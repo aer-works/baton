@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.20.0](https://github.com/aer-works/baton/compare/ui-v0.19.0...ui-v0.20.0) (2026-08-08)
+
+
+### Features
+
+* **cli:** Every command prints where each produced output landed ([#777](https://github.com/aer-works/baton/issues/777)) ([0e64c30](https://github.com/aer-works/baton/commit/0e64c306450571f9bc9b94dc60d82f87bdf4157b))
+* **design,ui,test:** The interaction-state register, and the end of the status fall-through class ([#977](https://github.com/aer-works/baton/issues/977)) ([21738c7](https://github.com/aer-works/baton/commit/21738c7339aa115297114fdf2387fbcb10b80d42))
+* **flow:** Split PausePoint into needs-input and ready-for-review kinds ([#435](https://github.com/aer-works/baton/issues/435)) ([82a9d95](https://github.com/aer-works/baton/commit/82a9d955da69be3bed3778d25415f9f2ec0185e7))
+* **mcp:** aer yield via AER's first MCP server host; dialogue sentinel retired ([#827](https://github.com/aer-works/baton/issues/827)) ([7ef1de5](https://github.com/aer-works/baton/commit/7ef1de568a3425bdb84870f1018a6eb1250b90f7))
+* **ui,mobile:** Generate both toolkits' themes from one token file ([#450](https://github.com/aer-works/baton/issues/450)) ([c4666a2](https://github.com/aer-works/baton/commit/c4666a29796bbe0f76d4b7803b09b8835fa4b026))
+* **ui,mobile:** Point both apps at the shipped typefaces ([#457](https://github.com/aer-works/baton/issues/457)) ([360cd81](https://github.com/aer-works/baton/commit/360cd8189a1e69f6f4eb278501dc99b3c91c614a))
+* **ui,mobile:** Ship Source Sans 3 + JetBrains Mono and give code its own surface ([#454](https://github.com/aer-works/baton/issues/454)) ([f9b742e](https://github.com/aer-works/baton/commit/f9b742eb79ec5be5e30dfa0d277c8a75ada6e26e))
+* **ui:** A failure shows what broke, in the room, with the worker that failed there to be asked ([#617](https://github.com/aer-works/baton/issues/617)) ([#982](https://github.com/aer-works/baton/issues/982)) ([15bdc44](https://github.com/aer-works/baton/commit/15bdc44d738222fb4708258d6b2ff5e18f6d9baa))
+* **ui:** Add a Settings surface (Workers, Your phone, Appearance), folding Remote in ([#1068](https://github.com/aer-works/baton/issues/1068)) ([997fe11](https://github.com/aer-works/baton/commit/997fe115a24a67b1aaa716398cf6cca275b885cc))
+* **ui:** Adopt the Quiet palette (blue-&gt;teal) and differentiate transcript turns ([#1064](https://github.com/aer-works/baton/issues/1064), [#1065](https://github.com/aer-works/baton/issues/1065)) ([80ad1bc](https://github.com/aer-works/baton/commit/80ad1bc220d6ed655d3537b4cdd6e933984b26ba))
+* **ui:** Daily-driver chat header is the room name + worker chip (M26) ([#1058](https://github.com/aer-works/baton/issues/1058)) ([3c8bb9a](https://github.com/aer-works/baton/commit/3c8bb9a380a90dfe552190b697ac3c6f3c0b219d))
+* **ui:** Daily-driver composer — "Reply…", Enter sends / Shift+Enter newline (M26) ([#1060](https://github.com/aer-works/baton/issues/1060)) ([ca223a4](https://github.com/aer-works/baton/commit/ca223a4ba3ef2d9426810509e6e77547317aac12))
+* **ui:** Desktop lands in your work, not the Home dashboard (rooms-as-root, M26) ([#1056](https://github.com/aer-works/baton/issues/1056)) ([16dcc21](https://github.com/aer-works/baton/commit/16dcc21f7e8e38826790776e04e263d3d485ff92))
+* **ui:** Desktop switcher rows and ordering to the daily-driver design (M26) ([#1054](https://github.com/aer-works/baton/issues/1054)) ([cb02bfd](https://github.com/aer-works/baton/commit/cb02bfdaaae7ec73472dff7fd75daaa20c147822))
+* **ui:** One gate is one object seen from three places, and the lock names its holder ([#618](https://github.com/aer-works/baton/issues/618)) ([#988](https://github.com/aer-works/baton/issues/988)) ([3a0f3d7](https://github.com/aer-works/baton/commit/3a0f3d7615e39751b38fe4e077bb8f99217c84f9))
+* **ui:** Replace the six-destination rail with one switcher shell ([#464](https://github.com/aer-works/baton/issues/464)) ([849c3b8](https://github.com/aer-works/baton/commit/849c3b82205753d84b4dd508615760e5d7f246f0))
+* **ui:** Room turn-host surface — throttle values, live usage, and dormancy visibility ([#994](https://github.com/aer-works/baton/issues/994)) ([#1000](https://github.com/aer-works/baton/issues/1000)) ([8260639](https://github.com/aer-works/baton/commit/8260639be29240f7f5b9a5160a5dd5dbfa1e3d7a))
+* **ui:** Switcher "+ New" and remove Home duplicate template button (M26) ([#1063](https://github.com/aer-works/baton/issues/1063)) ([bccfc5b](https://github.com/aer-works/baton/commit/bccfc5bf01916c509a7accf28099c2ca2aa5bfb1))
+* **ui:** Three icon-only rail + the inbox as a needs-you filter (M26) ([#1071](https://github.com/aer-works/baton/issues/1071), [#1072](https://github.com/aer-works/baton/issues/1072)) ([#1073](https://github.com/aer-works/baton/issues/1073)) ([5140983](https://github.com/aer-works/baton/commit/51409839973b5434d282528affbc2899d117a5f7))
+* **ui:** Truthful room states on the desktop switcher — waiting-on-you first, mark on load, drop the mislabel (J3, slice 2b) ([#1052](https://github.com/aer-works/baton/issues/1052)) ([f220c12](https://github.com/aer-works/baton/commit/f220c12d5285f909e8e3e1503e16cb27aa528256))
+
+
+### Bug Fixes
+
+* **cli:** Refuse a resume whose named workflow is a different template ([#652](https://github.com/aer-works/baton/issues/652)) ([bbfd524](https://github.com/aer-works/baton/commit/bbfd524cc752c9b55d11287521c442f7b398ac38))
+* **flow:** Name the failure AER already detected instead of an unclassified Failed ([#607](https://github.com/aer-works/baton/issues/607)) ([9bbecb6](https://github.com/aer-works/baton/commit/9bbecb6a0da18ca1e4d9b0481caf3a1039d3838f))
+* **ui,adapters:** Refuse to save a permission grant that is inert or that the engine rejects ([#711](https://github.com/aer-works/baton/issues/711)) ([273b7c2](https://github.com/aer-works/baton/commit/273b7c29c932690f3e212eeccd7676014a555ce5))
+* **ui,mobile:** Complete the status vocabulary and make fill agree across toolkits ([#463](https://github.com/aer-works/baton/issues/463)) ([6dd8c87](https://github.com/aer-works/baton/commit/6dd8c874e18e3b11211b349905f346a7fd144d3a))
+* **ui,mobile:** Draw status marks as shapes instead of codepoints ([#460](https://github.com/aer-works/baton/issues/460)) ([8f74855](https://github.com/aer-works/baton/commit/8f7485588c8cd7cd1bc9c2e3ebbf87002d56ee68))
+* **ui:** Remote advertises the unreachable address and hides the not-encrypted warning ([#392](https://github.com/aer-works/baton/issues/392)) ([41ec69f](https://github.com/aer-works/baton/commit/41ec69f945a874210f51e5277529d18470070822))
+* **ui:** Stop the new-chat adapter combo rendering blank after adapter refresh ([#990](https://github.com/aer-works/baton/issues/990)) ([c2bf1fd](https://github.com/aer-works/baton/commit/c2bf1fdb8cef63019dd4960cffa81fa08ff3048c))
+* **ui:** The newest artifact-preview request wins, and its test no longer bets on timing ([#873](https://github.com/aer-works/baton/issues/873)) ([e05d94d](https://github.com/aer-works/baton/commit/e05d94d1a845c6ff55487bc717e952cf158bc6b9))
+* **ui:** The workflow-path box never carries a bare template id, and the resume template check fires ([#969](https://github.com/aer-works/baton/issues/969)) ([c6ae9c1](https://github.com/aer-works/baton/commit/c6ae9c176fc3410a88d48b65ad2619b86d8e6134))
+
+
+### Code Refactoring
+
+* **adapters,cli,daemon,ui:** rename GeminiWorkerAdapter to AgyWorkerAdapter ([#1032](https://github.com/aer-works/baton/issues/1032)) ([#1034](https://github.com/aer-works/baton/issues/1034)) ([2a44e13](https://github.com/aer-works/baton/commit/2a44e1322c4e5054b5240b3cff3a2d1e7ec887f0))
+* **core,daemon,ui:** Rename identifiers and spec terms to the two nouns ([#1038](https://github.com/aer-works/baton/issues/1038)) ([8d097af](https://github.com/aer-works/baton/commit/8d097afc11a21840e1d8420215019f239883a502))
+* **core,daemon,ui:** Unify sessions and tasks into one storage root, with migration ([#444](https://github.com/aer-works/baton/issues/444)) ([04a11b8](https://github.com/aer-works/baton/commit/04a11b8ce095f37f4ff4bc9eba137461016dbbc0))
+* **core:** Introduce AerPaths so the storage root has a single seam ([#362](https://github.com/aer-works/baton/issues/362)) ([4b81e57](https://github.com/aer-works/baton/commit/4b81e573b73a839e9dd713acb662b0d1bfb357e9))
+* **dialogue:** StopSentinel fully retired from config and every authoring surface ([#830](https://github.com/aer-works/baton/issues/830)) ([71e112d](https://github.com/aer-works/baton/commit/71e112d69db051aa494a047b18c6551d08e191d0))
+* **ui,mobile,docs:** Rename the product to Baton on every user-facing surface (0045) ([#865](https://github.com/aer-works/baton/issues/865)) ([fc8cae5](https://github.com/aer-works/baton/commit/fc8cae5fd3d0c0e36b51a94942f2ea36b6b27add))
+* **ui:** Push back the view-model predicates that decide state rather than project it ([#980](https://github.com/aer-works/baton/issues/980)) ([6612829](https://github.com/aer-works/baton/commit/6612829f17a8cfd481a7455d7534ac64872e2bb8))
+
+
+### Documentation
+
+* Record the M25 design, verify it against both vendors, and consolidate the doc tree ([#473](https://github.com/aer-works/baton/issues/473)) ([a4afade](https://github.com/aer-works/baton/commit/a4afadebd7d239f2da6a49d53ea3f5217e978d6a))
+
+
+### Continuous Integration
+
+* **audit:** Lint user-facing strings for engine vocabulary ([#956](https://github.com/aer-works/baton/issues/956)) ([825c6f7](https://github.com/aer-works/baton/commit/825c6f7d7570bd39896a1d5514e6a81f769e5da4))
+* Wire the journey gate into CI, and make the token drift check bidirectional ([#490](https://github.com/aer-works/baton/issues/490)) ([67b7b18](https://github.com/aer-works/baton/commit/67b7b18acd458d9849162b107aba1ae59ee719f3))
+
+
+### Tests
+
+* Add the journey-test harness with its first driveable legs ([#372](https://github.com/aer-works/baton/issues/372)) ([3c30827](https://github.com/aer-works/baton/commit/3c308276ced96654a4326cb948547fc2821f9a35))
+
 ## [0.19.0](https://github.com/aer-works/aer-flow/compare/ui-v0.18.0...ui-v0.19.0) (2026-07-22)
 
 
