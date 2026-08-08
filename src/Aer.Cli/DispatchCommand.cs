@@ -42,7 +42,7 @@ public static class DispatchCommand
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(adapters);
 
-        var workspace = workspaceDirectory ?? Directory.GetCurrentDirectory();
+        var workspace = options.WorkspaceDirectory ?? workspaceDirectory ?? Directory.GetCurrentDirectory();
         var (definition, bindings) = await MaterializeAsync(options, workspace, cancellationToken).ConfigureAwait(false);
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
@@ -88,7 +88,7 @@ public static class DispatchCommand
 
             if (isRole)
             {
-                return await MaterializeRoleAsync(options, cancellationToken).ConfigureAwait(false);
+                return await MaterializeRoleAsync(options, workspaceDirectory, cancellationToken).ConfigureAwait(false);
             }
 
             throw new CliArgumentException(
@@ -117,7 +117,7 @@ public static class DispatchCommand
     }
 
     private static async Task<(WorkflowDefinition, IReadOnlyDictionary<string, WorkerBindingConfigEntry>)>
-        MaterializeRoleAsync(DispatchOptions options, CancellationToken cancellationToken)
+        MaterializeRoleAsync(DispatchOptions options, string workspaceDirectory, CancellationToken cancellationToken)
     {
         if (options.SpecFilePath is null)
         {
@@ -132,7 +132,13 @@ public static class DispatchCommand
 
         var role = WorkerRoleCatalog.For(options.Name);
         var spec = await File.ReadAllTextAsync(options.SpecFilePath, cancellationToken).ConfigureAwait(false);
-        return RoleDispatch.Materialize(role, spec, options.Adapter);
+
+        // #1083: pin the workspace onto the binding so the worker can actually read the project it was
+        // dispatched to study — the process cwd alone does not reach agy (`-p` ignores it, #491).
+        // #1082: vendor/model/effort are three independent axes over the role's instructions ([0017]/[0033]).
+        return RoleDispatch.Materialize(
+            role, spec, options.Adapter, workingDirectory: workspaceDirectory,
+            modelOverride: options.Model, effortOverride: options.Effort);
     }
 
     /// <summary>

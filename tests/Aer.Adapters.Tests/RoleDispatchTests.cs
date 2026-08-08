@@ -98,6 +98,66 @@ public class RoleDispatchTests
         Assert.Equal(GrantAuditMode.Enforced, binding.GrantAuditMode);
     }
 
+    private static WorkerRole Advise => WorkerRoleCatalog.For("advise");
+
+    [Fact]
+    public void An_adapter_override_to_a_different_vendor_drops_the_tiers_vendor_specific_model()
+    {
+        // advise is an agy-tier role whose tier pins a (gemini) model; running it on claude must NOT
+        // carry that vendor-specific string to claude's CLI — the measured #1082 failure. With no
+        // explicit --model, the swapped vendor falls back to its own default (null model).
+        Assert.False(string.IsNullOrEmpty(Advise.Model)); // the tier really does pin a model to drop
+
+        var onClaude = RoleDispatch.ToBinding(Advise, "spec", "claude");
+        Assert.Equal("claude", onClaude.Adapter);
+        Assert.Null(onClaude.Model);
+
+        // Control — same vendor keeps the tier's own model, so this is about the swap, not a blanket null.
+        Assert.Equal(Advise.Model, RoleDispatch.ToBinding(Advise, "spec").Model);
+    }
+
+    [Fact]
+    public void An_explicit_model_override_wins_over_both_the_tier_and_the_vendor_swap()
+    {
+        // The model is its own axis (0017/0033): an explicit --model is used verbatim, whether or not
+        // the vendor is also swapped.
+        Assert.Equal("opus", RoleDispatch.ToBinding(Advise, "spec", "claude", modelOverride: "opus").Model);
+        Assert.Equal("gemini-x", RoleDispatch.ToBinding(Advise, "spec", modelOverride: "gemini-x").Model);
+    }
+
+    [Fact]
+    public void Effort_is_its_own_axis_riding_across_a_vendor_swap_but_yielding_to_an_override()
+    {
+        // review's tier pins an effort; effort is a behavioural name (0023), not a vendor model string,
+        // so a vendor swap keeps it — only an explicit --effort changes it.
+        Assert.False(string.IsNullOrEmpty(Review.Effort)); // the tier really does pin an effort
+
+        Assert.Equal(Review.Effort, RoleDispatch.ToBinding(Review, "spec", "agy").Effort);
+        Assert.Equal("quick", RoleDispatch.ToBinding(Review, "spec", effortOverride: "quick").Effort);
+    }
+
+    [Fact]
+    public void ToBinding_pins_the_working_directory_when_given_so_the_worker_can_read_the_project()
+    {
+        // #1083: without this the dispatched role's binding carried no directory, and a vendor that
+        // ignores the process cwd (agy -p) was handed no path to the repo it was dispatched to read.
+        Assert.Null(RoleDispatch.ToBinding(Review, "spec").WorkingDirectory);
+        Assert.Equal("/repo/root", RoleDispatch.ToBinding(Review, "spec", workingDirectory: "/repo/root").WorkingDirectory);
+    }
+
+    [Fact]
+    public void Materialize_threads_the_working_directory_and_axis_overrides_onto_the_binding()
+    {
+        var (_, bindings) = RoleDispatch.Materialize(
+            Advise, "spec", "claude", workingDirectory: "/w", effortOverride: "careful");
+        var binding = Assert.Contains("advise", bindings);
+
+        Assert.Equal("claude", binding.Adapter);
+        Assert.Null(binding.Model);              // vendor swapped, no explicit --model
+        Assert.Equal("careful", binding.Effort);
+        Assert.Equal("/w", binding.WorkingDirectory);
+    }
+
     [Fact]
     public void Patch_role_resolves_with_expected_contract_and_grant_polarity_per_adapter()
     {

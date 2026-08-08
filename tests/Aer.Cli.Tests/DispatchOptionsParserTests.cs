@@ -32,6 +32,29 @@ public class DispatchOptionsParserTests
     }
 
     [Fact]
+    public void Parses_the_independent_model_effort_and_workspace_axes()
+    {
+        // Vendor/model/effort are three independent axes (0017/0033); the CLI exposes each, plus the
+        // workspace the worker reads (#1082/#1083).
+        var options = DispatchOptionsParser.Parse(
+            ["advise", "--spec", "t.md", "--adapter", "claude", "--model", "opus", "--effort", "careful", "--workspace", "."]);
+
+        Assert.Equal("claude", options.Adapter);
+        Assert.Equal("opus", options.Model);
+        Assert.Equal("careful", options.Effort);
+        Assert.Equal(System.IO.Path.GetFullPath("."), options.WorkspaceDirectory);
+    }
+
+    [Fact]
+    public void The_new_axis_flags_default_to_null_when_absent()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md"]);
+        Assert.Null(options.Model);
+        Assert.Null(options.Effort);
+        Assert.Null(options.WorkspaceDirectory);
+    }
+
+    [Fact]
     public void A_missing_name_is_a_typed_argument_error()
     {
         var ex = Assert.Throws<CliArgumentException>(() => DispatchOptionsParser.Parse(["--spec", "task.md"]));
