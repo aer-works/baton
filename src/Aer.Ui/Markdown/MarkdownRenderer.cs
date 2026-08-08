@@ -16,6 +16,13 @@ internal static class MarkdownRenderer
 {
     private static readonly FontFamily MonospaceFont = new("Cascadia Code, Consolas, monospace");
 
+    // #1076 review (MEDIUM), confirmed by measurement (tests/.../MarkdownRendererTests deep-nesting
+    // cases): 0051 §1 is that the input is untrusted model output. Markdig caps its own *block*
+    // nesting (blockquotes/lists throw past ~128) but does NOT cap *inline emphasis* — 5000 `*`
+    // delimiters parse to an AST ~2500 deep. The render walk recurses per level, so without this cap
+    // that AST would StackOverflow the desktop process. 48 is far above any real message's nesting.
+    private const int MaxRenderDepth = 48;
+
     public static Control Render(string? markdown)
     {
         var panel = new StackPanel
@@ -29,7 +36,26 @@ internal static class MarkdownRenderer
         }
 
         var pipeline = new MarkdownPipelineBuilder().Build();
-        var document = Markdig.Markdown.Parse(markdown, pipeline);
+
+        MarkdownDocument document;
+        try
+        {
+            document = Markdig.Markdown.Parse(markdown, pipeline);
+        }
+        catch (ArgumentException ex) when (ex.Message.Contains("deeply nested"))
+        {
+            // Markdig's own block-nesting cap throws this on pathologically deep blockquotes/lists.
+            // The `when` filter keeps any unrelated ArgumentException propagating (repo rule: don't
+            // silently swallow) — only the known deep-nesting throw degrades to safe literal text.
+            return DegradeToLiteral(panel, markdown);
+        }
+
+        // Emphasis nesting is NOT capped by Markdig (see MaxRenderDepth), so a parse can succeed and
+        // still hand back an AST too deep for the recursive render walk. Guard it before recursing.
+        if (ExceedsMaxDepth(document))
+        {
+            return DegradeToLiteral(panel, markdown);
+        }
 
         foreach (var block in document)
         {
@@ -41,6 +67,49 @@ internal static class MarkdownRenderer
         }
 
         return panel;
+    }
+
+    private static Control DegradeToLiteral(StackPanel panel, string markdown)
+    {
+        panel.Children.Add(new SelectableTextBlock { Text = markdown, TextWrapping = TextWrapping.Wrap });
+        return panel;
+    }
+
+    // Iterative (explicit-stack) depth probe so the guard itself cannot overflow. Walks the block tree
+    // and, at each leaf, its inline tree, returning true as soon as any node sits deeper than the cap.
+    private static bool ExceedsMaxDepth(MarkdownObject root)
+    {
+        var stack = new Stack<(MarkdownObject Node, int Depth)>();
+        stack.Push((root, 0));
+        while (stack.Count > 0)
+        {
+            var (node, depth) = stack.Pop();
+            if (depth > MaxRenderDepth)
+            {
+                return true;
+            }
+
+            switch (node)
+            {
+                case ContainerBlock containerBlock:
+                    foreach (var child in containerBlock)
+                    {
+                        stack.Push((child, depth + 1));
+                    }
+                    break;
+                case LeafBlock leafBlock when leafBlock.Inline is { } inline:
+                    stack.Push((inline, depth + 1));
+                    break;
+                case ContainerInline containerInline:
+                    foreach (var child in containerInline)
+                    {
+                        stack.Push((child, depth + 1));
+                    }
+                    break;
+            }
+        }
+
+        return false;
     }
 
     private static Control? RenderBlock(Block block)
@@ -137,13 +206,24 @@ internal static class MarkdownRenderer
             FontFamily = MonospaceFont
         };
 
+        // #1076 review (HIGH): NoWrap without a horizontal scroller clips wide code/diff lines — the
+        // exact content 0051 exists to render — with no way to reach the rest. Give the block its own
+        // horizontal ScrollViewer (bounded to the block, not the transcript), matching the
+        // HorizontalScrollBarVisibility="Auto" convention AuthorView/RoomView already use.
+        var scroller = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            Content = tb
+        };
+
         var border = new Border
         {
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(12, 8),
             Margin = new Thickness(0, 4, 0, 8),
-            Child = tb
+            Child = scroller
         };
         border.Bind(Border.BackgroundProperty, border.GetResourceObservable("Color.SurfaceSubtle"));
         border.Bind(Border.BorderBrushProperty, border.GetResourceObservable("Color.Border"));
@@ -311,11 +391,14 @@ internal static class MarkdownRenderer
 
             case EmphasisInline emphasis:
                 var span = new Span();
+                // CommonMark pairs a run of 3 delimiters as 2+1 (strong wrapping em), so a single
+                // EmphasisInline carries either 1 (italic) or 2 (bold); ***x*** is two nested nodes,
+                // and the italic inherits the outer bold via Span inheritance (#1076 review #6).
                 if (emphasis.DelimiterCount >= 2)
                 {
                     span.FontWeight = FontWeight.Bold;
                 }
-                if (emphasis.DelimiterCount == 1 || emphasis.DelimiterCount == 3)
+                else
                 {
                     span.FontStyle = FontStyle.Italic;
                 }

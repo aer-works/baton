@@ -3,6 +3,7 @@ using System.Linq;
 using Aer.Ui.Markdown;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
+using Avalonia.Controls.Primitives;
 using Avalonia.Headless.XUnit;
 using Avalonia.Media;
 using Xunit;
@@ -33,7 +34,13 @@ public class MarkdownRendererTests
         var border = allControls.OfType<Border>().FirstOrDefault();
         Assert.NotNull(border);
 
-        var selectableTextBlock = border.Child as SelectableTextBlock;
+        // #1076 review fix #1: the code block is wrapped in a horizontal ScrollViewer so a long line
+        // scrolls instead of forcing the message column wide.
+        var scrollViewer = border.Child as ScrollViewer;
+        Assert.NotNull(scrollViewer);
+        Assert.Equal(ScrollBarVisibility.Auto, scrollViewer.HorizontalScrollBarVisibility);
+
+        var selectableTextBlock = scrollViewer.Content as SelectableTextBlock;
         Assert.NotNull(selectableTextBlock);
         Assert.Equal("var x = 42;", selectableTextBlock.Text?.TrimEnd());
         Assert.NotNull(selectableTextBlock.FontFamily);
@@ -115,31 +122,129 @@ public class MarkdownRendererTests
     [AvaloniaFact]
     public void Raw_html_degrades_to_literal_text()
     {
-        const string markdown = "<script>alert('xss')</script> and <img src=\"http://evil.com/x.png\">";
+        // The heading discriminates against a no-op "bind raw string to a TextBlock" renderer: real
+        // parsing strips the "# " marker (transforms the heading), a no-op leaves it verbatim. So the
+        // test proves the HTML is routed through Markdig's AST and degraded, not merely passed through.
+        const string markdown = "# Title\n\n<script>alert('xss')</script> and <img src=\"http://evil.com/x.png\">";
         var control = MarkdownRenderer.Render(markdown);
 
         var allControls = GetAllControls(control).ToList();
         Assert.DoesNotContain(allControls, c => c is Image);
 
-        var textBlocks = allControls.OfType<SelectableTextBlock>().ToList();
-        Assert.NotEmpty(textBlocks);
+        var allText = CollectAllText(allControls);
+        Assert.Contains("<script>alert('xss')</script>", allText);
+        Assert.Contains("<img src=\"http://evil.com/x.png\">", allText);
+        // Real parse produced the heading text without its "# " marker; a no-op would keep "# Title".
+        Assert.Contains("Title", allText);
+        Assert.DoesNotContain("# Title", allText);
+    }
 
-        var collectedTexts = new List<string>();
-        foreach (var tb in textBlocks)
+    [AvaloniaFact]
+    public void Reference_style_image_renders_no_image_control()
+    {
+        // A different syntax path than the inline image already covered: the image reference is
+        // resolved against a link-reference definition, so it exercises the reference branch of
+        // LinkInline. 0051 §3 forbids ANY image control regardless of how the image reached the AST.
+        const string markdown = "![alt text][ref]\n\n[ref]: http://example.com/image.png";
+        var control = MarkdownRenderer.Render(markdown);
+
+        var allControls = GetAllControls(control).ToList();
+        Assert.DoesNotContain(allControls, c => c is Image);
+    }
+
+    [AvaloniaFact]
+    public void Autolink_is_not_wired_for_navigation_and_issues_no_fetch()
+    {
+        // The bare pipeline must not silently enable the AutoLinks extension. Even if an autolink
+        // slips through as a LinkInline, the renderer must not wire navigation. Assert the URL shows
+        // as literal text and no Image/HyperlinkButton reaches the tree.
+        const string markdown = "See <http://example.com> for details.";
+        var control = MarkdownRenderer.Render(markdown);
+
+        var allControls = GetAllControls(control).ToList();
+        Assert.DoesNotContain(allControls, c => c is Image);
+        Assert.DoesNotContain(allControls, c => c is HyperlinkButton);
+
+        var allText = CollectAllText(allControls);
+        Assert.Contains("http://example.com", allText);
+    }
+
+    [AvaloniaFact]
+    public void Inline_html_mid_paragraph_degrades_to_literal_and_loads_no_image()
+    {
+        // This hits the HtmlInline branch (raw HTML mid-paragraph), distinct from the HtmlBlock path
+        // the raw-html test exercises. The <img> tag must survive as literal text, never a control.
+        const string markdown = "before <img src=\"http://evil.com/x.png\"> after";
+        var control = MarkdownRenderer.Render(markdown);
+
+        var allControls = GetAllControls(control).ToList();
+        Assert.DoesNotContain(allControls, c => c is Image);
+
+        var allText = CollectAllText(allControls);
+        Assert.Contains("<img src=\"http://evil.com/x.png\">", allText);
+    }
+
+    [AvaloniaFact]
+    public void Deeply_nested_blockquotes_degrade_to_literal_via_the_parse_cap()
+    {
+        // Deep blockquotes hit the parse-cap path in MarkdownRenderer.Render (see its comment for the
+        // mechanism). Asserts the observable contract — literal text, no crash — not which branch fired.
+        var markdown = string.Concat(Enumerable.Repeat("> ", 500)) + "deep";
+        var control = MarkdownRenderer.Render(markdown);
+
+        Assert.IsType<StackPanel>(control);
+        Assert.Contains("deep", CollectAllText(GetAllControls(control).ToList()));
+    }
+
+    [AvaloniaFact]
+    public void Deeply_nested_emphasis_degrades_to_literal_via_the_render_depth_guard()
+    {
+        // 100 `*` delimiters parse to an AST deeper than the render-depth cap but throw nothing, so
+        // this exercises the ExceedsMaxDepth guard rather than the parse-cap catch (see the renderer).
+        var markdown = new string('*', 100) + "x" + new string('*', 100);
+        var control = MarkdownRenderer.Render(markdown);
+
+        Assert.IsType<StackPanel>(control);
+        // Guard degraded to one literal block — the raw delimiters survive as text, no crash.
+        Assert.Contains("x", CollectAllText(GetAllControls(control).ToList()));
+        Assert.Contains("*", CollectAllText(GetAllControls(control).ToList()));
+    }
+
+    private static string CollectAllText(IEnumerable<Control> controls)
+    {
+        var collected = new List<string>();
+        foreach (var tb in controls.OfType<SelectableTextBlock>())
         {
             if (!string.IsNullOrEmpty(tb.Text))
             {
-                collectedTexts.Add(tb.Text);
+                collected.Add(tb.Text);
             }
             if (tb.Inlines != null)
             {
-                collectedTexts.Add(string.Join("", tb.Inlines.OfType<Run>().Select(r => r.Text)));
+                collected.Add(CollectInlineText(tb.Inlines));
             }
         }
 
-        var allText = string.Join("\n", collectedTexts);
-        Assert.Contains("<script>alert('xss')</script>", allText);
-        Assert.Contains("<img src=\"http://evil.com/x.png\">", allText);
+        return string.Join("\n", collected);
+    }
+
+    private static string CollectInlineText(InlineCollection inlines)
+    {
+        var parts = new List<string>();
+        foreach (var inline in inlines)
+        {
+            switch (inline)
+            {
+                case Run run when run.Text != null:
+                    parts.Add(run.Text);
+                    break;
+                case Span span when span.Inlines != null:
+                    parts.Add(CollectInlineText(span.Inlines));
+                    break;
+            }
+        }
+
+        return string.Concat(parts);
     }
 
     private static IEnumerable<Control> GetAllControls(Control parent)
