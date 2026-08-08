@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 
@@ -1274,6 +1275,68 @@ public class AgyWorkerAdapterTests
 
         Assert.False(gate.Environment.ContainsKey("HOME"));
         Assert.False(gate.Environment.ContainsKey("USERPROFILE"));
+    }
+
+    // #1084: the three arms below pin the seed AgyWorkerAdapter emits -- present for the write-granted
+    // case, absent for the two that must not carry it. Why the seed is needed and what it permits is on
+    // Resolve; the vendor claim that agy honours it is the live `aer dispatch advise --adapter agy` run.
+    [Fact]
+    public void Write_granted_accept_edits_role_seeds_write_allow_into_redirected_home()
+    {
+        var writeGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false, NetworkAccess: false);
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan.", PermissionGrant: writeGrant), ArchitectContract);
+
+        var seed = Assert.Single(target.SeedFiles!);
+        Assert.Contains("gemini_home", seed.PathTemplate);
+        Assert.EndsWith(Path.Combine(".gemini", "antigravity-cli", "settings.json"), seed.PathTemplate);
+
+        // Content parses as JSON (a Windows path substituted with backslashes would not) and carries the
+        // least-privilege, per-output rule with a forward-slashed target and the unexpanded placeholder.
+        using var doc = JsonDocument.Parse(seed.Content);
+        var allow = doc.RootElement.GetProperty("permissions").GetProperty("allow");
+        var rule = Assert.Single(allow.EnumerateArray()).GetString();
+        var expectedRef = OperatingSystem.IsWindows() ? "%AER_OUTPUT_DIR%" : "$AER_OUTPUT_DIR";
+        Assert.Equal($"write_file({expectedRef}/plan.md)", rule);
+    }
+
+    [Fact]
+    public void Write_allow_seeds_one_rule_per_declared_output()
+    {
+        // A single-output contract cannot catch a `.Select` regression that drops all but the first
+        // output; a two-output contract pins the rule SET, not just that some rule was emitted.
+        var contract = new WorkerContract(
+            "architect", ["goal"], [new ProducedOutput("plan.md"), new ProducedOutput("risks.md")], []);
+        var writeGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false, NetworkAccess: false);
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan.", PermissionGrant: writeGrant), contract);
+
+        var seed = Assert.Single(target.SeedFiles!);
+        using var doc = JsonDocument.Parse(seed.Content);
+        var rules = doc.RootElement.GetProperty("permissions").GetProperty("allow")
+            .EnumerateArray().Select(e => e.GetString()).ToArray();
+        var expectedRef = OperatingSystem.IsWindows() ? "%AER_OUTPUT_DIR%" : "$AER_OUTPUT_DIR";
+        Assert.Equal([$"write_file({expectedRef}/plan.md)", $"write_file({expectedRef}/risks.md)"], rules);
+    }
+
+    [Fact]
+    public void Shell_granted_worker_does_not_seed_write_allow()
+    {
+        // The skip-permissions path already auto-approves writes -- seeding an allow-rule would be
+        // redundant, and this is how the front door was built. Polarity for the positive arm above.
+        var shellGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Build.", PermissionGrant: shellGrant), ArchitectContract);
+
+        Assert.True(target.SeedFiles is null or { Count: 0 });
+    }
+
+    [Fact]
+    public void Raw_accept_edits_scope_without_a_grant_seeds_nothing()
+    {
+        // No grant -> no redirected home -> the seed is gated off, so this raw-scope path emits nothing.
+        // The isolation reason the gate protects (never the operator's own home) is on Resolve.
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "accept-edits"), ArchitectContract);
+
+        Assert.True(target.SeedFiles is null or { Count: 0 });
     }
 
     [Fact]

@@ -3320,6 +3320,59 @@ def _agy_allow():
             print(f"  !! RESTORE MISMATCH -- backup kept at {backup}", file=sys.stderr)
 
 
+@check("agy.settings-allow-write-honoured-headless", "agy",
+       "agy permissions.allow write_file(<path>) is honoured under -p -- the fact a write-granted "
+       "accept-edits worker (advise/orchestrate) rests on to produce output at all (#1084)",
+       safety="mutates-config", sentinel=True)
+def _agy_allow_write():
+    """Two arms, one variable: the write_file(<target>) allow-rule present vs absent, same prompt.
+
+    The `command(...)` sibling proves the allow LIST loads under -p; it does not prove the write_file
+    CATEGORY is honoured, which is a distinct claim and the one AgyWorkerAdapter's #1084 seed depends
+    on. The without-rule control is the discriminator: under -p agy cannot prompt for the write, so it
+    is auto-denied unless the rule permits it. If the control writes anyway, the rule is not what
+    permitted the write and the pass would be meaningless.
+    """
+    if not os.path.exists(AGY_SETTINGS):
+        return SKIPPED, "settings.json not present"
+    backup = os.path.join(tempfile.gettempdir(), "aer_agy_allow_write_backup.json")
+    shutil.copyfile(AGY_SETTINGS, backup)
+    before = hashlib.sha256(open(AGY_SETTINGS, "rb").read()).hexdigest()
+
+    def wrote(with_rule):
+        wd = tempfile.mkdtemp(prefix="v-agyw-")
+        target = os.path.join(wd, "out.txt")
+        try:
+            cfg = json.load(open(backup, encoding="utf-8"))
+            allow = list(cfg.setdefault("permissions", {}).setdefault("allow", []))
+            if with_rule:
+                # Forward-slashed, matching the seed AgyWorkerAdapter emits and agy's normalized form.
+                allow = allow + [f"write_file({target.replace(os.sep, '/')})"]
+            cfg["permissions"]["allow"] = allow
+            json.dump(cfg, open(AGY_SETTINGS, "w", encoding="utf-8"), indent=2)
+            run(["agy", "-p", f"Write the single word DONE to the file {target}. Do nothing else.",
+                 "--add-dir", wd], cwd=wd)
+            return os.path.exists(target)
+        finally:
+            shutil.rmtree(wd, ignore_errors=True)
+
+    try:
+        with_rule = wrote(True)
+        without_rule = wrote(False)
+    finally:
+        shutil.copyfile(backup, AGY_SETTINGS)
+        after = hashlib.sha256(open(AGY_SETTINGS, "rb").read()).hexdigest()
+        if after != before:
+            print(f"  !! RESTORE MISMATCH -- backup kept at {backup}", file=sys.stderr)
+
+    note = f"with_rule={with_rule}, without_rule={without_rule}"
+    if not with_rule:
+        return FAIL, f"the write allow-rule was NOT honoured; {note}"
+    if without_rule:
+        return INCONCLUSIVE, f"the control wrote WITHOUT a rule, so the rule is not what permitted it; {note}"
+    return PASS, f"write allow-rule honoured; control denied the write without it; {note}"
+
+
 def _classify_model_outcome(rc, text):
     """accepted / rejected-naming-model / ambiguous, for one --model <unlisted-name> arm.
 
