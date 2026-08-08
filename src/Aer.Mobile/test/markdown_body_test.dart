@@ -1,5 +1,6 @@
 import 'package:aer_mobile/chat_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Tests for the mobile markdown transcript renderer (#1080, decision 0051). The security cases
@@ -45,6 +46,23 @@ void main() {
     expect(find.textContaining('alt text', findRichText: true), findsOneWidget);
   });
 
+  testWidgets('Security §3: a reference-style image loads no Image widget', (tester) async {
+    // A different syntax path (reference resolution) than the inline image, per 0051 §3.
+    const markdown = '![alt text][ref]\n\n[ref]: http://evil.com/x.png';
+    await tester.pumpWidget(buildSubject(markdown));
+
+    expect(find.byType(Image), findsNothing);
+    expect(find.textContaining('alt text', findRichText: true), findsOneWidget);
+  });
+
+  testWidgets('Security §3: an autolink loads no Image widget and is inert', (tester) async {
+    const markdown = 'see <http://evil.com/x.png> here';
+    await tester.pumpWidget(buildSubject(markdown));
+
+    expect(find.byType(Image), findsNothing);
+    expect(find.textContaining('http://evil.com/x.png', findRichText: true), findsOneWidget);
+  });
+
   testWidgets('Security §3: raw <img> / <script> HTML loads no Image widget', (tester) async {
     const markdown = 'before <img src="http://evil.com/x.png"> and <script>alert(1)</script> after';
     await tester.pumpWidget(buildSubject(markdown));
@@ -68,19 +86,27 @@ void main() {
     await tester.pump();
   });
 
-  testWidgets('Pathologically deep emphasis renders without crashing (depth measurement)', (tester) async {
-    // The real depth probe the worker's changes.md claimed but did not commit. Markdig (desktop)
-    // does NOT cap inline emphasis; if the Dart `markdown` package is the same and the widget build
-    // recurses per level, this would overflow. If this test passes, no guard is needed — and that is
-    // now actually measured, not asserted.
+  testWidgets('Normal-depth content renders through MarkdownBody (guard does not over-fire)', (tester) async {
+    // Control for the guard tests below: ordinary nesting must still render richly, not degrade.
+    await tester.pumpWidget(buildSubject('# Title\n\n- a\n  - b\n\n> quote **bold**'));
+    expect(find.byType(MarkdownBody), findsOneWidget);
+  });
+
+  testWidgets('Pathologically deep emphasis degrades to plain text, never MarkdownBody', (tester) async {
+    // The depth guard, not a happy-path render: the recursive build never runs on this input, so the
+    // safety no longer depends on the host stack the test happens to run on (finding 1). MarkdownBody
+    // is absent because the guard returned SelectableText before constructing it.
     final deepEmphasis = '${'*' * 5000}x${'*' * 5000}';
     await tester.pumpWidget(buildSubject(deepEmphasis));
     expect(tester.takeException(), isNull);
+    expect(find.byType(MarkdownBody), findsNothing);
+    expect(find.byType(SelectableText), findsOneWidget);
   });
 
-  testWidgets('Deeply nested blockquotes render without crashing', (tester) async {
+  testWidgets('Deeply nested blockquotes degrade to plain text, never MarkdownBody', (tester) async {
     final deepBlockquote = '${'> ' * 500}deep';
     await tester.pumpWidget(buildSubject(deepBlockquote));
     expect(tester.takeException(), isNull);
+    expect(find.byType(MarkdownBody), findsNothing);
   });
 }
