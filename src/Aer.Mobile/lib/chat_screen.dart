@@ -1,9 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:markdown/markdown.dart' as md;
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import 'daemon/daemon_client.dart';
 import 'daemon/models.dart';
+import 'theme/tokens.dart';
 
 /// One rendered row in the chat transcript — a human turn or an assistant response, never both.
 /// Mirrors Aer.Ui.Core's ChatMessageViewModel (see ChatViewModel.cs).
@@ -458,10 +462,91 @@ class _MessageBubble extends StatelessWidget {
           children: [
             Text(message.senderLabel, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: foreground)),
             const SizedBox(height: 4),
-            Text(message.text, style: TextStyle(color: foreground)),
+            MarkdownBodyWidget(text: message.text, foreground: foreground),
           ],
         ),
       ),
+    );
+  }
+}
+
+
+@visibleForTesting
+class MarkdownBodyWidget extends StatelessWidget {
+  final String text;
+  final Color foreground;
+
+  const MarkdownBodyWidget({
+    super.key,
+    required this.text,
+    required this.foreground,
+  });
+
+  /// #1080 review (severe): flutter_markdown_plus builds the widget tree by recursing the parsed AST
+  /// (one stack frame per nesting level), and the `markdown` package does not cap inline-emphasis
+  /// depth — so thousands of `*` or nested `>` in untrusted model output (0051 §1) could overflow the
+  /// render on a real device's smaller stack, which a `flutter test` pass on the host's larger stack
+  /// does not disprove. Mirror the desktop guard: bound the depth before the recursive render.
+  static const int _maxRenderDepth = 64;
+
+  /// Iterative (explicit-stack) depth probe over the exact AST MarkdownBody will build (same parser,
+  /// same `commonMark`/`encodeHtml: false` config), so the probe itself cannot overflow. Parsing is
+  /// linear and non-recursive; only the subsequent build recurses, which this gates.
+  static bool _exceedsMaxDepth(String text) {
+    final document = md.Document(extensionSet: md.ExtensionSet.commonMark, encodeHtml: false);
+    final nodes = document.parseLines(const LineSplitter().convert(text));
+    final stack = <(md.Node, int)>[for (final node in nodes) (node, 1)];
+    while (stack.isNotEmpty) {
+      final (node, depth) = stack.removeLast();
+      if (depth > _maxRenderDepth) return true;
+      if (node is md.Element) {
+        final children = node.children;
+        if (children != null) {
+          for (final child in children) {
+            stack.add((child, depth + 1));
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    if (_exceedsMaxDepth(text)) {
+      return SelectableText(text, style: TextStyle(color: foreground));
+    }
+
+    final codeBackground = isDark ? AerTokens.surfaceCodeDark : AerTokens.surfaceCodeLight;
+
+    // One `code` slot styles both inline code and fenced-block text in this package, so it carries no
+    // background — the flat block fill comes from codeblockDecoration below, matching desktop's
+    // single-fill code block (a per-glyph background here would double-tint every code line).
+    final styleSheet = MarkdownStyleSheet.fromTheme(theme).copyWith(
+      p: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(color: foreground),
+      code: TextStyle(
+        fontFamily: AerTokens.fontMono,
+        fontSize: AerTokens.fontSizeCode,
+        color: foreground,
+      ),
+      codeblockDecoration: BoxDecoration(
+        color: codeBackground,
+        borderRadius: BorderRadius.circular(AerTokens.radiusSm),
+      ),
+    );
+
+    return MarkdownBody(
+      data: text,
+      selectable: true,
+      imageBuilder: (uri, title, alt) {
+        final displayText = (alt != null && alt.isNotEmpty) ? alt : '[image]';
+        return Text(displayText);
+      },
+      extensionSet: md.ExtensionSet.commonMark,
+      styleSheet: styleSheet,
     );
   }
 }
