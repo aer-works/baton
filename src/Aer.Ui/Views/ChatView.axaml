@@ -1,10 +1,11 @@
-<!-- M24 Phase 1 desktop chat UI (issue #262): a dedicated view for interactive chat/codebase
+﻿<!-- M24 Phase 1 desktop chat UI (issue #262): a dedicated view for interactive chat/codebase
      sessions instead of the generic Task view's DAG drill-in — a single repeatedly-superseded
      "chat" step has no dependency graph worth showing, and the real content
      (SessionMetadata.Turns) lives outside RoomProjection entirely (see ChatViewModel's remarks). -->
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="clr-namespace:Aer.Ui.Core;assembly=Aer.Ui.Core"
+             xmlns:md="clr-namespace:Aer.Ui.Markdown"
              x:Class="Aer.Ui.Views.ChatView"
              x:DataType="vm:MainWindowViewModel">
   <DockPanel Margin="24">
@@ -149,7 +150,7 @@
             <Border Classes="card" Classes.you="{Binding IsFromUser}" Margin="0,0,0,8">
               <StackPanel Spacing="{DynamicResource Space.1}">
                 <TextBlock Classes="caption who" Text="{Binding SenderLabel}" />
-                <TextBlock Classes="secondary" TextWrapping="Wrap" Text="{Binding Text}" />
+                <md:MarkdownPresenter Markdown="{Binding Text}" />
               </StackPanel>
             </Border>
           </DataTemplate>
