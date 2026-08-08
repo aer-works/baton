@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.20.0](https://github.com/aer-works/baton/compare/dialogue-worker-v0.19.0...dialogue-worker-v0.20.0) (2026-08-08)
+
+
+### Features
+
+* **dialogue:** Turns resume the vendor's own session; {PROMPT_FILE} retired ([#838](https://github.com/aer-works/baton/issues/838)) ([25efee5](https://github.com/aer-works/baton/commit/25efee5024d7fdad9bd2b139c78a4c4c24d5478b))
+* **mcp:** aer yield via AER's first MCP server host; dialogue sentinel retired ([#827](https://github.com/aer-works/baton/issues/827)) ([7ef1de5](https://github.com/aer-works/baton/commit/7ef1de568a3425bdb84870f1018a6eb1250b90f7))
+* **workers:** FinalOutputMode -- a dialogue's declared output can carry the full transcript ([#765](https://github.com/aer-works/baton/issues/765)) ([3a80b67](https://github.com/aer-works/baton/commit/3a80b67fa6b828430025eb7034105e01b2a0fb38))
+
+
+### Bug Fixes
+
+* **adapters,flow:** Make the PreToolUse gate true on every spawn path, and enforced ([#705](https://github.com/aer-works/baton/issues/705)) ([6b4568f](https://github.com/aer-works/baton/commit/6b4568ffaa098ad4ff1f60667e089be6324becba))
+* **dialogue,flow,cli,daemon,ui,adapters:** Pin every redirected child stream's decode to UTF-8 ([#466](https://github.com/aer-works/baton/issues/466)) ([#1017](https://github.com/aer-works/baton/issues/1017)) ([3489faf](https://github.com/aer-works/baton/commit/3489faf1b349c9d271c4fdf82c653b5fd22eb29d))
+* **dialogue,tools:** Dialogue preset shapes are single-sourced; the mirror is gone ([#836](https://github.com/aer-works/baton/issues/836)) ([#849](https://github.com/aer-works/baton/issues/849)) ([ca9c0aa](https://github.com/aer-works/baton/commit/ca9c0aacc54698dab9c31590d3432ee8fe073494))
+* **dialogue:** pass long turn prompts by file path, not argv ([#580](https://github.com/aer-works/baton/issues/580)) ([351ac47](https://github.com/aer-works/baton/commit/351ac471c926dc6d0a0780c5d3ecd79636e339ff))
+* **workers:** An invalid FinalOutputMode value is reported as an invalid value, not malformed JSON ([#781](https://github.com/aer-works/baton/issues/781)) ([9b3a81c](https://github.com/aer-works/baton/commit/9b3a81c9241a3bf0d6fabb418861c5d3efd32677))
+* **workers:** Dialogue turns run under a configurable per-turn timeout with honest failure reporting ([#728](https://github.com/aer-works/baton/issues/728)) ([bc77580](https://github.com/aer-works/baton/commit/bc77580ab37d5f09f7f0d6a850744ab539292f50))
+
+
+### Code Refactoring
+
+* **adapters,cli,daemon,ui:** rename GeminiWorkerAdapter to AgyWorkerAdapter ([#1032](https://github.com/aer-works/baton/issues/1032)) ([#1034](https://github.com/aer-works/baton/issues/1034)) ([2a44e13](https://github.com/aer-works/baton/commit/2a44e1322c4e5054b5240b3cff3a2d1e7ec887f0))
+* **dialogue:** StopSentinel fully retired from config and every authoring surface ([#830](https://github.com/aer-works/baton/issues/830)) ([71e112d](https://github.com/aer-works/baton/commit/71e112d69db051aa494a047b18c6551d08e191d0))
+
 ## [0.19.0](https://github.com/aer-works/aer-flow/compare/dialogue-worker-v0.18.0...dialogue-worker-v0.19.0) (2026-07-22)
 
 
