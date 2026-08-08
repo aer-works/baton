@@ -32,6 +32,9 @@
     <PackageReference Include="Avalonia" Version="12.1.0" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.0" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.0" />
+    <!-- #267: the CommonMark parser behind the desktop markdown renderer. Why Markdig specifically,
+         why not Markdown.Avalonia, and the no-remote-content rule: decision 0051. -->
+    <PackageReference Include="Markdig" Version="1.3.2" />
     <!-- Avalonia.Fonts.Inter was dropped in #456: the app now defaults to the Source Sans 3 shipped
          under Assets\Fonts, so nothing resolved to Inter any more and keeping the package would
          have left a second face in the binary that only a stale reference could reach. -->
