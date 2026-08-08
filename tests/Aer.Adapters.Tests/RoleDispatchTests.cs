@@ -126,14 +126,16 @@ public class RoleDispatchTests
     }
 
     [Fact]
-    public void Effort_is_its_own_axis_riding_across_a_vendor_swap_but_yielding_to_an_override()
+    public void Effort_is_its_own_axis_dropped_on_a_vendor_swap_but_kept_on_the_same_vendor_and_overridable()
     {
-        // review's tier pins an effort; effort is a behavioural name (0023), not a vendor model string,
-        // so a vendor swap keeps it — only an explicit --effort changes it.
-        Assert.False(string.IsNullOrEmpty(Review.Effort)); // the tier really does pin an effort
+        // The catalog pins raw vendor flag values as effort ("high"/"low"), not the canonical 0023
+        // vocabulary an adapter would map — so effort is vendor-specific in practice and, like the model,
+        // must not ride a vendor swap (an "xhigh"/"max" tier would leak onto agy, which rejects those).
+        Assert.False(string.IsNullOrEmpty(Review.Effort)); // the tier really does pin an effort to drop
 
-        Assert.Equal(Review.Effort, RoleDispatch.ToBinding(Review, "spec", "agy").Effort);
-        Assert.Equal("quick", RoleDispatch.ToBinding(Review, "spec", effortOverride: "quick").Effort);
+        Assert.Null(RoleDispatch.ToBinding(Review, "spec", "agy").Effort);          // swapped: dropped
+        Assert.Equal(Review.Effort, RoleDispatch.ToBinding(Review, "spec").Effort); // same vendor: kept
+        Assert.Equal("quick", RoleDispatch.ToBinding(Review, "spec", effortOverride: "quick").Effort); // override wins
     }
 
     [Fact]

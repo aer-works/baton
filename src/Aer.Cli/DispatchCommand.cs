@@ -111,7 +111,10 @@ public static class DispatchCommand
         }
 
         var template = WorkflowTemplateCatalog.For(options.Name);
-        var (definition, bindings) = WorkflowTemplateComposer.Materialize(template, options.Adapter);
+        // #1083: hand every phase the workspace too, so a role run as a template phase can read the repo
+        // exactly as a directly-dispatched role now can.
+        var (definition, bindings) = WorkflowTemplateComposer.Materialize(
+            template, options.Adapter, workingDirectory: workspaceDirectory);
         bindings = await InjectCaptureBaseRefAsync(bindings, workspaceDirectory, cancellationToken).ConfigureAwait(false);
         return (definition, bindings);
     }

@@ -68,16 +68,20 @@ public static class RoleDispatch
             .Trim().ToLowerInvariant();
 
         // Vendor, model and effort are three independent axes ([0017]/[0033]): the role carries a
-        // default bundle (its tier), and each axis overrides on its own. An explicit --model wins; with
-        // none, swapping the vendor drops the tier's model because that string is vendor-specific
-        // (WorkerTiers.json) and meaningless to another vendor's CLI — the measured #1082 failure, the
-        // claude CLI handed 'gemini-3.6-flash-high' — so the new vendor falls back to its own default.
-        // Effort is a behavioural name ([0023]), not a vendor model string, so it rides across a swap.
+        // default bundle (its tier), and each axis overrides on its own. An explicit --model/--effort
+        // wins; with none, swapping the vendor drops the tier's model AND effort. Both are vendor-specific
+        // as the catalog actually pins them: the model string plainly so (the measured #1082 failure, the
+        // claude CLI handed 'gemini-3.6-flash-high'), and effort because WorkerTiers.json pins raw vendor
+        // flag values ("high"/"low"), not the canonical [0023] vocabulary the adapters would map — so an
+        // "xhigh"/"max" tier swapped onto agy (which rejects those) would leak the exact same way. On a
+        // swap the new vendor falls back to its own default for both, unless the axis is set explicitly.
         var vendorSwapped = !string.Equals(adapter, role.Adapter.Trim().ToLowerInvariant(), StringComparison.Ordinal);
         var model = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride
             : vendorSwapped ? null
             : role.Model;
-        var effort = string.IsNullOrWhiteSpace(effortOverride) ? role.Effort : effortOverride;
+        var effort = !string.IsNullOrWhiteSpace(effortOverride) ? effortOverride
+            : vendorSwapped ? null
+            : role.Effort;
 
         var grant = role.Grant;
         var grantAuditMode = GrantAuditMode.Enforced;

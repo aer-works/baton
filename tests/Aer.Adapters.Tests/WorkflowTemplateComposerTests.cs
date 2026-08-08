@@ -44,6 +44,22 @@ public class WorkflowTemplateComposerTests
     }
 
     [Fact]
+    public void Every_phase_binding_gets_the_workspace_pinned_so_a_template_phase_can_read_the_repo()
+    {
+        // #1083 covers a role run as a template phase too, not only `aer dispatch <role>` — without the
+        // pin an agy phase (which ignores the process cwd) would be handed no path to the repo.
+        var template = new WorkflowTemplate("t", [Phase("build", "implement"), Phase("check", "review")]);
+
+        var (_, pinned) = WorkflowTemplateComposer.Materialize(template, workingDirectory: "/repo/root");
+        Assert.Equal("/repo/root", pinned["build"].WorkingDirectory);
+        Assert.Equal("/repo/root", pinned["check"].WorkingDirectory);
+
+        // Control — omitting it leaves the pre-#1083 null, so this is about the pin, not a blanket value.
+        var (_, unpinned) = WorkflowTemplateComposer.Materialize(template);
+        Assert.Null(unpinned["build"].WorkingDirectory);
+    }
+
+    [Fact]
     public void Two_phases_naming_the_same_role_key_by_phase_name_without_collision()
     {
         var template = new WorkflowTemplate("t", [Phase("first-look", "review"), Phase("second-look", "review")]);

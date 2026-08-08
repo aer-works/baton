@@ -57,8 +57,13 @@ public static class WorkflowTemplateComposer
     /// escape hatch, applied uniformly, exactly as <see cref="RoleDispatch"/> applies it to one role.
     /// The spliced capture step ignores it: capture is engine-run, not a vendor.
     /// </param>
+    /// <param name="workingDirectory">
+    /// The workspace each phase's role runs in and may read — pinned onto every phase binding so a
+    /// role dispatched as a template phase gets the same repo read access #1083 gave a role dispatched
+    /// on its own. The spliced capture step pins its own working directory separately (it diffs the tree).
+    /// </param>
     public static (WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings) Materialize(
-        WorkflowTemplate template, string? adapterOverride = null)
+        WorkflowTemplate template, string? adapterOverride = null, string? workingDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(template);
 
@@ -118,7 +123,8 @@ public static class WorkflowTemplateComposer
                 // (Resume/Reject/RetryWithRevision); the template model carries no supersede targets, so
                 // empty is the faithful mapping until it does.
                 PausePoint: phase.AskFirst ? new PausePoint([]) : null));
-            bindings[phase.Name] = RoleDispatch.ToBinding(role, phase.Instruction, adapterOverride, workerName: phase.Name);
+            bindings[phase.Name] = RoleDispatch.ToBinding(
+                role, phase.Instruction, adapterOverride, workerName: phase.Name, workingDirectory: workingDirectory);
 
             blockerId = stepId;
             blockerOutputs = outputs;
