@@ -59,6 +59,10 @@ bld/
 # per-invocation scaffolding, never the deliverable.
 /aer-agy-loop-scratch/
 
+# `aer dispatch` per-run room dirs (artifacts, redirected .gemini_home, flow log) -- transient
+# per-invocation working state, never the deliverable.
+/.aer/
+
 # Python bytecode. Four .pyc files were tracked, so every tool run dirtied the tree.
 __pycache__/
 *.pyc

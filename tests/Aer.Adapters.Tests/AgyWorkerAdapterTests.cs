@@ -1312,7 +1312,7 @@ public class AgyWorkerAdapterTests
         var seed = Assert.Single(target.SeedFiles!);
         using var doc = JsonDocument.Parse(seed.Content);
         var rules = doc.RootElement.GetProperty("permissions").GetProperty("allow")
-            .EnumerateArray().Select(e => e.GetString()).ToArray();
+            .EnumerateArray().Select(e => e.GetString()!).ToArray();
         var expectedRef = OperatingSystem.IsWindows() ? "%AER_OUTPUT_DIR%" : "$AER_OUTPUT_DIR";
         Assert.Equal([$"write_file({expectedRef}/plan.md)", $"write_file({expectedRef}/risks.md)"], rules);
     }
