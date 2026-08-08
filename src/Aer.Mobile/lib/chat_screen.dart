@@ -1,9 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+// ignore: depend_on_referenced_packages
+import 'package:markdown/markdown.dart' as md;
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import 'daemon/daemon_client.dart';
 import 'daemon/models.dart';
+import 'theme/tokens.dart';
 
 /// One rendered row in the chat transcript — a human turn or an assistant response, never both.
 /// Mirrors Aer.Ui.Core's ChatMessageViewModel (see ChatViewModel.cs).
@@ -458,10 +462,57 @@ class _MessageBubble extends StatelessWidget {
           children: [
             Text(message.senderLabel, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: foreground)),
             const SizedBox(height: 4),
-            Text(message.text, style: TextStyle(color: foreground)),
+            MarkdownBodyWidget(text: message.text, foreground: foreground),
           ],
         ),
       ),
+    );
+  }
+}
+
+
+@visibleForTesting
+class MarkdownBodyWidget extends StatelessWidget {
+  final String text;
+  final Color foreground;
+
+  const MarkdownBodyWidget({
+    super.key,
+    required this.text,
+    required this.foreground,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    final codeBackground = isDark ? AerTokens.surfaceCodeDark : AerTokens.surfaceCodeLight;
+    final inlineCodeBackground = isDark ? AerTokens.surfaceCodeInlineDark : AerTokens.surfaceCodeInlineLight;
+
+    final styleSheet = MarkdownStyleSheet.fromTheme(theme).copyWith(
+      p: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(color: foreground),
+      code: TextStyle(
+        fontFamily: AerTokens.fontMono,
+        fontSize: AerTokens.fontSizeCode,
+        color: foreground,
+        backgroundColor: inlineCodeBackground,
+      ),
+      codeblockDecoration: BoxDecoration(
+        color: codeBackground,
+        borderRadius: BorderRadius.circular(AerTokens.radiusSm),
+      ),
+    );
+
+    return MarkdownBody(
+      data: text,
+      selectable: true,
+      imageBuilder: (uri, title, alt) {
+        final displayText = (alt != null && alt.isNotEmpty) ? alt : '[image]';
+        return Text(displayText);
+      },
+      extensionSet: md.ExtensionSet.commonMark,
+      styleSheet: styleSheet,
     );
   }
 }
