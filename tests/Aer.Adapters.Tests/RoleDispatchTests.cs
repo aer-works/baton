@@ -141,8 +141,8 @@ public class RoleDispatchTests
     [Fact]
     public void ToBinding_pins_the_working_directory_when_given_so_the_worker_can_read_the_project()
     {
-        // #1083: without this the dispatched role's binding carried no directory, and a vendor that
-        // ignores the process cwd (agy -p) was handed no path to the repo it was dispatched to read.
+        // #1083 polarity: a null binding pins no directory, a given one pins it. The rationale — why an
+        // unpinned binding stranded repo reads — lives on RoleDispatch.workingDirectory.
         Assert.Null(RoleDispatch.ToBinding(Review, "spec").WorkingDirectory);
         Assert.Equal("/repo/root", RoleDispatch.ToBinding(Review, "spec", workingDirectory: "/repo/root").WorkingDirectory);
     }

@@ -23,16 +23,15 @@ namespace Aer.Cli;
 /// </param>
 /// <param name="WorkflowId">A label forwarded to the run; defaults to the materialized template id.</param>
 /// <param name="WorkspaceDirectory">
-/// The directory a dispatched role runs in and may read — pinned onto its binding so a vendor that
-/// ignores the process cwd (agy <c>-p</c>, #491) is still handed the project via <c>--add-dir</c>. Null
-/// resolves to the process cwd in <see cref="DispatchCommand"/>, which is the common case (dispatching
-/// from the repo). Without this a role dispatched to read the repo was given no path to it and every
-/// repo read was auto-denied (#1083).
+/// The directory a dispatched role runs in and may read. Null resolves to the process cwd in
+/// <see cref="DispatchCommand"/>, the common case (dispatching from the repo). Why the binding needs a
+/// path at all, and what broke without one, is on <see cref="Aer.Adapters.RoleDispatch"/>'s
+/// <c>workingDirectory</c> parameter (#1083).
 /// </param>
 /// <param name="Model">
 /// The model axis, independent of the role's tier ([0017]/[0033]: vendor/model/effort are three
-/// separate axes). Null keeps the tier's model — except that an <paramref name="Adapter"/> override to
-/// a different vendor drops the tier's vendor-specific model for that vendor's default (#1082).
+/// separate axes). Null keeps the tier's model; the vendor-swap carve-out is documented on
+/// <see cref="Aer.Adapters.RoleDispatch"/>'s <c>modelOverride</c> (#1082).
 /// </param>
 /// <param name="Effort">The effort axis, independent of the role's tier ([0017]/[0023]); null keeps the tier's effort.</param>
 public sealed record DispatchOptions(
