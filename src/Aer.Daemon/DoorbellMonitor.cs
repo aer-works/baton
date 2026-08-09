@@ -82,9 +82,12 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
             {
                 break;
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore transient errors
+                // 0018 / CLAUDE.md no-swallow: a backup-poll iteration must never die silently --
+                // this poll is the guarantee the watcher can miss, and a silent throw here strands
+                // the human on every ask the watcher also drops. Log and keep polling.
+                Console.Error.WriteLine($"doorbell: backup poll iteration failed: {ex.GetType().Name}: {ex.Message}");
             }
         }
     }
@@ -102,9 +105,12 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
                 _ = ProcessAskFileAsync(askFile);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore transient IO errors during directory enumeration
+            // 0018 / no-swallow: a directory-enumeration failure is genuinely transient (a file
+            // mid-write), but it must be visible, not silent -- a persistent failure here means the
+            // backup poll is blind and every watcher-missed ask is stranded.
+            Console.Error.WriteLine($"doorbell: enumerating ask files failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -175,8 +181,13 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
                 await _broadcastStateAsync(proj, _directoryPath).ConfigureAwait(false);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            // 0018 / no-swallow, and this is the LIVE path (not reconciliation): if raising the ask
+            // throws, the human never sees the gate and the worker blocks to its timeout. Log it, and
+            // drop the dedup mark so a later watcher/poll pass can retry rather than the ask being lost
+            // to the in-memory _processedAsks set forever.
+            Console.Error.WriteLine($"doorbell: failed to raise permission ask '{permissionRequestId}': {ex.GetType().Name}: {ex.Message}");
             _processedAsks.TryRemove(permissionRequestId, out _);
         }
     }
