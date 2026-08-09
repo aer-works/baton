@@ -25,6 +25,19 @@ internal static class PermissionGrantWording
     /// Why a grant whose shell defeats <paramref name="defeated"/> is refused, with no leading
     /// context — each caller supplies the clause that says where the operator is.
     /// </summary>
+    /// <summary>
+    /// The honesty clause under 0022's "any command in this room" rung: granting the room's shell
+    /// standing is granting what a shell reaches — reading and writing files and the network — because
+    /// a command reaches those anyway (<see cref="PermissionGrant.CategoriesDefeatedByTheShell"/> is the
+    /// enforcement-side statement of the same fact). Grant-framed, not the bind-time refusal
+    /// <see cref="ShellDefeats"/> renders — this rung is honored, not refused — but it names the same
+    /// three categories so the two surfaces can't drift on <em>what</em> the shell defeats.
+    /// </summary>
+    internal static string RoomShellGrantReaches() =>
+        "Allowing any command in this room grants the shell, and a shell command reaches "
+        + $"{NaturalList([nameof(PermissionGrant.ReadFiles), nameof(PermissionGrant.WriteFiles), nameof(PermissionGrant.NetworkAccess)])} "
+        + "anyway — those come with it.";
+
     internal static string ShellDefeats(IReadOnlyList<string> defeated) =>
         $"the shell is granted while {NaturalList(defeated)} "
         + $"{(defeated.Count == 1 ? "is" : "are")} withheld, and a shell command reaches "

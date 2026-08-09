@@ -1261,7 +1261,11 @@ public partial class MainWindow : Window
         var stepsFingerprint = string.Join(",", projection.State.Steps.Select(s => $"{s.StepId.Value}:{s.Status}:{s.LatestExecutionId?.Value}"));
         var attemptsCount = projection.History.AttemptsByStepId.Sum(kv => kv.Value.Count);
         var convLength = _conversationOutputDirectory != null && File.Exists(System.IO.Path.Combine(_conversationOutputDirectory, "transcript.jsonl")) ? new FileInfo(System.IO.Path.Combine(_conversationOutputDirectory, "transcript.jsonl")).Length : 0;
-        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}"; // vocabulary-ok: state fingerprint key
+        // #390: the inline permission gate keys on projection.State.PendingPermission, which none of the
+        // other terms above reflect — a turn can raise or clear a gate with no step/status/decision
+        // change, so without this the fingerprint would short-circuit the render that must show or hide it.
+        var pendingPermissionId = projection.PendingPermission?.PermissionRequestId ?? "none";
+        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}|{pendingPermissionId}"; // vocabulary-ok: state fingerprint key
 
         if (_lastRenderedProjectionFingerprint == fingerprint)
         {
@@ -1323,6 +1327,35 @@ public partial class MainWindow : Window
             previewFileAsync: filePath => ShowArtifactPreviewAsync(filePath),
             showConversation: ShowConversation,
             workerAdapters: workerAdapters);
+
+        // #390: surface (or clear) the inline conversational permission gate from the same projection.
+        // The answer delegate captures this render's roomDirectoryPath; the daemon broadcasts a fresh
+        // projection on answer, and the LoadAsync refresh below it re-renders with the gate cleared.
+        ViewModel.Chat.SurfacePendingPermission(
+            projection.PendingPermission,
+            (permissionRequestId, decisionKind, reason) =>
+                AnswerPermissionFromGateAsync(roomDirectoryPath, permissionRequestId, decisionKind, reason));
+    }
+
+    /// <summary>
+    /// Records the operator's answer to the inline permission gate (0022, #390) and re-renders. The
+    /// client call owns the <see cref="MainWindowViewModel.IsMutationInFlight"/> lifecycle (disabling
+    /// the gate for its duration); the follow-up <see cref="LoadAsync"/> re-reads the projection whose
+    /// <c>PendingPermission</c> the daemon has now cleared, so the gate vanishes on the same code path
+    /// that drew it. A failed answer surfaces on the chat status line and leaves the gate up to retry.
+    /// </summary>
+    private async Task AnswerPermissionFromGateAsync(
+        string roomDirectoryPath, string permissionRequestId, string decisionKind, string? reason)
+    {
+        var outcome = await _session.AnswerPermissionAsync(
+            roomDirectoryPath, permissionRequestId, decisionKind, reason).ConfigureAwait(true);
+        if (outcome.ErrorMessage is { } error)
+        {
+            ViewModel.Chat.StatusText = error;
+            return;
+        }
+
+        await LoadAsync(roomDirectoryPath).ConfigureAwait(true);
     }
 
     private static Dictionary<string, string> GetWorkerAdapters(string roomDirectoryPath, string? bindingsFilePath)

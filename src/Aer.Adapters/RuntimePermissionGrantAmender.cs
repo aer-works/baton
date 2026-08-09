@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 namespace Aer.Adapters;
 
 /// <summary>
@@ -19,13 +17,6 @@ namespace Aer.Adapters;
 /// </remarks>
 public static class RuntimePermissionGrantAmender
 {
-    /// <summary>
-    /// The claude/agy tool names this can derive a shell command pattern from. Any other
-    /// <paramref name="toolName"/> on a shell-scoping rung persists nothing rather than guessing —
-    /// SECURITY-SENSITIVE: a rung must never persist wider than what was actually asked.
-    /// </summary>
-    private static readonly string[] ShellToolNames = ["Bash", "run_command"];
-
     /// <summary>
     /// Amends the named worker's <see cref="PermissionGrant"/> in <paramref name="roomDirectoryPath"/>'s
     /// <c>bindings.json</c> for <paramref name="decisionKind"/>, per 0022's rung mapping. The
@@ -161,32 +152,7 @@ public static class RuntimePermissionGrantAmender
     /// </summary>
     internal static string? DeriveShellCommandPattern(string toolName, string toolInputJson)
     {
-        if (!ShellToolNames.Contains(toolName, StringComparer.Ordinal))
-        {
-            return null;
-        }
-
-        string? commandLine = null;
-        try
-        {
-            using var doc = JsonDocument.Parse(toolInputJson);
-            if (doc.RootElement.ValueKind == JsonValueKind.Object)
-            {
-                // "command" is claude's Bash tool_input key; "CommandLine" is agy's run_command arg key
-                // (AgyHookCheckCommand reads the same name for the same tool).
-                if (doc.RootElement.TryGetProperty("command", out var commandProp) &&
-                    commandProp.ValueKind == JsonValueKind.String)
-                {
-                    commandLine = commandProp.GetString();
-                }
-                else if (doc.RootElement.TryGetProperty("CommandLine", out var commandLineProp) &&
-                    commandLineProp.ValueKind == JsonValueKind.String)
-                {
-                    commandLine = commandLineProp.GetString();
-                }
-            }
-        }
-        catch (JsonException)
+        if (!ShellCommandPatternMatcher.TryReadCommandLine(toolName, toolInputJson, out var commandLine))
         {
             return null;
         }

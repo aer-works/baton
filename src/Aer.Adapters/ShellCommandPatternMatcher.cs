@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Aer.Adapters;
 
 /// <summary>
@@ -6,6 +8,62 @@ namespace Aer.Adapters;
 /// </summary>
 public static class ShellCommandPatternMatcher
 {
+    /// <summary>
+    /// The claude/agy tool names a shell command line can be read from — claude's <c>Bash</c> and
+    /// agy's <c>run_command</c>. The one canonical list (record-once): the grant amender's
+    /// pattern derivation and the gate UI's command display both gate on this rather than each
+    /// restating the pair, and any other tool name reads back no command line at all.
+    /// </summary>
+    public static readonly string[] ShellToolNames = ["Bash", "run_command"];
+
+    /// <summary>
+    /// Reads the raw shell command line (e.g. <c>"rm -rf build/"</c>) out of a shell tool's asked
+    /// input, or returns <see langword="false"/> when <paramref name="toolName"/> isn't a recognized
+    /// shell tool (<see cref="ShellToolNames"/>) or the input JSON can't be parsed. This is the
+    /// display/derivation seam only: callers that need a scoped <em>pattern</em> pass the result
+    /// through <see cref="ExtractCommandFamily"/> themselves, which is where the fail-closed
+    /// metacharacter rule lives.
+    /// </summary>
+    /// <param name="toolName">The originally-asked tool name (e.g. <c>"Bash"</c>).</param>
+    /// <param name="toolInputJson">The originally-asked tool input JSON.</param>
+    /// <param name="commandLine">The read command line, or <see langword="null"/> on any miss.</param>
+    public static bool TryReadCommandLine(string toolName, string toolInputJson, out string? commandLine)
+    {
+        commandLine = null;
+        if (toolName is null || toolInputJson is null || !ShellToolNames.Contains(toolName, StringComparer.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(toolInputJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            // "command" is claude's Bash tool_input key; "CommandLine" is agy's run_command arg key
+            // (AgyHookCheckCommand reads the same name for the same tool).
+            if (doc.RootElement.TryGetProperty("command", out var commandProp) &&
+                commandProp.ValueKind == JsonValueKind.String)
+            {
+                commandLine = commandProp.GetString();
+            }
+            else if (doc.RootElement.TryGetProperty("CommandLine", out var commandLineProp) &&
+                commandLineProp.ValueKind == JsonValueKind.String)
+            {
+                commandLine = commandLineProp.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return commandLine is not null;
+    }
+
     /// <summary>
     /// Returns <see langword="true"/> iff <paramref name="commandLine"/> contains no unquoted shell
     /// metacharacters and matches at least one pattern in <paramref name="patterns"/>.

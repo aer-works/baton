@@ -325,6 +325,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
             step.IsEnabled = !value;
         }
 
+        // The inline permission gate answers over the same room lock a step decision does, so it
+        // disables on the same signal (0022's ladder is a mutation surface like PausedSteps).
+        if (Chat.PendingPermission is { } gate)
+        {
+            gate.IsEnabled = !value;
+        }
+
         foreach (var execution in RunningExecutions)
         {
             execution.UpdateEnabled(value);
