@@ -113,7 +113,7 @@ Not differentiators alone; collectively the difference between a tool you tolera
 
 | Delight | Status |
 |---|---|
-| `y`/`n` for permissions, never bound to Enter, so a reflex cannot approve | **→ `#481`** — closed, **unbuilt** (source checked 2026-08; not in the `#750` set): permissions are config-time only (`AuthorView` checkboxes → adapter flags); no runtime permission gate exists |
+| `y`/`n` for permissions, never bound to Enter, so a reflex cannot approve | **◐ desktop built** (`#481`/`#390`, source 2026-08): the runtime permission gate now renders inline in chat with the scope ladder, and a bare `y` allows / `n` denies, never on Enter and never with a modifier (`MainWindow.PermissionAnswerFor`, `PermissionGateKeystrokeTests`). Config-time `AuthorView` flags still exist alongside it. **Phone gate pending; live-drive visual confirmation outstanding.** |
 | Typing never blocks; the queue is visible, with interrupt and remove | **◐ partial** — `#462` (open `#750`). The **never-block + visible + removable queue** half landed via **`#1074`**: the desktop composer no longer disables mid-turn; a send joins a visible, removable FIFO that drains one message per turn-completion. **Interrupt** ("Send now" cancels the running turn) is the deferred half — a distinct mechanism, its own slice. |
 | Failures offer the fix, with the worker that failed already holding the context | ✅ **shipped** — `#482` (desktop verified: `RoomView`'s failed-step banner shows the error text inline with **Try again** / **Ask ⟨worker⟩ to fix it** / **Show full output**) |
 | Jump to the last decision via an event rail | **→ `#459`** — grouped into open `#750`, **unbuilt** (the earlier "(exists)" was wrong): no event rail or keyboard nav to a decision exists anywhere |
@@ -141,7 +141,7 @@ each row cites the issue tracked elsewhere in this doc rather than restating it 
 |---|---|---|---|
 | First run | ✅ | ✅ | Front door + readiness (`#1071`/`#478`); phone pairing+QR. |
 | The daily driver | ✅ | ✅ | Switcher-landing (`#1046`/`#1071`), state-grouped list (`#1072`), single worker chip, markdown chat (`#1076`/`#1080`). |
-| Two workers, a gate | ❌ | ❌ | The spine gap: add-worker + multi-worker chips (M27, unbuilt) + the **conversational gate as a turn** (§1 cross-examination is decided in 0019; its UI is `#367`). |
+| Two workers, a gate | ◐ | ❌ | The spine gap narrows: the **conversational gate as a turn** now renders on desktop for the permission kind (`#390`, 0022). Still unbuilt: add-worker + multi-worker chips (M27); the consult/escalation kinds and the phone surface (§1 cross-examination is decided in 0019; its UI is `#367`). |
 | When it fails | ✅ | ◐ | Desktop `#482` inline failed-banner matches the screen; phone shows failed card state, not the full inline fix-affordance set. |
 | Starting from a template | ✅ | n/a | `TemplatePickerWindow` + guided flow (phone template use out-of-scope, 0041). |
 | Drawing a shape (editor) | ◐ | n/a | `AuthorView` list-not-canvas + DAG preview (0014); the per-row **"ask me first" gate toggle** and named-blocker fan-out UI are the thin part (§6 "ask me first" → extends 0014). |
@@ -157,11 +157,13 @@ each row cites the issue tracked elsewhere in this doc rather than restating it 
 | Resident · escalation is a gate | ❌ | ❌ | It *is* the runtime gate `#367`; only the dormancy escalation *text* renders today. |
 
 **The distinction the tables above blur:** the *step-review* gate (0007 pause → Approve/Reject/Supersede)
-**is** built on both surfaces — desktop `PausedStepViewModel`, phone `inbox_screen._decide`. What is
-absent is the *conversational* gate (`#367`): a worker asking mid-turn (permission / consult /
-escalation) rendered inline where it was raised, with the scope-ladder and "Ask someone…". That gate
-is the single highest-leverage gap — it is the spine of "two workers, a gate", the phone gate,
-escalation, and cross-examination (0019, the corpus's stated *"single most important behaviour"*).
+**is** built on both surfaces — desktop `PausedStepViewModel`, phone `inbox_screen._decide`. The
+*conversational* gate is now **partly** built: its **permission** kind renders inline on desktop with
+the scope ladder (`#390`/`#445`, 0022) — a worker asking mid-turn for a command, answered where it was
+raised. What remains absent (`#367`): the **phone** surface of it, the **consult / escalation** kinds,
+and "Ask someone…" (0019). That gate is the single highest-leverage gap — the spine of "two workers, a
+gate", the phone gate, escalation, and cross-examination (0019, the corpus's stated *"single most
+important behaviour"*); the desktop permission slice is the first piece of it to land.
 
 ## What is left to route
 
