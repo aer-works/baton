@@ -12,6 +12,12 @@
     <ProjectReference Include="..\Aer.Ui.Core\Aer.Ui.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Aer.Daemon.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
   <!-- M21 Phase 5 (#242): copy the Go tsnet sidecar into the output directory, same copy-if-exists
        pattern as Aer.Core's native library (external/aer-core/bindings/dotnet/Aer.Core/Aer.Core.csproj).
        `pixi run build-sidecar` builds it first. Absent entirely if Go isn't installed/built; the
