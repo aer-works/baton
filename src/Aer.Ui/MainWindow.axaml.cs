@@ -300,6 +300,11 @@ public partial class MainWindow : Window
         ChatSendButton.Click += (_, _) => _ = SendChatMessageAsync();
         // Enter-to-send / Shift+Enter-newline — see OnChatInputBoxKeyDown and IsSendKeystroke.
         ChatInputBox.KeyDown += OnChatInputBoxKeyDown;
+        // #390 / 0022 §4: y/n answer a pending permission from anywhere in the window (bubbling KeyDown
+        // reaches the window from whatever is focused) — never from a focused text field, and never on
+        // Enter. Window-wide, not on ChatView, because the gate's caption promises it regardless of
+        // which pane holds focus.
+        KeyDown += OnPermissionGateKeyDown;
         ChatStartNewButton.Click += (_, _) => _ = StartNewChatAsync();
         ChatCommandsButton.Click += (_, _) => _ = ToggleChatCommandsAsync();
         ChatModeAutoButton.Click += (_, _) => _ = SetChatModeAsync("auto");
@@ -887,6 +892,54 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// The permission-gate keyboard rule (0022 §4, #481): a <em>bare</em> <c>y</c> answers "Allow once"
+    /// and a bare <c>n</c> answers "Deny once" — returning the <see cref="PermissionDecisionKind"/> for
+    /// that key, or <see langword="null"/> for anything else. Any modifier disqualifies it, so a `y`/`n`
+    /// that is the letter in an accelerator (Ctrl+Y, Alt+N) never answers a live ask; and Enter is not a
+    /// case here at all, so a reflex key can never approve. Pure, so the rule is unit-tested without a window.
+    /// </summary>
+    internal static string? PermissionAnswerFor(Key key, KeyModifiers modifiers)
+    {
+        if (modifiers != KeyModifiers.None)
+        {
+            return null;
+        }
+
+        return key switch
+        {
+            Key.Y => PermissionDecisionKind.AllowOnce,
+            Key.N => PermissionDecisionKind.Deny,
+            _ => null,
+        };
+    }
+
+    private void OnPermissionGateKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (PermissionAnswerFor(e.Key, e.KeyModifiers) is not { } decisionKind
+            || ViewModel.Chat.PendingPermission is not { } gate)
+        {
+            return;
+        }
+
+        // Never steal the keystroke from a focused text field — the operator may be typing a reply or
+        // editing a path. A gate answered by muscle memory while typing would be exactly the reflex
+        // 0022 §4 exists to prevent.
+        if (FocusManager?.GetFocusedElement() is TextBox)
+        {
+            return;
+        }
+
+        var command = decisionKind == PermissionDecisionKind.AllowOnce
+            ? gate.AllowOnceCommand
+            : gate.DenyCommand;
+        if (command.CanExecute(null))
+        {
+            command.Execute(null);
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>
     /// The Chat page's own "start new chat" entry point (#290) — mirrors
     /// <see cref="Views.TemplatePickerWindow"/>'s "chat session" template option (same
     /// <see cref="StartSessionRequest"/> shape, same <see cref="StartInteractiveSessionAsync"/> call)
@@ -1261,9 +1314,10 @@ public partial class MainWindow : Window
         var stepsFingerprint = string.Join(",", projection.State.Steps.Select(s => $"{s.StepId.Value}:{s.Status}:{s.LatestExecutionId?.Value}"));
         var attemptsCount = projection.History.AttemptsByStepId.Sum(kv => kv.Value.Count);
         var convLength = _conversationOutputDirectory != null && File.Exists(System.IO.Path.Combine(_conversationOutputDirectory, "transcript.jsonl")) ? new FileInfo(System.IO.Path.Combine(_conversationOutputDirectory, "transcript.jsonl")).Length : 0;
-        // #390: the inline permission gate keys on projection.State.PendingPermission, which none of the
-        // other terms above reflect — a turn can raise or clear a gate with no step/status/decision
-        // change, so without this the fingerprint would short-circuit the render that must show or hide it.
+        // #390: the inline permission gate keys on projection.PendingPermission (a sibling of State on
+        // RoomProjection, not a FlowState member), which none of the other terms above reflect — a turn
+        // can raise or clear a gate with no step/status/decision change, so without this the fingerprint
+        // would short-circuit the render that must show or hide it.
         var pendingPermissionId = projection.PendingPermission?.PermissionRequestId ?? "none";
         var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}|{pendingPermissionId}"; // vocabulary-ok: state fingerprint key
 
@@ -1355,6 +1409,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Clear the gate synchronously, before the awaited LoadAsync below yields to the dispatcher.
+        // AnswerPermissionAsync's finally already re-enabled the buttons (IsMutationInFlight=false), and
+        // the daemon has removed this request from its registry — so without this, a second click during
+        // LoadAsync's I/O would POST again and 404. The answer succeeded; the gate's job is done.
+        ViewModel.Chat.PendingPermission = null;
         await LoadAsync(roomDirectoryPath).ConfigureAwait(true);
     }
 

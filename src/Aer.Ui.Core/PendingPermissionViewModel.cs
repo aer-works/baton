@@ -15,7 +15,7 @@ namespace Aer.Ui.Core;
 public delegate Task AnswerPermissionDelegate(string permissionRequestId, string decisionKind, string? reason);
 
 /// <summary>
-/// The conversational permission gate 0022 draws (M-Phase-6 #390): one pending permission surfaced
+/// The conversational permission gate that decision 0022 draws (M-Phase-6 #390): one pending permission surfaced
 /// inline in the chat, with the scope ladder offered at the moment of asking rather than buried in
 /// settings. Rebuilt from <see cref="RoomProjection"/>'s <see cref="PendingPermission"/> on every
 /// load/refresh (a projected fact, not retained handler state — the "re-derived, not remembered"

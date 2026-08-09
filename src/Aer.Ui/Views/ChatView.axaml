@@ -39,13 +39,13 @@
            middle rungs are "what make it survivable". The cross-room rung is deliberately absent (0052:
            held until a project-scoped store exists). y answers "Allow once", n answers "Deny once";
            neither is ever bound to Enter (0022 §4, #481) — see ChatView.OnKeyDown. -->
-      <Border Classes="card" IsVisible="{Binding Chat.HasPendingPermission}"
+      <Border x:Name="ChatPermissionGate" Classes="card" IsVisible="{Binding Chat.HasPendingPermission}"
               BorderBrush="{DynamicResource Status.Failed}" BorderThickness="1">
         <StackPanel DataContext="{Binding Chat.PendingPermission}" x:DataType="vm:PendingPermissionViewModel"
                     Spacing="{DynamicResource Space.2}">
           <TextBlock Classes="body-strong" TextWrapping="Wrap" Text="{Binding PromptText}" />
           <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
-            <Button Classes="accent" Content="Allow once" Command="{Binding AllowOnceCommand}" />
+            <Button x:Name="ChatPermissionAllowOnceButton" Classes="accent" Content="Allow once" Command="{Binding AllowOnceCommand}" />
             <Button Content="Deny once" Command="{Binding DenyCommand}" />
             <TextBlock Classes="caption secondary" VerticalAlignment="Center"
                        Text="press y to allow · n to deny" />

@@ -22,10 +22,6 @@ namespace Aer.Ui.Core;
 internal static class PermissionGrantWording
 {
     /// <summary>
-    /// Why a grant whose shell defeats <paramref name="defeated"/> is refused, with no leading
-    /// context — each caller supplies the clause that says where the operator is.
-    /// </summary>
-    /// <summary>
     /// The honesty clause under 0022's "any command in this room" rung: granting the room's shell
     /// standing is granting what a shell reaches — reading and writing files and the network — because
     /// a command reaches those anyway (<see cref="PermissionGrant.CategoriesDefeatedByTheShell"/> is the
@@ -38,6 +34,10 @@ internal static class PermissionGrantWording
         + $"{NaturalList([nameof(PermissionGrant.ReadFiles), nameof(PermissionGrant.WriteFiles), nameof(PermissionGrant.NetworkAccess)])} "
         + "anyway — those come with it.";
 
+    /// <summary>
+    /// Why a grant whose shell defeats <paramref name="defeated"/> is refused, with no leading
+    /// context — each caller supplies the clause that says where the operator is.
+    /// </summary>
     internal static string ShellDefeats(IReadOnlyList<string> defeated) =>
         $"the shell is granted while {NaturalList(defeated)} "
         + $"{(defeated.Count == 1 ? "is" : "are")} withheld, and a shell command reaches "
