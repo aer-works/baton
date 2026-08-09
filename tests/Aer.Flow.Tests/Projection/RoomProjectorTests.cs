@@ -203,4 +203,120 @@ public class RoomProjectorTests
             $"dispatch recorded; workflow never started (no ledger found at {LaneRefA.AsWorkflowDirectoryPath()})",
             rendered);
     }
+
+    [Fact]
+    public void Projects_RuntimePermissionAsked_sets_PendingPermission()
+    {
+        var emptyState = RoomProjector.Project([]);
+        Assert.Null(emptyState.PendingPermission);
+
+        var askedAt = DateTimeOffset.UtcNow;
+        var askedEvent = new RoomEvent.RuntimePermissionAsked(
+            "req-101",
+            new ExecutionId("exec-01"),
+            new StepId("step-01"),
+            "worker-alpha",
+            "claude",
+            "tool_use_123",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            askedAt);
+
+        var state = RoomProjector.Project([askedEvent]);
+
+        Assert.NotNull(state.PendingPermission);
+        Assert.Equal("req-101", state.PendingPermission.PermissionRequestId);
+        Assert.Equal("worker-alpha", state.PendingPermission.WorkerId);
+        Assert.Equal("claude", state.PendingPermission.VendorTag);
+        Assert.Equal("WriteFiles", state.PendingPermission.ToolName);
+        Assert.Equal("""{"path":"test.txt"}""", state.PendingPermission.ToolInputJson);
+        Assert.Equal("WriteFiles", state.PendingPermission.Category);
+        Assert.Equal(askedAt, state.PendingPermission.AskedAt);
+    }
+
+    [Fact]
+    public void Projects_RuntimePermissionAsked_followed_by_matching_Answered_clears_PendingPermission()
+    {
+        var askedAt = DateTimeOffset.UtcNow;
+        var askedEvent = new RoomEvent.RuntimePermissionAsked(
+            "req-101",
+            new ExecutionId("exec-01"),
+            new StepId("step-01"),
+            "worker-alpha",
+            "claude",
+            "tool_use_123",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            askedAt);
+
+        var answeredEvent = new RoomEvent.RuntimePermissionAnswered(
+            "req-101",
+            "AllowOnce",
+            null,
+            "Approved",
+            "operator-bob",
+            askedAt.AddSeconds(5));
+
+        var state = RoomProjector.Project([askedEvent, answeredEvent]);
+
+        Assert.Null(state.PendingPermission);
+    }
+
+    [Fact]
+    public void Projects_RuntimePermissionAsked_followed_by_matching_Revoked_clears_PendingPermission()
+    {
+        var askedAt = DateTimeOffset.UtcNow;
+        var askedEvent = new RoomEvent.RuntimePermissionAsked(
+            "req-101",
+            new ExecutionId("exec-01"),
+            new StepId("step-01"),
+            "worker-alpha",
+            "claude",
+            "tool_use_123",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            askedAt);
+
+        var revokedEvent = new RoomEvent.RuntimePermissionRevoked(
+            "req-101",
+            "Cancelled by turn host",
+            askedAt.AddSeconds(5));
+
+        var state = RoomProjector.Project([askedEvent, revokedEvent]);
+
+        Assert.Null(state.PendingPermission);
+    }
+
+    [Fact]
+    public void Projects_RuntimePermissionAsked_followed_by_non_matching_Answered_leaves_PendingPermission_unchanged()
+    {
+        var askedAt = DateTimeOffset.UtcNow;
+        var askedEvent = new RoomEvent.RuntimePermissionAsked(
+            "req-101",
+            new ExecutionId("exec-01"),
+            new StepId("step-01"),
+            "worker-alpha",
+            "claude",
+            "tool_use_123",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            askedAt);
+
+        var answeredEvent = new RoomEvent.RuntimePermissionAnswered(
+            "req-999",
+            "AllowOnce",
+            null,
+            "Approved",
+            "operator-bob",
+            askedAt.AddSeconds(5));
+
+        var state = RoomProjector.Project([askedEvent, answeredEvent]);
+
+        Assert.NotNull(state.PendingPermission);
+        Assert.Equal("req-101", state.PendingPermission.PermissionRequestId);
+    }
 }

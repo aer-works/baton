@@ -17,6 +17,9 @@ public class RoomEventSerializationTests
         new RoomEvent.HeldWorkResolved(LaneRef, new HeldWorkCitation(CitedSubject, "executionSucceeded", 1)),
         new RoomEvent.TurnHostDormancyEntered(3, DateTimeOffset.UtcNow),
         new RoomEvent.TurnHostDormancyCleared("operator", DateTimeOffset.UtcNow),
+        new RoomEvent.RuntimePermissionAsked("req-1", new ExecutionId("ex-1"), new StepId("st-1"), "w-1", "claude", "corr-1", "ReadFiles", "{}", "ReadFiles", DateTimeOffset.UtcNow),
+        new RoomEvent.RuntimePermissionAnswered("req-1", "AllowOnce", "{}", "ok", "op-1", DateTimeOffset.UtcNow),
+        new RoomEvent.RuntimePermissionRevoked("req-1", "timeout", DateTimeOffset.UtcNow),
     ];
 
     [Theory]

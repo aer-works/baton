@@ -18,6 +18,7 @@ public static class RoomProjector
         var openEscalations = new List<RoomEvent.EscalationRaised>();
         var unmatchedEntries = new List<string>();
         var isDormant = false;
+        PendingPermission? pendingPermission = null;
 
         foreach (var roomEvent in events)
         {
@@ -129,10 +130,37 @@ public static class RoomProjector
                 case RoomEvent.TurnHostDormancyCleared:
                     isDormant = false;
                     break;
+
+                case RoomEvent.RuntimePermissionAsked asked:
+                    pendingPermission = new PendingPermission(
+                        asked.PermissionRequestId,
+                        asked.WorkerId,
+                        asked.VendorTag,
+                        asked.ToolName,
+                        asked.ToolInputJson,
+                        asked.Category,
+                        asked.AskedAt);
+                    break;
+
+                case RoomEvent.RuntimePermissionAnswered answered:
+                    if (pendingPermission != null && pendingPermission.PermissionRequestId == answered.PermissionRequestId)
+                    {
+                        pendingPermission = null;
+                    }
+
+                    break;
+
+                case RoomEvent.RuntimePermissionRevoked revoked:
+                    if (pendingPermission != null && pendingPermission.PermissionRequestId == revoked.PermissionRequestId)
+                    {
+                        pendingPermission = null;
+                    }
+
+                    break;
             }
         }
 
-        return new RoomState(heldWork, unmatchedEntries, activeGrants, openEscalations, isDormant);
+        return new RoomState(heldWork, unmatchedEntries, activeGrants, openEscalations, isDormant, pendingPermission);
 
     }
 }
