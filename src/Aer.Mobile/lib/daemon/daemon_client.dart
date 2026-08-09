@@ -507,6 +507,33 @@ class DaemonClient {
     _throwIfFailed(response);
   }
 
+  /// Answers a runtime permission (0022's ladder, #390's mobile phase) by posting to
+  /// /api/rooms/permissions/answer — the daemon writes the rendezvous answer file that releases the
+  /// held worker, records the answer as a turn, amends the room's chat-worker grant for a
+  /// persisting rung, and broadcasts a fresh projection whose `pendingPermission` is now clear.
+  /// [decisionKind] must be one of PermissionDecisionKind's values (permission_decision_kind.dart) —
+  /// the daemon fails closed on anything else. Body keys are camelCase, matching every other call in
+  /// this file; ASP.NET's body binding is case-insensitive (same as desktop's own POST — see
+  /// RoomClient.Permissions.cs's remarks).
+  Future<void> answerPermission({
+    required String directoryPath,
+    required String permissionRequestId,
+    required String decisionKind,
+    String? reason,
+  }) async {
+    final response = await _post(
+      Uri.http(host, '/api/rooms/permissions/answer'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'directoryPath': directoryPath,
+        'permissionRequestId': permissionRequestId,
+        'decisionKind': decisionKind,
+        'reason': reason,
+      }),
+    );
+    _throwIfFailed(response);
+  }
+
   /// executionId null cancels the whole run; non-null cancels just that execution.
   Future<void> cancelRun({
     required String directoryPath,

@@ -82,6 +82,43 @@ class ExecutionArtifacts {
   }
 }
 
+/// The runtime conversational permission gate a worker is currently blocked on (0022, #390's mobile
+/// phase) — the Dart counterpart of Aer.Flow.Projection.PendingPermission, carried as a top-level
+/// sibling of Snapshot/State/Lineage on the daemon's wire-level RoomProjection (Aer.Ui.Core's
+/// RoomProjection.cs), not nested under `state`. Null when no gate is open (the common case).
+class PendingPermission {
+  final String permissionRequestId;
+  final String workerId;
+  final String vendorTag;
+  final String toolName;
+  final String toolInputJson;
+  final String category;
+  final DateTime askedAt;
+
+  PendingPermission({
+    required this.permissionRequestId,
+    required this.workerId,
+    required this.vendorTag,
+    required this.toolName,
+    required this.toolInputJson,
+    required this.category,
+    required this.askedAt,
+  });
+
+  factory PendingPermission.fromJson(Map<String, dynamic> json) {
+    final j = caseInsensitive(json);
+    return PendingPermission(
+      permissionRequestId: j['permissionrequestid'].toString(),
+      workerId: j['workerid']?.toString() ?? '',
+      vendorTag: j['vendortag']?.toString() ?? '',
+      toolName: j['toolname']?.toString() ?? '',
+      toolInputJson: j['toolinputjson']?.toString() ?? '',
+      category: j['category']?.toString() ?? '',
+      askedAt: DateTime.tryParse(j['askedat']?.toString() ?? '') ?? DateTime.now(),
+    );
+  }
+}
+
 /// A projection Aer.Daemon pushes for one room directory. Aer.Daemon still has only one
 /// "current" task server-side (RoomClient.CurrentRoomDirectoryPath) and broadcasts every
 /// change to every connected WS client regardless of which directory it's for — but this app
@@ -104,6 +141,10 @@ class RoomProjection {
   final List<ExecutionArtifacts> executions;
   final Map<String, String> workerAdapters;
 
+  /// The runtime conversational permission gate (0022, #390's mobile phase), or null when no worker
+  /// is blocked on one — see [PendingPermission]'s doc comment for where this sits on the wire.
+  final PendingPermission? pendingPermission;
+
   RoomProjection({
     required this.directoryPath,
     required this.sessionId,
@@ -113,6 +154,7 @@ class RoomProjection {
     required this.steps,
     required this.executions,
     required this.workerAdapters,
+    this.pendingPermission,
   });
 
   List<WorkflowStepState> get pausedSteps => steps.where((s) => s.isPaused).toList();
@@ -149,6 +191,9 @@ class RoomProjection {
           .map((e) => ExecutionArtifacts.fromJson(e as Map<String, dynamic>))
           .toList(),
       workerAdapters: workerAdapters,
+      pendingPermission: j['pendingpermission'] == null
+          ? null
+          : PendingPermission.fromJson(j['pendingpermission'] as Map<String, dynamic>),
     );
   }
 }

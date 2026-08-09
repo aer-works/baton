@@ -7,6 +7,9 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import 'daemon/daemon_client.dart';
 import 'daemon/models.dart';
+import 'daemon/permission_decision_kind.dart';
+import 'daemon/permission_grant_wording.dart';
+import 'daemon/shell_command_pattern_matcher.dart';
 import 'theme/tokens.dart';
 
 /// One rendered row in the chat transcript — a human turn or an assistant response, never both.
@@ -69,6 +72,17 @@ class _ChatScreenState extends State<ChatScreen> {
   /// in the AppBar rather than only reflected transiently right after a mode-button tap.
   String? _currentMode;
 
+  /// The runtime conversational permission gate (0022, #390's mobile phase), rendered inline above
+  /// the composer when non-null. A projected fact — see [_surfacePendingPermission] — never edited
+  /// directly, and re-derived (never carried over) whenever the projection's own value changes.
+  PendingPermission? _pendingPermission;
+
+  /// True while an answer POST is in flight — disables the gate's rungs (mirrors InboxScreen's
+  /// `_decide`'s in-flight discipline) so a slow round trip can't be double-submitted. Independent of
+  /// [_pendingPermission]'s identity: the gate disappears entirely once the next projection clears
+  /// it, so this never needs to be reset on success.
+  bool _isAnsweringPermission = false;
+
   @override
   void initState() {
     super.initState();
@@ -77,6 +91,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _projectionSubscription = widget.client.watch().listen((projection) {
       if (!mounted) return;
       if (projection.directoryPath == widget.directoryPath) {
+        _surfacePendingPermission(projection.pendingPermission);
         _refresh();
       }
     });
@@ -127,6 +142,54 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) setState(() => _currentMode = mode);
     } on DaemonException {
       // Leave _currentMode as-is (null on first load, last-known value otherwise).
+    }
+  }
+
+  /// Reconciles the inline gate with the projection's current [pending] — mirrors
+  /// `ChatViewModel.SurfacePendingPermission`'s "projected fact" discipline: builds a fresh gate when
+  /// a new permission appears, leaves state untouched while the same one is still open (so
+  /// [_isAnsweringPermission] survives a push that changed nothing else), and clears it the moment
+  /// the projection stops carrying one (a permission dies with its turn, 0022 §5).
+  void _surfacePendingPermission(PendingPermission? pending) {
+    if (pending == null) {
+      if (_pendingPermission != null) setState(() => _pendingPermission = null);
+      return;
+    }
+    if (_pendingPermission?.permissionRequestId == pending.permissionRequestId) {
+      return;
+    }
+    setState(() {
+      _pendingPermission = pending;
+      _isAnsweringPermission = false;
+    });
+  }
+
+  /// Answers the open gate with one of [PermissionDecisionKind]'s rungs — mirrors InboxScreen's
+  /// `_decide`: disable-during-flight, then let the next projection push (via
+  /// [_surfacePendingPermission]) clear the gate on success rather than clearing it locally, since
+  /// the daemon's answer may itself raise the *next* pending permission in the same push.
+  Future<void> _answerPermission(String decisionKind) async {
+    final pending = _pendingPermission;
+    if (pending == null || _isAnsweringPermission) return;
+
+    setState(() => _isAnsweringPermission = true);
+    try {
+      await widget.client.answerPermission(
+        directoryPath: widget.directoryPath,
+        permissionRequestId: pending.permissionRequestId,
+        decisionKind: decisionKind,
+      );
+    } catch (e) {
+      // Catch EVERY error, not just DaemonException: _post/_get don't wrap transport failures, so a
+      // dropped connection or tsnet blip mid-answer throws a SocketException/ClientException that a
+      // narrow `on DaemonException` would miss — leaving _isAnsweringPermission stuck true and the gate
+      // frozen-disabled with the permission still open server-side. Desktop's RoomClient.AnswerPermissionAsync
+      // catches `Exception` + resets in a finally for exactly this reason; mirror that here.
+      if (mounted) {
+        setState(() => _isAnsweringPermission = false);
+        final message = e is DaemonException ? e.message : e.toString();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      }
     }
   }
 
@@ -363,6 +426,12 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           Expanded(child: _buildBody(context, metadata)),
+          if (_pendingPermission != null)
+            PermissionGateCard(
+              pending: _pendingPermission!,
+              enabled: !_isAnsweringPermission,
+              onAnswer: _answerPermission,
+            ),
           if (_isSending && _liveProgressText.isNotEmpty)
             Container(
               width: double.infinity,
@@ -435,6 +504,106 @@ class _ChatScreenState extends State<ChatScreen> {
       padding: const EdgeInsets.all(12),
       itemCount: messages.length,
       itemBuilder: (context, index) => _MessageBubble(message: messages[index]),
+    );
+  }
+}
+
+/// The conversational permission gate (0022, decision 0052, #390's mobile phase) — rendered inline
+/// above the composer when a worker is blocked on a runtime permission, mirroring desktop's
+/// `ChatView.axaml` card. A standalone `StatelessWidget` (like [MarkdownBodyWidget] below) rather
+/// than a private method on [_ChatScreenState], so it's pumpable directly in a widget test without
+/// [ChatScreen]'s live WebSocket dependency.
+///
+/// Tap-based rungs only — phone is tap-based, so 0022 §4's y/n keyboard rule is N/A here. The
+/// command-family rungs (`Allow <family> in this room`, `Always deny <family>`) render only when
+/// [tryReadCommandLine]/[extractCommandFamily] (ported from `ShellCommandPatternMatcher.cs`) can
+/// derive one from the asked tool input — HIDDEN, not merely disabled, the same fail-closed the
+/// amender applies to a command it can't parse safely. The cross-room rung ("any this command in
+/// *any* room") is deliberately absent: 0052 holds it until a project-scoped store exists.
+@visibleForTesting
+class PermissionGateCard extends StatelessWidget {
+  final PendingPermission pending;
+
+  /// False while an answer is in flight — disables every rung so a slow round trip can't be
+  /// double-submitted (mirrors `InboxScreen._decide`'s in-flight discipline).
+  final bool enabled;
+
+  /// Called with one of [PermissionDecisionKind]'s values when a rung is tapped.
+  final ValueChanged<String> onAnswer;
+
+  const PermissionGateCard({super.key, required this.pending, required this.enabled, required this.onAnswer});
+
+  @override
+  Widget build(BuildContext context) {
+    final commandLine = tryReadCommandLine(pending.toolName, pending.toolInputJson);
+    final hasCommand = commandLine != null && commandLine.trim().isNotEmpty;
+    final commandFamily = hasCommand ? extractCommandFamily(commandLine) : null;
+    final promptText =
+        hasCommand ? '${pending.vendorTag} wants to run: $commandLine' : '${pending.vendorTag} wants to use ${pending.toolName}';
+    final hasCommandScope = commandFamily != null;
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: scheme.error),
+        borderRadius: BorderRadius.circular(AerTokens.radiusMd),
+        color: scheme.surfaceContainerHighest,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(promptText, style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              FilledButton(
+                onPressed: enabled ? () => onAnswer(PermissionDecisionKind.allowOnce) : null,
+                child: const Text('Allow once'),
+              ),
+              OutlinedButton(
+                onPressed: enabled ? () => onAnswer(PermissionDecisionKind.deny) : null,
+                child: const Text('Deny once'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text('Scope this decision:', style: textTheme.bodySmall),
+          const SizedBox(height: 4),
+          if (hasCommandScope)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: enabled ? () => onAnswer(PermissionDecisionKind.allowCommandInRoom) : null,
+                child: Text('Allow $commandFamily in this room'),
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: enabled ? () => onAnswer(PermissionDecisionKind.allowRoom) : null,
+              child: const Text('Allow any command in this room'),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Text(allowRoomShellGrantReaches, style: textTheme.bodySmall),
+          ),
+          if (hasCommandScope)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: enabled ? () => onAnswer(PermissionDecisionKind.denyAlways) : null,
+                child: Text('Always deny $commandFamily'),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
