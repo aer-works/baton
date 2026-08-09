@@ -18,8 +18,8 @@ namespace Aer.Adapters.Tests;
 /// </para>
 /// <para>
 /// The one thing NOT asserted here is that a human ever sees the ask — that is a live-CLI claim, and
-/// its instrument is <c>gate.hook-ask-in-auto</c> in <c>tools/vendor-verify/verify.py</c> plus a real
-/// driven session, not a resolve.
+/// its instrument is the <c>gate.hook-ask-in-auto</c> sentinel plus a real driven session, not a
+/// resolve.
 /// </para>
 /// </remarks>
 [Collection(LaunchConfigCollection.Name)]
@@ -113,7 +113,7 @@ public class RuntimePermissionGateAdapterTests
 
     /// <summary>
     /// The withheld set moves BAND, it does not disappear. A name on <c>--disallowedTools</c> is
-    /// hard-refused by the CLI before the <c>PreToolUse</c> hook runs, so leaving it there would make
+    /// dropped by the CLI up front, before any hook sees it, so leaving it there would make
     /// the hook's ask unreachable — the gate would be installed and permanently silent.
     /// </summary>
     [Fact]
@@ -128,8 +128,8 @@ public class RuntimePermissionGateAdapterTests
         var withheld = ClaudeWorkerAdapter.BuildHookDeniedTools(InteractiveDefault);
         Assert.Equal($"claude:{withheld}", EnvValue(target, ClaudeWorkerAdapter.AskToolsVariable));
 
-        // The denied list becomes the standing-"never" channel, which is EMPTY today — and empty
-        // rather than absent, because #600 makes an absent list deny everything.
+        // The denied list becomes the standing-"never" channel, which is EMPTY today. It is emitted
+        // empty rather than omitted for the #600 reason recorded on ClaudeWorkerAdapter.AskToolsVariable.
         Assert.Equal("claude:", EnvValue(target, ClaudeWorkerAdapter.DeniedToolsVariable));
     }
 
@@ -190,8 +190,8 @@ public class RuntimePermissionGateAdapterTests
     }
 
     /// <summary>
-    /// agy has no <c>--permission-prompt-tool</c> and an exit-0/2 hook, so the gate is worker-elected
-    /// there (0015/0029): the tool is made reachable and the worker calls it. Reachability on this
+    /// agy has no <c>--permission-prompt-tool</c> and an exit-0/2 hook; the worker simply reaches and
+    /// calls the gate tool — the mechanism <c>AgyWorkerAdapter</c> documents. Reachability on this
     /// vendor means a real directory carrying <c>.agents/mcp_config.json</c> handed to
     /// <c>--add-dir</c> — agy's only lever (decision 0035).
     /// </summary>

@@ -587,7 +587,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// convention, and the same no-baked-capture-path reason, as
     /// <see cref="EnsureMemoryProposalWorkspace"/>.
     /// </summary>
-    /// <param name="alsoMemoryProposal">Composes the memory-proposal server into the same file; see <see cref="Resolve"/>'s own clause for why one file rather than two directories.</param>
+    /// <param name="alsoMemoryProposal">Folds the memory-proposal server in beside the gate rather than into a second config; see <see cref="Resolve"/>'s own clause for why one file rather than two directories.</param>
     private static string EnsurePermissionGateWorkspace(bool alsoMemoryProposal)
     {
         var workspace = Path.Combine(

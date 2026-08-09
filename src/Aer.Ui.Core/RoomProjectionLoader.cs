@@ -100,7 +100,30 @@ public static class RoomProjectionLoader
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactsDirectoryName);
         var lineage = ArtifactLineageProjector.Project(events, snapshot, artifactsRootPath);
 
-        return new RoomProjection(snapshot, state, history, lineage);
+        var pendingPermission = await LoadPendingPermissionAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
+
+        return new RoomProjection(snapshot, state, history, lineage, pendingPermission);
+    }
+
+    /// <summary>
+    /// Projects the room's <c>room.jsonl</c> journal — a SEPARATE event store from the
+    /// <c>flow.jsonl</c> the rest of <see cref="LoadAsync"/> reads (#445/#390) — for the one gate a
+    /// worker may currently be blocked on. Most rooms never write a RoomEvent, so the file is usually
+    /// absent; absence is an empty projection, never a throw. The room-journal filename is the literal
+    /// <c>Aer.Daemon</c> writes and reads it under (there is no shared constant to cite yet).
+    /// </summary>
+    private static async Task<PendingPermission?> LoadPendingPermissionAsync(
+        string roomDirectoryPath, CancellationToken cancellationToken)
+    {
+        var roomLogPath = Path.Combine(roomDirectoryPath, "room.jsonl");
+        if (!File.Exists(roomLogPath))
+        {
+            return null;
+        }
+
+        var reader = new RoomEventLogReader(roomLogPath);
+        var roomEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+        return RoomProjector.Project(roomEvents).PendingPermission;
     }
 
     /// <summary>

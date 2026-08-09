@@ -67,9 +67,9 @@ public class HookAskBandTests
     }
 
     /// <summary>
-    /// Order matters and is asserted, not assumed. A standing "never" is the operator having already
-    /// answered; asking them again would be the gate reopening a decision they closed — so deny wins
-    /// over ask when a tool is in both bands.
+    /// Order matters and is asserted, not assumed: deny wins over ask when a tool is in both bands.
+    /// The reason it is deny and not ask — a decision the operator already closed is not reopened — is
+    /// recorded once beside the ask-list parse in <see cref="HookCheckCommand"/>.
     /// </summary>
     [Fact]
     public void A_tool_in_both_bands_is_denied_rather_than_asked()
@@ -218,8 +218,8 @@ public class HookAskBandTests
     }
 
     /// <summary>
-    /// #445 + #649, the case the ask band could silently break: a withheld write LANDING IN THE OUTBOX
-    /// is the worker's declared output and is ALLOWED, never asked. A directory-less chat withholds
+    /// #445 + #649, the case the ask band could silently break: a withheld write whose target is the
+    /// worker's own declared output (the outbox) must be ALLOWED, never asked. A directory-less chat withholds
     /// writes, so under the gate <c>Write</c> rides the ask band — and without the outbox exemption
     /// hoisted above the ask branch, the worker would be prompted for permission to write the very
     /// report it was dispatched to produce. Assert stdout is EMPTY (an allow), not the ask envelope.
@@ -266,6 +266,38 @@ public class HookAskBandTests
         {
             DirectoryCleanup.DeleteRecursively(outbox);
         }
+    }
+
+    /// <summary>
+    /// THE CROSS-INSTRUMENT CONTRACT (#445): the value <see cref="Aer.Adapters.ClaudeWorkerAdapter"/>
+    /// actually PRODUCES for <c>AER_HOOK_ASK_TOOLS</c>, fed into the real hook — not a hand-written
+    /// string. Every other test here feeds the hook a literal, and the adapter tests assert the adapter
+    /// emits <c>$"claude:{withheld}"</c>; both assert against themselves, so if
+    /// <c>BuildHookDeniedTools</c> ever emitted a shape <c>DeniedToolList.Parse</c> reads as
+    /// NOT-Present, every branch would fall through to allow and BOTH suites would stay green while the
+    /// gate silently never fired. This is the one arm that fails when the two sides disagree — the same
+    /// defect shape as the doorbell test that passed with its subject deleted.
+    /// </summary>
+    [Fact]
+    public void The_ask_band_string_the_adapter_emits_is_one_the_hook_accepts_and_asks_on()
+    {
+        // The grant the interactive gate actually ships under (with a directory: read+write, no shell).
+        var grant = Aer.Adapters.InteractiveSessionMaterializer.DefaultGrantForWorkingDirectory("/some/project");
+        var target = new Aer.Adapters.ClaudeWorkerAdapter().Resolve(
+            new Aer.Adapters.WorkerInvocation("Chat.", PermissionGrant: grant, EnablePermissionGate: true),
+            new Aer.Flow.Domain.WorkerContract("architect", [], [new Aer.Flow.Domain.ProducedOutput("plan.md")], []));
+
+        // The REAL adapter output, verbatim — not a literal this test authored.
+        var askEnv = target.Environment!.Single(e => e.Name == Aer.Adapters.ClaudeWorkerAdapter.AskToolsVariable).Value;
+
+        // Bash is withheld by that grant (no shell), so the adapter must have put it on the ask band.
+        using var stdin = new StringReader(BashCall);
+        using var stderr = new StringWriter();
+        using var stdout = new StringWriter();
+        var exit = HookCheckCommand.Execute(stdin, stderr, "claude:", askToolsRaw: askEnv, stdout: stdout);
+
+        Assert.Equal(HookCheckCommand.AllowedExitCode, exit);
+        Assert.Equal(HookCheckCommand.AskDecisionJson, stdout.ToString().Trim());
     }
 
     /// <summary>

@@ -202,6 +202,92 @@ public class RoomProjectionLoaderTests
         }
     }
 
+    /// <summary>
+    /// #445/#390: the loader surfaces the runtime conversational gate a worker is blocked on, projected
+    /// from <c>room.jsonl</c> — the second journal, per <c>RoomProjection.PendingPermission</c>, not the one the rest of the
+    /// projection reads. Without this the mid-turn ask is journaled but never reaches a screen. Walks
+    /// the whole progression in one room so the polarity is asserted in BOTH directions: absent journal
+    /// -> null, an open ask -> the gate, an answered ask -> null again.
+    /// </summary>
+    [Fact]
+    public async Task LoadAsync_surfaces_an_open_permission_gate_from_room_jsonl_and_clears_it_when_answered()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "three-step-linear-workflow.json");
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"ui-gate-{Guid.NewGuid():N}");
+        try
+        {
+            var definition = await WorkflowDefinitionParser.LoadFromFileAsync(fixturePath, TestContext.Current.CancellationToken);
+            var snapshot = SnapshotBinder.Bind(definition);
+            await SnapshotBinder.PersistAsync(snapshot, Path.Combine(roomDirectory, "snapshot.json"), TestContext.Current.CancellationToken);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    ShellWorkerCommands.WriteFile("plan", "the-plan"),
+                    TimeSpan.FromSeconds(30)),
+                ["critic"] = new WorkerBinding.Process(
+                    new WorkerContract("critic", ["plan"], [new ProducedOutput("review")], []),
+                    ShellWorkerCommands.CopyFirstInputTo("review"),
+                    TimeSpan.FromSeconds(30)),
+                ["publisher"] = new WorkerBinding.Process(
+                    new WorkerContract("publisher", ["review"], [new ProducedOutput("summary")], []),
+                    ShellWorkerCommands.CopyFirstInputTo("summary"),
+                    TimeSpan.FromSeconds(30)),
+            };
+
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                var reader = new FlowEventLogReader(logPath);
+                var dispatcher = new CoreDispatcher(writer);
+                await MutationInterface.StartWorkflowAsync(
+                    new WorkflowId("wf-ui-gate"), roomDirectory, snapshot, bindings,
+                    Path.Combine(roomDirectory, "artifacts"), reader, writer, dispatcher,
+                    cancellationToken: TestContext.Current.CancellationToken);
+            }
+
+            // Arm 1 — no room.jsonl at all: the common case, and it must not throw or invent a gate.
+            var beforeAsk = await RoomProjectionLoader.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.Null(beforeAsk.PendingPermission);
+
+            // Arm 2 — an open ask journaled to room.jsonl. Writer disposed before the load so the read
+            // is not racing an open append handle (the daemon's own ordering).
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            await using (var roomWriter = new RoomEventLogWriter(roomLogPath))
+            {
+                var roomReader = new RoomEventLogReader(roomLogPath);
+                await RoomMutationInterface.RaisePermissionAsync(
+                    roomDirectory, roomReader, roomWriter, "req-gate-1", new ExecutionId("ex-1"),
+                    new StepId("architect"), "chat-worker", "claude", "corr-1", "Bash",
+                    "{\"command\":\"ls\"}", "Bash", cancellationToken: TestContext.Current.CancellationToken);
+            }
+
+            var withAsk = await RoomProjectionLoader.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.NotNull(withAsk.PendingPermission);
+            Assert.Equal("req-gate-1", withAsk.PendingPermission!.PermissionRequestId);
+            Assert.Equal("Bash", withAsk.PendingPermission.ToolName);
+            Assert.Equal("chat-worker", withAsk.PendingPermission.WorkerId);
+
+            // Arm 3 — the answer clears it, in the same room the ask opened it. This is the both-directions
+            // control: if the projector ignored the Answered event, arm 2 could pass while the gate never closed.
+            await using (var roomWriter = new RoomEventLogWriter(roomLogPath))
+            {
+                var roomReader = new RoomEventLogReader(roomLogPath);
+                await RoomMutationInterface.AnswerPermissionAsync(
+                    roomDirectory, roomReader, roomWriter, "req-gate-1", "AllowOnce", "{}", "ok", "human",
+                    cancellationToken: TestContext.Current.CancellationToken);
+            }
+
+            var afterAnswer = await RoomProjectionLoader.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.Null(afterAnswer.PendingPermission);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     [Fact]
     public async Task LoadFleetStatusAsync_ForAWorkflowRoom_LabelsWorkflowFromRoomKindMarker()
     {
