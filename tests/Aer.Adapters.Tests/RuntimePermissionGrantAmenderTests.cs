@@ -51,16 +51,21 @@ public class RuntimePermissionGrantAmenderTests
         return resolved!.Split(',');
     }
 
-    // The actual --disallowedTools value the claude gate spawns for a grant — where the DenyAlways rung
-    // is enforced on claude (the CLI applies it with precedence over --allowedTools).
-    private static string ClaudeDisallowedToolsFor(PermissionGrant grant)
+    // The actual --disallowedTools value the claude adapter spawns for a grant, through the REAL
+    // interactive dispatch path (Resolve with EnablePermissionGate: true) — not BuildGate, which the
+    // dialogue worker uses and which has no gate conditional. This distinction is load-bearing: the gate
+    // path suppresses the withheld-category disallowed list, so a DenyAlways standing refusal must still
+    // reach --disallowedTools here or it is unenforced on every interactive turn.
+    private static string ClaudeDisallowedToolsFor(PermissionGrant grant, bool enablePermissionGate = true)
     {
-        var args = ClaudeWorkerAdapter.BuildGate(grant).Args;
-        for (var i = 0; i < args.Count - 1; i++)
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Chat.", PermissionGrant: grant, EnablePermissionGate: enablePermissionGate),
+            new WorkerContract("chat-worker", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []));
+        for (var i = 0; i < target.Args.Count - 1; i++)
         {
-            if (args[i] == "--disallowedTools")
+            if (target.Args[i] == "--disallowedTools")
             {
-                return args[i + 1];
+                return target.Args[i + 1];
             }
         }
 

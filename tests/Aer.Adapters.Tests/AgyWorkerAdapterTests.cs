@@ -502,13 +502,17 @@ public class AgyWorkerAdapterTests
         // AER_HOOK_DENIED_SHELL_PATTERNS. Its absence is fail-closed at the hook, so a missing emission
         // would silently deny every run_command — this pins that the channel is actually sent.
         // The meaningful case: the shell is granted (agy expresses that only as the network-bundled
-        // --dangerously-skip-permissions) and a standing "never" carves rm back out via the hook.
+        // --dangerously-skip-permissions) and a standing "never" carves rm back out via the hook. Under
+        // the runtime gate (EnablePermissionGate: true) — the only shape DenyAlways is issued from — the
+        // channel must still be emitted, unlike claude's --disallowedTools which the gate suppresses.
         var adapter = new AgyWorkerAdapter();
         var grant = new PermissionGrant(
             ReadFiles: true, RunShellCommands: true, NetworkAccess: true,
             DeniedShellCommandPatterns: ["rm *"]);
 
-        var target = adapter.Resolve(new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+        var target = adapter.Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, EnablePermissionGate: true),
+            ArchitectContract);
 
         Assert.Contains(
             target.Environment!,

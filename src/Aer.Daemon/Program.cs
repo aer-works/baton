@@ -1174,9 +1174,8 @@ namespace Aer.Daemon
                     request.Reason,
                     "human").ConfigureAwait(false);
 
-                // #390: for a persisting rung, amend the room's chat-worker PermissionGrant so the
-                // NEXT turn's grant build (InteractiveSessionMaterializer's own read of this same
-                // bindings.json) enforces it -- the existing per-turn enforcement path, not a new one.
+                // #390: for a persisting rung, amend the room's chat-worker PermissionGrant. See
+                // RuntimePermissionGrantAmender for how the next interactive turn then enforces it.
                 if (askedEvent != null)
                 {
                     // The answer file written above already released the worker, so a fast next turn's

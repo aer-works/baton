@@ -205,11 +205,13 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         // #445 carves out the gate: a tool named here is hard-refused by the CLI BEFORE the PreToolUse
         // hook runs (see BuildDisallowedTools' own remarks), so a withheld category on this flag can
         // never reach the hook's "ask" band and never reach the human. Under the gate the withheld set
-        // rides AER_HOOK_ASK_TOOLS instead, and this flag carries only STANDING refusals -- of which
-        // there are none yet, so it is omitted entirely. Ungranted is not the same as forbidden; the
-        // gate fires where policy is silent, not where the operator said no.
+        // rides AER_HOOK_ASK_TOOLS instead, and this flag carries only STANDING refusals. #390 gives it
+        // one: a DenyAlways shell family (DeniedShellCommandPatterns) is exactly a standing "never" — the
+        // operator already answered, so it is hard-refused here rather than re-asked, deny-beats-allow.
+        // Ungranted is not the same as forbidden; the gate fires where policy is silent, not where the
+        // operator said no. Off the gate, the full withheld-category list rides this flag too.
         var disallowed = invocation.EnablePermissionGate
-            ? string.Empty
+            ? string.Join(',', StandingShellDenials(invocation.PermissionGrant))
             : BuildDisallowedTools(invocation.PermissionGrant);
         if (disallowed.Length > 0)
         {
@@ -750,20 +752,26 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         }
 
         var names = WithheldToolNames(grant, includeWriteTools: false);
-
-        // 0022's DenyAlways rung (#390): a standing per-command refusal. --disallowedTools takes
-        // precedence over --allowedTools -- measured, `git push` denied under
-        // `--allowedTools "Bash(git *)" --disallowedTools "Bash(git push*)"` (docs/vendor-capabilities.md)
-        // -- so a denied family is refused even when the shell is otherwise granted. This is the claude
-        // enforcement for the rung: redundant-but-harmless when Bash is withheld wholesale (already in
-        // `names`), load-bearing when RunShellCommands granted the shell and only this family is refused.
-        if (grant.DeniedShellCommandPatterns is { Count: > 0 } deniedPatterns)
-        {
-            names.AddRange(deniedPatterns.Select(pattern => $"Bash({pattern})"));
-        }
-
+        names.AddRange(StandingShellDenials(grant));
         return string.Join(',', names);
     }
+
+    /// <summary>
+    /// 0022's DenyAlways families (#390) as <c>--disallowedTools</c> entries — <c>Bash(pattern)</c> per
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/>, empty when none. This is claude's
+    /// enforcement for the standing-"never" rung on BOTH dispatch paths: the CLI applies
+    /// <c>--disallowedTools</c> with precedence over <c>--allowedTools</c> (measured — <c>git push</c>
+    /// denied under <c>--allowedTools "Bash(git *)" --disallowedTools "Bash(git push*)"</c>,
+    /// <c>docs/vendor-capabilities.md</c>) and hard-refuses BEFORE the hook, so a denied family is
+    /// refused even under an unscoped grant and without re-asking. Under the runtime gate this is the
+    /// <em>whole</em> of what <c>--disallowedTools</c> carries (withheld categories ride the ask band);
+    /// off the gate it rides alongside them. Enforced independently of the <c>PreToolUse</c> hook, so it
+    /// survives a silently-dead hook (#530) — which is why claude needs no hook-side deny check.
+    /// </summary>
+    private static IEnumerable<string> StandingShellDenials(PermissionGrant? grant) =>
+        grant?.DeniedShellCommandPatterns is { Count: > 0 } denied
+            ? denied.Select(pattern => $"Bash({pattern})")
+            : [];
 
     /// <summary>
     /// The withheld tool names carried to the <c>PreToolUse</c> hook — the same list

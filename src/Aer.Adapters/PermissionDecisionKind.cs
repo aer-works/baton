@@ -36,11 +36,8 @@ public static class PermissionDecisionKind
 
     /// <summary>
     /// Never / always deny <em>this command</em> — the standing refusal. Persists the asked command's
-    /// family to <see cref="PermissionGrant.DeniedShellCommandPatterns"/>, enforced next turn on both
-    /// vendors deny-beats-allow: claude via <c>--disallowedTools Bash(pattern)</c> (which takes
-    /// precedence over <c>--allowedTools</c>), agy via its <c>PreToolUse</c> hook's
-    /// <c>ShellCommandPatternMatcher.IsDenied</c> check (agy has no vendor flag that can express a
-    /// command family). A closed "no" is not reopened by a wider later allow.
+    /// family to <see cref="PermissionGrant.DeniedShellCommandPatterns"/>; see that field for how each
+    /// vendor enforces it.
     /// </summary>
     public const string DenyAlways = "DenyAlways";
 

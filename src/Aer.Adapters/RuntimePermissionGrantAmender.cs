@@ -56,9 +56,7 @@ public static class RuntimePermissionGrantAmender
         // binding. Persisting a per-room approximation would misrepresent its scope, so it no-ops to
         // AllowOnce behavior. The hold is recorded as an amendment to decision 0022.
         // DenyAlways (the standing "never" rung) DOES persist: it adds the asked command's family to
-        // DeniedShellCommandPatterns, which is enforced next turn on both vendors -- claude via
-        // --disallowedTools Bash(pattern) (BuildDisallowedTools), agy via its PreToolUse hook's IsDenied
-        // check (deny-beats-allow). Deny beats a wider later allow, so a closed "no" is not reopened.
+        // DeniedShellCommandPatterns (see that field for each vendor's enforcement).
         if (decisionKind is not (PermissionDecisionKind.AllowCommandInRoom
             or PermissionDecisionKind.AllowRoom
             or PermissionDecisionKind.DenyAlways))

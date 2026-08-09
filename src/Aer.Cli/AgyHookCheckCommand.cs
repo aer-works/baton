@@ -77,10 +77,9 @@ public static class AgyHookCheckCommand
         HookCheckCommand.ShellPatternsEnvironmentVariable;
 
     /// <summary>
-    /// The environment variable carrying this invocation's <b>denied</b> shell pattern list — 0022's
-    /// DenyAlways rung (#390). Unlike claude, agy cannot express a command-family deny as a vendor flag
-    /// (its rules match the whole line literally), so this hook is the sole enforcement point for a
-    /// standing "never" here. One canonical literal, owned by the adapter that emits it.
+    /// Mirror-name for <see cref="Aer.Adapters.AgyWorkerAdapter.DeniedShellPatternsVariable"/> — the one
+    /// canonical literal, owned there because that adapter emits it, read here. See it for what the
+    /// channel is and why agy needs it.
     /// </summary>
     public const string DeniedShellPatternsEnvironmentVariable =
         Aer.Adapters.AgyWorkerAdapter.DeniedShellPatternsVariable;
