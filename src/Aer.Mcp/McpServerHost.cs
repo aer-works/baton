@@ -79,7 +79,7 @@ public sealed class McpServerHost(string serverName, string serverVersion, IRead
             {
                 "initialize" => BuildInitializeResult(),
                 "tools/list" => BuildToolsListResult(),
-                "tools/call" => BuildToolsCallResult(requestObject),
+                "tools/call" => await BuildToolsCallResultAsync(requestObject, cancellationToken).ConfigureAwait(false),
                 _ => BuildMethodNotFound(),
             };
 
@@ -119,7 +119,7 @@ public sealed class McpServerHost(string serverName, string serverVersion, IRead
         return new JsonObject { ["tools"] = array };
     }
 
-    private JsonNode BuildToolsCallResult(JsonNode request)
+    private async Task<JsonNode> BuildToolsCallResultAsync(JsonNode request, CancellationToken cancellationToken)
     {
         var paramsNode = TryGetProperty(request, "params");
         var name = TryGetString(TryGetProperty(paramsNode, "name"));
@@ -138,7 +138,7 @@ public sealed class McpServerHost(string serverName, string serverVersion, IRead
         McpToolCallResult callResult;
         try
         {
-            callResult = tool.Call(argumentsDocument.RootElement);
+            callResult = await tool.CallAsync(argumentsDocument.RootElement, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

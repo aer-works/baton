@@ -25,6 +25,12 @@ public interface IMcpTool
     /// request's <c>arguments</c> object, unparsed — each tool owns its own argument shape.
     /// </summary>
     McpToolCallResult Call(JsonElement arguments);
+
+    /// <summary>
+    /// Executes the tool asynchronously for one <c>tools/call</c> request. Default implementation delegates to synchronous <see cref="Call"/>.
+    /// </summary>
+    Task<McpToolCallResult> CallAsync(JsonElement arguments, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Call(arguments));
 }
 
 /// <summary>The outcome of one <see cref="IMcpTool.Call"/> — becomes a <c>tools/call</c> response's <c>content</c>.</summary>
