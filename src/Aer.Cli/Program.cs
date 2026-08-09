@@ -44,11 +44,16 @@ if (args.Length >= 1 && args[0] == "agy-hook-check")
 {
     var deniedTools = Environment.GetEnvironmentVariable(AgyHookCheckCommand.DeniedToolsEnvironmentVariable);
     var shellPatterns = Environment.GetEnvironmentVariable(AgyHookCheckCommand.ShellPatternsEnvironmentVariable);
+    // #390: the DenyAlways channel — agy's sole enforcement for a standing "never" (no vendor flag can
+    // express a command family here), so it is read and passed like the allow channel.
+    var deniedShellPatterns = Environment.GetEnvironmentVariable(
+        AgyHookCheckCommand.DeniedShellPatternsEnvironmentVariable);
     // #679: the outbox reaches this gate for the GRANTED-write bound only. #649's withheld-write
     // exemption remains claude-only and is not extended here.
     var agyOutputDir = Environment.GetEnvironmentVariable("AER_OUTPUT_DIR");
     var agyWorkspaceDir = Environment.GetEnvironmentVariable(HookCheckCommand.WorkspaceEnvironmentVariable);
-    return AgyHookCheckCommand.Execute(Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir);
+    return AgyHookCheckCommand.Execute(
+        Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns);
 }
 
 var knownSubcommands = new[] { "run", "dispatch", "cancel", "decide", "supply", "status", "templates" };

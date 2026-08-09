@@ -127,4 +127,49 @@ public static class ShellCommandPatternMatcher
 
         return false;
     }
+
+    /// <summary>
+    /// The <c>DenyAlways</c> rung's standing-"never" check (0022, M-Phase-6 #390) — called by
+    /// <c>AgyHookCheckCommand</c> to refuse a <c>run_command</c> whose command line matches a persisted
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> entry, deny-beats-allow. (claude enforces
+    /// the same rung through <c>--disallowedTools</c> rather than this matcher.) Returns
+    /// <see langword="true"/> iff <paramref name="commandLine"/> matches at least one pattern in
+    /// <paramref name="deniedPatterns"/>. Same glob shape and the same metacharacter fail-closed rules as
+    /// <see cref="IsAllowed"/> (deliberately reuses it): a command this scanner cannot parse safely is
+    /// not matched against the deny list either, since whatever else grants it (categorical
+    /// <see cref="PermissionGrant.RunShellCommands"/> or an allow pattern) already refuses it on the
+    /// same unparseable-metacharacter grounds.
+    /// </summary>
+    public static bool IsDenied(string? commandLine, IReadOnlyList<string>? deniedPatterns) =>
+        IsAllowed(commandLine, deniedPatterns);
+
+    /// <summary>
+    /// Derives a command's family (its first whitespace-delimited token, e.g. <c>"rm"</c> out of
+    /// <c>"rm -rf build/"</c>) for scoping a new <see cref="PermissionGrant.ShellCommandPatterns"/> or
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> entry (0022's <c>AllowCommandInRoom</c>
+    /// / <c>DenyAlways</c> rungs, M-Phase-6 #390). Returns <see langword="null"/> — never a guess — when
+    /// <paramref name="commandLine"/> is empty or its first token opens with a shell metacharacter this
+    /// matcher already treats as unsafe to reason about (<see cref="IsAllowed"/>'s own set): persisting
+    /// a pattern derived from an unparseable head would scope a standing grant to something this same
+    /// matcher could not evaluate consistently later.
+    /// </summary>
+    public static string? ExtractCommandFamily(string? commandLine)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            return null;
+        }
+
+        var trimmed = commandLine.TrimStart();
+        var end = 0;
+        while (end < trimmed.Length && !char.IsWhiteSpace(trimmed[end]) && Array.IndexOf(MetaCharacters, trimmed[end]) < 0)
+        {
+            end++;
+        }
+
+        return end == 0 ? null : trimmed[..end];
+    }
+
+    private static readonly char[] MetaCharacters =
+        [';', '&', '|', '`', '$', '<', '>', '(', ')', '\n', '\r', '\\', '\'', '"'];
 }

@@ -38,12 +38,15 @@ public class AgyHookCheckCommandTests
         """;
 
     private static string Decide(
-        string stdinText, string? denied, string? outbox = null, string? workspace = null, string? shellPatterns = "agy:")
+        string stdinText, string? denied, string? outbox = null, string? workspace = null,
+        string? shellPatterns = "agy:", string? deniedShellPatterns = "agy:")
     {
         using var stdin = new StringReader(stdinText);
         using var stdout = new StringWriter();
 
-        var exitCode = AgyHookCheckCommand.Execute(stdin, stdout, denied, shellPatternsRaw: shellPatterns, outboxDirectory: outbox, workspaceDirectory: workspace);
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, denied, shellPatternsRaw: shellPatterns, outboxDirectory: outbox,
+            workspaceDirectory: workspace, deniedShellPatternsRaw: deniedShellPatterns);
 
         Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
 
@@ -101,6 +104,54 @@ public class AgyHookCheckCommandTests
         // still allow run_command (the deny above keys on Absent, not on an empty Present list).
         var payload = Payload("run_command");
         Assert.Equal("allow", Decide(payload, "agy:", shellPatterns: "agy:"));
+    }
+
+    // ---- DenyAlways channel (0022's standing "never" rung, #390): agy's only enforcement for it ----
+
+    [Fact]
+    public void A_run_command_matching_a_denied_pattern_is_refused_even_when_the_shell_is_unscoped()
+    {
+        // Deny beats allow: the shell is granted unscoped ("agy:" = allow anything), yet a standing
+        // "never" on node refuses it. If this allowed, DenyAlways could be reopened by a wider grant.
+        var payload = Payload("run_command"); // CommandLine: node --version
+        Assert.Equal("deny", Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:node *"));
+    }
+
+    [Fact]
+    public void A_run_command_not_matching_the_denied_pattern_is_allowed()
+    {
+        // The discriminating control: a deny on a DIFFERENT family must not refuse this command, or the
+        // deny channel would just be a blanket run_command block rather than a scoped "never".
+        var payload = Payload("run_command"); // CommandLine: node --version
+        Assert.Equal("allow", Decide(payload, "agy:", shellPatterns: "agy:node *", deniedShellPatterns: "agy:git *"));
+    }
+
+    [Theory]
+    [InlineData(null)] // the variable was never set
+    [InlineData("")] // present but empty of the vendor tag
+    public void Absent_denied_shell_patterns_deny_run_command_fail_closed(string? deniedShellPatterns)
+    {
+        // AgyWorkerAdapter always emits AER_HOOK_DENIED_SHELL_PATTERNS ("agy:" at minimum) alongside the
+        // allow channel, so an absent value means the channel broke — not "no standing denies". Fail
+        // closed, exactly as the allow channel does, rather than skip a "never" we cannot read.
+        var payload = Payload("run_command");
+        Assert.Equal("deny", Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: deniedShellPatterns));
+    }
+
+    [Fact]
+    public void Wrong_vendor_denied_shell_patterns_deny_run_command_fail_closed()
+    {
+        var payload = Payload("run_command");
+        Assert.Equal("deny", Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "claude:node *"));
+    }
+
+    [Fact]
+    public void A_non_run_command_tool_is_unaffected_by_denied_shell_patterns()
+    {
+        // The deny channel gates exactly run_command; a broken/again-Absent state must not leak a verdict
+        // onto other tools (view_file is judged only by the denied-tool channel).
+        var payload = Payload("view_file");
+        Assert.Equal("allow", Decide(payload, "agy:", deniedShellPatterns: null));
     }
 
     [Fact]

@@ -749,7 +749,20 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             return string.Empty;
         }
 
-        return string.Join(',', WithheldToolNames(grant, includeWriteTools: false));
+        var names = WithheldToolNames(grant, includeWriteTools: false);
+
+        // 0022's DenyAlways rung (#390): a standing per-command refusal. --disallowedTools takes
+        // precedence over --allowedTools -- measured, `git push` denied under
+        // `--allowedTools "Bash(git *)" --disallowedTools "Bash(git push*)"` (docs/vendor-capabilities.md)
+        // -- so a denied family is refused even when the shell is otherwise granted. This is the claude
+        // enforcement for the rung: redundant-but-harmless when Bash is withheld wholesale (already in
+        // `names`), load-bearing when RunShellCommands granted the shell and only this family is refused.
+        if (grant.DeniedShellCommandPatterns is { Count: > 0 } deniedPatterns)
+        {
+            names.AddRange(deniedPatterns.Select(pattern => $"Bash({pattern})"));
+        }
+
+        return string.Join(',', names);
     }
 
     /// <summary>

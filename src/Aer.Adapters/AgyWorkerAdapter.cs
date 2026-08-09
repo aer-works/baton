@@ -117,6 +117,17 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
     public const string ShellPatternsVariable = ClaudeWorkerAdapter.ShellPatternsVariable;
 
+    /// <summary>
+    /// The environment variable carrying this invocation's <b>denied</b> shell command patterns —
+    /// 0022's DenyAlways rung (#390). agy has no <c>--disallowedTools</c> equivalent that can express a
+    /// command family (its rules match the whole line literally), so unlike claude its ONLY enforcement
+    /// for a standing "never" is AER's own <c>PreToolUse</c> hook (<c>AgyHookCheckCommand</c>), which
+    /// reads this and refuses a matching command deny-beats-allow. A separate channel from
+    /// <see cref="ShellPatternsVariable"/> because the two lists are opposite in sign: one narrows an
+    /// allow, one subtracts from it.
+    /// </summary>
+    public const string DeniedShellPatternsVariable = "AER_HOOK_DENIED_SHELL_PATTERNS";
+
 
     /// <summary>
     /// The name of the workspace directory AER owns and points every agy worker at, holding the
@@ -235,6 +246,18 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     internal static string BuildShellPatterns(PermissionGrant? grant)
     {
         return grant?.ShellCommandPatterns is { Count: > 0 } patterns
+            ? string.Join(',', patterns)
+            : string.Empty;
+    }
+
+    /// <summary>
+    /// The standing "never" families for <see cref="DeniedShellPatternsVariable"/> — comma-joined,
+    /// empty when none. Mirror of <see cref="BuildShellPatterns"/> over
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> (0022's DenyAlways rung, #390).
+    /// </summary>
+    internal static string BuildDeniedShellPatterns(PermissionGrant? grant)
+    {
+        return grant?.DeniedShellCommandPatterns is { Count: > 0 } patterns
             ? string.Join(',', patterns)
             : string.Empty;
     }
@@ -396,6 +419,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             // same allow. See #600.
             (DeniedToolsVariable, $"{DeniedToolsVendorTag}:{BuildDeniedTools(invocation.PermissionGrant)}"),
             (ShellPatternsVariable, $"{ShellPatternsVendorTag}:{BuildShellPatterns(invocation.PermissionGrant)}"),
+            (DeniedShellPatternsVariable, $"{ShellPatternsVendorTag}:{BuildDeniedShellPatterns(invocation.PermissionGrant)}"),
         };
 
         // agy home redirect (#442): non-shell bindings get HOME and USERPROFILE redirected to an
@@ -480,6 +504,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         {
             [DeniedToolsVariable] = $"{DeniedToolsVendorTag}:{BuildDeniedTools(grant)}",
             [ShellPatternsVariable] = $"{ShellPatternsVendorTag}:{BuildShellPatterns(grant)}",
+            [DeniedShellPatternsVariable] = $"{ShellPatternsVendorTag}:{BuildDeniedShellPatterns(grant)}",
         };
 
         // Must mirror Resolve's own workspace clause. Load-bearing on this vendor rather than merely

@@ -121,7 +121,7 @@ copy of every record, retired by #952: the record is the only place a decision i
 | [0019](0019-consulting-is-not-deciding.md) | Consulting is not deciding: you can ask anyone, and the gate stays open | accepted |
 | [0020](0020-one-state-machine.md) | One state machine: every surface renders the room's state, none derives its own | accepted |
 | [0021](0021-artifacts-are-files.md) | Artifacts are files: vendor-neutral, versioned, attributed, and never silently overwritten | accepted |
-| [0022](0022-permission-ladder-and-denial-is-an-answer.md) | The permission ladder is offered at the moment of asking, and a denial is a real answer | accepted |
+| [0022](0022-permission-ladder-and-denial-is-an-answer.md) | The permission ladder is offered at the moment of asking, and a denial is a real answer | accepted; **cross-room rung held by [0052](0052-the-ladder-ships-without-the-cross-room-rung.md)** |
 | [0023](0023-effort-and-models-are-named-by-behaviour.md) | Effort is named by behaviour and models are offered by purpose, never by a vendor's own string | accepted |
 | [0024](0024-commands-are-namespaced.md) | Commands are namespaced by owner, and `/ask-all` is the broadcast | accepted |
 | [0025](0025-a-step-is-an-instruction-with-a-gate-toggle.md) | A step's instruction is its body, and "ask me first" is a toggle on the step | accepted |
@@ -151,5 +151,6 @@ copy of every record, retired by #952: the record is the only place a decision i
 | [0049](0049-the-wake-loop-is-in-contract-and-the-orchestrator-decides.md) | The wake loop is in-contract, and the orchestrator is a resident presence that decides | accepted |
 | [0050](0050-vendor-memory-is-isolated-scratch.md) | Vendor memory is isolated scratch; room memory is the only durable layer | accepted |
 | [0051](0051-markdown-rendering-is-a-defined-subset-parsed-per-platform.md) | Markdown rendering is a defined CommonMark subset, parsed per platform, with no remote content | accepted |
+| [0052](0052-the-ladder-ships-without-the-cross-room-rung.md) | The ladder ships without the cross-room rung; its home is project scope, not account scope | accepted |
 
 <!-- /generated: decisions-index -->

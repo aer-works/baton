@@ -1100,26 +1100,28 @@ namespace Aer.Daemon
                 if (string.IsNullOrEmpty(request.PermissionRequestId)) return Results.BadRequest("PermissionRequestId is required.");
                 if (string.IsNullOrEmpty(request.DecisionKind)) return Results.BadRequest("DecisionKind is required.");
 
+                // Read once up front, regardless of which branch resolves outputDir below: #390 needs
+                // the asked ToolName/ToolInputJson to persist a scoped grant, and PendingGateRegistry
+                // (the live-doorbell path) never carried them.
+                RoomEvent.RuntimePermissionAsked? askedEvent = null;
+                var permissionsAnswerRoomLogPath = Path.Combine(request.DirectoryPath, "room.jsonl");
+                if (File.Exists(permissionsAnswerRoomLogPath))
+                {
+                    var askedReader = new RoomEventLogReader(permissionsAnswerRoomLogPath);
+                    var askedEvents = await askedReader.ReadAllRoomEventsAsync().ConfigureAwait(false);
+                    askedEvent = askedEvents.OfType<RoomEvent.RuntimePermissionAsked>()
+                        .FirstOrDefault(a => a.PermissionRequestId == request.PermissionRequestId);
+                }
+
                 string? outputDir = null;
                 if (PendingGateRegistry.TryGet(request.PermissionRequestId, out var entry))
                 {
                     outputDir = entry.OutputDir;
                 }
-                else
+                else if (askedEvent != null)
                 {
-                    var roomLogPath = Path.Combine(request.DirectoryPath, "room.jsonl");
-                    if (File.Exists(roomLogPath))
-                    {
-                        var reader = new RoomEventLogReader(roomLogPath);
-                        var existingEvents = await reader.ReadAllRoomEventsAsync().ConfigureAwait(false);
-                        var asked = existingEvents.OfType<RoomEvent.RuntimePermissionAsked>()
-                            .FirstOrDefault(a => a.PermissionRequestId == request.PermissionRequestId);
-                        if (asked != null)
-                        {
-                            var artifactsDir = Path.Combine(request.DirectoryPath, ArtifactManager.ArtifactsDirectoryName);
-                            outputDir = ArtifactManager.ResolveOutputDirectory(artifactsDir, asked.ExecutionId);
-                        }
-                    }
+                    var artifactsDir = Path.Combine(request.DirectoryPath, ArtifactManager.ArtifactsDirectoryName);
+                    outputDir = ArtifactManager.ResolveOutputDirectory(artifactsDir, askedEvent.ExecutionId);
                 }
 
                 if (string.IsNullOrEmpty(outputDir))
@@ -1171,6 +1173,46 @@ namespace Aer.Daemon
                     updatedInputJson,
                     request.Reason,
                     "human").ConfigureAwait(false);
+
+                // #390: for a persisting rung, amend the room's chat-worker PermissionGrant so the
+                // NEXT turn's grant build (InteractiveSessionMaterializer's own read of this same
+                // bindings.json) enforces it -- the existing per-turn enforcement path, not a new one.
+                if (askedEvent != null)
+                {
+                    // The answer file written above already released the worker, so a fast next turn's
+                    // per-turn bindings.json write can race this read-modify-write. Take the same room
+                    // guard the mutation path uses; AcquireWithin (not Acquire) because that holder
+                    // releases in milliseconds -- #857's shape -- and a routine overlap should wait, not
+                    // 500 an already-recorded answer. If it stays held, fail narrow: the answer applies
+                    // once only (never wider) and we say so.
+                    try
+                    {
+                        using var amendGuard = ConcurrencyGuard.AcquireWithin(
+                            request.DirectoryPath, TimeSpan.FromSeconds(2), "permission-answer grant amend");
+                        var amendOutcome = await RuntimePermissionGrantAmender.AmendAsync(
+                            request.DirectoryPath,
+                            InteractiveSessionMaterializer.DefaultWorkerName,
+                            request.DecisionKind,
+                            askedEvent.ToolName,
+                            askedEvent.ToolInputJson).ConfigureAwait(false);
+
+                        if (amendOutcome == PermissionAmendOutcome.CouldNotPersist)
+                        {
+                            // The operator picked a standing rung but no grant could be written (no
+                            // binding, or the asked command was unparseable and derivation failed
+                            // closed). It applies once only -- surface the narrowing, don't swallow it.
+                            Console.Error.WriteLine(
+                                $"Permission answer '{request.DecisionKind}' for '{askedEvent.ToolName}' could not " +
+                                "persist a standing grant; it applies once only.");
+                        }
+                    }
+                    catch (WorkflowLockedException ex)
+                    {
+                        Console.Error.WriteLine(
+                            $"Permission answer '{request.DecisionKind}' recorded, but persisting the standing " +
+                            $"grant lost the room lock ({ex.Message}); it applies once only.");
+                    }
+                }
 
                 PendingGateRegistry.TryRemove(request.PermissionRequestId, out _);
 

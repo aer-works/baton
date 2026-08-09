@@ -1,8 +1,15 @@
 # 0022 — The permission ladder is offered at the moment of asking, and a denial is a real answer
 
-Status: accepted
+Status: accepted; **cross-room rung held by [0052](0052-the-ladder-ships-without-the-cross-room-rung.md)**
 Date: 2026-07-24
 Amends: [0004](0004-permission-scopes.md)
+
+> **The ladder ships without the "any this command in *any* room" rung — see
+> [0052](0052-the-ladder-ships-without-the-cross-room-rung.md).** The four room-scoped rungs below
+> (just-once, this-command-in-this-room, any-command-in-this-room, and the standing refusal) stand, and
+> are what the runtime gate builds and enforces. The cross-room rung in the table is held: the corpus
+> defines no store for a cross-room grant, and 0052 records that its home is *project* scope, not
+> account scope — to be reopened when that store is built.
 
 ## Context
 
