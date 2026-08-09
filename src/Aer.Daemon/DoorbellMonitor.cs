@@ -15,24 +15,33 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
     private readonly string _directoryPath;
     private readonly string _targetAdapter;
     private readonly string? _vendorSessionId;
-    private readonly RoomClient _session;
+    private readonly Func<string, Task<RoomProjection?>> _loadProjectionAsync;
     private readonly Func<RoomProjection, string?, Task> _broadcastStateAsync;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _pollTask;
     private readonly FileSystemWatcher? _watcher;
     private readonly ConcurrentDictionary<string, byte> _processedAsks = new(StringComparer.Ordinal);
 
+    /// <param name="loadProjectionAsync">
+    /// Loads the room's current projection, or null when it cannot be projected. Narrowed from the
+    /// whole <c>RoomClient</c> (#445 Phase 4) to the one call this class actually makes: a
+    /// <c>RoomClient</c> needs a configuration store, an adapter registry and a
+    /// <c>MainWindowViewModel</c> to construct, none of which this monitor's behaviour depends on --
+    /// so requiring one meant nothing could drive the watcher, the backup poll or
+    /// <see cref="ProcessAskFileAsync"/> in a test, and the test that claimed to hand-rolled the logic
+    /// inline instead and passed with this file deleted.
+    /// </param>
     public DoorbellMonitor(
         string directoryPath,
         string targetAdapter,
         string? vendorSessionId,
-        RoomClient session,
+        Func<string, Task<RoomProjection?>> loadProjectionAsync,
         Func<RoomProjection, string?, Task> broadcastStateAsync)
     {
         _directoryPath = directoryPath;
         _targetAdapter = targetAdapter;
         _vendorSessionId = vendorSessionId;
-        _session = session;
+        _loadProjectionAsync = loadProjectionAsync;
         _broadcastStateAsync = broadcastStateAsync;
 
         var artifactsDir = Path.Combine(directoryPath, ArtifactManager.ArtifactsDirectoryName);
@@ -175,8 +184,7 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
                 toolName,
                 askedAt).ConfigureAwait(false);
 
-            var currentOutcome = await _session.LoadAsync(_directoryPath).ConfigureAwait(false);
-            if (currentOutcome.Projection is { } proj)
+            if (await _loadProjectionAsync(_directoryPath).ConfigureAwait(false) is { } proj)
             {
                 await _broadcastStateAsync(proj, _directoryPath).ConfigureAwait(false);
             }

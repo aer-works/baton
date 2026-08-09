@@ -29,6 +29,15 @@ namespace Aer.Cli;
 /// holds every one of those paths to exit 2, with a well-formed control beside it.
 /// </para>
 /// <para>
+/// <b>Ternary since #445, but only when AER says so.</b> With
+/// <see cref="AskToolsEnvironmentVariable"/> present this decides allow / <em>ask</em> / deny rather
+/// than allow / deny: a category the operator never granted routes to a human instead of hard-failing,
+/// via <see cref="AskDecisionJson"/> on STDOUT. The two bands answer different questions — the denied
+/// list is a standing refusal (the operator said no), the ask list is policy being silent — and a tool
+/// in both is denied, because a closed decision is not reopened. With the variable absent, which is
+/// every one-shot dispatch, none of that exists and an ungranted capability still exits 2.
+/// </para>
+/// <para>
 /// What it still does not bound: the tool the model <em>substitutes</em>. A granted <c>Bash</c>
 /// defeats a withheld write/read/network category regardless of what this decides, so this remains
 /// a category gate rather than a security boundary — and the one failure it cannot reach at all is
@@ -49,9 +58,41 @@ public static class HookCheckCommand
     public const string DeniedToolsEnvironmentVariable = "AER_HOOK_DENIED_TOOLS";
 
     /// <summary>
+    /// The environment variable this command reads for the current invocation's <b>ask</b>-band list
+    /// (#445), vendor-tagged exactly like <see cref="DeniedToolsEnvironmentVariable"/>. Mirrors
+    /// <c>ClaudeWorkerAdapter.AskToolsVariable</c>; see that member for why the name is written out on
+    /// both sides.
+    /// </summary>
+    /// <remarks>
+    /// <b>Its ABSENCE is the whole of the gate-off path.</b> Only a <em>Present</em> list activates the
+    /// ask decision below; absent, blank, or another vendor's leaves every branch of this command
+    /// exactly as it was before the gate existed. That asymmetry is deliberate — the fail-closed
+    /// default a one-shot run depends on is "ungranted means denied", and a gate that activated on
+    /// anything short of AER explicitly saying so would widen it.
+    /// </remarks>
+    public const string AskToolsEnvironmentVariable = "AER_HOOK_ASK_TOOLS";
+
+    /// <summary>
     /// The environment variable carried for pattern-scoped shell grants (#659).
     /// </summary>
     public const string ShellPatternsEnvironmentVariable = "AER_HOOK_SHELL_PATTERNS";
+
+    /// <summary>
+    /// The exact stdout payload that turns a <c>PreToolUse</c> hook into an ask rather than an allow
+    /// or a deny (#445) — <b>the measured shape</b>, not an invented one:
+    /// <c>gate.hook-ask-in-auto</c> in <c>tools/vendor-verify/verify.py</c> is the sentinel that
+    /// established a hook returning <c>permissionDecision: "ask"</c> forces a prompt the CLI cannot
+    /// skip, and the same check's control arm returns <c>allow</c> through the identical envelope.
+    /// </summary>
+    /// <remarks>
+    /// Re-runnable via <c>pixi run vendor-verify -- --only gate.hook-ask-in-auto</c>. That check also
+    /// measured what happens with no human present: under <c>-p</c> the forced prompt fails closed and
+    /// the operation does not happen — which is what makes routing the ask band here safe as a
+    /// default, and what a standing "never" rule (exit 2, <see cref="DeniedExitCode"/>) is still
+    /// distinct from.
+    /// </remarks>
+    public const string AskDecisionJson =
+        """{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"AER: this capability is not pre-granted; asking the operator."}}""";
 
 
     /// <summary>
@@ -79,16 +120,28 @@ public static class HookCheckCommand
     /// was bounded by nothing. <see langword="null"/> means no workspace was declared, which narrows a
     /// granted write to the outbox rather than widening it to the disk.
     /// </param>
+    /// <param name="askToolsRaw">
+    /// This invocation's <see cref="AskToolsEnvironmentVariable"/> value (#445). <see langword="null"/>
+    /// — the default, and what every non-gate dispatch supplies — leaves this command's behaviour
+    /// exactly as it was before the gate existed.
+    /// </param>
+    /// <param name="stdout">
+    /// Where <see cref="AskDecisionJson"/> is written (#445). Claude Code reads a hook's structured
+    /// decision from STDOUT and its denial reason from stderr, so the two channels are not
+    /// interchangeable here. <see langword="null"/> means this command has no way to emit an ask, so a
+    /// tool in the ask band is denied rather than allowed — the same direction every other thing this
+    /// gate cannot judge fails in.
+    /// </param>
     public static int Execute(
         TextReader stdin, TextWriter stderr, string? deniedToolsRaw, string? outboxDirectory = null,
-        string? workspaceDirectory = null)
+        string? workspaceDirectory = null, string? askToolsRaw = null, TextWriter? stdout = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stderr);
 
         try
         {
-            return Decide(stdin, stderr, deniedToolsRaw, outboxDirectory, workspaceDirectory);
+            return Decide(stdin, stderr, deniedToolsRaw, outboxDirectory, workspaceDirectory, askToolsRaw, stdout);
         }
         catch (Exception ex)
         {
@@ -120,7 +173,7 @@ public static class HookCheckCommand
 
     private static int Decide(
         TextReader stdin, TextWriter stderr, string? deniedToolsRaw, string? outboxDirectory,
-        string? workspaceDirectory)
+        string? workspaceDirectory, string? askToolsRaw, TextWriter? stdout)
     {
         // Always drain stdin before deciding anything, even when there is nothing to check
         // against below: Claude Code is the writer on the other end of this pipe, and exiting
@@ -186,6 +239,21 @@ public static class HookCheckCommand
             return Deny(stderr, "read an empty tool name from the hook payload");
         }
 
+        // #445 + #649: a write-family tool landing in the outbox is the worker's declared output, and
+        // it is allowed BEFORE either band below can reclassify it. #649 already exempted a withheld
+        // outbox write inside the denied branch; the ask band (#445) then added a SECOND path to that
+        // same tool name — a withheld write rides AER_HOOK_ASK_TOOLS, skips the denied branch entirely,
+        // and would have asked the human for permission to write the very report the worker was
+        // dispatched to produce (a directory-less chat withholds writes, so this is reachable, not
+        // hypothetical). Hoisted here so the one write that is never a policy question is neither
+        // denied nor asked. Fires only on a TRUE IsInside (a rooted outbox); a non-rooted one still
+        // falls through to the denied branch's #668 message. The denied branch keeps its own copy as
+        // belt-and-braces defence in depth.
+        if (WriteFamilyTools.Contains(toolName) && OutboxPath.IsInside(writeTarget, outboxDirectory))
+        {
+            return AllowedExitCode;
+        }
+
         if (denied.Contains(toolName))
         {
             // #649: the outbox is not the workspace. A withheld write landing in AER_OUTPUT_DIR is the
@@ -216,6 +284,25 @@ public static class HookCheckCommand
             stderr.WriteLine(
                 $"AER: the '{toolName}' tool is withheld by this session's permission grant.");
             return DeniedExitCode;
+        }
+
+        // #445, and it sits HERE for a reason: after the deny above, before everything below. A tool
+        // in both lists is DENIED -- a standing "never" is the operator having already answered, and
+        // asking them again would be the gate re-opening a decision they closed. Parsed at the point
+        // of use so no fail-closed exit above can be reached through a different path than it was.
+        var askList = DeniedToolList.Parse(askToolsRaw, VendorTag);
+        if (askList.Status == DeniedToolListStatus.Present && askList.Tools.Contains(toolName))
+        {
+            if (stdout is null)
+            {
+                return Deny(stderr, "was handed an ask-list but no channel to emit the ask on");
+            }
+
+            // STDOUT, and exit 0: this is not an allow, it is a refusal to decide. The CLI reads the
+            // envelope and prompts, which under the gate reaches the human through
+            // --permission-prompt-tool -- and with no human (headless `-p`) fails closed, measured.
+            stdout.WriteLine(AskDecisionJson);
+            return AllowedExitCode;
         }
 
         // #679: the tool is granted, which decides WHETHER it may write, never WHERE. Until this

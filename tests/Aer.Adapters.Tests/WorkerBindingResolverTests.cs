@@ -442,6 +442,37 @@ public class WorkerBindingResolverTests
         Assert.Equal(TimeSpan.FromMinutes(20), Assert.IsType<WorkerBinding.Process>(bindings["architect"]).Timeout);
     }
 
+    /// <summary>
+    /// #445: the same shape for <c>EnablePermissionGate</c>. The entry is the only place the opt-in is
+    /// declared, so an adapter that cannot see it has no runtime ask path at all — and the failure is
+    /// silent, because a gate that is never installed looks exactly like one nobody triggered.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Resolve_hands_the_entrys_EnablePermissionGate_to_the_adapter(bool enabled)
+    {
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "capture", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(20),
+                EnablePermissionGate: enabled),
+        };
+        var adapter = new CapturingWorkerAdapter();
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["capture"] = adapter };
+
+        WorkerBindingResolver.Resolve(config, adapters);
+
+        // Both polarities, because a threading bug that hardcodes either constant passes a
+        // one-directional check.
+        Assert.Equal(enabled, adapter.LastInvocation!.EnablePermissionGate);
+
+        // The named-argument discipline this rests on: EnableMemoryProposalTool sits between Timeout
+        // and EnablePermissionGate in the ctor and is deliberately NOT threaded from the entry, so a
+        // positional call here would have set the wrong one.
+        Assert.False(adapter.LastInvocation!.EnableMemoryProposalTool);
+    }
+
     /// <summary>Records the <see cref="WorkerInvocation"/> it was handed, and nothing else.</summary>
     private sealed class CapturingWorkerAdapter : IWorkerAdapter
     {

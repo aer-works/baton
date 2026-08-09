@@ -2034,7 +2034,13 @@ namespace Aer.Daemon
                 SessionId: vendorSessionId,
                 ResumeSession: resumeSession,
                 StreamJson: string.Equals(targetAdapter, "claude", StringComparison.OrdinalIgnoreCase),
-                LogFilePath: logFilePath);
+                LogFilePath: logFilePath,
+                // #445: the ONE binding that opts into the runtime conversational gate. An interactive
+                // turn is the only dispatch shape with a human on the other end to answer an ask -- the
+                // anchor step's own binding (written at materialization) deliberately does not set it,
+                // so an ungranted capability there still fails closed exactly as it does in a one-shot
+                // run. See WorkerInvocation.EnablePermissionGate.
+                EnablePermissionGate: true);
 
             // #285: must start from the existing bindings, not a fresh dictionary containing only
             // "chat-worker" -- a full replacement here silently dropped the anchor step's own
@@ -2116,7 +2122,10 @@ namespace Aer.Daemon
                 });
             }
 
-            await using var doorbell = new DoorbellMonitor(directoryPath, targetAdapter, vendorSessionId, session, broadcastStateAsync);
+            await using var doorbell = new DoorbellMonitor(
+                directoryPath, targetAdapter, vendorSessionId,
+                async dir => (await session.LoadAsync(dir).ConfigureAwait(false)).Projection,
+                broadcastStateAsync);
 
             try
             {

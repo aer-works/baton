@@ -2,6 +2,7 @@ using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
 using Aer.Flow.Projection;
 using Aer.Flow.Store;
+using Aer.Tests.Shared;
 using Xunit;
 
 namespace Aer.Flow.Tests.Mutation;
@@ -20,14 +21,7 @@ public sealed class RuntimePermissionMutationTests : IDisposable
     {
         if (Directory.Exists(_tempDirectory))
         {
-            try
-            {
-                Directory.Delete(_tempDirectory, recursive: true);
-            }
-            catch
-            {
-                // Best effort cleanup
-            }
+            DirectoryCleanup.DeleteRecursively(_tempDirectory);
         }
     }
 
@@ -43,15 +37,15 @@ public sealed class RuntimePermissionMutationTests : IDisposable
         var stepId = new StepId("st-1");
 
         var state1 = await RoomMutationInterface.RaisePermissionAsync(
-            _tempDirectory, reader, writer, reqId, execId, stepId, "w-1", "claude", "corr-1", "ReadFile", "{}", "ReadFile");
+            _tempDirectory, reader, writer, reqId, execId, stepId, "w-1", "claude", "corr-1", "ReadFile", "{}", "ReadFile", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.NotNull(state1.PendingPermission);
         Assert.Equal(reqId, state1.PendingPermission.PermissionRequestId);
 
         var state2 = await RoomMutationInterface.RaisePermissionAsync(
-            _tempDirectory, reader, writer, reqId, execId, stepId, "w-1", "claude", "corr-1", "ReadFile", "{}", "ReadFile");
+            _tempDirectory, reader, writer, reqId, execId, stepId, "w-1", "claude", "corr-1", "ReadFile", "{}", "ReadFile", cancellationToken: TestContext.Current.CancellationToken);
 
-        var events = await reader.ReadAllRoomEventsAsync();
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
         var askedCount = events.OfType<RoomEvent.RuntimePermissionAsked>().Count(a => a.PermissionRequestId == reqId);
         Assert.Equal(1, askedCount);
     }
@@ -68,17 +62,17 @@ public sealed class RuntimePermissionMutationTests : IDisposable
         var stepId = new StepId("st-1");
 
         await RoomMutationInterface.RaisePermissionAsync(
-            _tempDirectory, reader, writer, reqId, execId, stepId, "w-1", "claude", "corr-1", "ReadFile", "{}", "ReadFile");
+            _tempDirectory, reader, writer, reqId, execId, stepId, "w-1", "claude", "corr-1", "ReadFile", "{}", "ReadFile", cancellationToken: TestContext.Current.CancellationToken);
 
         var state1 = await RoomMutationInterface.AnswerPermissionAsync(
-            _tempDirectory, reader, writer, reqId, "AllowOnce", "{}", "ok", "human");
+            _tempDirectory, reader, writer, reqId, "AllowOnce", "{}", "ok", "human", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Null(state1.PendingPermission);
 
         var state2 = await RoomMutationInterface.AnswerPermissionAsync(
-            _tempDirectory, reader, writer, reqId, "AllowOnce", "{}", "ok", "human");
+            _tempDirectory, reader, writer, reqId, "AllowOnce", "{}", "ok", "human", cancellationToken: TestContext.Current.CancellationToken);
 
-        var events = await reader.ReadAllRoomEventsAsync();
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
         var answeredCount = events.OfType<RoomEvent.RuntimePermissionAnswered>().Count(a => a.PermissionRequestId == reqId);
         Assert.Equal(1, answeredCount);
     }

@@ -178,7 +178,22 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         args.Add("--settings");
         args.Add(settingsPath);
         args.Add("--mcp-config");
-        args.Add(invocation.EnableMemoryProposalTool ? EnsureMemoryProposalMcpConfig() : mcpConfigPath);
+        args.Add(invocation.EnablePermissionGate
+            ? EnsurePermissionGateMcpConfig(invocation.EnableMemoryProposalTool)
+            : invocation.EnableMemoryProposalTool ? EnsureMemoryProposalMcpConfig() : mcpConfigPath);
+
+        if (invocation.EnablePermissionGate)
+        {
+            // #445: where the CLI sends a permission decision it cannot make itself. The server key is
+            // alphanumeric on purpose -- claude addresses an MCP tool as
+            // `mcp__<server>__<tool>`, and a hyphen in the server name risks mangling the one string
+            // this flag must match exactly.
+            //
+            // NEVER pair this with `--permission-mode auto` (0029/0015: it silently disables the
+            // prompt tool), and never with `--bare` (#521, see the block below).
+            args.Add("--permission-prompt-tool");
+            args.Add(PermissionPromptToolName);
+        }
 
         // #331: --allowedTools only *pre-approves* tools so they don't prompt; it is not a sandbox,
         // and omitting a tool leaves it in the model's reach (a shell-denied session ran `hostname`
@@ -186,7 +201,16 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         // against the live CLI in a clean spawn env: the same invocation refuses `hostname` with
         // --disallowedTools Bash and runs it without. --disallowedTools takes precedence over
         // --allowedTools, so the two compose — allow what's granted, deny what's withheld (0004).
-        var disallowed = BuildDisallowedTools(invocation.PermissionGrant);
+        //
+        // #445 carves out the gate: a tool named here is hard-refused by the CLI BEFORE the PreToolUse
+        // hook runs (see BuildDisallowedTools' own remarks), so a withheld category on this flag can
+        // never reach the hook's "ask" band and never reach the human. Under the gate the withheld set
+        // rides AER_HOOK_ASK_TOOLS instead, and this flag carries only STANDING refusals -- of which
+        // there are none yet, so it is omitted entirely. Ungranted is not the same as forbidden; the
+        // gate fires where policy is silent, not where the operator said no.
+        var disallowed = invocation.EnablePermissionGate
+            ? string.Empty
+            : BuildDisallowedTools(invocation.PermissionGrant);
         if (disallowed.Length > 0)
         {
             args.Add("--disallowedTools");
@@ -258,13 +282,38 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             args.Add(invocation.Effort);
         }
 
+        // #445: the withheld set is the same computation either way -- what changes is which band it
+        // rides. Gate off: it is the denied list, and the hook exits 2 (today's behaviour, byte for
+        // byte). Gate on: it is the ASK list, and the denied list carries only standing "never" rules.
+        var withheld = BuildHookDeniedTools(invocation.PermissionGrant);
         var environment = new List<(string Name, string Value)>
         {
             (MaxSubagentSpawnDepthVariable, "1"),
             // #600 tags it with the vendor; #649 makes its contents differ from the flag.
-            (DeniedToolsVariable, $"{DeniedToolsVendorTag}:{BuildHookDeniedTools(invocation.PermissionGrant)}"),
+            (DeniedToolsVariable,
+                $"{DeniedToolsVendorTag}:{(invocation.EnablePermissionGate ? StandingNeverTools : withheld)}"),
             (SimpleModeVariable, "0"),
         };
+
+        if (invocation.EnablePermissionGate)
+        {
+            environment.Add((AskToolsVariable, $"{DeniedToolsVendorTag}:{withheld}"));
+
+            // Defensive, and only on the gate path. MCP_TIMEOUT is the DOCUMENTED server-STARTUP
+            // timeout (docs/vendor-doc-audit.md: 30s); 30000 restates its default so a slow host
+            // spawn is not read as a missing gate. MCP_TOOL_TIMEOUT is set to 200000 to hold the
+            // gate tool's blocking call past a human's response time (0029 measured a 162s hold on
+            // agy; 200s is that band's upper bound), with the tool's own 180s fail-closed sitting
+            // under it so AER decides the deny rather than the CLI timing out first.
+            //
+            // UNMEASURED on claude (claim-scope): this repo has no vendor-verify check that claude
+            // honours MCP_TOOL_TIMEOUT, or what its default per-tool-call reap is when unset. Setting
+            // it can only help (honoured -> the hold survives; ignored -> no worse than the default),
+            // but "the held call survives to ~180s on claude" is a LIVE-SMOKE claim, not proven here.
+            // #445's runbook verifies it against the authenticated CLI.
+            environment.Add((McpStartupTimeoutVariable, "30000"));
+            environment.Add((McpToolTimeoutVariable, "200000"));
+        }
 
         if (Environment.GetEnvironmentVariable(AerClaudeConfigRootVariable) is { Length: > 0 } configRoot)
         {
@@ -330,6 +379,54 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// literal value in their own test suite, and the two must agree.
     /// </summary>
     public const string DeniedToolsVariable = "AER_HOOK_DENIED_TOOLS";
+
+    /// <summary>
+    /// The environment variable carrying this invocation's <b>ask</b>-band tool list to the
+    /// <c>PreToolUse</c> hook (#445) — the withheld categories, vendor-tagged exactly like
+    /// <see cref="DeniedToolsVariable"/>, which under the gate carries only standing refusals.
+    /// </summary>
+    /// <remarks>
+    /// Set ONLY when <see cref="WorkerInvocation.EnablePermissionGate"/> is true, and its absence is
+    /// load-bearing rather than incidental: the hook activates its ask path on a <em>Present</em> list
+    /// and on nothing else, so an unset variable leaves every gate-off dispatch's hook output
+    /// byte-identical to what it was before the gate existed. A plain string contract mirrored on
+    /// <c>HookCheckCommand.AskToolsEnvironmentVariable</c> for the reason
+    /// <see cref="DeniedToolsVariable"/> gives (canonical): <see cref="Aer.Adapters"/> cannot reference
+    /// <c>Aer.Cli</c>, so both sides assert the literal and a test holds them in agreement.
+    /// </remarks>
+    public const string AskToolsVariable = "AER_HOOK_ASK_TOOLS";
+
+    /// <summary>
+    /// What <see cref="DeniedToolsVariable"/> carries under the gate (#445): the STANDING "never"
+    /// rules — a persisted permanent refusal, which still exits 2 without ever troubling the human.
+    /// None exist yet, so it is empty; a withheld-but-not-refused category rides
+    /// <see cref="AskToolsVariable"/> instead. Empty rather than absent, because #600 makes an absent
+    /// list deny everything.
+    /// </summary>
+    private const string StandingNeverTools = "";
+
+    /// <summary>
+    /// The MCP server key <see cref="EnsurePermissionGateMcpConfig"/> registers the gate tool under,
+    /// and the one string <see cref="PermissionPromptToolName"/> is built from. <b>Alphanumeric
+    /// only</b> — claude addresses an MCP tool as <c>mcp__&lt;server&gt;__&lt;tool&gt;</c>, so a
+    /// hyphen here risks a mangled name in the flag value that has to match exactly.
+    /// </summary>
+    public const string PermissionGateMcpServerName = "aerpermission";
+
+    /// <summary>
+    /// The value handed to <c>--permission-prompt-tool</c> when the gate is on (#445): AER's own
+    /// <c>aer_permission_ask</c>, addressed through <see cref="PermissionGateMcpServerName"/>.
+    /// </summary>
+    public const string PermissionPromptToolName = $"mcp__{PermissionGateMcpServerName}__aer_permission_ask";
+
+    /// <summary>The MCP server STARTUP timeout, in milliseconds (#445, gate path only).</summary>
+    public const string McpStartupTimeoutVariable = "MCP_TIMEOUT";
+
+    /// <summary>
+    /// The per-MCP-tool-call timeout, in milliseconds (#445, gate path only) — the one that bounds the
+    /// gate tool's held-open wait for a human.
+    /// </summary>
+    public const string McpToolTimeoutVariable = "MCP_TOOL_TIMEOUT";
 
     /// <summary>
     /// The environment variable carrying shell command patterns for pattern-scoped grants (#659).
@@ -428,6 +525,51 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         });
 
         AtomicLaunchConfigWriter.Write(configPath, json);
+        return configPath;
+    }
+
+    /// <summary>
+    /// Ensures the <c>--mcp-config</c> file naming the runtime permission gate's MCP server (#445)
+    /// exists, returning its path. Mirrors <see cref="EnsureMemoryProposalMcpConfig"/> in every
+    /// respect — canonical content on every resolve, no per-execution path baked in (the host derives
+    /// its rendezvous directory from the <c>AER_OUTPUT_DIR</c> it inherits from the spawning
+    /// <c>claude</c> process; see that method's remarks, which are the record for both).
+    /// </summary>
+    /// <param name="alsoMemoryProposal">
+    /// Composes the memory-proposal server into the SAME file rather than replacing it. <c>--mcp-config</c>
+    /// takes one path, so the two opt-ins cannot each point it somewhere; composing is what keeps them
+    /// independent. The interactive turn — the only caller that enables the gate today — has memory
+    /// proposals off, so this is false there; the two files are kept separate so a concurrent resolve
+    /// of one shape never rewrites the other's.
+    /// </param>
+    private static string EnsurePermissionGateMcpConfig(bool alsoMemoryProposal)
+    {
+        Directory.CreateDirectory(AerPaths.WorkerLaunchConfig);
+        var hostDllPath = Path.Combine(AppContext.BaseDirectory, "Aer.Mcp.Host.dll");
+
+        var servers = new Dictionary<string, object>
+        {
+            [PermissionGateMcpServerName] = new
+            {
+                command = "dotnet",
+                args = new[] { hostDllPath, "--permission-gate-tool", "claude" },
+            },
+        };
+
+        if (alsoMemoryProposal)
+        {
+            servers["aer-memory-proposal"] = new
+            {
+                command = "dotnet",
+                args = new[] { hostDllPath, "--memory-proposal-tool" },
+            };
+        }
+
+        var fileName = alsoMemoryProposal
+            ? "claude-mcp-permission-gate-and-memory-proposal.json"
+            : "claude-mcp-permission-gate.json";
+        var configPath = Path.Combine(AerPaths.WorkerLaunchConfig, fileName);
+        AtomicLaunchConfigWriter.Write(configPath, JsonSerializer.Serialize(new { mcpServers = servers }));
         return configPath;
     }
 

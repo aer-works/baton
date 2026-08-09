@@ -242,7 +242,8 @@ public class PermissionGateToolTests
                 var fileName = Path.GetFileName(files[0]);
                 return fileName["ask-".Length..^".json".Length];
             }
-            await Task.Delay(50);
+            // wait-ok: poll interval inside a bounded WaitForAskFile helper — the TimeoutException ceiling is the real wait
+            await Task.Delay(50, TestContext.Current.CancellationToken);
         }
         throw new TimeoutException("ask-*.json file was not written within timeout.");
     }

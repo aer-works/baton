@@ -26,7 +26,13 @@ if (args.Length >= 1 && args[0] == "hook-check")
     // #679: where a granted write may land -- see HookCheckCommand.Execute's own parameter docs for
     // what its absence means.
     var workspaceDir = Environment.GetEnvironmentVariable(HookCheckCommand.WorkspaceEnvironmentVariable);
-    return HookCheckCommand.Execute(Console.In, Console.Error, deniedTools, outputDir, workspaceDir);
+    // #445: the ask band, reaching this process the same way the denied list does. Set only by a
+    // gate-enabled dispatch -- unset here is what keeps a one-shot run's hook output unchanged.
+    var askTools = Environment.GetEnvironmentVariable(HookCheckCommand.AskToolsEnvironmentVariable);
+    // Console.Out as well as Console.Error, and the two are not interchangeable: claude reads a
+    // structured hook decision from stdout and a denial reason from stderr.
+    return HookCheckCommand.Execute(
+        Console.In, Console.Error, deniedTools, outputDir, workspaceDir, askTools, Console.Out);
 }
 
 // #554: the same idea for agy, and a separate command because the two vendors share none of the
