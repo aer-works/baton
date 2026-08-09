@@ -287,6 +287,54 @@ public class CoreDispatcherTests
             : normalized;
     }
 
+    /// <summary>
+    /// #1084: drives the actual seed-write path in <see cref="CoreDispatcher.DispatchAsync"/> — path
+    /// expansion against native pathVariables, parent-directory creation, and the content write through
+    /// <see cref="CoreDispatcher.RenderSeedContent"/> — which the adapter-level and pure-function tests
+    /// do not exercise. The seed lands at the expanded (native) path under a directory that did not
+    /// exist, and its body is valid, forward-slashed JSON even though AER_OUTPUT_DIR is a native path.
+    /// </summary>
+    [Fact]
+    public async Task DispatchAsync_writes_a_declared_seed_file_to_its_expanded_path_with_a_valid_json_body()
+    {
+        var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
+            var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
+            var noop = OperatingSystem.IsWindows()
+                ? new CoreDispatchTarget("cmd", ["/c", "exit 0"])
+                : new CoreDispatchTarget("sh", ["-c", "exit 0"]);
+            // Path template references AER_OUTPUT_DIR and a not-yet-existing parent; content embeds the
+            // same variable in a JSON string, the shape a raw backslash substitution would void.
+            var target = noop with
+            {
+                SeedFiles = [new CoreDispatchSeedFile(
+                    "%AER_OUTPUT_DIR%/.seed_home/settings.json",
+                    """{"target":"write_file(%AER_OUTPUT_DIR%/out.md)"}""")],
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var result = await new CoreDispatcher(writer)
+                .DispatchAsync(request, target, TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, result.ExitCode);
+            var seedPath = Path.Combine(outputDirectory, ".seed_home", "settings.json");
+            Assert.True(File.Exists(seedPath));
+            var body = await File.ReadAllTextAsync(seedPath, TestContext.Current.CancellationToken);
+            using var doc = JsonDocument.Parse(body);
+            var rule = doc.RootElement.GetProperty("target").GetString();
+            var expectedDir = outputDirectory.Replace('\\', '/');
+            Assert.Equal($"write_file({expectedDir}/out.md)", rule);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(artifactsRoot);
+            FileCleanup.Delete(logPath);
+        }
+    }
+
     private static ExecutionRequest MakeRequest(IReadOnlyList<EnvironmentVariable> environment) => new(
         ExecutionId,
         new WorkflowId("wf-1"),
@@ -1691,5 +1739,35 @@ public class CoreDispatcherTests
             DirectoryCleanup.DeleteRecursively(artifactsRoot);
             FileCleanup.Delete(logPath);
         }
+    }
+
+    // #1084: a seed body is frequently JSON, and AER-computed variables are absolute paths whose raw
+    // Windows value carries backslashes. RenderSeedContent forward-slashes the substituted value so the
+    // body stays valid JSON. The control arm proves the raw substitution would break it -- without the
+    // discriminator the green test would be about nothing.
+    [Fact]
+    public void RenderSeedContent_forward_slashes_substituted_values_so_a_json_body_stays_valid()
+    {
+        var vars = new Dictionary<string, string> { ["AER_OUTPUT_DIR"] = @"C:\Users\me\out\exec_1" };
+        var template = """{"permissions":{"allow":["write_file(%AER_OUTPUT_DIR%/advice.md)"]}}""";
+
+        var rendered = CoreDispatcher.RenderSeedContent(template, vars);
+
+        using var doc = JsonDocument.Parse(rendered);
+        var rule = doc.RootElement.GetProperty("permissions").GetProperty("allow")[0].GetString();
+        Assert.Equal("write_file(C:/Users/me/out/exec_1/advice.md)", rule);
+    }
+
+    [Fact]
+    public void Raw_backslash_substitution_would_void_the_json_body()
+    {
+        // The control: substituting the backslashed value verbatim yields `C:\U…`, an invalid JSON
+        // escape. This is the failure RenderSeedContent's forward-slashing exists to prevent.
+        var vars = new Dictionary<string, string> { ["AER_OUTPUT_DIR"] = @"C:\Users\me\out\exec_1" };
+        var template = """{"permissions":{"allow":["write_file(%AER_OUTPUT_DIR%/advice.md)"]}}""";
+
+        var naive = template.Replace("%AER_OUTPUT_DIR%", vars["AER_OUTPUT_DIR"], StringComparison.Ordinal);
+
+        Assert.ThrowsAny<JsonException>(() => JsonDocument.Parse(naive));
     }
 }

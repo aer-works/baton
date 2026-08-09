@@ -53,7 +53,18 @@ public sealed record CoreDispatchTarget(
     string? PromptText = null,
     IReadOnlyList<(string Name, string Value)>? Environment = null,
     string? StdoutArtifactName = null,
-    string? OversizePromptWrapper = null);
+    string? OversizePromptWrapper = null,
+    IReadOnlyList<CoreDispatchSeedFile>? SeedFiles = null);
+
+/// <summary>
+/// A launch-configuration file an adapter needs written into place before its worker spawns, where the
+/// destination and/or contents reference an AER-computed path (e.g. <c>AER_OUTPUT_DIR</c>) that only
+/// resolves inside <see cref="CoreDispatcher.DispatchAsync"/>. Both <paramref name="PathTemplate"/> and
+/// <paramref name="Content"/> take the same <c>%NAME%</c>/<c>$NAME</c> placeholder grammar as target
+/// arguments and environment values, and are expanded there. Kept vendor-agnostic on purpose: the
+/// adapter owns what the file says (Adapter Isolation), the dispatcher only writes it.
+/// </summary>
+public sealed record CoreDispatchSeedFile(string PathTemplate, string Content);
 
 /// <summary>
 /// The raw, unclassified facts of a completed dispatch (spec §8's <c>NaturalExit</c> |
@@ -697,6 +708,28 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             }
         }
 
+        // Seed vendor-declared launch files (Adapter Isolation: the adapter owns the contents) whose
+        // path and/or body reference an AER-computed variable that only resolves here — the same reason
+        // the prompt capture and the agy per-execution home live at this point. agy's own settings.json
+        // carrying a permissions.allow for the granted write is the first user (#1084): a write-granted
+        // agy role with no shell/network runs under --mode accept-edits, where agy headless-denies the
+        // write unless an allow-rule is present; the hook still bounds where the write may land.
+        if (target.SeedFiles is { Count: > 0 } seedFiles)
+        {
+            foreach (var seed in seedFiles)
+            {
+                var seedPath = ExpandVariables(seed.PathTemplate, pathVariables);
+                var seedDirectory = Path.GetDirectoryName(seedPath);
+                if (!string.IsNullOrEmpty(seedDirectory))
+                {
+                    Directory.CreateDirectory(seedDirectory);
+                }
+
+                await File.WriteAllTextAsync(seedPath, RenderSeedContent(seed.Content, pathVariables), CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+        }
+
         // #598: measured here, on the expanded arguments, because this is the only place the real
         // command line exists — an adapter builds `%AER_OUTPUT_DIR%`, not the absolute path that
         // placeholder becomes above, so a guard living in an adapter would measure the wrong string.
@@ -959,4 +992,19 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         VariableToken.Replace(
             arg,
             match => vars.TryGetValue(match.Groups["name"].Value, out var value) ? value : match.Value);
+
+    /// <summary>
+    /// Expands a seed file's CONTENT against forward-slashed variable values — distinct from the seed
+    /// PATH, which expands natively. AER-computed variables are absolute paths, and on Windows their
+    /// raw value carries backslashes (<c>C:\Users\...</c>). A seed body is frequently JSON (agy's
+    /// <c>settings.json</c> is the first user, #1084), where a substituted <c>C:\U…</c> is an invalid
+    /// string escape that voids the whole file — so an allow-rule inside it would silently never load
+    /// and the write it was meant to permit would still be denied. Forward slashes are valid JSON, a
+    /// path Windows still accepts, and the exact form agy normalises both rule and target to before
+    /// comparing, so the rule still matches. The path stays native because
+    /// <see cref="Directory.CreateDirectory(string)"/> and <see cref="File.WriteAllTextAsync(string,string?,CancellationToken)"/>
+    /// want the platform separator.
+    /// </summary>
+    internal static string RenderSeedContent(string content, Dictionary<string, string> pathVariables) =>
+        ExpandVariables(content, pathVariables.ToDictionary(kv => kv.Key, kv => kv.Value.Replace('\\', '/')));
 }

@@ -22,9 +22,24 @@ namespace Aer.Cli;
 /// keeps each role's own tier-resolved adapter.
 /// </param>
 /// <param name="WorkflowId">A label forwarded to the run; defaults to the materialized template id.</param>
+/// <param name="WorkspaceDirectory">
+/// The directory a dispatched role runs in and may read. Null resolves to the process cwd in
+/// <see cref="DispatchCommand"/>, the common case (dispatching from the repo). Why the binding needs a
+/// path at all, and what broke without one, is on <see cref="Aer.Adapters.RoleDispatch"/>'s
+/// <c>workingDirectory</c> parameter (#1083).
+/// </param>
+/// <param name="Model">
+/// The model axis, independent of the role's tier ([0017]/[0033]: vendor/model/effort are three
+/// separate axes). Null keeps the tier's model; the vendor-swap carve-out is documented on
+/// <see cref="Aer.Adapters.RoleDispatch"/>'s <c>modelOverride</c> (#1082).
+/// </param>
+/// <param name="Effort">The effort axis, independent of the role's tier ([0017]/[0023]); null keeps the tier's effort.</param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
     string RoomDirectoryPath,
     string? Adapter = null,
-    string? WorkflowId = null);
+    string? WorkflowId = null,
+    string? WorkspaceDirectory = null,
+    string? Model = null,
+    string? Effort = null);

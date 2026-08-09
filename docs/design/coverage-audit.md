@@ -130,6 +130,39 @@ Not differentiators alone; collectively the difference between a tool you tolera
 | The pixel-level styling of the mockups | ⛔ Superseded by [0006](../decisions/0006-visual-direction-quiet.md) and the shipped token set, which are normative. The mockups are kept for layout and state, not colour values. |
 | Anything in the corpus contradicted by a later correction | ⛔ Records win over corpus — see [`README.md`](README.md). Notably: notifications never carry a verdict, rooms rather than "needs you" as the phone's landing screen, and the playful status verbs are **kept** (an earlier pass proposed removing them). |
 
+## 10 · Screen realization — every 02-screens shape, both surfaces
+
+The tables above route the *calls*; this one is the *screen*-level cut — built/partial/absent per
+surface, for setting priority. Verdicts key on source read 2026-08 (`Aer.Ui/Views`, `Aer.Mobile/lib`);
+each row cites the issue tracked elsewhere in this doc rather than restating it (record-once).
+**✅ built · ◐ partial · ❌ absent.**
+
+| 02-screens shape | Desktop | Phone | What's missing (cite) |
+|---|---|---|---|
+| First run | ✅ | ✅ | Front door + readiness (`#1071`/`#478`); phone pairing+QR. |
+| The daily driver | ✅ | ✅ | Switcher-landing (`#1046`/`#1071`), state-grouped list (`#1072`), single worker chip, markdown chat (`#1076`/`#1080`). |
+| Two workers, a gate | ❌ | ❌ | The spine gap: add-worker + multi-worker chips (M27, unbuilt) + the **conversational gate as a turn** (§1 cross-examination is decided in 0019; its UI is `#367`). |
+| When it fails | ✅ | ◐ | Desktop `#482` inline failed-banner matches the screen; phone shows failed card state, not the full inline fix-affordance set. |
+| Starting from a template | ✅ | n/a | `TemplatePickerWindow` + guided flow (phone template use out-of-scope, 0041). |
+| Drawing a shape (editor) | ◐ | n/a | `AuthorView` list-not-canvas + DAG preview (0014); the per-row **"ask me first" gate toggle** and named-blocker fan-out UI are the thin part (§6 "ask me first" → extends 0014). |
+| Settings | ✅ | — | Workers readiness (`#1069`), pairing, appearance. |
+| Phone (rooms/chat/gate/notif) | — | ◐ | Rooms root, needs-you filter, chat (`#1080`), **working step-review inbox** (Approve/Reject/Supersede, `#1049`). The *conversational* gate rides `#367`; notifications-inform is a §8 item. |
+| M27 · skill attach on chip | ❌ | ❌ | No skill-attach UI either surface (0033). |
+| M27 · skill creation drawer | ❌ | n/a | Unbuilt (0031/0033). |
+| M27 · orchestrator + add/remove worker | ❌ | ❌ | No orchestrator pin, add-worker, or removal guards (0032). |
+| M27 · workflow toggle-off | ❌ | — | Unbuilt (0001). |
+| Resident · spend controls | ◐ | ◐ | `RoomTurnHostBanner` **displays** meter+values (`#994`) but read-only; the editable-in-place fields + used-this-hour bar are the gap. |
+| Resident · dormant | ✅ | ◐ | Desktop dormant banner + Wake + escalation text in transcript (`#994`); phone card state present, drawer partial. |
+| Resident · waiting on a lock | ✅ | ◐ | `WaitingOnLockBanner` (`#618`) names holder+try-again; names the *path* until the lock grows a room-name field (`#752`/`#480`). |
+| Resident · escalation is a gate | ❌ | ❌ | It *is* the runtime gate `#367`; only the dormancy escalation *text* renders today. |
+
+**The distinction the tables above blur:** the *step-review* gate (0007 pause → Approve/Reject/Supersede)
+**is** built on both surfaces — desktop `PausedStepViewModel`, phone `inbox_screen._decide`. What is
+absent is the *conversational* gate (`#367`): a worker asking mid-turn (permission / consult /
+escalation) rendered inline where it was raised, with the scope-ladder and "Ask someone…". That gate
+is the single highest-leverage gap — it is the spine of "two workers, a gate", the phone gate,
+escalation, and cross-examination (0019, the corpus's stated *"single most important behaviour"*).
+
 ## What is left to route
 
 The issue-shaped and centrepiece items above are done. Three kinds of work remain, tracked by `#474`.

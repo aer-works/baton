@@ -12,14 +12,17 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>aer dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--room-dir <dir>] [--workflow-id <id>]";
+        "Usage: aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>]";
 
     public static DispatchOptions Parse(IReadOnlyList<string> args)
     {
         string? name = null;
         string? specFilePath = null;
         string? adapter = null;
+        string? model = null;
+        string? effort = null;
         string? roomDirectoryPath = null;
+        string? workspaceDirectory = null;
         string? workflowId = null;
 
         var i = 0;
@@ -34,8 +37,17 @@ public static class DispatchOptionsParser
                 case "--adapter":
                     adapter = RequireValue(args, ref i, arg);
                     break;
+                case "--model":
+                    model = RequireValue(args, ref i, arg);
+                    break;
+                case "--effort":
+                    effort = RequireValue(args, ref i, arg);
+                    break;
                 case "--room-dir":
                     roomDirectoryPath = RequireValue(args, ref i, arg);
+                    break;
+                case "--workspace":
+                    workspaceDirectory = RequireValue(args, ref i, arg);
                     break;
                 case "--workflow-id":
                     workflowId = RequireValue(args, ref i, arg);
@@ -74,7 +86,9 @@ public static class DispatchOptionsParser
         }
 
         return new DispatchOptions(
-            name, specFilePath, RoomDirectoryPath.Resolve(roomDirectoryPath), adapter, workflowId);
+            name, specFilePath, RoomDirectoryPath.Resolve(roomDirectoryPath), adapter, workflowId,
+            workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
+            model, effort);
     }
 
     private static string RequireValue(IReadOnlyList<string> args, ref int index, string optionName)

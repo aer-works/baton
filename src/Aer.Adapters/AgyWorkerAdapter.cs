@@ -388,6 +388,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         // deliberately NOT redirected so worker git commit can see the user's .gitconfig. Dispatch
         // path ONLY, deliberately absent from BuildGate -- ADR 0050 records why the gate's one
         // consumer (the dialogue worker) cannot carry it; that remainder lives on #1019.
+        string? agyHome = null;
         if (invocation.PermissionGrant is { RunShellCommands: false })
         {
             var isDaemonSession = invocation.SessionId is not null || invocation.ResumeSession ||
@@ -398,16 +399,18 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                 var sessionDir = invocation.BindingsFileDirectory ?? invocation.WorkingDirectory;
                 if (sessionDir is not null)
                 {
-                    var sessionHome = Path.Combine(sessionDir, ".gemini_home");
-                    environment.Add(("HOME", sessionHome));
-                    environment.Add(("USERPROFILE", sessionHome));
+                    agyHome = Path.Combine(sessionDir, ".gemini_home");
                 }
             }
             else
             {
-                var batchHome = EnvironmentReference("AER_OUTPUT_DIR", isWindows) + (isWindows ? @"\.gemini_home" : "/.gemini_home");
-                environment.Add(("HOME", batchHome));
-                environment.Add(("USERPROFILE", batchHome));
+                agyHome = EnvironmentReference("AER_OUTPUT_DIR", isWindows) + (isWindows ? @"\.gemini_home" : "/.gemini_home");
+            }
+
+            if (agyHome is not null)
+            {
+                environment.Add(("HOME", agyHome));
+                environment.Add(("USERPROFILE", agyHome));
             }
         }
 
@@ -418,9 +421,35 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             environment.Add((WorkerEnvironment.WorkspaceVariable, workspace));
         }
 
+        // #1084: under `--mode accept-edits` agy headless-DENIES a write tool because it cannot
+        // prompt (measured: the dispatch stderr says so verbatim, "add an allow-rule under
+        // permissions.allow ... e.g. write_file(<target>)"), so a write-granted advise/orchestrate
+        // role produces no output. The fix is a `permissions.allow` rule in the fresh AER-owned home
+        // agy already runs under here -- the write_file category proven honoured under `-p` by
+        // `agy.settings-allow-write-honoured-headless` (its command(...) sibling proves only that the
+        // allow LIST loads, a weaker claim). Gated on agyHome being non-null: that is exactly
+        // the AER-owned redirected home. When it is null the run uses the operator's real ~/.gemini,
+        // which AER must never write into (Credential Isolation) -- and that path is the raw-scope
+        // case with no grant, not the dispatch front door this fixes. The rule is least-privilege,
+        // one per declared output, and is NOT the security boundary: AER's PreToolUse hook still
+        // bounds where the write may land -- agy.hook-deny-holds-under-the-mode-production-uses
+        // measures that a deny holds under this exact --mode accept-edits (#670).
+        IReadOnlyList<CoreDispatchSeedFile>? seedFiles = null;
+        if (permissionScope == "accept-edits" && agyHome is not null && contract.ProducedOutputs.Count > 0)
+        {
+            var outputDir = EnvironmentReference("AER_OUTPUT_DIR", isWindows);
+            var allow = contract.ProducedOutputs
+                .Select(output => $"write_file({outputDir}/{output.Name})")
+                .ToArray();
+            var settings = JsonSerializer.Serialize(new { permissions = new { allow } });
+            var settingsPath = Path.Combine(agyHome, ".gemini", "antigravity-cli", "settings.json");
+            seedFiles = [new CoreDispatchSeedFile(settingsPath, settings)];
+        }
+
         return new CoreDispatchTarget(
             "agy", [.. args], invocation.WorkingDirectory, PromptText: prompt,
-            Environment: [.. environment], OversizePromptWrapper: OversizePromptWrapperText);
+            Environment: [.. environment], OversizePromptWrapper: OversizePromptWrapperText,
+            SeedFiles: seedFiles);
     }
 
     /// <summary>The agy <see cref="VendorGate"/>.</summary>

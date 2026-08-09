@@ -36,7 +36,20 @@ public static class RoleDispatch
     /// multi-phase composer passes a phase-unique name instead — see
     /// <see cref="WorkflowTemplateComposer"/> for why role ids will not do there.
     /// </param>
-    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null)
+    /// <param name="workingDirectory">
+    /// The directory the worker runs in and may read — set on the binding so a vendor that ignores the
+    /// process cwd (agy <c>-p</c>, #491) is still handed the project via <c>--add-dir</c>. Null leaves it
+    /// unset, the pre-#1083 behaviour, under which a role dispatched to read the repo was given no path to
+    /// it and every repo read was auto-denied.
+    /// </param>
+    /// <param name="modelOverride">
+    /// The model axis, independent of the role ([0017]/[0033]: vendor, model and effort are three
+    /// separate axes over a role's instructions). Null keeps the role's tier model — except when
+    /// <paramref name="adapterOverride"/> moves the role to a different vendor, where the tier's
+    /// vendor-specific model string is dropped for that vendor's own default (#1082).
+    /// </param>
+    /// <param name="effortOverride">The effort axis, independent of the role — a behavioural name ([0023]), null keeps the role's tier effort.</param>
+    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -53,6 +66,22 @@ public static class RoleDispatch
         // for an adapter that plainly exists.
         var adapter = (string.IsNullOrWhiteSpace(adapterOverride) ? role.Adapter : adapterOverride)
             .Trim().ToLowerInvariant();
+
+        // Vendor, model and effort are three independent axes ([0017]/[0033]): the role carries a
+        // default bundle (its tier), and each axis overrides on its own. An explicit --model/--effort
+        // wins; with none, swapping the vendor drops the tier's model AND effort. Both are vendor-specific
+        // as the catalog actually pins them: the model string plainly so (the measured #1082 failure, the
+        // claude CLI handed 'gemini-3.6-flash-high'), and effort because WorkerTiers.json pins raw vendor
+        // flag values ("high"/"low"), not the canonical [0023] vocabulary the adapters would map — so an
+        // "xhigh"/"max" tier swapped onto agy (which rejects those) would leak the exact same way. On a
+        // swap the new vendor falls back to its own default for both, unless the axis is set explicitly.
+        var vendorSwapped = !string.Equals(adapter, role.Adapter.Trim().ToLowerInvariant(), StringComparison.Ordinal);
+        var model = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride
+            : vendorSwapped ? null
+            : role.Model;
+        var effort = !string.IsNullOrWhiteSpace(effortOverride) ? effortOverride
+            : vendorSwapped ? null
+            : role.Effort;
 
         var grant = role.Grant;
         var grantAuditMode = GrantAuditMode.Enforced;
@@ -71,9 +100,10 @@ public static class RoleDispatch
             Contract: contract,
             PromptTemplate: BuildPrompt(role, spec),
             Timeout: role.Timeout,
-            Model: role.Model,
+            Model: model,
             PermissionGrant: grant,
-            Effort: role.Effort,
+            WorkingDirectory: workingDirectory,
+            Effort: effort,
             GrantAuditMode: grantAuditMode);
     }
 
@@ -84,11 +114,14 @@ public static class RoleDispatch
     /// mirror the contract's, so the reporter prints each produced file's path on success.
     /// </summary>
     public static (WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings) Materialize(
-        WorkerRole role, string spec, string? adapterOverride = null)
+        WorkerRole role, string spec, string? adapterOverride = null, string? workingDirectory = null,
+        string? modelOverride = null, string? effortOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
-        var binding = ToBinding(role, spec, adapterOverride);
+        var binding = ToBinding(
+            role, spec, adapterOverride, workingDirectory: workingDirectory,
+            modelOverride: modelOverride, effortOverride: effortOverride);
 
         var definition = new WorkflowDefinition(
             WorkflowTemplateId: new WorkflowTemplateId($"dispatch-{role.Id}"),
