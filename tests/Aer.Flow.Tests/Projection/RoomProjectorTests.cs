@@ -319,4 +319,26 @@ public class RoomProjectorTests
         Assert.NotNull(state.PendingPermission);
         Assert.Equal("req-101", state.PendingPermission.PermissionRequestId);
     }
+
+    /// <summary>
+    /// Order-robustness: an `Answered` (or `Revoked`) can be journaled BEFORE its `Asked` — the daemon
+    /// appends `Asked` asynchronously after observing the ask file, while the answer path appends
+    /// `Answered` directly, so a fast/automated answer or crash reconciliation can invert the order. A
+    /// late `Asked` for an already-resolved gate must NOT re-open it. The control is the non-matching
+    /// test above: proving the resolved-id suppression keys on the id, not a blanket ignore-all-asks.
+    /// </summary>
+    [Fact]
+    public void Projects_Answered_before_its_Asked_never_reopens_the_gate()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var answeredFirst = new RoomEvent.RuntimePermissionAnswered(
+            "req-101", "Deny", null, "Denied", "operator-bob", at);
+        var askedLate = new RoomEvent.RuntimePermissionAsked(
+            "req-101", new ExecutionId("exec-01"), new StepId("step-01"), "worker-alpha", "claude",
+            "tool_use_123", "WriteFiles", """{"path":"test.txt"}""", "WriteFiles", at.AddSeconds(1));
+
+        var state = RoomProjector.Project([answeredFirst, askedLate]);
+
+        Assert.Null(state.PendingPermission);
+    }
 }

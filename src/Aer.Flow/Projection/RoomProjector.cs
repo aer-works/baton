@@ -19,6 +19,12 @@ public static class RoomProjector
         var unmatchedEntries = new List<string>();
         var isDormant = false;
         PendingPermission? pendingPermission = null;
+        // Ids already answered or revoked. A permission ask can be journaled AFTER its resolution — the
+        // MCP host writes the ask file and the daemon appends `Asked` asynchronously, while the answer
+        // path appends `Answered` directly, so an automated/fast answer (or crash reconciliation) can
+        // invert the order. Without this set a late `Asked` would set a gate that is already closed and
+        // it would hang open forever (advisor-caught). The projector must be order-robust.
+        var resolvedPermissionIds = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var roomEvent in events)
         {
@@ -132,17 +138,23 @@ public static class RoomProjector
                     break;
 
                 case RoomEvent.RuntimePermissionAsked asked:
-                    pendingPermission = new PendingPermission(
-                        asked.PermissionRequestId,
-                        asked.WorkerId,
-                        asked.VendorTag,
-                        asked.ToolName,
-                        asked.ToolInputJson,
-                        asked.Category,
-                        asked.AskedAt);
+                    // A gate already resolved (in any order) never re-opens.
+                    if (!resolvedPermissionIds.Contains(asked.PermissionRequestId))
+                    {
+                        pendingPermission = new PendingPermission(
+                            asked.PermissionRequestId,
+                            asked.WorkerId,
+                            asked.VendorTag,
+                            asked.ToolName,
+                            asked.ToolInputJson,
+                            asked.Category,
+                            asked.AskedAt);
+                    }
+
                     break;
 
                 case RoomEvent.RuntimePermissionAnswered answered:
+                    resolvedPermissionIds.Add(answered.PermissionRequestId);
                     if (pendingPermission != null && pendingPermission.PermissionRequestId == answered.PermissionRequestId)
                     {
                         pendingPermission = null;
@@ -151,6 +163,7 @@ public static class RoomProjector
                     break;
 
                 case RoomEvent.RuntimePermissionRevoked revoked:
+                    resolvedPermissionIds.Add(revoked.PermissionRequestId);
                     if (pendingPermission != null && pendingPermission.PermissionRequestId == revoked.PermissionRequestId)
                     {
                         pendingPermission = null;
