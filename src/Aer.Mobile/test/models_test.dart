@@ -77,7 +77,7 @@ void main() {
     Map<String, dynamic> minimalProjection(Map<String, dynamic>? pendingPermissionJson, {required String key}) => {
           'snapshot': {'workflowTemplateId': 'wf', 'steps': <dynamic>[]},
           'state': {'status': 'Paused', 'steps': <dynamic>[]},
-          if (pendingPermissionJson != null) key: pendingPermissionJson,
+          key: ?pendingPermissionJson,
         };
 
     test('parses a PascalCase (WS) top-level pendingPermission sibling of state', () {
