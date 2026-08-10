@@ -55,7 +55,12 @@ public static class MutationInterface
         CancellationToken cancellationToken = default,
         TimeProvider? timeProvider = null,
         Func<double>? jitterSource = null,
-        string? holderDescription = null)
+        string? holderDescription = null,
+        // #1094: fired once when the pump enters a paced wait on a vendor-quota (ExhaustedUntil) park,
+        // with the local-time-resolvable reset instant. The foreground CLI prints it so a day-long
+        // quota wait never reads as a hang; null (the daemon/default) stays silent. Never touches the
+        // 0026 wait itself — surfacing only.
+        Action<DateTimeOffset>? onVendorQuotaPark = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -70,7 +75,7 @@ public static class MutationInterface
         return await PumpToFixedPointAsync(
                 workflowId, roomDirectoryPath, snapshot, workerBindings, artifactsRootPath, eventLogReader, eventLogWriter, dispatcher,
                 inFlightExecutions ?? new InFlightExecutionRegistry(), cancellationToken,
-                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()))
+                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()), onVendorQuotaPark)
             .ConfigureAwait(false);
     }
 
@@ -325,12 +330,17 @@ public static class MutationInterface
         InFlightExecutionRegistry inFlightExecutions,
         CancellationToken cancellationToken,
         TimeProvider timeProvider,
-        Func<double> jitterSource)
+        Func<double> jitterSource,
+        Action<DateTimeOffset>? onVendorQuotaPark = null)
     {
         inFlightExecutions.Bind(eventLogWriter);
 
         var inFlight = new List<Task>();
         var hostStopRequested = false;
+
+        // #1094: dedupes the vendor-quota park notice to the reset instant currently being waited on,
+        // so re-projection loops do not reprint it. Surfacing only — see onVendorQuotaPark.
+        DateTimeOffset? lastQuotaParkNotified = null;
 
         // Starts as the caller's own token, but is switched to CancellationToken.None the instant a
         // host stop is detected below (M10 Phase 2): every read/write this loop performs to reach
@@ -662,6 +672,19 @@ public static class MutationInterface
 
                         if (delay > TimeSpan.Zero)
                         {
+                            // #1094: surface a vendor-quota park to the foreground before the (possibly
+                            // day-long) paced wait, so it does not read as a hang. Deduped to the instant
+                            // being waited on; ordinary retry backoff is not a quota park and stays quiet.
+                            // Notification only — the 0026 wait below is unchanged.
+                            if (onVendorQuotaPark is not null
+                                && lastQuotaParkNotified != minNotBefore
+                                && state.Steps.Any(s => s.RetryNotBefore == minNotBefore
+                                    && s.LatestFailureClassification == FailureClassification.ExhaustedUntil))
+                            {
+                                lastQuotaParkNotified = minNotBefore;
+                                onVendorQuotaPark(minNotBefore);
+                            }
+
                             var delayTask = Task.Delay(delay, timeProvider, ioCancellationToken);
                             var deferralHostStopWatcher = cancellationToken.CanBeCanceled
                                 ? Task.Delay(Timeout.Infinite, cancellationToken)

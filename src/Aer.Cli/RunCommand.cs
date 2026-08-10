@@ -125,7 +125,11 @@ public static class RunCommand
                 dispatcher,
                 inFlightExecutions,
                 cancellationToken,
-                holderDescription: $"aer run pump (pid {Environment.ProcessId})")
+                holderDescription: $"aer run pump (pid {Environment.ProcessId})",
+                // #1094: a foreground run that quota-parks would otherwise sit silently until the reset
+                // (~a day out); surface it so the paced wait is legible. To stderr — it is a status
+                // notice, not run output.
+                onVendorQuotaPark: resumesAt => Console.Error.WriteLine(FormatVendorQuotaParkNotice(resumesAt)))
             .ConfigureAwait(false);
 
         var worktreeTeardowns = WorktreeProvisioner.TeardownIfTerminal(state.Status, provisionedWorktrees);
@@ -148,6 +152,20 @@ public static class RunCommand
     /// something that is not a readable file is left alone entirely, for the reason below.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// #1094: the foreground quota-park notice. Local time (the operator's own clock, matching
+    /// <c>aer status</c>'s <c>FormatParkedStatus</c>), and it names both what happens next (auto-resume
+    /// at the 0026-paced instant) and the escape hatch (Ctrl-C, which records a resumable stop) so a
+    /// day-long wait is a legible state rather than a hang.
+    /// </summary>
+    public static string FormatVendorQuotaParkNotice(DateTimeOffset resumesAt)
+    {
+        var local = resumesAt.ToLocalTime()
+            .ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+        return $"Parked on vendor quota — the run resumes automatically at {local} (local). "
+            + "Progress is saved; press Ctrl-C to stop now and resume later by re-running.";
+    }
+
     private static async Task RefuseIfTheNamedTemplateIsNotTheBoundOneAsync(
         RunOptions options, WorkflowDefinitionSnapshot snapshot, CancellationToken cancellationToken)
     {

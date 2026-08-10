@@ -984,4 +984,102 @@ public class MutationInterfaceRetryBackoffTests
             DirectoryCleanup.DeleteRecursively(roomDirectory);
         }
     }
+
+    // #1094: shared seeding for the two polarity tests below — a fabricated parked history (the #815
+    // test's pattern) whose classification the caller picks. fakeTime starts before the reset so the
+    // step is not yet ready; each test then chooses how to release the pump deterministically.
+    private static async Task<(string Room, string Artifacts, string Log, WorkflowDefinitionSnapshot Snapshot,
+        Dictionary<string, WorkerBinding> Bindings, FakeTimeProvider FakeTime, DateTimeOffset Reset)>
+        SeedParkedStepAsync(FailureClassification classification)
+    {
+        var room = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var log = Path.Combine(room, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 7, 31, 12, 0, 0, TimeSpan.Zero);
+        var reset = now.AddHours(2);
+        Directory.CreateDirectory(room);
+
+        var snapshot = new WorkflowDefinitionSnapshot(
+            new WorkflowDefinitionSnapshotId("snap-1094"),
+            new WorkflowTemplateId("tmpl-1094"),
+            WorkflowTemplateVersion: 1,
+            Steps: [new WorkflowStepDefinition(StepA, "worker-a", [], [], DependsOn: [], RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))]);
+
+        var bindings = new Dictionary<string, WorkerBinding>
+        {
+            ["worker-a"] = new WorkerBinding.Process(
+                new WorkerContract("worker-a", [], [], []), ExitCleanlyWithoutWriting(), TimeSpan.FromSeconds(30))
+        };
+
+        var firstAttempt = new ExecutionId("a-1");
+        var ct = TestContext.Current.CancellationToken;
+        await using var seed = new FlowEventLogWriter(log);
+        await seed.AppendAsync(new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
+            firstAttempt, new WorkflowId("wf-1094"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+        await seed.AppendAsync(new FlowEvent.ExecutionFailed(firstAttempt, classification, "seeded park", reset), ct);
+        await seed.AppendAsync(new FlowEvent.StepRetryScheduled(
+            StepA, firstAttempt, reset, RetryDelayMs: (int)TimeSpan.FromHours(2).TotalMilliseconds), ct);
+
+        return (room, Path.Combine(room, "artifacts"), log, snapshot, bindings, new FakeTimeProvider(now), reset);
+    }
+
+    [Fact]
+    public async Task A_vendor_quota_park_surfaces_the_reset_instant_to_the_foreground()
+    {
+        var s = await SeedParkedStepAsync(FailureClassification.ExhaustedUntil);
+        try
+        {
+            await using var writer = new FlowEventLogWriter(s.Log);
+            var ct = TestContext.Current.CancellationToken;
+            DateTimeOffset? captured = null;
+            var noticed = new TaskCompletionSource();
+            using var cts = new CancellationTokenSource();
+
+            // fakeTime is never advanced, so the pump enters and stays in the deferral wait: the notice
+            // fires deterministically (no wall-clock grace), then the host stop releases the pump.
+            var pump = MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-1094"), s.Room, s.Snapshot, s.Bindings, s.Artifacts,
+                new FlowEventLogReader(s.Log), writer, new CoreDispatcher(writer),
+                timeProvider: s.FakeTime, jitterSource: () => 0.0, cancellationToken: cts.Token,
+                onVendorQuotaPark: instant => { captured = instant; noticed.TrySetResult(); });
+
+            await noticed.Task.WaitAsync(PumpCompletionTimeout, ct);
+            await cts.CancelAsync();
+            await pump.WaitAsync(PumpCompletionTimeout, ct);
+
+            Assert.Equal(s.Reset, captured);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(s.Room);
+        }
+    }
+
+    [Fact]
+    public async Task An_ordinary_retry_backoff_does_not_surface_a_vendor_quota_notice()
+    {
+        var s = await SeedParkedStepAsync(FailureClassification.Retryable);
+        try
+        {
+            await using var writer = new FlowEventLogWriter(s.Log);
+            DateTimeOffset? captured = null;
+
+            // Advancing the clock past the reset drives the parked step's retry to a terminal state —
+            // deterministic, no fixed grace. Whether or not the pump paused in the backoff wait first,
+            // an ordinary Retryable park must never fire the vendor-quota notice.
+            var pump = MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-1094"), s.Room, s.Snapshot, s.Bindings, s.Artifacts,
+                new FlowEventLogReader(s.Log), writer, new CoreDispatcher(writer),
+                timeProvider: s.FakeTime, jitterSource: () => 0.0,
+                cancellationToken: TestContext.Current.CancellationToken,
+                onVendorQuotaPark: instant => captured = instant);
+
+            await AdvanceUntilPumpCompletesAsync(s.FakeTime, pump, TimeSpan.FromMinutes(30));
+
+            Assert.Null(captured);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(s.Room);
+        }
+    }
 }
