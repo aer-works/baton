@@ -155,6 +155,17 @@ public static class RoleDispatch
     private static string BuildPrompt(WorkerRole role, string spec)
     {
         var instructions = string.Join("\n", role.Outputs.Select(o => $"- {o.Instruction}"));
-        return $"{spec.TrimEnd()}\n\nRequired outputs:\n{instructions}\n";
+        return $"{spec.TrimEnd()}\n\nRequired outputs:\n{instructions}\n\n{OneShotContract}";
     }
+
+    // #1095: a dispatched worker runs in a one-shot, non-interactive harness — the turn is never
+    // resumed. A sonnet implement worker instead scheduled a background test run, ended its turn to
+    // wait for the notification, and produced no output; the contract failed and the step retried a
+    // worker that would defer identically every time. State the contract in the prompt. Lives here,
+    // the dispatch prompt builder, not in the adapter's BuildPrompt (which also runs for the
+    // interactive chat turn, where deferring genuinely is fine).
+    private const string OneShotContract =
+        "This is a single, non-interactive turn: do all of the work to completion now and write the "
+        + "required outputs before it ends. Do not schedule background tasks or wait for a "
+        + "notification or wake-up — nothing will resume this turn, so any deferred work is lost.";
 }
