@@ -1,8 +1,6 @@
-/// Ported from `Aer.Ui.Core.PermissionGrantWording.RoomShellGrantReaches()` — the honesty clause
-/// under 0022's "any command in this room" rung: granting the room's shell standing is granting what
-/// a shell reaches (files, network) regardless of which categories were otherwise withheld. One
-/// wording home on desktop; this is the mobile mirror of that exact sentence so the two surfaces
-/// can't drift on what the shell defeats.
+/// The user-facing honesty clause for the shell-grant rung. `Aer.Ui.Core.PermissionGrantWording`
+/// (desktop) is the one home that documents *why* it reads this way; the constant below is the
+/// mobile copy of that exact string, kept character-identical so the two surfaces can't drift.
 library;
 
 const String allowRoomShellGrantReaches = 'Allowing any command in this room grants the shell, and '

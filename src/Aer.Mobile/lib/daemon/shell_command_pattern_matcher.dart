@@ -8,20 +8,18 @@ library;
 
 import 'dart:convert';
 
-/// The claude/agy tool names a shell command line can be read from — claude's `Bash` and agy's
-/// `run_command`. Mirrors `ShellCommandPatternMatcher.ShellToolNames`.
+/// The shell tool names this port recognizes — mirrors `ShellCommandPatternMatcher.ShellToolNames`
+/// (the canonical list). The values are the wire contract with each vendor's CLI.
 const shellToolNames = ['Bash', 'run_command'];
 
-/// First whitespace-delimited-token scan's metacharacter set — mirrors
-/// `ShellCommandPatternMatcher.MetaCharacters` exactly (used by [extractCommandFamily] only; this
-/// port does not need the fuller quoting-aware scan `IsAllowed` does, since the gate only ever
-/// derives a family for *display*, never evaluates a command against a persisted pattern).
+/// Metacharacter set for the family scan — mirrors `ShellCommandPatternMatcher.MetaCharacters`
+/// (canonical). Used by [extractCommandFamily] only; see the C# for why only this subset of the
+/// matcher is ported to the phone.
 const _metaCharacters = [';', '&', '|', '`', r'$', '<', '>', '(', ')', '\n', '\r', '\\', "'", '"'];
 
-/// Reads the raw shell command line (e.g. "rm -rf build/") out of a shell tool's asked input, or
-/// returns null when [toolName] isn't a recognized shell tool ([shellToolNames]) or the input JSON
-/// can't be parsed / carries neither key. Mirrors `TryReadCommandLine`: "command" is claude's Bash
-/// tool_input key, "CommandLine" is agy's run_command arg key.
+/// Ports `TryReadCommandLine` (C# canonical): returns the command string for a recognized shell
+/// [toolName], or null when the tool isn't in [shellToolNames] or the JSON parse fails / has neither
+/// key. Which key belongs to which vendor is read in order below.
 String? tryReadCommandLine(String toolName, String toolInputJson) {
   if (!shellToolNames.contains(toolName)) return null;
 
@@ -41,10 +39,9 @@ String? tryReadCommandLine(String toolName, String toolInputJson) {
   }
 }
 
-/// Derives a command's family (its first whitespace-delimited token, e.g. "rm" out of
-/// "rm -rf build/") for scoping the `AllowCommandInRoom`/`DenyAlways` rungs. Returns null — never a
-/// guess — when [commandLine] is empty/blank or its first token opens with a shell metacharacter
-/// this scan already treats as unsafe to reason about. Mirrors `ExtractCommandFamily` exactly.
+/// Derives the command family that scopes the `AllowCommandInRoom`/`DenyAlways` rungs — ports
+/// `ShellCommandPatternMatcher.ExtractCommandFamily` (C# canonical). Null (never a guess) for a
+/// blank [commandLine], or when the leading token would start on a metacharacter.
 String? extractCommandFamily(String? commandLine) {
   if (commandLine == null || commandLine.trim().isEmpty) return null;
 

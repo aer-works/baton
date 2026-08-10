@@ -8,18 +8,11 @@
 library;
 
 class PermissionDecisionKind {
-  /// Just this once — nothing persists; only the one held call is released.
+  // Wire strings only. Each rung's semantics are documented once, canonically, on the matching C#
+  // constant — see `Aer.Adapters/PermissionDecisionKind.cs`; not restated here (record-once).
   static const allowOnce = 'AllowOnce';
-
-  /// Any this command in this room — persists a room-scoped shell-command-pattern grant.
   static const allowCommandInRoom = 'AllowCommandInRoom';
-
-  /// Any command in this room — persists the room's unscoped shell-run grant.
   static const allowRoom = 'AllowRoom';
-
-  /// Never / always deny this command — the standing refusal.
   static const denyAlways = 'DenyAlways';
-
-  /// Deny once — nothing persists.
   static const deny = 'Deny';
 }

@@ -78,9 +78,9 @@ class _ChatScreenState extends State<ChatScreen> {
   /// in the AppBar rather than only reflected transiently right after a mode-button tap.
   String? _currentMode;
 
-  /// The runtime conversational permission gate (0022, #390's mobile phase), rendered inline above
-  /// the composer when non-null. A projected fact — see [_surfacePendingPermission] — never edited
-  /// directly, and re-derived (never carried over) whenever the projection's own value changes.
+  /// The open gate (see [PendingPermission]) this screen renders inline above the composer when
+  /// non-null. A projected fact — see [_surfacePendingPermission] — never edited directly, and
+  /// re-derived (never carried over) whenever the projection's own value changes.
   PendingPermission? _pendingPermission;
 
   /// True while an answer POST is in flight — disables the gate's rungs (mirrors InboxScreen's
@@ -171,11 +171,10 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Reconciles the inline gate with the projection's current [pending] — mirrors
-  /// `ChatViewModel.SurfacePendingPermission`'s "projected fact" discipline: builds a fresh gate when
-  /// a new permission appears, leaves state untouched while the same one is still open (so
-  /// [_isAnsweringPermission] survives a push that changed nothing else), and clears it the moment
-  /// the projection stops carrying one (a permission dies with its turn, 0022 §5).
+  /// Applies [pending] to the inline gate per `ChatViewModel.SurfacePendingPermission` (the C#
+  /// canonical for the same-id-keep / different-id-replace / null-clear rule). Dart-specific:
+  /// [_isAnsweringPermission] survives a same-id push, so an in-flight answer isn't reset by an
+  /// unrelated projection change.
   void _surfacePendingPermission(PendingPermission? pending) {
     if (pending == null) {
       if (_pendingPermission != null) setState(() => _pendingPermission = null);
@@ -559,8 +558,9 @@ class _ChatScreenState extends State<ChatScreen> {
 /// command-family rungs (`Allow <family> in this room`, `Always deny <family>`) render only when
 /// [tryReadCommandLine]/[extractCommandFamily] (ported from `ShellCommandPatternMatcher.cs`) can
 /// derive one from the asked tool input — HIDDEN, not merely disabled, the same fail-closed the
-/// amender applies to a command it can't parse safely. The cross-room rung ("any this command in
-/// *any* room") is deliberately absent: 0052 holds it until a project-scoped store exists.
+/// amender applies to a command it can't parse safely. The cross-room rung is deliberately absent
+/// per 0052 — the same omission, for the same reason, that desktop's `PendingPermissionViewModel`
+/// documents canonically.
 @visibleForTesting
 class PermissionGateCard extends StatelessWidget {
   final PendingPermission pending;

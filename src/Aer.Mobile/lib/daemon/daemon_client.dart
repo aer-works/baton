@@ -507,10 +507,9 @@ class DaemonClient {
     _throwIfFailed(response);
   }
 
-  /// Answers a runtime permission (0022's ladder, #390's mobile phase) by posting to
-  /// /api/rooms/permissions/answer — the daemon writes the rendezvous answer file that releases the
-  /// held worker, records the answer as a turn, amends the room's chat-worker grant for a
-  /// persisting rung, and broadcasts a fresh projection whose `pendingPermission` is now clear.
+  /// Answers an open runtime-permission gate over the wire. The server-side effects match desktop's
+  /// `RoomClient.AnswerPermissionAsync` (the canonical description); the phone supplies the same
+  /// decision. The POST target and body shape are in the call below.
   /// [decisionKind] must be one of PermissionDecisionKind's values (permission_decision_kind.dart) —
   /// the daemon fails closed on anything else. Body keys are camelCase, matching every other call in
   /// this file; ASP.NET's body binding is case-insensitive (same as desktop's own POST — see
