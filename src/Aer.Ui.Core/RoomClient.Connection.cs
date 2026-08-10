@@ -11,6 +11,7 @@ using Aer.Cli;
 using Aer.Flow;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
+using Aer.Flow.Projection;
 
 namespace Aer.Ui.Core;
 
@@ -316,12 +317,26 @@ public sealed partial class RoomClient
     /// directory this client has open, so every push got applied unconditionally regardless of which
     /// client's action produced it. This wrapper exists solely so the receive loop can filter.
     /// </summary>
-    private sealed record ProjectionFrame(
+    /// <remarks>
+    /// Every <see cref="RoomProjection"/> member must be mirrored here, or it is silently dropped on
+    /// every live push while the room-open HTTP load (which deserializes straight into
+    /// <see cref="RoomProjection"/>) still carries it — <c>PendingPermission</c> was, #445/#390. New
+    /// members carry defaults, so <see cref="ToProjection"/> keeps compiling when one is missing;
+    /// <c>WebSocketProjectionFrameTests</c> is the structural check that catches the next one.
+    /// </remarks>
+    internal sealed record ProjectionFrame(
         string? DirectoryPath,
         WorkflowDefinitionSnapshot Snapshot,
         FlowState State,
         ExecutionHistory History,
-        ArtifactLineage Lineage);
+        ArtifactLineage Lineage,
+        PendingPermission? PendingPermission);
+
+    /// <summary>Rebuilds the projection a live WS frame carries — the one place the frame's members
+    /// map back onto <see cref="RoomProjection"/>. Every member goes through here (see the frame's
+    /// remarks for why an omission is invisible on the HTTP path).</summary>
+    internal static RoomProjection ToProjection(ProjectionFrame frame) =>
+        new(frame.Snapshot, frame.State, frame.History, frame.Lineage, frame.PendingPermission);
 
     /// <summary>The M24 Phase 1 live in-turn streaming socket's client-side counterpart -- see <see cref="SessionProgressReceived"/>. A dedicated connection, not folded into <see cref="StartWebSocketListenerAsync"/>'s own socket, for the exact same reason the daemon keeps the two endpoints separate (<c>Aer.Daemon.Program</c>'s <c>progressWebSockets</c> remarks): this frame shape has no type discriminator, so sharing a socket risks a <see cref="RoomProjection"/> deserialization corrupting on it.</summary>
     private async Task StartProgressWebSocketListenerAsync(string resolvedUrl, string? token, CancellationToken cancellationToken)
@@ -433,7 +448,7 @@ public sealed partial class RoomClient
 
                     if (frame != null)
                     {
-                        var projection = new RoomProjection(frame.Snapshot, frame.State, frame.History, frame.Lineage);
+                        var projection = ToProjection(frame);
 
                         // Consumer 1 (#336): every frame, whichever directory it is for. The switcher's
                         // list shows every session at once, so a push for a session this client is not

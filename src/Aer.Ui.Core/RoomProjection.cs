@@ -1,4 +1,5 @@
 using Aer.Flow.Domain;
+using Aer.Flow.Projection;
 
 namespace Aer.Ui.Core;
 
@@ -19,5 +20,16 @@ namespace Aer.Ui.Core;
 /// <see cref="History"/>, following the same "derived from the same events, owned by <c>Aer.Ui</c>"
 /// shape <see cref="History"/> established (Phase 2).
 /// </param>
+/// <param name="PendingPermission">
+/// The runtime conversational gate a worker is currently blocked on (#445/#390), projected from the
+/// room's <c>room.jsonl</c> journal (a DIFFERENT event store from the <see cref="State"/>'s
+/// <c>flow.jsonl</c>) via <see cref="RoomProjector"/>. <see langword="null"/> when no gate is open —
+/// the common case. A fifth read-model surface, defaulted so the many existing construction sites
+/// (e.g. the fleet-status loader) that carry no gate stay source-compatible. This is the one field
+/// that lets the daemon's projection push carry a pending permission to a screen: without it the
+/// mid-turn ask is journaled but never rendered (<see cref="RoomProjectionLoader.LoadAsync"/> reads
+/// only <c>flow.jsonl</c> otherwise).
+/// </param>
 public sealed record RoomProjection(
-    WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage);
+    WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage,
+    PendingPermission? PendingPermission = null);

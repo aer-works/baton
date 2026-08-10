@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Aer.Adapters;
 
 /// <summary>
@@ -6,6 +8,62 @@ namespace Aer.Adapters;
 /// </summary>
 public static class ShellCommandPatternMatcher
 {
+    /// <summary>
+    /// The claude/agy tool names a shell command line can be read from — claude's <c>Bash</c> and
+    /// agy's <c>run_command</c>. The one canonical list (record-once): the grant amender's
+    /// pattern derivation and the gate UI's command display both gate on this rather than each
+    /// restating the pair, and any other tool name reads back no command line at all.
+    /// </summary>
+    public static readonly string[] ShellToolNames = ["Bash", "run_command"];
+
+    /// <summary>
+    /// Reads the raw shell command line (e.g. <c>"rm -rf build/"</c>) out of a shell tool's asked
+    /// input, or returns <see langword="false"/> when <paramref name="toolName"/> isn't a recognized
+    /// shell tool (<see cref="ShellToolNames"/>) or the input JSON can't be parsed. This is the
+    /// display/derivation seam only: callers that need a scoped <em>pattern</em> pass the result
+    /// through <see cref="ExtractCommandFamily"/> themselves, which is where the fail-closed
+    /// metacharacter rule lives.
+    /// </summary>
+    /// <param name="toolName">The originally-asked tool name (e.g. <c>"Bash"</c>).</param>
+    /// <param name="toolInputJson">The originally-asked tool input JSON.</param>
+    /// <param name="commandLine">The read command line, or <see langword="null"/> on any miss.</param>
+    public static bool TryReadCommandLine(string toolName, string toolInputJson, out string? commandLine)
+    {
+        commandLine = null;
+        if (toolName is null || toolInputJson is null || !ShellToolNames.Contains(toolName, StringComparer.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(toolInputJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            // "command" is claude's Bash tool_input key; "CommandLine" is agy's run_command arg key
+            // (AgyHookCheckCommand reads the same name for the same tool).
+            if (doc.RootElement.TryGetProperty("command", out var commandProp) &&
+                commandProp.ValueKind == JsonValueKind.String)
+            {
+                commandLine = commandProp.GetString();
+            }
+            else if (doc.RootElement.TryGetProperty("CommandLine", out var commandLineProp) &&
+                commandLineProp.ValueKind == JsonValueKind.String)
+            {
+                commandLine = commandLineProp.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return commandLine is not null;
+    }
+
     /// <summary>
     /// Returns <see langword="true"/> iff <paramref name="commandLine"/> contains no unquoted shell
     /// metacharacters and matches at least one pattern in <paramref name="patterns"/>.
@@ -127,4 +185,49 @@ public static class ShellCommandPatternMatcher
 
         return false;
     }
+
+    /// <summary>
+    /// The <c>DenyAlways</c> rung's standing-"never" check (0022, M-Phase-6 #390) — called by
+    /// <c>AgyHookCheckCommand</c> to refuse a <c>run_command</c> whose command line matches a persisted
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> entry, deny-beats-allow. (claude enforces
+    /// the same rung through <c>--disallowedTools</c> rather than this matcher.) Returns
+    /// <see langword="true"/> iff <paramref name="commandLine"/> matches at least one pattern in
+    /// <paramref name="deniedPatterns"/>. Same glob shape and the same metacharacter fail-closed rules as
+    /// <see cref="IsAllowed"/> (deliberately reuses it): a command this scanner cannot parse safely is
+    /// not matched against the deny list either, since whatever else grants it (categorical
+    /// <see cref="PermissionGrant.RunShellCommands"/> or an allow pattern) already refuses it on the
+    /// same unparseable-metacharacter grounds.
+    /// </summary>
+    public static bool IsDenied(string? commandLine, IReadOnlyList<string>? deniedPatterns) =>
+        IsAllowed(commandLine, deniedPatterns);
+
+    /// <summary>
+    /// Derives a command's family (its first whitespace-delimited token, e.g. <c>"rm"</c> out of
+    /// <c>"rm -rf build/"</c>) for scoping a new <see cref="PermissionGrant.ShellCommandPatterns"/> or
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> entry (0022's <c>AllowCommandInRoom</c>
+    /// / <c>DenyAlways</c> rungs, M-Phase-6 #390). Returns <see langword="null"/> — never a guess — when
+    /// <paramref name="commandLine"/> is empty or its first token opens with a shell metacharacter this
+    /// matcher already treats as unsafe to reason about (<see cref="IsAllowed"/>'s own set): persisting
+    /// a pattern derived from an unparseable head would scope a standing grant to something this same
+    /// matcher could not evaluate consistently later.
+    /// </summary>
+    public static string? ExtractCommandFamily(string? commandLine)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            return null;
+        }
+
+        var trimmed = commandLine.TrimStart();
+        var end = 0;
+        while (end < trimmed.Length && !char.IsWhiteSpace(trimmed[end]) && Array.IndexOf(MetaCharacters, trimmed[end]) < 0)
+        {
+            end++;
+        }
+
+        return end == 0 ? null : trimmed[..end];
+    }
+
+    private static readonly char[] MetaCharacters =
+        [';', '&', '|', '`', '$', '<', '>', '(', ')', '\n', '\r', '\\', '\'', '"'];
 }

@@ -496,6 +496,45 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
+    public void Resolving_a_grant_with_a_denyalways_pattern_emits_the_denied_shell_patterns_variable()
+    {
+        // #390: the agy hook is the only enforcement for a standing "never", so the adapter must emit
+        // AER_HOOK_DENIED_SHELL_PATTERNS. Its absence is fail-closed at the hook, so a missing emission
+        // would silently deny every run_command — this pins that the channel is actually sent.
+        // The meaningful case: the shell is granted (agy expresses that only as the network-bundled
+        // --dangerously-skip-permissions) and a standing "never" carves rm back out via the hook. Under
+        // the runtime gate (EnablePermissionGate: true) — the only shape DenyAlways is issued from — the
+        // channel must still be emitted, unlike claude's --disallowedTools which the gate suppresses.
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(
+            ReadFiles: true, RunShellCommands: true, NetworkAccess: true,
+            DeniedShellCommandPatterns: ["rm *"]);
+
+        var target = adapter.Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, EnablePermissionGate: true),
+            ArchitectContract);
+
+        Assert.Contains(
+            target.Environment!,
+            env => env.Name == AgyWorkerAdapter.DeniedShellPatternsVariable && env.Value == "agy:rm *");
+    }
+
+    [Fact]
+    public void A_grant_with_no_denies_still_emits_the_denied_shell_patterns_variable_present_but_empty()
+    {
+        // The channel is always emitted ("agy:" at minimum) so the hook can tell "no standing denies"
+        // (Present+empty) from "the channel broke" (Absent) — the same distinction the allow channel draws.
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(ReadFiles: true, RunShellCommands: true, NetworkAccess: true);
+
+        var target = adapter.Resolve(new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+
+        Assert.Contains(
+            target.Environment!,
+            env => env.Name == AgyWorkerAdapter.DeniedShellPatternsVariable && env.Value == "agy:");
+    }
+
+    [Fact]
     public void An_empty_pattern_list_alongside_a_shell_grant_still_translates()
     {
         // The control, and the polarity mirror of the refusal above: the two differ only in whether

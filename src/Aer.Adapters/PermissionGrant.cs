@@ -23,12 +23,24 @@ namespace Aer.Adapters;
 /// </param>
 /// <param name="ShellCommandPatterns">Command-pattern allowlist (e.g. <c>"git:*"</c>) — only meaningful when <see cref="RunShellCommands"/> is set.</param>
 /// <param name="NetworkAccess">Grants outbound network access (web fetch/search tools).</param>
+/// <param name="DeniedShellCommandPatterns">
+/// 0022's <c>DenyAlways</c> rung (M-Phase-6 #390) — a standing "never" list in the same
+/// <c>ShellCommandPatternMatcher</c> glob form as <see cref="ShellCommandPatterns"/>, but subtractive:
+/// a match here is refused regardless of <see cref="RunShellCommands"/> or a matching entry in
+/// <see cref="ShellCommandPatterns"/>. A closed "no" is not reopened by a wider later grant. Enforced
+/// next turn on both vendors — claude via <c>--disallowedTools Bash(pattern)</c>
+/// (<c>ClaudeWorkerAdapter.BuildDisallowedTools</c>, which the CLI applies with precedence over
+/// <c>--allowedTools</c>), agy via its <c>PreToolUse</c> hook's <c>IsDenied</c> check (agy has no
+/// vendor flag that can express a command family). Written only by <c>RuntimePermissionGrantAmender</c>
+/// when the operator answers the DenyAlways rung.
+/// </param>
 public sealed record PermissionGrant(
     bool ReadFiles = false,
     bool WriteFiles = false,
     bool RunShellCommands = false,
     IReadOnlyList<string>? ShellCommandPatterns = null,
-    bool NetworkAccess = false)
+    bool NetworkAccess = false,
+    IReadOnlyList<string>? DeniedShellCommandPatterns = null)
 {
     /// <summary>
     /// True when every category is unset — the structured equivalent of a blank
@@ -37,7 +49,8 @@ public sealed record PermissionGrant(
     /// <c>WorkerBindingEntryViewModel.TryBuildEntry</c>'s decision of record).
     /// </summary>
     public bool IsEmpty => !ReadFiles && !WriteFiles && !RunShellCommands && !NetworkAccess
-        && (ShellCommandPatterns is null || ShellCommandPatterns.Count == 0);
+        && (ShellCommandPatterns is null || ShellCommandPatterns.Count == 0)
+        && (DeniedShellCommandPatterns is null || DeniedShellCommandPatterns.Count == 0);
 
     /// <summary>
     /// The categories this grant WITHHOLDS that a granted shell reaches anyway — empty when the

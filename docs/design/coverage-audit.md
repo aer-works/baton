@@ -17,7 +17,7 @@ and `docs/plan.md` — not judged by reading. **16 of the first 18 tested were a
 |---|---|---|
 | A **rule** that constrains future work | numbered decision record | it is a choice with alternatives and a cost |
 | A **promise** to a person | `spec/journeys.md` + registry | it is demonstrable end to end |
-| A **screen** or affordance | the UI spec replacement (`#367`) | it describes a surface |
+| A **screen** or affordance | the UI spec replacement (`#474`) | it describes a surface |
 | A **feature** or fix | GitHub issue | it is a unit of work |
 
 A single call can land in two places — the rule in a record, the demonstration as a journey. That is
@@ -30,7 +30,7 @@ correct, not duplication: the record says *why*, the journey says *what you get*
 | **Consulting is not deciding.** Put a question to anyone — including a worker not yet in the room — and it joins to answer. The gate stays open the whole time; only you close it. Asking three still decides nothing. | 03, 07 | ✅ **landed** — [0019](../decisions/0019-consulting-is-not-deciding.md). The corpus calls this *"the single most important behaviour in the room model"* and *"if only one thing survives contact with implementation, it should be this."* |
 | **Routing is a control.** You choose who answers and what they see. The product never reads the conversation to decide who should respond. | 03 | ✅ **landed** — 0019 §4. CLAUDE.md Architecture Rule 1 surfacing in the UI, and what keeps cross-examination from becoming inference. |
 | **Adding a worker = asking a question.** No separate participant-management surface. | 03 | ✅ **landed** — 0019 §1. |
-| **What a newly-added worker sees:** a room summary + the raising turn and its attachments verbatim + the ability to query for more (`#424`). Always disclosed before sending, every item removable. | 06 | ✅ **landed** — 0019 §3; the disclosure *UI* still routes to `#367`. |
+| **What a newly-added worker sees:** a room summary + the raising turn and its attachments verbatim + the ability to query for more (`#424`). Always disclosed before sending, every item removable. | 06 | ✅ **landed** — 0019 §3; the disclosure *UI* still routes to `#474`. |
 
 ## 2 · Permissions
 
@@ -39,7 +39,7 @@ correct, not duplication: the record says *why*, the journey says *what you get*
 | **The scope ladder** — allow once / this command here / anything here — offered **at the moment of asking**, never buried in settings. | 04, 07 | **→ extends [0004](../decisions/0004-permission-scopes.md).** 0004 has the *scopes*; the ladder-at-point-of-ask is the affordance and is absent. |
 | **Denial is an answer.** A refused worker is told and continues — it does not silently retry and does not die. | 04, 07 | **→ same.** Absent, and it is the difference between a safety feature and a dead end. |
 | **A pending permission dies with its turn**, everywhere at once, and the transcript says why. | 06 | **→ same.** |
-| **A queued message does not send into a blocked worker.** The queue waits on the whole turn, permission included, and says what it is waiting for. "Send now" interrupts — which here means denying the permission — and the control says so. | 06 | **→ same**, affordance to `#367`. (The general in-flight-message queue itself now exists — `#1074` — but it waits on a *running turn*; waiting on a *permission* gate, and "Send now", ride the `#367` gate surface.) |
+| **A queued message does not send into a blocked worker.** The queue waits on the whole turn, permission included, and says what it is waiting for. "Send now" interrupts — which here means denying the permission — and the control says so. | 06 | **→ same**, affordance to `#474`. (The general in-flight-message queue itself now exists — `#1074` — but it waits on a *running turn*; waiting on a *permission* gate, and "Send now", ride the `#474`/`#751` gate surface.) |
 
 ## 3 · State, errors and freshness
 
@@ -68,9 +68,9 @@ correct, not duplication: the record says *why*, the journey says *what you get*
 |---|---|---|
 | **Commands are namespaced** — room commands, then each vendor's own. Resolves an ambiguity single-agent tools never face. | 04 | **→ extends [0010](../decisions/0010-skills-and-advisor.md).** |
 | **`/ask-all`** — one question to every worker, answers side by side. | 04, 07 | **→ same**, plus a journey. |
-| **No slash palette on a phone** — the same commands become an Actions sheet from the room header. | 04 | **→ `#367`.** |
-| **Canonical skills under Room, native skills under their vendor, marked as such.** | 06 | **→ extends 0010** / `#386`. |
-| **An advisor is a preset, not a new noun.** Roles are instructions. | 06 | **→ `#385`**, which currently proposes it as a participant kind. |
+| **No slash palette on a phone** — the same commands become an Actions sheet from the room header. | 04 | **→ `#474`.** |
+| **Canonical skills under Room, native skills under their vendor, marked as such.** | 06 | **→ extends 0010** / `#386` (under `#758`). |
+| **An advisor is a preset, not a new noun.** Roles are instructions. | 06 | **→ `#385`** (under `#758`), which currently proposes it as a participant kind. |
 
 ## 6 · Rooms, files and shapes
 
@@ -80,12 +80,12 @@ correct, not duplication: the record says *why*, the journey says *what you get*
 | Shapes are an ordered list that renders as a graph | 02 | ✅ **landed** — [0014](../decisions/0014-shapes-are-a-list-not-a-canvas.md). |
 | **"Ask me first" is a property of a step, not a node type** — one switch is the entire mental model for human oversight. | 02 | **→ extends 0014.** |
 | **A step's instruction is its body**; previous output flows in implicitly; no template language. | 06 | **→ extends 0014.** |
-| **Artifacts are files** — vendor-neutral, versioned, attributed, explicitly attached, diffable between vendors. | 03, 07 | **→ new decision record.** Only partially implied today; `#377` covers the viewer, not the model. |
+| **Artifacts are files** — vendor-neutral, versioned, attributed, explicitly attached, diffable between vendors. | 03, 07 | **→ new decision record.** Only partially implied today; `#377` (under `#751`) covers the viewer, not the model. |
 | **Saving a working document into the project: diff-and-choose, never overwrite by default**, and flag divergence since derivation. | 06 | **→ same record.** |
 | **Documents stay, plumbing goes.** One file list; the only distinction is "in your project" or not. Execution directories are never surfaced. | 04 | **→ same record.** |
-| **Child rooms** nest in the list and report back as a turn; the parent never blocks. | 06 | **→ `#340`** — scope extended with the non-blocking parent, and its interaction with `#480`'s directory lock. |
-| **Two rooms on one folder**: serialised already (verified — the turn lock is keyed on directory path). Surface the wait, name the holder, warn on a duplicate room. | 06 | **→ `#480`.** The engine behaviour is verified and correct; only the *surfacing* is absent. |
-| **Gates render inline**, in the conversation that produced them, reachable from a "needs you" filter and the phone. The separate decision surface goes away. | 02 | Inline gates + phone entry point **→ `#367`**. Desktop "needs you" filter: ✅ **landed** — `#1072` (a filter on the switcher; needs-you rows expand in place to their paused steps, decision 0007's middle level, and the Home decision inbox retired into it). |
+| **Child rooms** nest in the list and report back as a turn; the parent never blocks. | 06 | **→ `#340`** (under `#756`) — scope extended with the non-blocking parent, and its interaction with `#480`'s directory lock. |
+| **Two rooms on one folder**: serialised already (verified — the turn lock is keyed on directory path). Surface the wait, name the holder, warn on a duplicate room. | 06 | **→ `#480`** (under `#752`). The engine behaviour is verified and correct; only the *surfacing* is absent. |
+| **Gates render inline**, in the conversation that produced them, reachable from a "needs you" filter and the phone. The separate decision surface goes away. | 02 | Inline gates + phone entry point **→ `#474`/`#751`**. Desktop "needs you" filter: ✅ **landed** — `#1072` (a filter on the switcher; needs-you rows expand in place to their paused steps, decision 0007's middle level, and the Home decision inbox retired into it). |
 | Rooms are the front door on both surfaces; "needs you" is a filter, not the landing screen | 02 | ✅ **landed** — 0018 + `#337`; the desktop rail is now the three icon-only destinations 02-screens draws (`#1071`), with Home folded into the ▤ rooms front door. |
 
 ## 7 · The nine claims and their demonstrations
@@ -109,16 +109,16 @@ change under `ReconcileTests`. None exists today.
 ## 8 · The eight delights
 
 Not differentiators alone; collectively the difference between a tool you tolerate and one you like.
-**All eight are tracked — three shipped (`#482`/`#463`/refresh-rule), one partial (`#462`'s never-block half, `#1074`); the other four remain unbuilt.**
+**All eight are tracked — four shipped (y/n `#481`, `#482`, `#463`, refresh-rule), one partial (`#462`'s never-block half, `#1074`); the other three remain unbuilt.**
 
 | Delight | Status |
 |---|---|
-| `y`/`n` for permissions, never bound to Enter, so a reflex cannot approve | **→ `#481`** — closed, **unbuilt** (source checked 2026-08; not in the `#750` set): permissions are config-time only (`AuthorView` checkboxes → adapter flags); no runtime permission gate exists |
+| `y`/`n` for permissions, never bound to Enter, so a reflex cannot approve | **✅ both surfaces built** (`#481`/`#390`, source 2026-08): the runtime permission gate renders inline in chat with the scope ladder. **Desktop** — a bare `y` allows / `n` denies, never on Enter and never with a modifier (`MainWindow.PermissionAnswerFor`, `PermissionGateKeystrokeTests`); config-time `AuthorView` flags still exist alongside it. **Phone** — the same gate card (`chat_screen.dart` `PermissionGateCard`) with tap rungs (no keyboard shortcuts on mobile). Both **live-driven 2026-08-09**: the full scope ladder renders per `04`'s mockup and the cross-room rung is absent (0052); the drive exercised the **Allow once** rung, which clears the gate (a `runtimePermissionAnswered` turn is recorded) — desktop from the daemon's `/api/rooms/open` response, phone from the WS projection push. The other rungs render but were not individually clicked. Scope is the **permission** kind only; the consult/escalation kinds remain absent (`#474`/`#751`). |
 | Typing never blocks; the queue is visible, with interrupt and remove | **◐ partial** — `#462` (open `#750`). The **never-block + visible + removable queue** half landed via **`#1074`**: the desktop composer no longer disables mid-turn; a send joins a visible, removable FIFO that drains one message per turn-completion. **Interrupt** ("Send now" cancels the running turn) is the deferred half — a distinct mechanism, its own slice. |
 | Failures offer the fix, with the worker that failed already holding the context | ✅ **shipped** — `#482` (desktop verified: `RoomView`'s failed-step banner shows the error text inline with **Try again** / **Ask ⟨worker⟩ to fix it** / **Show full output**) |
 | Jump to the last decision via an event rail | **→ `#459`** — grouped into open `#750`, **unbuilt** (the earlier "(exists)" was wrong): no event rail or keyboard nav to a decision exists anywhere |
 | Status readable without colour | ✅ **shipped** — `#463` |
-| *"Thought for 12s"* reported after the fact, never a live counter | **→ `#483`** — closed, **unbuilt** (source checked 2026-08; not in the `#750` set): no duration / thinking-time rendering exists |
+| *"Thought for 12s"* reported after the fact, never a live counter | **→ `#483`** (under `#752`) — **unbuilt** (source checked 2026-08): no duration / thinking-time rendering exists |
 | Success collapses, failure opens | **→ `#267`** — grouped into open `#750`. The **markdown/code-rendering** half of `#267` is landing per surface (desktop `#1076`, [0051](../decisions/0051-markdown-rendering-is-a-defined-subset-parsed-per-platform.md)) — canonical status in the §7 row above. The two halves this row names: failure-open exists via `#482`'s inline banner; **success-collapse is still absent** |
 | Refresh never blanks | ✅ **landed** as a rule — [0018](../decisions/0018-attention-is-the-primary-signal.md); built with the rebuild |
 
@@ -126,7 +126,7 @@ Not differentiators alone; collectively the difference between a tool you tolera
 
 | Item | Why |
 |---|---|
-| Curved Bézier DAG edges, hover tracing | ⛔ The corpus itself marks this *"obsolete — close rather than implement"*: it is polish for the freeform canvas 0014 rejects. **Done:** `#266` was split and closed, `#208` folded in, and the surviving half — vendor brand marks on workers plus status motion and skeletons — carried to **`#476`** in M30. |
+| Curved Bézier DAG edges, hover tracing | ⛔ The corpus itself marks this *"obsolete — close rather than implement"*: it is polish for the freeform canvas 0014 rejects. **Done:** `#266` was split and closed, `#208` folded in, and the surviving half — vendor brand marks on workers plus status motion and skeletons — carried to **`#476`** (under `#757`) in M30. |
 | The pixel-level styling of the mockups | ⛔ Superseded by [0006](../decisions/0006-visual-direction-quiet.md) and the shipped token set, which are normative. The mockups are kept for layout and state, not colour values. |
 | Anything in the corpus contradicted by a later correction | ⛔ Records win over corpus — see [`README.md`](README.md). Notably: notifications never carry a verdict, rooms rather than "needs you" as the phone's landing screen, and the playful status verbs are **kept** (an earlier pass proposed removing them). |
 
@@ -141,12 +141,12 @@ each row cites the issue tracked elsewhere in this doc rather than restating it 
 |---|---|---|---|
 | First run | ✅ | ✅ | Front door + readiness (`#1071`/`#478`); phone pairing+QR. |
 | The daily driver | ✅ | ✅ | Switcher-landing (`#1046`/`#1071`), state-grouped list (`#1072`), single worker chip, markdown chat (`#1076`/`#1080`). |
-| Two workers, a gate | ❌ | ❌ | The spine gap: add-worker + multi-worker chips (M27, unbuilt) + the **conversational gate as a turn** (§1 cross-examination is decided in 0019; its UI is `#367`). |
+| Two workers, a gate | ◐ | ◐ | The spine gap narrows: the **conversational gate as a turn** now renders on **both** surfaces for the permission kind (`#390`, 0022) — desktop and phone, both live-driven 2026-08-09. Still unbuilt: add-worker + multi-worker chips (M27); the consult/escalation kinds (§1 cross-examination is decided in 0019; its UI is `#474`/`#751`). |
 | When it fails | ✅ | ◐ | Desktop `#482` inline failed-banner matches the screen; phone shows failed card state, not the full inline fix-affordance set. |
 | Starting from a template | ✅ | n/a | `TemplatePickerWindow` + guided flow (phone template use out-of-scope, 0041). |
 | Drawing a shape (editor) | ◐ | n/a | `AuthorView` list-not-canvas + DAG preview (0014); the per-row **"ask me first" gate toggle** and named-blocker fan-out UI are the thin part (§6 "ask me first" → extends 0014). |
 | Settings | ✅ | — | Workers readiness (`#1069`), pairing, appearance. |
-| Phone (rooms/chat/gate/notif) | — | ◐ | Rooms root, needs-you filter, chat (`#1080`), **working step-review inbox** (Approve/Reject/Supersede, `#1049`). The *conversational* gate rides `#367`; notifications-inform is a §8 item. |
+| Phone (rooms/chat/gate/notif) | — | ◐ | Rooms root, needs-you filter, chat (`#1080`), **working step-review inbox** (Approve/Reject/Supersede, `#1049`), and the **permission** conversational gate inline in chat (`#390`, live-driven 2026-08-09). The consult/escalation kinds of the conversational gate ride `#474`/`#751`; notifications-inform is a §8 item. |
 | M27 · skill attach on chip | ❌ | ❌ | No skill-attach UI either surface (0033). |
 | M27 · skill creation drawer | ❌ | n/a | Unbuilt (0031/0033). |
 | M27 · orchestrator + add/remove worker | ❌ | ❌ | No orchestrator pin, add-worker, or removal guards (0032). |
@@ -154,14 +154,21 @@ each row cites the issue tracked elsewhere in this doc rather than restating it 
 | Resident · spend controls | ◐ | ◐ | `RoomTurnHostBanner` **displays** meter+values (`#994`) but read-only; the editable-in-place fields + used-this-hour bar are the gap. |
 | Resident · dormant | ✅ | ◐ | Desktop dormant banner + Wake + escalation text in transcript (`#994`); phone card state present, drawer partial. |
 | Resident · waiting on a lock | ✅ | ◐ | `WaitingOnLockBanner` (`#618`) names holder+try-again; names the *path* until the lock grows a room-name field (`#752`/`#480`). |
-| Resident · escalation is a gate | ❌ | ❌ | It *is* the runtime gate `#367`; only the dormancy escalation *text* renders today. |
+| Resident · escalation is a gate | ❌ | ❌ | It *is* the runtime gate (`#474`/`#751`); only the dormancy escalation *text* renders today. |
 
 **The distinction the tables above blur:** the *step-review* gate (0007 pause → Approve/Reject/Supersede)
-**is** built on both surfaces — desktop `PausedStepViewModel`, phone `inbox_screen._decide`. What is
-absent is the *conversational* gate (`#367`): a worker asking mid-turn (permission / consult /
-escalation) rendered inline where it was raised, with the scope-ladder and "Ask someone…". That gate
-is the single highest-leverage gap — it is the spine of "two workers, a gate", the phone gate,
-escalation, and cross-examination (0019, the corpus's stated *"single most important behaviour"*).
+**is** built on both surfaces — desktop `PausedStepViewModel`, phone `inbox_screen._decide`. The
+*conversational* gate is now **partly** built: its **permission** kind renders inline on **both
+surfaces** with the full scope ladder (`#390`/`#445`, 0022) — a worker asking mid-turn for a command,
+answered where it was raised. Live-driven on desktop and phone 2026-08-09 via the Allow-once rung
+(which clears the gate); the remaining rungs render but were not individually exercised. What remains absent:
+the **consult / escalation** kinds, and "Ask someone…" (0019) — their *spec transfer* is `#474`'s
+untransferred-screens work, and their *implementation* is tracked under umbrella `#751` (member `#494`);
+the doc's earlier `#367` cites meant the docs-scrub issue that gated the spec rewrite, which closed
+without the rewrite happening, so `#474`/`#751` are the live trackers everywhere this doc routes gate UI. That gate is the single highest-leverage
+gap — the spine of "two workers, a gate", escalation, and cross-examination (0019, the corpus's stated
+*"single most important behaviour"*); the permission slice, now on both surfaces, is the first piece of
+it to land.
 
 ## What is left to route
 
@@ -200,8 +207,8 @@ one coordinated change under `ReconcileTests`. Note the ordering constraint: the
 `J<n>` reference from `docs/plan.md` and requires a matching heading in the spec, so the journeys must
 land **before** anything cites them.
 
-**The screens** (§ across 02) go to `#367`, the UI spec replacement — the largest single body of untransferred
-material, ~350 lines across eight screens on two surfaces.
+**The screens** (§ across 02) go to `#474`, which tracks the untransferred corpus — the largest single body,
+~350 lines across eight screens on two surfaces.
 
 ## Still genuinely open
 

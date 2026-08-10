@@ -227,6 +227,18 @@ namespace Aer.Daemon
             App = app;
             onBuilt?.Invoke(app);
 
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await ReconcilePendingPermissionsAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Crash reconciliation failed: {ex.Message}");
+                }
+            });
+
             bool SafeEquals(string a, string b)
             {
                 if (a.Length != b.Length) return false;
@@ -1082,6 +1094,136 @@ namespace Aer.Daemon
                 return Results.Ok();
             });
 
+            app.MapPost("/api/rooms/permissions/answer", async ([FromBody] AnswerPermissionRequest request, RoomClient session) =>
+            {
+                if (string.IsNullOrEmpty(request.DirectoryPath)) return Results.BadRequest("DirectoryPath is required.");
+                if (string.IsNullOrEmpty(request.PermissionRequestId)) return Results.BadRequest("PermissionRequestId is required.");
+                if (string.IsNullOrEmpty(request.DecisionKind)) return Results.BadRequest("DecisionKind is required.");
+
+                // Read once up front, regardless of which branch resolves outputDir below: #390 needs
+                // the asked ToolName/ToolInputJson to persist a scoped grant, and PendingGateRegistry
+                // (the live-doorbell path) never carried them.
+                RoomEvent.RuntimePermissionAsked? askedEvent = null;
+                var permissionsAnswerRoomLogPath = Path.Combine(request.DirectoryPath, "room.jsonl");
+                if (File.Exists(permissionsAnswerRoomLogPath))
+                {
+                    var askedReader = new RoomEventLogReader(permissionsAnswerRoomLogPath);
+                    var askedEvents = await askedReader.ReadAllRoomEventsAsync().ConfigureAwait(false);
+                    askedEvent = askedEvents.OfType<RoomEvent.RuntimePermissionAsked>()
+                        .FirstOrDefault(a => a.PermissionRequestId == request.PermissionRequestId);
+                }
+
+                string? outputDir = null;
+                if (PendingGateRegistry.TryGet(request.PermissionRequestId, out var entry))
+                {
+                    outputDir = entry.OutputDir;
+                }
+                else if (askedEvent != null)
+                {
+                    var artifactsDir = Path.Combine(request.DirectoryPath, ArtifactManager.ArtifactsDirectoryName);
+                    outputDir = ArtifactManager.ResolveOutputDirectory(artifactsDir, askedEvent.ExecutionId);
+                }
+
+                if (string.IsNullOrEmpty(outputDir))
+                {
+                    return Results.NotFound($"Permission request '{request.PermissionRequestId}' was not found.");
+                }
+
+                Directory.CreateDirectory(outputDir);
+
+                string? updatedInputJson = null;
+                if (request.UpdatedInput.HasValue && request.UpdatedInput.Value.ValueKind != JsonValueKind.Undefined && request.UpdatedInput.Value.ValueKind != JsonValueKind.Null)
+                {
+                    updatedInputJson = request.UpdatedInput.Value.ValueKind == JsonValueKind.String
+                        ? request.UpdatedInput.Value.GetString()
+                        : request.UpdatedInput.Value.GetRawText();
+                }
+
+                var answerPayload = new
+                {
+                    decisionKind = request.DecisionKind,
+                    updatedInputJson = updatedInputJson,
+                    reason = request.Reason
+                };
+
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    WriteIndented = true
+                };
+
+                var answerFileName = $"answer-{request.PermissionRequestId}.json";
+                var answerFilePath = Path.Combine(outputDir, answerFileName);
+                var tempFilePath = Path.Combine(outputDir, $"{answerFileName}.{Guid.NewGuid():N}.tmp");
+
+                var answerJson = JsonSerializer.Serialize(answerPayload, jsonOptions);
+                await File.WriteAllTextAsync(tempFilePath, answerJson).ConfigureAwait(false);
+                File.Move(tempFilePath, answerFilePath, overwrite: true);
+
+                var roomLogFile = Path.Combine(request.DirectoryPath, "room.jsonl");
+                var roomReader = new RoomEventLogReader(roomLogFile);
+                await using var roomWriter = new RoomEventLogWriter(roomLogFile);
+
+                await RoomMutationInterface.AnswerPermissionAsync(
+                    request.DirectoryPath,
+                    roomReader,
+                    roomWriter,
+                    request.PermissionRequestId,
+                    request.DecisionKind,
+                    updatedInputJson,
+                    request.Reason,
+                    "human").ConfigureAwait(false);
+
+                // #390: for a persisting rung, amend the room's chat-worker PermissionGrant. See
+                // RuntimePermissionGrantAmender for how the next interactive turn then enforces it.
+                if (askedEvent != null)
+                {
+                    // The answer file written above already released the worker, so a fast next turn's
+                    // per-turn bindings.json write can race this read-modify-write. Take the same room
+                    // guard the mutation path uses; AcquireWithin (not Acquire) because that holder
+                    // releases in milliseconds -- #857's shape -- and a routine overlap should wait, not
+                    // 500 an already-recorded answer. If it stays held, fail narrow: the answer applies
+                    // once only (never wider) and we say so.
+                    try
+                    {
+                        using var amendGuard = ConcurrencyGuard.AcquireWithin(
+                            request.DirectoryPath, TimeSpan.FromSeconds(2), "permission-answer grant amend");
+                        var amendOutcome = await RuntimePermissionGrantAmender.AmendAsync(
+                            request.DirectoryPath,
+                            InteractiveSessionMaterializer.DefaultWorkerName,
+                            request.DecisionKind,
+                            askedEvent.ToolName,
+                            askedEvent.ToolInputJson).ConfigureAwait(false);
+
+                        if (amendOutcome == PermissionAmendOutcome.CouldNotPersist)
+                        {
+                            // The operator picked a standing rung but no grant could be written (no
+                            // binding, or the asked command was unparseable and derivation failed
+                            // closed). It applies once only -- surface the narrowing, don't swallow it.
+                            Console.Error.WriteLine(
+                                $"Permission answer '{request.DecisionKind}' for '{askedEvent.ToolName}' could not " +
+                                "persist a standing grant; it applies once only.");
+                        }
+                    }
+                    catch (WorkflowLockedException ex)
+                    {
+                        Console.Error.WriteLine(
+                            $"Permission answer '{request.DecisionKind}' recorded, but persisting the standing " +
+                            $"grant lost the room lock ({ex.Message}); it applies once only.");
+                    }
+                }
+
+                PendingGateRegistry.TryRemove(request.PermissionRequestId, out _);
+
+                var outcome = await session.LoadAsync(request.DirectoryPath).ConfigureAwait(false);
+                if (outcome.Projection is { } proj)
+                {
+                    await broadcast.BroadcastStateAsync(proj, request.DirectoryPath).ConfigureAwait(false);
+                }
+
+                return Results.Ok();
+            });
+
             app.MapPost("/api/rooms/cancel", async ([FromBody] CancelRoomRequest request, RoomClient session) =>
             {
                 if (string.IsNullOrEmpty(request.DirectoryPath)) return Results.BadRequest("DirectoryPath is required.");
@@ -1933,7 +2075,13 @@ namespace Aer.Daemon
                 SessionId: vendorSessionId,
                 ResumeSession: resumeSession,
                 StreamJson: string.Equals(targetAdapter, "claude", StringComparison.OrdinalIgnoreCase),
-                LogFilePath: logFilePath);
+                LogFilePath: logFilePath,
+                // #445: the ONE binding that opts into the runtime conversational gate. An interactive
+                // turn is the only dispatch shape with a human on the other end to answer an ask -- the
+                // anchor step's own binding (written at materialization) deliberately does not set it,
+                // so an ungranted capability there still fails closed exactly as it does in a one-shot
+                // run. See WorkerInvocation.EnablePermissionGate.
+                EnablePermissionGate: true);
 
             // #285: must start from the existing bindings, not a fresh dictionary containing only
             // "chat-worker" -- a full replacement here silently dropped the anchor step's own
@@ -2014,6 +2162,11 @@ namespace Aer.Daemon
                     }
                 });
             }
+
+            await using var doorbell = new DoorbellMonitor(
+                directoryPath, targetAdapter, vendorSessionId,
+                async dir => (await session.LoadAsync(dir).ConfigureAwait(false)).Projection,
+                broadcastStateAsync);
 
             try
             {
@@ -2439,6 +2592,134 @@ namespace Aer.Daemon
                 ? "The vendor process exited without producing a response."
                 : lastLine;
         }
+
+        internal static async Task ReconcilePendingPermissionsAsync(string? roomsDirOverride = null, CancellationToken cancellationToken = default)
+        {
+            var baseRoomsDir = roomsDirOverride ?? AerPaths.Rooms;
+            if (!Directory.Exists(baseRoomsDir)) return;
+
+            string[] roomDirs;
+            try
+            {
+                roomDirs = Directory.GetDirectories(baseRoomsDir);
+            }
+            catch
+            {
+                return;
+            }
+
+            foreach (var roomDir in roomDirs)
+            {
+                await ReconcileRoomPermissionsAsync(roomDir, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        internal static async Task ReconcileRoomPermissionsAsync(string roomDir, CancellationToken cancellationToken = default)
+        {
+            var artifactsDir = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
+            if (!Directory.Exists(artifactsDir)) return;
+
+            string[] askFiles;
+            try
+            {
+                askFiles = Directory.GetFiles(artifactsDir, "ask-*.json", SearchOption.AllDirectories);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (askFiles.Length == 0) return;
+
+            // Do NOT bail when room.jsonl is absent: a worker that asked permission on its first turn and
+            // crashed before any journal write leaves an orphan ask in a journal-less room. Requiring the
+            // journal to pre-exist would make that pause silently unrecoverable -- the exact "absence must
+            // be observed, never assumed" failure 0018 forbids. RaisePermissionAsync's writer creates the
+            // journal, so an empty prior-events list is the correct starting point.
+            var roomLogPath = Path.Combine(roomDir, "room.jsonl");
+            var reader = new RoomEventLogReader(roomLogPath);
+            IReadOnlyList<RoomEvent> events = File.Exists(roomLogPath)
+                ? await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false)
+                : [];
+
+            var resolvedIds = events.OfType<RoomEvent.RuntimePermissionAnswered>()
+                .Select(a => a.PermissionRequestId)
+                .Concat(events.OfType<RoomEvent.RuntimePermissionRevoked>().Select(r => r.PermissionRequestId))
+                .ToHashSet(StringComparer.Ordinal);
+
+            foreach (var askFile in askFiles)
+            {
+                var fileName = Path.GetFileName(askFile);
+                if (!fileName.StartsWith("ask-", StringComparison.OrdinalIgnoreCase) || !fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var permissionRequestId = fileName.Substring(4, fileName.Length - 9);
+                if (string.IsNullOrWhiteSpace(permissionRequestId)) continue;
+
+                var outputDir = Path.GetDirectoryName(askFile)!;
+                var answerFile = Path.Combine(outputDir, $"answer-{permissionRequestId}.json");
+
+                if (File.Exists(answerFile)) continue;
+                if (resolvedIds.Contains(permissionRequestId)) continue;
+
+                try
+                {
+                    var jsonText = await File.ReadAllTextAsync(askFile, cancellationToken).ConfigureAwait(false);
+                    using var doc = JsonDocument.Parse(jsonText);
+                    var root = doc.RootElement;
+
+                    var dirName = Path.GetFileName(outputDir);
+                    var executionIdStr = dirName.StartsWith("execution_", StringComparison.OrdinalIgnoreCase)
+                        ? dirName.Substring("execution_".Length)
+                        : dirName;
+                    var executionId = new ExecutionId(executionIdStr);
+
+                    var toolName = root.TryGetProperty("toolName", out var tnElem) && tnElem.ValueKind == JsonValueKind.String
+                        ? tnElem.GetString()!
+                        : "unknown";
+
+                    string inputJson = "{}";
+                    if (root.TryGetProperty("inputJson", out var inElem))
+                    {
+                        inputJson = inElem.ValueKind == JsonValueKind.String ? inElem.GetString()! : inElem.GetRawText();
+                    }
+
+                    DateTimeOffset askedAt = root.TryGetProperty("askedAt", out var askedAtElem) && askedAtElem.TryGetDateTimeOffset(out var dto)
+                        ? dto
+                        : DateTimeOffset.UtcNow;
+
+                    var entry = new PendingGateEntry(roomDir, outputDir, executionIdStr, askFile);
+                    PendingGateRegistry.Register(permissionRequestId, entry);
+
+                    await using var writer = new RoomEventLogWriter(roomLogPath);
+                    await RoomMutationInterface.RaisePermissionAsync(
+                        roomDir,
+                        reader,
+                        writer,
+                        permissionRequestId,
+                        executionId,
+                        new StepId(InteractiveSessionMaterializer.DefaultStepId),
+                        InteractiveSessionMaterializer.DefaultWorkerName,
+                        "unknown",
+                        "",
+                        toolName,
+                        inputJson,
+                        toolName,
+                        askedAt,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // Log and continue: a single unreadable/corrupt ask file must not abort reconciling
+                    // the rest, but it must NOT vanish silently -- a swallowed exception here is exactly
+                    // the "silence must be earned" failure (0018) in the mechanism that exists to prevent
+                    // silent loss. This surfaced a real defect (an empty vendor correlation id threw and
+                    // was hidden, killing all reconciliation).
+                    Console.Error.WriteLine(
+                        $"reconcile: failed to re-raise permission ask '{askFile}': {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
     }
 
     public class PairRequest
@@ -2470,5 +2751,12 @@ namespace Aer.Daemon
 
     /// <summary>#992: clears dormancy on a room.</summary>
     public record ClearDormancyRequest(string RoomDirectoryPath);
+
+    public record AnswerPermissionRequest(
+        string DirectoryPath,
+        string PermissionRequestId,
+        string DecisionKind,
+        JsonElement? UpdatedInput = null,
+        string? Reason = null);
 }
 

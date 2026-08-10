@@ -77,6 +77,14 @@ public static class AgyHookCheckCommand
         HookCheckCommand.ShellPatternsEnvironmentVariable;
 
     /// <summary>
+    /// Mirror-name for <see cref="Aer.Adapters.AgyWorkerAdapter.DeniedShellPatternsVariable"/> — the one
+    /// canonical literal, owned there because that adapter emits it, read here. See it for what the
+    /// channel is and why agy needs it.
+    /// </summary>
+    public const string DeniedShellPatternsEnvironmentVariable =
+        Aer.Adapters.AgyWorkerAdapter.DeniedShellPatternsVariable;
+
+    /// <summary>
     /// agy reads the verdict from stdout and the process exit code carries no gating meaning — a
     /// denial and an allow both exit 0. Compare <see cref="HookCheckCommand.DeniedExitCode"/>, where
     /// the exit code <i>is</i> the signal.
@@ -109,14 +117,17 @@ public static class AgyHookCheckCommand
     /// </summary>
     public static int Execute(
         TextReader stdin, TextWriter stdout, string? deniedToolsRaw, string? shellPatternsRaw = null,
-        string? outboxDirectory = null, string? workspaceDirectory = null)
+        string? outboxDirectory = null, string? workspaceDirectory = null,
+        string? deniedShellPatternsRaw = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stdout);
 
         try
         {
-            stdout.Write(Decide(stdin, deniedToolsRaw, shellPatternsRaw, outboxDirectory, workspaceDirectory));
+            stdout.Write(Decide(
+                stdin, deniedToolsRaw, shellPatternsRaw, outboxDirectory, workspaceDirectory,
+                deniedShellPatternsRaw));
         }
         catch
         {
@@ -140,7 +151,7 @@ public static class AgyHookCheckCommand
 
     private static string Decide(
         TextReader stdin, string? deniedToolsRaw, string? shellPatternsRaw,
-        string? outboxDirectory, string? workspaceDirectory)
+        string? outboxDirectory, string? workspaceDirectory, string? deniedShellPatternsRaw)
     {
         // Drain stdin first and unconditionally: agy is the writer on the other end of this pipe,
         // and exiting before reading its full payload risks a blocked write on its side for any
@@ -178,6 +189,11 @@ public static class AgyHookCheckCommand
         // tool, so its state is not allowed to decide the verdict for any other tool — a non-Present
         // list denies run_command (see there) but leaves view_file et al. to the denied-tool channel.
         var shellPatternList = ShellPatternList.Parse(shellPatternsRaw, VendorTag);
+
+        // The DenyAlways channel (#390), parsed the same way and judged in the same branch. Deny beats
+        // allow, so it is checked BEFORE the allow-narrowing below: a standing "never" refuses the
+        // command even when the shell is otherwise (or unscoped-ly) granted.
+        var deniedShellPatternList = ShellPatternList.Parse(deniedShellPatternsRaw, VendorTag);
 
         // #679 removed the early allow for an empty list here as on claude; see
         // HookCheckCommand.Decide for why, and for what an empty list cannot be told apart from.
@@ -254,6 +270,41 @@ public static class AgyHookCheckCommand
                         : "AER: the permission gate received another vendor's shell pattern list, whose " +
                           "patterns it cannot judge, and denied this run_command call rather than allowing " +
                           "it unchecked.");
+            }
+
+            // The DenyAlways channel is emitted alongside the allow one, so a non-Present state is the
+            // same broken-channel failure #679 closed for denied tools — fail closed rather than skip a
+            // standing "never" we cannot read.
+            if (deniedShellPatternList.Status != ShellPatternListStatus.Present)
+            {
+                return DenyJson(
+                    deniedShellPatternList.Status == ShellPatternListStatus.Absent
+                        ? "AER: the permission gate did not receive its denied shell pattern list and denied " +
+                          "this run_command call rather than allowing it unchecked."
+                        : "AER: the permission gate received another vendor's denied shell pattern list, whose " +
+                          "patterns it cannot judge, and denied this run_command call rather than allowing it " +
+                          "unchecked.");
+            }
+
+            // Deny beats allow (0022, #390): a standing "never" refuses the command BEFORE any
+            // allow-narrowing, so an unscoped grant (empty allow list) or a matching allow pattern
+            // cannot reopen a family the operator has closed.
+            if (deniedShellPatternList.Patterns.Count > 0)
+            {
+                if (commandLine is null)
+                {
+                    return DenyJson(
+                        "AER: the 'run_command' tool has standing deny patterns, but this gate could not " +
+                        "read toolCall.args.CommandLine in the hook payload and denied this call rather " +
+                        "than allowing it unchecked.");
+                }
+
+                if (Aer.Adapters.ShellCommandPatternMatcher.IsDenied(commandLine, deniedShellPatternList.Patterns))
+                {
+                    return DenyJson(
+                        $"AER: the command line '{commandLine}' matches a standing 'never' rule for this " +
+                        "session's grant (deny-always) and was refused.");
+                }
             }
 
             // Present with no patterns is the deliberate unscoped-shell grant: allow. Only a non-empty

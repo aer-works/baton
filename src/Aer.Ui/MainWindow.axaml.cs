@@ -300,6 +300,11 @@ public partial class MainWindow : Window
         ChatSendButton.Click += (_, _) => _ = SendChatMessageAsync();
         // Enter-to-send / Shift+Enter-newline — see OnChatInputBoxKeyDown and IsSendKeystroke.
         ChatInputBox.KeyDown += OnChatInputBoxKeyDown;
+        // #390 / 0022 §4: y/n answer a pending permission from anywhere in the window (bubbling KeyDown
+        // reaches the window from whatever is focused) — never from a focused text field, and never on
+        // Enter. Window-wide, not on ChatView, because the gate's caption promises it regardless of
+        // which pane holds focus.
+        KeyDown += OnPermissionGateKeyDown;
         ChatStartNewButton.Click += (_, _) => _ = StartNewChatAsync();
         ChatCommandsButton.Click += (_, _) => _ = ToggleChatCommandsAsync();
         ChatModeAutoButton.Click += (_, _) => _ = SetChatModeAsync("auto");
@@ -887,6 +892,54 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// The permission-gate keyboard rule (0022 §4, #481): a <em>bare</em> <c>y</c> answers "Allow once"
+    /// and a bare <c>n</c> answers "Deny once" — returning the <see cref="PermissionDecisionKind"/> for
+    /// that key, or <see langword="null"/> for anything else. Any modifier disqualifies it, so a `y`/`n`
+    /// that is the letter in an accelerator (Ctrl+Y, Alt+N) never answers a live ask; and Enter is not a
+    /// case here at all, so a reflex key can never approve. Pure, so the rule is unit-tested without a window.
+    /// </summary>
+    internal static string? PermissionAnswerFor(Key key, KeyModifiers modifiers)
+    {
+        if (modifiers != KeyModifiers.None)
+        {
+            return null;
+        }
+
+        return key switch
+        {
+            Key.Y => PermissionDecisionKind.AllowOnce,
+            Key.N => PermissionDecisionKind.Deny,
+            _ => null,
+        };
+    }
+
+    private void OnPermissionGateKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (PermissionAnswerFor(e.Key, e.KeyModifiers) is not { } decisionKind
+            || ViewModel.Chat.PendingPermission is not { } gate)
+        {
+            return;
+        }
+
+        // Never steal the keystroke from a focused text field — the operator may be typing a reply or
+        // editing a path. A gate answered by muscle memory while typing would be exactly the reflex
+        // 0022 §4 exists to prevent.
+        if (FocusManager?.GetFocusedElement() is TextBox)
+        {
+            return;
+        }
+
+        var command = decisionKind == PermissionDecisionKind.AllowOnce
+            ? gate.AllowOnceCommand
+            : gate.DenyCommand;
+        if (command.CanExecute(null))
+        {
+            command.Execute(null);
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>
     /// The Chat page's own "start new chat" entry point (#290) — mirrors
     /// <see cref="Views.TemplatePickerWindow"/>'s "chat session" template option (same
     /// <see cref="StartSessionRequest"/> shape, same <see cref="StartInteractiveSessionAsync"/> call)
@@ -1261,7 +1314,12 @@ public partial class MainWindow : Window
         var stepsFingerprint = string.Join(",", projection.State.Steps.Select(s => $"{s.StepId.Value}:{s.Status}:{s.LatestExecutionId?.Value}"));
         var attemptsCount = projection.History.AttemptsByStepId.Sum(kv => kv.Value.Count);
         var convLength = _conversationOutputDirectory != null && File.Exists(System.IO.Path.Combine(_conversationOutputDirectory, "transcript.jsonl")) ? new FileInfo(System.IO.Path.Combine(_conversationOutputDirectory, "transcript.jsonl")).Length : 0;
-        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}"; // vocabulary-ok: state fingerprint key
+        // #390: the inline permission gate keys on projection.PendingPermission (a sibling of State on
+        // RoomProjection, not a FlowState member), which none of the other terms above reflect — a turn
+        // can raise or clear a gate with no step/status/decision change, so without this the fingerprint
+        // would short-circuit the render that must show or hide it.
+        var pendingPermissionId = projection.PendingPermission?.PermissionRequestId ?? "none";
+        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}|{pendingPermissionId}"; // vocabulary-ok: state fingerprint key
 
         if (_lastRenderedProjectionFingerprint == fingerprint)
         {
@@ -1323,6 +1381,40 @@ public partial class MainWindow : Window
             previewFileAsync: filePath => ShowArtifactPreviewAsync(filePath),
             showConversation: ShowConversation,
             workerAdapters: workerAdapters);
+
+        // #390: surface (or clear) the inline conversational permission gate from the same projection.
+        // The answer delegate captures this render's roomDirectoryPath; the daemon broadcasts a fresh
+        // projection on answer, and the LoadAsync refresh below it re-renders with the gate cleared.
+        ViewModel.Chat.SurfacePendingPermission(
+            projection.PendingPermission,
+            (permissionRequestId, decisionKind, reason) =>
+                AnswerPermissionFromGateAsync(roomDirectoryPath, permissionRequestId, decisionKind, reason));
+    }
+
+    /// <summary>
+    /// Records the operator's answer to the inline permission gate (0022, #390) and re-renders. The
+    /// client call owns the <see cref="MainWindowViewModel.IsMutationInFlight"/> lifecycle (disabling
+    /// the gate for its duration); the follow-up <see cref="LoadAsync"/> re-reads the projection whose
+    /// <c>PendingPermission</c> the daemon has now cleared, so the gate vanishes on the same code path
+    /// that drew it. A failed answer surfaces on the chat status line and leaves the gate up to retry.
+    /// </summary>
+    private async Task AnswerPermissionFromGateAsync(
+        string roomDirectoryPath, string permissionRequestId, string decisionKind, string? reason)
+    {
+        var outcome = await _session.AnswerPermissionAsync(
+            roomDirectoryPath, permissionRequestId, decisionKind, reason).ConfigureAwait(true);
+        if (outcome.ErrorMessage is { } error)
+        {
+            ViewModel.Chat.StatusText = error;
+            return;
+        }
+
+        // Clear the gate synchronously, before the awaited LoadAsync below yields to the dispatcher.
+        // AnswerPermissionAsync's finally already re-enabled the buttons (IsMutationInFlight=false), and
+        // the daemon has removed this request from its registry — so without this, a second click during
+        // LoadAsync's I/O would POST again and 404. The answer succeeded; the gate's job is done.
+        ViewModel.Chat.PendingPermission = null;
+        await LoadAsync(roomDirectoryPath).ConfigureAwait(true);
     }
 
     private static Dictionary<string, string> GetWorkerAdapters(string roomDirectoryPath, string? bindingsFilePath)

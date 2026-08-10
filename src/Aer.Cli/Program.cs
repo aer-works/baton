@@ -26,7 +26,13 @@ if (args.Length >= 1 && args[0] == "hook-check")
     // #679: where a granted write may land -- see HookCheckCommand.Execute's own parameter docs for
     // what its absence means.
     var workspaceDir = Environment.GetEnvironmentVariable(HookCheckCommand.WorkspaceEnvironmentVariable);
-    return HookCheckCommand.Execute(Console.In, Console.Error, deniedTools, outputDir, workspaceDir);
+    // #445: the ask band, reaching this process the same way the denied list does. Set only by a
+    // gate-enabled dispatch -- unset here is what keeps a one-shot run's hook output unchanged.
+    var askTools = Environment.GetEnvironmentVariable(HookCheckCommand.AskToolsEnvironmentVariable);
+    // Console.Out as well as Console.Error, and the two are not interchangeable: claude reads a
+    // structured hook decision from stdout and a denial reason from stderr.
+    return HookCheckCommand.Execute(
+        Console.In, Console.Error, deniedTools, outputDir, workspaceDir, askTools, Console.Out);
 }
 
 // #554: the same idea for agy, and a separate command because the two vendors share none of the
@@ -38,11 +44,16 @@ if (args.Length >= 1 && args[0] == "agy-hook-check")
 {
     var deniedTools = Environment.GetEnvironmentVariable(AgyHookCheckCommand.DeniedToolsEnvironmentVariable);
     var shellPatterns = Environment.GetEnvironmentVariable(AgyHookCheckCommand.ShellPatternsEnvironmentVariable);
+    // #390: the DenyAlways channel — agy's sole enforcement for a standing "never" (no vendor flag can
+    // express a command family here), so it is read and passed like the allow channel.
+    var deniedShellPatterns = Environment.GetEnvironmentVariable(
+        AgyHookCheckCommand.DeniedShellPatternsEnvironmentVariable);
     // #679: the outbox reaches this gate for the GRANTED-write bound only. #649's withheld-write
     // exemption remains claude-only and is not extended here.
     var agyOutputDir = Environment.GetEnvironmentVariable("AER_OUTPUT_DIR");
     var agyWorkspaceDir = Environment.GetEnvironmentVariable(HookCheckCommand.WorkspaceEnvironmentVariable);
-    return AgyHookCheckCommand.Execute(Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir);
+    return AgyHookCheckCommand.Execute(
+        Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns);
 }
 
 var knownSubcommands = new[] { "run", "dispatch", "cancel", "decide", "supply", "status", "templates" };

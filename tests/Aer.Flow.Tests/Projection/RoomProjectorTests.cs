@@ -203,4 +203,142 @@ public class RoomProjectorTests
             $"dispatch recorded; workflow never started (no ledger found at {LaneRefA.AsWorkflowDirectoryPath()})",
             rendered);
     }
+
+    [Fact]
+    public void Projects_RuntimePermissionAsked_sets_PendingPermission()
+    {
+        var emptyState = RoomProjector.Project([]);
+        Assert.Null(emptyState.PendingPermission);
+
+        var askedAt = DateTimeOffset.UtcNow;
+        var askedEvent = new RoomEvent.RuntimePermissionAsked(
+            "req-101",
+            new ExecutionId("exec-01"),
+            new StepId("step-01"),
+            "worker-alpha",
+            "claude",
+            "tool_use_123",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            askedAt);
+
+        var state = RoomProjector.Project([askedEvent]);
+
+        Assert.NotNull(state.PendingPermission);
+        Assert.Equal("req-101", state.PendingPermission.PermissionRequestId);
+        Assert.Equal("worker-alpha", state.PendingPermission.WorkerId);
+        Assert.Equal("claude", state.PendingPermission.VendorTag);
+        Assert.Equal("WriteFiles", state.PendingPermission.ToolName);
+        Assert.Equal("""{"path":"test.txt"}""", state.PendingPermission.ToolInputJson);
+        Assert.Equal("WriteFiles", state.PendingPermission.Category);
+        Assert.Equal(askedAt, state.PendingPermission.AskedAt);
+    }
+
+    [Fact]
+    public void Projects_RuntimePermissionAsked_followed_by_matching_Answered_clears_PendingPermission()
+    {
+        var askedAt = DateTimeOffset.UtcNow;
+        var askedEvent = new RoomEvent.RuntimePermissionAsked(
+            "req-101",
+            new ExecutionId("exec-01"),
+            new StepId("step-01"),
+            "worker-alpha",
+            "claude",
+            "tool_use_123",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            askedAt);
+
+        var answeredEvent = new RoomEvent.RuntimePermissionAnswered(
+            "req-101",
+            "AllowOnce",
+            null,
+            "Approved",
+            "operator-bob",
+            askedAt.AddSeconds(5));
+
+        var state = RoomProjector.Project([askedEvent, answeredEvent]);
+
+        Assert.Null(state.PendingPermission);
+    }
+
+    [Fact]
+    public void Projects_RuntimePermissionAsked_followed_by_matching_Revoked_clears_PendingPermission()
+    {
+        var askedAt = DateTimeOffset.UtcNow;
+        var askedEvent = new RoomEvent.RuntimePermissionAsked(
+            "req-101",
+            new ExecutionId("exec-01"),
+            new StepId("step-01"),
+            "worker-alpha",
+            "claude",
+            "tool_use_123",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            askedAt);
+
+        var revokedEvent = new RoomEvent.RuntimePermissionRevoked(
+            "req-101",
+            "Cancelled by turn host",
+            askedAt.AddSeconds(5));
+
+        var state = RoomProjector.Project([askedEvent, revokedEvent]);
+
+        Assert.Null(state.PendingPermission);
+    }
+
+    [Fact]
+    public void Projects_RuntimePermissionAsked_followed_by_non_matching_Answered_leaves_PendingPermission_unchanged()
+    {
+        var askedAt = DateTimeOffset.UtcNow;
+        var askedEvent = new RoomEvent.RuntimePermissionAsked(
+            "req-101",
+            new ExecutionId("exec-01"),
+            new StepId("step-01"),
+            "worker-alpha",
+            "claude",
+            "tool_use_123",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            askedAt);
+
+        var answeredEvent = new RoomEvent.RuntimePermissionAnswered(
+            "req-999",
+            "AllowOnce",
+            null,
+            "Approved",
+            "operator-bob",
+            askedAt.AddSeconds(5));
+
+        var state = RoomProjector.Project([askedEvent, answeredEvent]);
+
+        Assert.NotNull(state.PendingPermission);
+        Assert.Equal("req-101", state.PendingPermission.PermissionRequestId);
+    }
+
+    /// <summary>
+    /// Order-robustness: an `Answered` (or `Revoked`) can be journaled BEFORE its `Asked` — the daemon
+    /// appends `Asked` asynchronously after observing the ask file, while the answer path appends
+    /// `Answered` directly, so a fast/automated answer or crash reconciliation can invert the order. A
+    /// late `Asked` for an already-resolved gate must NOT re-open it. The control is the non-matching
+    /// test above: proving the resolved-id suppression keys on the id, not a blanket ignore-all-asks.
+    /// </summary>
+    [Fact]
+    public void Projects_Answered_before_its_Asked_never_reopens_the_gate()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var answeredFirst = new RoomEvent.RuntimePermissionAnswered(
+            "req-101", "Deny", null, "Denied", "operator-bob", at);
+        var askedLate = new RoomEvent.RuntimePermissionAsked(
+            "req-101", new ExecutionId("exec-01"), new StepId("step-01"), "worker-alpha", "claude",
+            "tool_use_123", "WriteFiles", """{"path":"test.txt"}""", "WriteFiles", at.AddSeconds(1));
+
+        var state = RoomProjector.Project([answeredFirst, askedLate]);
+
+        Assert.Null(state.PendingPermission);
+    }
 }

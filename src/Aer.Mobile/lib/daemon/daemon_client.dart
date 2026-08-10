@@ -507,6 +507,32 @@ class DaemonClient {
     _throwIfFailed(response);
   }
 
+  /// Answers an open runtime-permission gate over the wire. The server-side effects match desktop's
+  /// `RoomClient.AnswerPermissionAsync` (the canonical description); the phone supplies the same
+  /// decision. The POST target and body shape are in the call below.
+  /// [decisionKind] must be one of PermissionDecisionKind's values (permission_decision_kind.dart) —
+  /// the daemon fails closed on anything else. Body keys are camelCase, matching every other call in
+  /// this file; ASP.NET's body binding is case-insensitive (same as desktop's own POST — see
+  /// RoomClient.Permissions.cs's remarks).
+  Future<void> answerPermission({
+    required String directoryPath,
+    required String permissionRequestId,
+    required String decisionKind,
+    String? reason,
+  }) async {
+    final response = await _post(
+      Uri.http(host, '/api/rooms/permissions/answer'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'directoryPath': directoryPath,
+        'permissionRequestId': permissionRequestId,
+        'decisionKind': decisionKind,
+        'reason': reason,
+      }),
+    );
+    _throwIfFailed(response);
+  }
+
   /// executionId null cancels the whole run; non-null cancels just that execution.
   Future<void> cancelRun({
     required String directoryPath,

@@ -327,5 +327,120 @@ public static class RoomMutationInterface
 
         return RoomProjector.Project([.. existingEvents, roomEvent]);
     }
+
+    public static async Task<RoomState> RaisePermissionAsync(
+        string roomDirectoryPath,
+        IRoomEventLogReader reader,
+        IRoomEventLogWriter writer,
+        string permissionRequestId,
+        ExecutionId executionId,
+        StepId stepId,
+        string workerId,
+        string vendorTag,
+        string vendorCorrelationId,
+        string toolName,
+        string toolInputJson,
+        string category,
+        DateTimeOffset? timestamp = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentException.ThrowIfNullOrEmpty(permissionRequestId);
+        ArgumentException.ThrowIfNullOrEmpty(workerId);
+        ArgumentException.ThrowIfNullOrEmpty(vendorTag);
+        // Empty is allowed: the correlation id is the vendor RESUME hint (0015), not the answer route
+        // (that goes via the answer file keyed by PermissionRequestId). It is frequently unknown at raise
+        // time -- crash reconciliation recovers only the ask file, and a live turn may not yet hold a
+        // vendor session id -- so requiring it non-empty would break both the doorbell and reconcile.
+        ArgumentNullException.ThrowIfNull(vendorCorrelationId);
+        ArgumentException.ThrowIfNullOrEmpty(toolName);
+        ArgumentException.ThrowIfNullOrEmpty(toolInputJson);
+        ArgumentException.ThrowIfNullOrEmpty(category);
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(writer);
+
+        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+
+        var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+        var currentState = RoomProjector.Project(existingEvents);
+
+        bool alreadyPresent = existingEvents.Any(e => e switch
+        {
+            RoomEvent.RuntimePermissionAsked asked => asked.PermissionRequestId == permissionRequestId,
+            RoomEvent.RuntimePermissionAnswered answered => answered.PermissionRequestId == permissionRequestId,
+            RoomEvent.RuntimePermissionRevoked revoked => revoked.PermissionRequestId == permissionRequestId,
+            _ => false
+        });
+
+        if (alreadyPresent)
+        {
+            return currentState;
+        }
+
+        var ts = timestamp ?? DateTimeOffset.UtcNow;
+        var roomEvent = new RoomEvent.RuntimePermissionAsked(
+            permissionRequestId,
+            executionId,
+            stepId,
+            workerId,
+            vendorTag,
+            vendorCorrelationId,
+            toolName,
+            toolInputJson,
+            category,
+            ts);
+
+        await writer.AppendAsync(roomEvent, cancellationToken).ConfigureAwait(false);
+        return RoomProjector.Project([.. existingEvents, roomEvent]);
+    }
+
+    public static async Task<RoomState> AnswerPermissionAsync(
+        string roomDirectoryPath,
+        IRoomEventLogReader reader,
+        IRoomEventLogWriter writer,
+        string permissionRequestId,
+        string decisionKind,
+        string? updatedInputJson,
+        string? reason,
+        string deciderIdentity,
+        DateTimeOffset? timestamp = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentException.ThrowIfNullOrEmpty(permissionRequestId);
+        ArgumentException.ThrowIfNullOrEmpty(decisionKind);
+        ArgumentException.ThrowIfNullOrEmpty(deciderIdentity);
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(writer);
+
+        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+
+        var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+        var currentState = RoomProjector.Project(existingEvents);
+
+        bool alreadyAnswered = existingEvents.Any(e => e switch
+        {
+            RoomEvent.RuntimePermissionAnswered answered => answered.PermissionRequestId == permissionRequestId,
+            RoomEvent.RuntimePermissionRevoked revoked => revoked.PermissionRequestId == permissionRequestId,
+            _ => false
+        });
+
+        if (alreadyAnswered)
+        {
+            return currentState;
+        }
+
+        var ts = timestamp ?? DateTimeOffset.UtcNow;
+        var roomEvent = new RoomEvent.RuntimePermissionAnswered(
+            permissionRequestId,
+            decisionKind,
+            updatedInputJson,
+            reason,
+            deciderIdentity,
+            ts);
+
+        await writer.AppendAsync(roomEvent, cancellationToken).ConfigureAwait(false);
+        return RoomProjector.Project([.. existingEvents, roomEvent]);
+    }
 }
 

@@ -123,6 +123,43 @@ public sealed partial class ChatViewModel : ObservableObject
     private string? _pendingUserMessage;
 
     /// <summary>
+    /// The runtime permission gate rendered inline in the conversation (0022, #390), or null when the
+    /// worker is not waiting on a permission. Set by <see cref="SurfacePendingPermission"/> from the
+    /// projection's <c>PendingPermission</c> on every render — a projected fact, so it clears itself the
+    /// moment the projection stops carrying one (a permission dies with its turn, 0022 §5).
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasPendingPermission))]
+    private PendingPermissionViewModel? pendingPermission;
+
+    /// <summary>True while the worker is blocked on a permission — drives the inline gate's visibility.</summary>
+    public bool HasPendingPermission => PendingPermission != null;
+
+    /// <summary>
+    /// Reconciles the inline gate with the projection's current <paramref name="pending"/>: builds a
+    /// fresh <see cref="PendingPermissionViewModel"/> when a new permission appears, keeps the existing
+    /// instance while the same one is still open (so an in-flight <see cref="PendingPermissionViewModel.IsEnabled"/>
+    /// toggle survives a poll that changed nothing else), and clears it when the projection no longer
+    /// carries a permission. Idempotent — called from the same render path as
+    /// <see cref="LoadFromMetadata"/> on every load/refresh.
+    /// </summary>
+    public void SurfacePendingPermission(Aer.Flow.Projection.PendingPermission? pending, AnswerPermissionDelegate answer)
+    {
+        if (pending is null)
+        {
+            PendingPermission = null;
+            return;
+        }
+
+        if (PendingPermission?.PermissionRequestId == pending.PermissionRequestId)
+        {
+            return; // same open permission — keep the live instance rather than resetting its state
+        }
+
+        PendingPermission = new PendingPermissionViewModel(pending, answer);
+    }
+
+    /// <summary>
     /// The durable turn count as of the last <see cref="LoadFromMetadata"/> — the send baseline
     /// (#1074). Completion keys on <see cref="Aer.Adapters.SessionMetadata"/>'s <c>Turns.Count</c>
     /// growing past the baseline (see line ~<see cref="IsSending"/> handling below), so the baseline

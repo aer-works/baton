@@ -142,7 +142,11 @@ public static class WorkerBindingResolver
             // adapter so a vendor CLI with its own internal wait limit can be told about AER's. Passing
             // it here rather than plumbing a per-execution value is what keeps this "once per binding
             // entry" contract intact — both come off `entry`.
-            entry.Timeout);
+            entry.Timeout,
+            // Named, because EnableMemoryProposalTool sits between Timeout and this one and is
+            // deliberately NOT threaded here — it is set by the dialogue-worker wiring rather than by a
+            // bindings entry, and defaulting it is what keeps that so (#445).
+            EnablePermissionGate: entry.EnablePermissionGate);
         var target = adapter.Resolve(invocation, entry.Contract);
 
         if (onWorkerStdoutLine is not null)

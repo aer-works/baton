@@ -34,6 +34,35 @@
                IsVisible="{Binding Chat.HasStatusText}" />
 
     <StackPanel DockPanel.Dock="Bottom" Spacing="{DynamicResource Space.2}" Margin="0,12,0,0">
+      <!-- The conversational permission gate (0022, #390): offered at the moment of asking, directly
+           above the composer, with the scope ladder VISIBLE here rather than buried in settings — the
+           middle rungs are "what make it survivable". The cross-room rung is deliberately absent (0052:
+           held until a project-scoped store exists). y answers "Allow once", n answers "Deny once";
+           neither is ever bound to Enter (0022 §4, #481) — see ChatView.OnKeyDown. -->
+      <Border x:Name="ChatPermissionGate" Classes="card" IsVisible="{Binding Chat.HasPendingPermission}"
+              BorderBrush="{DynamicResource Status.Failed}" BorderThickness="1">
+        <StackPanel DataContext="{Binding Chat.PendingPermission}" x:DataType="vm:PendingPermissionViewModel"
+                    Spacing="{DynamicResource Space.2}">
+          <TextBlock Classes="body-strong" TextWrapping="Wrap" Text="{Binding PromptText}" />
+          <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
+            <Button x:Name="ChatPermissionAllowOnceButton" Classes="accent" Content="Allow once" Command="{Binding AllowOnceCommand}" />
+            <Button Content="Deny once" Command="{Binding DenyCommand}" />
+            <TextBlock Classes="caption secondary" VerticalAlignment="Center"
+                       Text="press y to allow · n to deny" />
+          </StackPanel>
+          <TextBlock Classes="caption secondary" Text="Scope this decision:" />
+          <StackPanel Spacing="{DynamicResource Space.1}">
+            <Button Classes="ghost" HorizontalAlignment="Left" IsVisible="{Binding HasCommandScope}"
+                    Content="{Binding AllowCommandInRoomLabel}" Command="{Binding AllowCommandInRoomCommand}" />
+            <Button Classes="ghost" HorizontalAlignment="Left"
+                    Content="Allow any command in this room" Command="{Binding AllowRoomCommand}" />
+            <TextBlock Classes="caption secondary" TextWrapping="Wrap" Text="{Binding AllowRoomDisclosure}" />
+            <Button Classes="ghost" HorizontalAlignment="Left" IsVisible="{Binding HasCommandScope}"
+                    Content="{Binding DenyAlwaysLabel}" Command="{Binding DenyAlwaysCommand}" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
       <!-- The raw in-turn stream — plain text for now (Kind-based rendering, e.g. distinguishing
            tool calls from prose, is visual polish left for M25). -->
       <Border Classes="card" IsVisible="{Binding Chat.IsSending}" MaxHeight="140">

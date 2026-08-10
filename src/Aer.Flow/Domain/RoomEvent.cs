@@ -16,6 +16,9 @@ namespace Aer.Flow.Domain;
 [JsonDerivedType(typeof(EscalationRaised), "escalationRaised")]
 [JsonDerivedType(typeof(TurnHostDormancyEntered), "turnHostDormancyEntered")]
 [JsonDerivedType(typeof(TurnHostDormancyCleared), "turnHostDormancyCleared")]
+[JsonDerivedType(typeof(RuntimePermissionAsked), "runtimePermissionAsked")]
+[JsonDerivedType(typeof(RuntimePermissionAnswered), "runtimePermissionAnswered")]
+[JsonDerivedType(typeof(RuntimePermissionRevoked), "runtimePermissionRevoked")]
 public abstract record RoomEvent
 {
     private RoomEvent()
@@ -83,5 +86,33 @@ public abstract record RoomEvent
     public sealed record TurnHostDormancyCleared(
         string ClearedBy,
         DateTimeOffset Timestamp) : RoomEvent;
+
+    /// <summary>Records at ask-time when a worker's mid-turn tool call needs permission.</summary>
+    public sealed record RuntimePermissionAsked(
+        string PermissionRequestId,
+        ExecutionId ExecutionId,
+        StepId StepId,
+        string WorkerId,
+        string VendorTag,
+        string VendorCorrelationId,
+        string ToolName,
+        string ToolInputJson,
+        string Category,
+        DateTimeOffset AskedAt) : RoomEvent;
+
+    /// <summary>Records an answer to a runtime permission request.</summary>
+    public sealed record RuntimePermissionAnswered(
+        string PermissionRequestId,
+        string DecisionKind,
+        string? UpdatedInputJson,
+        string? Reason,
+        string DeciderIdentity,
+        DateTimeOffset AnsweredAt) : RoomEvent;
+
+    /// <summary>Records revocation of a runtime permission request.</summary>
+    public sealed record RuntimePermissionRevoked(
+        string PermissionRequestId,
+        string Reason,
+        DateTimeOffset RevokedAt) : RoomEvent;
 }
 

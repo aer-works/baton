@@ -73,6 +73,62 @@ void main() {
     });
   }
 
+  group('RoomProjection.pendingPermission (0022, #390 mobile phase)', () {
+    Map<String, dynamic> minimalProjection(Map<String, dynamic>? pendingPermissionJson, {required String key}) => {
+          'snapshot': {'workflowTemplateId': 'wf', 'steps': <dynamic>[]},
+          'state': {'status': 'Paused', 'steps': <dynamic>[]},
+          key: ?pendingPermissionJson,
+        };
+
+    test('parses a PascalCase (WS) top-level pendingPermission sibling of state', () {
+      final projection = RoomProjection.fromJson(minimalProjection(
+        {
+          'PermissionRequestId': 'perm-1',
+          'WorkerId': 'worker-1',
+          'VendorTag': 'claude',
+          'ToolName': 'Bash',
+          'ToolInputJson': '{"command":"rm -rf build/"}',
+          'Category': 'Shell',
+          'AskedAt': '2026-08-09T12:00:00Z',
+        },
+        key: 'PendingPermission',
+      ));
+
+      final pending = projection.pendingPermission;
+      expect(pending, isNotNull);
+      expect(pending!.permissionRequestId, 'perm-1');
+      expect(pending.workerId, 'worker-1');
+      expect(pending.vendorTag, 'claude');
+      expect(pending.toolName, 'Bash');
+      expect(pending.toolInputJson, '{"command":"rm -rf build/"}');
+      expect(pending.category, 'Shell');
+      expect(pending.askedAt, DateTime.parse('2026-08-09T12:00:00Z'));
+    });
+
+    test('parses a camelCase (REST) top-level pendingPermission sibling of state', () {
+      final projection = RoomProjection.fromJson(minimalProjection(
+        {
+          'permissionRequestId': 'perm-2',
+          'workerId': 'worker-2',
+          'vendorTag': 'agy',
+          'toolName': 'run_command',
+          'toolInputJson': '{"CommandLine":"git status"}',
+          'category': 'Shell',
+          'askedAt': '2026-08-09T12:05:00Z',
+        },
+        key: 'pendingPermission',
+      ));
+
+      expect(projection.pendingPermission?.permissionRequestId, 'perm-2');
+      expect(projection.pendingPermission?.vendorTag, 'agy');
+    });
+
+    test('is null when the projection carries no pendingPermission (the common case)', () {
+      final projection = RoomProjection.fromJson(minimalProjection(null, key: 'pendingPermission'));
+      expect(projection.pendingPermission, isNull);
+    });
+  });
+
   test('RoomFleetItem.fromJson reads a session row\'s sessionId (#1044 row-as-place)', () {
     // A session room's fleet entry carries the id its row taps into. The daemon serializes PascalCase
     // (RoomFleetItem.SessionId); the parser lowercases keys, so a phone reads j['sessionid'].
