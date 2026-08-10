@@ -672,7 +672,7 @@ recorded here so the next reader who greps for it does not read it as a configur
 
 | what | why it matters |
 |---|---|
-| **per-turn and cumulative token usage** | this is the usage/cost data for **#479**, which we recorded as unavailable on `agy` |
+| **per-turn and cumulative token usage** | the usage/cost data for **#479**. Per-turn token usage turned out to be available on `agy`'s CLI after all — the `--output-format stream-json` `result`'s `usage` object (#1088; we had recorded it unavailable on the strength of a probe-grammar bug). *Cumulative* usage and a dollar figure remain SDK-only. |
 | **streamed structured events**, "live model reasoning and output chunks", Pydantic-typed results | routing on structured events instead of parsed stdout — **Architecture Rule 1, structurally** |
 | **`deny()` / `allow()` / `ask_user()`**, "declarative deny-by-default policy" | a permission surface with a human-approval primitive |
 | nine lifecycle hook points, "Inspect / Decide / Transform" | the same gate shape, in-process |

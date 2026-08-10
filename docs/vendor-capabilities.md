@@ -12,7 +12,8 @@ and where a row says something is *absent*, it names the surfaces that absence w
 
 | established | against | covers |
 |---|---|---|
-| 2026-08-07 | `agy` **1.1.11** (`claude` carried) | the six probe-suite rows re-established after `agy` self-updated 1.1.10→1.1.11: usage, per-turn cost, structured output, `--permission-prompt-tool`, effort, `--add-dir` — **every reading unchanged**; only the version and the RPC server's random port moved. |
+| 2026-08-10, `#1088` | `agy` **1.1.11** (`claude` carried) | **`structured output` CORRECTED — the negative in the rows below was a probe bug, not agy.** `Aer.VendorProbe` invoked agy with *claude's* stream-json grammar (`-p` boolean + positional prompt + `--verbose`), so agy read `--output-format` as the prompt and stream-json never engaged (it also rejects `--verbose`, exit 2). Fixed to agy's flag-value `-p`: agy **observably streams** `--output-format stream-json` on stdout (`init`→`step_update`→`result` with a `usage` token object). Per-turn *dollar* cost stays absent (no `total_cost_usd`); per-turn **token** usage is now recorded present. The "every reading unchanged" rows below were re-confirming a false negative. |
+| 2026-08-07 | `agy` **1.1.11** (`claude` carried) | the six probe-suite rows re-established after `agy` self-updated 1.1.10→1.1.11: usage, per-turn cost, structured output, `--permission-prompt-tool`, effort, `--add-dir` — **every reading unchanged**; only the version and the RPC server's random port moved. *(structured-output reading later found false — see the #1088 row above.)* |
 | 2026-08-03 | `agy` **1.1.10** (`claude` carried) | the six probe-suite rows re-established after `agy` self-updated 1.1.9→1.1.10 mid-session: usage, per-turn cost, structured output, `--permission-prompt-tool`, effort, `--add-dir` — **every reading unchanged**; only the version and the RPC server's random port moved. |
 | 2026-08-01 | `agy` **1.1.9** (`claude` carried) | the six probe-suite rows re-established after `agy` self-updated 1.1.8→1.1.9: usage, per-turn cost, structured output, `--permission-prompt-tool`, effort, `--add-dir` — **every reading unchanged**; only the version and the RPC server's random port moved. The subcommand rows below are older (#472/#527) and were not in this run. |
 | 2026-07-25, `#527` | `claude` **2.1.220**, `agy` **1.1.8** | the rows the probe suite regenerates: usage, per-turn cost, structured output, `--permission-prompt-tool`, effort, `--add-dir`, plus the subcommand findings below — **re-probed after claude self-updated mid-audit** |
@@ -64,13 +65,13 @@ env $STRIP claude -p --output-format stream-json --verbose "..."
 | Bypass permissions | `--permission-mode bypassPermissions`, `--dangerously-skip-permissions` | **`--dangerously-skip-permissions`** |
 | Sandbox | referenced in help only | **`--sandbox`, and it enforces** |
 | Resume | `--resume`, `-c` / `--continue` | `-c` / `--continue`, `--conversation <id>` |
-| Structured output | `--output-format stream-json --verbose` | **a local gRPC/HTTP server** — reachable, service surface not yet enumerated |
+| Structured output | `--output-format stream-json --verbose` | **`--output-format stream-json`** — structured events on stdout, observed (`init`/`step_update`/`result`, #1088). A local gRPC/HTTP server is a *separate*, still-unenumerated surface (§below) |
 | Running-session registry | **`claude agents --json`** | not found on: `--help`, subcommand list |
 | Permission policy engine | **`claude auto-mode`** — allow / soft_deny / hard_deny | not found on: `--help`, subcommand list |
 | Always-fires gate hook | **`PreToolUse` hook — first of six evaluation steps, applies even in `bypassPermissions`** | **`PreToolUse` hook — the vendor mechanism denies; what AER shipped never ran on Windows until #710 (the only platform measured — `sh` would have stripped the quotes `cmd` chokes on)** |
 | Model enumeration | not found on: `--help`, subcommand list | **`agy models`** |
 | Plan usage & reset | **`/usage` (and `/cost`) — works headlessly, see below** | **none** — `/usage` is not a real command |
-| Per-turn cost | **`total_cost_usd` in every `stream-json` result** | none |
+| Per-turn cost | **`total_cost_usd` in every `stream-json` result** | no **dollar** figure (no `total_cost_usd`) — but the `stream-json` `result` carries per-turn **token** usage (`usage`: input/output/thinking/cache_read/total), #1088 |
 | Other | `--agents <json>` | `--remote-control`, `--agent`, `--project` |
 
 ## Prompt delivery splits the vendors (#932)
@@ -491,7 +492,9 @@ per-turn cost display.
 
 `agy -p "/usage"` is **not a built-in command**. Headless, it tried to run a shell tool and was denied;
 re-run sandboxed with permissions bypassed, the model simply answered *conversationally* — active
-model, config path, telemetry state. No tokens, no percentage, no reset. `agy -p "/cost"` likewise
+model, config path, telemetry state. No quota percentage or reset, and no token count on *this*
+surface — but per-turn **token** usage does live in the `--output-format stream-json` `result` event
+(#1088); what stays absent here is *plan-level* usage against a subscription's limit. `agy -p "/cost"` likewise
 produced prose claiming the status bar shows it, which is an interactive-only surface and, being the
 model talking rather than the CLI, is not evidence of anything.
 
@@ -499,10 +502,17 @@ Not found on the surfaces checked: `--help`, the subcommand list, the slash surf
 (13 KB, **zero** token keys), and `~/.gemini/antigravity-cli/cache/conversation_metadata.json`
 (`NumSteps`, `Title`, `UpdatedAt` — no usage of any kind).
 
-**One surface remains unchecked, and it is the promising one.** See below: `agy` runs a local RPC
-server, and no usage query has been put to it. Read this row as "not found yet", not "does not exist".
+**One surface remains unchecked** — `agy`'s local RPC server (below), to which no usage query has been
+put. It is no longer the *only* place structured data could live, though: stdout carries it (#1088).
 
-### `agy` has a local RPC server — the structured surface we recorded as absent
+### `agy` has a local RPC server — a *second* structured surface, still unenumerated
+
+**Reframed 2026-08-10 (#1088).** The *primary* structured surface is agy's own CLI
+`--output-format stream-json` — `init`/`step_update`/`result` on stdout, now observed (see the matrix
+row and the history table). The "tried `--output-format` and it missed" below was the **same probe-grammar
+bug**: `Aer.VendorProbe` handed agy claude's `-p`/`--verbose` argv, so stream-json never engaged and the
+search moved to the RPC server. That server is real and still unenumerated, but it is a *second* surface
+— not "the structured surface we recorded as absent."
 
 **Corrected 2026-07-24.** "Structured output: not found" was established on `--help` and on trying
 `--output-format`. It missed that **every `agy` run starts a local server and prints its ports**:
@@ -533,17 +543,19 @@ is waiting on it anymore.
 
 ### The design consequence
 
-**Do not fake parity.** Exact plan usage, reset times and per-turn cost for one vendor; nothing found
-yet for the other. That asymmetry has to be visible in the interface rather than smoothed into a
-single half-trustworthy number — the same rule
+**Do not fake parity.** claude reports plan usage, reset times, and per-turn **dollar** cost; agy
+reports per-turn **token** usage (the `stream-json` `result`'s `usage` object, #1088) but no dollar
+figure and no plan-level quota/reset. The asymmetry is now token-vs-dollar and per-turn-vs-plan, not
+"everything vs nothing" — but it still has to be visible in the interface rather than smoothed into a
+single half-trustworthy number, the same rule
 [0023](decisions/0023-effort-and-models-are-named-by-behaviour.md) applies to effort levels, where a
 collapse is disclosed rather than silently faked.
 
-**But design the surface for "not measured", not for "does not exist".** Two unprobed `agy` surfaces
-could still produce real numbers — the local RPC server and the public Python SDK — so a UI that
-hard-codes *"agy has no usage"* would bake in a claim that two open probes might overturn next week.
-The honest element is one that can say *"no usage data from this worker"* and later carry a figure
-without being redesigned.
+**And design the surface for "not measured", not for "does not exist" — the predicted figure arrived.**
+This section used to say agy's usage number might surface from the local RPC server or the Python SDK
+"next week"; instead it was on stdout all along, hidden by the probe bug (#1088). A UI that had
+hard-coded *"agy has no usage"* would now be wrong. The honest element is one that can say *"no usage
+data from this worker"* and carry a figure once one appears, without being redesigned — agy's is here.
 
 ## Neither `--mode` nor `--add-dir` stops `agy` writing a file
 

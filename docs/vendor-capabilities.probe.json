@@ -1,5 +1,5 @@
 {
-  "RanAt": "2026-08-07T12:03:51.018718-04:00",
+  "RanAt": "2026-08-10T12:56:40.8352351-04:00",
   "Host": "Microsoft Windows NT 10.0.26200.0",
   "Findings": [
     {
@@ -98,20 +98,20 @@
         "structured output stream",
         "--help"
       ],
-      "Detail": "No \u0060total_cost_usd\u0060 in a \u0060stream-json\u0060 run, and no cost flag in \u0060--help\u0060. The run produced output, but carried no cost field.",
+      "Detail": "No \u0060total_cost_usd\u0060 in a \u0060stream-json\u0060 run, and no cost flag in \u0060--help\u0060. The run streamed a \u0060result\u0060 event carrying per-turn **token** usage (the \u0060usage\u0060 object), but no dollar cost field \u2014 token-denominated, not dollars.",
       "VendorVersion": "1.1.11"
     },
     {
       "Capability": "structured output",
       "Vendor": "agy",
-      "Evidence": "Inspected",
-      "Value": "a local RPC server (ports in \u0060--log-file\u0060)",
+      "Evidence": "Observed",
+      "Value": "\u0060--output-format stream-json\u0060",
       "SurfacesConsulted": [
         "--help",
         "structured output stream",
         "local RPC server"
       ],
-      "Detail": "No structured stdout: \u0060--output-format stream-json\u0060 exited 0. But the CLI starts a local server on every run \u2014 \u0022listening on random port at 62802 for HTTPS\u0022 \u2014 so this is **not found on stdout**, not an absence of structured events. The service and method names are not yet enumerated; until they are, treat this as the highest-value open probe rather than a settled negative.",
+      "Detail": "Emitted 6 JSON lines on a trivial turn.",
       "VendorVersion": "1.1.11"
     },
     {

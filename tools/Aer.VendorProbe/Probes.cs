@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Aer.VendorProbe;
@@ -73,14 +74,61 @@ public static class Probes
             version);
     }
 
+    private static bool IsAgy(string vendor) => string.Equals(vendor, "agy", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The stream-json invocation for THIS vendor. The two CLIs disagree on the grammar, and passing
+    /// claude's argv to agy is what recorded agy's structured output as absent across three versions
+    /// (#1088): agy's <c>-p</c> is <b>flag-value</b> (#491) — the prompt is the value of <c>-p</c>, so
+    /// <c>["-p", "--output-format", …]</c> makes agy read <c>--output-format</c> as the prompt and
+    /// stream-json never engages — and agy <b>rejects</b> claude's <c>--verbose</c> (exit 2, "flags
+    /// provided but not defined: -verbose"). claude's <c>-p</c> is a boolean with a positional prompt
+    /// and does take <c>--verbose</c>. Measured live 2026-08-10; the corrected agy form streams
+    /// <c>{"event":"init"} → {"event":"step_update"} → {"event":"result",…,"usage":{…}}</c> on stdout.
+    /// </summary>
+    internal static string[] StreamJsonArgs(string vendor, string prompt) =>
+        IsAgy(vendor)
+            ? ["-p", prompt, "--output-format", "stream-json"]
+            : ["-p", "--output-format", "stream-json", "--verbose", prompt];
+
+    /// <summary>
+    /// Whether stdout is a stream-json event stream, recognising <b>either</b> vendor's envelope: the
+    /// first non-empty line is a JSON object carrying a <c>type</c> (claude) or <c>event</c> (agy)
+    /// discriminator. Keying only on claude's <c>type</c> is the second half of the #1088 false
+    /// negative — even a correctly-invoked agy stream read as "not structured" because its lines say
+    /// <c>"event"</c>, not <c>"type"</c>. Structural (parses the line) rather than a substring, so a
+    /// vendor merely mentioning the word "type" in prose cannot masquerade as a stream.
+    /// </summary>
+    internal static bool LooksLikeStreamJson(string stdout)
+    {
+        var firstLine = stdout
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Trim())
+            .FirstOrDefault(l => l.Length > 0);
+        if (firstLine is null || !firstLine.StartsWith('{'))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(firstLine);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && (doc.RootElement.TryGetProperty("type", out _) || doc.RootElement.TryGetProperty("event", out _));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>API-equivalent cost per turn — the "what would this have cost on a key" number.</summary>
     private static Finding PerTurnCost(string vendor, string version)
     {
         const string cap = "per-turn cost";
         string[] surfaces = [Surfaces.StructuredOutput, Surfaces.Help];
 
-        var run = Cli.Invoke(vendor, ["-p", "--output-format", "stream-json", "--verbose", "Reply with exactly: ok"],
-            TimeSpan.FromMinutes(2));
+        var run = Cli.Invoke(vendor, StreamJsonArgs(vendor, "Reply with exactly: ok"), TimeSpan.FromMinutes(2));
         var cost = Regex.Match(run.StdOut, @"""total_cost_usd""\s*:\s*([0-9.]+)");
         if (cost.Success)
         {
@@ -92,9 +140,17 @@ public static class Probes
                 version);
         }
 
+        // A stream-json run that carries token usage but no dollar figure is a real, distinct state —
+        // 0023/#479 spend is shown against a subscription's own limits, never faked into dollars. Say
+        // which of the two absences this is, so "none" is not misread as "produced nothing".
+        var streamedUsage = LooksLikeStreamJson(run.StdOut) && run.StdOut.Contains("\"usage\"", StringComparison.Ordinal);
         return Finding.Absent(cap, vendor, surfaces,
             "No `total_cost_usd` in a `stream-json` run, and no cost flag in `--help`. "
-            + (run.StdOut.Length == 0 ? "The structured-output run produced nothing at all." : "The run produced output, but carried no cost field."),
+            + (run.StdOut.Length == 0
+                ? "The structured-output run produced nothing at all."
+                : streamedUsage
+                    ? "The run streamed a `result` event carrying per-turn **token** usage (the `usage` object), but no dollar cost field — token-denominated, not dollars."
+                    : "The run produced output, but carried no cost field."),
             version);
     }
 
@@ -103,13 +159,11 @@ public static class Probes
         const string cap = "structured output";
         string[] surfaces = [Surfaces.Help, Surfaces.StructuredOutput, Surfaces.LocalServer];
 
-        var run = Cli.Invoke(vendor, ["-p", "--output-format", "stream-json", "--verbose", "Reply with exactly: ok"],
-            TimeSpan.FromMinutes(2));
-        var looksJson = run.StdOut.Contains("\"type\"", StringComparison.Ordinal)
-                        && run.StdOut.TrimStart().StartsWith('{');
-        if (looksJson)
+        var run = Cli.Invoke(vendor, StreamJsonArgs(vendor, "Reply with exactly: ok"), TimeSpan.FromMinutes(2));
+        if (LooksLikeStreamJson(run.StdOut))
         {
-            return Finding.Seen(cap, vendor, "`--output-format stream-json --verbose`", surfaces,
+            var flagShown = IsAgy(vendor) ? "`--output-format stream-json`" : "`--output-format stream-json --verbose`";
+            return Finding.Seen(cap, vendor, flagShown, surfaces,
                 $"Emitted {run.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length} JSON lines on a trivial turn.",
                 version);
         }
