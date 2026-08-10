@@ -343,6 +343,47 @@ public class WorkerRoleCatalogTests
     }
 
     [Fact]
+    public void The_dispatch_doc_role_table_matches_the_catalog_exactly()
+    {
+        // #1091: docs/dispatch.md lists the roles and what each writes. An operator doc that drifts from
+        // the catalog is a documentation defect, so pin the table to WorkerRoleCatalog bidirectionally:
+        // every role appears with its exact outputs, and the table names no role the catalog does not.
+        var docPath = Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..", "..", "docs", "dispatch.md");
+        var doc = File.ReadAllText(docPath);
+
+        // Scope to the "## Roles" section so the flags table above it is not parsed as roles.
+        var start = doc.IndexOf("## Roles", StringComparison.Ordinal);
+        Assert.True(start >= 0, "dispatch.md has no '## Roles' section");
+        var end = doc.IndexOf("\n## ", start + 1, StringComparison.Ordinal);
+        var section = end >= 0 ? doc[start..end] : doc[start..];
+
+        // A role row is `| `<id>` | <tier> | `out`, `out` | ... |` — id is the first cell's sole
+        // backticked token; outputs are the backticked file names anywhere in the row.
+        var rowRegex = new System.Text.RegularExpressions.Regex(@"^\|\s*`([a-z-]+)`\s*\|.*$",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+        var fileRegex = new System.Text.RegularExpressions.Regex(@"`([\w.-]+\.[a-z]+)`");
+
+        var documented = new Dictionary<string, HashSet<string>>();
+        foreach (System.Text.RegularExpressions.Match row in rowRegex.Matches(section))
+        {
+            var id = row.Groups[1].Value;
+            var outs = fileRegex.Matches(row.Value).Select(m => m.Groups[1].Value).ToHashSet();
+            documented[id] = outs;
+        }
+
+        var catalog = WorkerRoleCatalog.All.ToDictionary(
+            r => r.Id, r => r.Outputs.Select(o => o.Name).ToHashSet());
+
+        Assert.Equal(catalog.Keys.OrderBy(k => k), documented.Keys.OrderBy(k => k));
+        foreach (var (id, outs) in catalog)
+        {
+            Assert.True(documented[id].SetEquals(outs),
+                $"dispatch.md role '{id}' writes {string.Join(",", documented[id])}; catalog says {string.Join(",", outs)}");
+        }
+    }
+
+    [Fact]
     public void The_review_verdict_instruction_embeds_a_schema_valid_example_and_names_the_enum_sets()
     {
         // #1092: the instruction named "ReviewVerdict JSON" but showed no shape, so a strong model
