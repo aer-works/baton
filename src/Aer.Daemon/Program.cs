@@ -2074,7 +2074,13 @@ namespace Aer.Daemon
                 WorkingDirectory: InteractiveSessionMaterializer.ResolveRunDirectory(metadata.WorkingDirectory, metadata.RoomDirectoryPath),
                 SessionId: vendorSessionId,
                 ResumeSession: resumeSession,
-                StreamJson: string.Equals(targetAdapter, "claude", StringComparison.OrdinalIgnoreCase),
+                // #1088: agy joins claude here. Both stream structured events on stdout under their own
+                // grammar (claude `--output-format stream-json --verbose`; agy `--output-format stream-json`,
+                // no `--verbose`), and each adapter's TryParseProgressEvent parses its own envelope. Turning
+                // this on fills rawStdoutCapture and drives the progress pump for agy; the answer still comes
+                // from the output file and the conversation-id from the log scrape, both unchanged.
+                StreamJson: string.Equals(targetAdapter, "claude", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(targetAdapter, "agy", StringComparison.OrdinalIgnoreCase),
                 LogFilePath: logFilePath,
                 // #445: the ONE binding that opts into the runtime conversational gate. An interactive
                 // turn is the only dispatch shape with a human on the other end to answer an ask -- the
@@ -2525,21 +2531,44 @@ namespace Aer.Daemon
                 try
                 {
                     var node = JsonNode.Parse(line);
-                    if (node?["type"]?.GetValue<string>() != "result")
+
+                    // claude: {"type":"result","result":"<text>","is_error":bool}
+                    if (node?["type"]?.GetValue<string>() == "result")
                     {
+                        // A failed turn's text is an ERROR, and belongs in ErrorMessage. Never here.
+                        if (node["is_error"]?.GetValue<bool>() == true)
+                        {
+                            return null;
+                        }
+
+                        if (node["result"] is { } answer)
+                        {
+                            var text = answer.ToString();
+                            return string.IsNullOrWhiteSpace(text) ? null : text;
+                        }
+
                         continue;
                     }
 
-                    // A failed turn's text is an ERROR, and belongs in ErrorMessage. Never here.
-                    if (node["is_error"]?.GetValue<bool>() == true)
+                    // agy (#1088): {"event":"result","result":{"status":"SUCCESS","response":"<text>",…}}.
+                    // agy streams no incremental assistant text, so this terminal event is the ONLY stdout
+                    // carrier of the answer -- the #534 recovery for the all-deny / no-output-file case,
+                    // now reachable because agy runs under `--output-format stream-json`. Claude's `result`
+                    // is a string, agy's is an object, so `is JsonObject` keeps the two envelopes apart.
+                    if (node?["event"]?.GetValue<string>() == "result" && node["result"] is JsonObject agyResult)
                     {
-                        return null;
-                    }
+                        // Only a SUCCESS result is an answer; any other status is a failure whose text
+                        // belongs in ErrorMessage. agy's NON-success result shape is unmeasured (its quota
+                        // error is on stderr, not a stdout result), so this returns null rather than guess a
+                        // field -- and returns here regardless, since the terminal result ends the scan.
+                        if (agyResult["status"]?.GetValue<string>() == "SUCCESS"
+                            && agyResult["response"]?.GetValue<string>() is { } response
+                            && !string.IsNullOrWhiteSpace(response))
+                        {
+                            return response;
+                        }
 
-                    if (node["result"] is { } answer)
-                    {
-                        var text = answer.ToString();
-                        return string.IsNullOrWhiteSpace(text) ? null : text;
+                        return null;
                     }
                 }
                 catch (JsonException)

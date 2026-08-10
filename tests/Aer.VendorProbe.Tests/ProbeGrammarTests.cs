@@ -28,14 +28,14 @@ public sealed class ProbeGrammarTests
     {
         var args = Probes.StreamJsonArgs("agy", "Reply with exactly: ok");
 
-        // agy's -p is flag-VALUE (#491): the prompt is the value of -p, immediately after it.
+        // The prompt sits immediately after -p; the grammar rationale lives on Probes.StreamJsonArgs.
         var p = Array.IndexOf(args, "-p");
         Assert.True(p >= 0 && p + 1 < args.Length, "expected a -p flag with a following value");
         Assert.Equal("Reply with exactly: ok", args[p + 1]);
 
         Assert.Contains("--output-format", args);
         Assert.Contains("stream-json", args);
-        // agy rejects claude's --verbose with exit 2 ("flags provided but not defined: -verbose").
+        // and never claude's --verbose (rationale on Probes.StreamJsonArgs).
         Assert.DoesNotContain("--verbose", args);
     }
 

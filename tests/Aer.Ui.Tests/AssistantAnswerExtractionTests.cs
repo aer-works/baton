@@ -115,4 +115,56 @@ public class AssistantAnswerExtractionTests
     {
         Assert.Null(DaemonHost.TryExtractAssistantAnswer(""));
     }
+
+    // ---- agy (#1088): the same recovery over agy's own stream-json envelope ----
+
+    [Fact]
+    public void RecoversTheAnswerFromARealAgyStreamJsonResultEvent()
+    {
+        // Real agy 1.1.11 `--output-format stream-json` shape (why the terminal result carries the answer:
+        // DaemonHost.TryExtractAssistantAnswer's agy branch).
+        var rawStdout = """
+            {"event":"init","conversation_id":"5ec0d582"}
+            {"event":"step_update","step_update":{"state":"DONE","step_type":"agent_response"}}
+            {"event":"result","result":{"conversation_id":"5ec0d582","status":"SUCCESS","response":"Created note.txt containing HELLO-WORLD.","num_turns":1,"usage":{"total_tokens":15580}}}
+            """;
+
+        Assert.Equal("Created note.txt containing HELLO-WORLD.",
+            DaemonHost.TryExtractAssistantAnswer(rawStdout));
+    }
+
+    /// <summary>
+    /// Polarity guard for agy: a non-SUCCESS status is a failure, not an answer. agy's exact
+    /// failure-result shape is unmeasured (its quota error surfaces on stderr, not a stdout result), so
+    /// the guard keys on <c>status != SUCCESS</c> rather than a guessed error field.
+    /// </summary>
+    [Fact]
+    public void RefusesToTreatANonSuccessAgyResultAsAnAnswer()
+    {
+        var rawStdout = """
+            {"event":"result","result":{"status":"ERROR","response":"whatever text"}}
+            """;
+
+        Assert.Null(DaemonHost.TryExtractAssistantAnswer(rawStdout));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void TreatsAnEmptyAgyResponseAsNoAnswer(string response)
+    {
+        var rawStdout = $"{{\"event\":\"result\",\"result\":{{\"status\":\"SUCCESS\",\"response\":\"{response}\"}}}}";
+
+        Assert.Null(DaemonHost.TryExtractAssistantAnswer(rawStdout));
+    }
+
+    [Fact]
+    public void DoesNotMistakeABareStringAgyResultForAnAnswer()
+    {
+        // An `event:result` carrying a bare string matches neither envelope (see the `is JsonObject`
+        // guard in DaemonHost.TryExtractAssistantAnswer), so nothing is recovered.
+        var rawStdout = """{"event":"result","result":"a bare string, not agy's object"}""";
+
+        Assert.Null(DaemonHost.TryExtractAssistantAnswer(rawStdout));
+    }
 }

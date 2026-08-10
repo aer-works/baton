@@ -67,6 +67,31 @@ public class AgyWorkerAdapterTests
         Assert.Contains("%AER_PROMPT_FILE%", target.OversizePromptWrapper);
     }
 
+    /// <summary>
+    /// #1088: under StreamJson, agy streams with its OWN grammar — `--output-format stream-json`, and
+    /// NEVER claude's `--verbose`. <see cref="AgyWorkerAdapter"/>'s Resolve comment owns why.
+    /// </summary>
+    [Fact]
+    public void StreamJson_emits_agy_output_format_stream_json_and_never_claude_verbose()
+    {
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", StreamJson: true), ArchitectContract);
+
+        Assert.Contains(
+            target.Args.Zip(target.Args.Skip(1)),
+            pair => pair.First == "--output-format" && pair.Second == "stream-json");
+        Assert.DoesNotContain("--verbose", target.Args);
+    }
+
+    [Fact]
+    public void Without_StreamJson_no_output_format_flag_is_emitted()
+    {
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.DoesNotContain("--output-format", target.Args);
+        Assert.DoesNotContain("stream-json", target.Args);
+    }
+
     [Fact]
     public void The_rooms_directory_is_bound_with_add_dir_because_agy_ignores_the_process_cwd()
     {
