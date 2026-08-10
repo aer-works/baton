@@ -32,7 +32,6 @@ OVERLAP = [
     "audit-completeness",
     "audit-vocabulary",
     "audit-recordonce",
-    "aer-dispatch-selftest",
     "test-scripts",
     "audit-staleness-ext-selftest",
     "audit-waitceiling",
@@ -46,10 +45,16 @@ BUILD_PHASE = [
 ]
 
 # Sequential too, but only because they read the CLI binary `lint` writes -- they run after the
-# build phase, once the overlapped audits have been joined.
+# build phase, once the overlapped audits have been joined. `aer-dispatch-selftest` belongs here for
+# the same reason and used to sit in OVERLAP by mistake: `dispatch.py` loads the worker catalog from
+# the built `Aer.Cli` binary AT IMPORT, so running it before `lint` produces that binary dies with
+# "aer engine CLI binary not found ... Build it first". Overlapped, it raced the very build it depends
+# on -- invisible everywhere a prior build had left the binary on disk, and a hard first-run FAIL in a
+# fresh worktree, which is exactly the intermittent gate failure #1088 spent a session diagnosing.
 AFTER_BUILD_FAST = [
     "audit-selfcheck",
     "audit-controls",
+    "aer-dispatch-selftest",
 ]
 
 # The full run's test leg. `test-no-build` reuses the assemblies `lint` just built; if `lint`

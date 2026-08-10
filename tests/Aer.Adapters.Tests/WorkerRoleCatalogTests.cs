@@ -341,4 +341,72 @@ public class WorkerRoleCatalogTests
         var output = Assert.Single(WorkerRoleCatalog.For("p").Outputs);
         Assert.Equal(OutputSchema.Diff, output.Schema);
     }
+
+    [Fact]
+    public void The_dispatch_doc_role_table_matches_the_catalog_exactly()
+    {
+        // #1091: docs/dispatch.md lists the roles and what each writes. An operator doc that drifts from
+        // the catalog is a documentation defect, so pin the table to WorkerRoleCatalog bidirectionally:
+        // every role appears with its exact outputs, and the table names no role the catalog does not.
+        var docPath = Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..", "..", "docs", "dispatch.md");
+        var doc = File.ReadAllText(docPath);
+
+        // Scope to the "## Roles" section so the flags table above it is not parsed as roles.
+        var start = doc.IndexOf("## Roles", StringComparison.Ordinal);
+        Assert.True(start >= 0, "dispatch.md has no '## Roles' section");
+        var end = doc.IndexOf("\n## ", start + 1, StringComparison.Ordinal);
+        var section = end >= 0 ? doc[start..end] : doc[start..];
+
+        // A role row is `| `<id>` | <tier> | `out`, `out` | ... |` — id is the first cell's sole
+        // backticked token, tier is the second cell's bare word, outputs are the backticked file names.
+        var rowRegex = new System.Text.RegularExpressions.Regex(@"^\|\s*`([a-z-]+)`\s*\|\s*([a-z]+)\s*\|.*$",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+        var fileRegex = new System.Text.RegularExpressions.Regex(@"`([\w.-]+\.[a-z]+)`");
+
+        var documented = new Dictionary<string, (string Tier, HashSet<string> Outputs)>();
+        foreach (System.Text.RegularExpressions.Match row in rowRegex.Matches(section))
+        {
+            var id = row.Groups[1].Value;
+            var tier = row.Groups[2].Value;
+            var outs = fileRegex.Matches(row.Value).Select(m => m.Groups[1].Value).ToHashSet();
+            documented[id] = (tier, outs);
+        }
+
+        var catalog = WorkerRoleCatalog.All.ToDictionary(
+            r => r.Id, r => (r.Tier, Outputs: r.Outputs.Select(o => o.Name).ToHashSet()));
+
+        Assert.Equal(catalog.Keys.OrderBy(k => k), documented.Keys.OrderBy(k => k));
+        foreach (var (id, expected) in catalog)
+        {
+            Assert.True(documented[id].Outputs.SetEquals(expected.Outputs),
+                $"dispatch.md role '{id}' writes {string.Join(",", documented[id].Outputs)}; catalog says {string.Join(",", expected.Outputs)}");
+            Assert.True(string.Equals(documented[id].Tier, expected.Tier, StringComparison.Ordinal),
+                $"dispatch.md role '{id}' tier is '{documented[id].Tier}'; catalog says '{expected.Tier}'");
+        }
+    }
+
+    [Fact]
+    public void The_review_verdict_instruction_embeds_a_schema_valid_example_and_names_the_enum_sets()
+    {
+        // #1092: the instruction named "ReviewVerdict JSON" but showed no shape, so a strong model
+        // guessed findings[].claim and the closed severity/status enums wrong and was rejected on
+        // repeat (the schema traps are pinned in ReviewVerdictSchemaTests). It must now carry a
+        // concrete example the schema accepts -- a wrong example would be worse than none -- and name
+        // the status values a single example cannot show.
+        var instruction = WorkerRoleCatalog.For("review").Outputs.Single(o => o.Name == "verdict.json").Instruction;
+
+        var open = instruction.IndexOf('{');
+        var close = instruction.LastIndexOf('}');
+        Assert.True(open >= 0 && close > open, "the instruction embeds no JSON example object");
+        var example = instruction.Substring(open, close - open + 1);
+        Assert.True(
+            ReviewVerdictSchema.TryParse(System.Text.Encoding.UTF8.GetBytes(example), out _, out var error),
+            $"the instruction's example must parse as a ReviewVerdict: {error}");
+
+        // status is the subtler closed set (confirmed/refuted/unverified); the example shows only one,
+        // so the other two must be named or a model still guesses them.
+        Assert.Contains("refuted", instruction);
+        Assert.Contains("unverified", instruction);
+    }
 }

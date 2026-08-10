@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 
@@ -272,10 +273,11 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             }
         }
 
-        if (invocation.Model is not null)
+        if (invocation.Model is { } model)
         {
+            RefuseDotDelimitedClaudeModelId(model); // #1090
             args.Add("--model");
-            args.Add(invocation.Model);
+            args.Add(model);
         }
 
         if (invocation.Effort is not null)
@@ -876,6 +878,27 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// updating every model generation the way a hardcoded full model ID would.
     /// </summary>
     private static readonly IReadOnlyList<string> ModelAliases = ["sonnet", "opus", "haiku"];
+
+    /// <summary>
+    /// #1090: a <c>claude-*</c> id whose version is dot-delimited (<c>claude-opus-4.8</c>) is a typo for
+    /// the dash form (<c>claude-opus-4-8</c>) — see <see cref="MalformedVendorModelException"/> for the
+    /// measurement. Scoped to the <c>claude-</c> prefix + a digit.digit run so it cannot fire on an
+    /// alias (no dot) or a valid dash id; this is NOT a model-list check — claude ships none, see
+    /// <see cref="ModelAliases"/>.
+    /// </summary>
+    private static readonly Regex DotDelimitedClaudeVersion =
+        new(@"^claude-.*\d\.\d", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static void RefuseDotDelimitedClaudeModelId(string model)
+    {
+        if (DotDelimitedClaudeVersion.IsMatch(model))
+        {
+            var suggestion = Regex.Replace(model, @"(\d)\.(\d)", "$1-$2");
+            throw new MalformedVendorModelException(
+                "claude",
+                $"'{model}' is dot-delimited; claude model ids use dashes. Did you mean '{suggestion}'?");
+        }
+    }
 
     public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(string? workingDirectory = null, CancellationToken cancellationToken = default)
     {

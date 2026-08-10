@@ -138,7 +138,7 @@ public static class DispatchCommand
 
         // #1083: pin the workspace onto the binding so the worker can actually read the project it was
         // dispatched to study — the process cwd alone does not reach agy (`-p` ignores it, #491).
-        // #1082: vendor/model/effort are three independent axes over the role's instructions ([0017]/[0033]).
+        // #1082: vendor/model/effort are three independent axes over the role's instructions ([0017]).
         return RoleDispatch.Materialize(
             role, spec, options.Adapter, workingDirectory: workspaceDirectory,
             modelOverride: options.Model, effortOverride: options.Effort);

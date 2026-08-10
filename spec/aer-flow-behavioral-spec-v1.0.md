@@ -213,11 +213,13 @@ Core reports only factual, mechanical outcomes — exit code and `reason` (`Natu
 
 | Classification       | Condition                                                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `ExecutionSucceeded` | Core `reason == NaturalExit`, exit code `== 0`, **and** all outputs declared by the step's `WorkerContract` exist and satisfy their declared `OutputCondition`s (§4.1) |
-| `ExecutionFailed`    | Core `reason == NaturalExit` and (non-zero exit code **or** missing / condition-unsatisfied required outputs), **or** Core `reason == TimedOut` |
+| `ExecutionSucceeded` | Core `reason == NaturalExit`, exit code `== 0`, **and** all outputs declared by the step's `WorkerContract` exist and satisfy their declared `OutputCondition`s (§4.1); **or** Core `reason == TimedOut` with a worker-emitted terminal success marker **and** all declared outputs satisfied (see the timeout exception below) |
+| `ExecutionFailed`    | Core `reason == NaturalExit` and (non-zero exit code **or** missing / condition-unsatisfied required outputs), **or** Core `reason == TimedOut` without the marker-and-outputs pair above |
 | `ExecutionCancelled` | Core `reason == CancelRequested` — see §9                                                                               |
 
 A clean exit with missing or condition-unsatisfied outputs (§4.1) is a failure, not a success — exit code alone is necessary but not sufficient. A cancellation is never classified as a failure: it reflects an explicit decision to stop, not the worker doing anything wrong, and — per §9 and §10 — is never subject to retry.
+
+A `TimedOut` run is failed **by default**, because a bare timeout cannot tell a worker that finished and then hung at process teardown from one killed mid-write with a half-written output — trusting the latter's outputs would ship incomplete work. The one exception (#1089): when the worker's vendor CLI emitted its own **terminal success marker** on stdout before the timeout — agy's `result` event with `status: SUCCESS`, claude's `result` with `is_error: false`, surfaced to the classifier as `CoreDispatchResult.TerminalSuccessObserved` by the adapter (Adapter Isolation) — **and** every declared output is present, the worker demonstrably completed its contracted work, so the teardown-timeout is benign and the run **succeeds** rather than retrying from scratch (which would only rebuild work that already exists). Absent the marker — a non-streaming run, a genuine mid-work kill, or crash-recovery — the default holds and the timeout fails.
 
 ### 8.1 Worker Self-Reported Failure Classification (optional)
 

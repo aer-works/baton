@@ -55,8 +55,10 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
                 _tempRoomDir, reader, writer, reqId, "AllowOnce", "{}", "ok", "human",
                 cancellationToken: TestContext.Current.CancellationToken);
 
-            // wait-ok: deadlock detector — the lock-free answer path completes in ms; only a real turn-lock deadlock fails to finish in 3s (0037)
-            var completedTask = await Task.WhenAny(task, Task.Delay(3000, TestContext.Current.CancellationToken));
+            // wait-ok: deadlock detector — the lock-free answer path finishes in ms; only a real
+            // turn-lock deadlock fails within the budget (0037). 60s, not 3s: the answer path does
+            // room.jsonl I/O that lost to a 3s budget under Windows CI load — a false deadlock (#1097).
+            var completedTask = await Task.WhenAny(task, Task.Delay(60000, TestContext.Current.CancellationToken));
             Assert.Same(task, completedTask); // Proves it did not deadlock/block
 
             var state = await task;

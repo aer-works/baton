@@ -43,7 +43,7 @@ public static class RoleDispatch
     /// it and every repo read was auto-denied.
     /// </param>
     /// <param name="modelOverride">
-    /// The model axis, independent of the role ([0017]/[0033]: vendor, model and effort are three
+    /// The model axis, independent of the role ([0017]: vendor, model and effort are three
     /// separate axes over a role's instructions). Null keeps the role's tier model — except when
     /// <paramref name="adapterOverride"/> moves the role to a different vendor, where the tier's
     /// vendor-specific model string is dropped for that vendor's own default (#1082).
@@ -67,7 +67,7 @@ public static class RoleDispatch
         var adapter = (string.IsNullOrWhiteSpace(adapterOverride) ? role.Adapter : adapterOverride)
             .Trim().ToLowerInvariant();
 
-        // Vendor, model and effort are three independent axes ([0017]/[0033]): the role carries a
+        // Vendor, model and effort are three independent axes ([0017]): the role carries a
         // default bundle (its tier), and each axis overrides on its own. An explicit --model/--effort
         // wins; with none, swapping the vendor drops the tier's model AND effort. Both are vendor-specific
         // as the catalog actually pins them: the model string plainly so (the measured #1082 failure, the
@@ -104,7 +104,12 @@ public static class RoleDispatch
             PermissionGrant: grant,
             WorkingDirectory: workingDirectory,
             Effort: effort,
-            GrantAuditMode: grantAuditMode);
+            GrantAuditMode: grantAuditMode,
+            // #1089: agy only. Streaming puts agy's terminal `result` event on stdout so a teardown-hang
+            // (agy holds a scratch handle and never exits) classifies as the satisfied contract it is,
+            // instead of a from-scratch retry. claude has no such hang and no detector wired, so streaming
+            // it here would change its stdout format for nothing; left in text mode.
+            StreamJson: string.Equals(adapter, "agy", StringComparison.OrdinalIgnoreCase));
     }
 
 
@@ -150,6 +155,17 @@ public static class RoleDispatch
     private static string BuildPrompt(WorkerRole role, string spec)
     {
         var instructions = string.Join("\n", role.Outputs.Select(o => $"- {o.Instruction}"));
-        return $"{spec.TrimEnd()}\n\nRequired outputs:\n{instructions}\n";
+        return $"{spec.TrimEnd()}\n\nRequired outputs:\n{instructions}\n\n{OneShotContract}";
     }
+
+    // #1095: a dispatched worker runs in a one-shot, non-interactive harness — the turn is never
+    // resumed. A sonnet implement worker instead scheduled a background test run, ended its turn to
+    // wait for the notification, and produced no output; the contract failed and the step retried a
+    // worker that would defer identically every time. State the contract in the prompt. Lives here,
+    // the dispatch prompt builder, not in the adapter's BuildPrompt (which also runs for the
+    // interactive chat turn, where deferring genuinely is fine).
+    private const string OneShotContract =
+        "This is a single, non-interactive turn: do all of the work to completion now and write the "
+        + "required outputs before it ends. Do not schedule background tasks or wait for a "
+        + "notification or wake-up — nothing will resume this turn, so any deferred work is lost.";
 }

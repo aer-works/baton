@@ -50,9 +50,11 @@ something a user can reason about ("compact near 70% of the window"), model-awar
 differs by model.
 
 **Harder.** Per-vendor usage accounting must live in the adapter (Adapter Isolation, CLAUDE.md rule
-2): `claude`'s stream-json usage is available, but `agy`'s is unverified and must be checked before
-token-based compaction is promised for Gemini (strip `CLAUDE_CODE_*` when probing — see the
-vendor-CLI probe runbook). The threshold has to be model-aware, which couples it to knowing the
+2): `claude`'s stream-json usage is available, and `agy`'s **is now verified too** (#1088) — its
+`--output-format stream-json` `result` event carries a `usage` object (input/output/thinking/
+cache_read/total tokens); it is token counts, not a dollar figure. (A prior version of this note said
+agy's was unverified; that traced to a probe-grammar bug, not agy — strip `CLAUDE_CODE_*` when probing,
+see the vendor-CLI probe runbook.) The threshold has to be model-aware, which couples it to knowing the
 active model ([0010](0010-skills-and-advisor.md)'s participant-as-binding, surfaced by #391). Tracking
 per worker rather than per session requires the participant dimension `SessionMetadata` currently
 lacks — the same object-model work `#493` scopes.

@@ -392,16 +392,31 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             args.Add(invocation.LogFilePath);
         }
 
+        // #1088: structured streaming, mirroring claude's `if (invocation.StreamJson)` — but with agy's
+        // OWN grammar. agy emits `--output-format stream-json` and, critically, does NOT take claude's
+        // `--verbose`: agy rejects it (exit 2), so mirroring claude's argv verbatim would break every agy
+        // run. The prompt is already the `-p` value above (agy's flag-value grammar, #491), so nothing
+        // here re-passes it. Unconditional min-version posture matches the rest of this method (the hook,
+        // `--conversation`, `--print-timeout` are all emitted without a version probe); measured on agy
+        // 1.1.11 (docs/vendor-capabilities.md). The daemon turns StreamJson on for agy's interactive turn;
+        // the dispatch path rides #1089.
+        if (invocation.StreamJson)
+        {
+            args.Add("--output-format");
+            args.Add("stream-json");
+        }
+
         if (invocation.Model is not null)
         {
             args.Add("--model");
             args.Add(invocation.Model);
         }
 
-        if (invocation.Effort is not null)
+        if (invocation.Effort is { } effort)
         {
+            ReconcileAgyEffort(invocation.Model, effort); // #1090
             args.Add("--effort");
-            args.Add(invocation.Effort);
+            args.Add(effort);
         }
 
         if (invocation.Timeout is { } timeout)
@@ -488,7 +503,39 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         return new CoreDispatchTarget(
             "agy", [.. args], invocation.WorkingDirectory, PromptText: prompt,
             Environment: [.. environment], OversizePromptWrapper: OversizePromptWrapperText,
-            SeedFiles: seedFiles);
+            SeedFiles: seedFiles,
+            // #1089: only when streaming is there a `result` event on stdout to detect; in text mode the
+            // stdout is the answer, so wiring the detector would just scan prose for nothing. Null there
+            // keeps the guard failing safe.
+            DetectsTerminalSuccess: invocation.StreamJson ? IsTerminalSuccessLine : null);
+    }
+
+    /// <summary>
+    /// True iff <paramref name="rawLine"/> is agy's terminal success marker:
+    /// <c>{"event":"result","result":{"status":"SUCCESS",…}}</c> (#1089). A non-SUCCESS status, a
+    /// non-result event, or a chunk-split line is not one. This is the ONE agy fact the #1089 guard
+    /// rests on, so it is asserted against a real captured line in the adapter tests.
+    /// </summary>
+    internal static bool IsTerminalSuccessLine(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            return root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("event", out var eventProp) && eventProp.GetString() == "result"
+                && root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object
+                && result.TryGetProperty("status", out var status) && status.GetString() == "SUCCESS";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>The agy <see cref="VendorGate"/>.</summary>
@@ -864,6 +911,57 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <paramref name="invocation"/> carries a <see cref="WorkerInvocation.PermissionGrant"/> that
     /// <see cref="TryTranslatePermissionGrant"/> refuses (e.g. requesting shell commands without network access, or vice versa).
     /// </exception>
+    /// <summary>
+    /// #1090: agy's <c>--effort</c> is one control with the model-name suffix and must agree (sentinel
+    /// <c>effort.agy-effort-and-suffix-must-agree</c>), and its value set is exactly {low, medium, high}
+    /// (sentinel <c>effort.agy-value-set</c> — that check is the tripwire if agy ever changes the set).
+    /// Both are otherwise refused by agy at bind time, after the operator has waited; this refuses them
+    /// up-front at resolution, naming the real cause. See <see cref="IncoherentVendorEffortException"/>.
+    /// </summary>
+    private static void ReconcileAgyEffort(string? model, string effort)
+    {
+        if (!AgyEffortValues.Contains(effort))
+        {
+            throw new IncoherentVendorEffortException(
+                "agy", $"'{effort}' is not one of agy's values (low, medium, high).");
+        }
+
+        if (GeminiEffortSuffix(model) is { } suffix
+            && !string.Equals(suffix, effort, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new IncoherentVendorEffortException(
+                "agy",
+                $"model '{model}' already encodes effort '{suffix}', which conflicts with --effort '{effort}'. "
+                + "On agy, effort is part of the model name; pass one, or make them agree.");
+        }
+    }
+
+    private static readonly HashSet<string> AgyEffortValues =
+        new(StringComparer.OrdinalIgnoreCase) { "low", "medium", "high" };
+
+    /// <summary>
+    /// The effort a gemini model name encodes as a trailing <c>-low|-medium|-high</c>, or null. Scoped
+    /// to the measured gemini families: <c>gpt-oss-120b-medium</c>'s trailing <c>-medium</c> is part of
+    /// the name and is not measured as an effort, so it is deliberately not treated as one (claim-scope).
+    /// </summary>
+    private static string? GeminiEffortSuffix(string? model)
+    {
+        if (model is null || !model.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        foreach (var value in AgyEffortValues)
+        {
+            if (model.EndsWith("-" + value, StringComparison.OrdinalIgnoreCase))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
     private string ResolvePermissionScope(WorkerInvocation invocation)
     {
         if (invocation.PermissionGrant is { } grant)
@@ -936,6 +1034,73 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         items.AddRange(ParsePluginLines(pluginsOutput.Result));
 
         return new WorkerCapabilities("agy", items, ParseModelLines(modelsOutput.Result));
+    }
+
+    /// <summary>
+    /// Parses one line of `agy -p … --output-format stream-json` (#1088). agy's envelope is keyed on
+    /// <c>"event"</c> — <c>init</c>, <c>step_update</c>, <c>result</c> — NOT claude's <c>"type"</c>, so
+    /// this is a genuinely different parse, not a mirror of <see cref="ClaudeWorkerAdapter"/>. Confirmed
+    /// against a live agy 1.1.11 run. Granularity is <b>step-level</b>: <c>step_update</c> is a heartbeat
+    /// naming the current step (assistant/tool/…), and the full answer text arrives only in the terminal
+    /// <c>result</c> event — agy does not stream token-by-token deltas the way claude's
+    /// <c>--include-partial-messages</c> does. A line split across a stdout chunk boundary throws
+    /// <see cref="JsonException"/> and is treated as "not a progress event", exactly as the claude parser
+    /// does; the daemon's line assembler delivers whole lines in practice.
+    /// </summary>
+    public bool TryParseProgressEvent(string rawLine, out WorkerProgressEvent? progressEvent)
+    {
+        progressEvent = null;
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("event", out var eventProp))
+            {
+                return false;
+            }
+
+            switch (eventProp.GetString())
+            {
+                case "init":
+                    progressEvent = new WorkerProgressEvent("status", "Session started");
+                    return true;
+
+                case "step_update"
+                    when root.TryGetProperty("step_update", out var step)
+                        && step.TryGetProperty("state", out var stateProp)
+                        && stateProp.GetString() == "DONE"
+                        && step.TryGetProperty("step_type", out var stepTypeProp)
+                        && stepTypeProp.GetString() is { Length: > 0 } stepType
+                        && stepType is not ("unknown" or "checkpoint" or "user_input"):
+                    // The DONE edge, not ACTIVE: measured, agy reports most steps ONLY at DONE
+                    // (user_input/agent_response/checkpoint had no ACTIVE; only `tool` did), so the DONE
+                    // edge is the one that gives one heartbeat per completed step. Dropped as non-signal:
+                    // the user's own echoed `user_input`, internal `checkpoint`, and opaque `unknown`.
+                    // (Which edge/types to surface is a UX policy provisional on a live end-to-end drive,
+                    // which is blocked on the agy weekly-quota reset; the parse itself is fixture-pinned.)
+                    progressEvent = new WorkerProgressEvent("status", stepType);
+                    return true;
+
+                case "result"
+                    when root.TryGetProperty("result", out var result)
+                        && result.TryGetProperty("response", out var responseProp)
+                        && responseProp.GetString() is { Length: > 0 } response:
+                    progressEvent = new WorkerProgressEvent("text", response);
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static IReadOnlyList<string> ParseModelLines(string? stdout) =>

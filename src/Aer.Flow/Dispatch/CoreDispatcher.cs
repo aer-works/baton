@@ -54,7 +54,12 @@ public sealed record CoreDispatchTarget(
     IReadOnlyList<(string Name, string Value)>? Environment = null,
     string? StdoutArtifactName = null,
     string? OversizePromptWrapper = null,
-    IReadOnlyList<CoreDispatchSeedFile>? SeedFiles = null);
+    IReadOnlyList<CoreDispatchSeedFile>? SeedFiles = null,
+    // #1089: given one complete stdout line, true iff it is this vendor's terminal "finished, status
+    // success" marker. Set by the adapter (Adapter Isolation — the dispatcher never parses vendor
+    // content, spec Rule 1); null on adapters/paths that do not stream, where the #1089 guard fails
+    // safe to "a timeout always fails". Latched into CoreDispatchResult.TerminalSuccessObserved.
+    Func<string, bool>? DetectsTerminalSuccess = null);
 
 /// <summary>
 /// A launch-configuration file an adapter needs written into place before its worker spawns, where the
@@ -84,7 +89,22 @@ public sealed record CoreDispatchSeedFile(string PathTemplate, string Content);
 /// worker was silent".
 /// </para>
 /// </param>
-public sealed record CoreDispatchResult(int ExitCode, CoreExitReason Reason, string? StderrTail = null);
+/// <param name="TerminalSuccessObserved">
+/// True when the worker emitted a <b>terminal success</b> event on stdout during the run — its vendor
+/// CLI's own "I finished, status success" marker (agy's <c>{"event":"result","result":{"status":
+/// "SUCCESS"}}</c>, claude's <c>{"type":"result","subtype":"success","is_error":false}</c>), detected by
+/// the adapter (Adapter Isolation) via <see cref="CoreDispatchTarget.DetectsTerminalSuccess"/>. It is
+/// the ONE fact that distinguishes "the worker finished, then hung at teardown" from "the worker was
+/// killed mid-work": the <see cref="Outcomes.OutcomeClassifier"/> uses it to let a <c>TimedOut</c> run
+/// whose declared outputs are all present classify as Succeeded instead of a doomed from-scratch retry
+/// (#1089). False on the crash-recovery path and whenever the worker did not stream (no marker to see),
+/// so the guard fails safe toward today's "a timeout always fails" behaviour.
+/// </param>
+public sealed record CoreDispatchResult(
+    int ExitCode,
+    CoreExitReason Reason,
+    string? StderrTail = null,
+    bool TerminalSuccessObserved = false);
 
 /// <summary>
 /// What <c>MutationInterface</c> needs from a dispatcher (spec §12's "Flow never executes a
@@ -810,6 +830,29 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         var stderrTail = new StderrTailBuffer();
         var stderrLock = new object();
 
+        // #1089: the terminal-success signal. The adapter (Adapter Isolation) owns what its vendor's
+        // "I finished, status success" line looks like; here we only invoke that predicate on each
+        // complete stdout line and latch the flag. Combined with OnStdoutLine into one sink so a line is
+        // decoded once, and non-null whenever EITHER a progress callback OR a detector is present -- so
+        // detection works on the dispatch path even when nothing consumes progress. Mutated on aer-core's
+        // single callback thread under stdoutLock (below); read after the post-run Flush, which takes the
+        // same lock, so the latch is visible.
+        var terminalSuccessObserved = false;
+        var detectsTerminalSuccess = target.DetectsTerminalSuccess;
+        Action<string>? stdoutLineSink = target.OnStdoutLine;
+        if (detectsTerminalSuccess is not null)
+        {
+            var innerProgress = target.OnStdoutLine;
+            stdoutLineSink = line =>
+            {
+                innerProgress?.Invoke(line);
+                if (!terminalSuccessObserved && detectsTerminalSuccess(line))
+                {
+                    terminalSuccessObserved = true;
+                }
+            };
+        }
+
         ExecutionStreamLogger? streamLogger = pathVariables.TryGetValue("AER_OUTPUT_DIR", out var outputDir)
             ? new ExecutionStreamLogger(outputDir)
             : null;
@@ -865,7 +908,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                                 fs.Flush();
                             }
                         }
-                        if (target.OnStdoutLine is not null)
+                        if (stdoutLineSink is not null)
                         {
                             // The decode is inside the lock, unlike the stateless GetString it replaces:
                             // the buffer now carries decoder state between chunks, so two callbacks
@@ -874,7 +917,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                             // it rather than sitting beside it.
                             lock (stdoutLock)
                             {
-                                stdoutLines.Append(e.Data, target.OnStdoutLine);
+                                stdoutLines.Append(e.Data, stdoutLineSink);
                             }
                         }
                     }
@@ -928,12 +971,17 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
 
         await Task.WhenAll(pendingLogWrites).ConfigureAwait(false);
 
+        bool terminalSuccessLatched;
         lock (stdoutLock)
         {
-            if (target.OnStdoutLine is not null)
+            if (stdoutLineSink is not null)
             {
-                stdoutLines.Flush(target.OnStdoutLine);
+                stdoutLines.Flush(stdoutLineSink);
             }
+
+            // Read under the same lock the sink mutates, and AFTER Flush drains the last buffered line --
+            // a terminal `result` arriving in the final chunk is only latched once Flush runs it.
+            terminalSuccessLatched = terminalSuccessObserved;
         }
 
         string? capturedStderr;
@@ -942,7 +990,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             capturedStderr = stderrTail.ToTailOrNull();
         }
 
-        return new CoreDispatchResult(exitCode, reason, capturedStderr);
+        return new CoreDispatchResult(exitCode, reason, capturedStderr, terminalSuccessLatched);
     }
 
 
