@@ -66,8 +66,13 @@ public class OutcomeClassifierTests
         }
     }
 
+    // #1089 flips this from the old "a timeout always fails regardless of outputs" into a guarded
+    // exception. The three arms below pin the guard from every direction: outputs alone are not enough
+    // (no marker -> Failed), the marker plus outputs succeeds, and the marker alone is not enough
+    // (no outputs -> Failed).
+
     [Fact]
-    public void Classify_returns_Failed_for_a_timeout_regardless_of_exit_code_or_outputs()
+    public void Classify_fails_a_timeout_with_satisfied_outputs_when_no_terminal_success_was_observed()
     {
         var directory = CreateTempDirectory();
         try
@@ -75,8 +80,52 @@ public class OutcomeClassifierTests
             File.WriteAllText(Path.Combine(directory, "plan"), "content");
             var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
 
+            // Outputs present, but the worker streamed no terminal success marker -- this could be a
+            // mid-write kill, not a finished-then-hung run, so spec §8's default holds: TimedOut -> Failed.
             var classification = OutcomeClassifier.Classify(
-                new CoreDispatchResult(0, CoreExitReason.TimedOut), contract, directory);
+                new CoreDispatchResult(0, CoreExitReason.TimedOut, TerminalSuccessObserved: false), contract, directory);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_succeeds_a_timeout_when_terminal_success_was_observed_and_outputs_are_satisfied()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            // The worker declared success (terminal marker on stdout) AND every declared output exists --
+            // it finished, then hung at teardown (#1089). A from-scratch retry would rebuild existing work.
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.TimedOut, TerminalSuccessObserved: true), contract, directory);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_fails_a_timeout_with_terminal_success_but_missing_outputs()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            // No output file written: the marker alone is not enough, the contract is unsatisfied.
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.TimedOut, TerminalSuccessObserved: true), contract, directory);
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
         }

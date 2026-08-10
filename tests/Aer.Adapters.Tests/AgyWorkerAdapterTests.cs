@@ -92,6 +92,33 @@ public class AgyWorkerAdapterTests
         Assert.DoesNotContain("stream-json", target.Args);
     }
 
+    /// <summary>
+    /// #1089: under StreamJson the target carries a terminal-success detector that recognises agy's
+    /// SUCCESS `result` event and nothing else; in text mode there is no such event, so it is null and
+    /// the classifier's timeout guard fails safe.
+    /// </summary>
+    [Fact]
+    public void StreamJson_wires_a_terminal_success_detector_that_recognises_only_agys_success_result()
+    {
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", StreamJson: true), ArchitectContract);
+
+        Assert.NotNull(target.DetectsTerminalSuccess);
+        Assert.True(target.DetectsTerminalSuccess!(
+            """{"event":"result","result":{"status":"SUCCESS","response":"done","usage":{"total_tokens":5}}}"""));
+        Assert.False(target.DetectsTerminalSuccess!("""{"event":"result","result":{"status":"ERROR"}}"""));
+        Assert.False(target.DetectsTerminalSuccess!("""{"event":"step_update","step_update":{"state":"DONE","step_type":"tool"}}"""));
+        Assert.False(target.DetectsTerminalSuccess!("not json"));
+    }
+
+    [Fact]
+    public void Without_StreamJson_no_terminal_success_detector_is_wired()
+    {
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.Null(target.DetectsTerminalSuccess);
+    }
+
     [Fact]
     public void The_rooms_directory_is_bound_with_add_dir_because_agy_ignores_the_process_cwd()
     {

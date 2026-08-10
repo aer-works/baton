@@ -105,6 +105,20 @@ public static class OutcomeClassifier
 
         if (result.Reason == CoreExitReason.TimedOut)
         {
+            // #1089: a worker can finish its declared work and then hang at process teardown (agy holds a
+            // scratch handle and never exits), which WithTimeout kills and reads as TimedOut. Spec §8
+            // otherwise fails every timeout regardless of outputs -- deliberately, because a bare timeout
+            // cannot tell "finished then hung" from "killed mid-write with a half-written output". The
+            // worker's own terminal success marker (CoreDispatchResult.TerminalSuccessObserved) IS that
+            // discriminator: when it was observed AND every declared output is present, the contract is
+            // genuinely satisfied and a from-scratch retry (RetryPolicy.MaxAttempts) only rebuilds work that
+            // already exists. Absent the marker -- no stream, killed mid-work, or crash-recovery -- this
+            // falls through to today's behaviour, so the guard fails safe.
+            if (result.TerminalSuccessObserved && ContractValidator.IsSatisfied(contract, outputDirectory))
+            {
+                return new OutcomeClassification(OutcomeVerdict.Succeeded);
+            }
+
             var (classification, retryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
             return new OutcomeClassification(
                 OutcomeVerdict.Failed,

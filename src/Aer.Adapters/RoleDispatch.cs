@@ -104,7 +104,12 @@ public static class RoleDispatch
             PermissionGrant: grant,
             WorkingDirectory: workingDirectory,
             Effort: effort,
-            GrantAuditMode: grantAuditMode);
+            GrantAuditMode: grantAuditMode,
+            // #1089: agy only. Streaming puts agy's terminal `result` event on stdout so a teardown-hang
+            // (agy holds a scratch handle and never exits) classifies as the satisfied contract it is,
+            // instead of a from-scratch retry. claude has no such hang and no detector wired, so streaming
+            // it here would change its stdout format for nothing; left in text mode.
+            StreamJson: string.Equals(adapter, "agy", StringComparison.OrdinalIgnoreCase));
     }
 
 

@@ -502,7 +502,39 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         return new CoreDispatchTarget(
             "agy", [.. args], invocation.WorkingDirectory, PromptText: prompt,
             Environment: [.. environment], OversizePromptWrapper: OversizePromptWrapperText,
-            SeedFiles: seedFiles);
+            SeedFiles: seedFiles,
+            // #1089: only when streaming is there a `result` event on stdout to detect; in text mode the
+            // stdout is the answer, so wiring the detector would just scan prose for nothing. Null there
+            // keeps the guard failing safe.
+            DetectsTerminalSuccess: invocation.StreamJson ? IsTerminalSuccessLine : null);
+    }
+
+    /// <summary>
+    /// True iff <paramref name="rawLine"/> is agy's terminal success marker:
+    /// <c>{"event":"result","result":{"status":"SUCCESS",…}}</c> (#1089). A non-SUCCESS status, a
+    /// non-result event, or a chunk-split line is not one. This is the ONE agy fact the #1089 guard
+    /// rests on, so it is asserted against a real captured line in the adapter tests.
+    /// </summary>
+    internal static bool IsTerminalSuccessLine(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            return root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("event", out var eventProp) && eventProp.GetString() == "result"
+                && root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object
+                && result.TryGetProperty("status", out var status) && status.GetString() == "SUCCESS";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>The agy <see cref="VendorGate"/>.</summary>
