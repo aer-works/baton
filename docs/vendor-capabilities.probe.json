@@ -1,81 +1,7 @@
 {
-  "RanAt": "2026-08-10T12:56:40.8352351-04:00",
+  "RanAt": "2026-08-10T16:25:45.5836924-04:00",
   "Host": "Microsoft Windows NT 10.0.26200.0",
   "Findings": [
-    {
-      "Capability": "plan usage \u0026 reset",
-      "Vendor": "claude",
-      "Evidence": "Observed",
-      "Value": "\u0060/usage\u0060 \u2014 13% used, with reset times",
-      "SurfacesConsulted": [
-        "--help",
-        "subcommand list",
-        "in-session slash command"
-      ],
-      "Detail": "\u0060claude -p \u0022/usage\u0022\u0060 reported a live percentage and a reset instant (\u0022Aug 5, 2pm (America/New_York)\u0022). Note the vendor\u0027s own caveat where present: the figure may be machine-local.",
-      "VendorVersion": "2.1.222 (Claude Code)"
-    },
-    {
-      "Capability": "per-turn cost",
-      "Vendor": "claude",
-      "Evidence": "Observed",
-      "Value": "\u0060total_cost_usd\u0060 in every result event",
-      "SurfacesConsulted": [
-        "structured output stream",
-        "--help"
-      ],
-      "Detail": "Observed $0.60216 on a trivial turn, alongside cache_creation_input_tokens, cache_read_input_tokens, input_tokens, output_tokens. The CLI computes the figure, so there is no price table to maintain and no drift to chase.",
-      "VendorVersion": "2.1.222 (Claude Code)"
-    },
-    {
-      "Capability": "structured output",
-      "Vendor": "claude",
-      "Evidence": "Observed",
-      "Value": "\u0060--output-format stream-json --verbose\u0060",
-      "SurfacesConsulted": [
-        "--help",
-        "structured output stream",
-        "local RPC server"
-      ],
-      "Detail": "Emitted 7 JSON lines on a trivial turn.",
-      "VendorVersion": "2.1.222 (Claude Code)"
-    },
-    {
-      "Capability": "--permission-prompt-tool",
-      "Vendor": "claude",
-      "Evidence": "Observed",
-      "Value": "\u0060--permission-prompt-tool \u003Cmcp-tool\u003E\u0060 \u2014 consulted for permission decisions",
-      "SurfacesConsulted": [
-        "--help",
-        "stderr",
-        "flag acceptance vs. a control flag",
-        "structured output stream"
-      ],
-      "Detail": "**Undocumented in \u0060--help\u0060** \u2014 which is why help text alone was never enough. Honoured, not merely parsed: on a turn requiring a Write permission the CLI reported \u0022aer_probe_no_such_tool (passed via --permission-prompt-tool)\u0022, naming the tool it tried to consult. The flag therefore routes permission decisions to an **MCP tool**, which is the same mechanism 0015 already chose \u2014 but as the vendor\u0027s designated entry point, consulted for every decision, rather than a tool the model must elect to call. Established with a name (\u0060aer_probe_no_such_tool\u0060) that exists nowhere, so it could not have come from anywhere but the flag.",
-      "VendorVersion": "2.1.222 (Claude Code)"
-    },
-    {
-      "Capability": "effort",
-      "Vendor": "claude",
-      "Evidence": "Inspected",
-      "Value": "\u0060--effort\u0060 \u2014 low, medium, high, xhigh, max",
-      "SurfacesConsulted": [
-        "--help"
-      ],
-      "Detail": "Read from help: \u0022--effort \u003Clevel\u003E Effort level for the current session (low, medium, high, xhigh, max)\u0022. Help names the accepted values, but naming is not behaviour: 0023 declines to assert a mapping until each value is shown to be accepted AND to behave distinctly.",
-      "VendorVersion": "2.1.222 (Claude Code)"
-    },
-    {
-      "Capability": "extra directories",
-      "Vendor": "claude",
-      "Evidence": "Inspected",
-      "Value": "\u0060--add-dir\u0060",
-      "SurfacesConsulted": [
-        "--help"
-      ],
-      "Detail": "Read from help. On \u0060agy\u0060 this is load-bearing rather than optional: \u0060-p\u0060 ignores the process working directory entirely (#491), so the room\u0027s folder must be bound explicitly.",
-      "VendorVersion": "2.1.222 (Claude Code)"
-    },
     {
       "Capability": "plan usage \u0026 reset",
       "Vendor": "agy",
@@ -149,6 +75,80 @@
       ],
       "Detail": "Read from help. On \u0060agy\u0060 this is load-bearing rather than optional: \u0060-p\u0060 ignores the process working directory entirely (#491), so the room\u0027s folder must be bound explicitly.",
       "VendorVersion": "1.1.11"
+    },
+    {
+      "Capability": "plan usage \u0026 reset",
+      "Vendor": "claude",
+      "Evidence": "Observed",
+      "Value": "\u0060/usage\u0060 \u2014 19% used, with reset times",
+      "SurfacesConsulted": [
+        "--help",
+        "subcommand list",
+        "in-session slash command"
+      ],
+      "Detail": "\u0060claude -p \u0022/usage\u0022\u0060 reported a live percentage and a reset instant (\u0022Aug 10, 5:50pm (America/New_York)\u0022). Note the vendor\u0027s own caveat where present: the figure may be machine-local.",
+      "VendorVersion": "2.1.226 (Claude Code)"
+    },
+    {
+      "Capability": "per-turn cost",
+      "Vendor": "claude",
+      "Evidence": "Observed",
+      "Value": "\u0060total_cost_usd\u0060 in every result event",
+      "SurfacesConsulted": [
+        "structured output stream",
+        "--help"
+      ],
+      "Detail": "Observed $0.238335 on a trivial turn, alongside cache_creation_input_tokens, cache_read_input_tokens, input_tokens, output_tokens. The CLI computes the figure, so there is no price table to maintain and no drift to chase.",
+      "VendorVersion": "2.1.226 (Claude Code)"
+    },
+    {
+      "Capability": "structured output",
+      "Vendor": "claude",
+      "Evidence": "Observed",
+      "Value": "\u0060--output-format stream-json --verbose\u0060",
+      "SurfacesConsulted": [
+        "--help",
+        "structured output stream",
+        "local RPC server"
+      ],
+      "Detail": "Emitted 6 JSON lines on a trivial turn.",
+      "VendorVersion": "2.1.226 (Claude Code)"
+    },
+    {
+      "Capability": "--permission-prompt-tool",
+      "Vendor": "claude",
+      "Evidence": "Observed",
+      "Value": "\u0060--permission-prompt-tool \u003Cmcp-tool\u003E\u0060 \u2014 consulted for permission decisions",
+      "SurfacesConsulted": [
+        "--help",
+        "stderr",
+        "flag acceptance vs. a control flag",
+        "structured output stream"
+      ],
+      "Detail": "**Undocumented in \u0060--help\u0060** \u2014 which is why help text alone was never enough. Honoured, not merely parsed: on a turn requiring a Write permission the CLI reported \u0022aer_probe_no_such_tool (passed via --permission-prompt-tool)\u0022, naming the tool it tried to consult. The flag therefore routes permission decisions to an **MCP tool**, which is the same mechanism 0015 already chose \u2014 but as the vendor\u0027s designated entry point, consulted for every decision, rather than a tool the model must elect to call. Established with a name (\u0060aer_probe_no_such_tool\u0060) that exists nowhere, so it could not have come from anywhere but the flag.",
+      "VendorVersion": "2.1.226 (Claude Code)"
+    },
+    {
+      "Capability": "effort",
+      "Vendor": "claude",
+      "Evidence": "Inspected",
+      "Value": "\u0060--effort\u0060 \u2014 low, medium, high, xhigh, max",
+      "SurfacesConsulted": [
+        "--help"
+      ],
+      "Detail": "Read from help: \u0022--effort \u003Clevel\u003E Effort level for the current session (low, medium, high, xhigh, max)\u0022. Help names the accepted values, but naming is not behaviour: 0023 declines to assert a mapping until each value is shown to be accepted AND to behave distinctly.",
+      "VendorVersion": "2.1.226 (Claude Code)"
+    },
+    {
+      "Capability": "extra directories",
+      "Vendor": "claude",
+      "Evidence": "Inspected",
+      "Value": "\u0060--add-dir\u0060",
+      "SurfacesConsulted": [
+        "--help"
+      ],
+      "Detail": "Read from help. On \u0060agy\u0060 this is load-bearing rather than optional: \u0060-p\u0060 ignores the process working directory entirely (#491), so the room\u0027s folder must be bound explicitly.",
+      "VendorVersion": "2.1.226 (Claude Code)"
     }
   ]
 }
