@@ -54,7 +54,7 @@
       {
         "name": "verdict.json",
         "schema": "review_verdict",
-        "instruction": "Also write your findings as a ReviewVerdict JSON to $AER_OUTPUT_DIR/verdict.json (the machine-checked structured form of the same review)."
+        "instruction": "Also write your findings as a ReviewVerdict JSON to $AER_OUTPUT_DIR/verdict.json (the machine-checked structured form of the same review). severity is one of high/medium/low; status is one of confirmed/refuted/unverified; unlisted fields are ignored; findings may be an empty array. Example: {\"reviewedRef\":\"<branch, commit, or PR>\",\"summary\":\"<optional overall assessment>\",\"findings\":[{\"claim\":\"<one-line finding>\",\"severity\":\"high\",\"status\":\"confirmed\",\"anchor\":{\"file\":\"path/to/file\",\"line\":1},\"detail\":\"<evidence, reproduction, reasoning>\"}]}"
       }
     ]
   },

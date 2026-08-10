@@ -341,4 +341,28 @@ public class WorkerRoleCatalogTests
         var output = Assert.Single(WorkerRoleCatalog.For("p").Outputs);
         Assert.Equal(OutputSchema.Diff, output.Schema);
     }
+
+    [Fact]
+    public void The_review_verdict_instruction_embeds_a_schema_valid_example_and_names_the_enum_sets()
+    {
+        // #1092: the instruction named "ReviewVerdict JSON" but showed no shape, so a strong model
+        // guessed findings[].claim and the closed severity/status enums wrong and was rejected on
+        // repeat (the schema traps are pinned in ReviewVerdictSchemaTests). It must now carry a
+        // concrete example the schema accepts -- a wrong example would be worse than none -- and name
+        // the status values a single example cannot show.
+        var instruction = WorkerRoleCatalog.For("review").Outputs.Single(o => o.Name == "verdict.json").Instruction;
+
+        var open = instruction.IndexOf('{');
+        var close = instruction.LastIndexOf('}');
+        Assert.True(open >= 0 && close > open, "the instruction embeds no JSON example object");
+        var example = instruction.Substring(open, close - open + 1);
+        Assert.True(
+            ReviewVerdictSchema.TryParse(System.Text.Encoding.UTF8.GetBytes(example), out _, out var error),
+            $"the instruction's example must parse as a ReviewVerdict: {error}");
+
+        // status is the subtler closed set (confirmed/refuted/unverified); the example shows only one,
+        // so the other two must be named or a model still guesses them.
+        Assert.Contains("refuted", instruction);
+        Assert.Contains("unverified", instruction);
+    }
 }
