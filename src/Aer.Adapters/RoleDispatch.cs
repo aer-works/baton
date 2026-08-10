@@ -43,7 +43,7 @@ public static class RoleDispatch
     /// it and every repo read was auto-denied.
     /// </param>
     /// <param name="modelOverride">
-    /// The model axis, independent of the role ([0017]/[0033]: vendor, model and effort are three
+    /// The model axis, independent of the role ([0017]: vendor, model and effort are three
     /// separate axes over a role's instructions). Null keeps the role's tier model — except when
     /// <paramref name="adapterOverride"/> moves the role to a different vendor, where the tier's
     /// vendor-specific model string is dropped for that vendor's own default (#1082).
@@ -67,7 +67,7 @@ public static class RoleDispatch
         var adapter = (string.IsNullOrWhiteSpace(adapterOverride) ? role.Adapter : adapterOverride)
             .Trim().ToLowerInvariant();
 
-        // Vendor, model and effort are three independent axes ([0017]/[0033]): the role carries a
+        // Vendor, model and effort are three independent axes ([0017]): the role carries a
         // default bundle (its tier), and each axis overrides on its own. An explicit --model/--effort
         // wins; with none, swapping the vendor drops the tier's model AND effort. Both are vendor-specific
         // as the catalog actually pins them: the model string plainly so (the measured #1082 failure, the

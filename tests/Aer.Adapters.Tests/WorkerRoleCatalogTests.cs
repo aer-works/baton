@@ -359,27 +359,30 @@ public class WorkerRoleCatalogTests
         var section = end >= 0 ? doc[start..end] : doc[start..];
 
         // A role row is `| `<id>` | <tier> | `out`, `out` | ... |` — id is the first cell's sole
-        // backticked token; outputs are the backticked file names anywhere in the row.
-        var rowRegex = new System.Text.RegularExpressions.Regex(@"^\|\s*`([a-z-]+)`\s*\|.*$",
+        // backticked token, tier is the second cell's bare word, outputs are the backticked file names.
+        var rowRegex = new System.Text.RegularExpressions.Regex(@"^\|\s*`([a-z-]+)`\s*\|\s*([a-z]+)\s*\|.*$",
             System.Text.RegularExpressions.RegexOptions.Multiline);
         var fileRegex = new System.Text.RegularExpressions.Regex(@"`([\w.-]+\.[a-z]+)`");
 
-        var documented = new Dictionary<string, HashSet<string>>();
+        var documented = new Dictionary<string, (string Tier, HashSet<string> Outputs)>();
         foreach (System.Text.RegularExpressions.Match row in rowRegex.Matches(section))
         {
             var id = row.Groups[1].Value;
+            var tier = row.Groups[2].Value;
             var outs = fileRegex.Matches(row.Value).Select(m => m.Groups[1].Value).ToHashSet();
-            documented[id] = outs;
+            documented[id] = (tier, outs);
         }
 
         var catalog = WorkerRoleCatalog.All.ToDictionary(
-            r => r.Id, r => r.Outputs.Select(o => o.Name).ToHashSet());
+            r => r.Id, r => (r.Tier, Outputs: r.Outputs.Select(o => o.Name).ToHashSet()));
 
         Assert.Equal(catalog.Keys.OrderBy(k => k), documented.Keys.OrderBy(k => k));
-        foreach (var (id, outs) in catalog)
+        foreach (var (id, expected) in catalog)
         {
-            Assert.True(documented[id].SetEquals(outs),
-                $"dispatch.md role '{id}' writes {string.Join(",", documented[id])}; catalog says {string.Join(",", outs)}");
+            Assert.True(documented[id].Outputs.SetEquals(expected.Outputs),
+                $"dispatch.md role '{id}' writes {string.Join(",", documented[id].Outputs)}; catalog says {string.Join(",", expected.Outputs)}");
+            Assert.True(string.Equals(documented[id].Tier, expected.Tier, StringComparison.Ordinal),
+                $"dispatch.md role '{id}' tier is '{documented[id].Tier}'; catalog says '{expected.Tier}'");
         }
     }
 

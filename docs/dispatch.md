@@ -25,7 +25,7 @@ aer dispatch <role> --spec <file> --room-dir <dir> [--adapter <vendor>] [--model
 | `--workspace <dir>` | The directory the worker runs in and may read. Defaults to the current directory. Bound explicitly because `agy -p` ignores the process working directory (#491). |
 | `--workflow-id <label>` | A label forwarded to the run; defaults to the materialised template id. |
 
-Vendor, model, and effort are **three independent axes** over a role's instructions ([0017]/[0033]):
+Vendor, model, and effort are **three independent axes** over a role's instructions ([0017]):
 the role carries a default bundle (its tier), and each axis overrides on its own.
 
 Model and effort are validated at the adapter boundary before dispatch (#1090): a dot-delimited claude

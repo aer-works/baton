@@ -29,7 +29,7 @@ namespace Aer.Cli;
 /// <c>workingDirectory</c> parameter (#1083).
 /// </param>
 /// <param name="Model">
-/// The model axis, independent of the role's tier ([0017]/[0033]: vendor/model/effort are three
+/// The model axis, independent of the role's tier ([0017]: vendor/model/effort are three
 /// separate axes). Null keeps the tier's model; the vendor-swap carve-out is documented on
 /// <see cref="Aer.Adapters.RoleDispatch"/>'s <c>modelOverride</c> (#1082).
 /// </param>
