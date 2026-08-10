@@ -412,10 +412,11 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             args.Add(invocation.Model);
         }
 
-        if (invocation.Effort is not null)
+        if (invocation.Effort is { } effort)
         {
+            ReconcileAgyEffort(invocation.Model, effort); // #1090
             args.Add("--effort");
-            args.Add(invocation.Effort);
+            args.Add(effort);
         }
 
         if (invocation.Timeout is { } timeout)
@@ -910,6 +911,57 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <paramref name="invocation"/> carries a <see cref="WorkerInvocation.PermissionGrant"/> that
     /// <see cref="TryTranslatePermissionGrant"/> refuses (e.g. requesting shell commands without network access, or vice versa).
     /// </exception>
+    /// <summary>
+    /// #1090: agy's <c>--effort</c> is one control with the model-name suffix and must agree (sentinel
+    /// <c>effort.agy-effort-and-suffix-must-agree</c>), and its value set is exactly {low, medium, high}
+    /// (sentinel <c>effort.agy-value-set</c> — that check is the tripwire if agy ever changes the set).
+    /// Both are otherwise refused by agy at bind time, after the operator has waited; this refuses them
+    /// up-front at resolution, naming the real cause. See <see cref="IncoherentVendorEffortException"/>.
+    /// </summary>
+    private static void ReconcileAgyEffort(string? model, string effort)
+    {
+        if (!AgyEffortValues.Contains(effort))
+        {
+            throw new IncoherentVendorEffortException(
+                "agy", $"'{effort}' is not one of agy's values (low, medium, high).");
+        }
+
+        if (GeminiEffortSuffix(model) is { } suffix
+            && !string.Equals(suffix, effort, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new IncoherentVendorEffortException(
+                "agy",
+                $"model '{model}' already encodes effort '{suffix}', which conflicts with --effort '{effort}'. "
+                + "On agy, effort is part of the model name; pass one, or make them agree.");
+        }
+    }
+
+    private static readonly HashSet<string> AgyEffortValues =
+        new(StringComparer.OrdinalIgnoreCase) { "low", "medium", "high" };
+
+    /// <summary>
+    /// The effort a gemini model name encodes as a trailing <c>-low|-medium|-high</c>, or null. Scoped
+    /// to the measured gemini families: <c>gpt-oss-120b-medium</c>'s trailing <c>-medium</c> is part of
+    /// the name and is not measured as an effort, so it is deliberately not treated as one (claim-scope).
+    /// </summary>
+    private static string? GeminiEffortSuffix(string? model)
+    {
+        if (model is null || !model.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        foreach (var value in AgyEffortValues)
+        {
+            if (model.EndsWith("-" + value, StringComparison.OrdinalIgnoreCase))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
     private string ResolvePermissionScope(WorkerInvocation invocation)
     {
         if (invocation.PermissionGrant is { } grant)

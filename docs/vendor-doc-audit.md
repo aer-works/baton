@@ -63,6 +63,22 @@ Recorded as "a no-op headless". The documentation: *"`manual` as an alias for `d
 UI labels Manual… `claude --help` lists it in place of `default`, and both values work."* Our
 observation (session reports `default`) was correct; the interpretation was not.
 
+### 5. `claude --model` REJECTS an unrecognized id — it does not silently degrade
+
+Reported (#1090) as: a dotted id like `claude-opus-4.8` silently degrades to a retired Opus 4, so
+every dispatch quietly runs the wrong model. **Measured 2026-08-10, verbatim, `claude` 2.1.226:** it
+does not degrade — it fails. The `system:init` event echoes whatever `--model` string was passed (so
+init is *not* a resolved-model signal), but the assistant turn resolves to `model:"<synthetic>"`,
+`is_error:true`, exit 1 — byte-identical to a plainly bogus id (`claude-bogus-nonexistent-zzz`), while
+the dash form `claude-opus-4-8` runs (real model, exit 0). So `claude` validates model ids; it just
+does so *after* spinning up the turn rather than pre-flight, and the failure is loud, not silent.
+
+The consequence is still worth catching up-front: on the dispatch path an exit-1 turn is
+`RetryPolicy(3)`-retried with the identical bad argv before surfacing that cryptic `<synthetic>`
+error. `ClaudeWorkerAdapter` (#1090, `MalformedVendorModelException`) refuses the dash→dot typo at
+resolution — the one malformed form distinguishable without a model list, which `claude` does not
+ship (`ClaudeWorkerAdapter.ModelAliases`). This is not general model-id validation.
+
 ---
 
 ## Capabilities the design predates and should be measured against
