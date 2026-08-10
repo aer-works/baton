@@ -61,6 +61,12 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _loadError;
   String? _sendError;
 
+  /// A dropped projection socket, surfaced as a recoverable banner (mirrors InboxScreen's
+  /// `_connectionError`). Without this the `watch()` stream's error was swallowed silently and every
+  /// future push — including the inline permission gate's appear/clear — stopped arriving with no
+  /// signal to the user (found while live-driving #390's mobile gate).
+  String? _connectionError;
+
   bool _isSending = false;
   String? _pendingUserMessage;
   int _turnsCountAtSendTime = 0;
@@ -88,19 +94,39 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _refresh();
     _refreshMode();
-    _projectionSubscription = widget.client.watch().listen((projection) {
-      if (!mounted) return;
-      if (projection.directoryPath == widget.directoryPath) {
-        _surfacePendingPermission(projection.pendingPermission);
-        _refresh();
-      }
-    });
+    _subscribeProjection();
     _progressSubscription = widget.client.watchProgress().listen((event) {
       if (!mounted) return;
       if (event.directoryPath == widget.directoryPath && _isSending) {
         setState(() => _liveProgressText += event.text);
       }
     });
+  }
+
+  /// (Re)subscribes to the daemon's filtered projection stream. Mirrors InboxScreen's `_connect`:
+  /// `onError`/`onDone` surface a recoverable [_connectionError] banner rather than letting a dropped
+  /// socket swallow every future push — the silent-swallow that would otherwise strand the inline
+  /// permission gate. Also the Reconnect button's action. A push that arrives after an error clears
+  /// the banner, so a self-healing transport needs no tap.
+  void _subscribeProjection() {
+    _projectionSubscription?.cancel();
+    setState(() => _connectionError = null);
+    _projectionSubscription = widget.client.watch().listen(
+      (projection) {
+        if (!mounted) return;
+        if (_connectionError != null) setState(() => _connectionError = null);
+        if (projection.directoryPath == widget.directoryPath) {
+          _surfacePendingPermission(projection.pendingPermission);
+          _refresh();
+        }
+      },
+      onError: (Object error) {
+        if (mounted) setState(() => _connectionError = 'Disconnected — $error');
+      },
+      onDone: () {
+        if (mounted) setState(() => _connectionError ??= 'Disconnected from the Baton daemon.');
+      },
+    );
   }
 
   @override
@@ -445,6 +471,21 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               color: Theme.of(context).colorScheme.errorContainer,
               child: Text(_sendError!, style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer)),
+            ),
+          if (_connectionError != null)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.only(left: 12, right: 4, top: 4, bottom: 4),
+              color: Theme.of(context).colorScheme.errorContainer,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(_connectionError!,
+                        style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer)),
+                  ),
+                  TextButton(onPressed: _subscribeProjection, child: const Text('Reconnect')),
+                ],
+              ),
             ),
           SafeArea(
             top: false,

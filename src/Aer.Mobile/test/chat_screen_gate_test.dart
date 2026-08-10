@@ -33,6 +33,11 @@ class _FakeDaemonClient extends DaemonClient {
 
   void push(RoomProjection projection) => _projectionController.add(projection);
 
+  /// Drops an error onto the projection stream — stands in for a WebSocket transport failure so a
+  /// test can assert the screen surfaces it (the found-while-fixing `onError` gap) rather than
+  /// swallowing it. The broadcast controller stays open afterwards, so a later [push] still lands.
+  void pushError(Object error) => _projectionController.addError(error);
+
   @override
   Stream<RoomProjection> watch() => _projectionController.stream;
 
@@ -173,6 +178,45 @@ void main() {
       await tester.tap(find.text('Allow once'));
       await tester.pump();
       expect(client.answerCallCount, 2);
+    });
+
+    testWidgets(
+        'a watch() stream error surfaces a recoverable Reconnect banner instead of a silent swallow (found-while-fixing #390)',
+        (tester) async {
+      final client = await pumpChatScreen(tester);
+
+      // Gate open, then the socket drops. Before the fix, `watch().listen` had no `onError`, so this
+      // error escaped to the test zone as an unhandled async error (a failing test) and no banner
+      // appeared -- the silent swallow that stranded the gate with no user signal.
+      client.push(projection(withPending: pending('perm-1')));
+      await tester.pumpAndSettle();
+      expect(find.text('Allow once'), findsOneWidget);
+
+      client.pushError(Exception('socket closed'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Disconnected'), findsOneWidget);
+      expect(find.text('Reconnect'), findsOneWidget);
+
+      // Reconnect re-subscribes and clears the banner (the button's whole point).
+      await tester.tap(find.text('Reconnect'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Disconnected'), findsNothing);
+    });
+
+    testWidgets('a projection push after a stream error self-clears the banner with no tap', (tester) async {
+      final client = await pumpChatScreen(tester);
+
+      client.pushError(Exception('socket closed'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Disconnected'), findsOneWidget);
+
+      // Transport recovers on its own: the next push must clear the banner without the user tapping
+      // Reconnect (the self-heal the onData handler's `_connectionError = null` promises).
+      client.push(projection(withPending: pending('perm-1')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Disconnected'), findsNothing);
+      expect(find.text('Allow once'), findsOneWidget);
     });
   });
 }
