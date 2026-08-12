@@ -72,7 +72,7 @@ dotnet tool install --global --add-source "$PACK_DIR" aer
 
 export PATH="$HOME/.dotnet/tools:$STUB_DIR:$PATH"
 
-aer run "$WORKFLOW_FILE" --bindings "$BINDINGS_FILE" --task-dir "$TASK_DIR"
+aer run "$WORKFLOW_FILE" --bindings "$BINDINGS_FILE" --room-dir "$TASK_DIR"
 
 OUTPUT_FILE=$(find "$TASK_DIR/artifacts" -type f -name greeting -print -quit)
 if [ -z "$OUTPUT_FILE" ] || [ ! -s "$OUTPUT_FILE" ]; then
