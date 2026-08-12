@@ -541,11 +541,12 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
         var guard = Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(_tempRoomDir);
         var releaseTask = Task.Run(async () =>
         {
-            // wait-ok: holds the guard across the retry loop's first attempt(s), releasing well
-            // inside its bounded backoff so success can only come from a retry, not first-try luck
-            await Task.Delay(350);
+            // Holds the guard across the retry loop's first attempt(s), releasing well inside its
+            // bounded backoff so success can only come from a retry, not first-try luck.
+            // wait-ok: transient-contention window, far under the retry loop's own ceiling
+            await Task.Delay(350, TestContext.Current.CancellationToken);
             guard.Dispose();
-        });
+        }, TestContext.Current.CancellationToken);
 
         await DaemonHost.RetryOnRoomLockAsync(async () =>
         {
