@@ -553,9 +553,8 @@ public class RoomDrillInTests
     [AvaloniaFact]
     public async Task Exhausted_step_renders_no_failed_banner()
     {
-        // #1116 review must-fix: the banner says "Failed" with a red cross and a live
-        // ask-the-worker-to-fix button — for a step 0026 says is not broken and must not have
-        // dispatches spent against it. The polarity arm is
+        // #1116 review must-fix — why the banner is suppressed for ExhaustedUntil is the gate
+        // comment in StepItemProjector.Build. The polarity arm is
         // Failed_step_renders_failed_banner_with_reason_and_stderr_excerpt above (Permanent).
         var roomDirectory = await CreateRoomDirectoryAsync(
             TwoStepSnapshot(),

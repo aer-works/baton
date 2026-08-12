@@ -219,9 +219,8 @@ public class StatusDerivationTests
     [Fact]
     public void DeriveStatus_MixedExhaustedAndGenuinelyFailed_IsFailed_NotWorking()
     {
-        // #1116 review must-fix: an unresolved ExhaustedUntil step keeps WorkflowStatus.Running
-        // alive FOREVER (RetryEngine.MayRetry bypasses attempts for it), so a genuinely failed
-        // sibling would hide behind "Working" indefinitely — Terminal's "Failed" arm never comes.
+        // #1116 review must-fix — why a genuinely failed sibling must not hide behind the
+        // exhausted keep-alive is the mixed-room arm comment in RoomCardViewModel.DeriveStatus.
         var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
             new WorkflowTemplateId("status-derivation-mixed"),
             1,
