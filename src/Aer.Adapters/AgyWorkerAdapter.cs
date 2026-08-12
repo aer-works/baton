@@ -1243,6 +1243,34 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         return TryClassifyAutoDeniedTool(stderrTail, out classification, out retryNotBefore);
     }
 
+    /// <summary>
+    /// #1128: agy's real quota refusal ("Individual quota reached. … Resets in 1h39m10s.",
+    /// measured live 2026-08-12) arrives in the stream-json result envelope on STDOUT, not on
+    /// stderr — so the single-tail path above never saw it and the failure burned ordinary retry
+    /// attempts against a dead quota. Same both-channels ordering ClaudeWorkerAdapter uses
+    /// (#1115): stderr first, then the stdout tail. QUOTA-ONLY on stdout, deliberately
+    /// (#1124 review): in stream-json mode the stdout tail is the model's own answer text, and
+    /// the auto-denied matcher is a loose two-word prose match — running it there would let a
+    /// worker's legitimate answer about permissions veto its own successful run. The quota
+    /// matcher stays sound on stdout because it requires the vendor-controlled refusal sentence
+    /// plus a parseable reset duration; auto-denied stays stderr-only, where agy's own CLI
+    /// diagnostics live.
+    /// </summary>
+    public bool TryClassifyFailure(
+        string? stderrTail,
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        if (TryClassifyFailure(stderrTail, timeProvider, out classification, out retryNotBefore))
+        {
+            return true;
+        }
+
+        return TryClassifyQuotaExhaustion(stdoutTail, timeProvider, out classification, out retryNotBefore);
+    }
+
     [GeneratedRegex(@"Resets in\s+(?:(?<hours>\d+)h)?(?:(?<minutes>\d+)m)?(?:(?<seconds>\d+)s)?", RegexOptions.IgnoreCase)]
     private static partial Regex QuotaResetDurationRegex();
 

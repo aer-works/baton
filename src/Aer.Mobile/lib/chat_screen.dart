@@ -603,7 +603,7 @@ class PermissionGateCard extends StatelessWidget {
             spacing: 8,
             runSpacing: 4,
             children: [
-              FilledButton(
+              OutlinedButton(
                 onPressed: enabled ? () => onAnswer(PermissionDecisionKind.allowOnce) : null,
                 child: const Text('Allow once'),
               ),

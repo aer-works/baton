@@ -1147,6 +1147,41 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
+    public void Quota_refusal_on_the_stdout_tail_alone_classifies_ExhaustedUntil()
+    {
+        // #1128: the real refusal (measured live 2026-08-12, execution eca57a30) arrived in the
+        // stream-json result envelope on STDOUT with empty stderr — the single-tail path never saw
+        // it. Verbatim from that run's log.
+        var stdoutTail = """{"event":"result","result":{"conversation_id":"eca57a30-db54-4be3-b760-53d708f8ae79","status":"ERROR","response":"","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h39m10s."}}""";
+        var now = new DateTimeOffset(2026, 8, 12, 22, 0, 0, TimeSpan.Zero);
+        var testTime = new TestTimeProvider(now);
+
+        var adapter = new AgyWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(stderrTail: null, stdoutTail, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(now.AddHours(1).AddMinutes(39).AddSeconds(10), retryNotBefore);
+    }
+
+    [Fact]
+    public void Worker_prose_about_permissions_on_stdout_does_not_veto_the_run()
+    {
+        // #1124 review finding E — why is the doc comment on AgyWorkerAdapter's two-tail
+        // TryClassifyFailure override. This proves the negative half: a worker legitimately
+        // discussing this repo's gate ("auto-denied" + "permission" are its daily vocabulary)
+        // keeps its successful run un-vetoed.
+        var stdoutTail = """{"event":"result","result":{"status":"OK","response":"When a tool is auto-denied, the permission gate writes an ask file and the worker blocks until a human answers."}}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new AgyWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(stderrTail: null, stdoutTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
+    [Fact]
     public void Non_quota_stderr_classifies_as_null()
     {
         var stderr = "Worker exited with non-zero code 1. stderr: Error: Failed to execute tool.";

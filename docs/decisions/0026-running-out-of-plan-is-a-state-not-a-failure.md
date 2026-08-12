@@ -92,7 +92,7 @@ effort mapping.
 | fact | how we know | if false |
 |---|---|---|
 | Plan/quota exhaustion is distinguishable at the CLI boundary from an ordinary worker failure | **assumed** — no `vendor-verify` check probes an exhausted plan, and exhausting one to measure it spends a real plan window | the state cannot be entered reliably, and exhaustion degrades back to the `Retryable` misclassification this record exists to replace |
-| A reset time is recoverable from what the vendor prints when it refuses | **assumed** — same reason; never observed under a real cap here | the state exists but carries no reset time, so "nothing wakes up when the window resets" stays true and only the manual path remains |
+| A reset time is recoverable from what the vendor prints when it refuses | **measured for `agy`, 2026-08-12 (#1128)** — a real cap hit during a dispatched run printed "Resets in 1h39m10s" in the stdout result envelope, and the adapter parses it; still assumed for `claude`'s refusal message specifically (its `/usage` reset instants are measured, its cap-hit refusal text is not) | the state exists but carries no reset time, so "nothing wakes up when the window resets" stays true and only the manual path remains |
 | `FailureClassification` is `{ Retryable, Permanent }` and nothing else | **measured** — `src/Aer.Flow/Domain/FailureClassification.cs`, with the ordinals pinned by `FlowEventLogJsonTests` (#604) | the premise that the types froze on the spec's stopgap is wrong, and this record's framing needs re-deriving even if its conclusion survives |
 
 ## Consequences
@@ -117,6 +117,15 @@ instants**, a per-model breakdown, and request counts, headlessly — the corpus
 `--log-file`, nothing in its conversation metadata. So the degrade-to-unknown path this record
 requires is not a hedge against an unmeasured gap — it is `agy`'s permanent, measured state, and
 `claude`'s reset instant should be treated as reliably available rather than merely hoped for.
+
+**Corrected 2026-08-12 (#1128).** The paragraph above conflates two channels, and only one of them
+is empty. What `agy` still reports **none of** is *proactive* usage — no usage command, nothing in
+`--log-file` or conversation metadata, so there is no `agy` equivalent of *"72% of this week's
+limit"*. But its **refusal message** carries a reset time after all: a real cap hit during a
+dispatched run printed *"Individual quota reached. … Resets in 1h39m10s."* in the stdout result
+envelope, which `AgyWorkerAdapter` now parses into an `ExhaustedUntil` instant. So degrade-to-unknown
+is `agy`'s state for *anticipating* the cliff, not for landing on it — at the moment of refusal, a
+reset instant is recoverable on both vendors.
 
 **Obliges us to** never spend retry attempts against an exhausted quota; record the reset instant at
 mutation time and never re-read a clock on replay; keep exhaustion per vendor rather than per room;
