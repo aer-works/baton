@@ -93,6 +93,15 @@ this is honestly a review rule, and [`docs/plan.md`](../plan.md) is right that *
 a control.* The nearest thing to teeth is that a permission surface's rank is now a named thing a
 reviewer can point at.
 
+**Corrected 2026-08-12 (#1124).** "No automated gate" is no longer true. §2's most mechanical
+failure shape — a permissive control carrying the primary visual marker while a sibling deny/cancel
+goes bare — is now checked by `pixi run audit-permissionrank`
+(`tools/audit-completeness/permissionrank.py`), a gate member since the same PR. It is a heuristic
+with its scope disclosed in its own docstring: it sees file-local markup pairings (`Classes="accent"`
+/ `Classes.accent=` in AXAML, `FilledButton`/`ElevatedButton` in Dart) and cannot see cross-file
+pairings, code-behind styling, or wrapped components. So emphasis-as-judgment stays a review rule;
+emphasis-as-markup is now a control.
+
 **Obliges us to** state the intended rank when specifying any surface that grants or destroys; keep the
 permissive option out of the primary slot, off the focus ring, and off `Enter`; give genuine either/or
 choices equal weight; and treat a mockup's emphasis as a claim to be checked against the records rather
