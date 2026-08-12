@@ -26,6 +26,19 @@ jobs:
           channel: stable
           cache: true
 
+      # #1121: `flutter build apk` invokes the gradle WRAPPER, whose first act on a cold runner is
+      # downloading a full gradle distribution — and that download died mid-stream on main
+      # (run 31643627243, java.net.SocketException before any compilation), the same
+      # toolchain-download disease #1117's pixi retry fixed. A cache keyed off the wrapper's own
+      # pinned version makes the download a cache-miss-only event instead of a per-run network bet.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/wrapper
+            ~/.gradle/caches
+          key: gradle-${{ runner.os }}-${{ hashFiles('src/Aer.Mobile/android/gradle/wrapper/gradle-wrapper.properties', 'src/Aer.Mobile/android/**/*.gradle*') }}
+          restore-keys: gradle-${{ runner.os }}-
+
       - name: Install dependencies
         run: flutter pub get
         working-directory: src/Aer.Mobile

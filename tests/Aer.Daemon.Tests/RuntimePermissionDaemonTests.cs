@@ -978,7 +978,17 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
                 {
                     if (File.Exists(errorLogPath))
                     {
-                        errorText = await File.ReadAllTextAsync(errorLogPath, TestContext.Current.CancellationToken);
+                        // #1120: the daemon's AppendTurnErrorAsync can be mid-append when this poll
+                        // reads — on Windows that is a sharing violation, not a failure. A locked
+                        // file just means "try again next tick" inside the same bounded deadline.
+                        try
+                        {
+                            errorText = await File.ReadAllTextAsync(errorLogPath, TestContext.Current.CancellationToken);
+                        }
+                        catch (IOException)
+                        {
+                            errorText = "";
+                        }
                         if (errorText.Contains(Aer.Flow.Concurrency.ConcurrencyGuard.RoomEventsLockFileName))
                         {
                             break;
