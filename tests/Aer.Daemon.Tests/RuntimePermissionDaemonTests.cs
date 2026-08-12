@@ -777,5 +777,64 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
             await app.StopAsync(TestContext.Current.CancellationToken);
         }
     }
+    [Fact]
+    public async Task SetMode_WhileRoomEventsLockHeld_Returns503_AndBindingsUnchanged()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
 
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var sessionId = "sess-mode-lock-" + Guid.NewGuid().ToString("N");
+            var roomDir = InteractiveSessionMaterializer.ResolveRoomDirectoryPath(sessionId, null, null);
+            await InteractiveSessionMaterializer.MaterializeToDirectoryAsync(
+                sessionId, roomDir, "claude", null, _tempRoomDir, null, 100, InteractiveSessionMaterializer.GrantForMode("interactive"), TestContext.Current.CancellationToken);
+
+            var bindingsPath = Path.Combine(roomDir, "bindings.json");
+            var initialBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            try
+            {
+                // Hold room-events lock
+                using var roomEventsGuard = Aer.Flow.Concurrency.ConcurrencyGuard.AcquireRoomEvents(roomDir, "test mode lock hold");
+
+                var response = await client.PostAsJsonAsync($"{baseUrl}/api/sessions/{sessionId}/mode", new { mode = "auto" }, TestContext.Current.CancellationToken);
+
+                Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+                var afterBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+                Assert.Equal(initialBindingsText, afterBindingsText);
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
 }
