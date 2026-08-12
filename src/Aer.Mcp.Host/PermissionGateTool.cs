@@ -78,7 +78,11 @@ public sealed class PermissionGateTool : IMcpTool
             toolName,
             inputJson,
             reason,
-            askedAt = DateTimeOffset.UtcNow
+            askedAt = DateTimeOffset.UtcNow,
+            // The ask carries its own deadline so no other component has to duplicate this tool's
+            // timeout value: the daemon's restart reconciliation expires an ask from askedAt +
+            // timeoutSeconds, staying correct if a caller ever parameterizes the timeout.
+            timeoutSeconds = (int)_timeout.TotalSeconds
         };
 
         var jsonOptions = new JsonSerializerOptions
