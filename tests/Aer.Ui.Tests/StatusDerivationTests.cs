@@ -82,8 +82,39 @@ public class StatusDerivationTests
         var projection = ProjectionWith(status, stepStatuses);
 
         Assert.Equal(
-            RoomCardViewModel.DeriveStatus(projection).StatusText,
+            RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission).StatusText,
             PlainLanguage.ForWorkflow(projection));
+    }
+
+    [Fact]
+    public void DeriveStatus_PendingPermission_IsNeedsYou_PermissionRequested()
+    {
+        var pendingPermission = new Aer.Flow.Projection.PendingPermission(
+            "req-101",
+            "worker-alpha",
+            "claude",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            DateTimeOffset.UtcNow);
+
+        var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Running);
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, pendingPermission);
+
+        Assert.Equal(RoomCardStatus.NeedsYou, status);
+        Assert.Equal("Permission requested", statusText);
+    }
+
+    [Fact]
+    public void DeriveStatus_AnsweredPermission_RestoresRunningStatus()
+    {
+        var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Running);
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+
+        Assert.Equal(RoomCardStatus.Running, status);
+        Assert.Equal("Working — step-0", statusText);
     }
 
     [Fact]

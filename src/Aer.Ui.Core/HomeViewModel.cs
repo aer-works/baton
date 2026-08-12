@@ -2,6 +2,7 @@ using Aer.Adapters;
 using Aer.Flow;
 using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
+using Aer.Flow.Projection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -113,11 +114,15 @@ public static class RoomCardViewModel
     /// the same surfaces that made #458's marks disagree across toolkits would make two copies of
     /// this disagree across views — Home would say "Cancelled" while the switcher said "Finished",
     /// which is the exact defect #461 had just fixed in one place.
+    /// Extended (#1112): receives <paramref name="pendingPermission"/> projected from <c>room.jsonl</c>
+    /// so a live permission ask derives <see cref="RoomCardStatus.NeedsYou"/> and "Permission requested".
     /// </summary>
-    public static (string StatusText, RoomCardStatus Status) DeriveStatus(RoomProjection projection)
+    public static (string StatusText, RoomCardStatus Status) DeriveStatus(
+        RoomProjection projection, PendingPermission? pendingPermission)
     {
         return projection.State.Status switch
         {
+            _ when pendingPermission != null => ("Permission requested", RoomCardStatus.NeedsYou),
             WorkflowStatus.Paused => (PausedCardStatusText(projection), RoomCardStatus.NeedsYou),
             WorkflowStatus.Running when projection.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Running) is { } runningStep
                 => ($"Working — {runningStep.StepId.Value}", RoomCardStatus.Running),

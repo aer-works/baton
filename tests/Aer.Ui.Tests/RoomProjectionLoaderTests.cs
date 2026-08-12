@@ -518,4 +518,185 @@ public class RoomProjectionLoaderTests
             Timeout: TimeSpan.FromMinutes(10),
             Environment: [],
             UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+    [Fact]
+    public async Task LoadFleetStatus_RoomWithJournaledAsk_IsNeedsYou()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "three-step-linear-workflow.json");
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"ui-fleet-ask-{Guid.NewGuid():N}");
+        try
+        {
+            var definition = await WorkflowDefinitionParser.LoadFromFileAsync(fixturePath, TestContext.Current.CancellationToken);
+            var snapshot = SnapshotBinder.Bind(definition);
+            await SnapshotBinder.PersistAsync(snapshot, Path.Combine(roomDirectory, "snapshot.json"), TestContext.Current.CancellationToken);
+
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakePausedStepRequest(new ExecutionId("exec-01"), Architect)), TestContext.Current.CancellationToken);
+            }
+
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            var askedEvent = new RoomEvent.RuntimePermissionAsked(
+                "req-101",
+                new ExecutionId("exec-01"),
+                Architect,
+                "worker-alpha",
+                "claude",
+                "tool_use_123",
+                "WriteFiles",
+                """{"path":"test.txt"}""",
+                "WriteFiles",
+                DateTimeOffset.UtcNow);
+
+            await using (var roomWriter = new RoomEventLogWriter(roomLogPath))
+            {
+                await roomWriter.AppendAsync(askedEvent, TestContext.Current.CancellationToken);
+            }
+
+            var fleetItem = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            Assert.Equal(RoomCardStatus.NeedsYou, fleetItem.Status);
+            Assert.Equal("Permission requested", fleetItem.StatusText);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task LoadFleetStatus_AskAnsweredOrRevoked_IsNotNeedsYou()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "three-step-linear-workflow.json");
+
+        // Case 1: Answered
+        var roomDirectory1 = Path.Combine(Path.GetTempPath(), $"ui-fleet-answered-{Guid.NewGuid():N}");
+        try
+        {
+            var definition = await WorkflowDefinitionParser.LoadFromFileAsync(fixturePath, TestContext.Current.CancellationToken);
+            var snapshot = SnapshotBinder.Bind(definition);
+            await SnapshotBinder.PersistAsync(snapshot, Path.Combine(roomDirectory1, "snapshot.json"), TestContext.Current.CancellationToken);
+
+            var logPath = Path.Combine(roomDirectory1, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakePausedStepRequest(new ExecutionId("exec-01"), Architect)), TestContext.Current.CancellationToken);
+            }
+
+            var askedAt = DateTimeOffset.UtcNow;
+            var askedEvent = new RoomEvent.RuntimePermissionAsked(
+                "req-101",
+                new ExecutionId("exec-01"),
+                Architect,
+                "worker-alpha",
+                "claude",
+                "tool_use_123",
+                "WriteFiles",
+                """{"path":"test.txt"}""",
+                "WriteFiles",
+                askedAt);
+
+            var answeredEvent = new RoomEvent.RuntimePermissionAnswered(
+                "req-101",
+                "AllowOnce",
+                null,
+                "Approved",
+                "operator-bob",
+                askedAt.AddSeconds(5));
+
+            var roomLogPath1 = Path.Combine(roomDirectory1, "room.jsonl");
+            await using (var roomWriter = new RoomEventLogWriter(roomLogPath1))
+            {
+                await roomWriter.AppendAsync(askedEvent, TestContext.Current.CancellationToken);
+                await roomWriter.AppendAsync(answeredEvent, TestContext.Current.CancellationToken);
+            }
+
+            var fleetItem1 = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory1, TestContext.Current.CancellationToken);
+            Assert.NotEqual(RoomCardStatus.NeedsYou, fleetItem1.Status);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory1);
+        }
+
+        // Case 2: Revoked
+        var roomDirectory2 = Path.Combine(Path.GetTempPath(), $"ui-fleet-revoked-{Guid.NewGuid():N}");
+        try
+        {
+            var definition = await WorkflowDefinitionParser.LoadFromFileAsync(fixturePath, TestContext.Current.CancellationToken);
+            var snapshot = SnapshotBinder.Bind(definition);
+            await SnapshotBinder.PersistAsync(snapshot, Path.Combine(roomDirectory2, "snapshot.json"), TestContext.Current.CancellationToken);
+
+            var logPath = Path.Combine(roomDirectory2, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakePausedStepRequest(new ExecutionId("exec-01"), Architect)), TestContext.Current.CancellationToken);
+            }
+
+            var askedAt = DateTimeOffset.UtcNow;
+            var askedEvent = new RoomEvent.RuntimePermissionAsked(
+                "req-102",
+                new ExecutionId("exec-01"),
+                Architect,
+                "worker-alpha",
+                "claude",
+                "tool_use_123",
+                "WriteFiles",
+                """{"path":"test.txt"}""",
+                "WriteFiles",
+                askedAt);
+
+            var revokedEvent = new RoomEvent.RuntimePermissionRevoked(
+                "req-102",
+                "TurnEnded",
+                askedAt.AddSeconds(5));
+
+            var roomLogPath2 = Path.Combine(roomDirectory2, "room.jsonl");
+            await using (var roomWriter = new RoomEventLogWriter(roomLogPath2))
+            {
+                await roomWriter.AppendAsync(askedEvent, TestContext.Current.CancellationToken);
+                await roomWriter.AppendAsync(revokedEvent, TestContext.Current.CancellationToken);
+            }
+
+            var fleetItem2 = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory2, TestContext.Current.CancellationToken);
+            Assert.NotEqual(RoomCardStatus.NeedsYou, fleetItem2.Status);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory2);
+        }
+    }
+
+    [Fact]
+    public async Task LoadFleetStatus_NoRoomJournal_StillLoads()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "three-step-linear-workflow.json");
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"ui-fleet-nojournal-{Guid.NewGuid():N}");
+        try
+        {
+            var definition = await WorkflowDefinitionParser.LoadFromFileAsync(fixturePath, TestContext.Current.CancellationToken);
+            var snapshot = SnapshotBinder.Bind(definition);
+            await SnapshotBinder.PersistAsync(snapshot, Path.Combine(roomDirectory, "snapshot.json"), TestContext.Current.CancellationToken);
+
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakePausedStepRequest(new ExecutionId("exec-01"), Architect)), TestContext.Current.CancellationToken);
+            }
+
+            // Ensure no room.jsonl exists
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            Assert.False(File.Exists(roomLogPath));
+
+            var fleetItem = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            Assert.Equal("Working — architect", fleetItem.StatusText);
+            Assert.Equal(RoomCardStatus.Running, fleetItem.Status);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
 }

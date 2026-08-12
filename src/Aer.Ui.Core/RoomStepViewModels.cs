@@ -49,7 +49,7 @@ public static class PlainLanguage
     /// #334's reply/review split. Delegating is what makes "can never drift" true.
     /// </summary>
     public static string ForWorkflow(RoomProjection projection)
-        => RoomCardViewModel.DeriveStatus(projection).StatusText;
+        => RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission).StatusText;
 
     /// <summary>
     /// #215: real execution/decision ids are 32-char generated Guids — pure visual noise to a

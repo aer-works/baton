@@ -204,6 +204,7 @@ public static class RoomProjectionLoader
         var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
         var state = StateProjector.Project(events, snapshot, checkpoint);
         var pausedStepCount = state.Steps.Count(s => s.Status == StepStatus.Paused);
+        var pendingPermission = await LoadPendingPermissionAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
 
         // Reuse the ONE status derivation (#616/#976 — never a second copy) so the fleet reads
         // "Waiting for your reply" for a chat turn and "Waiting for your review" for a real gate,
@@ -212,7 +213,9 @@ public static class RoomProjectionLoader
         var (statusText, status) = RoomCardViewModel.DeriveStatus(new RoomProjection(
             snapshot, state,
             new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
-            new ArtifactLineage([])));
+            new ArtifactLineage([]),
+            pendingPermission),
+            pendingPermission);
 
         // Fallback for a room with no journal events/timestamps yet: prefer created timestamp
         // (scoped strictly to the pre-first-event window).
