@@ -604,7 +604,7 @@ public sealed partial class RoomFleetItemViewModel : ObservableObject
     /// </summary>
     internal void ApplyProjection(RoomProjection projection)
     {
-        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection);
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission);
         StatusText = statusText;
         Status = status;
         PausedStepCount = projection.State.Steps.Count(s => s.Status == StepStatus.Paused);

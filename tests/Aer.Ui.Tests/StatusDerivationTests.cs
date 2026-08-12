@@ -82,8 +82,72 @@ public class StatusDerivationTests
         var projection = ProjectionWith(status, stepStatuses);
 
         Assert.Equal(
-            RoomCardViewModel.DeriveStatus(projection).StatusText,
+            RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission).StatusText,
             PlainLanguage.ForWorkflow(projection));
+    }
+
+    [Fact]
+    public void DeriveStatus_PendingPermission_IsNeedsYou_PermissionRequested()
+    {
+        var pendingPermission = new Aer.Flow.Projection.PendingPermission(
+            "req-101",
+            "worker-alpha",
+            "claude",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            DateTimeOffset.UtcNow);
+
+        var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Running);
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, pendingPermission);
+
+        Assert.Equal(RoomCardStatus.NeedsYou, status);
+        Assert.Equal("Permission requested", statusText);
+    }
+
+    [Fact]
+    public void DeriveStatus_AnsweredPermission_RestoresRunningStatus()
+    {
+        var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Running);
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+
+        Assert.Equal(RoomCardStatus.Running, status);
+        Assert.Equal("Working — step-0", statusText);
+    }
+
+    public static TheoryData<WorkflowStatus, StepStatus, string> OrphanedAskCases() => new()
+    {
+        // #1112 review finding: an ask can outlive its turn (a lost turn-end revoke race, a young
+        // ask re-raised by startup reconcile — #1113). The gate is only genuinely answerable while
+        // a turn is executing, so every non-Running state keeps its own truthful word rather than
+        // masking it with "Permission requested" for a worker nothing is left to release.
+        { WorkflowStatus.Paused, StepStatus.Paused, "Waiting for your review" },
+        { WorkflowStatus.Terminal, StepStatus.Failed, "Failed" },
+        { WorkflowStatus.Terminal, StepStatus.Cancelled, "Cancelled" },
+        { WorkflowStatus.Terminal, StepStatus.Succeeded, "Finished" },
+    };
+
+    [Theory]
+    [MemberData(nameof(OrphanedAskCases))]
+    public void DeriveStatus_OrphanedAskBesideNonRunningState_KeepsTheTrueStatus(
+        WorkflowStatus status, StepStatus stepStatus, string expectedText)
+    {
+        var orphanedAsk = new Aer.Flow.Projection.PendingPermission(
+            "req-orphan",
+            "worker-alpha",
+            "claude",
+            "Bash",
+            """{"command":"ls"}""",
+            "Bash",
+            DateTimeOffset.UtcNow);
+
+        var projection = ProjectionWith(status, stepStatus);
+
+        var (statusText, _) = RoomCardViewModel.DeriveStatus(projection, orphanedAsk);
+
+        Assert.Equal(expectedText, statusText);
     }
 
     [Fact]

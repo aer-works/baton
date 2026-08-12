@@ -306,6 +306,87 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
     }
 
     [Fact]
+    public async Task Reconciliation_ReRaisedYoungAsk_ExpiresAtItsOwnDeadline()
+    {
+        // #1113: a re-raised young ask's worker died with the daemon, so nothing else is left to
+        // enforce its recorded timeout — reconcile itself must schedule the expiry.
+        var artifactsDir = Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName);
+        var outputDir = Path.Combine(artifactsDir, "execution_ex-young");
+        Directory.CreateDirectory(outputDir);
+
+        var reqId = "req-young-1";
+        var askPayload = new { permissionRequestId = reqId, toolName = "Edit", inputJson = "{}", askedAt = DateTimeOffset.UtcNow, timeoutSeconds = 2 };
+        await File.WriteAllTextAsync(Path.Combine(outputDir, $"ask-{reqId}.json"), JsonSerializer.Serialize(askPayload), TestContext.Current.CancellationToken);
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+
+        await DaemonHost.ReconcileRoomPermissionsAsync(_tempRoomDir, TestContext.Current.CancellationToken);
+
+        // Re-raised first: still inside its 2s window.
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        Assert.Single(events.OfType<RoomEvent.RuntimePermissionAsked>());
+        Assert.Empty(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+        Assert.True(PendingGateRegistry.TryGet(reqId, out _));
+
+        // Then expired at its own deadline, with the full resolution (journal + sentinel + registry).
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        RoomEvent.RuntimePermissionRevoked? revoked = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            revoked = events.OfType<RoomEvent.RuntimePermissionRevoked>().FirstOrDefault();
+            if (revoked != null && !PendingGateRegistry.TryGet(reqId, out _))
+            {
+                break;
+            }
+            await Task.Delay(100, TestContext.Current.CancellationToken); // wait-ok: bounded poll for the scheduled expiry at the ask's 2s deadline
+        }
+
+        Assert.NotNull(revoked);
+        Assert.Equal(reqId, revoked.PermissionRequestId);
+        Assert.Equal("timeout", revoked.Reason);
+        Assert.False(PendingGateRegistry.TryGet(reqId, out _));
+        Assert.True(File.Exists(Path.Combine(outputDir, $"revoked-{reqId}.json")));
+    }
+
+    [Fact]
+    public async Task Reconciliation_ReRaisedAsk_ResolvedBeforeDeadline_IsNotExpired()
+    {
+        // Polarity arm for the scheduled expiry: anything that resolves the ask first (here, the
+        // answer path's registry removal + journaled Answered) makes the delayed sweep a no-op.
+        var artifactsDir = Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName);
+        var outputDir = Path.Combine(artifactsDir, "execution_ex-young2");
+        Directory.CreateDirectory(outputDir);
+
+        var reqId = "req-young-2";
+        var askPayload = new { permissionRequestId = reqId, toolName = "Edit", inputJson = "{}", askedAt = DateTimeOffset.UtcNow, timeoutSeconds = 2 };
+        await File.WriteAllTextAsync(Path.Combine(outputDir, $"ask-{reqId}.json"), JsonSerializer.Serialize(askPayload), TestContext.Current.CancellationToken);
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+
+        await DaemonHost.ReconcileRoomPermissionsAsync(_tempRoomDir, TestContext.Current.CancellationToken);
+        Assert.True(PendingGateRegistry.TryGet(reqId, out _));
+
+        // Resolve like the answer endpoint does: journal Answered, then clear the registry entry.
+        await using (var writer = new RoomEventLogWriter(roomLogPath))
+        {
+            await RoomMutationInterface.AnswerPermissionAsync(
+                _tempRoomDir, reader, writer, reqId, "AllowOnce", updatedInputJson: null,
+                reason: null, deciderIdentity: "human",
+                cancellationToken: TestContext.Current.CancellationToken);
+        }
+        PendingGateRegistry.TryRemove(reqId, out _);
+
+        await Task.Delay(TimeSpan.FromSeconds(4), TestContext.Current.CancellationToken); // wait-ok: spans the ask's 2s deadline to prove the scheduled expiry did not fire
+
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+        Assert.Single(events.OfType<RoomEvent.RuntimePermissionAnswered>());
+    }
+
+    [Fact]
     public async Task Reconciliation_ExpiredAsk_EmitsRevoked_AndDoesNotReRaise()
     {
         var artifactsDir = Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName);
