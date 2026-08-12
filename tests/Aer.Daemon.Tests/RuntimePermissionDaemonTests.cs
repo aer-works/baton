@@ -837,4 +837,88 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
             await app.StopAsync(TestContext.Current.CancellationToken);
         }
     }
+
+    [Fact]
+    public async Task SendTurn_WhileRoomEventsLockHeld_FailsBeforeRewritingBindings_AndNamesTheLock()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var sessionId = "sess-turn-lock-" + Guid.NewGuid().ToString("N");
+            var roomDir = InteractiveSessionMaterializer.ResolveRoomDirectoryPath(sessionId, null, null);
+            await InteractiveSessionMaterializer.MaterializeToDirectoryAsync(
+                sessionId, roomDir, "claude", null, _tempRoomDir, null, 100, InteractiveSessionMaterializer.GrantForMode("interactive"), TestContext.Current.CancellationToken);
+
+            var bindingsPath = Path.Combine(roomDir, "bindings.json");
+            var initialBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            try
+            {
+                // #1110: the per-turn bindings rewrite in ExecuteSessionTurnCoreAsync must refuse
+                // (bounded acquire, then WorkflowLockedException) rather than rewrite bindings.json
+                // while another room-events holder is live. The send endpoint is fire-and-forget
+                // (200 up front, #341), so the failure surfaces in .aer/turn-errors.log — and since
+                // 0053 the lock message names the contended lock file, which is what pins this
+                // failure to the room-events lock rather than any other turn error.
+                using var roomEventsGuard = Aer.Flow.Concurrency.ConcurrencyGuard.AcquireRoomEvents(roomDir, "test turn lock hold");
+
+                var response = await client.PostAsJsonAsync($"{baseUrl}/api/sessions/send",
+                    new { sessionId, message = "hello" }, TestContext.Current.CancellationToken);
+                Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+
+                var errorLogPath = Path.Combine(roomDir, ".aer", "turn-errors.log");
+                var errorDeadline = DateTime.UtcNow.AddSeconds(20);
+                string errorText = "";
+                while (DateTime.UtcNow < errorDeadline)
+                {
+                    if (File.Exists(errorLogPath))
+                    {
+                        errorText = await File.ReadAllTextAsync(errorLogPath, TestContext.Current.CancellationToken);
+                        if (errorText.Contains(Aer.Flow.Concurrency.ConcurrencyGuard.RoomEventsLockFileName))
+                        {
+                            break;
+                        }
+                    }
+                    await Task.Delay(100, TestContext.Current.CancellationToken); // wait-ok: bounded poll for the fire-and-forget turn's persisted error
+                }
+
+                Assert.Contains(Aer.Flow.Concurrency.ConcurrencyGuard.RoomEventsLockFileName, errorText);
+
+                var afterBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+                Assert.Equal(initialBindingsText, afterBindingsText);
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
 }
