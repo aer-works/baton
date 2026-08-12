@@ -687,6 +687,22 @@ public class ClaudeWorkerAdapterTests
     }
 
     [Fact]
+    public void TruncatedEnvelopeInTail_FailsClosed_NoClassificationNoThrow()
+    {
+        // #1115 review: the tail buffers cut front-first mid-line, so the classifier can be
+        // handed half a JSON envelope — even one whose retained half still contains the literal
+        // "credits_required". Unparseable input must fail closed: no classification, no throw.
+        var frontCut = """error","errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(frontCut, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
+    [Fact]
     public void CreditsRequired_ClassifiesExhaustedUntil()
     {
         var envelope = """{"type":"result","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";

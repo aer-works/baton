@@ -137,9 +137,11 @@ public interface ICoreDispatcher
 }
 
 /// <summary>
-/// Accumulates the tail of a worker's stderr as chunks arrive from the native callback (#563):
-/// decodes, collapses whitespace, and keeps at most
-/// <see cref="CoreDispatcher.MaxRetainedStderrLength"/> characters.
+/// Accumulates the tail of a worker's output stream as chunks arrive from the native callback
+/// (#563): decodes, collapses whitespace, and keeps at most
+/// <see cref="CoreDispatcher.MaxRetainedStderrLength"/> characters. Named for the stderr capture
+/// it was built for; since #1115 a second instance captures the stdout tail
+/// (<see cref="CoreDispatchResult.StdoutTail"/>) with identical, stream-agnostic mechanics.
 /// </summary>
 /// <remarks>
 /// <para>
