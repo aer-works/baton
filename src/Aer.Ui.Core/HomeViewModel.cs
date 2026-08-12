@@ -116,10 +116,20 @@ public static class RoomCardViewModel
     /// which is the exact defect #461 had just fixed in one place.
     /// Extended (#1112): receives <paramref name="pendingPermission"/> projected from <c>room.jsonl</c>
     /// so a live permission ask derives <see cref="RoomCardStatus.NeedsYou"/> and "Permission requested".
+    /// Extended (#1116, 0026 §1/§3/§5): an exhausted step must NOT rank the room NeedsYou (0026 §1).
+    /// A room whose only blocker is exhaustion carries the 0026 sentence shape ("Out of plan — resumes ...")
+    /// with rank/color non-alarming (<see cref="RoomCardStatus.Cancelled"/>, band 4 background room state).
     /// </summary>
     public static (string StatusText, RoomCardStatus Status) DeriveStatus(
         RoomProjection projection, PendingPermission? pendingPermission)
     {
+        var failedOrRejectedSteps = projection.State.Steps
+            .Where(s => s.Status is StepStatus.Failed or StepStatus.Rejected)
+            .ToList();
+
+        var isOnlyBlockerExhaustion = failedOrRejectedSteps.Count > 0 &&
+            failedOrRejectedSteps.All(s => s.Status == StepStatus.Failed && s.LatestFailureClassification == FailureClassification.ExhaustedUntil);
+
         return projection.State.Status switch
         {
             // Running-scoped on purpose (#1112 review): a live answerable gate only exists while a
@@ -131,8 +141,9 @@ public static class RoomCardViewModel
             WorkflowStatus.Paused => (PausedCardStatusText(projection), RoomCardStatus.NeedsYou),
             WorkflowStatus.Running when projection.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Running) is { } runningStep
                 => ($"Working — {runningStep.StepId.Value}", RoomCardStatus.Running),
+            _ when isOnlyBlockerExhaustion => FormatExhaustedRoomStatus(failedOrRejectedSteps[0]),
             WorkflowStatus.Running => ("Working", RoomCardStatus.Running),
-            _ when projection.State.Steps.Any(s => s.Status is StepStatus.Failed or StepStatus.Rejected)
+            _ when failedOrRejectedSteps.Count > 0
                 => ("Failed", RoomCardStatus.Failed),
             // #461: a cancelled run has no WorkflowStatus of its own — it reaches Terminal like any
             // other, which is exactly why it used to fall through to "Finished" and tell you a room
@@ -143,6 +154,15 @@ public static class RoomCardViewModel
                 => ("Cancelled", RoomCardStatus.Cancelled),
             _ => ("Finished", RoomCardStatus.Finished),
         };
+    }
+
+    private static (string StatusText, RoomCardStatus Status) FormatExhaustedRoomStatus(StepState exhaustedStep)
+    {
+        var resetInstant = exhaustedStep.RetryNotBefore ?? exhaustedStep.LatestExecutionFailedRetryNotBefore;
+        var text = resetInstant is { } instant
+            ? $"Out of plan — resumes {instant.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)}"
+            : "Out of plan — reset unknown";
+        return (text, RoomCardStatus.Cancelled);
     }
 
     // #334: a paused chat turn is "your turn to reply", not an approval gate. A card whose only

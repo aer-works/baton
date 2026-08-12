@@ -420,9 +420,20 @@ public static class StatusCommand
         // StateProjector clears RetryNotBefore the moment a fresh ExecutionRequestAccepted lands
         // for the step, so latest-state-wins here for free: a step that has since retried or
         // succeeded never reaches this branch.
-        if (step.Status == StepStatus.Failed && step.RetryNotBefore is not null)
+        // Post-#1115 / 0026 §5 (#1116): an un-obligated ExhaustedUntil step (null RetryNotBefore;
+        // see MutationInterface.GetRetryObligations) renders
+        // "parked (vendor quota) — reset unknown".
+        if (step.Status == StepStatus.Failed)
         {
-            return FormatParkedStatus(step);
+            if (step.LatestFailureClassification == FailureClassification.ExhaustedUntil && step.RetryNotBefore is null)
+            {
+                return "parked (vendor quota) — reset unknown";
+            }
+
+            if (step.RetryNotBefore is not null)
+            {
+                return FormatParkedStatus(step);
+            }
         }
 
         // Probe ONLY steps claiming a live engine. Paused is a mask over an already-terminal
