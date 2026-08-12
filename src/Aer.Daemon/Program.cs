@@ -2990,6 +2990,35 @@ namespace Aer.Daemon
                         toolName,
                         askedAt,
                         cancellationToken).ConfigureAwait(false);
+
+                    // #1113: a re-raised young ask usually has no live PermissionGateTool left to
+                    // enforce its own timeout — the worker that would write the timeout sentinel was
+                    // a child of a turn this daemon no longer hosts, and this reconcile pass runs
+                    // exactly once. Schedule the expiry the dead worker can no longer perform, at the
+                    // ask's own recorded deadline. Harmless when the worker IS still alive (a CLI
+                    // pump independent of the daemon) or a human answers first: the registry entry is
+                    // gone once anything resolves the ask, so the sweep below finds nothing, and
+                    // RevokePermissionAsync refuses an already-resolved id either way.
+                    var remaining = askedAt.AddSeconds(askTimeoutSeconds) - DateTimeOffset.UtcNow;
+                    var expiryExecutionId = executionIdStr;
+                    var expiryRequestId = permissionRequestId;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            if (remaining > TimeSpan.Zero)
+                            {
+                                await Task.Delay(remaining).ConfigureAwait(false);
+                            }
+
+                            await RevokePendingGatesForRoomAsync(roomDir, expiryExecutionId, "timeout").ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine(
+                                $"reconcile: delayed expiry for re-raised ask '{expiryRequestId}' failed: {ex.GetType().Name}: {ex.Message}");
+                        }
+                    });
                 }
                 catch (Exception ex)
                 {
