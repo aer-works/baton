@@ -316,6 +316,8 @@ public static class WorktreeProvisioner
     /// prints the resolved spelling in <c>worktree list</c>, so a caller-supplied <c>/var/...</c>
     /// path must compare equal to git's <c>/private/var/...</c> or the idempotence check (#1023)
     /// can never recognise its own worktree there (#1103, the standing macos CI failure).
+    /// Accepted edge: on non-macOS, a literal <c>/private/</c>-rooted directory would compare
+    /// equal to its stripped twin — a layout nothing here produces, priced below the CI fix.
     /// </summary>
     internal static string NormalizeForComparison(string fullPath)
     {
