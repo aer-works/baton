@@ -1165,6 +1165,23 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
+    public void Worker_prose_about_permissions_on_stdout_does_not_veto_the_run()
+    {
+        // #1124 review finding E: the stdout tail is the model's own answer text. A worker
+        // legitimately explaining this repo's gate ("auto-denied" + "permission" are its daily
+        // vocabulary) must never have its successful run reclassified ToolDenied by the loose
+        // prose matcher — that matcher is stderr-only, where agy's CLI diagnostics live.
+        var stdoutTail = """{"event":"result","result":{"status":"OK","response":"When a tool is auto-denied, the permission gate writes an ask file and the worker blocks until a human answers."}}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new AgyWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(stderrTail: null, stdoutTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
+    [Fact]
     public void Non_quota_stderr_classifies_as_null()
     {
         var stderr = "Worker exited with non-zero code 1. stderr: Error: Failed to execute tool.";
