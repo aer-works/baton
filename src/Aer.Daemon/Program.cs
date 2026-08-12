@@ -1212,7 +1212,7 @@ namespace Aer.Daemon
                     // once only (never wider) and we say so.
                     try
                     {
-                        using var amendGuard = ConcurrencyGuard.AcquireWithin(
+                        using var amendGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
                             request.DirectoryPath, TimeSpan.FromSeconds(2), "permission-answer grant amend");
                         var amendOutcome = await RuntimePermissionGrantAmender.AmendAsync(
                             request.DirectoryPath,

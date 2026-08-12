@@ -12,6 +12,13 @@ namespace Aer.Flow.Concurrency;
 /// clearing. The OS releases a <see cref="FileStream"/>'s lock the instant its owning process
 /// exits, crashed or not, so a crashed holder never leaves a stale lock behind.
 /// <para>
+/// 0053: two independent lock files per room directory, one per log. <c>flow.lock</c> serializes
+/// the engine and <c>flow.jsonl</c> writers; <c>room-events.lock</c> serializes <c>room.jsonl</c>
+/// appends (and the daemon's <c>bindings.json</c> read-modify-writes). §15's single-writer
+/// guarantee holds per log; §186 forbids replay from depending on cross-log order, so nothing may
+/// rely on the accidental cross-log serialization the former single lock provided.
+/// </para>
+/// <para>
 /// #618: Writes a sibling sidecar file <c>flow.lock.holder</c> on successful acquire so readers can name
 /// the lock holder. A stale sidecar beside a FREE lock is harmless by construction: readers only
 /// consult it when an acquire has just failed against a live holder, and every new holder rewrites it.
@@ -19,8 +26,10 @@ namespace Aer.Flow.Concurrency;
 /// </summary>
 public sealed class ConcurrencyGuard : IDisposable
 {
-    private const string LockFileName = "flow.lock";
-    private const string HolderFileName = "flow.lock.holder";
+    public const string FlowLockFileName = "flow.lock";
+    public const string FlowHolderFileName = "flow.lock.holder";
+    public const string RoomEventsLockFileName = "room-events.lock";
+    public const string RoomEventsHolderFileName = "room-events.lock.holder";
 
     private readonly FileStream _lockStream;
     private readonly string? _sidecarPath;
@@ -32,7 +41,7 @@ public sealed class ConcurrencyGuard : IDisposable
     }
 
     /// <summary>
-    /// Acquires the lock for <paramref name="roomDirectoryPath"/>, creating the directory first
+    /// Acquires the flow lock for <paramref name="roomDirectoryPath"/>, creating the directory first
     /// if it does not yet exist.
     /// </summary>
     /// <exception cref="WorkflowLockedException">
@@ -40,10 +49,27 @@ public sealed class ConcurrencyGuard : IDisposable
     /// </exception>
     public static ConcurrencyGuard Acquire(string roomDirectoryPath, string? holderDescription = null)
     {
+        return AcquireCore(roomDirectoryPath, FlowLockFileName, FlowHolderFileName, holderDescription);
+    }
+
+    /// <summary>
+    /// Acquires the room-events lock for <paramref name="roomDirectoryPath"/>, creating the directory first
+    /// if it does not yet exist.
+    /// </summary>
+    /// <exception cref="WorkflowLockedException">
+    /// Another Flow instance already holds the room-events lock for this room.
+    /// </exception>
+    public static ConcurrencyGuard AcquireRoomEvents(string roomDirectoryPath, string? holderDescription = null)
+    {
+        return AcquireCore(roomDirectoryPath, RoomEventsLockFileName, RoomEventsHolderFileName, holderDescription);
+    }
+
+    private static ConcurrencyGuard AcquireCore(string roomDirectoryPath, string lockFileName, string holderFileName, string? holderDescription)
+    {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
 
         Directory.CreateDirectory(roomDirectoryPath);
-        var lockFilePath = Path.Combine(roomDirectoryPath, LockFileName);
+        var lockFilePath = Path.Combine(roomDirectoryPath, lockFileName);
 
         FileStream lockStream;
         try
@@ -52,24 +78,26 @@ public sealed class ConcurrencyGuard : IDisposable
         }
         catch (IOException ex)
         {
-            var holder = TryReadHolderInfo(roomDirectoryPath);
-            throw new WorkflowLockedException(BuildLockedMessage(roomDirectoryPath, holder), ex, holder?.HolderDescription, holder?.AcquiredAtUtc);
+            var holder = TryReadHolderInfoCore(roomDirectoryPath, holderFileName);
+            throw new WorkflowLockedException(BuildLockedMessage(roomDirectoryPath, holder, lockFileName), ex, holder?.HolderDescription, holder?.AcquiredAtUtc);
         }
 
-        return CreateWithSidecar(lockStream, roomDirectoryPath, holderDescription);
+        return CreateWithSidecar(lockStream, roomDirectoryPath, holderFileName, holderDescription);
     }
 
     /// <summary>
-    /// Acquires the lock like <see cref="Acquire"/>, but retries a lost race until
+    /// Acquires the flow lock like <see cref="Acquire"/>, but retries a lost race until
     /// <paramref name="within"/> elapses instead of failing on the first attempt.
     /// <para>
     /// This is opt-in, and <see cref="Acquire"/> deliberately stays fail-fast: for an
     /// <c>aer run</c> pump, losing the lock means another pump owns this room and waiting for it is
     /// exactly the wrong behaviour. What this exists for is the opposite case — a holder known to
     /// let go in milliseconds, where failing fast turns a routine overlap into a user-visible
-    /// error. #857: the room sweep takes this same lock while escalating a newly-appeared memory
-    /// proposal, so an operator's approve/reject could lose a coin-flip to a background tick and be
-    /// refused, with nothing wrong and nothing to retry but the click.
+    /// error. #857: the room sweep takes this same bounded shape while escalating a newly-appeared
+    /// memory proposal, so an operator's approve/reject could lose a coin-flip to a background tick
+    /// and be refused, with nothing wrong and nothing to retry but the click. (Since 0053 the sweep
+    /// contends on the room-events lock via <see cref="AcquireRoomEventsWithin"/>; the rationale is
+    /// the mechanism's, not one lock file's.)
     /// </para>
     /// <para>
     /// Bounded rather than indefinite on purpose. A genuinely stuck holder must still surface as a
@@ -82,10 +110,28 @@ public sealed class ConcurrencyGuard : IDisposable
     /// </exception>
     public static ConcurrencyGuard AcquireWithin(string roomDirectoryPath, TimeSpan within, string? holderDescription = null)
     {
+        return AcquireWithinCore(roomDirectoryPath, within, FlowLockFileName, FlowHolderFileName, holderDescription);
+    }
+
+    /// <summary>
+    /// Acquires the room-events lock like <see cref="AcquireRoomEvents"/>, but retries a lost race until
+    /// <paramref name="within"/> elapses instead of failing on the first attempt. Same
+    /// fail-fast-vs-bounded rationale as <see cref="AcquireWithin"/>.
+    /// </summary>
+    /// <exception cref="WorkflowLockedException">
+    /// The room-events lock was still held when <paramref name="within"/> ran out.
+    /// </exception>
+    public static ConcurrencyGuard AcquireRoomEventsWithin(string roomDirectoryPath, TimeSpan within, string? holderDescription = null)
+    {
+        return AcquireWithinCore(roomDirectoryPath, within, RoomEventsLockFileName, RoomEventsHolderFileName, holderDescription);
+    }
+
+    private static ConcurrencyGuard AcquireWithinCore(string roomDirectoryPath, TimeSpan within, string lockFileName, string holderFileName, string? holderDescription)
+    {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
 
         Directory.CreateDirectory(roomDirectoryPath);
-        var lockFilePath = Path.Combine(roomDirectoryPath, LockFileName);
+        var lockFilePath = Path.Combine(roomDirectoryPath, lockFileName);
 
         // Stopwatch, not DateTime.UtcNow: a wall clock can step backwards (an NTP correction, a
         // manual change) and silently stretch this wait well past its budget. Monotonic is what a
@@ -97,7 +143,7 @@ public sealed class ConcurrencyGuard : IDisposable
             try
             {
                 var lockStream = new FileStream(lockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-                return CreateWithSidecar(lockStream, roomDirectoryPath, holderDescription);
+                return CreateWithSidecar(lockStream, roomDirectoryPath, holderFileName, holderDescription);
             }
             catch (IOException) when (elapsed.Elapsed < within)
             {
@@ -107,8 +153,8 @@ public sealed class ConcurrencyGuard : IDisposable
             }
             catch (IOException ex)
             {
-                var holder = TryReadHolderInfo(roomDirectoryPath);
-                var message = $"{BuildLockedMessage(roomDirectoryPath, holder)} Still held after waiting " +
+                var holder = TryReadHolderInfoCore(roomDirectoryPath, holderFileName);
+                var message = $"{BuildLockedMessage(roomDirectoryPath, holder, lockFileName)} Still held after waiting " +
                     $"{within.TotalMilliseconds:0}ms, so this is not a routine overlap.";
 
                 // The OS holder probe costs hundreds of milliseconds, so it runs only here — the
@@ -126,9 +172,9 @@ public sealed class ConcurrencyGuard : IDisposable
         }
     }
 
-    private static ConcurrencyGuard CreateWithSidecar(FileStream lockStream, string roomDirectoryPath, string? holderDescription)
+    private static ConcurrencyGuard CreateWithSidecar(FileStream lockStream, string roomDirectoryPath, string holderFileName, string? holderDescription)
     {
-        var sidecarPath = Path.Combine(roomDirectoryPath, HolderFileName);
+        var sidecarPath = Path.Combine(roomDirectoryPath, holderFileName);
         var description = holderDescription ?? DefaultHolderDescription();
         try
         {
@@ -158,11 +204,12 @@ public sealed class ConcurrencyGuard : IDisposable
     /// per-execution room directory no sweep ever touches. The lock file itself still cannot say
     /// who won it — what changed with #618 is the sidecar beside it: when a holder wrote one, its
     /// self-description is appended here, and the two-shapes wording stays as the fallback for a
-    /// holder that did not (or whose write lost a race).
+    /// holder that did not (or whose write lost a race). Since 0053 there are two lock files per
+    /// directory, so the message names which one (<paramref name="lockFileName"/>) was contended.
     /// </summary>
-    private static string BuildLockedMessage(string roomDirectoryPath, LockHolderInfo? holder)
+    private static string BuildLockedMessage(string roomDirectoryPath, LockHolderInfo? holder, string lockFileName)
     {
-        var baseMsg = $"Directory '{roomDirectoryPath}' is already locked by another Flow instance — either a live " +
+        var baseMsg = $"Directory '{roomDirectoryPath}' is already locked ('{lockFileName}') by another Flow instance — either a live " +
             "'aer run' pump, or a background component that takes this directory's lock briefly (a room's " +
             "memory-proposal sweep does this while escalating a new proposal). A live in-flight execution " +
             "can only be reached from the pump process itself (Ctrl+C); 'aer cancel' from a second " +
@@ -183,15 +230,29 @@ public sealed class ConcurrencyGuard : IDisposable
     /// </summary>
     public static (string? HolderDescription, DateTime? AcquiredAtUtc) ReadHolderInfo(string roomDirectoryPath)
     {
-        var info = TryReadHolderInfo(roomDirectoryPath);
+        return ReadHolderInfoCore(roomDirectoryPath, FlowHolderFileName);
+    }
+
+    /// <summary>
+    /// Reads the holder sidecar file <c>room-events.lock.holder</c> for <paramref name="roomDirectoryPath"/> if present and readable.
+    /// Tolerates absence/unreadability by returning null for both fields.
+    /// </summary>
+    public static (string? HolderDescription, DateTime? AcquiredAtUtc) ReadRoomEventsHolderInfo(string roomDirectoryPath)
+    {
+        return ReadHolderInfoCore(roomDirectoryPath, RoomEventsHolderFileName);
+    }
+
+    private static (string? HolderDescription, DateTime? AcquiredAtUtc) ReadHolderInfoCore(string roomDirectoryPath, string holderFileName)
+    {
+        var info = TryReadHolderInfoCore(roomDirectoryPath, holderFileName);
         return (info?.HolderDescription, info?.AcquiredAtUtc);
     }
 
-    private static LockHolderInfo? TryReadHolderInfo(string roomDirectoryPath)
+    private static LockHolderInfo? TryReadHolderInfoCore(string roomDirectoryPath, string holderFileName)
     {
         try
         {
-            var sidecarPath = Path.Combine(roomDirectoryPath, HolderFileName);
+            var sidecarPath = Path.Combine(roomDirectoryPath, holderFileName);
             if (File.Exists(sidecarPath))
             {
                 var text = File.ReadAllText(sidecarPath);
@@ -210,7 +271,7 @@ public sealed class ConcurrencyGuard : IDisposable
     }
 
     /// <summary>
-    /// Reports whether another live holder currently owns the lock for
+    /// Reports whether another live holder currently owns the flow lock for
     /// <paramref name="roomDirectoryPath"/>, without acquiring it and without creating the
     /// directory or the lock file. A read-only probe: callers that need the lock still go through
     /// <see cref="Acquire"/>. A missing <c>flow.lock</c> (or a non-existent directory) means no
@@ -221,9 +282,25 @@ public sealed class ConcurrencyGuard : IDisposable
     /// </summary>
     public static bool IsHeld(string roomDirectoryPath)
     {
+        return IsHeldCore(roomDirectoryPath, FlowLockFileName);
+    }
+
+    /// <summary>
+    /// Reports whether another live holder currently owns the room-events lock for
+    /// <paramref name="roomDirectoryPath"/>, without acquiring it and without creating the
+    /// directory or the lock file. Same read-only-probe semantics as <see cref="IsHeld"/>: only
+    /// the live OS hold carries meaning, never the file's existence.
+    /// </summary>
+    public static bool IsRoomEventsHeld(string roomDirectoryPath)
+    {
+        return IsHeldCore(roomDirectoryPath, RoomEventsLockFileName);
+    }
+
+    private static bool IsHeldCore(string roomDirectoryPath, string lockFileName)
+    {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
 
-        var lockFilePath = Path.Combine(roomDirectoryPath, LockFileName);
+        var lockFilePath = Path.Combine(roomDirectoryPath, lockFileName);
         if (!File.Exists(lockFilePath))
         {
             return false;
@@ -243,7 +320,7 @@ public sealed class ConcurrencyGuard : IDisposable
     /// <summary>
     /// Releases the lock. The lock file itself is deliberately left on disk — under §15's
     /// guarantee, only the OS-held lock carries meaning, not the file's existence — so a
-    /// subsequent <see cref="Acquire"/> call for the same room directory succeeds immediately.
+    /// subsequent acquire for the same room directory succeeds immediately.
     /// The holder sidecar is removed best-effort first, while the lock is still held, so no reader
     /// ever sees this holder's label on a lock it has already released; a delete that loses a race
     /// leaves only the stale-beside-free-lock case the class doc calls harmless by construction.
