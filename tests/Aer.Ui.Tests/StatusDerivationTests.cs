@@ -217,6 +217,82 @@ public class StatusDerivationTests
     }
 
     [Fact]
+    public void DeriveStatus_MixedExhaustedAndGenuinelyFailed_IsFailed_NotWorking()
+    {
+        // #1116 review must-fix: an unresolved ExhaustedUntil step keeps WorkflowStatus.Running
+        // alive FOREVER (RetryEngine.MayRetry bypasses attempts for it), so a genuinely failed
+        // sibling would hide behind "Working" indefinitely — Terminal's "Failed" arm never comes.
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("status-derivation-mixed"),
+            1,
+            [new WorkflowStepDefinition(new StepId("step-0"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+
+        var exhausted = new StepState(
+            new StepId("step-0"), StepStatus.Failed,
+            LatestExecutionId: new ExecutionId("exec-1"),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryNotBefore: new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero));
+        var genuinelyFailed = new StepState(
+            new StepId("step-1"), StepStatus.Failed,
+            LatestExecutionId: new ExecutionId("exec-2"),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.Permanent);
+
+        var projection = new RoomProjection(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, [exhausted, genuinelyFailed], WorkflowStatus.Running),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+
+        Assert.Equal(RoomCardStatus.Failed, status);
+        Assert.Equal("Failed", statusText);
+    }
+
+    [Fact]
+    public void DeriveStatus_TwoExhaustedSteps_ShowsTheLatestResetInstant_AndAnyUnknownMakesItUnknown()
+    {
+        // #1116 review should-fix: the room cannot fully resume before EVERY exhausted step
+        // clears — the honest instant is the max, never declaration order's arbitrary first.
+        var earlier = new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero);
+        var later = new DateTimeOffset(2026, 8, 13, 6, 0, 0, TimeSpan.Zero);
+        var expectedLocalTime = later.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("status-derivation-two-exhausted"),
+            1,
+            [new WorkflowStepDefinition(new StepId("step-0"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+
+        StepState Exhausted(string stepId, string execId, DateTimeOffset? instant) => new(
+            new StepId(stepId), StepStatus.Failed,
+            LatestExecutionId: new ExecutionId(execId),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryNotBefore: instant);
+
+        RoomProjection ProjectionOf(params StepState[] steps) => new(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, steps, WorkflowStatus.Running),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        // Earlier instant declared FIRST — declaration order must not win.
+        var (bothKnownText, bothKnownStatus) = RoomCardViewModel.DeriveStatus(
+            ProjectionOf(Exhausted("step-0", "e-1", earlier), Exhausted("step-1", "e-2", later)), null);
+        Assert.Equal(RoomCardStatus.OutOfPlan, bothKnownStatus);
+        Assert.Equal($"Out of plan — resumes {expectedLocalTime}", bothKnownText);
+
+        // One unknown instant makes the room's answer unknown — a known sibling must not
+        // fabricate a full-resume time the vendor never gave for the other step.
+        var (oneUnknownText, oneUnknownStatus) = RoomCardViewModel.DeriveStatus(
+            ProjectionOf(Exhausted("step-0", "e-1", earlier), Exhausted("step-1", "e-2", null)), null);
+        Assert.Equal(RoomCardStatus.OutOfPlan, oneUnknownStatus);
+        Assert.Equal("Out of plan — reset unknown", oneUnknownText);
+    }
+
+    [Fact]
     public void DeriveStatus_RoomWithExhaustedStep_IsNotNeedsYou_Carries0026Sentence()
     {
         var resetInstant = new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero);

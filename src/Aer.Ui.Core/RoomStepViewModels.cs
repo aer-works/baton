@@ -554,7 +554,13 @@ public static class StepItemProjector
             var adapter = workerAdapters?.GetValueOrDefault(stepDefinition.Worker);
 
             FailedStepBannerViewModel? failedBanner = null;
-            if (stepState.Status == StepStatus.Failed)
+            // #1116 review must-fix: no failed banner for an ExhaustedUntil step. The banner says
+            // "Failed" with a red cross and a live ask-the-worker-to-fix button — for a step that
+            // is not broken and must not have dispatches spent against it (0026 §1), directly
+            // beside the step wording that already says "Out of plan — resumes …". The calm word
+            // is the whole 0026 point; the banner would un-say it.
+            if (stepState.Status == StepStatus.Failed
+                && stepState.LatestFailureClassification != FailureClassification.ExhaustedUntil)
             {
                 var reasonText = reasonedAttempt?.Reason ?? stepState.LatestFailureReason;
 

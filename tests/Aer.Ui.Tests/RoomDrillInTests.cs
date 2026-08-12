@@ -551,6 +551,40 @@ public class RoomDrillInTests
     }
 
     [AvaloniaFact]
+    public async Task Exhausted_step_renders_no_failed_banner()
+    {
+        // #1116 review must-fix: the banner says "Failed" with a red cross and a live
+        // ask-the-worker-to-fix button — for a step 0026 says is not broken and must not have
+        // dispatches spent against it. The polarity arm is
+        // Failed_step_renders_failed_banner_with_reason_and_stderr_excerpt above (Permanent).
+        var roomDirectory = await CreateRoomDirectoryAsync(
+            TwoStepSnapshot(),
+            [
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("a-1"), Architect)),
+                new FlowEvent.ExecutionFailed(
+                    new ExecutionId("a-1"),
+                    FailureClassification.ExhaustedUntil,
+                    "quota exhausted",
+                    RetryNotBefore: null),
+            ],
+            TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            var architect = window.ViewModel.RoomSteps.Single(step => step.StepId == "architect");
+            Assert.False(architect.HasFailedBanner);
+            Assert.Null(architect.FailedBanner);
+            Assert.Equal("Out of plan — reset unknown", architect.PlainStatusText);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [AvaloniaFact]
     public async Task Tool_denied_failure_renders_a_not_retryable_suffix()
     {
         // #914: a ToolDenied attempt must carry an explanatory "not retryable" suffix, not fall through
