@@ -1147,6 +1147,24 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
+    public void Quota_refusal_on_the_stdout_tail_alone_classifies_ExhaustedUntil()
+    {
+        // #1128: the real refusal (measured live 2026-08-12, execution eca57a30) arrived in the
+        // stream-json result envelope on STDOUT with empty stderr — the single-tail path never saw
+        // it. Verbatim from that run's log.
+        var stdoutTail = """{"event":"result","result":{"conversation_id":"eca57a30-db54-4be3-b760-53d708f8ae79","status":"ERROR","response":"","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h39m10s."}}""";
+        var now = new DateTimeOffset(2026, 8, 12, 22, 0, 0, TimeSpan.Zero);
+        var testTime = new TestTimeProvider(now);
+
+        var adapter = new AgyWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(stderrTail: null, stdoutTail, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(now.AddHours(1).AddMinutes(39).AddSeconds(10), retryNotBefore);
+    }
+
+    [Fact]
     public void Non_quota_stderr_classifies_as_null()
     {
         var stderr = "Worker exited with non-zero code 1. stderr: Error: Failed to execute tool.";

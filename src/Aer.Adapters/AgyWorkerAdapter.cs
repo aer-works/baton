@@ -1243,6 +1243,33 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         return TryClassifyAutoDeniedTool(stderrTail, out classification, out retryNotBefore);
     }
 
+    /// <summary>
+    /// #1128: agy's real quota refusal ("Individual quota reached. … Resets in 1h39m10s.",
+    /// measured live 2026-08-12) arrives in the stream-json result envelope on STDOUT, not on
+    /// stderr — so the single-tail path above never saw it and the failure burned ordinary retry
+    /// attempts against a dead quota. Same both-channels shape ClaudeWorkerAdapter uses (#1115):
+    /// stderr first, then the stdout tail.
+    /// </summary>
+    public bool TryClassifyFailure(
+        string? stderrTail,
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        if (TryClassifyFailure(stderrTail, timeProvider, out classification, out retryNotBefore))
+        {
+            return true;
+        }
+
+        if (TryClassifyQuotaExhaustion(stdoutTail, timeProvider, out classification, out retryNotBefore))
+        {
+            return true;
+        }
+
+        return TryClassifyAutoDeniedTool(stdoutTail, out classification, out retryNotBefore);
+    }
+
     [GeneratedRegex(@"Resets in\s+(?:(?<hours>\d+)h)?(?:(?<minutes>\d+)m)?(?:(?<seconds>\d+)s)?", RegexOptions.IgnoreCase)]
     private static partial Regex QuotaResetDurationRegex();
 
