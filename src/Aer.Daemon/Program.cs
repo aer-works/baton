@@ -1212,7 +1212,7 @@ namespace Aer.Daemon
                     // once only (never wider) and we say so.
                     try
                     {
-                        using var amendGuard = ConcurrencyGuard.AcquireWithin(
+                        using var amendGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
                             request.DirectoryPath, TimeSpan.FromSeconds(2), "permission-answer grant amend");
                         var amendOutcome = await RuntimePermissionGrantAmender.AmendAsync(
                             request.DirectoryPath,
@@ -1641,20 +1641,30 @@ namespace Aer.Daemon
                         $"Mode must be one of: {string.Join(", ", InteractiveSessionMaterializer.KnownModes)}.");
                 }
 
-                var bindingsFilePath = Path.Combine(directoryPath, "bindings.json");
-                var existingBindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsFilePath).ConfigureAwait(true);
-                if (!existingBindings.TryGetValue(InteractiveSessionMaterializer.DefaultWorkerName, out var existingEntry))
+                try
                 {
-                    return Results.NotFound();
+                    using var guard = ConcurrencyGuard.AcquireRoomEventsWithin(directoryPath, TimeSpan.FromSeconds(2), "session mode update");
+                    var bindingsFilePath = Path.Combine(directoryPath, "bindings.json");
+                    var existingBindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsFilePath).ConfigureAwait(true);
+                    if (!existingBindings.TryGetValue(InteractiveSessionMaterializer.DefaultWorkerName, out var existingEntry))
+                    {
+                        return Results.NotFound();
+                    }
+
+                    var updatedBindings = new Dictionary<string, WorkerBindingConfigEntry>(existingBindings)
+                    {
+                        [InteractiveSessionMaterializer.DefaultWorkerName] = existingEntry with { PermissionGrant = grant }
+                    };
+                    await WorkerBindingConfigWriter.SaveToFileAsync(updatedBindings, bindingsFilePath).ConfigureAwait(true);
+
+                    return Results.Ok();
                 }
-
-                var updatedBindings = new Dictionary<string, WorkerBindingConfigEntry>(existingBindings)
+                catch (WorkflowLockedException ex)
                 {
-                    [InteractiveSessionMaterializer.DefaultWorkerName] = existingEntry with { PermissionGrant = grant }
-                };
-                await WorkerBindingConfigWriter.SaveToFileAsync(updatedBindings, bindingsFilePath).ConfigureAwait(true);
-
-                return Results.Ok();
+                    return Results.Json(
+                        new { Error = $"Could not acquire room lock to update session mode: {ex.Message}. Retry the operation." },
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
             });
 
             // #286: the POST above changes the mode but nothing let a client learn what's
@@ -2100,63 +2110,68 @@ namespace Aer.Daemon
                 : null;
 
             var bindingsFilePath = Path.Combine(directoryPath, "bindings.json");
-            var existingBindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsFilePath).ConfigureAwait(false);
 
-            WorkerBindingConfigEntry? existingEntry = existingBindings.TryGetValue(InteractiveSessionMaterializer.DefaultWorkerName, out var e) ? e : null;
-
-            // Always the canonical shape, never the persisted one (#650). AER owns this contract and
-            // an operator never authors it, so there is nothing in a session's own copy worth
-            // preserving — while reading it back would keep every session materialized before this
-            // change requiring response.md, and so keep classifying every one of its turns Failed.
-            var contract = InteractiveSessionMaterializer.ChatWorkerContract;
-
-            var grant = existingEntry?.PermissionGrant ?? InteractiveSessionMaterializer.DefaultGrantForWorkingDirectory(metadata.WorkingDirectory);
-
-            var updatedEntry = new WorkerBindingConfigEntry(
-                Adapter: targetAdapter,
-                Contract: contract,
-                PromptTemplate: promptTemplate,
-                Timeout: TimeSpan.FromMinutes(10),
-                Model: requestModel ?? metadata.Model,
-                PermissionGrant: grant,
-                // #407: a directory-less session runs in its own dir under ~/.aer/rooms/, not the
-                // inherited daemon/app cwd. The grant above is still derived from metadata.WorkingDirectory
-                // (null -> fail-closed), so this run-dir fallback hardens where it starts without widening
-                // what it may do.
-                WorkingDirectory: InteractiveSessionMaterializer.ResolveRunDirectory(metadata.WorkingDirectory, metadata.RoomDirectoryPath),
-                SessionId: vendorSessionId,
-                ResumeSession: resumeSession,
-                // #1088: agy joins claude here. Both stream structured events on stdout under their own
-                // grammar (claude `--output-format stream-json --verbose`; agy `--output-format stream-json`,
-                // no `--verbose`), and each adapter's TryParseProgressEvent parses its own envelope. Turning
-                // this on fills rawStdoutCapture and drives the progress pump for agy; the answer still comes
-                // from the output file and the conversation-id from the log scrape, both unchanged.
-                StreamJson: string.Equals(targetAdapter, "claude", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(targetAdapter, "agy", StringComparison.OrdinalIgnoreCase),
-                LogFilePath: logFilePath,
-                // #445: the ONE binding that opts into the runtime conversational gate. An interactive
-                // turn is the only dispatch shape with a human on the other end to answer an ask -- the
-                // anchor step's own binding (written at materialization) deliberately does not set it,
-                // so an ungranted capability there still fails closed exactly as it does in a one-shot
-                // run. See WorkerInvocation.EnablePermissionGate.
-                EnablePermissionGate: true);
-
-            // #285: must start from the existing bindings, not a fresh dictionary containing only
-            // "chat-worker" -- a full replacement here silently dropped the anchor step's own
-            // binding entry (written once at materialization, never touched by any per-turn
-            // rewrite) after the very first turn, leaving "turn-anchor-worker" unresolvable and the
-            // anchor step's dispatch throwing UnresolvedWorkerException deep inside the pump. That
-            // exception was itself silently swallowed (RoomClient.RunAsync's in-process fallback
-            // catches AerFlowException into an unchecked MutationOutcome, and neither call site
-            // below checked it) -- chat would still succeed before the pump ever reached the
-            // now-unresolvable anchor, so the turn looked like it worked right up until the anchor
-            // never dispatched and never paused, wedging every later turn's Supersede target.
-            var newBindings = new Dictionary<string, WorkerBindingConfigEntry>(existingBindings)
+            WorkerBindingConfigEntry updatedEntry;
             {
-                [InteractiveSessionMaterializer.DefaultWorkerName] = updatedEntry
-            };
+                using var bindingsGuard = ConcurrencyGuard.AcquireRoomEventsWithin(directoryPath, TimeSpan.FromSeconds(2), "per-turn bindings rewrite");
+                var existingBindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsFilePath).ConfigureAwait(false);
 
-            await WorkerBindingConfigWriter.SaveToFileAsync(newBindings, bindingsFilePath).ConfigureAwait(false);
+                WorkerBindingConfigEntry? existingEntry = existingBindings.TryGetValue(InteractiveSessionMaterializer.DefaultWorkerName, out var e) ? e : null;
+
+                // Always the canonical shape, never the persisted one (#650). AER owns this contract and
+                // an operator never authors it, so there is nothing in a session's own copy worth
+                // preserving — while reading it back would keep every session materialized before this
+                // change requiring response.md, and so keep classifying every one of its turns Failed.
+                var contract = InteractiveSessionMaterializer.ChatWorkerContract;
+
+                var grant = existingEntry?.PermissionGrant ?? InteractiveSessionMaterializer.DefaultGrantForWorkingDirectory(metadata.WorkingDirectory);
+
+                updatedEntry = new WorkerBindingConfigEntry(
+                    Adapter: targetAdapter,
+                    Contract: contract,
+                    PromptTemplate: promptTemplate,
+                    Timeout: TimeSpan.FromMinutes(10),
+                    Model: requestModel ?? metadata.Model,
+                    PermissionGrant: grant,
+                    // #407: a directory-less session runs in its own dir under ~/.aer/rooms/, not the
+                    // inherited daemon/app cwd. The grant above is still derived from metadata.WorkingDirectory
+                    // (null -> fail-closed), so this run-dir fallback hardens where it starts without widening
+                    // what it may do.
+                    WorkingDirectory: InteractiveSessionMaterializer.ResolveRunDirectory(metadata.WorkingDirectory, metadata.RoomDirectoryPath),
+                    SessionId: vendorSessionId,
+                    ResumeSession: resumeSession,
+                    // #1088: agy joins claude here. Both stream structured events on stdout under their own
+                    // grammar (claude `--output-format stream-json --verbose`; agy `--output-format stream-json`,
+                    // no `--verbose`), and each adapter's TryParseProgressEvent parses its own envelope. Turning
+                    // this on fills rawStdoutCapture and drives the progress pump for agy; the answer still comes
+                    // from the output file and the conversation-id from the log scrape, both unchanged.
+                    StreamJson: string.Equals(targetAdapter, "claude", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(targetAdapter, "agy", StringComparison.OrdinalIgnoreCase),
+                    LogFilePath: logFilePath,
+                    // #445: the ONE binding that opts into the runtime conversational gate. An interactive
+                    // turn is the only dispatch shape with a human on the other end to answer an ask -- the
+                    // anchor step's own binding (written at materialization) deliberately does not set it,
+                    // so an ungranted capability there still fails closed exactly as it does in a one-shot
+                    // run. See WorkerInvocation.EnablePermissionGate.
+                    EnablePermissionGate: true);
+
+                // #285: must start from the existing bindings, not a fresh dictionary containing only
+                // "chat-worker" -- a full replacement here silently dropped the anchor step's own
+                // binding entry (written once at materialization, never touched by any per-turn
+                // rewrite) after the very first turn, leaving "turn-anchor-worker" unresolvable and the
+                // anchor step's dispatch throwing UnresolvedWorkerException deep inside the pump. That
+                // exception was itself silently swallowed (RoomClient.RunAsync's in-process fallback
+                // catches AerFlowException into an unchecked MutationOutcome, and neither call site
+                // below checked it) -- chat would still succeed before the pump ever reached the
+                // now-unresolvable anchor, so the turn looked like it worked right up until the anchor
+                // never dispatched and never paused, wedging every later turn's Supersede target.
+                var newBindings = new Dictionary<string, WorkerBindingConfigEntry>(existingBindings)
+                {
+                    [InteractiveSessionMaterializer.DefaultWorkerName] = updatedEntry
+                };
+
+                await WorkerBindingConfigWriter.SaveToFileAsync(newBindings, bindingsFilePath).ConfigureAwait(false);
+            }
 
             var workflowFilePath = Path.Combine(directoryPath, "workflow.json");
 

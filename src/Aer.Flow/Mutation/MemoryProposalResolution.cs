@@ -82,7 +82,7 @@ public static class MemoryProposalResolution
         // Note the sweep does NOT take this lock on every tick -- it skips capture files already in
         // the projected state, so an idle tick locks nothing. The first draft of this comment said
         // "every 500ms" and was wrong; #878 covers the doc that led there.
-        using var guard = ConcurrencyGuard.AcquireWithin(roomDirectoryPath, SweepContentionBudget);
+        using var guard = ConcurrencyGuard.AcquireRoomEventsWithin(roomDirectoryPath, SweepContentionBudget);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var state = RoomProjector.Project(existingEvents);

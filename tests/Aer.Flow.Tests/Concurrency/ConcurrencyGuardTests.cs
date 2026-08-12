@@ -370,4 +370,70 @@ public class ConcurrencyGuardTests
             FileCleanup.Delete(rootFile);
         }
     }
+
+    [Fact]
+    public void Flow_and_room_events_locks_are_independent_in_both_directions()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        try
+        {
+            // Direction 1: Flow held -> room-events acquirable
+            using (var flowGuard = ConcurrencyGuard.Acquire(roomDirectory, "Flow holder"))
+            {
+                Assert.True(ConcurrencyGuard.IsHeld(roomDirectory));
+                Assert.False(ConcurrencyGuard.IsRoomEventsHeld(roomDirectory));
+
+                using var roomEventsGuard = ConcurrencyGuard.AcquireRoomEvents(roomDirectory, "RoomEvents holder");
+                Assert.True(ConcurrencyGuard.IsRoomEventsHeld(roomDirectory));
+            }
+
+            // Direction 2: Room-events held -> flow acquirable
+            using (var roomEventsGuard = ConcurrencyGuard.AcquireRoomEvents(roomDirectory, "RoomEvents holder"))
+            {
+                Assert.True(ConcurrencyGuard.IsRoomEventsHeld(roomDirectory));
+                Assert.False(ConcurrencyGuard.IsHeld(roomDirectory));
+
+                using var flowGuard = ConcurrencyGuard.Acquire(roomDirectory, "Flow holder");
+                Assert.True(ConcurrencyGuard.IsHeld(roomDirectory));
+            }
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public void Room_events_holder_file_names_do_not_collide_with_flow_holder_files()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        try
+        {
+            using var flowGuard = ConcurrencyGuard.Acquire(roomDirectory, "Flow Holder 123");
+            using var roomEventsGuard = ConcurrencyGuard.AcquireRoomEvents(roomDirectory, "RoomEvents Holder 456");
+
+            var flowSidecarPath = Path.Combine(roomDirectory, ConcurrencyGuard.FlowHolderFileName);
+            var roomEventsSidecarPath = Path.Combine(roomDirectory, ConcurrencyGuard.RoomEventsHolderFileName);
+
+            Assert.True(File.Exists(flowSidecarPath));
+            Assert.True(File.Exists(roomEventsSidecarPath));
+
+            var (flowHolder, _) = ConcurrencyGuard.ReadHolderInfo(roomDirectory);
+            var (roomEventsHolder, _) = ConcurrencyGuard.ReadRoomEventsHolderInfo(roomDirectory);
+
+            Assert.Equal("Flow Holder 123", flowHolder);
+            Assert.Equal("RoomEvents Holder 456", roomEventsHolder);
+
+            roomEventsGuard.Dispose();
+            Assert.False(File.Exists(roomEventsSidecarPath));
+            Assert.True(File.Exists(flowSidecarPath));
+
+            flowGuard.Dispose();
+            Assert.False(File.Exists(flowSidecarPath));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
 }

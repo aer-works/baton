@@ -241,7 +241,7 @@ public class GrantShapesTests : IDisposable
         var reader = new RoomEventLogReader(_roomLogPath);
         await using var writer = new RoomEventLogWriter(_roomLogPath);
 
-        using (ConcurrencyGuard.Acquire(_tempDirectory))
+        using (ConcurrencyGuard.AcquireRoomEvents(_tempDirectory))
         {
             await Assert.ThrowsAsync<WorkflowLockedException>(() =>
                 RoomMutationInterface.RecordGrantAsync(

@@ -37,7 +37,7 @@ public static class RoomMutationInterface
                 $"HeldWorkRef '{@ref}' is not an absolute path; a relative workflow directory would resolve against the reading process's working directory.");
         }
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var currentState = RoomProjector.Project(existingEvents);
@@ -66,7 +66,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var currentState = RoomProjector.Project(existingEvents);
@@ -100,7 +100,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var currentState = RoomProjector.Project(existingEvents);
@@ -164,7 +164,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var currentState = RoomProjector.Project(existingEvents);
@@ -202,7 +202,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var currentState = RoomProjector.Project(existingEvents);
@@ -235,7 +235,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var currentState = RoomProjector.Project(existingEvents);
@@ -270,7 +270,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -293,7 +293,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -317,7 +317,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -359,7 +359,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var currentState = RoomProjector.Project(existingEvents);
@@ -413,7 +413,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var currentState = RoomProjector.Project(existingEvents);
@@ -458,7 +458,7 @@ public static class RoomMutationInterface
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var currentState = RoomProjector.Project(existingEvents);

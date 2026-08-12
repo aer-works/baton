@@ -150,7 +150,8 @@ public class RoomJournalCompactorTests
     }
     /// <summary>
     /// The compaction lock is load-bearing, not decorative — <see cref="RoomJournalCompactor"/>'s
-    /// own comment says what it protects. Held lock in, refusal out.
+    /// own comment says what it protects. Serialised against room-event appenders (room-events lock),
+    /// not against the flow engine's flow lock.
     /// </summary>
     [Fact]
     public async Task CompactAsync_refuses_while_the_room_lock_is_held_by_someone_else()
@@ -162,15 +163,19 @@ public class RoomJournalCompactorTests
 
         var before = await File.ReadAllTextAsync(Path.Combine(roomDir, "room.jsonl"), TestContext.Current.CancellationToken);
 
-        using (Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(roomDir, "test holder"))
+        // Arm 1: Blocked by room-events lock
+        using (Aer.Flow.Concurrency.ConcurrencyGuard.AcquireRoomEvents(roomDir, "test holder"))
         {
             await Assert.ThrowsAsync<Aer.Flow.Concurrency.WorkflowLockedException>(
                 () => RoomJournalCompactor.CompactAsync(roomDir, TestContext.Current.CancellationToken));
         }
 
-        // The control: the same call succeeds once the lock is free, so the refusal above is about
-        // the lock and not about the journal being uncompactable.
-        Assert.True(await RoomJournalCompactor.CompactAsync(roomDir, TestContext.Current.CancellationToken));
+        // Arm 2: NOT blocked by flow lock
+        using (Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(roomDir, "test flow holder"))
+        {
+            Assert.True(await RoomJournalCompactor.CompactAsync(roomDir, TestContext.Current.CancellationToken));
+        }
+
         var after = await File.ReadAllTextAsync(Path.Combine(roomDir, "room.jsonl"), TestContext.Current.CancellationToken);
         Assert.NotEqual(before, after);
     }

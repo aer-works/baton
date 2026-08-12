@@ -114,7 +114,7 @@ public class MemoryProposalResolutionTests : IDisposable
         var @ref = await DispatchMemoryProposalAsync(reader, writer);
 
         var hold = TimeSpan.FromMilliseconds(250);
-        var holder = ConcurrencyGuard.Acquire(_tempDirectory);
+        var holder = ConcurrencyGuard.AcquireRoomEvents(_tempDirectory);
         var release = new Thread(() =>
         {
             Thread.Sleep(hold);

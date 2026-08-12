@@ -600,7 +600,7 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
         var reader = new RoomEventLogReader(roomLogPath);
 
         // Hold the room guard so the monitor's journal write fails with WorkflowLockedException.
-        var guard = Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(_tempRoomDir);
+        var guard = Aer.Flow.Concurrency.ConcurrencyGuard.AcquireRoomEvents(_tempRoomDir);
 
         await using var monitor = new DoorbellMonitor(
             _tempRoomDir,
@@ -652,7 +652,7 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
     {
         var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
 
-        var guard = Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(_tempRoomDir);
+        var guard = Aer.Flow.Concurrency.ConcurrencyGuard.AcquireRoomEvents(_tempRoomDir);
         var releaseTask = Task.Run(async () =>
         {
             // Holds the guard across the retry loop's first attempt(s), releasing well inside its
@@ -677,5 +677,248 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
         var events = await reader2.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
         var revoked = Assert.Single(events.OfType<RoomEvent.RuntimePermissionRevoked>());
         Assert.Equal("req-retry-1", revoked.PermissionRequestId);
+    }
+
+    [Fact]
+    public async Task AnswerPermission_SucceedsWhileFlowLockHeld()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var bindingsPath = Path.Combine(_tempRoomDir, "bindings.json");
+            var seedEntry = new WorkerBindingConfigEntry(
+                Adapter: "claude",
+                Contract: InteractiveSessionMaterializer.ChatWorkerContract,
+                PromptTemplate: "test",
+                Timeout: TimeSpan.FromMinutes(10),
+                PermissionGrant: new PermissionGrant(ReadFiles: true));
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                new Dictionary<string, WorkerBindingConfigEntry> { [InteractiveSessionMaterializer.DefaultWorkerName] = seedEntry },
+                bindingsPath, TestContext.Current.CancellationToken);
+
+            var artifactsDir = Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName);
+            var outputDir = Path.Combine(artifactsDir, "execution_ex-holdflow");
+            Directory.CreateDirectory(outputDir);
+
+            var reqId = "req-holdflow-1";
+            var askFile = Path.Combine(outputDir, $"ask-{reqId}.json");
+            var askPayload = new
+            {
+                permissionRequestId = reqId,
+                toolName = "Bash",
+                toolInputJson = "{\"command\":\"ls\"}",
+                category = "shell",
+                askedAt = DateTimeOffset.UtcNow
+            };
+            var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+            await File.WriteAllTextAsync(askFile, JsonSerializer.Serialize(askPayload, jsonOptions), TestContext.Current.CancellationToken);
+
+            PendingGateRegistry.Register(reqId, new PendingGateEntry(_tempRoomDir, outputDir, "ex-holdflow", askFile));
+
+            var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+            var reader = new RoomEventLogReader(roomLogPath);
+            await using (var writer = new RoomEventLogWriter(roomLogPath))
+            {
+                await RoomMutationInterface.RaisePermissionAsync(
+                    _tempRoomDir, reader, writer, reqId, new ExecutionId("ex-holdflow"), new StepId("step-1"),
+                    "chat-worker", "claude", "corr-1", "Bash", "{\"command\":\"ls\"}", "shell",
+                    cancellationToken: TestContext.Current.CancellationToken);
+            }
+
+            // Hold the FLOW lock during answer request
+            using var flowGuard = Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(_tempRoomDir, "testing flow lock hold during answer");
+
+            var answerBody = new
+            {
+                directoryPath = _tempRoomDir,
+                permissionRequestId = reqId,
+                decisionKind = "AllowRoom",
+                updatedInputJson = (string?)null,
+                reason = "operator approved"
+            };
+
+            var response = await client.PostAsJsonAsync($"{baseUrl}/api/rooms/permissions/answer", answerBody, TestContext.Current.CancellationToken);
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+
+            var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            var answered = Assert.Single(events.OfType<RoomEvent.RuntimePermissionAnswered>());
+            Assert.Equal(reqId, answered.PermissionRequestId);
+
+            // Grant amender must have run successfully and updated bindings.json (AllowRoom -> RunShellCommands: true)
+            var updatedBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+            Assert.Contains("RunShellCommands", updatedBindingsText);
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+    [Fact]
+    public async Task SetMode_WhileRoomEventsLockHeld_Returns503_AndBindingsUnchanged()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var sessionId = "sess-mode-lock-" + Guid.NewGuid().ToString("N");
+            var roomDir = InteractiveSessionMaterializer.ResolveRoomDirectoryPath(sessionId, null, null);
+            await InteractiveSessionMaterializer.MaterializeToDirectoryAsync(
+                sessionId, roomDir, "claude", null, _tempRoomDir, null, 100, InteractiveSessionMaterializer.GrantForMode("interactive"), TestContext.Current.CancellationToken);
+
+            var bindingsPath = Path.Combine(roomDir, "bindings.json");
+            var initialBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            try
+            {
+                // Hold room-events lock
+                using var roomEventsGuard = Aer.Flow.Concurrency.ConcurrencyGuard.AcquireRoomEvents(roomDir, "test mode lock hold");
+
+                var response = await client.PostAsJsonAsync($"{baseUrl}/api/sessions/{sessionId}/mode", new { mode = "auto" }, TestContext.Current.CancellationToken);
+
+                Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+                var afterBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+                Assert.Equal(initialBindingsText, afterBindingsText);
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task SendTurn_WhileRoomEventsLockHeld_FailsBeforeRewritingBindings_AndNamesTheLock()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var sessionId = "sess-turn-lock-" + Guid.NewGuid().ToString("N");
+            var roomDir = InteractiveSessionMaterializer.ResolveRoomDirectoryPath(sessionId, null, null);
+            await InteractiveSessionMaterializer.MaterializeToDirectoryAsync(
+                sessionId, roomDir, "claude", null, _tempRoomDir, null, 100, InteractiveSessionMaterializer.GrantForMode("interactive"), TestContext.Current.CancellationToken);
+
+            var bindingsPath = Path.Combine(roomDir, "bindings.json");
+            var initialBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            try
+            {
+                // #1110: the per-turn bindings rewrite in ExecuteSessionTurnCoreAsync must refuse
+                // (bounded acquire, then WorkflowLockedException) rather than rewrite bindings.json
+                // while another room-events holder is live. The send endpoint is fire-and-forget
+                // (200 up front, #341), so the failure surfaces in .aer/turn-errors.log — and since
+                // 0053 the lock message names the contended lock file, which is what pins this
+                // failure to the room-events lock rather than any other turn error.
+                using var roomEventsGuard = Aer.Flow.Concurrency.ConcurrencyGuard.AcquireRoomEvents(roomDir, "test turn lock hold");
+
+                var response = await client.PostAsJsonAsync($"{baseUrl}/api/sessions/send",
+                    new { sessionId, message = "hello" }, TestContext.Current.CancellationToken);
+                Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+
+                var errorLogPath = Path.Combine(roomDir, ".aer", "turn-errors.log");
+                var errorDeadline = DateTime.UtcNow.AddSeconds(20);
+                string errorText = "";
+                while (DateTime.UtcNow < errorDeadline)
+                {
+                    if (File.Exists(errorLogPath))
+                    {
+                        errorText = await File.ReadAllTextAsync(errorLogPath, TestContext.Current.CancellationToken);
+                        if (errorText.Contains(Aer.Flow.Concurrency.ConcurrencyGuard.RoomEventsLockFileName))
+                        {
+                            break;
+                        }
+                    }
+                    await Task.Delay(100, TestContext.Current.CancellationToken); // wait-ok: bounded poll for the fire-and-forget turn's persisted error
+                }
+
+                Assert.Contains(Aer.Flow.Concurrency.ConcurrencyGuard.RoomEventsLockFileName, errorText);
+
+                var afterBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+                Assert.Equal(initialBindingsText, afterBindingsText);
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
     }
 }

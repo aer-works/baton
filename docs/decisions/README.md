@@ -152,5 +152,6 @@ copy of every record, retired by #952: the record is the only place a decision i
 | [0050](0050-vendor-memory-is-isolated-scratch.md) | Vendor memory is isolated scratch; room memory is the only durable layer | accepted |
 | [0051](0051-markdown-rendering-is-a-defined-subset-parsed-per-platform.md) | Markdown rendering is a defined CommonMark subset, parsed per platform, with no remote content | accepted |
 | [0052](0052-the-ladder-ships-without-the-cross-room-rung.md) | The ladder ships without the cross-room rung; its home is project scope, not account scope | accepted |
+| [0053](0053-room-event-appends-take-their-own-lock.md) | Room-event appends take their own lock, not the flow engine's | accepted |
 
 <!-- /generated: decisions-index -->

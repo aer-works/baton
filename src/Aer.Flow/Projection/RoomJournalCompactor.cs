@@ -42,7 +42,7 @@ public static class RoomJournalCompactor
             return false;
         }
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, "room journal compaction");
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath, "room journal compaction");
 
         var reader = new RoomEventLogReader(roomLogPath);
         var events = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
