@@ -245,7 +245,7 @@ public class StatusDerivationTests
 
         Assert.NotEqual(RoomCardStatus.NeedsYou, status);
         Assert.NotEqual(RoomCardStatus.Failed, status);
-        Assert.Equal(RoomCardStatus.Cancelled, status);
+        Assert.Equal(RoomCardStatus.OutOfPlan, status);
         Assert.Equal($"Out of plan — resumes {expectedLocalTime}", statusText);
     }
 
@@ -275,7 +275,7 @@ public class StatusDerivationTests
 
         Assert.NotEqual(RoomCardStatus.NeedsYou, status);
         Assert.NotEqual(RoomCardStatus.Failed, status);
-        Assert.Equal(RoomCardStatus.Cancelled, status);
+        Assert.Equal(RoomCardStatus.OutOfPlan, status);
         Assert.Equal("Out of plan — reset unknown", statusText);
     }
 

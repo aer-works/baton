@@ -162,7 +162,7 @@ public static class RoomCardViewModel
         var text = resetInstant is { } instant
             ? $"Out of plan — resumes {instant.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)}"
             : "Out of plan — reset unknown";
-        return (text, RoomCardStatus.Cancelled);
+        return (text, RoomCardStatus.OutOfPlan);
     }
 
     // #334: a paused chat turn is "your turn to reply", not an approval gate. A card whose only
@@ -207,6 +207,15 @@ public enum RoomCardStatus
 
     /// <summary>§3's stale list state: recorded in Local UI Configuration but no longer loadable — greyed, never an error.</summary>
     Unavailable,
+
+    /// <summary>
+    /// 0026 (#1116): the room's only blocker is vendor-plan exhaustion — waiting on a reset, not
+    /// broken and not stopped. Deliberately its own member: <see cref="Cancelled"/> claims "you
+    /// stopped it" and <see cref="Failed"/> claims "it broke", and this state is neither. Styled
+    /// muted (0018 band 4 for a background room); the status text carries the reset instant or an
+    /// honest "reset unknown" (0026 §5).
+    /// </summary>
+    OutOfPlan,
 }
 
 /// <summary>
