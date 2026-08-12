@@ -653,6 +653,92 @@ public class CoreDispatcherTests
         }
     }
 
+    [Fact]
+    public async Task DispatchAsync_records_StdoutTail_when_process_writes_to_stdout()
+    {
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var request = MakeRequest([]);
+            const string distinctiveStdout = "BOILER-PLATE-STDOUT-DIAGNOSTIC";
+            var target = OperatingSystem.IsWindows()
+                ? new CoreDispatchTarget("cmd", ["/c", $"echo {distinctiveStdout}& exit 1"])
+                : new CoreDispatchTarget("sh", ["-c", $"echo {distinctiveStdout}; exit 1"]);
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var result = await new CoreDispatcher(writer).DispatchAsync(
+                request, target, TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.NotNull(result.StdoutTail);
+            Assert.Contains("BOILER-PLATE-STDOUT-DIAGNOSTIC", result.StdoutTail);
+        }
+        finally
+        {
+            FileCleanup.Delete(logPath);
+        }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_leaves_StdoutTail_null_when_the_worker_writes_nothing_to_stdout()
+    {
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var request = MakeRequest([]);
+            var target = OperatingSystem.IsWindows()
+                ? new CoreDispatchTarget("cmd", ["/c", "exit 1"])
+                : new CoreDispatchTarget("sh", ["-c", "exit 1"]);
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var result = await new CoreDispatcher(writer).DispatchAsync(
+                request, target, TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Null(result.StdoutTail);
+        }
+        finally
+        {
+            FileCleanup.Delete(logPath);
+        }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_bounds_StdoutTail_and_keeps_the_end_rather_than_the_beginning()
+    {
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        var payloadDirectory = Path.Combine(Path.GetTempPath(), $"stdout-payload-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(payloadDirectory);
+            const string payloadFileName = "payload_stdout.txt";
+            var payload = "FIRST-STDOUT-MARKER" + new string('x', CoreDispatcher.MaxRetainedStderrLength * 3) + "LAST-STDOUT-MARKER";
+            await File.WriteAllTextAsync(
+                Path.Combine(payloadDirectory, payloadFileName), payload, TestContext.Current.CancellationToken);
+
+            var target = OperatingSystem.IsWindows()
+                ? new CoreDispatchTarget("cmd", ["/c", $"type {payloadFileName} & exit 1"], payloadDirectory)
+                : new CoreDispatchTarget("sh", ["-c", $"cat {payloadFileName}; exit 1"], payloadDirectory);
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var result = await new CoreDispatcher(writer).DispatchAsync(
+                MakeRequest([]), target, TestContext.Current.CancellationToken);
+
+            Assert.NotNull(result.StdoutTail);
+            Assert.True(
+                result.StdoutTail.Length <= CoreDispatcher.MaxRetainedStderrLength,
+                $"retained {result.StdoutTail.Length} chars, cap is {CoreDispatcher.MaxRetainedStderrLength}");
+            Assert.Contains("LAST-STDOUT-MARKER", result.StdoutTail);
+            Assert.DoesNotContain("FIRST-STDOUT-MARKER", result.StdoutTail);
+        }
+        finally
+        {
+            FileCleanup.Delete(logPath);
+            DirectoryCleanup.DeleteRecursively(payloadDirectory);
+        }
+    }
+
+
     /// <summary>
     /// Proves the buffer keeps the <i>end</i> and is bounded, in one test — the two properties are
     /// one mistake apart. A head-keeping implementation is equally "bounded" and would surface the

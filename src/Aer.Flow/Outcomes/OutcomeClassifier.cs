@@ -161,7 +161,7 @@ public static class OutcomeClassifier
             // (ExhaustedUntil) cannot reach a *satisfied* contract, and gating narrowly keeps this from
             // ever stamping some other classification with the auto-denied message below.
             if (failureClassifier is not null && failureClassifier.TryClassifyFailure(
-                    result.StderrTail, timeProvider ?? TimeProvider.System, out var classifiedFailure, out var retryNotBefore)
+                    result.StderrTail, result.StdoutTail, timeProvider ?? TimeProvider.System, out var classifiedFailure, out var retryNotBefore)
                 && classifiedFailure == FailureClassification.ToolDenied)
             {
                 return new OutcomeClassification(
@@ -435,7 +435,7 @@ public static class OutcomeClassifier
         }
 
         if (failureClassifier is not null && failureClassifier.TryClassifyFailure(
-                result.StderrTail, timeProvider ?? TimeProvider.System, out var adapterClassification, out var adapterRetryNotBefore))
+                result.StderrTail, result.StdoutTail, timeProvider ?? TimeProvider.System, out var adapterClassification, out var adapterRetryNotBefore))
         {
             return (adapterClassification, adapterRetryNotBefore);
         }

@@ -1090,8 +1090,27 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         out FailureClassification? classification,
         out DateTimeOffset? retryNotBefore)
     {
-        return TryClassifyQuotaExhaustion(stderrTail, timeProvider, out classification, out retryNotBefore);
+        return TryClassifyFailure(stderrTail, null, timeProvider, out classification, out retryNotBefore);
     }
+
+    /// <summary>
+    /// Interprets Claude-specific failure output from stderr and stdout tails into a <see cref="FailureClassification"/> and reset instant (issue #1115).
+    /// </summary>
+    public bool TryClassifyFailure(
+        string? stderrTail,
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        if (TryClassifyQuotaExhaustion(stderrTail, timeProvider, out classification, out retryNotBefore))
+        {
+            return true;
+        }
+
+        return TryClassifyQuotaExhaustion(stdoutTail, timeProvider, out classification, out retryNotBefore);
+    }
+
 
     /// <summary>
     /// Recognizes Claude subscription quota exhaustion errors from the typed field <c>errorCode == "credits_required"</c>

@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
+using Aer.Flow.Outcomes;
 
 namespace Aer.Adapters.Tests;
+
 
 /// <summary>
 /// M20 Phase 4's deliverable: unit tests for the refactored, direct shell-less
@@ -726,6 +728,22 @@ public class ClaudeWorkerAdapterTests
         Assert.Null(classification);
         Assert.Null(retryNotBefore);
     }
+
+    [Fact]
+    public void CreditsRequired_OnStdoutTail_ClassifiesExhaustedUntil()
+    {
+        var envelope = """{"type":"result","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(stderrTail: null, stdoutTail: envelope, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Null(retryNotBefore);
+    }
+
+
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {

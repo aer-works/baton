@@ -100,11 +100,25 @@ public sealed record CoreDispatchSeedFile(string PathTemplate, string Content);
 /// (#1089). False on the crash-recovery path and whenever the worker did not stream (no marker to see),
 /// so the guard fails safe toward today's "a timeout always fails" behaviour.
 /// </param>
+
+/// <param name="StdoutTail">
+/// The last <see cref="CoreDispatcher.MaxRetainedStderrLength"/> characters the worker wrote to
+/// stdout, or <see langword="null"/> if it wrote nothing. The <i>tail</i> specifically: bounded
+/// retention for failure classification (0026/#1115), allowing classifiers to inspect typed worker
+/// outputs on stdout without loading full execution streams.
+/// <para>
+/// Null also on the crash-recovery path, where <c>MutationInterface</c> rebuilds a result from a
+/// stored <c>CoreEvent.ExecutionExited</c> after a restart — stdout tail is not written to the Event
+/// Store, so it does not survive a crash.
+/// </para>
+/// </param>
 public sealed record CoreDispatchResult(
     int ExitCode,
     CoreExitReason Reason,
     string? StderrTail = null,
-    bool TerminalSuccessObserved = false);
+    bool TerminalSuccessObserved = false,
+    string? StdoutTail = null);
+
 
 /// <summary>
 /// What <c>MutationInterface</c> needs from a dispatcher (spec §12's "Flow never executes a
@@ -830,6 +844,9 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         var stderrTail = new StderrTailBuffer();
         var stderrLock = new object();
 
+        // 0026 / #1115.
+        var stdoutTail = new StderrTailBuffer();
+
         // #1089: the terminal-success signal. The adapter (Adapter Isolation) owns what its vendor's
         // "I finished, status success" line looks like; here we only invoke that predicate on each
         // complete stdout line and latch the flag. Combined with OnStdoutLine into one sink so a line is
@@ -908,15 +925,16 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                                 fs.Flush();
                             }
                         }
-                        if (stdoutLineSink is not null)
+                        lock (stdoutLock)
                         {
-                            // The decode is inside the lock, unlike the stateless GetString it replaces:
-                            // the buffer now carries decoder state between chunks, so two callbacks
-                            // decoding concurrently would interleave into one another's partial
-                            // sequences. The lock was already here for the line buffer; the decode joins
-                            // it rather than sitting beside it.
-                            lock (stdoutLock)
+                            stdoutTail.Append(e.Data);
+                            if (stdoutLineSink is not null)
                             {
+                                // The decode is inside the lock, unlike the stateless GetString it replaces:
+                                // the buffer now carries decoder state between chunks, so two callbacks
+                                // decoding concurrently would interleave into one another's partial
+                                // sequences. The lock was already here for the line buffer; the decode joins
+                                // it rather than sitting beside it.
                                 stdoutLines.Append(e.Data, stdoutLineSink);
                             }
                         }
@@ -972,6 +990,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         await Task.WhenAll(pendingLogWrites).ConfigureAwait(false);
 
         bool terminalSuccessLatched;
+        string? capturedStdoutTail;
         lock (stdoutLock)
         {
             if (stdoutLineSink is not null)
@@ -982,6 +1001,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             // Read under the same lock the sink mutates, and AFTER Flush drains the last buffered line --
             // a terminal `result` arriving in the final chunk is only latched once Flush runs it.
             terminalSuccessLatched = terminalSuccessObserved;
+            capturedStdoutTail = stdoutTail.ToTailOrNull();
         }
 
         string? capturedStderr;
@@ -990,7 +1010,8 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             capturedStderr = stderrTail.ToTailOrNull();
         }
 
-        return new CoreDispatchResult(exitCode, reason, capturedStderr, terminalSuccessLatched);
+        return new CoreDispatchResult(exitCode, reason, capturedStderr, terminalSuccessLatched, capturedStdoutTail);
+
     }
 
 
