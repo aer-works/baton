@@ -272,8 +272,11 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
         Assert.False(PendingGateRegistry.TryGet(answeredReqId, out _));
     }
 
+    // Exercises the helper directly, not the turn path: ExecuteSessionTurnAsync (which calls this
+    // with reason "turn_ended" from its finally, before the turn-lock release) is private and
+    // spawns real vendor processes, so the wiring itself is verifiable only by a live drive.
     [Fact]
-    public async Task TurnEnd_RevokesPendingPermission_AndClearsPendingGateRegistry()
+    public async Task RevokePendingGatesForRoom_RevokesPendingPermission_AndClearsPendingGateRegistry()
     {
         var execId = new ExecutionId("ex-turnend");
         var outputDir = ArtifactManager.ResolveOutputDirectory(

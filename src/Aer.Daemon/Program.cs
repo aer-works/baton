@@ -2010,6 +2010,25 @@ namespace Aer.Daemon
             }
             finally
             {
+                // 0022 §5: a pending permission dies with its turn. Revoked BEFORE the lock is
+                // released and room-scoped on purpose — while this turn's lock is held no next
+                // turn can raise a fresh ask, so every registry entry for this room is a leftover
+                // of the turn that just ended, and the room filter cannot catch a successor's ask.
+                // Failure here must never wedge the release below (same reason as its comment).
+                try
+                {
+                    await RevokePendingGatesForRoomAsync(
+                        directoryPath,
+                        executionIdFilter: null,
+                        "turn_ended",
+                        async (proj, dir) => await broadcastStateAsync(proj, dir).ConfigureAwait(false),
+                        async () => (await session.LoadAsync(directoryPath).ConfigureAwait(false)).Projection).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"turn-end gate revocation failed for '{directoryPath}': {ex.GetType().Name}: {ex.Message}");
+                }
+
                 // Turns throw in several places and the fire-and-forget catch sits outside this method,
                 // so an un-released semaphore would wedge the session permanently.
                 turnLock.Release();
