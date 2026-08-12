@@ -683,4 +683,52 @@ public class ClaudeWorkerAdapterTests
             Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.AerClaudeConfigRootVariable, original);
         }
     }
+
+    [Fact]
+    public void CreditsRequired_ClassifiesExhaustedUntil()
+    {
+        var envelope = """{"type":"result","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(envelope, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Theory]
+    [InlineData("""{"type":"result","is_error":true,"errorCode":"other_error","result":"Failed"}""")]
+    [InlineData("""{"type":"result","is_error":true,"result":"Failed without errorCode"}""")]
+    public void OrdinaryError_StaysUnclassified(string envelope)
+    {
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(envelope, testTime, out var classification, out var retryNotBefore);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Fact]
+    public void CreditsRequiredProseInMessageText_DoesNotTrigger()
+    {
+        var envelope = """{"type":"assistant","message":{"content":[{"type":"text","text":"The system reported credits_required in prose text"}]}}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(envelope, testTime, out var classification, out var retryNotBefore);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
 }
