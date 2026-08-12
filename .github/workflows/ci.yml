@@ -114,6 +114,12 @@ jobs:
         with:
           run-install: false
           cache: false
+      # 30s backoff before the retry: the first live firing (run 31640170988, ubuntu) lost
+      # both attempts to a CDN 503 seconds apart — a pause is what gives attempt 2 a chance
+      # a back-to-back retry measurably did not have.
+      - if: steps.pixi-attempt-1.outcome == 'failure'
+        shell: bash
+        run: sleep 30
       - uses: prefix-dev/setup-pixi@v0.8.0
         if: steps.pixi-attempt-1.outcome == 'failure'
         with:
@@ -280,6 +286,12 @@ jobs:
         with:
           run-install: false
           cache: false
+      # 30s backoff before the retry: the first live firing (run 31640170988, ubuntu) lost
+      # both attempts to a CDN 503 seconds apart — a pause is what gives attempt 2 a chance
+      # a back-to-back retry measurably did not have.
+      - if: steps.pixi-attempt-1.outcome == 'failure'
+        shell: bash
+        run: sleep 30
       - uses: prefix-dev/setup-pixi@v0.8.0
         if: steps.pixi-attempt-1.outcome == 'failure'
         with:
@@ -364,6 +376,12 @@ jobs:
         with:
           run-install: false
           cache: false
+      # 30s backoff before the retry: the first live firing (run 31640170988, ubuntu) lost
+      # both attempts to a CDN 503 seconds apart — a pause is what gives attempt 2 a chance
+      # a back-to-back retry measurably did not have.
+      - if: steps.pixi-attempt-1.outcome == 'failure'
+        shell: bash
+        run: sleep 30
       - uses: prefix-dev/setup-pixi@v0.8.0
         if: steps.pixi-attempt-1.outcome == 'failure'
         with:
