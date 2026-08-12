@@ -844,6 +844,15 @@ def _permissionrank_checker_blind():
         yield
 
 
+@control(PERMISSIONRANK, "the checker flags every button pair, so a legitimate equal-weight gate cannot ship")
+def _permissionrank_cries_wolf():
+    # #1124 review finding D: the over-broad direction. A primary marker matching ANY control
+    # makes the selfcheck's fixed equal-weight fixtures (and the real, fixed tree) flag — the
+    # unusable-inside-a-day failure the blind arm alone cannot catch.
+    with swap(selfcheck.permissionrank, "AXAML_ACCENT_RE", re.compile(r"<Button")):
+        yield
+
+
 
 def main() -> int:
     print(__doc__.strip().splitlines()[0])

@@ -1716,7 +1716,35 @@ def _permissionrank_discriminates():
         files_scanned, violations = rec.scan_tree(tmp_path)
         assert len(violations) == 0, f"equal-weight Dart flagged unexpectedly: {violations}"
 
-    return "AXAML and Dart permissive-primary controls + real tree verification"
+        # #1124 review finding A: the repo's own AccessText mnemonic idiom puts the permissive
+        # label on a LATER line of the same element — a same-line-only scan ships that violation
+        # green.
+        (mobile_dir / "screen.dart").unlink()
+        (ui_dir / "TestView.axaml").write_text(
+            '<StackPanel>\n'
+            '  <Button Classes="accent" Command="{Binding AllowCommand}">\n'
+            '    <AccessText Text="A_llow once" VerticalAlignment="Center" />\n'
+            '  </Button>\n'
+            '  <Button Content="Deny once" />\n'
+            '</StackPanel>',
+            encoding="utf-8"
+        )
+        files_scanned, violations = rec.scan_tree(tmp_path)
+        assert len(violations) == 1, f"multi-line AccessText permissive-primary not caught: {violations}"
+
+        # #1124 review finding B: Avalonia's attached-property conditional-class syntax,
+        # already used in this tree (SettingsView.axaml), must be as visible as the list form.
+        (ui_dir / "TestView.axaml").write_text(
+            '<StackPanel>\n'
+            '  <Button Classes.accent="{Binding IsPrimary}" Content="Allow once" />\n'
+            '  <Button Content="Deny once" />\n'
+            '</StackPanel>',
+            encoding="utf-8"
+        )
+        files_scanned, violations = rec.scan_tree(tmp_path)
+        assert len(violations) == 1, f"Classes.accent conditional-class violation not caught: {violations}"
+
+    return "AXAML (same-line, AccessText multi-line, Classes.accent) and Dart permissive-primary controls + real tree verification"
 
 
 def main() -> int:

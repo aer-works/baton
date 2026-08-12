@@ -7,13 +7,22 @@ while a sibling deny/cancel control (Deny, Cancel) in the same file is un-primar
 
 What it CAN see:
 - File-local pairings of primary permissive controls alongside non-primary deny/cancel controls.
-- AXAML `Classes="accent"` attribute on controls containing permissive text.
+- AXAML `Classes="accent"` (list attribute) and `Classes.accent=` (attached-property conditional
+  class) on controls whose permissive label sits on the same line OR on a following line inside
+  the same element (the repo's own AccessText mnemonic idiom, #1124 review finding A) — the
+  lookahead is bounded at the element's close.
 - Dart `FilledButton` or `ElevatedButton` constructors containing permissive text.
 
 What it CANNOT see:
 - Pairings split across multiple files or dynamic templates.
 - Dynamic control styles applied exclusively in code-behind logic.
 - Custom wrapped button components that don't use standard AXAML/Flutter button names/classes.
+
+Known coarseness, disclosed rather than solved (#1124 review finding C): the deny half is
+file-scoped, not DOM-proximity-scoped — a legitimate accent permissive control sharing a FILE with
+an unrelated bare Cancel would flag. That is a deliberate narrowness/complexity trade: keep gate
+markup self-contained per view (which the current tree does), and a false fire here is loud and
+cheap to triage, where the inverse (a DOM parser wrong in silence) is not.
 """
 from __future__ import annotations
 
@@ -30,7 +39,7 @@ DENY_PAT = r"\b(Deny|Cancel)\b"
 PERMISSIVE_RE = re.compile(PERMISSIVE_PAT, re.IGNORECASE)
 DENY_RE = re.compile(DENY_PAT, re.IGNORECASE)
 
-AXAML_ACCENT_RE = re.compile(r'Classes="[^"]*\baccent\b[^"]*"')
+AXAML_ACCENT_RE = re.compile(r'Classes="[^"]*\baccent\b[^"]*"|Classes\.accent\s*=')
 DART_PRIMARY_RE = re.compile(r'\b(FilledButton|ElevatedButton)\b')
 DART_NON_PRIMARY_RE = re.compile(r'\b(OutlinedButton|TextButton)\b')
 
@@ -49,7 +58,25 @@ def scan_axaml_text(text: str, rel_path: str) -> list[tuple[str, int, str, str]]
 
     violations = []
     for idx, line in enumerate(lines, 1):
-        if AXAML_ACCENT_RE.search(line) and PERMISSIVE_RE.search(line):
+        if not AXAML_ACCENT_RE.search(line):
+            continue
+
+        # #1124 review finding A: the permissive label may sit on a LATER line of the same
+        # element — the repo's own AccessText mnemonic idiom puts it in a child element. Scan
+        # from the accent line to the element's close (bounded, so an unrelated later control
+        # cannot leak in).
+        element_lines = [line]
+        for follow in lines[idx:]:
+            element_lines.append(follow)
+            if "/>" in follow or "</Button>" in follow or "<Button" in follow:
+                break
+            if len(element_lines) > 12:
+                break
+        # AccessText mnemonics put the underscore INSIDE the word ("A_llow", "A_pprove") — strip
+        # it before matching or the word-boundary regex misses the repo's own labelling idiom.
+        element_text = "\n".join(element_lines).replace("_", "")
+
+        if PERMISSIVE_RE.search(element_text):
             violations.append((rel_path, idx, "permissive-primary-axaml", line.strip()))
 
     return violations
