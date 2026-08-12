@@ -188,4 +188,221 @@ public class StatusDerivationTests
             Assert.Equal(expected[decisionType], PlainLanguage.ForDecision(decisionType));
         }
     }
+
+    [Fact]
+    public void PlainLanguage_ForStep_ExhaustedUntil_KnownInstant_RendersOutofPlanResumesLocalTime()
+    {
+        var resetInstant = new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero);
+        var expectedLocalTime = resetInstant.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+
+        var result = PlainLanguage.ForStep(StepStatus.Failed, FailureClassification.ExhaustedUntil, resetInstant);
+
+        Assert.Equal($"Out of plan — resumes {expectedLocalTime}", result);
+    }
+
+    [Fact]
+    public void PlainLanguage_ForStep_ExhaustedUntil_UnknownInstant_RendersOutofPlanResetUnknown()
+    {
+        var result = PlainLanguage.ForStep(StepStatus.Failed, FailureClassification.ExhaustedUntil, null);
+
+        Assert.Equal("Out of plan — reset unknown", result);
+    }
+
+    [Fact]
+    public void PlainLanguage_ForStep_Polarity_OrdinaryFailedAndRetryableWordingUnchanged()
+    {
+        Assert.Equal("Failed", PlainLanguage.ForStep(StepStatus.Failed, FailureClassification.Retryable));
+        Assert.Equal("Failed", PlainLanguage.ForStep(StepStatus.Failed, FailureClassification.Permanent));
+        Assert.Equal("Failed", PlainLanguage.ForStep(StepStatus.Failed, null));
+    }
+
+    [Fact]
+    public void DeriveStatus_MixedExhaustedAndGenuinelyFailed_IsFailed_NotWorking()
+    {
+        // #1116 review must-fix — why a genuinely failed sibling must not hide behind the
+        // exhausted keep-alive is the mixed-room arm comment in RoomCardViewModel.DeriveStatus.
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("status-derivation-mixed"),
+            1,
+            [new WorkflowStepDefinition(new StepId("step-0"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+
+        var exhausted = new StepState(
+            new StepId("step-0"), StepStatus.Failed,
+            LatestExecutionId: new ExecutionId("exec-1"),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryNotBefore: new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero));
+        var genuinelyFailed = new StepState(
+            new StepId("step-1"), StepStatus.Failed,
+            LatestExecutionId: new ExecutionId("exec-2"),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.Permanent);
+
+        var projection = new RoomProjection(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, [exhausted, genuinelyFailed], WorkflowStatus.Running),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+
+        Assert.Equal(RoomCardStatus.Failed, status);
+        Assert.Equal("Failed", statusText);
+    }
+
+    [Fact]
+    public void DeriveStatus_TwoExhaustedSteps_ShowsTheLatestResetInstant_AndAnyUnknownMakesItUnknown()
+    {
+        // #1116 review should-fix: the room cannot fully resume before EVERY exhausted step
+        // clears — the honest instant is the max, never declaration order's arbitrary first.
+        var earlier = new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero);
+        var later = new DateTimeOffset(2026, 8, 13, 6, 0, 0, TimeSpan.Zero);
+        var expectedLocalTime = later.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("status-derivation-two-exhausted"),
+            1,
+            [new WorkflowStepDefinition(new StepId("step-0"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+
+        StepState Exhausted(string stepId, string execId, DateTimeOffset? instant) => new(
+            new StepId(stepId), StepStatus.Failed,
+            LatestExecutionId: new ExecutionId(execId),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryNotBefore: instant);
+
+        RoomProjection ProjectionOf(params StepState[] steps) => new(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, steps, WorkflowStatus.Running),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        // Earlier instant declared FIRST — declaration order must not win.
+        var (bothKnownText, bothKnownStatus) = RoomCardViewModel.DeriveStatus(
+            ProjectionOf(Exhausted("step-0", "e-1", earlier), Exhausted("step-1", "e-2", later)), null);
+        Assert.Equal(RoomCardStatus.OutOfPlan, bothKnownStatus);
+        Assert.Equal($"Out of plan — resumes {expectedLocalTime}", bothKnownText);
+
+        // One unknown instant makes the room's answer unknown — a known sibling must not
+        // fabricate a full-resume time the vendor never gave for the other step.
+        var (oneUnknownText, oneUnknownStatus) = RoomCardViewModel.DeriveStatus(
+            ProjectionOf(Exhausted("step-0", "e-1", earlier), Exhausted("step-1", "e-2", null)), null);
+        Assert.Equal(RoomCardStatus.OutOfPlan, oneUnknownStatus);
+        Assert.Equal("Out of plan — reset unknown", oneUnknownText);
+    }
+
+    [Fact]
+    public void DeriveStatus_RoomWithExhaustedStep_IsNotNeedsYou_Carries0026Sentence()
+    {
+        var resetInstant = new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero);
+        var expectedLocalTime = resetInstant.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("status-derivation-exhausted"),
+            1,
+            [new WorkflowStepDefinition(new StepId("step-0"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+
+        var stepState = new StepState(
+            new StepId("step-0"),
+            StepStatus.Failed,
+            LatestExecutionId: new ExecutionId("exec-1"),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryNotBefore: resetInstant);
+
+        var projection = new RoomProjection(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, [stepState], WorkflowStatus.Running),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+
+        Assert.NotEqual(RoomCardStatus.NeedsYou, status);
+        Assert.NotEqual(RoomCardStatus.Failed, status);
+        Assert.Equal(RoomCardStatus.OutOfPlan, status);
+        Assert.Equal($"Out of plan — resumes {expectedLocalTime}", statusText);
+    }
+
+    [Fact]
+    public void DeriveStatus_RoomWithExhaustedStep_UnknownInstant_CarriesResetUnknownSentence()
+    {
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("status-derivation-exhausted-unknown"),
+            1,
+            [new WorkflowStepDefinition(new StepId("step-0"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+
+        var stepState = new StepState(
+            new StepId("step-0"),
+            StepStatus.Failed,
+            LatestExecutionId: new ExecutionId("exec-1"),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryNotBefore: null);
+
+        var projection = new RoomProjection(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, [stepState], WorkflowStatus.Running),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+
+        Assert.NotEqual(RoomCardStatus.NeedsYou, status);
+        Assert.NotEqual(RoomCardStatus.Failed, status);
+        Assert.Equal(RoomCardStatus.OutOfPlan, status);
+        Assert.Equal("Out of plan — reset unknown", statusText);
+    }
+
+    [Fact]
+    public void DeriveStatus_Polarity_PendingPermissionAndFailedArmPassUnchanged()
+    {
+        var pendingPermission = new Aer.Flow.Projection.PendingPermission(
+            "req-101",
+            "worker-alpha",
+            "claude",
+            "WriteFiles",
+            """{"path":"test.txt"}""",
+            "WriteFiles",
+            DateTimeOffset.UtcNow);
+
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("status-derivation-polarity"),
+            1,
+            [new WorkflowStepDefinition(new StepId("step-0"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+
+        var exhaustedStep = new StepState(
+            new StepId("step-0"),
+            StepStatus.Failed,
+            LatestExecutionId: new ExecutionId("exec-1"),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.ExhaustedUntil);
+
+        var projectionExhaustedWithPermission = new RoomProjection(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, [exhaustedStep], WorkflowStatus.Running),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        var (permText, permStatus) = RoomCardViewModel.DeriveStatus(projectionExhaustedWithPermission, pendingPermission);
+        Assert.Equal(RoomCardStatus.NeedsYou, permStatus);
+        Assert.Equal("Permission requested", permText);
+
+        var ordinaryFailedStep = new StepState(
+            new StepId("step-0"),
+            StepStatus.Failed,
+            LatestExecutionId: new ExecutionId("exec-1"),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.Retryable);
+
+        var projectionOrdinaryFailed = new RoomProjection(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, [ordinaryFailedStep], WorkflowStatus.Terminal),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        var (failedText, failedStatus) = RoomCardViewModel.DeriveStatus(projectionOrdinaryFailed, null);
+        Assert.Equal(RoomCardStatus.Failed, failedStatus);
+        Assert.Equal("Failed", failedText);
+    }
 }

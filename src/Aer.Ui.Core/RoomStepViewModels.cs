@@ -14,22 +14,40 @@ namespace Aer.Ui.Core;
 /// </summary>
 public static class PlainLanguage
 {
-    public static string ForStep(StepStatus status) => status switch
+    /// <summary>
+    /// Maps step status to plain-language text.
+    /// Extended (#1116, 0026 §5): an <see cref="FailureClassification.ExhaustedUntil"/> step
+    /// reads "Out of plan — resumes {local time}" with a known instant, or "Out of plan — reset unknown" without.
+    /// </summary>
+    public static string ForStep(
+        StepStatus status,
+        FailureClassification? failureClassification = null,
+        DateTimeOffset? retryNotBefore = null)
     {
-        StepStatus.Pending => "Not started yet",
-        StepStatus.Running => "Working",
-        StepStatus.Succeeded => "Done",
-        StepStatus.Failed => "Failed",
-        // #461: was "Stopped". The token file's label for this state is "Cancelled", and a step
-        // saying one word while the room card says another is the collage this milestone is undoing.
-        StepStatus.Cancelled => "Cancelled",
-        StepStatus.Paused => "Waiting for your review",
-        StepStatus.Rejected => "Rejected",
-        // #616: the discard throws instead of answering — same posture as the generated
-        // AerStatusPresentation. A new member reaches no silent word: StatusDerivationTests'
-        // golden map iterates every member, so the gap is a red test, never a shipped label.
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped step status."),
-    };
+        if (status == StepStatus.Failed && failureClassification == FailureClassification.ExhaustedUntil)
+        {
+            return retryNotBefore is { } instant
+                ? $"Out of plan — resumes {instant.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)}"
+                : "Out of plan — reset unknown";
+        }
+
+        return status switch
+        {
+            StepStatus.Pending => "Not started yet",
+            StepStatus.Running => "Working",
+            StepStatus.Succeeded => "Done",
+            StepStatus.Failed => "Failed",
+            // #461: was "Stopped". The token file's label for this state is "Cancelled", and a step
+            // saying one word while the room card says another is the collage this milestone is undoing.
+            StepStatus.Cancelled => "Cancelled",
+            StepStatus.Paused => "Waiting for your review",
+            StepStatus.Rejected => "Rejected",
+            // #616: the discard throws instead of answering — same posture as the generated
+            // AerStatusPresentation. A new member reaches no silent word: StatusDerivationTests'
+            // golden map iterates every member, so the gap is a red test, never a shipped label.
+            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped step status."),
+        };
+    }
 
     public static string ForDecision(DecisionType decisionType) => decisionType switch
     {
@@ -44,7 +62,7 @@ public static class PlainLanguage
     /// <summary>
     /// The room-level headline — the shared room-status derivation (<c>RoomCardViewModel.DeriveStatus</c>), by delegation rather than by copy. This
     /// method used to restate the mapping and claim it was shared; the copy drifted (#976: no
-    /// Cancelled arm, so a cancelled run's headline said "Finished" — the 0020 worked example,
+    /// Cancelled arm, so a cancelled run'headline said "Finished" — the 0020 worked example,
     /// alive on a second surface) and hard-coded the review wording for every pause, missing
     /// #334's reply/review split. Delegating is what makes "can never drift" true.
     /// </summary>
@@ -83,7 +101,9 @@ public sealed partial class StepItemViewModel : ObservableObject
         Action<StepItemViewModel> select,
         string? adapter = null,
         IReadOnlyList<ArtifactFileViewModel>? promptFiles = null,
-        FailedStepBannerViewModel? failedBanner = null)
+        FailedStepBannerViewModel? failedBanner = null,
+        FailureClassification? latestFailureClassification = null,
+        DateTimeOffset? retryNotBefore = null)
     {
         StepId = stepId;
         Worker = worker;
@@ -97,13 +117,17 @@ public sealed partial class StepItemViewModel : ObservableObject
         Adapter = adapter;
         PromptFiles = promptFiles ?? [];
         FailedBanner = failedBanner;
+        LatestFailureClassification = latestFailureClassification;
+        RetryNotBefore = retryNotBefore;
     }
 
     public string StepId { get; }
     public string Worker { get; }
     public string? Adapter { get; }
     public StepStatus Status { get; }
-    public string PlainStatusText => PlainLanguage.ForStep(Status);
+    public FailureClassification? LatestFailureClassification { get; }
+    public DateTimeOffset? RetryNotBefore { get; }
+    public string PlainStatusText => PlainLanguage.ForStep(Status, LatestFailureClassification, RetryNotBefore);
     public IReadOnlyList<string> AttemptLines { get; }
     public IReadOnlyList<ArtifactFileViewModel> OutputFiles { get; }
     public IReadOnlyList<ConversationRefViewModel> Conversations { get; }
@@ -530,7 +554,13 @@ public static class StepItemProjector
             var adapter = workerAdapters?.GetValueOrDefault(stepDefinition.Worker);
 
             FailedStepBannerViewModel? failedBanner = null;
-            if (stepState.Status == StepStatus.Failed)
+            // #1116 review must-fix: no failed banner for an ExhaustedUntil step. The banner says
+            // "Failed" with a red cross and a live ask-the-worker-to-fix button — for a step that
+            // is not broken and must not have dispatches spent against it (0026 §1), directly
+            // beside the step wording that already says "Out of plan — resumes …". The calm word
+            // is the whole 0026 point; the banner would un-say it.
+            if (stepState.Status == StepStatus.Failed
+                && stepState.LatestFailureClassification != FailureClassification.ExhaustedUntil)
             {
                 var reasonText = reasonedAttempt?.Reason ?? stepState.LatestFailureReason;
 
@@ -549,6 +579,7 @@ public static class StepItemProjector
                     showFullOutputAction);
             }
 
+            var resetInstant = stepState.RetryNotBefore ?? stepState.LatestExecutionFailedRetryNotBefore;
             items.Add(new StepItemViewModel(
                 stepState.StepId.Value,
                 stepDefinition.Worker,
@@ -561,7 +592,9 @@ public static class StepItemProjector
                 select,
                 adapter,
                 promptFiles,
-                failedBanner));
+                failedBanner,
+                stepState.LatestFailureClassification,
+                resetInstant));
         }
 
         return items;

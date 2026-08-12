@@ -77,6 +77,9 @@ internal static class StatusIconMap
         // #616: Unavailable is named and the discard throws — a new RoomCardStatus member must
         // not silently render as the stale-list state.
         RoomCardStatus.Unavailable => "Icon.Slashed",
+        // 0026 (#1116): waiting on a plan reset, not stopped (Dash would claim Cancelled's "you
+        // stopped it") and not broken — the ellipsis is the honest "more to come, later" mark.
+        RoomCardStatus.OutOfPlan => "Icon.Ellipsis",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped card status."),
     };
 
@@ -90,6 +93,9 @@ internal static class StatusIconMap
         // colouring it like a failure is exactly the alarm #461 exists to remove.
         RoomCardStatus.Cancelled => "Status.Idle",
         RoomCardStatus.Unavailable => "Status.Idle",
+        // 0026 §5/0018 band 4: a quiet wait, muted like Cancelled — the status text carries the
+        // reset instant (or "reset unknown"), so the color never has to shout.
+        RoomCardStatus.OutOfPlan => "Status.Idle",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped card status."), // #616
     };
 }

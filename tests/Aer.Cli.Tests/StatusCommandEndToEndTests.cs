@@ -499,6 +499,27 @@ public class StatusCommandEndToEndTests
     }
 
     [Fact]
+    public async Task Status_of_an_unknown_instant_exhausted_step_renders_parked_vendor_quota_reset_unknown()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            await WriteUnknownInstantExhaustedStepFixtureAsync(testRoot, roomDirectory);
+
+            var output = new StringWriter();
+            await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory), output, TestContext.Current.CancellationToken);
+
+            var text = output.ToString();
+            Assert.Contains("implement: parked (vendor quota) — reset unknown", text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Status_of_an_ordinary_backoff_park_days_away_renders_retryable_with_the_full_date()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
@@ -615,6 +636,44 @@ public class StatusCommandEndToEndTests
         }
 
         return (snapshotPath, logPath, executionId, retryNotBefore);
+    }
+
+    private static async Task<(string SnapshotPath, string LogPath, ExecutionId ExecutionId)>
+        WriteUnknownInstantExhaustedStepFixtureAsync(
+            string testRoot,
+            string roomDirectory)
+    {
+        Directory.CreateDirectory(roomDirectory);
+        var definition = new WorkflowDefinition(
+            new WorkflowTemplateId("parked-probe"),
+            1,
+            [new WorkflowStepDefinition(new StepId("implement"), "implement", [], ["out"], [], new RetryPolicy(3))]);
+        var snapshot = SnapshotBinder.Bind(definition);
+        var snapshotPath = Path.Combine(roomDirectory, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var executionId = new ExecutionId("exec-parked-1");
+        var request = new ExecutionRequest(
+            executionId,
+            new WorkflowId("wf-parked"),
+            new StepId("implement"),
+            "implement",
+            Inputs: [],
+            Outputs: [],
+            Timeout: TimeSpan.FromSeconds(30),
+            Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+        await using (var writer = new FlowEventLogWriter(logPath))
+        {
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota exhausted", RetryNotBefore: null),
+                TestContext.Current.CancellationToken);
+        }
+
+        return (snapshotPath, logPath, executionId);
     }
 
     private static async Task<string> WriteThreeStepWorkflowAsync(string directory)
