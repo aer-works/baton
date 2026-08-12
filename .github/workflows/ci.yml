@@ -103,7 +103,19 @@ jobs:
       # installs, not conda packages — GitHub's standard runner images ship both already), and
       # setup-pixi's `pixi list` step fails hard on an empty environment. `pixi run` performs the
       # (trivial) implicit install on first use instead.
+      # #1117: the pixi binary download itself flaked ("socket hang up") four times on
+      # 2026-08-12, failing runs before any repo code executed. One bounded retry; a second
+      # failure still fails the job, so required-job semantics are unchanged. The failed
+      # attempt's post step is harmless: it only looks for the binary the successful attempt
+      # installed at the same path.
       - uses: prefix-dev/setup-pixi@v0.8.0
+        id: pixi-attempt-1
+        continue-on-error: true
+        with:
+          run-install: false
+          cache: false
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        if: steps.pixi-attempt-1.outcome == 'failure'
         with:
           run-install: false
           cache: false
@@ -257,7 +269,19 @@ jobs:
         with:
           workspaces: external/aer-core
 
+      # #1117: the pixi binary download itself flaked ("socket hang up") four times on
+      # 2026-08-12, failing runs before any repo code executed. One bounded retry; a second
+      # failure still fails the job, so required-job semantics are unchanged. The failed
+      # attempt's post step is harmless: it only looks for the binary the successful attempt
+      # installed at the same path.
       - uses: prefix-dev/setup-pixi@v0.8.0
+        id: pixi-attempt-1
+        continue-on-error: true
+        with:
+          run-install: false
+          cache: false
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        if: steps.pixi-attempt-1.outcome == 'failure'
         with:
           run-install: false
           cache: false
@@ -329,7 +353,19 @@ jobs:
       # Same setup the test and pack jobs use, for the reason recorded there: pinning a pixi version
       # pinned one too old to read this repo's lock file (version 7), and setup-pixi's own install
       # step fails hard on an empty environment. Let `pixi run` do the implicit install.
+      # #1117: the pixi binary download itself flaked ("socket hang up") four times on
+      # 2026-08-12, failing runs before any repo code executed. One bounded retry; a second
+      # failure still fails the job, so required-job semantics are unchanged. The failed
+      # attempt's post step is harmless: it only looks for the binary the successful attempt
+      # installed at the same path.
       - uses: prefix-dev/setup-pixi@v0.8.0
+        id: pixi-attempt-1
+        continue-on-error: true
+        with:
+          run-install: false
+          cache: false
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        if: steps.pixi-attempt-1.outcome == 'failure'
         with:
           run-install: false
           cache: false
