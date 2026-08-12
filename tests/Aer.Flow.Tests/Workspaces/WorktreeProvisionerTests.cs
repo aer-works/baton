@@ -225,4 +225,27 @@ public sealed class WorktreeProvisionerTests : IDisposable
 
         DirectoryCleanup.DeleteRecursively(_root);
     }
+
+    /// <summary>
+    /// #1103: git prints macOS temp paths in their resolved <c>/private/...</c> spelling while
+    /// callers hold the <c>/var/...</c> symlink spelling; equality must see through that or the
+    /// idempotence check above can never match on macOS. Pure string logic, so this discriminates
+    /// on every platform — it is the unit-level pin for the macos-only CI failure.
+    /// </summary>
+    [Theory]
+    [InlineData("/private/var/folders/x/task/workspace", "/var/folders/x/task/workspace", true)]
+    [InlineData("/private/tmp/task", "/tmp/task", true)]
+    [InlineData("/var/folders/x/a", "/var/folders/x/b", false)]
+    [InlineData("/private/var/folders/x/a", "/var/folders/y/a", false)]
+    public void Normalization_sees_through_the_macos_private_symlink_spelling(string a, string b, bool expected)
+    {
+        // Targets the normalization itself rather than PathsEqual: PathsEqual runs GetFullPath
+        // first, which on Windows would re-root these POSIX literals under the current drive and
+        // turn this into a test of GetFullPath instead of the /private equivalence.
+        var equal = string.Equals(
+            WorktreeProvisioner.NormalizeForComparison(a),
+            WorktreeProvisioner.NormalizeForComparison(b),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(expected, equal);
+    }
 }
