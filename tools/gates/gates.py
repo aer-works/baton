@@ -31,6 +31,7 @@ import sys
 OVERLAP = [
     "audit-completeness",
     "audit-vocabulary",
+    "audit-permissionrank",
     "audit-recordonce",
     "test-scripts",
     "audit-staleness-ext-selftest",

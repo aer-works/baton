@@ -256,6 +256,7 @@ build-cli = { cmd = "dotnet build src/Aer.Cli" }
 audit-selfcheck = { cmd = "python -u tools/audit-completeness/selfcheck.py" }
 audit-controls = { cmd = "python -u tools/audit-completeness/controls.py" }
 audit-vocabulary = { cmd = "python -u tools/audit-completeness/vocabulary.py" }
+audit-permissionrank = { cmd = "python -u tools/audit-completeness/permissionrank.py" }
 
 # Needs full history: it diffs against origin/main. See recordonce.py (#671).
 audit-recordonce = { cmd = "python -u tools/audit-completeness/recordonce.py" }

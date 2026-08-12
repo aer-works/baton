@@ -78,6 +78,8 @@ LINT_DIRS = (ROOT / "tools" / "audit-completeness", ROOT / "tools" / "aer-agy-lo
 dispatch = load(DISPATCH_PY, "_selfcheck_dispatch")
 completeness = load(ROOT / "tools" / "audit-completeness" / "completeness.py", "_selfcheck_audit")
 vocabulary = load(ROOT / "tools" / "audit-completeness" / "vocabulary.py", "_selfcheck_vocabulary")
+permissionrank = load(ROOT / "tools" / "audit-completeness" / "permissionrank.py", "_selfcheck_permissionrank")
+
 
 
 def register_models() -> set[str]:
@@ -1657,6 +1659,64 @@ def _vocabulary_discriminates():
         assert len(violations) == 1, f"multiline Dart triple-quoted leak not caught: {violations}"
 
     return "AXAML, C#, Dart populations + allowlist suppression + multiline literal leaks"
+
+
+@check("the permissionrank checker flags permissive-primary controls paired with un-primaried deny controls")
+def _permissionrank_discriminates():
+    rec = permissionrank
+    total_files, violations = rec.scan_tree(ROOT)
+    assert len(violations) == 0, f"real tree has permissionrank violations: {violations}"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        files_scanned, violations = rec.scan_tree(tmp_path)
+        assert len(violations) == 0, f"empty tree produced violations: {violations}"
+
+        ui_dir = tmp_path / "src" / "Aer.Ui"
+        ui_dir.mkdir(parents=True)
+        (ui_dir / "TestView.axaml").write_text(
+            '<StackPanel>\n'
+            '  <Button Classes="accent" Content="Allow once" />\n'
+            '  <Button Content="Deny once" />\n'
+            '</StackPanel>',
+            encoding="utf-8"
+        )
+        files_scanned, violations = rec.scan_tree(tmp_path)
+        assert len(violations) == 1, f"planted AXAML permissive-primary violation not caught: {violations}"
+
+        (ui_dir / "TestView.axaml").write_text(
+            '<StackPanel>\n'
+            '  <Button Content="Allow once" />\n'
+            '  <Button Content="Deny once" />\n'
+            '</StackPanel>',
+            encoding="utf-8"
+        )
+        files_scanned, violations = rec.scan_tree(tmp_path)
+        assert len(violations) == 0, f"equal-weight AXAML flagged unexpectedly: {violations}"
+
+        mobile_dir = tmp_path / "src" / "Aer.Mobile" / "lib"
+        mobile_dir.mkdir(parents=True)
+        (mobile_dir / "screen.dart").write_text(
+            'Column(children: [\n'
+            '  FilledButton(onPressed: () {}, child: Text("Allow once")),\n'
+            '  OutlinedButton(onPressed: () {}, child: Text("Deny once")),\n'
+            '])',
+            encoding="utf-8"
+        )
+        files_scanned, violations = rec.scan_tree(tmp_path)
+        assert len(violations) == 1, f"planted Dart permissive-primary violation not caught: {violations}"
+
+        (mobile_dir / "screen.dart").write_text(
+            'Column(children: [\n'
+            '  OutlinedButton(onPressed: () {}, child: Text("Allow once")),\n'
+            '  OutlinedButton(onPressed: () {}, child: Text("Deny once")),\n'
+            '])',
+            encoding="utf-8"
+        )
+        files_scanned, violations = rec.scan_tree(tmp_path)
+        assert len(violations) == 0, f"equal-weight Dart flagged unexpectedly: {violations}"
+
+    return "AXAML and Dart permissive-primary controls + real tree verification"
 
 
 def main() -> int:

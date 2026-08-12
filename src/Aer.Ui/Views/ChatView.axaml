@@ -1,4 +1,4 @@
-﻿<!-- M24 Phase 1 desktop chat UI (issue #262): a dedicated view for interactive chat/codebase
+<!-- M24 Phase 1 desktop chat UI (issue #262): a dedicated view for interactive chat/codebase
      sessions instead of the generic Task view's DAG drill-in — a single repeatedly-superseded
      "chat" step has no dependency graph worth showing, and the real content
      (SessionMetadata.Turns) lives outside RoomProjection entirely (see ChatViewModel's remarks). -->
@@ -45,7 +45,7 @@
                     Spacing="{DynamicResource Space.2}">
           <TextBlock Classes="body-strong" TextWrapping="Wrap" Text="{Binding PromptText}" />
           <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
-            <Button x:Name="ChatPermissionAllowOnceButton" Classes="accent" Content="Allow once" Command="{Binding AllowOnceCommand}" />
+            <Button x:Name="ChatPermissionAllowOnceButton" Content="Allow once" Command="{Binding AllowOnceCommand}" />
             <Button Content="Deny once" Command="{Binding DenyCommand}" />
             <TextBlock Classes="caption secondary" VerticalAlignment="Center"
                        Text="press y to allow · n to deny" />

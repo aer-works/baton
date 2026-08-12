@@ -835,6 +835,16 @@ def _vocabulary_checker_blind():
         yield
 
 
+PERMISSIONRANK = "the permissionrank checker flags permissive-primary controls paired with un-primaried deny controls"
+
+
+@control(PERMISSIONRANK, "the checker stops finding permissive-primary pairs, so planted violations ship green")
+def _permissionrank_checker_blind():
+    with swap(selfcheck.permissionrank, "PERMISSIVE_RE", re.compile(r"(?!)")):
+        yield
+
+
+
 def main() -> int:
     print(__doc__.strip().splitlines()[0])
     print("=" * 78)
