@@ -296,18 +296,35 @@ public static class WorktreeProvisioner
         return false;
     }
 
-    private static bool PathsEqual(string path1, string path2)
+    internal static bool PathsEqual(string path1, string path2)
     {
         try
         {
-            var full1 = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path1));
-            var full2 = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path2));
+            var full1 = NormalizeForComparison(Path.GetFullPath(path1));
+            var full2 = NormalizeForComparison(Path.GetFullPath(path2));
             return string.Equals(full1, full2, StringComparison.OrdinalIgnoreCase);
         }
         catch
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// <see cref="Path.GetFullPath(string)"/> never resolves symlinks, and on macOS the standard
+    /// temp roots (<c>/var</c>, <c>/tmp</c>, <c>/etc</c>) are symlinks into <c>/private</c> — git
+    /// prints the resolved spelling in <c>worktree list</c>, so a caller-supplied <c>/var/...</c>
+    /// path must compare equal to git's <c>/private/var/...</c> or the idempotence check (#1023)
+    /// can never recognise its own worktree there (#1103, the standing macos CI failure).
+    /// Accepted edge: on non-macOS, a literal <c>/private/</c>-rooted directory would compare
+    /// equal to its stripped twin — a layout nothing here produces, priced below the CI fix.
+    /// </summary>
+    internal static string NormalizeForComparison(string fullPath)
+    {
+        var trimmed = Path.TrimEndingDirectorySeparator(fullPath);
+        return trimmed.StartsWith("/private/", StringComparison.Ordinal)
+            ? trimmed["/private".Length..]
+            : trimmed;
     }
 }
 

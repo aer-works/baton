@@ -466,17 +466,18 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
             JsonSerializer.Serialize(revokedPayload),
             TestContext.Current.CancellationToken);
 
+        // Poll until BOTH the journal event exists AND the registry entry is gone: the monitor
+        // journals first and removes second (#1102's invariant), so asserting the registry at
+        // first sight of the event races the monitor's own next statement (#1106, caught on CI).
         RoomEvent.RuntimePermissionRevoked? revoked = null;
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTimeOffset.UtcNow < deadline && revoked is null)
+        while (DateTimeOffset.UtcNow < deadline
+            && (revoked is null || PendingGateRegistry.TryGet(reqId, out _)))
         {
             var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
             revoked = events.OfType<RoomEvent.RuntimePermissionRevoked>().FirstOrDefault();
-            if (revoked is null)
-            {
-                // wait-ok: bounded poll for the monitor's watcher/backup-poll to pick the file up
-                await Task.Delay(100, TestContext.Current.CancellationToken);
-            }
+            // wait-ok: bounded poll for the monitor's pickup, journal write, and removal to land
+            await Task.Delay(100, TestContext.Current.CancellationToken);
         }
 
         Assert.NotNull(revoked);
@@ -623,17 +624,17 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
 
         guard.Dispose();
 
+        // Same both-conditions poll as the pickup test above (#1106): the entry disappears only
+        // AFTER the retried journal write lands, so first-sight-of-the-event is too early.
         RoomEvent.RuntimePermissionRevoked? revoked = null;
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTimeOffset.UtcNow < deadline && revoked is null)
+        while (DateTimeOffset.UtcNow < deadline
+            && (revoked is null || PendingGateRegistry.TryGet(reqId, out _)))
         {
             var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
             revoked = events.OfType<RoomEvent.RuntimePermissionRevoked>().FirstOrDefault();
-            if (revoked is null)
-            {
-                // wait-ok: bounded poll for the monitor's backup tick to retry after guard release
-                await Task.Delay(100, TestContext.Current.CancellationToken);
-            }
+            // wait-ok: bounded poll for the monitor's backup tick to retry after guard release
+            await Task.Delay(100, TestContext.Current.CancellationToken);
         }
 
         Assert.NotNull(revoked);

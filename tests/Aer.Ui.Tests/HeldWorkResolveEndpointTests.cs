@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Aer.Adapters;
 using Aer.Daemon;
+using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
 using Aer.Flow.Projection;
@@ -119,6 +120,12 @@ public class HeldWorkResolveEndpointTests : IAsyncLifetime
             catch (InvalidRoomMutationException) when (DateTime.UtcNow < deadline)
             {
                 // The sweep won between the check and the dispatch; re-read and take the other branch.
+            }
+            catch (WorkflowLockedException) when (DateTime.UtcNow < deadline)
+            {
+                // #1104: with the bridge live (the #857 configuration), the raw fail-fast dispatch
+                // can also lose the room guard to a sweep tick itself — reliably hit on the slower
+                // macos runner. Same principle as above: whoever wins is immaterial; retry.
             }
         }
     }
