@@ -529,6 +529,119 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
     }
 
     /// <summary>
+    /// The crash window between the answer endpoint's journal-first write and its answer-file
+    /// write leaves a journaled Answered with no file — the worker never released. Reconciliation
+    /// must re-materialize the file from the event (second-reader Finding 1 on the reorder).
+    /// </summary>
+    [Fact]
+    public async Task Reconciliation_JournaledAnswerWithoutAnswerFile_RematerializesTheAnswerFile()
+    {
+        var execId = new ExecutionId("ex-heal-ans");
+        var outputDir = ArtifactManager.ResolveOutputDirectory(
+            Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName),
+            execId);
+        Directory.CreateDirectory(outputDir);
+
+        var reqId = "req-heal-ans-1";
+        var askPayload = new
+        {
+            permissionRequestId = reqId,
+            toolName = "Bash",
+            inputJson = "{\"command\":\"ls\"}",
+            reason = "list",
+            askedAt = DateTimeOffset.UtcNow
+        };
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, $"ask-{reqId}.json"),
+            JsonSerializer.Serialize(askPayload),
+            TestContext.Current.CancellationToken);
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+        await using (var writer = new RoomEventLogWriter(roomLogPath))
+        {
+            await RoomMutationInterface.AnswerPermissionAsync(
+                _tempRoomDir, reader, writer, reqId, "AllowOnce", "{\"command\":\"ls\"}", "ok", "human",
+                cancellationToken: TestContext.Current.CancellationToken);
+        }
+
+        var answerFilePath = Path.Combine(outputDir, $"answer-{reqId}.json");
+        Assert.False(File.Exists(answerFilePath));
+
+        await DaemonHost.ReconcileRoomPermissionsAsync(_tempRoomDir, TestContext.Current.CancellationToken);
+
+        Assert.True(File.Exists(answerFilePath));
+        using var answerDoc = JsonDocument.Parse(
+            await File.ReadAllTextAsync(answerFilePath, TestContext.Current.CancellationToken));
+        Assert.Equal("AllowOnce", answerDoc.RootElement.GetProperty("decisionKind").GetString());
+        Assert.False(PendingGateRegistry.TryGet(reqId, out _));
+    }
+
+    /// <summary>
+    /// A failed revoke-journal write must NOT strip the registry entry — the doorbell keeps the
+    /// entry, clears its dedup, and the 1.5s backup poll retries until the journal write lands
+    /// (second-reader Finding 2: the pre-fix order removed the entry before journaling).
+    /// </summary>
+    [Fact]
+    public async Task Doorbell_RevokeJournalFailure_KeepsRegistryEntry_ThenRetriesViaPoll()
+    {
+        var execId = new ExecutionId("ex-doorbell-retry");
+        var outputDir = ArtifactManager.ResolveOutputDirectory(
+            Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName),
+            execId);
+        Directory.CreateDirectory(outputDir);
+
+        var reqId = "req-doorbell-retry-1";
+        PendingGateRegistry.Register(reqId, new PendingGateEntry(
+            _tempRoomDir, outputDir, execId.Value, Path.Combine(outputDir, $"ask-{reqId}.json")));
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+
+        // Hold the room guard so the monitor's journal write fails with WorkflowLockedException.
+        var guard = Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(_tempRoomDir);
+
+        await using var monitor = new DoorbellMonitor(
+            _tempRoomDir,
+            "claude",
+            "vendor-session-1",
+            _ => Task.FromResult<RoomProjection?>(null),
+            (_, _) => Task.CompletedTask);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, $"revoked-{reqId}.json"),
+            JsonSerializer.Serialize(new { permissionRequestId = reqId, reason = "timeout" }),
+            TestContext.Current.CancellationToken);
+
+        // Bounded wait past a 1.5s poll tick so at least one processing attempt has FAILED against
+        // the held guard before the polarity assertion below.
+        // wait-ok: negative-arm window sized to the monitor's own 1.5s backup-poll tick
+        await Task.Delay(TimeSpan.FromSeconds(2.5), TestContext.Current.CancellationToken);
+        Assert.Empty(await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken));
+        // THE DISCRIMINATOR: pre-fix, the entry was removed before the (failed) journal write.
+        Assert.True(PendingGateRegistry.TryGet(reqId, out _));
+
+        guard.Dispose();
+
+        RoomEvent.RuntimePermissionRevoked? revoked = null;
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline && revoked is null)
+        {
+            var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            revoked = events.OfType<RoomEvent.RuntimePermissionRevoked>().FirstOrDefault();
+            if (revoked is null)
+            {
+                // wait-ok: bounded poll for the monitor's backup tick to retry after guard release
+                await Task.Delay(100, TestContext.Current.CancellationToken);
+            }
+        }
+
+        Assert.NotNull(revoked);
+        Assert.Equal(reqId, revoked!.PermissionRequestId);
+        Assert.False(PendingGateRegistry.TryGet(reqId, out _));
+    }
+
+    /// <summary>
     /// The journal write must survive losing the fail-fast room guard to a short-lived holder
     /// (RoomWakeBridge's sweep, #857's shape). Pre-fix, the first <see
     /// cref="Aer.Flow.Concurrency.WorkflowLockedException"/> propagated immediately.

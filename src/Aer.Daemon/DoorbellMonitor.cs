@@ -244,8 +244,9 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
                 ? rElem.GetString()!
                 : "unknown";
 
-            PendingGateRegistry.TryRemove(permissionRequestId, out _);
-
+            // Journal before the registry removal — the same invariant the turn-end sweep states:
+            // no path removes the entry without a journaled event. On a failed write the catch
+            // below clears the dedup so the 1.5s backup poll retries, entry intact.
             var roomLogPath = Path.Combine(_directoryPath, "room.jsonl");
             var reader = new RoomEventLogReader(roomLogPath);
             await using var writer = new RoomEventLogWriter(roomLogPath);
@@ -256,6 +257,8 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
                 writer,
                 permissionRequestId,
                 reason).ConfigureAwait(false);
+
+            PendingGateRegistry.TryRemove(permissionRequestId, out _);
 
             if (await _loadProjectionAsync(_directoryPath).ConfigureAwait(false) is { } proj)
             {

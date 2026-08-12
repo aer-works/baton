@@ -2811,8 +2811,10 @@ namespace Aer.Daemon
                 ? await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false)
                 : [];
 
-            var resolvedIds = events.OfType<RoomEvent.RuntimePermissionAnswered>()
-                .Select(a => a.PermissionRequestId)
+            var answeredById = events.OfType<RoomEvent.RuntimePermissionAnswered>()
+                .GroupBy(a => a.PermissionRequestId, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+            var resolvedIds = answeredById.Keys
                 .Concat(events.OfType<RoomEvent.RuntimePermissionRevoked>().Select(r => r.PermissionRequestId))
                 .ToHashSet(StringComparer.Ordinal);
 
@@ -2828,6 +2830,35 @@ namespace Aer.Daemon
                 var outputDir = Path.GetDirectoryName(askFile)!;
                 var answerFile = Path.Combine(outputDir, $"answer-{permissionRequestId}.json");
                 var revokedFile = Path.Combine(outputDir, $"revoked-{permissionRequestId}.json");
+
+                // A journaled answer with no answer file on disk is the crash window between the
+                // journal-first write and the file write in the answer endpoint: the human's
+                // decision is recorded but the worker was never released. Re-materialize the file
+                // from the event so a still-polling worker resolves per the recorded answer
+                // (second-reader Finding 1 on the #1098 reorder).
+                if (answeredById.TryGetValue(permissionRequestId, out var answeredEvent)
+                    && !File.Exists(Path.Combine(outputDir, $"answer-{permissionRequestId}.json")))
+                {
+                    try
+                    {
+                        var healPayload = new
+                        {
+                            decisionKind = answeredEvent.DecisionKind,
+                            updatedInputJson = answeredEvent.UpdatedInputJson,
+                            reason = answeredEvent.Reason
+                        };
+                        var healOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
+                        var healJson = JsonSerializer.Serialize(healPayload, healOptions);
+                        var healPath = Path.Combine(outputDir, $"answer-{permissionRequestId}.json");
+                        var healTemp = Path.Combine(outputDir, $"answer-{permissionRequestId}.json.{Guid.NewGuid():N}.tmp");
+                        await File.WriteAllTextAsync(healTemp, healJson, cancellationToken).ConfigureAwait(false);
+                        File.Move(healTemp, healPath, overwrite: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"reconcile: failed to re-materialize answer file '{permissionRequestId}': {ex.GetType().Name}: {ex.Message}");
+                    }
+                }
 
                 if (resolvedIds.Contains(permissionRequestId)) continue;
 

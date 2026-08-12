@@ -110,6 +110,21 @@ public static class WorkerBindingResolver
             throw new UnknownWorkerAdapterException(entry.Adapter);
         }
 
+        // #1101: the runtime permission gate is daemon-managed. Only the daemon's own chat-worker
+        // entry legitimately carries it (written at turn time, a human on the other end to answer);
+        // a hand-authored `true` on any other worker produces a gate nobody observes — the ask
+        // blocks until its own timeout and self-denies invisibly, and the turn-end room-scoped
+        // revocation assumes all pending asks belong to the interactive turn. Fail loud instead.
+        if (entry.EnablePermissionGate
+            && !string.Equals(workerName, InteractiveSessionMaterializer.DefaultWorkerName, StringComparison.Ordinal))
+        {
+            throw new WorkerBindingConfigException(
+                $"Worker '{workerName}' sets enablePermissionGate, which only the daemon's interactive "
+                + $"'{InteractiveSessionMaterializer.DefaultWorkerName}' binding may carry (#1101): a "
+                + "workflow-dispatched worker has no one observing its asks, so the gate would deny "
+                + "silently at timeout instead of asking anyone. Remove the flag from this entry.");
+        }
+
         // Only an ACTUALLY-provisioned worktree counts as isolation. A declared-but-unprovisioned
         // Worktree spec is not: the callers that skip WorktreeWorkspaces.Provision (#1012 records
         // which) would otherwise dispatch an audited worker into a null working directory — the
