@@ -76,4 +76,54 @@ public sealed class RuntimePermissionMutationTests : IDisposable
         var answeredCount = events.OfType<RoomEvent.RuntimePermissionAnswered>().Count(a => a.PermissionRequestId == reqId);
         Assert.Equal(1, answeredCount);
     }
+
+    [Fact]
+    public async Task RevokeAfterAnswer_IsNoOp_NoSecondEvent()
+    {
+        var logPath = Path.Combine(_tempDirectory, "room.jsonl");
+        var reader = new RoomEventLogReader(logPath);
+        await using var writer = new RoomEventLogWriter(logPath);
+
+        var reqId = "req-revoke-after-ans";
+        var execId = new ExecutionId("ex-1");
+        var stepId = new StepId("st-1");
+
+        await RoomMutationInterface.RaisePermissionAsync(
+            _tempDirectory, reader, writer, reqId, execId, stepId, "w-1", "claude", "corr-1", "ReadFile", "{}", "ReadFile", cancellationToken: TestContext.Current.CancellationToken);
+
+        await RoomMutationInterface.AnswerPermissionAsync(
+            _tempDirectory, reader, writer, reqId, "AllowOnce", "{}", "ok", "human", cancellationToken: TestContext.Current.CancellationToken);
+
+        await RoomMutationInterface.RevokePermissionAsync(
+            _tempDirectory, reader, writer, reqId, "timeout", cancellationToken: TestContext.Current.CancellationToken);
+
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        Assert.Single(events.OfType<RoomEvent.RuntimePermissionAnswered>());
+        Assert.Empty(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+    }
+
+    [Fact]
+    public async Task AnswerAfterRevoke_IsRefused()
+    {
+        var logPath = Path.Combine(_tempDirectory, "room.jsonl");
+        var reader = new RoomEventLogReader(logPath);
+        await using var writer = new RoomEventLogWriter(logPath);
+
+        var reqId = "req-ans-after-revoke";
+        var execId = new ExecutionId("ex-1");
+        var stepId = new StepId("st-1");
+
+        await RoomMutationInterface.RaisePermissionAsync(
+            _tempDirectory, reader, writer, reqId, execId, stepId, "w-1", "claude", "corr-1", "ReadFile", "{}", "ReadFile", cancellationToken: TestContext.Current.CancellationToken);
+
+        await RoomMutationInterface.RevokePermissionAsync(
+            _tempDirectory, reader, writer, reqId, "timeout", cancellationToken: TestContext.Current.CancellationToken);
+
+        await RoomMutationInterface.AnswerPermissionAsync(
+            _tempDirectory, reader, writer, reqId, "AllowOnce", "{}", "ok", "human", cancellationToken: TestContext.Current.CancellationToken);
+
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        Assert.Single(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+        Assert.Empty(events.OfType<RoomEvent.RuntimePermissionAnswered>());
+    }
 }

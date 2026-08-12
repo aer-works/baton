@@ -442,5 +442,47 @@ public static class RoomMutationInterface
         await writer.AppendAsync(roomEvent, cancellationToken).ConfigureAwait(false);
         return RoomProjector.Project([.. existingEvents, roomEvent]);
     }
+
+    public static async Task<RoomState> RevokePermissionAsync(
+        string roomDirectoryPath,
+        IRoomEventLogReader reader,
+        IRoomEventLogWriter writer,
+        string permissionRequestId,
+        string reason,
+        DateTimeOffset? timestamp = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentException.ThrowIfNullOrEmpty(permissionRequestId);
+        ArgumentException.ThrowIfNullOrEmpty(reason);
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(writer);
+
+        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath);
+
+        var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+        var currentState = RoomProjector.Project(existingEvents);
+
+        bool alreadyResolved = existingEvents.Any(e => e switch
+        {
+            RoomEvent.RuntimePermissionAnswered answered => answered.PermissionRequestId == permissionRequestId,
+            RoomEvent.RuntimePermissionRevoked revoked => revoked.PermissionRequestId == permissionRequestId,
+            _ => false
+        });
+
+        if (alreadyResolved)
+        {
+            return currentState;
+        }
+
+        var ts = timestamp ?? DateTimeOffset.UtcNow;
+        var roomEvent = new RoomEvent.RuntimePermissionRevoked(
+            permissionRequestId,
+            reason,
+            ts);
+
+        await writer.AppendAsync(roomEvent, cancellationToken).ConfigureAwait(false);
+        return RoomProjector.Project([.. existingEvents, roomEvent]);
+    }
 }
 

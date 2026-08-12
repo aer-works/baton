@@ -1,10 +1,13 @@
+using System.Net.Http.Json;
 using System.Text.Json;
+using Aer.Adapters;
 using Aer.Daemon;
 using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
 using Aer.Flow.Store;
 using Aer.Tests.Shared;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Aer.Daemon.Tests;
@@ -267,5 +270,411 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
         // Registry should hold orphan entry
         Assert.True(PendingGateRegistry.TryGet(orphanReqId, out _));
         Assert.False(PendingGateRegistry.TryGet(answeredReqId, out _));
+    }
+
+    // Exercises the helper directly, not the turn path: ExecuteSessionTurnAsync (which calls this
+    // with reason "turn_ended" from its finally, before the turn-lock release) is private and
+    // spawns real vendor processes, so the wiring itself is verifiable only by a live drive.
+    [Fact]
+    public async Task RevokePendingGatesForRoom_RevokesPendingPermission_AndClearsPendingGateRegistry()
+    {
+        var execId = new ExecutionId("ex-turnend");
+        var outputDir = ArtifactManager.ResolveOutputDirectory(
+            Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName),
+            execId);
+        Directory.CreateDirectory(outputDir);
+
+        var reqId = "req-turnend-1";
+        PendingGateRegistry.Register(reqId, new PendingGateEntry(_tempRoomDir, outputDir, execId.Value, Path.Combine(outputDir, $"ask-{reqId}.json")));
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+
+        await DaemonHost.RevokePendingGatesForRoomAsync(_tempRoomDir, executionIdFilter: null, reason: "turn_ended");
+
+        Assert.False(PendingGateRegistry.TryGet(reqId, out _));
+
+        var revokedPath = Path.Combine(outputDir, $"revoked-{reqId}.json");
+        Assert.True(File.Exists(revokedPath));
+        var revokedText = await File.ReadAllTextAsync(revokedPath, TestContext.Current.CancellationToken);
+        Assert.Contains("turn_ended", revokedText);
+
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        var revokedEvent = Assert.Single(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+        Assert.Equal(reqId, revokedEvent.PermissionRequestId);
+        Assert.Equal("turn_ended", revokedEvent.Reason);
+    }
+
+    [Fact]
+    public async Task Reconciliation_ExpiredAsk_EmitsRevoked_AndDoesNotReRaise()
+    {
+        var artifactsDir = Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName);
+        var outputDirExpired = Path.Combine(artifactsDir, "execution_ex-expired");
+        Directory.CreateDirectory(outputDirExpired);
+
+        var expiredReqId = "req-expired-1";
+        var expiredAskFile = Path.Combine(outputDirExpired, $"ask-{expiredReqId}.json");
+        var expiredAskedAt = DateTimeOffset.UtcNow.AddMinutes(-5); // 5 minutes old (> 180s timeout)
+
+        var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+        var askPayloadExpired = new
+        {
+            permissionRequestId = expiredReqId,
+            toolName = "Edit",
+            inputJson = "{}",
+            askedAt = expiredAskedAt
+        };
+        await File.WriteAllTextAsync(expiredAskFile, JsonSerializer.Serialize(askPayloadExpired, jsonOptions), TestContext.Current.CancellationToken);
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+
+        await DaemonHost.ReconcileRoomPermissionsAsync(_tempRoomDir, TestContext.Current.CancellationToken);
+
+        var revokedFile = Path.Combine(outputDirExpired, $"revoked-{expiredReqId}.json");
+        Assert.True(File.Exists(revokedFile));
+        var revokedText = await File.ReadAllTextAsync(revokedFile, TestContext.Current.CancellationToken);
+        Assert.Contains("expired_during_shutdown", revokedText);
+
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(events.OfType<RoomEvent.RuntimePermissionAsked>());
+        var revokedEvent = Assert.Single(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+        Assert.Equal(expiredReqId, revokedEvent.PermissionRequestId);
+        Assert.Equal("expired_during_shutdown", revokedEvent.Reason);
+
+        Assert.False(PendingGateRegistry.TryGet(expiredReqId, out _));
+    }
+
+    [Fact]
+    public async Task AnswerPermission_LateAnswerAfterTimeout_Returns409Conflict_AndDoesNotAmendGrant()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var bindingsPath = Path.Combine(_tempRoomDir, "bindings.json");
+            var initialBindingsJson = """{"chat-worker":{"adapter":"claude","contract":{"inputs":[],"outputs":[]},"promptTemplate":"test","timeout":"00:10:00","model":"claude-3-5-sonnet","permissionGrant":{"level":"AllowList","allowedTools":["Bash"]}}}""";
+            await File.WriteAllTextAsync(bindingsPath, initialBindingsJson, TestContext.Current.CancellationToken);
+
+            var artifactsDir = Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName);
+            var outputDir = Path.Combine(artifactsDir, "execution_ex-late");
+            Directory.CreateDirectory(outputDir);
+
+            var reqId = "req-late-1";
+            var askFile = Path.Combine(outputDir, $"ask-{reqId}.json");
+            var revokedFile = Path.Combine(outputDir, $"revoked-{reqId}.json");
+
+            var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+            var askPayload = new { permissionRequestId = reqId, toolName = "Edit", inputJson = "{}" };
+            var revokedPayload = new { permissionRequestId = reqId, reason = "timeout" };
+
+            await File.WriteAllTextAsync(askFile, JsonSerializer.Serialize(askPayload, jsonOptions), TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(revokedFile, JsonSerializer.Serialize(revokedPayload, jsonOptions), TestContext.Current.CancellationToken);
+
+            var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+            var reader = new RoomEventLogReader(roomLogPath);
+            await using (var writer = new RoomEventLogWriter(roomLogPath))
+            {
+                await RoomMutationInterface.RaisePermissionAsync(
+                    _tempRoomDir, reader, writer, reqId, new ExecutionId("ex-late"), new StepId("st-1"),
+                    "chat-worker", "claude", "corr-1", "Edit", "{}", "Edit", cancellationToken: TestContext.Current.CancellationToken);
+            }
+
+            var answerRequestPayload = new
+            {
+                directoryPath = _tempRoomDir,
+                permissionRequestId = reqId,
+                decisionKind = "AllowOnce"
+            };
+
+            var response = await client.PostAsJsonAsync($"{baseUrl}/api/rooms/permissions/answer", answerRequestPayload, TestContext.Current.CancellationToken);
+
+            Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+
+            var responseText = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+            Assert.Contains("Revoked", responseText);
+            Assert.Contains(reqId, responseText);
+
+            var currentBindingsJson = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+            Assert.Equal(initialBindingsJson, currentBindingsJson);
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+            try
+            {
+                await daemonTask;
+            }
+            catch (OperationCanceledException) { }
+        }
+    }
+
+    /// <summary>
+    /// Drives a REAL <see cref="DoorbellMonitor"/> against a <c>revoked-*.json</c> sentinel — the
+    /// pickup path the second-reader found had zero coverage in either watcher or poll mode.
+    /// </summary>
+    [Fact]
+    public async Task Doorbell_DetectsRevokedFile_JournalsRevoke_AndClearsRegistry()
+    {
+        var execId = new ExecutionId("ex-doorbell-rev");
+        var outputDir = ArtifactManager.ResolveOutputDirectory(
+            Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName),
+            execId);
+        Directory.CreateDirectory(outputDir);
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+
+        var reqId = "req-doorbell-rev-1";
+        PendingGateRegistry.Register(reqId, new PendingGateEntry(
+            _tempRoomDir, outputDir, execId.Value, Path.Combine(outputDir, $"ask-{reqId}.json")));
+
+        var broadcasts = 0;
+        await using var monitor = new DoorbellMonitor(
+            _tempRoomDir,
+            "claude",
+            "vendor-session-1",
+            _ => Task.FromResult<RoomProjection?>(null),
+            (_, _) => { Interlocked.Increment(ref broadcasts); return Task.CompletedTask; });
+
+        var revokedPayload = new { permissionRequestId = reqId, reason = "timeout" };
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, $"revoked-{reqId}.json"),
+            JsonSerializer.Serialize(revokedPayload),
+            TestContext.Current.CancellationToken);
+
+        RoomEvent.RuntimePermissionRevoked? revoked = null;
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline && revoked is null)
+        {
+            var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            revoked = events.OfType<RoomEvent.RuntimePermissionRevoked>().FirstOrDefault();
+            if (revoked is null)
+            {
+                // wait-ok: bounded poll for the monitor's watcher/backup-poll to pick the file up
+                await Task.Delay(100, TestContext.Current.CancellationToken);
+            }
+        }
+
+        Assert.NotNull(revoked);
+        Assert.Equal(reqId, revoked!.PermissionRequestId);
+        Assert.Equal("timeout", revoked.Reason);
+        Assert.False(PendingGateRegistry.TryGet(reqId, out _));
+    }
+
+    /// <summary>
+    /// A revoked sentinel with no matching journal event must be HEALED by restart reconciliation,
+    /// not skipped — the pre-fix skip made a tool-timeout-while-daemon-down invisible in
+    /// <c>room.jsonl</c> forever (second-reader finding on #1098).
+    /// </summary>
+    [Fact]
+    public async Task Reconciliation_OrphanedRevokedSentinel_IsJournaled_NotSkipped()
+    {
+        var execId = new ExecutionId("ex-orphan-rev");
+        var outputDir = ArtifactManager.ResolveOutputDirectory(
+            Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName),
+            execId);
+        Directory.CreateDirectory(outputDir);
+
+        var reqId = "req-orphan-rev-1";
+        var askPayload = new
+        {
+            permissionRequestId = reqId,
+            toolName = "Bash",
+            inputJson = "{\"command\":\"ls\"}",
+            reason = "list",
+            askedAt = DateTimeOffset.UtcNow.AddMinutes(-10)
+        };
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, $"ask-{reqId}.json"),
+            JsonSerializer.Serialize(askPayload),
+            TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, $"revoked-{reqId}.json"),
+            JsonSerializer.Serialize(new { permissionRequestId = reqId, reason = "timeout" }),
+            TestContext.Current.CancellationToken);
+
+        await DaemonHost.ReconcileRoomPermissionsAsync(_tempRoomDir, TestContext.Current.CancellationToken);
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        var revoked = Assert.Single(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+        Assert.Equal(reqId, revoked.PermissionRequestId);
+        Assert.Equal("timeout", revoked.Reason);
+        Assert.False(PendingGateRegistry.TryGet(reqId, out _));
+    }
+
+    /// <summary>
+    /// The crash window between the answer endpoint's journal-first write and its answer-file
+    /// write leaves a journaled Answered with no file — the worker never released. Reconciliation
+    /// must re-materialize the file from the event (second-reader Finding 1 on the reorder).
+    /// </summary>
+    [Fact]
+    public async Task Reconciliation_JournaledAnswerWithoutAnswerFile_RematerializesTheAnswerFile()
+    {
+        var execId = new ExecutionId("ex-heal-ans");
+        var outputDir = ArtifactManager.ResolveOutputDirectory(
+            Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName),
+            execId);
+        Directory.CreateDirectory(outputDir);
+
+        var reqId = "req-heal-ans-1";
+        var askPayload = new
+        {
+            permissionRequestId = reqId,
+            toolName = "Bash",
+            inputJson = "{\"command\":\"ls\"}",
+            reason = "list",
+            askedAt = DateTimeOffset.UtcNow
+        };
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, $"ask-{reqId}.json"),
+            JsonSerializer.Serialize(askPayload),
+            TestContext.Current.CancellationToken);
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+        await using (var writer = new RoomEventLogWriter(roomLogPath))
+        {
+            await RoomMutationInterface.AnswerPermissionAsync(
+                _tempRoomDir, reader, writer, reqId, "AllowOnce", "{\"command\":\"ls\"}", "ok", "human",
+                cancellationToken: TestContext.Current.CancellationToken);
+        }
+
+        var answerFilePath = Path.Combine(outputDir, $"answer-{reqId}.json");
+        Assert.False(File.Exists(answerFilePath));
+
+        await DaemonHost.ReconcileRoomPermissionsAsync(_tempRoomDir, TestContext.Current.CancellationToken);
+
+        Assert.True(File.Exists(answerFilePath));
+        using var answerDoc = JsonDocument.Parse(
+            await File.ReadAllTextAsync(answerFilePath, TestContext.Current.CancellationToken));
+        Assert.Equal("AllowOnce", answerDoc.RootElement.GetProperty("decisionKind").GetString());
+        Assert.False(PendingGateRegistry.TryGet(reqId, out _));
+    }
+
+    /// <summary>
+    /// A failed revoke-journal write must NOT strip the registry entry — the doorbell keeps the
+    /// entry, clears its dedup, and the 1.5s backup poll retries until the journal write lands
+    /// (second-reader Finding 2: the pre-fix order removed the entry before journaling).
+    /// </summary>
+    [Fact]
+    public async Task Doorbell_RevokeJournalFailure_KeepsRegistryEntry_ThenRetriesViaPoll()
+    {
+        var execId = new ExecutionId("ex-doorbell-retry");
+        var outputDir = ArtifactManager.ResolveOutputDirectory(
+            Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName),
+            execId);
+        Directory.CreateDirectory(outputDir);
+
+        var reqId = "req-doorbell-retry-1";
+        PendingGateRegistry.Register(reqId, new PendingGateEntry(
+            _tempRoomDir, outputDir, execId.Value, Path.Combine(outputDir, $"ask-{reqId}.json")));
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+
+        // Hold the room guard so the monitor's journal write fails with WorkflowLockedException.
+        var guard = Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(_tempRoomDir);
+
+        await using var monitor = new DoorbellMonitor(
+            _tempRoomDir,
+            "claude",
+            "vendor-session-1",
+            _ => Task.FromResult<RoomProjection?>(null),
+            (_, _) => Task.CompletedTask);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, $"revoked-{reqId}.json"),
+            JsonSerializer.Serialize(new { permissionRequestId = reqId, reason = "timeout" }),
+            TestContext.Current.CancellationToken);
+
+        // Bounded wait past a 1.5s poll tick so at least one processing attempt has FAILED against
+        // the held guard before the polarity assertion below.
+        // wait-ok: negative-arm window sized to the monitor's own 1.5s backup-poll tick
+        await Task.Delay(TimeSpan.FromSeconds(2.5), TestContext.Current.CancellationToken);
+        Assert.Empty(await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken));
+        // THE DISCRIMINATOR: pre-fix, the entry was removed before the (failed) journal write.
+        Assert.True(PendingGateRegistry.TryGet(reqId, out _));
+
+        guard.Dispose();
+
+        RoomEvent.RuntimePermissionRevoked? revoked = null;
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline && revoked is null)
+        {
+            var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            revoked = events.OfType<RoomEvent.RuntimePermissionRevoked>().FirstOrDefault();
+            if (revoked is null)
+            {
+                // wait-ok: bounded poll for the monitor's backup tick to retry after guard release
+                await Task.Delay(100, TestContext.Current.CancellationToken);
+            }
+        }
+
+        Assert.NotNull(revoked);
+        Assert.Equal(reqId, revoked!.PermissionRequestId);
+        Assert.False(PendingGateRegistry.TryGet(reqId, out _));
+    }
+
+    /// <summary>
+    /// The journal write must survive losing the fail-fast room guard to a short-lived holder
+    /// (RoomWakeBridge's sweep, #857's shape). Pre-fix, the first <see
+    /// cref="Aer.Flow.Concurrency.WorkflowLockedException"/> propagated immediately.
+    /// </summary>
+    [Fact]
+    public async Task RetryOnRoomLock_JournalWrite_SurvivesTransientGuardContention()
+    {
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+
+        var guard = Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(_tempRoomDir);
+        var releaseTask = Task.Run(async () =>
+        {
+            // Holds the guard across the retry loop's first attempt(s), releasing well inside its
+            // bounded backoff so success can only come from a retry, not first-try luck.
+            // wait-ok: transient-contention window, far under the retry loop's own ceiling
+            await Task.Delay(350, TestContext.Current.CancellationToken);
+            guard.Dispose();
+        }, TestContext.Current.CancellationToken);
+
+        await DaemonHost.RetryOnRoomLockAsync(async () =>
+        {
+            var reader = new RoomEventLogReader(roomLogPath);
+            await using var writer = new RoomEventLogWriter(roomLogPath);
+            await RoomMutationInterface.RevokePermissionAsync(
+                _tempRoomDir, reader, writer, "req-retry-1", "turn_ended",
+                cancellationToken: TestContext.Current.CancellationToken).ConfigureAwait(false);
+        });
+
+        await releaseTask;
+
+        var reader2 = new RoomEventLogReader(roomLogPath);
+        var events = await reader2.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        var revoked = Assert.Single(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+        Assert.Equal("req-retry-1", revoked.PermissionRequestId);
     }
 }

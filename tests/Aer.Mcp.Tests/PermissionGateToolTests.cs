@@ -134,6 +134,37 @@ public class PermissionGateToolTests
     }
 
     [Fact]
+    public async Task Timeout_WritesRevokedFile_AndReturnsFailClosedDeny()
+    {
+        var rendezvousDir = Path.Combine(Path.GetTempPath(), $"aer-perm-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rendezvousDir);
+        try
+        {
+            var toolClaude = new PermissionGateTool(rendezvousDir, PermissionReturnShape.ClaudeCallback, TimeSpan.FromMilliseconds(200));
+            using var argsDoc = JsonDocument.Parse("""{"tool_name":"long_op","input":{}}""");
+
+            var resultClaude = await toolClaude.CallAsync(argsDoc.RootElement, TestContext.Current.CancellationToken);
+            Assert.False(resultClaude.IsError);
+            var node = JsonNode.Parse(resultClaude.Text)!.AsObject();
+            Assert.Equal("deny", (string)node["behavior"]!);
+
+            var revokedFiles = Directory.GetFiles(rendezvousDir, "revoked-*.json");
+            Assert.Single(revokedFiles);
+            var revokedText = await File.ReadAllTextAsync(revokedFiles[0], TestContext.Current.CancellationToken);
+            var revokedNode = JsonNode.Parse(revokedText)!.AsObject();
+            Assert.Equal("timeout", (string)revokedNode["reason"]!);
+            Assert.False(string.IsNullOrWhiteSpace((string)revokedNode["permissionRequestId"]!));
+        }
+        finally
+        {
+            if (Directory.Exists(rendezvousDir))
+            {
+                Directory.Delete(rendezvousDir, true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task TimeoutControl_ReturnsFailClosedDenyNamingTimeout()
     {
         var rendezvousDir = Path.Combine(Path.GetTempPath(), $"aer-perm-test-{Guid.NewGuid():N}");

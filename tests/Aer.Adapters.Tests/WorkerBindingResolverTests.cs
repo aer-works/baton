@@ -452,9 +452,13 @@ public class WorkerBindingResolverTests
     [InlineData(false)]
     public void Resolve_hands_the_entrys_EnablePermissionGate_to_the_adapter(bool enabled)
     {
+        // The true arm rides the chat-worker name: since #1101 that is the ONLY entry allowed to
+        // carry the flag (any other worker is refused — covered by its own test above), so the
+        // pass-through contract this test pins is now specifically the daemon-owned entry's.
+        var workerName = enabled ? InteractiveSessionMaterializer.DefaultWorkerName : "architect";
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
-            ["architect"] = new WorkerBindingConfigEntry(
+            [workerName] = new WorkerBindingConfigEntry(
                 "capture", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(20),
                 EnablePermissionGate: enabled),
         };
@@ -898,6 +902,41 @@ public class WorkerBindingResolverTests
         };
 
         Assert.Throws<UnsatisfiableOutputContractException>(() => WorkerBindingResolver.Resolve(config, adapters));
+    }
+
+    /// <summary>
+    /// #1101: <c>enablePermissionGate</c> is daemon-managed — only the interactive chat-worker
+    /// binding may carry it. A hand-authored <c>true</c> on any other worker would block on a gate
+    /// nobody observes and self-deny at timeout, so the resolver fails loud instead.
+    /// </summary>
+    [Fact]
+    public void A_hand_authored_permission_gate_flag_is_refused_for_any_worker_but_the_chat_worker()
+    {
+        var grant = InteractiveSessionMaterializer.GrantForMode(InteractiveSessionMaterializer.KnownModes.First());
+        Assert.NotNull(grant);
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
+
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "echo", InteractiveSessionMaterializer.ChatWorkerContract, "Say hello.",
+                TimeSpan.FromMinutes(5), Model: null, PermissionScope: null, PermissionGrant: grant,
+                EnablePermissionGate: true),
+        };
+        var ex = Assert.Throws<WorkerBindingConfigException>(() => WorkerBindingResolver.Resolve(config, adapters));
+        Assert.Contains("enablePermissionGate", ex.Message);
+
+        // POSITIVE CONTROL (polarity): the daemon-owned chat-worker entry carries the same flag and
+        // resolves — this arm is what keeps the refusal from breaking every room with chat history.
+        var chatConfig = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            [InteractiveSessionMaterializer.DefaultWorkerName] = new WorkerBindingConfigEntry(
+                "echo", InteractiveSessionMaterializer.ChatWorkerContract, "Say hello.",
+                TimeSpan.FromMinutes(5), Model: null, PermissionScope: null, PermissionGrant: grant,
+                EnablePermissionGate: true),
+        };
+        var bindings = WorkerBindingResolver.Resolve(chatConfig, adapters);
+        Assert.True(bindings.ContainsKey(InteractiveSessionMaterializer.DefaultWorkerName));
     }
 }
 

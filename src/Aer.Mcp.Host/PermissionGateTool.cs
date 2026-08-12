@@ -78,7 +78,11 @@ public sealed class PermissionGateTool : IMcpTool
             toolName,
             inputJson,
             reason,
-            askedAt = DateTimeOffset.UtcNow
+            askedAt = DateTimeOffset.UtcNow,
+            // The ask carries its own deadline so no other component has to duplicate this tool's
+            // timeout value: the daemon's restart reconciliation expires an ask from askedAt +
+            // timeoutSeconds, staying correct if a caller ever parameterizes the timeout.
+            timeoutSeconds = (int)_timeout.TotalSeconds
         };
 
         var jsonOptions = new JsonSerializerOptions
@@ -132,6 +136,25 @@ public sealed class PermissionGateTool : IMcpTool
             {
                 await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        try
+        {
+            var revokePayload = new
+            {
+                permissionRequestId,
+                reason = "timeout"
+            };
+            var revokeJson = JsonSerializer.Serialize(revokePayload, jsonOptions);
+            var revokedFilePath = Path.Combine(_rendezvousDirectoryPath, $"revoked-{permissionRequestId}.json");
+            var tempRevokedFilePath = Path.Combine(_rendezvousDirectoryPath, $"revoked-{permissionRequestId}.json.{Guid.NewGuid():N}.tmp");
+
+            await File.WriteAllTextAsync(tempRevokedFilePath, revokeJson, cancellationToken).ConfigureAwait(false);
+            File.Move(tempRevokedFilePath, revokedFilePath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Ignore transient file errors on timeout write
         }
 
         return BuildTimeoutResult();

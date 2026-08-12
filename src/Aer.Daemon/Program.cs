@@ -1104,6 +1104,7 @@ namespace Aer.Daemon
                 // the asked ToolName/ToolInputJson to persist a scoped grant, and PendingGateRegistry
                 // (the live-doorbell path) never carried them.
                 RoomEvent.RuntimePermissionAsked? askedEvent = null;
+                bool isResolvedInJournal = false;
                 var permissionsAnswerRoomLogPath = Path.Combine(request.DirectoryPath, "room.jsonl");
                 if (File.Exists(permissionsAnswerRoomLogPath))
                 {
@@ -1111,6 +1112,13 @@ namespace Aer.Daemon
                     var askedEvents = await askedReader.ReadAllRoomEventsAsync().ConfigureAwait(false);
                     askedEvent = askedEvents.OfType<RoomEvent.RuntimePermissionAsked>()
                         .FirstOrDefault(a => a.PermissionRequestId == request.PermissionRequestId);
+
+                    isResolvedInJournal = askedEvents.Any(e => e switch
+                    {
+                        RoomEvent.RuntimePermissionAnswered ans => ans.PermissionRequestId == request.PermissionRequestId,
+                        RoomEvent.RuntimePermissionRevoked rev => rev.PermissionRequestId == request.PermissionRequestId,
+                        _ => false
+                    });
                 }
 
                 string? outputDir = null;
@@ -1127,6 +1135,17 @@ namespace Aer.Daemon
                 if (string.IsNullOrEmpty(outputDir))
                 {
                     return Results.NotFound($"Permission request '{request.PermissionRequestId}' was not found.");
+                }
+
+                var revokedFilePath = Path.Combine(outputDir, $"revoked-{request.PermissionRequestId}.json");
+                if (isResolvedInJournal || File.Exists(revokedFilePath))
+                {
+                    return Results.Conflict(new
+                    {
+                        error = $"Permission request '{request.PermissionRequestId}' is revoked or already answered.",
+                        permissionRequestId = request.PermissionRequestId,
+                        status = "Revoked"
+                    });
                 }
 
                 Directory.CreateDirectory(outputDir);
@@ -1152,6 +1171,27 @@ namespace Aer.Daemon
                     WriteIndented = true
                 };
 
+                // Journal FIRST, then write the answer file. The answer file is what releases the
+                // waiting worker, so this order means a failed journal write leaves the worker
+                // waiting and the operator retrying — never a released worker whose answer is
+                // missing from room.jsonl forever (second-reader finding on #1098: the room guard
+                // is fail-fast and RoomWakeBridge contends it, so a lost race here was permanent).
+                var roomLogFile = Path.Combine(request.DirectoryPath, "room.jsonl");
+                await RetryOnRoomLockAsync(async () =>
+                {
+                    var roomReader = new RoomEventLogReader(roomLogFile);
+                    await using var roomWriter = new RoomEventLogWriter(roomLogFile);
+                    await RoomMutationInterface.AnswerPermissionAsync(
+                        request.DirectoryPath,
+                        roomReader,
+                        roomWriter,
+                        request.PermissionRequestId,
+                        request.DecisionKind,
+                        updatedInputJson,
+                        request.Reason,
+                        "human").ConfigureAwait(false);
+                }).ConfigureAwait(false);
+
                 var answerFileName = $"answer-{request.PermissionRequestId}.json";
                 var answerFilePath = Path.Combine(outputDir, answerFileName);
                 var tempFilePath = Path.Combine(outputDir, $"{answerFileName}.{Guid.NewGuid():N}.tmp");
@@ -1159,20 +1199,6 @@ namespace Aer.Daemon
                 var answerJson = JsonSerializer.Serialize(answerPayload, jsonOptions);
                 await File.WriteAllTextAsync(tempFilePath, answerJson).ConfigureAwait(false);
                 File.Move(tempFilePath, answerFilePath, overwrite: true);
-
-                var roomLogFile = Path.Combine(request.DirectoryPath, "room.jsonl");
-                var roomReader = new RoomEventLogReader(roomLogFile);
-                await using var roomWriter = new RoomEventLogWriter(roomLogFile);
-
-                await RoomMutationInterface.AnswerPermissionAsync(
-                    request.DirectoryPath,
-                    roomReader,
-                    roomWriter,
-                    request.PermissionRequestId,
-                    request.DecisionKind,
-                    updatedInputJson,
-                    request.Reason,
-                    "human").ConfigureAwait(false);
 
                 // #390: for a persisting rung, amend the room's chat-worker PermissionGrant. See
                 // RuntimePermissionGrantAmender for how the next interactive turn then enforces it.
@@ -1240,6 +1266,13 @@ namespace Aer.Daemon
                     // whichever started last, so a client asking to stop A stopped B.
                     session.RequestHostStop(request.DirectoryPath);
                 }
+
+                await RevokePendingGatesForRoomAsync(
+                    request.DirectoryPath,
+                    request.ExecutionId,
+                    "cancelled",
+                    async (proj, dir) => await broadcast.BroadcastStateAsync(proj, dir).ConfigureAwait(false),
+                    async () => (await session.LoadAsync(request.DirectoryPath).ConfigureAwait(false)).Projection).ConfigureAwait(false);
 
                 return Results.Ok();
             });
@@ -1984,6 +2017,25 @@ namespace Aer.Daemon
             }
             finally
             {
+                // 0022 §5: a pending permission dies with its turn. Revoked BEFORE the lock is
+                // released and room-scoped on purpose — while this turn's lock is held no next
+                // turn can raise a fresh ask, so every registry entry for this room is a leftover
+                // of the turn that just ended, and the room filter cannot catch a successor's ask.
+                // Failure here must never wedge the release below (same reason as its comment).
+                try
+                {
+                    await RevokePendingGatesForRoomAsync(
+                        directoryPath,
+                        executionIdFilter: null,
+                        "turn_ended",
+                        async (proj, dir) => await broadcastStateAsync(proj, dir).ConfigureAwait(false),
+                        async () => (await session.LoadAsync(directoryPath).ConfigureAwait(false)).Projection).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"turn-end gate revocation failed for '{directoryPath}': {ex.GetType().Name}: {ex.Message}");
+                }
+
                 // Turns throw in several places and the fire-and-forget catch sits outside this method,
                 // so an un-released semaphore would wedge the session permanently.
                 turnLock.Release();
@@ -2643,6 +2695,94 @@ namespace Aer.Daemon
             }
         }
 
+        /// <summary>
+        /// Retries a room-journal write that lost the fail-fast <see cref="ConcurrencyGuard"/> race.
+        /// RoomWakeBridge's periodic sweep holds the guard in millisecond bursts (#857's shape), so
+        /// a loser waits briefly and retries rather than stranding an on-disk answer/sentinel file
+        /// with no journal entry; the final attempt propagates so callers stay loud on real failure.
+        /// </summary>
+        internal static async Task RetryOnRoomLockAsync(Func<Task> journalWrite)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await journalWrite().ConfigureAwait(false);
+                    return;
+                }
+                catch (WorkflowLockedException) when (attempt < 4)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt)).ConfigureAwait(false);
+                }
+            }
+        }
+
+        internal static async Task RevokePendingGatesForRoomAsync(
+            string roomDir,
+            string? executionIdFilter,
+            string reason,
+            Func<RoomProjection, string, Task>? broadcastStateAsync = null,
+            Func<Task<RoomProjection?>>? loadProjectionAsync = null)
+        {
+            var entries = PendingGateRegistry.GetEntries();
+            foreach (var kvp in entries)
+            {
+                var reqId = kvp.Key;
+                var entry = kvp.Value;
+
+                if (!string.Equals(entry.RoomDir, roomDir, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!string.IsNullOrEmpty(executionIdFilter) &&
+                    !string.Equals(entry.ExecutionId, executionIdFilter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                try
+                {
+                    // Journal first (with the room-lock retry), sentinel second, registry removal
+                    // last. On a journal failure the entry stays registered, so the next turn-end
+                    // or cancel sweep retries it instead of the revoke silently never reaching
+                    // room.jsonl (second-reader finding on #1098).
+                    var roomLogPath = Path.Combine(roomDir, "room.jsonl");
+                    await RetryOnRoomLockAsync(async () =>
+                    {
+                        var reader = new RoomEventLogReader(roomLogPath);
+                        await using var writer = new RoomEventLogWriter(roomLogPath);
+                        await RoomMutationInterface.RevokePermissionAsync(
+                            roomDir,
+                            reader,
+                            writer,
+                            reqId,
+                            reason).ConfigureAwait(false);
+                    }).ConfigureAwait(false);
+
+                    var revokedFilePath = Path.Combine(entry.OutputDir, $"revoked-{reqId}.json");
+                    var tempFilePath = Path.Combine(entry.OutputDir, $"revoked-{reqId}.json.{Guid.NewGuid():N}.tmp");
+                    var payload = new { permissionRequestId = reqId, reason };
+                    var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
+                    var json = JsonSerializer.Serialize(payload, jsonOptions);
+
+                    Directory.CreateDirectory(entry.OutputDir);
+                    await File.WriteAllTextAsync(tempFilePath, json).ConfigureAwait(false);
+                    File.Move(tempFilePath, revokedFilePath, overwrite: true);
+
+                    PendingGateRegistry.TryRemove(reqId, out _);
+
+                    if (broadcastStateAsync != null && loadProjectionAsync != null)
+                    {
+                        if (await loadProjectionAsync().ConfigureAwait(false) is { } proj)
+                        {
+                            await broadcastStateAsync(proj, roomDir).ConfigureAwait(false);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Failed to revoke pending gate '{reqId}' with reason '{reason}': {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
+
         internal static async Task ReconcileRoomPermissionsAsync(string roomDir, CancellationToken cancellationToken = default)
         {
             var artifactsDir = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
@@ -2671,8 +2811,10 @@ namespace Aer.Daemon
                 ? await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false)
                 : [];
 
-            var resolvedIds = events.OfType<RoomEvent.RuntimePermissionAnswered>()
-                .Select(a => a.PermissionRequestId)
+            var answeredById = events.OfType<RoomEvent.RuntimePermissionAnswered>()
+                .GroupBy(a => a.PermissionRequestId, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+            var resolvedIds = answeredById.Keys
                 .Concat(events.OfType<RoomEvent.RuntimePermissionRevoked>().Select(r => r.PermissionRequestId))
                 .ToHashSet(StringComparer.Ordinal);
 
@@ -2687,9 +2829,78 @@ namespace Aer.Daemon
 
                 var outputDir = Path.GetDirectoryName(askFile)!;
                 var answerFile = Path.Combine(outputDir, $"answer-{permissionRequestId}.json");
+                var revokedFile = Path.Combine(outputDir, $"revoked-{permissionRequestId}.json");
+
+                // A journaled answer with no answer file on disk is the crash window between the
+                // journal-first write and the file write in the answer endpoint: the human's
+                // decision is recorded but the worker was never released. Re-materialize the file
+                // from the event so a still-polling worker resolves per the recorded answer
+                // (second-reader Finding 1 on the #1098 reorder).
+                if (answeredById.TryGetValue(permissionRequestId, out var answeredEvent)
+                    && !File.Exists(Path.Combine(outputDir, $"answer-{permissionRequestId}.json")))
+                {
+                    try
+                    {
+                        var healPayload = new
+                        {
+                            decisionKind = answeredEvent.DecisionKind,
+                            updatedInputJson = answeredEvent.UpdatedInputJson,
+                            reason = answeredEvent.Reason
+                        };
+                        var healOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
+                        var healJson = JsonSerializer.Serialize(healPayload, healOptions);
+                        var healPath = Path.Combine(outputDir, $"answer-{permissionRequestId}.json");
+                        var healTemp = Path.Combine(outputDir, $"answer-{permissionRequestId}.json.{Guid.NewGuid():N}.tmp");
+                        await File.WriteAllTextAsync(healTemp, healJson, cancellationToken).ConfigureAwait(false);
+                        File.Move(healTemp, healPath, overwrite: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"reconcile: failed to re-materialize answer file '{permissionRequestId}': {ex.GetType().Name}: {ex.Message}");
+                    }
+                }
+
+                if (resolvedIds.Contains(permissionRequestId)) continue;
+
+                // A revoked sentinel with no matching journal event is a divergence to HEAL, not
+                // skip: the tool's own timeout can fire while the daemon is down, and a lost room-
+                // lock race can strand a sentinel (second-reader finding on #1098). Journal it now
+                // so the outcome exists in room.jsonl, then move on.
+                if (File.Exists(revokedFile))
+                {
+                    try
+                    {
+                        string revokedReason = "unknown";
+                        using (var revokedDoc = JsonDocument.Parse(await File.ReadAllTextAsync(revokedFile, cancellationToken).ConfigureAwait(false)))
+                        {
+                            if (revokedDoc.RootElement.TryGetProperty("reason", out var rr) && rr.ValueKind == JsonValueKind.String)
+                            {
+                                revokedReason = rr.GetString()!;
+                            }
+                        }
+
+                        await RetryOnRoomLockAsync(async () =>
+                        {
+                            var healReader = new RoomEventLogReader(roomLogPath);
+                            await using var healWriter = new RoomEventLogWriter(roomLogPath);
+                            await RoomMutationInterface.RevokePermissionAsync(
+                                roomDir,
+                                healReader,
+                                healWriter,
+                                permissionRequestId,
+                                revokedReason,
+                                cancellationToken: cancellationToken).ConfigureAwait(false);
+                        }).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"reconcile: failed to journal orphaned revoke '{permissionRequestId}': {ex.GetType().Name}: {ex.Message}");
+                    }
+
+                    continue;
+                }
 
                 if (File.Exists(answerFile)) continue;
-                if (resolvedIds.Contains(permissionRequestId)) continue;
 
                 try
                 {
@@ -2713,9 +2924,37 @@ namespace Aer.Daemon
                         inputJson = inElem.ValueKind == JsonValueKind.String ? inElem.GetString()! : inElem.GetRawText();
                     }
 
-                    DateTimeOffset askedAt = root.TryGetProperty("askedAt", out var askedAtElem) && askedAtElem.TryGetDateTimeOffset(out var dto)
+                    DateTimeOffset askedAt = ((root.TryGetProperty("askedAt", out var askedAtElem) || root.TryGetProperty("AskedAt", out askedAtElem)) && askedAtElem.TryGetDateTimeOffset(out var dto))
                         ? dto
                         : DateTimeOffset.UtcNow;
+
+                    // The ask records its own deadline (PermissionGateTool writes timeoutSeconds
+                    // beside askedAt); 180 is only the fallback for ask files predating that field.
+                    var askTimeoutSeconds = root.TryGetProperty("timeoutSeconds", out var timeoutElem)
+                        && timeoutElem.TryGetInt32(out var timeoutVal) && timeoutVal > 0
+                        ? timeoutVal
+                        : 180;
+
+                    if (DateTimeOffset.UtcNow >= askedAt.AddSeconds(askTimeoutSeconds))
+                    {
+                        var revokePayload = new { permissionRequestId, reason = "expired_during_shutdown" };
+                        var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
+                        var revokeJson = JsonSerializer.Serialize(revokePayload, jsonOptions);
+                        var tempRevokedFilePath = Path.Combine(outputDir, $"revoked-{permissionRequestId}.json.{Guid.NewGuid():N}.tmp");
+                        await File.WriteAllTextAsync(tempRevokedFilePath, revokeJson, cancellationToken).ConfigureAwait(false);
+                        File.Move(tempRevokedFilePath, revokedFile, overwrite: true);
+
+                        await using var expireWriter = new RoomEventLogWriter(roomLogPath);
+                        await RoomMutationInterface.RevokePermissionAsync(
+                            roomDir,
+                            reader,
+                            expireWriter,
+                            permissionRequestId,
+                            "expired_during_shutdown",
+                            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                        continue;
+                    }
 
                     var entry = new PendingGateEntry(roomDir, outputDir, executionIdStr, askFile);
                     PendingGateRegistry.Register(permissionRequestId, entry);
