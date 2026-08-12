@@ -1,10 +1,13 @@
+using System.Net.Http.Json;
 using System.Text.Json;
+using Aer.Adapters;
 using Aer.Daemon;
 using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
 using Aer.Flow.Store;
 using Aer.Tests.Shared;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Aer.Daemon.Tests;
@@ -267,5 +270,162 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
         // Registry should hold orphan entry
         Assert.True(PendingGateRegistry.TryGet(orphanReqId, out _));
         Assert.False(PendingGateRegistry.TryGet(answeredReqId, out _));
+    }
+
+    [Fact]
+    public async Task TurnEnd_RevokesPendingPermission_AndClearsPendingGateRegistry()
+    {
+        var execId = new ExecutionId("ex-turnend");
+        var outputDir = ArtifactManager.ResolveOutputDirectory(
+            Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName),
+            execId);
+        Directory.CreateDirectory(outputDir);
+
+        var reqId = "req-turnend-1";
+        PendingGateRegistry.Register(reqId, new PendingGateEntry(_tempRoomDir, outputDir, execId.Value, Path.Combine(outputDir, $"ask-{reqId}.json")));
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+
+        await DaemonHost.RevokePendingGatesForRoomAsync(_tempRoomDir, executionIdFilter: null, reason: "turn_ended");
+
+        Assert.False(PendingGateRegistry.TryGet(reqId, out _));
+
+        var revokedPath = Path.Combine(outputDir, $"revoked-{reqId}.json");
+        Assert.True(File.Exists(revokedPath));
+        var revokedText = await File.ReadAllTextAsync(revokedPath, TestContext.Current.CancellationToken);
+        Assert.Contains("turn_ended", revokedText);
+
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        var revokedEvent = Assert.Single(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+        Assert.Equal(reqId, revokedEvent.PermissionRequestId);
+        Assert.Equal("turn_ended", revokedEvent.Reason);
+    }
+
+    [Fact]
+    public async Task Reconciliation_ExpiredAsk_EmitsRevoked_AndDoesNotReRaise()
+    {
+        var artifactsDir = Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName);
+        var outputDirExpired = Path.Combine(artifactsDir, "execution_ex-expired");
+        Directory.CreateDirectory(outputDirExpired);
+
+        var expiredReqId = "req-expired-1";
+        var expiredAskFile = Path.Combine(outputDirExpired, $"ask-{expiredReqId}.json");
+        var expiredAskedAt = DateTimeOffset.UtcNow.AddMinutes(-5); // 5 minutes old (> 180s timeout)
+
+        var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+        var askPayloadExpired = new
+        {
+            permissionRequestId = expiredReqId,
+            toolName = "Edit",
+            inputJson = "{}",
+            askedAt = expiredAskedAt
+        };
+        await File.WriteAllTextAsync(expiredAskFile, JsonSerializer.Serialize(askPayloadExpired, jsonOptions), TestContext.Current.CancellationToken);
+
+        var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+        var reader = new RoomEventLogReader(roomLogPath);
+
+        await DaemonHost.ReconcileRoomPermissionsAsync(_tempRoomDir, TestContext.Current.CancellationToken);
+
+        var revokedFile = Path.Combine(outputDirExpired, $"revoked-{expiredReqId}.json");
+        Assert.True(File.Exists(revokedFile));
+        var revokedText = await File.ReadAllTextAsync(revokedFile, TestContext.Current.CancellationToken);
+        Assert.Contains("expired_during_shutdown", revokedText);
+
+        var events = await reader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(events.OfType<RoomEvent.RuntimePermissionAsked>());
+        var revokedEvent = Assert.Single(events.OfType<RoomEvent.RuntimePermissionRevoked>());
+        Assert.Equal(expiredReqId, revokedEvent.PermissionRequestId);
+        Assert.Equal("expired_during_shutdown", revokedEvent.Reason);
+
+        Assert.False(PendingGateRegistry.TryGet(expiredReqId, out _));
+    }
+
+    [Fact]
+    public async Task AnswerPermission_LateAnswerAfterTimeout_Returns409Conflict_AndDoesNotAmendGrant()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var bindingsPath = Path.Combine(_tempRoomDir, "bindings.json");
+            var initialBindingsJson = """{"chat-worker":{"adapter":"claude","contract":{"inputs":[],"outputs":[]},"promptTemplate":"test","timeout":"00:10:00","model":"claude-3-5-sonnet","permissionGrant":{"level":"AllowList","allowedTools":["Bash"]}}}""";
+            await File.WriteAllTextAsync(bindingsPath, initialBindingsJson, TestContext.Current.CancellationToken);
+
+            var artifactsDir = Path.Combine(_tempRoomDir, ArtifactManager.ArtifactsDirectoryName);
+            var outputDir = Path.Combine(artifactsDir, "execution_ex-late");
+            Directory.CreateDirectory(outputDir);
+
+            var reqId = "req-late-1";
+            var askFile = Path.Combine(outputDir, $"ask-{reqId}.json");
+            var revokedFile = Path.Combine(outputDir, $"revoked-{reqId}.json");
+
+            var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+            var askPayload = new { permissionRequestId = reqId, toolName = "Edit", inputJson = "{}" };
+            var revokedPayload = new { permissionRequestId = reqId, reason = "timeout" };
+
+            await File.WriteAllTextAsync(askFile, JsonSerializer.Serialize(askPayload, jsonOptions), TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(revokedFile, JsonSerializer.Serialize(revokedPayload, jsonOptions), TestContext.Current.CancellationToken);
+
+            var roomLogPath = Path.Combine(_tempRoomDir, "room.jsonl");
+            var reader = new RoomEventLogReader(roomLogPath);
+            await using (var writer = new RoomEventLogWriter(roomLogPath))
+            {
+                await RoomMutationInterface.RaisePermissionAsync(
+                    _tempRoomDir, reader, writer, reqId, new ExecutionId("ex-late"), new StepId("st-1"),
+                    "chat-worker", "claude", "corr-1", "Edit", "{}", "Edit", cancellationToken: TestContext.Current.CancellationToken);
+            }
+
+            var answerRequestPayload = new
+            {
+                directoryPath = _tempRoomDir,
+                permissionRequestId = reqId,
+                decisionKind = "AllowOnce"
+            };
+
+            var response = await client.PostAsJsonAsync($"{baseUrl}/api/rooms/permissions/answer", answerRequestPayload, TestContext.Current.CancellationToken);
+
+            Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+
+            var responseText = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+            Assert.Contains("Revoked", responseText);
+            Assert.Contains(reqId, responseText);
+
+            var currentBindingsJson = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+            Assert.Equal(initialBindingsJson, currentBindingsJson);
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+            try
+            {
+                await daemonTask;
+            }
+            catch (OperationCanceledException) { }
+        }
     }
 }

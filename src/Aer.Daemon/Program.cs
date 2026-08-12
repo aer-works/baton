@@ -1104,6 +1104,7 @@ namespace Aer.Daemon
                 // the asked ToolName/ToolInputJson to persist a scoped grant, and PendingGateRegistry
                 // (the live-doorbell path) never carried them.
                 RoomEvent.RuntimePermissionAsked? askedEvent = null;
+                bool isResolvedInJournal = false;
                 var permissionsAnswerRoomLogPath = Path.Combine(request.DirectoryPath, "room.jsonl");
                 if (File.Exists(permissionsAnswerRoomLogPath))
                 {
@@ -1111,6 +1112,13 @@ namespace Aer.Daemon
                     var askedEvents = await askedReader.ReadAllRoomEventsAsync().ConfigureAwait(false);
                     askedEvent = askedEvents.OfType<RoomEvent.RuntimePermissionAsked>()
                         .FirstOrDefault(a => a.PermissionRequestId == request.PermissionRequestId);
+
+                    isResolvedInJournal = askedEvents.Any(e => e switch
+                    {
+                        RoomEvent.RuntimePermissionAnswered ans => ans.PermissionRequestId == request.PermissionRequestId,
+                        RoomEvent.RuntimePermissionRevoked rev => rev.PermissionRequestId == request.PermissionRequestId,
+                        _ => false
+                    });
                 }
 
                 string? outputDir = null;
@@ -1127,6 +1135,17 @@ namespace Aer.Daemon
                 if (string.IsNullOrEmpty(outputDir))
                 {
                     return Results.NotFound($"Permission request '{request.PermissionRequestId}' was not found.");
+                }
+
+                var revokedFilePath = Path.Combine(outputDir, $"revoked-{request.PermissionRequestId}.json");
+                if (isResolvedInJournal || File.Exists(revokedFilePath))
+                {
+                    return Results.Conflict(new
+                    {
+                        error = $"Permission request '{request.PermissionRequestId}' is revoked or already answered.",
+                        permissionRequestId = request.PermissionRequestId,
+                        status = "Revoked"
+                    });
                 }
 
                 Directory.CreateDirectory(outputDir);
@@ -1240,6 +1259,13 @@ namespace Aer.Daemon
                     // whichever started last, so a client asking to stop A stopped B.
                     session.RequestHostStop(request.DirectoryPath);
                 }
+
+                await RevokePendingGatesForRoomAsync(
+                    request.DirectoryPath,
+                    request.ExecutionId,
+                    "cancelled",
+                    async (proj, dir) => await broadcast.BroadcastStateAsync(proj, dir).ConfigureAwait(false),
+                    async () => (await session.LoadAsync(request.DirectoryPath).ConfigureAwait(false)).Projection).ConfigureAwait(false);
 
                 return Results.Ok();
             });
@@ -2643,6 +2669,66 @@ namespace Aer.Daemon
             }
         }
 
+        internal static async Task RevokePendingGatesForRoomAsync(
+            string roomDir,
+            string? executionIdFilter,
+            string reason,
+            Func<RoomProjection, string, Task>? broadcastStateAsync = null,
+            Func<Task<RoomProjection?>>? loadProjectionAsync = null)
+        {
+            var entries = PendingGateRegistry.GetEntries();
+            foreach (var kvp in entries)
+            {
+                var reqId = kvp.Key;
+                var entry = kvp.Value;
+
+                if (!string.Equals(entry.RoomDir, roomDir, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!string.IsNullOrEmpty(executionIdFilter) &&
+                    !string.Equals(entry.ExecutionId, executionIdFilter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                try
+                {
+                    PendingGateRegistry.TryRemove(reqId, out _);
+
+                    var revokedFilePath = Path.Combine(entry.OutputDir, $"revoked-{reqId}.json");
+                    var tempFilePath = Path.Combine(entry.OutputDir, $"revoked-{reqId}.json.{Guid.NewGuid():N}.tmp");
+                    var payload = new { permissionRequestId = reqId, reason };
+                    var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
+                    var json = JsonSerializer.Serialize(payload, jsonOptions);
+
+                    Directory.CreateDirectory(entry.OutputDir);
+                    await File.WriteAllTextAsync(tempFilePath, json).ConfigureAwait(false);
+                    File.Move(tempFilePath, revokedFilePath, overwrite: true);
+
+                    var roomLogPath = Path.Combine(roomDir, "room.jsonl");
+                    var reader = new RoomEventLogReader(roomLogPath);
+                    await using var writer = new RoomEventLogWriter(roomLogPath);
+
+                    await RoomMutationInterface.RevokePermissionAsync(
+                        roomDir,
+                        reader,
+                        writer,
+                        reqId,
+                        reason).ConfigureAwait(false);
+
+                    if (broadcastStateAsync != null && loadProjectionAsync != null)
+                    {
+                        if (await loadProjectionAsync().ConfigureAwait(false) is { } proj)
+                        {
+                            await broadcastStateAsync(proj, roomDir).ConfigureAwait(false);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Failed to revoke pending gate '{reqId}' with reason '{reason}': {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
+
         internal static async Task ReconcileRoomPermissionsAsync(string roomDir, CancellationToken cancellationToken = default)
         {
             var artifactsDir = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
@@ -2687,8 +2773,9 @@ namespace Aer.Daemon
 
                 var outputDir = Path.GetDirectoryName(askFile)!;
                 var answerFile = Path.Combine(outputDir, $"answer-{permissionRequestId}.json");
+                var revokedFile = Path.Combine(outputDir, $"revoked-{permissionRequestId}.json");
 
-                if (File.Exists(answerFile)) continue;
+                if (File.Exists(answerFile) || File.Exists(revokedFile)) continue;
                 if (resolvedIds.Contains(permissionRequestId)) continue;
 
                 try
@@ -2713,9 +2800,30 @@ namespace Aer.Daemon
                         inputJson = inElem.ValueKind == JsonValueKind.String ? inElem.GetString()! : inElem.GetRawText();
                     }
 
-                    DateTimeOffset askedAt = root.TryGetProperty("askedAt", out var askedAtElem) && askedAtElem.TryGetDateTimeOffset(out var dto)
+                    DateTimeOffset askedAt = ((root.TryGetProperty("askedAt", out var askedAtElem) || root.TryGetProperty("AskedAt", out askedAtElem)) && askedAtElem.TryGetDateTimeOffset(out var dto))
                         ? dto
                         : DateTimeOffset.UtcNow;
+
+                    if (DateTimeOffset.UtcNow >= askedAt.AddSeconds(180))
+                    {
+                        var revokePayload = new { permissionRequestId, reason = "expired_during_shutdown" };
+                        var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
+                        var revokeJson = JsonSerializer.Serialize(revokePayload, jsonOptions);
+                        var tempRevokedFilePath = Path.Combine(outputDir, $"revoked-{permissionRequestId}.json.{Guid.NewGuid():N}.tmp");
+                        await File.WriteAllTextAsync(tempRevokedFilePath, revokeJson, cancellationToken).ConfigureAwait(false);
+                        File.Move(tempRevokedFilePath, revokedFile, overwrite: true);
+
+                        await using var expireWriter = new RoomEventLogWriter(roomLogPath);
+                        await RoomMutationInterface.RevokePermissionAsync(
+                            roomDir,
+                            reader,
+                            expireWriter,
+                            permissionRequestId,
+                            "expired_during_shutdown",
+                            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                        continue;
+                    }
 
                     var entry = new PendingGateEntry(roomDir, outputDir, executionIdStr, askFile);
                     PendingGateRegistry.Register(permissionRequestId, entry);

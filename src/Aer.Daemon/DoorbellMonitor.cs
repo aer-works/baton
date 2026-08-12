@@ -21,6 +21,7 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
     private readonly Task _pollTask;
     private readonly FileSystemWatcher? _watcher;
     private readonly ConcurrentDictionary<string, byte> _processedAsks = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _processedRevokes = new(StringComparer.Ordinal);
 
     /// <param name="loadProjectionAsync">
     /// Loads the room's current projection, or null when it cannot be projected. Narrowed from the
@@ -49,14 +50,16 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
 
         try
         {
-            _watcher = new FileSystemWatcher(artifactsDir, "ask-*.json")
+            _watcher = new FileSystemWatcher(artifactsDir)
             {
                 IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size
             };
-            _watcher.Created += OnAskFileChanged;
-            _watcher.Changed += OnAskFileChanged;
-            _watcher.Renamed += OnAskFileRenamed;
+            _watcher.Filters.Add("ask-*.json");
+            _watcher.Filters.Add("revoked-*.json");
+            _watcher.Created += OnDoorbellFileChanged;
+            _watcher.Changed += OnDoorbellFileChanged;
+            _watcher.Renamed += OnDoorbellFileRenamed;
             _watcher.EnableRaisingEvents = true;
         }
         catch
@@ -67,14 +70,27 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
         _pollTask = Task.Run(() => PollLoopAsync(_cts.Token));
     }
 
-    private void OnAskFileChanged(object sender, FileSystemEventArgs e)
+    private void OnDoorbellFileChanged(object sender, FileSystemEventArgs e)
     {
-        _ = ProcessAskFileAsync(e.FullPath);
+        RouteDoorbellFile(e.FullPath);
     }
 
-    private void OnAskFileRenamed(object sender, RenamedEventArgs e)
+    private void OnDoorbellFileRenamed(object sender, RenamedEventArgs e)
     {
-        _ = ProcessAskFileAsync(e.FullPath);
+        RouteDoorbellFile(e.FullPath);
+    }
+
+    private void RouteDoorbellFile(string fullPath)
+    {
+        var fileName = Path.GetFileName(fullPath);
+        if (fileName.StartsWith("ask-", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = ProcessAskFileAsync(fullPath);
+        }
+        else if (fileName.StartsWith("revoked-", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = ProcessRevokedFileAsync(fullPath);
+        }
     }
 
     private async Task PollLoopAsync(CancellationToken cancellationToken)
@@ -113,13 +129,19 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
             {
                 _ = ProcessAskFileAsync(askFile);
             }
+
+            var revokedFiles = Directory.GetFiles(artifactsDir, "revoked-*.json", SearchOption.AllDirectories);
+            foreach (var revokedFile in revokedFiles)
+            {
+                _ = ProcessRevokedFileAsync(revokedFile);
+            }
         }
         catch (Exception ex)
         {
             // 0018 / no-swallow: a directory-enumeration failure is genuinely transient (a file
             // mid-write), but it must be visible, not silent -- a persistent failure here means the
             // backup poll is blind and every watcher-missed ask is stranded.
-            Console.Error.WriteLine($"doorbell: enumerating ask files failed: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine($"doorbell: enumerating ask/revoked files failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -197,6 +219,53 @@ public sealed class DoorbellMonitor : IAsyncDisposable, IDisposable
             // to the in-memory _processedAsks set forever.
             Console.Error.WriteLine($"doorbell: failed to raise permission ask '{permissionRequestId}': {ex.GetType().Name}: {ex.Message}");
             _processedAsks.TryRemove(permissionRequestId, out _);
+        }
+    }
+
+    public async Task ProcessRevokedFileAsync(string revokedFilePath)
+    {
+        if (string.IsNullOrEmpty(revokedFilePath) || !File.Exists(revokedFilePath)) return;
+
+        var fileName = Path.GetFileName(revokedFilePath);
+        if (!fileName.StartsWith("revoked-", StringComparison.OrdinalIgnoreCase) || !fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) return;
+
+        var permissionRequestId = fileName.Substring(8, fileName.Length - 13);
+        if (string.IsNullOrWhiteSpace(permissionRequestId)) return;
+
+        if (!_processedRevokes.TryAdd(permissionRequestId, 0)) return;
+
+        try
+        {
+            string jsonText = await File.ReadAllTextAsync(revokedFilePath).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(jsonText);
+            var root = doc.RootElement;
+
+            var reason = root.TryGetProperty("reason", out var rElem) && rElem.ValueKind == JsonValueKind.String
+                ? rElem.GetString()!
+                : "unknown";
+
+            PendingGateRegistry.TryRemove(permissionRequestId, out _);
+
+            var roomLogPath = Path.Combine(_directoryPath, "room.jsonl");
+            var reader = new RoomEventLogReader(roomLogPath);
+            await using var writer = new RoomEventLogWriter(roomLogPath);
+
+            await RoomMutationInterface.RevokePermissionAsync(
+                _directoryPath,
+                reader,
+                writer,
+                permissionRequestId,
+                reason).ConfigureAwait(false);
+
+            if (await _loadProjectionAsync(_directoryPath).ConfigureAwait(false) is { } proj)
+            {
+                await _broadcastStateAsync(proj, _directoryPath).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"doorbell: failed to process revoked file '{permissionRequestId}': {ex.GetType().Name}: {ex.Message}");
+            _processedRevokes.TryRemove(permissionRequestId, out _);
         }
     }
 

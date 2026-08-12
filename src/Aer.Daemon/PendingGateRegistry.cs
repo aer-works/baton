@@ -28,6 +28,11 @@ public static class PendingGateRegistry
         return Entries.TryRemove(permissionRequestId, out entry);
     }
 
+    public static KeyValuePair<string, PendingGateEntry>[] GetEntries()
+    {
+        return Entries.ToArray();
+    }
+
     public static void Clear()
     {
         Entries.Clear();

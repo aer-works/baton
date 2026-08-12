@@ -134,6 +134,25 @@ public sealed class PermissionGateTool : IMcpTool
             }
         }
 
+        try
+        {
+            var revokePayload = new
+            {
+                permissionRequestId,
+                reason = "timeout"
+            };
+            var revokeJson = JsonSerializer.Serialize(revokePayload, jsonOptions);
+            var revokedFilePath = Path.Combine(_rendezvousDirectoryPath, $"revoked-{permissionRequestId}.json");
+            var tempRevokedFilePath = Path.Combine(_rendezvousDirectoryPath, $"revoked-{permissionRequestId}.json.{Guid.NewGuid():N}.tmp");
+
+            await File.WriteAllTextAsync(tempRevokedFilePath, revokeJson, cancellationToken).ConfigureAwait(false);
+            File.Move(tempRevokedFilePath, revokedFilePath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Ignore transient file errors on timeout write
+        }
+
         return BuildTimeoutResult();
     }
 
