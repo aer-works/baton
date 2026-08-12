@@ -613,7 +613,7 @@ public class RoomProjectionLoaderTests
             }
 
             var fleetItem1 = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory1, TestContext.Current.CancellationToken);
-            Assert.NotEqual(RoomCardStatus.NeedsYou, fleetItem1.Status);
+            Assert.Equal(RoomCardStatus.Running, fleetItem1.Status);
         }
         finally
         {
@@ -660,7 +660,7 @@ public class RoomProjectionLoaderTests
             }
 
             var fleetItem2 = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory2, TestContext.Current.CancellationToken);
-            Assert.NotEqual(RoomCardStatus.NeedsYou, fleetItem2.Status);
+            Assert.Equal(RoomCardStatus.Running, fleetItem2.Status);
         }
         finally
         {

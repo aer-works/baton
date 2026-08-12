@@ -117,6 +117,39 @@ public class StatusDerivationTests
         Assert.Equal("Working — step-0", statusText);
     }
 
+    public static TheoryData<WorkflowStatus, StepStatus, string> OrphanedAskCases() => new()
+    {
+        // #1112 review finding: an ask can outlive its turn (a lost turn-end revoke race, a young
+        // ask re-raised by startup reconcile — #1113). The gate is only genuinely answerable while
+        // a turn is executing, so every non-Running state keeps its own truthful word rather than
+        // masking it with "Permission requested" for a worker nothing is left to release.
+        { WorkflowStatus.Paused, StepStatus.Paused, "Waiting for your review" },
+        { WorkflowStatus.Terminal, StepStatus.Failed, "Failed" },
+        { WorkflowStatus.Terminal, StepStatus.Cancelled, "Cancelled" },
+        { WorkflowStatus.Terminal, StepStatus.Succeeded, "Finished" },
+    };
+
+    [Theory]
+    [MemberData(nameof(OrphanedAskCases))]
+    public void DeriveStatus_OrphanedAskBesideNonRunningState_KeepsTheTrueStatus(
+        WorkflowStatus status, StepStatus stepStatus, string expectedText)
+    {
+        var orphanedAsk = new Aer.Flow.Projection.PendingPermission(
+            "req-orphan",
+            "worker-alpha",
+            "claude",
+            "Bash",
+            """{"command":"ls"}""",
+            "Bash",
+            DateTimeOffset.UtcNow);
+
+        var projection = ProjectionWith(status, stepStatus);
+
+        var (statusText, _) = RoomCardViewModel.DeriveStatus(projection, orphanedAsk);
+
+        Assert.Equal(expectedText, statusText);
+    }
+
     [Fact]
     public void Every_step_status_has_a_pinned_plain_word()
     {

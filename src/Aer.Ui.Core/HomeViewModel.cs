@@ -122,7 +122,12 @@ public static class RoomCardViewModel
     {
         return projection.State.Status switch
         {
-            _ when pendingPermission != null => ("Permission requested", RoomCardStatus.NeedsYou),
+            // Running-scoped on purpose (#1112 review): a live answerable gate only exists while a
+            // turn is executing. Revocation (#1102) is best-effort and reconcile is a single startup
+            // pass (#1113), so an orphaned ask CAN sit in room.jsonl beside a Paused/Terminal flow
+            // state — and headlining "Permission requested" there would mask the room's true status
+            // with a gate no worker is left to be released by.
+            WorkflowStatus.Running when pendingPermission != null => ("Permission requested", RoomCardStatus.NeedsYou),
             WorkflowStatus.Paused => (PausedCardStatusText(projection), RoomCardStatus.NeedsYou),
             WorkflowStatus.Running when projection.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Running) is { } runningStep
                 => ($"Working — {runningStep.StepId.Value}", RoomCardStatus.Running),
