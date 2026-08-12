@@ -1080,4 +1080,141 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
 
         return false;
     }
+
+    /// <summary>
+    /// Interprets Claude-specific failure output into a <see cref="FailureClassification"/> and reset instant (issue #1115).
+    /// </summary>
+    public bool TryClassifyFailure(
+        string? stderrTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        return TryClassifyFailure(stderrTail, null, timeProvider, out classification, out retryNotBefore);
+    }
+
+    /// <summary>
+    /// Interprets Claude-specific failure output from stderr and stdout tails into a <see cref="FailureClassification"/> and reset instant (issue #1115).
+    /// </summary>
+    public bool TryClassifyFailure(
+        string? stderrTail,
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        if (TryClassifyQuotaExhaustion(stderrTail, timeProvider, out classification, out retryNotBefore))
+        {
+            return true;
+        }
+
+        return TryClassifyQuotaExhaustion(stdoutTail, timeProvider, out classification, out retryNotBefore);
+    }
+
+
+    /// <summary>
+    /// Recognizes Claude subscription quota exhaustion errors from the typed field <c>errorCode == "credits_required"</c>
+    /// (decision 0026 §1a, issue #1115).
+    /// </summary>
+    public static bool TryClassifyQuotaExhaustion(
+        string? stderrOrReason,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        classification = null;
+        retryNotBefore = null;
+
+        if (string.IsNullOrWhiteSpace(stderrOrReason))
+        {
+            return false;
+        }
+
+        if (!ContainsTypedCreditsRequiredError(stderrOrReason))
+        {
+            return false;
+        }
+
+        classification = FailureClassification.ExhaustedUntil;
+        retryNotBefore = null;
+        return true;
+    }
+
+    private static bool ContainsTypedCreditsRequiredError(string input)
+    {
+        if (TryCheckElementForCreditsRequired(input))
+        {
+            return true;
+        }
+
+        var lines = input.Split('\n');
+        if (lines.Length > 1)
+        {
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                if (trimmed.Length > 0 && TryCheckElementForCreditsRequired(trimmed))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryCheckElementForCreditsRequired(string jsonCandidate)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonCandidate);
+            return HasTypedCreditsRequiredCode(doc.RootElement);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasTypedCreditsRequiredCode(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (element.TryGetProperty("errorCode", out var errorCodeProp) &&
+            errorCodeProp.ValueKind == JsonValueKind.String &&
+            errorCodeProp.GetString() == "credits_required")
+        {
+            return true;
+        }
+
+        if (element.TryGetProperty("error_code", out var errorCodeProp2) &&
+            errorCodeProp2.ValueKind == JsonValueKind.String &&
+            errorCodeProp2.GetString() == "credits_required")
+        {
+            return true;
+        }
+
+        if (element.TryGetProperty("error", out var errorProp) && errorProp.ValueKind == JsonValueKind.Object)
+        {
+            if (errorProp.TryGetProperty("code", out var codeProp) &&
+                codeProp.ValueKind == JsonValueKind.String &&
+                codeProp.GetString() == "credits_required")
+            {
+                return true;
+            }
+
+            if (errorProp.TryGetProperty("errorCode", out var codeProp2) &&
+                codeProp2.ValueKind == JsonValueKind.String &&
+                codeProp2.GetString() == "credits_required")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

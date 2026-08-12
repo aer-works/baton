@@ -1015,6 +1015,19 @@ public static class MutationInterface
                 continue;
             }
 
+            // 0026 §5 (#1115 review): an ExhaustedUntil step whose vendor gave NO reset instant
+            // gets NO obligation at all — "nothing wakes up, and the product says so". Falling
+            // through to ordinary backoff here fabricated a ~1s-away instant on every cycle
+            // (ConsecutiveFailureCount is frozen at 0 for quota hits, so the delay never grew),
+            // auto-retrying a claude dispatch against a known-dead quota forever while the
+            // status surfaced the fabricated time as a vendor reset. A person resumes this step
+            // (§17.2 RetryWithRevision), or a later failure carries a real instant.
+            if (stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil &&
+                stepState.LatestExecutionFailedRetryNotBefore is null)
+            {
+                continue;
+            }
+
             DateTimeOffset notBefore;
             int delayMs;
 

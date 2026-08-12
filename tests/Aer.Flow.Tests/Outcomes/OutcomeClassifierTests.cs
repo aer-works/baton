@@ -786,6 +786,87 @@ public class OutcomeClassifierTests
         }
     }
 
+    [Fact]
+    public void Classify_delegates_to_IFailureClassifier_with_StdoutTail_and_carries_ExhaustedUntil()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [], []);
+            var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+            var stdoutEnvelope = """{"type":"result","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+            var mockClassifier = new TestQuotaTwoTailClassifier(null, stdoutEnvelope, FailureClassification.ExhaustedUntil, null);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.Natural, StderrTail: null, StdoutTail: stdoutEnvelope),
+                contract,
+                directory,
+                mockClassifier,
+                testTime);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_with_ordinary_error_on_StdoutTail_stays_unclassified()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [], []);
+            var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+            var stdoutEnvelope = """{"type":"result","is_error":true,"errorCode":"other_error","result":"Failed"}""";
+            var mockClassifier = new TestQuotaTwoTailClassifier(null, stdoutEnvelope, null, null);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.Natural, StderrTail: null, StdoutTail: stdoutEnvelope),
+                contract,
+                directory,
+                mockClassifier,
+                testTime);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    private sealed class TestQuotaTwoTailClassifier(
+        string? matchStderr,
+        string? matchStdout,
+        FailureClassification? classificationToEmit,
+        DateTimeOffset? notBeforeToEmit) : IFailureClassifier
+    {
+        public bool TryClassifyFailure(
+            string? stderrTail,
+            string? stdoutTail,
+            TimeProvider timeProvider,
+            out FailureClassification? classification,
+            out DateTimeOffset? retryNotBefore)
+        {
+            if (stderrTail == matchStderr && stdoutTail == matchStdout && classificationToEmit is not null)
+            {
+                classification = classificationToEmit;
+                retryNotBefore = notBeforeToEmit;
+                return true;
+            }
+
+            classification = null;
+            retryNotBefore = null;
+            return false;
+        }
+    }
+
+
     private sealed class TestQuotaClassifier(string matchStderr, FailureClassification? classificationToEmit, DateTimeOffset? notBeforeToEmit) : IFailureClassifier
     {
         public bool TryClassifyFailure(string? stderrTail, TimeProvider timeProvider, out FailureClassification? classification, out DateTimeOffset? retryNotBefore)

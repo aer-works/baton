@@ -884,6 +884,49 @@ public class MutationInterfaceRetryBackoffTests
         }
     }
 
+    // #1115 review must-fix: claude's typed credits_required match honestly carries NO reset
+    // instant (0026 §5) — and that combination fell through to ordinary backoff with
+    // ConsecutiveFailureCount frozen at 0, i.e. a ~1s fabricated-instant retry loop against a
+    // known-dead quota, forever. An unknown-instant exhaustion gets NO obligation: nothing
+    // wakes up; a person resumes it (§17.2). The non-null arm above is this test's polarity.
+    [Fact]
+    public async Task ExhaustedUntil_with_unknown_reset_instant_schedules_no_obligation_at_all()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 8, 12, 15, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var execId = new ExecutionId("exec-exhausted-unknown");
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                new ExecutionRequest(execId, new WorkflowId("wf-exu"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", RetryNotBefore: null), TestContext.Current.CancellationToken);
+
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snap-exu"),
+                new WorkflowTemplateId("tpl-exu"),
+                1,
+                [new WorkflowStepDefinition(StepA, "worker-a", [], [], [], RetryPolicy: new RetryPolicy(MaxAttempts: 3, Backoff: BackoffPolicy.Steady))]);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var state = StateProjector.Project(events, snapshot);
+
+            var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0)])!;
+
+            Assert.Empty(obligations);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     // #815: the Test9 scenario (operator RetryWithRevision dispatches immediately, clearing the
     // deadline), but for a step #594's classification quota-parked and never paused — the lane-
     // workflow shape #815 measured live, where the step declares no PausePoint at all. Starts from

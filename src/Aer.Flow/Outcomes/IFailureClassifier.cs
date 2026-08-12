@@ -21,4 +21,18 @@ public interface IFailureClassifier
         retryNotBefore = null;
         return false;
     }
+
+    /// <summary>
+    /// Attempts to classify a worker failure from vendor-specific stderr and stdout tails / exit output.
+    /// </summary>
+    bool TryClassifyFailure(
+        string? stderrTail,
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        return TryClassifyFailure(stderrTail, timeProvider, out classification, out retryNotBefore);
+    }
 }
+

@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
+using Aer.Flow.Outcomes;
 
 namespace Aer.Adapters.Tests;
+
 
 /// <summary>
 /// M20 Phase 4's deliverable: unit tests for the refactored, direct shell-less
@@ -682,5 +684,85 @@ public class ClaudeWorkerAdapterTests
         {
             Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.AerClaudeConfigRootVariable, original);
         }
+    }
+
+    [Fact]
+    public void TruncatedEnvelopeInTail_FailsClosed_NoClassificationNoThrow()
+    {
+        // #1115 review: the tail buffers cut front-first mid-line, so the classifier can be
+        // handed half a JSON envelope — even one whose retained half still contains the literal
+        // "credits_required". Unparseable input must fail closed: no classification, no throw.
+        var frontCut = """error","errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(frontCut, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
+    [Fact]
+    public void CreditsRequired_ClassifiesExhaustedUntil()
+    {
+        var envelope = """{"type":"result","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(envelope, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Theory]
+    [InlineData("""{"type":"result","is_error":true,"errorCode":"other_error","result":"Failed"}""")]
+    [InlineData("""{"type":"result","is_error":true,"result":"Failed without errorCode"}""")]
+    public void OrdinaryError_StaysUnclassified(string envelope)
+    {
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(envelope, testTime, out var classification, out var retryNotBefore);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Fact]
+    public void CreditsRequiredProseInMessageText_DoesNotTrigger()
+    {
+        var envelope = """{"type":"assistant","message":{"content":[{"type":"text","text":"The system reported credits_required in prose text"}]}}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(envelope, testTime, out var classification, out var retryNotBefore);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Fact]
+    public void CreditsRequired_OnStdoutTail_ClassifiesExhaustedUntil()
+    {
+        var envelope = """{"type":"result","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(stderrTail: null, stdoutTail: envelope, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Null(retryNotBefore);
+    }
+
+
+
+    private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }
