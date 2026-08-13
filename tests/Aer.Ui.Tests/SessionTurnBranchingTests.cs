@@ -402,4 +402,39 @@ public class SessionTurnBranchingTests : IAsyncLifetime
         Assert.NotNull(turn.ErrorMessage);
         Assert.False(afterExhaustion.VendorSessionEstablished);
     }
+
+    /// <summary>
+    /// #1184 at the session seam: a chat turn refused for quota, with a reset instant years away.
+    /// How the stub reaches that refusal is recorded on
+    /// <see cref="SessionTurnStubAdapter.ImmediateExhaustionSentinel"/>.
+    ///
+    /// <para>
+    /// What discriminates here is <b>completion, not the assertions</b>: the reset instant is 2030,
+    /// so a parked turn's pump waits for it and this send never lands at all. Flipping the daemon's
+    /// three <c>settleOnVendorExhaustion: true</c> call sites to <c>false</c> fails it with
+    /// "never reached 1 turn(s) within 60s (545 polls); last seen: 0" — measured, not assumed. The
+    /// assertions below then say what the settled turn is; the obligation that must not be
+    /// scheduled is pinned at the engine, in MutationInterfaceRetryBackoffTests' polarity pair,
+    /// because the attended path hardcodes the flag and cannot drive its own false branch.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_WhenPumpClassifiesExhaustionOnFirstCall_SettlesImmediatelyWithoutParking()
+    {
+        var started = await StartStubSessionWithNoInitialMessageAsync();
+
+        var exhaustedSend = await _client.PostAsJsonAsync($"{_baseUrl}/api/sessions/send",
+            new SendSessionMessageRequest(SessionId: started.SessionId, Message: SessionTurnStubAdapter.ImmediateExhaustionSentinel),
+            TestContext.Current.CancellationToken);
+        Assert.True(exhaustedSend.IsSuccessStatusCode);
+
+        var afterExhaustion = await PollUntilTurnCountAsync(started.SessionId, expectedTurnCount: 1);
+        var turn = afterExhaustion.Turns[0];
+
+        Assert.Null(turn.AssistantResponse);
+        Assert.True(turn.IsExhausted);
+        Assert.Equal(SessionTurnStubAdapter.ExhaustionResetInstant, turn.ExhaustedUntil);
+        Assert.NotNull(turn.ErrorMessage);
+        Assert.False(afterExhaustion.VendorSessionEstablished);
+    }
 }

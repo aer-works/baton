@@ -2335,7 +2335,7 @@ namespace Aer.Daemon
             {
                 if (isInitial)
                 {
-                    var runOutcome = await session.RunAsync(directoryPath, workflowFilePath, bindingsFilePath, onWorkerStdoutLine: onWorkerStdoutLine).ConfigureAwait(false);
+                    var runOutcome = await session.RunAsync(directoryPath, workflowFilePath, bindingsFilePath, onWorkerStdoutLine: onWorkerStdoutLine, settleOnVendorExhaustion: true).ConfigureAwait(false);
                     if (runOutcome.ErrorMessage is { } runError)
                     {
                         // #285: RunAsync's in-process fallback catches AerFlowException into an
@@ -2385,7 +2385,8 @@ namespace Aer.Daemon
                             revisionFilePath: messageFilePath,
                             supplementaryWorker: "human",
                             supplementaryOutputName: "message.txt",
-                            onWorkerStdoutLine: onWorkerStdoutLine).ConfigureAwait(false);
+                            onWorkerStdoutLine: onWorkerStdoutLine,
+                            settleOnVendorExhaustion: true).ConfigureAwait(false);
 
                         if (decideOutcome.ErrorMessage is { } decideError)
                         {
@@ -2438,7 +2439,7 @@ namespace Aer.Daemon
                             Directory.Delete(artifactsPath, recursive: true);
                         }
 
-                        var runOutcome = await session.RunAsync(directoryPath, workflowFilePath, bindingsFilePath, onWorkerStdoutLine: onWorkerStdoutLine).ConfigureAwait(false);
+                        var runOutcome = await session.RunAsync(directoryPath, workflowFilePath, bindingsFilePath, onWorkerStdoutLine: onWorkerStdoutLine, settleOnVendorExhaustion: true).ConfigureAwait(false);
                         if (runOutcome.ErrorMessage is { } runError)
                         {
                             // #285: RunAsync's in-process fallback catches AerFlowException into an

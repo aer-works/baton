@@ -76,6 +76,16 @@ public static class DependencyResolver
                 continue;
             }
 
+            // 0026 §4/§5: an ExhaustedUntil step whose retry obligation was not scheduled
+            // (e.g. an attended interactive turn with settleOnVendorExhaustion=true, or an unknown reset instant)
+            // has no scheduled retry for this execution and is not ready for retry.
+            if (stepState.Status == StepStatus.Failed &&
+                stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil &&
+                stepState.RetryScheduledForExecutionId != stepState.LatestExecutionId)
+            {
+                continue;
+            }
+
             if (stepState.RetryNotBefore is { } notBefore && stepState.RetryDelayMs is { } delayMs)
             {
                 var remaining = notBefore - now;

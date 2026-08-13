@@ -60,7 +60,10 @@ public static class MutationInterface
         // with the local-time-resolvable reset instant. The foreground CLI prints it so a day-long
         // quota wait never reads as a hang; null (the daemon/default) stays silent. Never touches the
         // 0026 wait itself — surfacing only.
-        Action<DateTimeOffset>? onVendorQuotaPark = null)
+        Action<DateTimeOffset>? onVendorQuotaPark = null,
+        // #1184 / 0026 §4: when true (attended session turn), an ExhaustedUntil step settles immediately
+        // rather than scheduling a paced retry obligation. Defaults to false (unattended workflow steps).
+        bool settleOnVendorExhaustion = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -75,7 +78,7 @@ public static class MutationInterface
         return await PumpToFixedPointAsync(
                 workflowId, roomDirectoryPath, snapshot, workerBindings, artifactsRootPath, eventLogReader, eventLogWriter, dispatcher,
                 inFlightExecutions ?? new InFlightExecutionRegistry(), cancellationToken,
-                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()), onVendorQuotaPark)
+                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()), onVendorQuotaPark, settleOnVendorExhaustion)
             .ConfigureAwait(false);
     }
 
@@ -107,7 +110,8 @@ public static class MutationInterface
         CancellationToken cancellationToken = default,
         TimeProvider? timeProvider = null,
         Func<double>? jitterSource = null,
-        string? holderDescription = null)
+        string? holderDescription = null,
+        bool settleOnVendorExhaustion = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -144,7 +148,8 @@ public static class MutationInterface
         return await PumpToFixedPointAsync(
                 workflowId, roomDirectoryPath, snapshot, workerBindings, artifactsRootPath, eventLogReader, eventLogWriter, dispatcher,
                 inFlightExecutions ?? new InFlightExecutionRegistry(), cancellationToken,
-                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()))
+                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()),
+                settleOnVendorExhaustion: settleOnVendorExhaustion)
             .ConfigureAwait(false);
     }
 
@@ -331,7 +336,8 @@ public static class MutationInterface
         CancellationToken cancellationToken,
         TimeProvider timeProvider,
         Func<double> jitterSource,
-        Action<DateTimeOffset>? onVendorQuotaPark = null)
+        Action<DateTimeOffset>? onVendorQuotaPark = null,
+        bool settleOnVendorExhaustion = false)
     {
         inFlightExecutions.Bind(eventLogWriter);
 
@@ -556,7 +562,7 @@ public static class MutationInterface
                 // A derived obligation (#712; spec §10), re-evaluated from projected state on every round for
                 // the same crash-safety reason the pause obligation above is: evaluated after pause obligations
                 // and before readiness.
-                var retryObligations = GetRetryObligations(state, snapshot, timeProvider, jitterSource);
+                var retryObligations = GetRetryObligations(state, snapshot, timeProvider, jitterSource, settleOnVendorExhaustion);
                 if (retryObligations.Count > 0)
                 {
                     foreach (var obligation in retryObligations)
@@ -980,7 +986,8 @@ public static class MutationInterface
         FlowState state,
         WorkflowDefinitionSnapshot snapshot,
         TimeProvider timeProvider,
-        Func<double> jitterSource)
+        Func<double> jitterSource,
+        bool settleOnVendorExhaustion = false)
     {
         var stepDefinitionByStepId = snapshot.Steps.ToDictionary(s => s.StepId);
         var obligations = new List<RetryObligation>();
@@ -1022,8 +1029,11 @@ public static class MutationInterface
             // auto-retrying a claude dispatch against a known-dead quota forever while the
             // status surfaced the fabricated time as a vendor reset. A person resumes this step
             // (§17.2 RetryWithRevision), or a later failure carries a real instant.
+            // 0026 §4 attended/unattended discriminator (#1184): when settleOnVendorExhaustion is true
+            // (an attended interactive session turn), an ExhaustedUntil step ALSO gets NO retry obligation
+            // even if a reset instant is known — the turn settles immediately and the operator re-sends after reset.
             if (stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil &&
-                stepState.LatestExecutionFailedRetryNotBefore is null)
+                (settleOnVendorExhaustion || stepState.LatestExecutionFailedRetryNotBefore is null))
             {
                 continue;
             }

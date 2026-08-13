@@ -127,10 +127,13 @@ envelope, which `AgyWorkerAdapter` now parses into an `ExhaustedUntil` instant. 
 is `agy`'s state for *anticipating* the cliff, not for landing on it — at the moment of refusal, a
 reset instant is recoverable on both vendors.
 
+**Amended 2026-08-13 (#1184).** Attended execution (an interactive chat turn) splits from unattended execution (a workflow step) using §4's discriminator — *did the operator just try to use it*. An interactive turn's first `ExhaustedUntil` outcome settles immediately so the operator receives prompt feedback and can re-send after reset; it does not schedule a paced retry obligation or park into a multi-hour wait. Unattended workflow steps keep the paced park unchanged.
+
 **Obliges us to** never spend retry attempts against an exhausted quota; record the reset instant at
 mutation time and never re-read a clock on replay; keep exhaustion per vendor rather than per room;
-treat it as an attention state only where the operator just tried to use it; and never fabricate a
-reset time — required now for `agy` specifically, not as a generic caution.
+treat it as an attention state only where the operator just tried to use it — and, per the 2026-08-13
+amendment above, pace the wait only where nobody is; and never fabricate a reset time — required now
+for `agy` specifically, not as a generic caution.
 
 **Relates to** [0018](0018-attention-is-the-primary-signal.md), whose band-4 assignment for
 rate-limited this amends. [0008](0008-runtime-streaming-over-append-log.md) — per-turn cost is

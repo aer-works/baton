@@ -304,6 +304,8 @@ Waiting on another room's lock | Reads as a wait, never as an error and never as
 
 Dormant | The room stopped machine turns after repeated turns that committed nothing, and says so in the transcript with the reason and the wake control. A message to a dormant room is answered with this state — waking is your explicit action, never a side effect of asking how it's going. *(#778 turn-throttle addendum, ratified 2026-08-04 on #495)* |
 
+Out of plan | Displays quota/subscription exhaustion with its reset time when known ("Out of plan — resumes {local time}") or an explicit unknown ("Out of plan — reset unknown"), distinct from failure. *(0026 decision record, 2026-07-25 (#1123 rooms, #1185 chat))* |
+
 <!-- /generated: interaction-states -->
 
 Two of these are the defects from the last manual run , promoted from bugs to rules: cancelled reading as finished, and a room that existed but appeared nowhere. Writing them here is what stops them being rediscovered.

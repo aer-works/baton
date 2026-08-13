@@ -17,6 +17,11 @@ using Aer.Flow.Mutation;
 namespace Aer.Ui.Core;
 
 public record OpenRoomRequest(string DirectoryPath);
+// #1184: deliberately NO settle-on-exhaustion field. Attendedness is 0026 §4's "did the operator
+// just try to use it", and nothing on the far side of an HTTP POST can tell whether that is true —
+// it would become whatever the caller claimed, on ordinary workflow runs as much as chat turns.
+// The one attended caller (the daemon's own session turn) reaches the pump in-process, so the knob
+// belongs on the in-process seam only; RunAsync refuses rather than dropping a remote request for it.
 public record RunRoomRequest(string DirectoryPath, string? WorkflowTemplateFilePath, string BindingsFilePath);
 public record ArtifactReference(string ExecutionId, string FileName);
 
@@ -456,14 +461,34 @@ public sealed partial class RoomClient
     /// <see cref="RoomClient"/> singleton always takes that fallback path (it has no daemon of its
     /// own to delegate to), which is exactly the case that needs this.
     /// </param>
+    /// <summary>
+    /// #1184: the settle-instead-of-park choice does not cross the daemon's HTTP boundary — see the
+    /// remark on <see cref="RunRoomRequest"/> for why it must not. Every attended caller today is
+    /// the daemon's own session turn, which runs the pump in-process, so a caller asking for it on
+    /// the remote branch is asking for something that would not happen. Refuse loudly instead of
+    /// running the turn with the opposite retry behaviour and reporting success.
+    /// </summary>
+    private static void RefuseRemoteSettleOnVendorExhaustion(bool settleOnVendorExhaustion)
+    {
+        if (settleOnVendorExhaustion)
+        {
+            throw new NotSupportedException(
+                "settleOnVendorExhaustion has no remote form: the attended/unattended split (0026 §4) "
+                + "is decided at the in-process pump, and a daemon on the far side of HTTP cannot tell "
+                + "whether an operator is waiting on this run.");
+        }
+    }
+
     public async Task<MutationOutcome> RunAsync(
         string roomDirectoryPath, string? workflowTemplateFilePath, string bindingsFilePath, CancellationToken cancellationToken = default,
-        Action<string, string>? onWorkerStdoutLine = null)
+        Action<string, string>? onWorkerStdoutLine = null,
+        bool settleOnVendorExhaustion = false)
     {
         CurrentRoomDirectoryPath = roomDirectoryPath;
 
         if (await EnsureDaemonConnectedAsync(cancellationToken).ConfigureAwait(true))
         {
+            RefuseRemoteSettleOnVendorExhaustion(settleOnVendorExhaustion);
             try
             {
                 var request = new RunRoomRequest(roomDirectoryPath, workflowTemplateFilePath, bindingsFilePath);
@@ -511,7 +536,8 @@ public sealed partial class RoomClient
         var options = new RunOptions(
             string.IsNullOrWhiteSpace(workflowTemplateFilePath) ? null : workflowTemplateFilePath,
             bindingsFilePath,
-            roomDirectoryPath);
+            roomDirectoryPath,
+            SettleOnVendorExhaustion: settleOnVendorExhaustion);
 
         ViewModel.IsMutationInFlight = true;
         ViewModel.RunStatusText = "Running…";
@@ -607,10 +633,12 @@ public sealed partial class RoomClient
         string? supplementaryWorker,
         string? supplementaryOutputName,
         CancellationToken cancellationToken = default,
-        Action<string, string>? onWorkerStdoutLine = null)
+        Action<string, string>? onWorkerStdoutLine = null,
+        bool settleOnVendorExhaustion = false)
     {
         if (await EnsureDaemonConnectedAsync(cancellationToken).ConfigureAwait(true))
         {
+            RefuseRemoteSettleOnVendorExhaustion(settleOnVendorExhaustion);
             try
             {
                 ViewModel.DecisionStatusText = $"Deciding {stepId.Value}…";
@@ -691,7 +719,8 @@ public sealed partial class RoomClient
                 decisionType,
                 targetStepId,
                 supplementaryExecutionId?.Value,
-                _bindingsFilePathProvider() ?? string.Empty);
+                _bindingsFilePathProvider() ?? string.Empty,
+                SettleOnVendorExhaustion: settleOnVendorExhaustion);
 
             var pumpTask = Task.Run(
                 () => DecideCommand.ExecuteAsync(options, _adapters, inFlightExecutions, hostStopSource.Token, onWorkerStdoutLine), hostStopSource.Token);

@@ -297,4 +297,52 @@ public class DependencyResolverTests
 
         Assert.DoesNotContain(Architect, ready);
     }
+
+    // #1187: withholding the retry obligation is NOT by itself what stops an exhausted step from
+    // running again. Readiness never consulted the obligation: an ExhaustedUntil step bypasses the
+    // attempts check (0026, RetryEngine.MayRetry) and carries no RetryNotBefore when no obligation
+    // was scheduled, so it fell through both guards above and came back ready on the very next pump
+    // round -- the immediate re-dispatch loop #1119 believed it had removed by dropping the
+    // obligation, and the one #1184's attended settle would otherwise inherit. Both arms that leave
+    // an obligation unscheduled are pinned here; the paced-park arm below is the control that shows
+    // the fix does not strand the ordinary 0026 §5 wait.
+    [Fact]
+    public void An_exhausted_step_with_no_scheduled_retry_is_not_ready_to_run_again()
+    {
+        var state = new FlowState(
+            new WorkflowDefinitionSnapshotId("snapshot-1"),
+            [
+                new StepState(
+                    Architect, StepStatus.Failed, new ExecutionId("A1"), NoUpstream,
+                    ConsecutiveFailureCount: 0,
+                    LatestFailureClassification: FailureClassification.ExhaustedUntil),
+                Pending(Critic),
+            ]);
+
+        var ready = DependencyResolver.GetReadySteps(state, TwoStepSnapshot(), Now);
+
+        Assert.DoesNotContain(Architect, ready);
+    }
+
+    [Fact]
+    public void An_exhausted_step_whose_paced_retry_was_scheduled_and_has_come_due_is_ready()
+    {
+        var executionId = new ExecutionId("A1");
+        var state = new FlowState(
+            new WorkflowDefinitionSnapshotId("snapshot-1"),
+            [
+                new StepState(
+                    Architect, StepStatus.Failed, executionId, NoUpstream,
+                    ConsecutiveFailureCount: 0,
+                    LatestFailureClassification: FailureClassification.ExhaustedUntil,
+                    RetryNotBefore: Now.AddMinutes(-1),
+                    RetryDelayMs: 60_000,
+                    RetryScheduledForExecutionId: executionId),
+                Pending(Critic),
+            ]);
+
+        var ready = DependencyResolver.GetReadySteps(state, TwoStepSnapshot(), Now);
+
+        Assert.Contains(Architect, ready);
+    }
 }

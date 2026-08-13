@@ -129,7 +129,8 @@ public static class RunCommand
                 // #1094: a foreground run that quota-parks would otherwise sit silently until the reset
                 // (~a day out); surface it so the paced wait is legible. To stderr — it is a status
                 // notice, not run output.
-                onVendorQuotaPark: resumesAt => Console.Error.WriteLine(FormatVendorQuotaParkNotice(resumesAt)))
+                onVendorQuotaPark: resumesAt => Console.Error.WriteLine(FormatVendorQuotaParkNotice(resumesAt)),
+                settleOnVendorExhaustion: options.SettleOnVendorExhaustion)
             .ConfigureAwait(false);
 
         var worktreeTeardowns = WorktreeProvisioner.TeardownIfTerminal(state.Status, provisionedWorktrees);

@@ -104,7 +104,8 @@ public static class DecideCommand
                 options.TargetStepId,
                 supplementaryExecutionId,
                 inFlightExecutions,
-                cancellationToken)
+                cancellationToken,
+                settleOnVendorExhaustion: options.SettleOnVendorExhaustion)
             .ConfigureAwait(false);
 
         var worktreeTeardowns = WorktreeProvisioner.TeardownIfTerminal(state.Status, provisionedWorktrees);

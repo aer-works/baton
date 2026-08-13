@@ -1,6 +1,7 @@
 """Render the interaction-state register into 03-interaction-depth's table (#616).
 
-The register (design/interaction-states.json) is the one home for the thirteen states; the
+The register (design/interaction-states.json) is the one home for the states — it holds however
+many there are, and this script is what keeps anything else from having to count them; the
 corpus's table is a rendering of it, regenerated here between sentinel markers so the two cannot
 drift — the same generate-and-check shape as genregister.py, checked by completeness.py.
 Loud on anything malformed: a table silently missing a state is the drift class this ends.
