@@ -55,11 +55,11 @@ public partial class App : Application
     internal MainWindowViewModel? ErrorSurface { get; set; }
 
     /// <summary>
-    /// Issue #1176: the one app-level unhandled exception guard. An <c>async void</c> handler's
-    /// exception is observable on no <see cref="Task"/> — it is rethrown on the dispatcher, and
-    /// with nothing hooked here it ends the process. Marks it handled, appends the detail to the
-    /// durable sink, and says so through the failure text already on screen (never a dialog: the
-    /// interaction-state register's own "Folder gone" row is where that constraint is recorded).
+    /// Issue #1176: the one app-level unhandled exception guard. What a person should see when it
+    /// fires is the "Unexpected app error" row of <c>design/interaction-states.json</c>; this is
+    /// only the wiring that makes it so. Why the hook must exist at all — what becomes of an
+    /// exception thrown out of one of this app's nine <c>async void</c> handlers — is recorded
+    /// once, on <c>AppUnhandledExceptionGuardTests</c>, where it is also proven.
     /// </summary>
     private void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
