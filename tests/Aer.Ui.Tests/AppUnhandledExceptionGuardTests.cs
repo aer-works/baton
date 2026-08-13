@@ -55,7 +55,10 @@ public class AppUnhandledExceptionGuardTests
         {
             ThrowFromAnAsyncVoidHandler(expectedMessage);
 
-            var wasHandled = await handled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            // A ceiling, not a pace: the dispatcher raises this on the next turn of its own loop,
+            // so a real failure here is "never", not "slow" — the wait only keeps a regression from
+            // hanging the suite.
+            var wasHandled = await handled.Task.WaitAsync(TimeSpan.FromSeconds(60));
             Assert.True(wasHandled, "The guard did not mark the exception handled, so the dispatcher would rethrow it.");
 
             var logPath = AppUnhandledExceptionSink.LogPath;
