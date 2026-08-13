@@ -443,4 +443,80 @@ public class ChatViewModelTests
         Assert.Equal(["do-thing"], viewModel.InvokableCommands.Select(item => item.Name));
         Assert.Equal(["plan-mode"], viewModel.InfoCommands.Select(item => item.Name));
     }
+
+    [Fact]
+    public void LoadFromMetadata_TurnWithErrorMessage_RendersYouAndFailureEntry()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Do work", null, DateTimeOffset.UtcNow, false, false, ErrorMessage: "Process exited with code 1"));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.Equal(2, viewModel.Messages.Count);
+        Assert.True(viewModel.Messages[0].IsFromUser);
+        Assert.Equal("Do work", viewModel.Messages[0].Text);
+
+        var failureMsg = viewModel.Messages[1];
+        Assert.False(failureMsg.IsFromUser);
+        Assert.True(failureMsg.IsFailure);
+        Assert.Equal("claude", failureMsg.SenderLabel);
+        Assert.Equal("Process exited with code 1", failureMsg.Text);
+        Assert.NotNull(failureMsg.PrepareFixPromptCommand);
+    }
+
+    [Fact]
+    public void LoadFromMetadata_TurnWithBothPartialResponseAndErrorMessage_RendersResponseThenFailure()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Do work", "Partial output...", DateTimeOffset.UtcNow, false, false, ErrorMessage: "Process crashed"));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.Equal(3, viewModel.Messages.Count);
+        Assert.True(viewModel.Messages[0].IsFromUser);
+        Assert.Equal("Do work", viewModel.Messages[0].Text);
+
+        Assert.False(viewModel.Messages[1].IsFromUser);
+        Assert.False(viewModel.Messages[1].IsFailure);
+        Assert.Equal("Partial output...", viewModel.Messages[1].Text);
+
+        var failureMsg = viewModel.Messages[2];
+        Assert.False(failureMsg.IsFromUser);
+        Assert.True(failureMsg.IsFailure);
+        Assert.Equal("Process crashed", failureMsg.Text);
+    }
+
+    [Fact]
+    public void PrepareFixPrompt_SetsInputTextAndDoesNotSend()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Do work", null, DateTimeOffset.UtcNow, false, false, ErrorMessage: "Compilation failed"));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        var failureMsg = viewModel.Messages[1];
+        Assert.True(failureMsg.IsFailure);
+
+        failureMsg.PrepareFixPromptCommand!.Execute(null);
+
+        Assert.Equal("The last turn failed with:\n> Compilation failed\nPlease diagnose and fix it.", viewModel.InputText);
+        Assert.False(viewModel.IsSending);
+    }
+
+    [Fact]
+    public void LoadFromMetadata_HealthyTurn_RendersNoFailureCard()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false, ErrorMessage: null));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.Equal(2, viewModel.Messages.Count);
+        Assert.False(viewModel.Messages[0].IsFailure);
+        Assert.False(viewModel.Messages[1].IsFailure);
+    }
 }

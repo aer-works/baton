@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Aer.Ui.Core;
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
 using Avalonia.Threading;
 
 namespace Aer.Ui.Views;
@@ -52,6 +53,18 @@ public partial class ChatView : UserControl
             && _subscribedChat is { HasPendingPermission: true })
         {
             Dispatcher.UIThread.Post(() => ChatMessagesScroll.ScrollToEnd());
+        }
+    }
+
+    private async void OnCopyFailureClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (sender is Control control && control.DataContext is ChatMessageViewModel message)
+        {
+            var topLevel = TopLevel.GetTopLevel(control);
+            if (topLevel?.Clipboard is { } clipboard)
+            {
+                await clipboard.SetTextAsync(message.Text);
+            }
         }
     }
 }

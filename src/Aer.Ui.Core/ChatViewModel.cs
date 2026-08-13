@@ -8,7 +8,17 @@ using CommunityToolkit.Mvvm.Input;
 namespace Aer.Ui.Core;
 
 /// <summary>One rendered row in <see cref="ChatViewModel.Messages"/> — a human turn or an assistant response, never both (M24 Phase 1 desktop chat UI, issue #262).</summary>
-public sealed record ChatMessageViewModel(string SenderLabel, string Text, DateTimeOffset Timestamp, bool IsFromUser, bool IsSystem = false);
+public sealed record ChatMessageViewModel(
+    string SenderLabel,
+    string Text,
+    DateTimeOffset Timestamp,
+    bool IsFromUser,
+    bool IsSystem = false,
+    bool IsFailure = false,
+    Action? PrepareFixPrompt = null)
+{
+    public IRelayCommand? PrepareFixPromptCommand { get; } = PrepareFixPrompt != null ? new RelayCommand(PrepareFixPrompt) : null;
+}
 
 /// <summary>
 /// One row in the chat capability picker (M24 Phase 2 follow-up). <paramref name="IsInvokable"/> is
@@ -310,6 +320,18 @@ public sealed partial class ChatViewModel : ObservableObject
         if (turn.AssistantResponse is { } response)
         {
             Messages.Add(new ChatMessageViewModel(turn.Vendor, response, turn.ExecutedAt, IsFromUser: false));
+        }
+
+        if (!string.IsNullOrEmpty(turn.ErrorMessage))
+        {
+            var error = turn.ErrorMessage;
+            Messages.Add(new ChatMessageViewModel(
+                turn.Vendor,
+                error,
+                turn.ExecutedAt,
+                IsFromUser: false,
+                IsFailure: true,
+                PrepareFixPrompt: () => InputText = $"The last turn failed with:\n> {error}\nPlease diagnose and fix it."));
         }
     }
 
