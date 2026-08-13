@@ -30,6 +30,7 @@
       <Color x:Key="StatusFailedColor">#9E382C</Color>
       <Color x:Key="StatusCancelledColor">#88969C</Color>
       <Color x:Key="StatusQueuedColor">#88969C</Color>
+      <Color x:Key="StatusOutOfPlanColor">#88969C</Color>
       <Color x:Key="StatusUnavailableColor">#88969C</Color>
       <SolidColorBrush x:Key="Color.Accent">#3F8C87</SolidColorBrush>
       <SolidColorBrush x:Key="Color.OnAccent">#FFFFFF</SolidColorBrush>
@@ -60,6 +61,7 @@
       <Color x:Key="StatusFailedColor">#E08274</Color>
       <Color x:Key="StatusCancelledColor">#6C7A80</Color>
       <Color x:Key="StatusQueuedColor">#6C7A80</Color>
+      <Color x:Key="StatusOutOfPlanColor">#6C7A80</Color>
       <Color x:Key="StatusUnavailableColor">#6C7A80</Color>
       <SolidColorBrush x:Key="Color.Accent">#5FB3AD</SolidColorBrush>
       <SolidColorBrush x:Key="Color.OnAccent">#0B1112</SolidColorBrush>
@@ -108,6 +110,8 @@
     <sys:String x:Key="StatusCancelledLabel">Cancelled</sys:String>
     <sys:String x:Key="StatusQueuedMark">Icon.Ellipsis</sys:String>
     <sys:String x:Key="StatusQueuedLabel">Queued</sys:String>
+    <sys:String x:Key="StatusOutOfPlanMark">Icon.Ellipsis</sys:String>
+    <sys:String x:Key="StatusOutOfPlanLabel">Out of plan</sys:String>
     <sys:String x:Key="StatusUnavailableMark">Icon.Slashed</sys:String>
     <sys:String x:Key="StatusUnavailableLabel">Unavailable</sys:String>
     <sys:Double x:Key="DensityRowPaddingX">9</sys:Double>

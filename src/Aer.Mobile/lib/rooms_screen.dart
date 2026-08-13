@@ -6,6 +6,8 @@ import 'daemon/daemon_client.dart';
 import 'daemon/models.dart';
 import 'inbox_screen.dart';
 import 'pairing_screen.dart';
+import 'theme/status_mark.dart';
+import 'theme/tokens.dart';
 
 /// Maps a status string to decision 0018's (docs/decisions/0018-attention-is-the-primary-signal.md)
 /// attention band; unknown strings stay visible in band 2, never the muted band.
@@ -15,6 +17,18 @@ int attentionBand(String? status) => switch (status) {
       'Finished' || 'Failed' => 2,
       'Cancelled' || 'Unavailable' || 'OutOfPlan' => 3,
       _ => 2,
+    };
+
+/// Maps a room status string to decision 0006's [AerStatus]; canonical prose is design/tokens.json.
+AerStatus roomStatus(String? status) => switch (status) {
+      'NeedsYou' => AerStatus.needsInput,
+      'Running' => AerStatus.working,
+      'Finished' => AerStatus.finished,
+      'Failed' => AerStatus.failed,
+      'Cancelled' => AerStatus.cancelled,
+      'Unavailable' => AerStatus.unavailable,
+      'OutOfPlan' => AerStatus.outOfPlan,
+      _ => AerStatus.idle,
     };
 
 /// The switcher — the phone's front door (#337/#1044): every known room at once, and the screen a
@@ -452,7 +466,22 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
                                       // The canonical status line (J3, #1049) — "Waiting for your reply"
                                       // for a chat turn, "Waiting for your review" for a real gate. Replaces
                                       // the old raw "N step(s) awaiting a decision", which mislabelled a chat.
-                                      Text(item.statusText),
+                                      Row(
+                                        // Top-align the mark against a wrapping status line, and keep
+                                        // the Text width-bounded: a Row does not pass the Column's
+                                        // width constraint to non-flex children, so without Expanded a
+                                        // long line ("Out of plan — resumes …") overflows instead of
+                                        // wrapping the way the bare Text here always did.
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Padding(
+                                            padding: const EdgeInsets.only(top: 2),
+                                            child: StatusMark(roomStatus(item.status), size: 12),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Expanded(child: Text(item.statusText)),
+                                        ],
+                                      ),
                                       Text(item.roomDirectoryPath, style: Theme.of(context).textTheme.bodySmall),
                                       const SizedBox(height: 8),
                                       if (!_selectionMode)
