@@ -2572,7 +2572,10 @@ namespace Aer.Daemon
             // null here -- unlike the dispatch path's CoreDispatchResult, this session seam never
             // captures the failed process's stderr (aer-core's P/Invoke boundary doesn't surface it,
             // see rawStdoutCapture's comment above) -- so only the stdout tail is offered, which is
-            // where both vendors' refusal text has been measured to land for this seam.
+            // the only tail this seam has. Claim scope (0026 Rests-on): agy's refusal prose is
+            // measured on stdout (dispatch path, #1128); claude's typed code is measured on the
+            // dispatch path (#1115) but its INTERACTIVE refusal channel is still unmeasured -- this
+            // wires the same classifier honestly without claiming a live observation on this seam.
             var isExhausted = false;
             DateTimeOffset? exhaustedUntil = null;
             if (!establishedThisTurn
