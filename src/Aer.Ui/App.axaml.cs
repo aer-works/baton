@@ -14,6 +14,15 @@ public partial class App : Application
     {
         Dispatcher.UIThread.UnhandledException += OnUnhandledException;
 
+        // #1189: the dispatcher hook above catches what an `async void` handler throws, because
+        // that exception is rethrown on the synchronization context. The other half of this app's
+        // async surface is `_ = SomethingAsync()` — 47 sites, one per click handler — whose
+        // exception is captured on a Task nobody awaits, reaches no synchronization context, and
+        // is dropped on the floor by the runtime. Not a crash; a silence, which the error-handling
+        // rules forbid just as firmly. One hook rather than 47 call-site edits, for the same reason
+        // the guard above is not nine try/catches.
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.ShutdownMode = Avalonia.Controls.ShutdownMode.OnExplicitShutdown;
@@ -64,11 +73,43 @@ public partial class App : Application
     private void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         e.Handled = true;
-        AppUnhandledExceptionSink.LogException(e.Exception);
+        Report(e.Exception);
+    }
+
+    /// <summary>
+    /// #1189: a faulted Task that nobody awaited, arriving when the finalizer eventually collects
+    /// it. Two things this cannot be, and the difference matters to anyone reading it later: it is
+    /// not prompt — the event fires at garbage collection, not at the failure — and it is not a
+    /// crash to avert, because an unobserved Task fault has terminated nothing since .NET 4.5. It
+    /// is the difference between the failure being written down and disappearing, which is the whole
+    /// of its job. <see cref="UnobservedTaskExceptionEventArgs.SetObserved"/> is called for the
+    /// same reason the dispatcher's <c>Handled</c> is: to say the report is now someone's
+    /// responsibility.
+    /// </summary>
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        e.SetObserved();
+
+        // Off the UI thread by construction (a finalizer thread), and the surface below is bound to
+        // UI properties — so the report is posted rather than written here.
+        var exception = (Exception?)e.Exception?.InnerException ?? e.Exception;
+        if (exception is not null)
+        {
+            Dispatcher.UIThread.Post(() => Report(exception));
+        }
+    }
+
+    private void Report(Exception exception)
+    {
+        AppUnhandledExceptionSink.LogException(exception);
 
         if (ErrorSurface is { } surface)
         {
-            var message = $"{PlainLanguage.ForUnexpectedAppError()}: {e.Exception.Message}";
+            // The log path rides in the sentence deliberately: this text shares its two properties
+            // with every routine status update (MainWindow's own writers, RoomClient's mutation
+            // status), so it can be overwritten by the next ordinary message before it is read.
+            // Where the detail persists has to be part of what the person is told.
+            var message = $"{PlainLanguage.ForUnexpectedAppError()}: {exception.Message} — written to {AppUnhandledExceptionSink.LogPath}";
             if (surface.Chat is { } chat)
             {
                 chat.StatusText = message;

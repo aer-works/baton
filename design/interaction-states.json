@@ -106,7 +106,7 @@
       "name": "Unexpected app error",
       "behaviour": "The app stays up and says what went wrong in the failure text already on screen — never a dialog, never a silent disappearance, and never a window that vanishes mid-task. The detail is kept on disk so the failure is still there to read afterwards.",
       "provenance": "#1176, surfaced by #1175's second reader; decided 2026-08-13",
-      "coverage": { "renderedBy": ["src/Aer.Ui/App.axaml.cs", "src/Aer.Mobile/lib/main.dart"] }
+      "coverage": { "renderedBy": ["src/Aer.Ui/App.axaml.cs", "src/Aer.Ui.Core/RoomStepViewModels.cs", "src/Aer.Ui/MainWindow.axaml", "src/Aer.Mobile/lib/main.dart"] }
     }
   }
 }

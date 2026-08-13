@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Aer.Ui.Core;
 
 using Avalonia.Headless.XUnit;
@@ -84,5 +85,55 @@ public class AppUnhandledExceptionGuardTests
     {
         await Task.Yield();
         throw new InvalidOperationException(message);
+    }
+
+    /// <summary>
+    /// #1189, the other half of the app's async surface: <c>_ = SomethingAsync()</c>. Its exception
+    /// never reaches the dispatcher — it sits on a Task nobody awaits — so the fact above cannot see
+    /// it and this one drives the finalizer instead. Deliberately asserts only the durable sink:
+    /// the event arrives at collection time on a finalizer thread, so what a person sees and when
+    /// is a different (posted, best-effort) claim, and pinning it here would be pinning the GC.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task An_exception_on_a_task_nobody_awaited_is_still_written_down()
+    {
+        var expectedMessage = $"Simulated unobserved fault {Guid.NewGuid():N}";
+
+        DropAFaultedTask(expectedMessage);
+
+        // The event fires when the faulted Task is finalized, which is a collection away rather
+        // than a duration away — hence a bounded poll around forced collections rather than a
+        // sleep. wait-ok: the ceiling only bounds a regression; the loop exits on the first pass.
+        var logPath = AppUnhandledExceptionSink.LogPath;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(60);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            if (File.Exists(logPath) && (await File.ReadAllTextAsync(logPath)).Contains(expectedMessage))
+            {
+                return;
+            }
+
+            await Task.Delay(100);
+        }
+
+        Assert.Fail($"The unobserved fault never reached the durable sink at {logPath}.");
+    }
+
+    // Its own method so the Task is unreachable the moment it returns; a local in the test body
+    // can stay rooted for the whole method and never be finalized.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void DropAFaultedTask(string message)
+    {
+        _ = FailAsync(message);
+
+        static async Task FailAsync(string message)
+        {
+            await Task.Yield();
+            throw new InvalidOperationException(message);
+        }
     }
 }
