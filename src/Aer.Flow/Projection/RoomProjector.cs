@@ -19,6 +19,8 @@ public static class RoomProjector
         var unmatchedEntries = new List<string>();
         var isDormant = false;
         PendingPermission? pendingPermission = null;
+        var askedPermissions = new Dictionary<string, (string ToolName, string Category)>(StringComparer.Ordinal);
+        var permissionAnswers = new List<PermissionAnswer>();
         // Ids already answered or revoked. A permission ask can be journaled AFTER its resolution — the
         // MCP host writes the ask file and the daemon appends `Asked` asynchronously, while the answer
         // path appends `Answered` directly, so an automated/fast answer (or crash reconciliation) can
@@ -138,6 +140,8 @@ public static class RoomProjector
                     break;
 
                 case RoomEvent.RuntimePermissionAsked asked:
+                    askedPermissions[asked.PermissionRequestId] = (asked.ToolName, asked.Category);
+
                     // A gate already resolved (in any order) never re-opens.
                     if (!resolvedPermissionIds.Contains(asked.PermissionRequestId))
                     {
@@ -160,6 +164,25 @@ public static class RoomProjector
                         pendingPermission = null;
                     }
 
+                    var (toolName, category) = askedPermissions.TryGetValue(answered.PermissionRequestId, out var askedInfo)
+                        ? askedInfo
+                        : ("(unknown)", "");
+
+                    permissionAnswers.Add(new PermissionAnswer(
+                        answered.PermissionRequestId,
+                        toolName,
+                        category,
+                        answered.DecisionKind,
+                        answered.Reason,
+                        answered.DeciderIdentity,
+                        answered.AnsweredAt,
+                        WasRevoked: false));
+
+                    if (permissionAnswers.Count > 50)
+                    {
+                        permissionAnswers.RemoveAt(0);
+                    }
+
                     break;
 
                 case RoomEvent.RuntimePermissionRevoked revoked:
@@ -169,11 +192,30 @@ public static class RoomProjector
                         pendingPermission = null;
                     }
 
+                    var (revokedToolName, revokedCategory) = askedPermissions.TryGetValue(revoked.PermissionRequestId, out var revokedAskedInfo)
+                        ? revokedAskedInfo
+                        : ("(unknown)", "");
+
+                    permissionAnswers.Add(new PermissionAnswer(
+                        revoked.PermissionRequestId,
+                        revokedToolName,
+                        revokedCategory,
+                        "",
+                        revoked.Reason,
+                        "",
+                        revoked.RevokedAt,
+                        WasRevoked: true));
+
+                    if (permissionAnswers.Count > 50)
+                    {
+                        permissionAnswers.RemoveAt(0);
+                    }
+
                     break;
             }
         }
 
-        return new RoomState(heldWork, unmatchedEntries, activeGrants, openEscalations, isDormant, pendingPermission);
+        return new RoomState(heldWork, unmatchedEntries, activeGrants, openEscalations, isDormant, pendingPermission, permissionAnswers);
 
     }
 }

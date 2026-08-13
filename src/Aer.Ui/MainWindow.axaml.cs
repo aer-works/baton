@@ -1387,6 +1387,7 @@ public partial class MainWindow : Window
         // projection on answer, and the LoadAsync refresh below it re-renders with the gate cleared.
         ViewModel.Chat.SurfacePendingPermission(
             projection.PendingPermission,
+            projection.PermissionAnswers,
             (permissionRequestId, decisionKind, reason) =>
                 AnswerPermissionFromGateAsync(roomDirectoryPath, permissionRequestId, decisionKind, reason));
     }

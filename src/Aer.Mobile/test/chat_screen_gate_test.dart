@@ -82,7 +82,7 @@ void main() {
         askedAt: DateTime.utc(2026, 8, 9, 12),
       );
 
-  RoomProjection projection({PendingPermission? withPending}) => RoomProjection(
+  RoomProjection projection({PendingPermission? withPending, List<PermissionAnswer>? withAnswers}) => RoomProjection(
         directoryPath: '/tasks/foo',
         sessionId: 'sess-1',
         workflowTemplateId: 'chat',
@@ -92,6 +92,7 @@ void main() {
         executions: const [],
         workerAdapters: const {},
         pendingPermission: withPending,
+        permissionAnswers: withAnswers ?? const [],
       );
 
   Future<_FakeDaemonClient> pumpChatScreen(WidgetTester tester) async {
@@ -104,6 +105,50 @@ void main() {
   }
 
   group('_ChatScreenState permission gate wiring (0022, #390 mobile, second-reader finding)', () {
+    testWidgets('a push with permissionAnswers renders system transcript lines in order', (tester) async {
+      final client = await pumpChatScreen(tester);
+
+      final answers = [
+        PermissionAnswer(
+          permissionRequestId: 'req-1',
+          toolName: 'Bash',
+          category: 'Shell',
+          decisionKind: 'AllowOnce',
+          reason: null,
+          deciderIdentity: 'op',
+          answeredAt: DateTime.utc(2026, 8, 12, 10, 2),
+          wasRevoked: false,
+        ),
+        PermissionAnswer(
+          permissionRequestId: 'req-2',
+          toolName: 'Edit',
+          category: 'Files',
+          decisionKind: 'Deny',
+          reason: 'user declined',
+          deciderIdentity: 'op',
+          answeredAt: DateTime.utc(2026, 8, 12, 10, 5),
+          wasRevoked: false,
+        ),
+        PermissionAnswer(
+          permissionRequestId: 'req-3',
+          toolName: 'Bash',
+          category: 'Shell',
+          decisionKind: '',
+          reason: 'turn_ended',
+          deciderIdentity: '',
+          answeredAt: DateTime.utc(2026, 8, 12, 10, 12),
+          wasRevoked: true,
+        ),
+      ];
+
+      client.push(projection(withAnswers: answers));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Allowed once — Bash'), findsOneWidget);
+      expect(find.text('Denied — Edit: user declined'), findsOneWidget);
+      expect(find.text('Expired unanswered — turn ended'), findsOneWidget);
+    });
+
     testWidgets('a push with a pendingPermission renders the gate', (tester) async {
       final client = await pumpChatScreen(tester);
 

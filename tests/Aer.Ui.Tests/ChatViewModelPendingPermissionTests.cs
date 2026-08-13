@@ -60,4 +60,63 @@ public class ChatViewModelPendingPermissionTests
         Assert.NotSame(first, chat.PendingPermission);
         Assert.Equal("req-2", chat.PendingPermission!.PermissionRequestId);
     }
+
+    [Fact]
+    public void SurfacePending_InterleavesAnswersWithTurnsInTimestampOrder_AndFormatsWordings()
+    {
+        var chat = new ChatViewModel();
+        var baseTime = new DateTimeOffset(2026, 8, 12, 10, 0, 0, TimeSpan.Zero);
+
+        var turns = new[]
+        {
+            new Aer.Adapters.SessionTurn(1, "claude", "First turn", "Response 1", baseTime, false, false),
+            new Aer.Adapters.SessionTurn(2, "claude", "Second turn", "Response 2", baseTime.AddMinutes(10), false, false)
+        };
+
+        var metadata = new Aer.Adapters.SessionMetadata(
+            SessionId: "sess-1",
+            RoomDirectoryPath: "C:/tasks/foo",
+            CurrentAdapter: "claude",
+            CurrentVendorSessionId: "vendor-1",
+            Model: null,
+            WorkingDirectory: null,
+            TurnCount: turns.Length,
+            SafetyCeiling: 100,
+            CreatedAt: baseTime,
+            UpdatedAt: baseTime.AddMinutes(10),
+            Turns: [.. turns]);
+
+        chat.LoadFromMetadata(metadata, "C:/tasks/foo");
+
+        var answers = new List<PermissionAnswer>
+        {
+            new("req-1", "Bash", "Shell", "AllowOnce", null, "op", baseTime.AddMinutes(2), WasRevoked: false),
+            new("req-2", "Edit", "Files", "Deny", "user declined", "op", baseTime.AddMinutes(5), WasRevoked: false),
+            new("req-3", "Bash", "Shell", "", "turn_ended", "", baseTime.AddMinutes(12), WasRevoked: true)
+        };
+
+        chat.SurfacePendingPermission(null, answers, NoopAnswer);
+
+        Assert.Equal(7, chat.Messages.Count);
+
+        Assert.Equal("You", chat.Messages[0].SenderLabel);
+        Assert.False(chat.Messages[0].IsSystem);
+
+        Assert.Equal("claude", chat.Messages[1].SenderLabel);
+
+        Assert.Equal("System", chat.Messages[2].SenderLabel);
+        Assert.True(chat.Messages[2].IsSystem);
+        Assert.Equal("Allowed once — Bash", chat.Messages[2].Text);
+
+        Assert.Equal("System", chat.Messages[3].SenderLabel);
+        Assert.True(chat.Messages[3].IsSystem);
+        Assert.Equal("Denied — Edit: user declined", chat.Messages[3].Text);
+
+        Assert.Equal("You", chat.Messages[4].SenderLabel);
+        Assert.Equal("claude", chat.Messages[5].SenderLabel);
+
+        Assert.Equal("System", chat.Messages[6].SenderLabel);
+        Assert.True(chat.Messages[6].IsSystem);
+        Assert.Equal("Expired unanswered — turn ended", chat.Messages[6].Text);
+    }
 }
