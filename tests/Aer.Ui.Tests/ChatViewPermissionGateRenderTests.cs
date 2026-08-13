@@ -4,6 +4,7 @@ using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+using Avalonia.LogicalTree;
 using Avalonia.Threading;
 
 namespace Aer.Ui.Tests;
@@ -78,5 +79,30 @@ public class ChatViewPermissionGateRenderTests
         var answer = Assert.Single(answers);
         Assert.Equal("req-99", answer.Id);
         Assert.Equal(PermissionDecisionKind.AllowOnce, answer.Kind);
+    }
+
+    [AvaloniaFact]
+    public void Gate_IsDescendantOfChatMessagesScroll_WhenSurfaced_AndIsHiddenWhenCleared()
+    {
+        var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+        var chat = window.ViewModel.Chat;
+
+        var scroll = window.FindViewControl<ScrollViewer>("ChatMessagesScroll");
+        var gate = window.FindViewControl<Border>("ChatPermissionGate");
+        Assert.NotNull(scroll);
+        Assert.NotNull(gate);
+
+        // With a pending permission surfaced, the gate Border is a descendant of ChatMessagesScroll (the transcript) and visible
+        chat.SurfacePendingPermission(ShellAsk(), (_, _, _) => Task.CompletedTask);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Contains(scroll, gate!.GetLogicalAncestors());
+        Assert.True(gate!.IsVisible);
+
+        // With the permission cleared, it is not visible
+        chat.SurfacePendingPermission(null, (_, _, _) => Task.CompletedTask);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(gate.IsVisible);
     }
 }
