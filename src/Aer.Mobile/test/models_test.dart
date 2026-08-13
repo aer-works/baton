@@ -154,4 +154,41 @@ void main() {
     expect(item.sessionId, 'sess-123');
     expect(item.status, 'NeedsYou');
   });
+
+  group('SessionTurn.fromJson (errorMessage parse)', () {
+    test('parses camelCase errorMessage', () {
+      final turn = SessionTurn.fromJson({
+        'turnIndex': 1,
+        'vendor': 'claude',
+        'humanMessage': 'Do work',
+        'assistantResponse': null,
+        'executedAt': '2026-08-13T08:00:00Z',
+        'errorMessage': 'Process exited with code 1',
+      });
+      expect(turn.errorMessage, 'Process exited with code 1');
+    });
+
+    test('parses PascalCase ErrorMessage', () {
+      final turn = SessionTurn.fromJson({
+        'TurnIndex': 1,
+        'Vendor': 'claude',
+        'HumanMessage': 'Do work',
+        'AssistantResponse': null,
+        'ExecutedAt': '2026-08-13T08:00:00Z',
+        'ErrorMessage': 'Process crashed',
+      });
+      expect(turn.errorMessage, 'Process crashed');
+    });
+
+    test('parses absent errorMessage as null', () {
+      final turn = SessionTurn.fromJson({
+        'turnIndex': 1,
+        'vendor': 'claude',
+        'humanMessage': 'Hello',
+        'assistantResponse': 'Hi',
+        'executedAt': '2026-08-13T08:00:00Z',
+      });
+      expect(turn.errorMessage, isNull);
+    });
+  });
 }

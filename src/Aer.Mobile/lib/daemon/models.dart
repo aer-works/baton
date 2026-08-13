@@ -249,6 +249,7 @@ class SessionTurn {
   final String humanMessage;
   final String? assistantResponse;
   final DateTime executedAt;
+  final String? errorMessage;
 
   SessionTurn({
     required this.turnIndex,
@@ -256,6 +257,7 @@ class SessionTurn {
     required this.humanMessage,
     required this.assistantResponse,
     required this.executedAt,
+    this.errorMessage,
   });
 
   factory SessionTurn.fromJson(Map<String, dynamic> json) {
@@ -266,6 +268,7 @@ class SessionTurn {
       humanMessage: j['humanmessage']?.toString() ?? '',
       assistantResponse: j['assistantresponse']?.toString(),
       executedAt: DateTime.tryParse(j['executedat']?.toString() ?? '') ?? DateTime.now(),
+      errorMessage: j['errormessage']?.toString(),
     );
   }
 }

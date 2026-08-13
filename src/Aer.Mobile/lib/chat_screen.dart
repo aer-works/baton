@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
@@ -19,12 +20,16 @@ class _ChatMessage {
   final String text;
   final bool isFromUser;
   final bool isSystem;
+  final bool isFailure;
+  final VoidCallback? onFix;
 
   _ChatMessage({
     required this.senderLabel,
     required this.text,
     required this.isFromUser,
     this.isSystem = false,
+    this.isFailure = false,
+    this.onFix,
   });
 }
 
@@ -552,6 +557,27 @@ class _ChatScreenState extends State<ChatScreen> {
     return 'Denied — ${answer.toolName}$reasonSuffix';
   }
 
+  void _addTurnMessages(List<_ChatMessage> messages, SessionTurn turn) {
+    messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
+    if (turn.assistantResponse != null) {
+      messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
+    }
+    if (turn.errorMessage != null && turn.errorMessage!.isNotEmpty) {
+      final err = turn.errorMessage!;
+      messages.add(
+        _ChatMessage(
+          senderLabel: turn.vendor,
+          text: err,
+          isFromUser: false,
+          isFailure: true,
+          onFix: () {
+            _inputController.text = 'The last turn failed with:\n> $err\nPlease diagnose and fix it.';
+          },
+        ),
+      );
+    }
+  }
+
   List<_ChatMessage> _buildMessages(SessionMetadata metadata) {
     final messages = <_ChatMessage>[];
     final turns = metadata.turns;
@@ -567,10 +593,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final answer = answers[ansIdx];
 
         if (turn.executedAt.isBefore(answer.answeredAt) || turn.executedAt.isAtSameMomentAs(answer.answeredAt)) {
-          messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
-          if (turn.assistantResponse != null) {
-            messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
-          }
+          _addTurnMessages(messages, turn);
           turnIdx++;
         } else {
           final text = formatPermissionAnswerWording(answer);
@@ -578,11 +601,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ansIdx++;
         }
       } else if (turnIdx < turns.length) {
-        final turn = turns[turnIdx];
-        messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
-        if (turn.assistantResponse != null) {
-          messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
-        }
+        _addTurnMessages(messages, turns[turnIdx]);
         turnIdx++;
       } else {
         final answer = answers[ansIdx];
@@ -905,8 +924,16 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
-    final background = message.isFromUser ? scheme.primaryContainer : scheme.surfaceContainerHighest;
-    final foreground = message.isFromUser ? scheme.onPrimaryContainer : scheme.onSurfaceVariant;
+    final background = message.isFailure
+        ? scheme.errorContainer
+        : message.isFromUser
+            ? scheme.primaryContainer
+            : scheme.surfaceContainerHighest;
+    final foreground = message.isFailure
+        ? scheme.onErrorContainer
+        : message.isFromUser
+            ? scheme.onPrimaryContainer
+            : scheme.onSurfaceVariant;
 
     return Align(
       alignment: message.isFromUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -921,6 +948,24 @@ class _MessageBubble extends StatelessWidget {
             Text(message.senderLabel, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: foreground)),
             const SizedBox(height: 4),
             MarkdownBodyWidget(text: message.text, foreground: foreground),
+            if (message.isFailure) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  OutlinedButton(
+                    onPressed: message.onFix,
+                    child: Text('Ask ${message.senderLabel} to fix'),
+                  ),
+                  OutlinedButton(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: message.text));
+                    },
+                    child: const Text('Copy'),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),

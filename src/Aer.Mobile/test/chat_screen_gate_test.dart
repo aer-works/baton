@@ -341,5 +341,45 @@ void main() {
       expect(find.textContaining('Disconnected'), findsNothing);
       expect(find.text('Allow once'), findsOneWidget);
     });
+
+    testWidgets('a failed turn renders error message and fix button, and tapping pre-fills composer', (tester) async {
+      final turns = [
+        SessionTurn(
+          turnIndex: 0,
+          vendor: 'claude',
+          humanMessage: 'run command',
+          assistantResponse: null,
+          executedAt: DateTime.utc(2026, 8, 12, 10, 0),
+          errorMessage: 'Process exited with code 1',
+        ),
+      ];
+      await pumpChatScreen(tester, turns: turns);
+
+      expect(find.text('Process exited with code 1'), findsOneWidget);
+      expect(find.text('Ask claude to fix'), findsOneWidget);
+
+      await tester.tap(find.text('Ask claude to fix'));
+      await tester.pump();
+
+      final textField = tester.widget<TextField>(find.byType(TextField));
+      expect(textField.controller?.text, 'The last turn failed with:\n> Process exited with code 1\nPlease diagnose and fix it.');
+    });
+
+    testWidgets('a healthy turn shows no failure card or fix button', (tester) async {
+      final turns = [
+        SessionTurn(
+          turnIndex: 0,
+          vendor: 'claude',
+          humanMessage: 'run command',
+          assistantResponse: 'command completed successfully',
+          executedAt: DateTime.utc(2026, 8, 12, 10, 0),
+          errorMessage: null,
+        ),
+      ];
+      await pumpChatScreen(tester, turns: turns);
+
+      expect(find.text('command completed successfully'), findsOneWidget);
+      expect(find.textContaining('to fix'), findsNothing);
+    });
   });
 }
