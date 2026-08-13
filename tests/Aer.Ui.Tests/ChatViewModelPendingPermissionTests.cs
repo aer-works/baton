@@ -119,4 +119,56 @@ public class ChatViewModelPendingPermissionTests
         Assert.True(chat.Messages[6].IsSystem);
         Assert.Equal("Expired unanswered — turn ended", chat.Messages[6].Text);
     }
+
+    /// <summary>
+    /// #1142 second-reader: /clear wipes the vendor turns but room.jsonl's permission history
+    /// survives, so without the watermark every old answer re-rendered as an orphan bubble above an
+    /// empty transcript. Both polarities: answers at-or-before the watermark are hidden, an answer
+    /// AFTER it still renders.
+    /// </summary>
+    [Fact]
+    public void MarkTranscriptCleared_HidesOldAnswers_ButNotOnesAnsweredAfterward()
+    {
+        var chat = new ChatViewModel();
+        var baseTime = new DateTimeOffset(2026, 8, 12, 10, 0, 0, TimeSpan.Zero);
+
+        var metadata = new Aer.Adapters.SessionMetadata(
+            SessionId: "sess-1",
+            RoomDirectoryPath: "C:/tasks/foo",
+            CurrentAdapter: "claude",
+            CurrentVendorSessionId: "vendor-1",
+            Model: null,
+            WorkingDirectory: null,
+            TurnCount: 0,
+            SafetyCeiling: 100,
+            CreatedAt: baseTime,
+            UpdatedAt: baseTime,
+            Turns: []);
+        chat.LoadFromMetadata(metadata, "C:/tasks/foo");
+
+        var oldAnswers = new List<PermissionAnswer>
+        {
+            new("req-1", "Bash", "Shell", "AllowOnce", null, "op", baseTime.AddMinutes(2), WasRevoked: false),
+            new("req-2", "Edit", "Files", "Deny", "user declined", "op", baseTime.AddMinutes(5), WasRevoked: false)
+        };
+        chat.SurfacePendingPermission(null, oldAnswers, NoopAnswer);
+        Assert.Equal(2, chat.Messages.Count); // pre-clear sanity: both render
+
+        chat.MarkTranscriptCleared();
+        chat.LoadFromMetadata(metadata, "C:/tasks/foo"); // the /clear handler's reload, turns wiped
+
+        Assert.Empty(chat.Messages);
+
+        // The room's durable history still carries the old answers on the next poll, plus one
+        // answered after the clear — only the new one may surface.
+        var afterClear = new List<PermissionAnswer>(oldAnswers)
+        {
+            new("req-3", "Bash", "Shell", "AllowOnce", null, "op", baseTime.AddMinutes(9), WasRevoked: false)
+        };
+        chat.SurfacePendingPermission(null, afterClear, NoopAnswer);
+
+        var message = Assert.Single(chat.Messages);
+        Assert.Equal("Allowed once — Bash", message.Text);
+        Assert.True(message.IsSystem);
+    }
 }

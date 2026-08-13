@@ -110,6 +110,14 @@ class _ChatScreenState extends State<ChatScreen> {
   /// History of answered or revoked permissions from the latest projection.
   List<PermissionAnswer> _permissionAnswers = const [];
 
+  /// Answers at or before this watermark are hidden from the transcript. Set on /clear: the vendor
+  /// turns are wiped but room.jsonl's permission history survives, so without this every old answer
+  /// re-renders as an orphan bubble above an empty transcript. Derived from the answers' own
+  /// daemon-stamped timestamps, never this device's clock. In-memory only — after the screen is
+  /// reopened the old answers reappear with the room's other durable history, the same disclosed
+  /// limitation as the desktop's ChatViewModel watermark (#1142 review).
+  DateTime? _answersClearedThrough;
+
   /// True while an answer POST is in flight — disables the gate's rungs (mirrors InboxScreen's
   /// `_decide`'s in-flight discipline) so a slow round trip can't be double-submitted. Independent of
   /// [_pendingPermission]'s identity: the gate disappears entirely once the next projection clears
@@ -487,7 +495,14 @@ class _ChatScreenState extends State<ChatScreen> {
         try {
           final cleared = await widget.client.clearSession(widget.sessionId);
           if (mounted) {
-            setState(() => _metadata = cleared);
+            setState(() {
+              if (_permissionAnswers.isNotEmpty) {
+                _answersClearedThrough = _permissionAnswers
+                    .map((a) => a.answeredAt)
+                    .reduce((a, b) => a.isAfter(b) ? a : b);
+              }
+              _metadata = cleared;
+            });
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Room context cleared.')));
           }
         } on DaemonException catch (e) {
@@ -542,13 +557,16 @@ class _ChatScreenState extends State<ChatScreen> {
   List<_ChatMessage> _buildMessages(SessionMetadata metadata) {
     final messages = <_ChatMessage>[];
     final turns = metadata.turns;
+    final answers = _answersClearedThrough == null
+        ? _permissionAnswers
+        : _permissionAnswers.where((a) => a.answeredAt.isAfter(_answersClearedThrough!)).toList();
     int turnIdx = 0;
     int ansIdx = 0;
 
-    while (turnIdx < turns.length || ansIdx < _permissionAnswers.length) {
-      if (turnIdx < turns.length && ansIdx < _permissionAnswers.length) {
+    while (turnIdx < turns.length || ansIdx < answers.length) {
+      if (turnIdx < turns.length && ansIdx < answers.length) {
         final turn = turns[turnIdx];
-        final answer = _permissionAnswers[ansIdx];
+        final answer = answers[ansIdx];
 
         if (turn.executedAt.isBefore(answer.answeredAt) || turn.executedAt.isAtSameMomentAs(answer.answeredAt)) {
           messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
@@ -569,7 +587,7 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         turnIdx++;
       } else {
-        final answer = _permissionAnswers[ansIdx];
+        final answer = answers[ansIdx];
         final text = formatPermissionAnswerWording(answer);
         messages.add(_ChatMessage(senderLabel: 'System', text: text, isFromUser: false, isSystem: true));
         ansIdx++;

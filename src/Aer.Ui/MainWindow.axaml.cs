@@ -1047,6 +1047,7 @@ public partial class MainWindow : Window
                 var (cleared, clearError) = await _session.ClearSessionAsync(sessionId).ConfigureAwait(true);
                 if (cleared != null && chat.RoomDirectoryPath is { } roomDirectoryPath)
                 {
+                    chat.MarkTranscriptCleared();
                     chat.LoadFromMetadata(cleared, roomDirectoryPath);
                     chat.StatusText = "Room context cleared.";
                 }

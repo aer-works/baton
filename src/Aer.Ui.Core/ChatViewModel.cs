@@ -39,6 +39,18 @@ public sealed partial class ChatViewModel : ObservableObject
 {
     private SessionMetadata? _lastMetadata;
     private IReadOnlyList<PermissionAnswer> _permissionAnswers = [];
+
+    /// <summary>
+    /// Answers at or before this watermark are hidden from the transcript. Set by
+    /// <see cref="MarkTranscriptCleared"/> when /clear wipes the vendor turns: room.jsonl's
+    /// permission history survives the wipe, so without this every old answer would re-render as an
+    /// orphan bubble above an empty transcript. Derived from the answers' own timestamps rather than
+    /// the UI host's clock (the daemon stamped AnsweredAt; the two clocks can disagree). In-memory
+    /// only — after an app restart the old answers reappear alongside the room's other durable
+    /// history, which is the disclosed limitation (#1142 review) until clears are themselves room
+    /// events.
+    /// </summary>
+    private DateTimeOffset? _answersClearedThrough;
     public ObservableCollection<ChatMessageViewModel> Messages { get; } = [];
 
     /// <summary>Invokable skills/commands/agents (M24 Phase 2 follow-up chat capability picker) — recently-used first, per <see cref="LoadCommands"/>.</summary>
@@ -218,15 +230,18 @@ public sealed partial class ChatViewModel : ObservableObject
         }
 
         var turns = _lastMetadata.Turns;
+        var answers = _answersClearedThrough is { } clearedThrough
+            ? _permissionAnswers.Where(a => a.AnsweredAt > clearedThrough).ToList()
+            : _permissionAnswers;
         int turnIdx = 0;
         int ansIdx = 0;
 
-        while (turnIdx < turns.Count || ansIdx < _permissionAnswers.Count)
+        while (turnIdx < turns.Count || ansIdx < answers.Count)
         {
-            if (turnIdx < turns.Count && ansIdx < _permissionAnswers.Count)
+            if (turnIdx < turns.Count && ansIdx < answers.Count)
             {
                 var turn = turns[turnIdx];
-                var answer = _permissionAnswers[ansIdx];
+                var answer = answers[ansIdx];
 
                 if (turn.ExecutedAt <= answer.AnsweredAt)
                 {
@@ -246,7 +261,7 @@ public sealed partial class ChatViewModel : ObservableObject
             }
             else
             {
-                AddAnswerMessage(_permissionAnswers[ansIdx]);
+                AddAnswerMessage(answers[ansIdx]);
                 ansIdx++;
             }
         }
@@ -427,10 +442,24 @@ public sealed partial class ChatViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Called when /clear wipes the vendor turns so already-rendered permission answers don't
+    /// resurface as orphan bubbles — see <see cref="_answersClearedThrough"/> for the mechanism and
+    /// its restart limitation.
+    /// </summary>
+    public void MarkTranscriptCleared()
+    {
+        if (_permissionAnswers.Count > 0)
+        {
+            _answersClearedThrough = _permissionAnswers.Max(a => a.AnsweredAt);
+        }
+    }
+
     public void Clear()
     {
         _lastMetadata = null;
         _permissionAnswers = [];
+        _answersClearedThrough = null;
         SessionId = null;
         RoomDirectoryPath = null;
         CurrentAdapter = null;
