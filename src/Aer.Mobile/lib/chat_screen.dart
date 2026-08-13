@@ -523,6 +523,8 @@ class _ChatScreenState extends State<ChatScreen> {
         case PermissionDecisionKind.allowCommandInRoom:
           scope = 'command in this room';
           break;
+        // A literal on purpose: PermissionDecisionKind deliberately doesn't port this rung (its
+        // 0052 note) — the phone never OFFERS it, but a desktop-given answer still renders here.
         case 'AllowCommandAnyRoom':
           scope = 'command in any room';
           break;
