@@ -235,7 +235,7 @@ public static class BuiltInWorkflowTemplates
         {
             // The review-worker binding is sourced from the catalog's review role via RoleDispatch.ToBinding.
             // write_files: false is the role's intent and GrantAuditMode materializes the vendor-conditional
-            // realization (agy: audited single-output write) (#901, #1146).
+            // realization (agy: audited write scoped to the role's declared outputs) (#901, #1146).
             var defaultGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false, ShellCommandPatterns: [], NetworkAccess: false);
 
             var definition = new WorkflowDefinition(

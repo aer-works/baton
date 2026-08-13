@@ -137,6 +137,13 @@ public class BuiltInWorkflowTemplatesTests
         // originally dropped it, leaving the reviewer undisclosed where draft.md landed.
         Assert.Equal(definition.Steps[1].Inputs, reviewBinding.Contract.RequiredInputs);
         Assert.Equal(new[] { "draft.md" }, reviewBinding.Contract.RequiredInputs);
+
+        // #1146 review: timeout/model/effort now come from the role's tier — pinned from the
+        // catalog itself, so a tier edit reddens this instead of silently retuning review-run.
+        // Same-vendor secondary keeps the tier's model and effort (#1082's rule, non-swap arm).
+        Assert.Equal(role.Timeout, reviewBinding.Timeout);
+        Assert.Equal(role.Model, reviewBinding.Model);
+        Assert.Equal(role.Effort, reviewBinding.Effort);
     }
 
     [Fact]
@@ -147,10 +154,18 @@ public class BuiltInWorkflowTemplatesTests
 
         var reviewBinding = bindings["review-worker"]!;
         Assert.NotNull(reviewBinding.PermissionGrant);
+        // WriteFiles: true alone holds under the old hand-rolled binding too (its shared
+        // defaultGrant granted writes on every adapter) — the audit mode is the discriminator.
         Assert.True(reviewBinding.PermissionGrant!.WriteFiles);
         Assert.Equal(GrantAuditMode.AuditedNotEnforced, reviewBinding.GrantAuditMode);
 
         Assert.Equal(reviewBinding.Contract.ProducedOutputs[0].Name, definition.Steps[1].Outputs.Single());
+
+        // Vendor swap (frontier tier is claude): the tier's model/effort drop to the new vendor's
+        // own defaults (#1082); the timeout is the role's regardless of vendor.
+        Assert.Equal(role.Timeout, reviewBinding.Timeout);
+        Assert.Null(reviewBinding.Model);
+        Assert.Null(reviewBinding.Effort);
     }
 
     [Fact]
