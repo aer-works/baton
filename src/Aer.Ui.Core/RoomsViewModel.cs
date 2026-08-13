@@ -281,10 +281,10 @@ public sealed partial class RoomsViewModel : ObservableObject
             .ThenBy(i => i.FriendlyName, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The design's "State first, then recency" list order (docs/design/02-screens.md): rooms group
-    /// by state — <b>needs you</b>, then <b>working</b>, then everything <b>earlier</b> (finished /
-    /// failed / cancelled / unavailable / never-run) — and recency orders within each group. This is
-    /// the tier key; <see cref="InFleetOrder"/> breaks ties by recency then name so the list is stable.
+    /// Decision 0018's (<see href="docs/decisions/0018-attention-is-the-primary-signal.md">attention is the primary signal</see>)
+    /// four bands: <b>needs you</b> (0), <b>working</b> (1), <b>idle/finished/failed</b> (2), and muted <b>quiet states</b>
+    /// (cancelled/unavailable/out-of-plan, 3). Recency orders within each group. This is the tier key;
+    /// <see cref="InFleetOrder"/> breaks ties by recency then name so the list is stable.
     /// The stress test's lesson (02-screens.md): at a hundred rooms, sorting by recency alone buries
     /// the three that need you among ninety-one finished ones — grouping is what keeps it usable.
     /// </summary>
@@ -292,6 +292,11 @@ public sealed partial class RoomsViewModel : ObservableObject
     {
         RoomCardStatus.NeedsYou => 0,
         RoomCardStatus.Running => 1,
+        RoomCardStatus.Finished => 2,
+        RoomCardStatus.Failed => 2,
+        RoomCardStatus.Cancelled => 3,
+        RoomCardStatus.Unavailable => 3,
+        RoomCardStatus.OutOfPlan => 3,
         _ => 2,
     };
 

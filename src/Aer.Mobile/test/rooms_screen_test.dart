@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:aer_mobile/daemon/daemon_client.dart';
+import 'package:aer_mobile/daemon/models.dart';
 import 'package:aer_mobile/rooms_screen.dart';
 
 /// Bulk select (issue #288) widget-level coverage — the Flutter counterpart of
@@ -13,11 +14,12 @@ import 'package:aer_mobile/rooms_screen.dart';
 /// daemon (same approach `daemon_client_rooms_test.dart` already uses for the single-item calls this
 /// screen was built on).
 void main() {
-  Map<String, dynamic> fleetItemJson(String path, {bool archived = false}) => {
+  Map<String, dynamic> fleetItemJson(String path, {bool archived = false, String? status}) => {
         'roomDirectoryPath': path,
         'friendlyName': path.split('/').last,
         'typeLabel': 'solo-run-template',
-        'statusText': 'Idle',
+        'statusText': status ?? 'Idle',
+        'status': status,
         'pausedStepCount': 0,
         'isArchived': archived,
       };
@@ -137,6 +139,51 @@ void main() {
       // Still in selection mode with the same selection -- cancelling the confirm is not the same
       // as exiting selection mode.
       expect(find.text('1 selected'), findsOneWidget);
+    });
+  });
+
+  group('Decision 0018 attention bands (#1133)', () {
+    test('attentionBand maps status strings to four bands with unknown to band 2', () {
+      expect(attentionBand('NeedsYou'), 0);
+      expect(attentionBand('Running'), 1);
+      expect(attentionBand('Finished'), 2);
+      expect(attentionBand('Failed'), 2);
+      expect(attentionBand('UnknownState'), 2);
+      expect(attentionBand('Cancelled'), 3);
+      expect(attentionBand('Unavailable'), 3);
+      expect(attentionBand('OutOfPlan'), 3);
+    });
+
+    testWidgets('RoomsScreen partitions items by attention bands 0-3 preserving recency within bands', (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.method == 'GET' && request.url.path == '/api/rooms') {
+          final items = [
+            fleetItemJson('/tasks/cancelled', status: 'Cancelled'),
+            fleetItemJson('/tasks/unavailable', status: 'Unavailable'),
+            fleetItemJson('/tasks/needs', status: 'NeedsYou'),
+            fleetItemJson('/tasks/running', status: 'Running'),
+            fleetItemJson('/tasks/finished', status: 'Finished'),
+            fleetItemJson('/tasks/outofplan', status: 'OutOfPlan'),
+          ];
+          return http.Response(jsonEncode(items), 200);
+        }
+        return http.Response('unexpected request: ${request.method} ${request.url}', 500);
+      });
+      final client = DaemonClient(host: 'localhost:5000', token: 'fake-token', httpClient: mockClient);
+
+      await tester.pumpWidget(MaterialApp(home: RoomsScreen(client: client)));
+      await tester.pumpAndSettle();
+
+      final state = tester.state(find.byType(RoomsScreen)) as dynamic;
+      final paths = (state.itemsForTests as List<RoomFleetItem>).map((i) => i.roomDirectoryPath).toList();
+      expect(paths, [
+        '/tasks/needs',
+        '/tasks/running',
+        '/tasks/finished',
+        '/tasks/cancelled',
+        '/tasks/unavailable',
+        '/tasks/outofplan',
+      ]);
     });
   });
 }

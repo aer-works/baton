@@ -373,6 +373,112 @@ public class RoomsViewModelTests
     }
 
     [Fact]
+    public void A_cancelled_room_more_recent_than_a_finished_one_sorts_below_it()
+    {
+        var cancelledButNewer = NewItem("/tasks/cancelled") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(9),
+            Status = RoomCardStatus.Cancelled,
+        };
+        var finishedButOlder = NewItem("/tasks/finished") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(1),
+            Status = RoomCardStatus.Finished,
+        };
+
+        var ordered = RoomsViewModel.InFleetOrderForTests([cancelledButNewer, finishedButOlder]).ToList();
+
+        Assert.Equal("/tasks/finished", ordered[0].RoomDirectoryPath);
+        Assert.Equal("/tasks/cancelled", ordered[1].RoomDirectoryPath);
+    }
+
+    [Fact]
+    public void An_out_of_plan_room_sorts_below_a_finished_one()
+    {
+        var outOfPlanButNewer = NewItem("/tasks/outofplan") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(9),
+            Status = RoomCardStatus.OutOfPlan,
+        };
+        var finishedButOlder = NewItem("/tasks/finished") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(1),
+            Status = RoomCardStatus.Finished,
+        };
+
+        var ordered = RoomsViewModel.InFleetOrderForTests([outOfPlanButNewer, finishedButOlder]).ToList();
+
+        Assert.Equal("/tasks/finished", ordered[0].RoomDirectoryPath);
+        Assert.Equal("/tasks/outofplan", ordered[1].RoomDirectoryPath);
+    }
+
+    [Fact]
+    public void An_unavailable_room_sorts_below_a_finished_one()
+    {
+        var unavailableButNewer = NewItem("/tasks/unavailable") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(9),
+            Status = RoomCardStatus.Unavailable,
+        };
+        var finishedButOlder = NewItem("/tasks/finished") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(1),
+            Status = RoomCardStatus.Finished,
+        };
+
+        var ordered = RoomsViewModel.InFleetOrderForTests([unavailableButNewer, finishedButOlder]).ToList();
+
+        Assert.Equal("/tasks/finished", ordered[0].RoomDirectoryPath);
+        Assert.Equal("/tasks/unavailable", ordered[1].RoomDirectoryPath);
+    }
+
+    [Fact]
+    public void Failed_ties_with_finished_by_recency()
+    {
+        var failedButNewer = NewItem("/tasks/failed") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(9),
+            Status = RoomCardStatus.Failed,
+        };
+        var finishedButOlder = NewItem("/tasks/finished") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(1),
+            Status = RoomCardStatus.Finished,
+        };
+
+        var ordered = RoomsViewModel.InFleetOrderForTests([finishedButOlder, failedButNewer]).ToList();
+
+        Assert.Equal("/tasks/failed", ordered[0].RoomDirectoryPath);
+        Assert.Equal("/tasks/finished", ordered[1].RoomDirectoryPath);
+    }
+
+    [Fact]
+    public void Recency_still_orders_within_each_band()
+    {
+        var olderCancelled = NewItem("/tasks/older-cancelled") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(1),
+            Status = RoomCardStatus.Cancelled,
+        };
+        var newerOutOfPlan = NewItem("/tasks/newer-outofplan") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(5),
+            Status = RoomCardStatus.OutOfPlan,
+        };
+        var oldestUnavailable = NewItem("/tasks/oldest-unavailable") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(0),
+            Status = RoomCardStatus.Unavailable,
+        };
+
+        var ordered = RoomsViewModel.InFleetOrderForTests([olderCancelled, oldestUnavailable, newerOutOfPlan]).ToList();
+
+        Assert.Equal("/tasks/newer-outofplan", ordered[0].RoomDirectoryPath);
+        Assert.Equal("/tasks/older-cancelled", ordered[1].RoomDirectoryPath);
+        Assert.Equal("/tasks/oldest-unavailable", ordered[2].RoomDirectoryPath);
+    }
+
+    [Fact]
     public void A_row_seeds_its_mark_from_the_fleets_status_on_load_not_only_after_a_push()
     {
         // The switcher must draw the correct silhouette immediately; before #1051 the row's Status

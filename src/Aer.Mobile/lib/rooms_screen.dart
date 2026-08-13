@@ -7,6 +7,16 @@ import 'daemon/models.dart';
 import 'inbox_screen.dart';
 import 'pairing_screen.dart';
 
+/// Maps a status string to decision 0018's (docs/decisions/0018-attention-is-the-primary-signal.md)
+/// attention band; unknown strings stay visible in band 2, never the muted band.
+int attentionBand(String? status) => switch (status) {
+      'NeedsYou' => 0,
+      'Running' => 1,
+      'Finished' || 'Failed' => 2,
+      'Cancelled' || 'Unavailable' || 'OutOfPlan' => 3,
+      _ => 2,
+    };
+
 /// The switcher — the phone's front door (#337/#1044): every known room at once, and the screen a
 /// paired device lands on. Tapping a room enters it directly (a session opens its chat; a workflow
 /// opens its decision view), so a room row is a place, not a dead card. It also carries the
@@ -30,6 +40,7 @@ class RoomsScreen extends StatefulWidget {
 
 class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
   List<RoomFleetItem> _items = [];
+  List<RoomFleetItem> get itemsForTests => _items;
   bool _includeArchived = false;
   bool _isLoading = true;
   String? _loadError;
@@ -68,11 +79,17 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
     try {
       final items = await widget.client.listRooms(includeArchived: _includeArchived);
       if (!mounted) return;
-      // Waiting-on-you first (J3, #1049): rooms needing a decision/review rise to the top; the
-      // daemon's recency order is kept within each group (stable partition, not List.sort).
-      final needsYou = items.where((i) => i.status == 'NeedsYou').toList();
-      final rest = items.where((i) => i.status != 'NeedsYou').toList();
-      setState(() => _items = [...needsYou, ...rest]);
+      // Group by decision 0018's four attention bands while preserving daemon recency within each group (stable partition).
+      final bands = [
+        <RoomFleetItem>[],
+        <RoomFleetItem>[],
+        <RoomFleetItem>[],
+        <RoomFleetItem>[],
+      ];
+      for (final item in items) {
+        bands[attentionBand(item.status)].add(item);
+      }
+      setState(() => _items = [for (final band in bands) ...band]);
     } on DaemonException catch (e) {
       if (!mounted) return;
       setState(() => _loadError = e.message);
