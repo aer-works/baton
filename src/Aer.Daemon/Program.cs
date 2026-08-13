@@ -1521,7 +1521,10 @@ namespace Aer.Daemon
 
                 // #1179: a freshly materialized room (POST /api/sessions/start) is never dormant --
                 // its room.jsonl has no dormancy transition yet -- so that endpoint needs no change;
-                // this check only ever matters on a send into an already-existing room.
+                // this check only ever matters on a send into an already-existing room. The check and
+                // the dispatch below are deliberately not atomic: dormancy entered between them lets
+                // exactly one already-accepted human turn complete, and every later send sees the
+                // dormant state -- bounded and self-correcting, so no lock spans the vendor dispatch.
                 if (await IsRoomDormantAsync(directoryPath).ConfigureAwait(true))
                 {
                     // 03-interaction-depth.md: "Dormancy answers, it never resumes" -- a message to a
@@ -1530,24 +1533,44 @@ namespace Aer.Daemon
                     // recorded as an answered turn (no vendor process ran, hence AssistantResponse
                     // stays null) and the ONLY way a real turn runs again is the existing Wake path
                     // (/api/rooms/turn-host/clear-dormancy).
-                    var dormancyTurn = new SessionTurn(
-                        TurnIndex: metadata.TurnCount + 1,
-                        Vendor: "System",
-                        HumanMessage: request.Message,
-                        AssistantResponse: null,
-                        ExecutedAt: DateTimeOffset.UtcNow,
-                        NativeSessionResumed: false,
-                        VendorHandoffSynthesized: false,
-                        IsDormancyAnswer: true);
-
-                    var updatedMetadata = metadata with
+                    //
+                    // #393/#285 (the #1179 review's blocking find): this is a metadata read-modify-write
+                    // like every real turn's, and SaveMetadataAsync is last-writer-wins by design -- so
+                    // it takes the SAME per-directory turn lock and re-reads metadata inside it, exactly
+                    // as ExecuteSessionTurnAsync does. Without this, a dormancy answer built from the
+                    // endpoint's pre-lock snapshot could land after an in-flight real turn's save and
+                    // silently erase that turn (reverting VendorSessionEstablished -- the #285 wedge).
+                    var dormancyTurnLock = SessionTurnLockFor(directoryPath);
+                    await dormancyTurnLock.WaitAsync().ConfigureAwait(true);
+                    try
                     {
-                        TurnCount = metadata.TurnCount + 1,
-                        UpdatedAt = DateTimeOffset.UtcNow,
-                        Turns = new List<SessionTurn>(metadata.Turns) { dormancyTurn },
-                    };
+                        var currentMetadata =
+                            await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath).ConfigureAwait(true)
+                            ?? metadata;
 
-                    await InteractiveSessionMaterializer.SaveMetadataAsync(updatedMetadata, metadataPath).ConfigureAwait(true);
+                        var dormancyTurn = new SessionTurn(
+                            TurnIndex: currentMetadata.TurnCount + 1,
+                            Vendor: "System",
+                            HumanMessage: request.Message,
+                            AssistantResponse: null,
+                            ExecutedAt: DateTimeOffset.UtcNow,
+                            NativeSessionResumed: false,
+                            VendorHandoffSynthesized: false,
+                            IsDormancyAnswer: true);
+
+                        var updatedMetadata = currentMetadata with
+                        {
+                            TurnCount = currentMetadata.TurnCount + 1,
+                            UpdatedAt = DateTimeOffset.UtcNow,
+                            Turns = new List<SessionTurn>(currentMetadata.Turns) { dormancyTurn },
+                        };
+
+                        await InteractiveSessionMaterializer.SaveMetadataAsync(updatedMetadata, metadataPath).ConfigureAwait(true);
+                    }
+                    finally
+                    {
+                        dormancyTurnLock.Release();
+                    }
 
                     // Same broadcast a completed turn ends with (ExecuteSessionTurnAsync's finally
                     // block), so both surfaces update without waiting on their own poll.

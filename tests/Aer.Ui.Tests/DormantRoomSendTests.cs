@@ -207,6 +207,79 @@ public class DormantRoomSendTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The #1179 review's blocking find, pinned: the dormancy-answer branch is a metadata
+    /// read-modify-write and SaveMetadataAsync is last-writer-wins, so the branch must take
+    /// <see cref="Program.SessionTurnLockFor"/> and re-read inside it like every other writer.
+    /// The test holds the room's turn lock itself (standing in for an in-flight real turn), fires
+    /// the dormant send (which must block), commits a marker turn from a snapshot taken BEFORE the
+    /// send, then releases. Without the lock + re-read, the dormancy answer is built from the
+    /// endpoint's stale snapshot and one of the two writes silently erases the other.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ToDormantRoom_SerializesWithAnInFlightTurnsMetadataWrite()
+    {
+        var started = await StartStubSessionAsync();
+
+        var roomLogPath = Path.Combine(started.RoomDirectoryPath, "room.jsonl");
+        await using (var writer = new RoomEventLogWriter(roomLogPath))
+        {
+            await writer.AppendAsync(
+                new RoomEvent.TurnHostDormancyEntered(3, DateTimeOffset.UtcNow),
+                TestContext.Current.CancellationToken);
+        }
+
+        var metadataPath = Path.Combine(started.RoomDirectoryPath, ".aer", AerPaths.RoomMetadataFileName);
+        var preSendSnapshot = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath, TestContext.Current.CancellationToken);
+        Assert.NotNull(preSendSnapshot);
+
+        var turnLock = DaemonHost.SessionTurnLockFor(started.RoomDirectoryPath);
+        await turnLock.WaitAsync(TestContext.Current.CancellationToken);
+        Task<HttpResponseMessage> sendTask;
+        try
+        {
+            var sendRequest = new SendSessionMessageRequest(SessionId: started.SessionId, Message: "how's it going?");
+            sendTask = _client.PostAsJsonAsync($"{_baseUrl}/api/sessions/send", sendRequest, TestContext.Current.CancellationToken);
+
+            // Give the send time to reach the lock wait. If the branch (wrongly) skipped the lock, it
+            // completes its save inside this window and the marker write below erases it.
+            await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken); // wait-ok: interleaving window so the blocked send is provably queued behind the held lock
+
+            // The in-flight real turn commits, from its own (pre-send) state -- exactly what
+            // ExecuteSessionTurnAsync does under this lock.
+            var markerTurn = new SessionTurn(
+                TurnIndex: preSendSnapshot.TurnCount + 1,
+                Vendor: "claude",
+                HumanMessage: "in-flight turn",
+                AssistantResponse: "committed under the lock",
+                ExecutedAt: DateTimeOffset.UtcNow,
+                NativeSessionResumed: false,
+                VendorHandoffSynthesized: false);
+            var committed = preSendSnapshot with
+            {
+                TurnCount = preSendSnapshot.TurnCount + 1,
+                Turns = new List<SessionTurn>(preSendSnapshot.Turns) { markerTurn },
+            };
+            await InteractiveSessionMaterializer.SaveMetadataAsync(committed, metadataPath, TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            turnLock.Release();
+        }
+
+        var sendResponse = await sendTask;
+        Assert.True(sendResponse.IsSuccessStatusCode);
+
+        // Both writes survive, in lock order: the marker turn, then the dormancy answer built from a
+        // re-read that saw it.
+        var final = await PollUntilTurnCountAsync(started.SessionId, expectedTurnCount: 3);
+        Assert.Equal("in-flight turn", final.Turns[1].HumanMessage);
+        Assert.False(final.Turns[1].IsDormancyAnswer);
+        Assert.True(final.Turns[2].IsDormancyAnswer);
+        Assert.Equal("how's it going?", final.Turns[2].HumanMessage);
+        Assert.Equal(3, final.Turns[2].TurnIndex);
+    }
+
+    /// <summary>
     /// Wraps a real dispatch-shape stub adapter and counts <see cref="IWorkerAdapter.Resolve"/>
     /// calls -- the observation seam these tests need: <see cref="SessionTurnStubAdapter"/> alone can
     /// only prove a dispatch's outcome, not whether a dispatch was ever attempted, and the whole
