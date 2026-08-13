@@ -324,6 +324,11 @@ public class SessionTurnBranchingTests : IAsyncLifetime
         Assert.NotNull(afterFailure.Turns[0].ErrorMessage);
         Assert.False(afterFailure.VendorSessionEstablished);
 
+        // Control for #1180: an ordinary vendor rejection the classifier does NOT recognize stays
+        // the #1177 ordinary-failure shape unchanged -- IsExhausted false, no reset instant.
+        Assert.False(afterFailure.Turns[0].IsExhausted);
+        Assert.Null(afterFailure.Turns[0].ExhaustedUntil);
+
         // The regression this guards against: pre-fix, this second attempt would still carry
         // NativeSessionResumed=true (isInitial was already false on the very first turn), so it
         // would `--resume` the same never-established id and fail identically forever.
@@ -364,5 +369,37 @@ public class SessionTurnBranchingTests : IAsyncLifetime
         Assert.True(Directory.Exists(artifactsDir));
         var executionDirs = Directory.GetDirectories(artifactsDir);
         Assert.Equal(executionDirs.Length, executionDirs.Distinct().Count());
+    }
+
+    /// <summary>
+    /// #1180: pins the classification the <c>SessionTurn.IsExhausted</c> doc
+    /// (Aer.Adapters/InteractiveSessions.cs) specifies -- <see cref="SessionTurnStubAdapter.ExhaustionSentinel"/>
+    /// forces exactly that classification with a known instant
+    /// (<see cref="SessionTurnStubAdapter.ExhaustionResetInstant"/>), so this pins the daemon seam
+    /// (Program.cs's <c>ExecuteSessionTurnCoreAsync</c>) without a live vendor CLI. The control for
+    /// this (an unrecognized failure staying ordinary) is
+    /// <see cref="FirstMessage_WhenTheVendorRejectsIt_DoesNotPermanentlyWedgeTheSession"/>'s added
+    /// assertions.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_WhenAdapterClassifiesExhaustion_RecordsOutOfPlanState()
+    {
+        var started = await StartStubSessionWithNoInitialMessageAsync();
+
+        var exhaustedSend = await _client.PostAsJsonAsync($"{_baseUrl}/api/sessions/send",
+            new SendSessionMessageRequest(SessionId: started.SessionId, Message: SessionTurnStubAdapter.ExhaustionSentinel),
+            TestContext.Current.CancellationToken);
+        Assert.True(exhaustedSend.IsSuccessStatusCode);
+
+        var afterExhaustion = await PollUntilTurnCountAsync(started.SessionId, expectedTurnCount: 1);
+        var turn = afterExhaustion.Turns[0];
+
+        Assert.Null(turn.AssistantResponse);
+        Assert.True(turn.IsExhausted);
+        Assert.Equal(SessionTurnStubAdapter.ExhaustionResetInstant, turn.ExhaustedUntil);
+        // The raw vendor text stays on ErrorMessage even for an exhausted turn (it feeds Copy and
+        // the disclosure path on both surfaces) -- only the RENDERING arm changes, not this field.
+        Assert.NotNull(turn.ErrorMessage);
+        Assert.False(afterExhaustion.VendorSessionEstablished);
     }
 }

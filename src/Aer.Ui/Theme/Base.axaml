@@ -241,6 +241,16 @@
     <Setter Property="Foreground" Value="{DynamicResource Color.TextSecondary}" />
   </Style>
 
+  <!-- 0026 §4/#1180: exhaustion is a STATE with a reset time, visually distinct from a failure,
+       via Status.OutOfPlan (#1132/#1136 tokens); never Status.Failed, never a hex literal. -->
+  <Style Selector="Border.card.outofplan">
+    <Setter Property="BorderBrush" Value="{DynamicResource Status.OutOfPlan}" />
+    <Setter Property="BorderThickness" Value="1" />
+  </Style>
+  <Style Selector="Border.card.outofplan TextBlock.who">
+    <Setter Property="Foreground" Value="{DynamicResource Status.OutOfPlan}" />
+  </Style>
+
   <!-- The navigation rail (#1071): icon-only bordered squares, per docs/design/mockups/02-screens.html's
        .rail styling — a 29x29 icon in a 1px rule border, radius 6, quiet by default (rule border,
        secondary glyph). The active destination alone takes the accent border, accent glyph, and the

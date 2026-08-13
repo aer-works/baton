@@ -294,6 +294,13 @@ class SessionTurn {
   /// Aer.Adapters/InteractiveSessions.cs for what it means and why [assistantResponse] stays null.
   final bool isDormancyAnswer;
 
+  /// See `SessionTurn.IsExhausted`'s doc in Aer.Adapters/InteractiveSessions.cs (canonical: what
+  /// the flag means, the render-before-errorMessage ordering rule, why [errorMessage] stays
+  /// populated). Tolerant parse: absent on old metadata reads false/null, same idiom as
+  /// [isDormancyAnswer].
+  final bool isExhausted;
+  final DateTime? exhaustedUntil;
+
   SessionTurn({
     required this.turnIndex,
     required this.vendor,
@@ -302,6 +309,8 @@ class SessionTurn {
     required this.executedAt,
     this.errorMessage,
     this.isDormancyAnswer = false,
+    this.isExhausted = false,
+    this.exhaustedUntil,
   });
 
   factory SessionTurn.fromJson(Map<String, dynamic> json) {
@@ -314,6 +323,8 @@ class SessionTurn {
       executedAt: DateTime.tryParse(j['executedat']?.toString() ?? '') ?? DateTime.now(),
       errorMessage: j['errormessage']?.toString(),
       isDormancyAnswer: j['isdormancyanswer'] == true,
+      isExhausted: j['isexhausted'] == true,
+      exhaustedUntil: j['exhausteduntil'] == null ? null : DateTime.tryParse(j['exhausteduntil'].toString()),
     );
   }
 }

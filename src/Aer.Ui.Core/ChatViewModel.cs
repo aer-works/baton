@@ -18,7 +18,17 @@ public sealed record ChatMessageViewModel(
     bool IsFailure = false,
     Action? PrepareFixPrompt = null,
     bool IsDormancy = false,
-    Action? Wake = null)
+    Action? Wake = null,
+    // 0026 §4/#1180: the out-of-plan card -- same pattern as IsFailure, but never carries
+    // PrepareFixPrompt (an offer to spend against the very quota that is out is the confusion 0026
+    // exists to remove) and never reads Status.Failed.
+    bool IsOutOfPlan = false,
+    // What Copy puts on the clipboard. Null means "copy Text" (every other card's behaviour,
+    // including IsFailure's). The out-of-plan card sets this to the turn's raw ErrorMessage: Text
+    // is the plain-language 0026 sentence ("Out of plan — resumes …"), which is what should render,
+    // but the vendor's own words are what's useful to paste elsewhere -- the same raw text
+    // InteractiveSessions.SessionTurn.ErrorMessage stays populated for.
+    string? CopyText = null)
 {
     public IRelayCommand? PrepareFixPromptCommand { get; } = PrepareFixPrompt != null ? new RelayCommand(PrepareFixPrompt) : null;
     public IRelayCommand? WakeCommand { get; } = Wake != null ? new RelayCommand(Wake) : null;
@@ -362,6 +372,28 @@ public sealed partial class ChatViewModel : ObservableObject
                 IsFromUser: false,
                 IsDormancy: true,
                 Wake: _isDormant ? _wakeAction : null));
+            return;
+        }
+
+        // #1180 (the SessionTurn.IsExhausted doc carries the 0026 framing): checked
+        // BEFORE the ErrorMessage/IsFailure arm below so the failure card is unreachable for it, even
+        // though ErrorMessage is still populated on this turn (it feeds the out-of-plan card's Copy).
+        // A partial response can coexist with exhaustion (the vendor said something before refusing),
+        // so it still renders first.
+        if (turn.IsExhausted)
+        {
+            if (turn.AssistantResponse is { } partialResponse)
+            {
+                Messages.Add(new ChatMessageViewModel(turn.Vendor, partialResponse, turn.ExecutedAt, IsFromUser: false));
+            }
+
+            Messages.Add(new ChatMessageViewModel(
+                turn.Vendor,
+                PlainLanguage.ForExhaustion(turn.ExhaustedUntil),
+                turn.ExecutedAt,
+                IsFromUser: false,
+                IsOutOfPlan: true,
+                CopyText: turn.ErrorMessage));
             return;
         }
 

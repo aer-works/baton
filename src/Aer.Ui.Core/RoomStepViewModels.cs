@@ -26,9 +26,7 @@ public static class PlainLanguage
     {
         if (status == StepStatus.Failed && failureClassification == FailureClassification.ExhaustedUntil)
         {
-            return retryNotBefore is { } instant
-                ? $"Out of plan — resumes {instant.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)}"
-                : "Out of plan — reset unknown";
+            return ForExhaustion(retryNotBefore);
         }
 
         return status switch
@@ -48,6 +46,19 @@ public static class PlainLanguage
             _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped step status."),
         };
     }
+
+    /// <summary>
+    /// The single 0026 §5 exhaustion sentence -- "Out of plan — resumes {local time}" with a known
+    /// reset instant, or "Out of plan — reset unknown" without (an honest gap, never a fabricated
+    /// estimate). This is the ONE derivation (#1180, record-once): <see cref="ForStep"/> calls it
+    /// for the room/step surface (#1116), and the interactive-session chat card
+    /// (<c>ChatViewModel.AddTurnMessages</c>) calls it for an exhausted turn -- neither restates the
+    /// strings.
+    /// </summary>
+    public static string ForExhaustion(DateTimeOffset? retryNotBefore) =>
+        retryNotBefore is { } instant
+            ? $"Out of plan — resumes {instant.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)}"
+            : "Out of plan — reset unknown";
 
     public static string ForDecision(DecisionType decisionType) => decisionType switch
     {
