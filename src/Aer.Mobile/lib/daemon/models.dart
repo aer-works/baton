@@ -294,7 +294,6 @@ class SessionTurn {
   /// Aer.Adapters/InteractiveSessions.cs for what it means and why [assistantResponse] stays null.
   final bool isDormancyAnswer;
 
-  /// 0026 §4/#1180: mirrors `SessionTurn.IsExhausted`/`ExhaustedUntil` in
   /// See `SessionTurn.IsExhausted`'s doc in Aer.Adapters/InteractiveSessions.cs (canonical: what
   /// the flag means, the render-before-errorMessage ordering rule, why [errorMessage] stays
   /// populated). Tolerant parse: absent on old metadata reads false/null, same idiom as
