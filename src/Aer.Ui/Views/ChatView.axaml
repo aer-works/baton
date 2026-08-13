@@ -159,7 +159,7 @@
                     <Button Content="{Binding SenderLabel, StringFormat='Ask {0} to fix'}" Command="{Binding PrepareFixPromptCommand}" />
                     <Button Content="Copy" Click="OnCopyFailureClick" />
                   </StackPanel>
-                  <!-- 0026 §4/#1180: Copy only, deliberately no fix-ask affordance -- rationale on
+                  <!-- 0026 §4/#1180: Copy only, deliberately no fix-ask affordance; rationale on
                        ChatMessageViewModel.IsOutOfPlan (Aer.Ui.Core/ChatViewModel.cs). -->
                   <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}" IsVisible="{Binding IsOutOfPlan}">
                     <Button Content="Copy" Click="OnCopyFailureClick" />
