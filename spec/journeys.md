@@ -112,7 +112,11 @@ first — held apart from what's still running and what already finished.
 - **Path** *(illustrative)* — reopen the app · the first thing you see is the short list of decisions
   waiting · running work is visible but secondary · finished work (failures correctly labelled) is
   available, not in your face.
-- **Today** — the phone now lands on the switcher (shipped PR #1046; former #337 gap), and failed/finished separation has since improved (0018 four-band sort PR #1134, out-of-plan band PR #1136); remaining edges are the parameterized "Nothing is waiting on you" line at `inbox_screen.dart:701` and whatever umbrella #752 (status truthfulness, former #355) still tracks. The vendor audit (#527) settled *where the signal
+- **Today** — the phone now lands on the switcher (shipped PR #1046; former #337 gap), and
+  failed/finished separation has since improved (0018 four-band sort PR #1134, out-of-plan band
+  PR #1136); remaining edges are the parameterized "Nothing is waiting on you" line at
+  `inbox_screen.dart:701` and whatever umbrella #752 (status truthfulness, former #355) still
+  tracks. The vendor audit (#527) settled *where the signal
   comes from*, which this journey had never pinned down: both vendor events that could have announced
   a pause — `PermissionRequest` and `Notification` — are silent under `-p`, so
   [0030](../docs/decisions/0030-aer-is-its-own-notifier.md) makes AER the notifier. It follows that
@@ -314,7 +318,9 @@ you restating it.
 - **Verify** — additions are **proposed and accepted, never inferred** — the product must not decide
   on its own what is worth remembering. The project's own vendor files (a repo's `CLAUDE.md`) stay
   honoured; room memory is additional, never a replacement.
-- **Today** — the room-memory engine (0016/0044) is built and test-enforced (0050 isolation), and proposals are proposed-and-accepted; missing is any UI to see, attribute, or edit room memory on either surface, plus the #1019 continuity remainder. (corrected 2026-08-13, #1149)
+- **Today** — the room-memory engine (0016/0044) is built and test-enforced (0050 isolation), and
+  proposals are proposed-and-accepted; missing is any UI to see, attribute, or edit room memory on
+  either surface (#1152), plus the #1019 continuity remainder. (corrected 2026-08-13, #1149)
 - **Serves** — #442, #386, decision 0016
 
 ## J13 — Two workers from one vendor, at different models and efforts
@@ -333,7 +339,10 @@ three separate choices.
 - **Verify** — a vendor's own effort string must not appear in any surface; the mapping happens in the
   adapter (Architecture Rule 2). Where a vendor cannot express a level distinctly, the collapse is
   **disclosed** rather than silently faked.
-- **Today** — vendor, model, and effort exist as three engine axes (0017 — `RoleDispatch.ToBinding` model/effort overrides, tier defaults in WorkerTiers.json); missing is 0023's AER-vocabulary mapping and any model/effort UI — vendor strings pass through verbatim where they surface at all. (corrected 2026-08-13, #1149)
+- **Today** — vendor, model, and effort exist as three engine axes (0017 — `RoleDispatch.ToBinding`
+  model/effort overrides, tier defaults in WorkerTiers.json); missing is 0023's AER-vocabulary
+  mapping and any model/effort UI — vendor strings pass through verbatim where they surface at
+  all. (corrected 2026-08-13, #1149)
 - **Serves** — #391, #479, decisions 0017, 0023
 
 ## J14 — Hand a document to another vendor and see exactly what changed
