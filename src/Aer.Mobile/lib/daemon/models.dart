@@ -320,7 +320,7 @@ class RoomFleetItem {
   final String? sessionId;
 
   /// The status vocabulary is the wire form of `RoomCardStatus` (`src/Aer.Ui.Core/HomeViewModel.cs`),
-  /// or null for a never-run room. Drives the waiting-on-you first sort; `statusText` already carries
+  /// or null for a never-run room. Drives the 0018 attention-band sort (#1133); `statusText` already carries
   /// the human line ("Waiting for your reply" vs "review", "Out of plan — resumes …"). Unrecognized
   /// values are tolerated by design — every consumer is an equality check, never an exhaustive switch.
   final String? status;
