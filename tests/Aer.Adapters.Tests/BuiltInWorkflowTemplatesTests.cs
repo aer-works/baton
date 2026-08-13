@@ -131,6 +131,12 @@ public class BuiltInWorkflowTemplatesTests
         }
 
         Assert.Equal(reviewBinding.Contract.ProducedOutputs[0].Name, definition.Steps[1].Outputs.Single());
+
+        // #1147: the contract's RequiredInputs must mirror the step's Inputs — it is what the
+        // adapters' prompt builders disclose the AER_INPUT_<n> path from, and the adoption
+        // originally dropped it, leaving the reviewer undisclosed where draft.md landed.
+        Assert.Equal(definition.Steps[1].Inputs, reviewBinding.Contract.RequiredInputs);
+        Assert.Equal(new[] { "draft.md" }, reviewBinding.Contract.RequiredInputs);
     }
 
     [Fact]

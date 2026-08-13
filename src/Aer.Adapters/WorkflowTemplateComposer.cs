@@ -123,8 +123,12 @@ public static class WorkflowTemplateComposer
                 // (Resume/Reject/RetryWithRevision); the template model carries no supersede targets, so
                 // empty is the faithful mapping until it does.
                 PausePoint: phase.AskFirst ? new PausePoint([]) : null));
+            // requiredInputs mirrors the step's Inputs above (#1147): the contract is what the adapters'
+            // prompt builders disclose AER_INPUT_<n> paths from, and the variables are positional per
+            // the step's list — without it the phase is handed its upstream artifact undisclosed.
             bindings[phase.Name] = RoleDispatch.ToBinding(
-                role, phase.Instruction, adapterOverride, workerName: phase.Name, workingDirectory: workingDirectory);
+                role, phase.Instruction, adapterOverride, workerName: phase.Name, workingDirectory: workingDirectory,
+                requiredInputs: blockerOutputs);
 
             blockerId = stepId;
             blockerOutputs = outputs;

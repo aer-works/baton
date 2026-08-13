@@ -279,7 +279,8 @@ public static class BuiltInWorkflowTemplates
                         ? "Review draft.md carefully, provide feedback and recommendations."
                         : secondaryCustomPrompt,
                     adapterOverride: normalizedSecondary,
-                    workerName: "review-worker")
+                    workerName: "review-worker",
+                    requiredInputs: ["draft.md"])
             };
 
             return (definition, bindings);
