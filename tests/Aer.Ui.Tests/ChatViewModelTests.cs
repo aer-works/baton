@@ -213,6 +213,75 @@ public class ChatViewModelTests
         Assert.Equal(string.Empty, typed.InputText);
     }
 
+    /// <summary>
+    /// #1167: the open-gate clause of <see cref="ChatViewModel.CanDrainQueue"/> is load-bearing on
+    /// its own — the cross-client case (a phone-started turn's gate, this client's IsSending false)
+    /// is exactly the arm where only that clause holds the drain. Red-proven by dropping the
+    /// clause: the gate-open arm fails, the rest stay green.
+    /// </summary>
+    [Fact]
+    public void CanDrainQueue_holds_for_an_open_permission_gate_even_when_this_client_is_not_sending()
+    {
+        var chat = new ChatViewModel();
+        chat.LoadFromMetadata(MetadataWithTurns(), "/tmp/sess-1");
+        chat.EnqueueMessage("queued while blocked");
+
+        Assert.True(chat.CanDrainQueue); // control: idle, no gate — drains
+
+        var gate = new Aer.Flow.Projection.PendingPermission(
+            "req-1", "chat-worker", "claude", "Bash", "{}", "shell", DateTimeOffset.UtcNow);
+        chat.SurfacePendingPermission(gate, (_, _, _) => Task.CompletedTask);
+
+        Assert.False(chat.IsSending);    // the cross-client shape: gate open, not our turn
+        Assert.False(chat.CanDrainQueue);
+
+        chat.SurfacePendingPermission(null, (_, _, _) => Task.CompletedTask);
+        Assert.True(chat.CanDrainQueue); // gate answered elsewhere — drain resumes
+    }
+
+    /// <summary>
+    /// #1167's second call site (its second reader's HIGH) — the why lives on
+    /// <see cref="ChatViewModel.SendJoinsQueue"/>'s doc. Both polarities pinned: gate-open joins,
+    /// the post-failure typed retry stays direct.
+    /// </summary>
+    [Fact]
+    public void SendJoinsQueue_for_an_open_gate_but_a_typed_retry_after_a_failure_posts_directly()
+    {
+        var chat = new ChatViewModel();
+        chat.LoadFromMetadata(MetadataWithTurns(), "/tmp/sess-1");
+
+        Assert.False(chat.SendJoinsQueue); // idle, no gate, no queue — a typed send posts
+
+        var gate = new Aer.Flow.Projection.PendingPermission(
+            "req-1", "chat-worker", "claude", "Bash", "{}", "shell", DateTimeOffset.UtcNow);
+        chat.SurfacePendingPermission(gate, (_, _, _) => Task.CompletedTask);
+        Assert.True(chat.SendJoinsQueue);  // open gate — the send joins the queue
+        chat.SurfacePendingPermission(null, (_, _, _) => Task.CompletedTask);
+
+        chat.BeginSend("hello", currentTurnsCount: 0);
+        chat.FailSend("daemon unreachable");
+        Assert.False(chat.SendJoinsQueue); // failed dispatch: the typed retry stays direct (#1074)
+
+        chat.EnqueueMessage("queued");
+        Assert.True(chat.SendJoinsQueue);  // non-empty queue — FIFO preserved
+    }
+
+    [Fact]
+    public void CanDrainQueue_holds_while_sending_and_while_paused_by_a_failed_dispatch()
+    {
+        var chat = new ChatViewModel();
+        chat.LoadFromMetadata(MetadataWithTurns(), "/tmp/sess-1");
+
+        chat.BeginSend("hello", currentTurnsCount: 0);
+        Assert.False(chat.CanDrainQueue); // turn in flight
+
+        chat.FailSend("daemon unreachable");
+        Assert.False(chat.CanDrainQueue); // paused by the failure, not by IsSending
+
+        chat.EnqueueMessage("try again"); // operator action clears the pause (#1074's contract)
+        Assert.True(chat.CanDrainQueue);
+    }
+
     [Fact]
     public void The_drain_pause_flag_is_separate_from_StatusText_so_a_success_notice_never_stalls_the_queue()
     {

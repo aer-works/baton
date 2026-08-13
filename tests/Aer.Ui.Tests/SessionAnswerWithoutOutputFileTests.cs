@@ -199,7 +199,12 @@ public class SessionAnswerWithoutOutputFileTests : IAsyncLifetime
         {
             var response = await _client.GetAsync(
                 $"{_baseUrl}/api/sessions/{started.SessionId}", TestContext.Current.CancellationToken);
-            Assert.True(response.IsSuccessStatusCode);
+            // A bare IsSuccessStatusCode assert here failed on Windows CI with no way to tell what
+            // the daemon actually returned (poll iteration, status, body) — make the flake name
+            // itself if it recurs.
+            Assert.True(response.IsSuccessStatusCode,
+                $"poll {i} for session {started.SessionId}: {(int)response.StatusCode} {response.StatusCode} — "
+                + await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
             var metadata = await response.Content.ReadFromJsonAsync<SessionMetadata>(
                 cancellationToken: TestContext.Current.CancellationToken);
             Assert.NotNull(metadata);

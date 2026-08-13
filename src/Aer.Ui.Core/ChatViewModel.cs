@@ -204,6 +204,29 @@ public sealed partial class ChatViewModel : ObservableObject
     /// </summary>
     public bool LastSendFailed { get; private set; }
 
+    /// <summary>
+    /// True when the drain tick may post the queued head (#1167). All three clauses are load-bearing:
+    /// a turn in flight (<see cref="IsSending"/>), a queue paused by a failed dispatch
+    /// (<see cref="LastSendFailed"/>), and an OPEN PERMISSION GATE each hold the drain. The gate
+    /// clause is not redundant with <see cref="IsSending"/>: a turn another client started (the
+    /// phone) keeps the gate open while THIS client's IsSending is false — before the clause was
+    /// explicit, the hold was an accident of IsSending's lifecycle and a resumed backlog could
+    /// drain into a blocked worker.
+    /// </summary>
+    public bool CanDrainQueue => !IsSending && !LastSendFailed && !HasPendingPermission;
+
+    /// <summary>
+    /// True when a typed send must JOIN the queue instead of posting a turn directly (#1074's
+    /// never-block composer): a turn in flight, a non-empty queue (FIFO), or an open permission
+    /// gate. The gate clause is #1167's second call site — the same cross-client shape
+    /// <see cref="CanDrainQueue"/>'s doc explains, found by that PR's second reader: without it a
+    /// FRESH typed send (unlike a queued one) posted straight past a phone-raised gate and sat
+    /// rendered "in flight" behind another client's unanswered ask. Deliberately NOT
+    /// <c>!CanDrainQueue</c>: <see cref="LastSendFailed"/> must not reroute a typed retry into the
+    /// queue — the operator's next direct send after a failure stays a direct send (#1074).
+    /// </summary>
+    public bool SendJoinsQueue => IsSending || HasQueuedMessages || HasPendingPermission;
+
     /// <summary>Rebuilds <see cref="Messages"/> from a freshly loaded/polled <see cref="SessionMetadata"/> — the chat view's counterpart of <see cref="MainWindowViewModel.RebuildRoomSteps"/>.</summary>
     public void LoadFromMetadata(SessionMetadata metadata, string roomDirectoryPath)
     {

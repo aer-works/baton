@@ -834,11 +834,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        // #1074: the composer never blocks (slice of #462). A send while a turn is in flight — OR
-        // while messages are already queued — joins the queue rather than posting ahead of them; the
-        // HasQueuedMessages half preserves FIFO if the queue is non-empty while nothing is in flight
-        // (e.g. paused after a failed drain). MainWindow's live-refresh poll drains one per completion.
-        if (chat.IsSending || chat.HasQueuedMessages)
+        // #1074: the composer never blocks (slice of #462) — the enqueue-vs-post decision lives on
+        // ChatViewModel.SendJoinsQueue (its doc carries the FIFO and #1167 open-gate clauses).
+        // MainWindow's live-refresh poll drains one per completion.
+        if (chat.SendJoinsQueue)
         {
             chat.EnqueueMessage(message);
             return;
@@ -1248,11 +1247,10 @@ public partial class MainWindow : Window
 
                 // #1074: LoadFromMetadata clears IsSending when the turn lands — drain the head here,
                 // on the same tick that observed completion. Peek-then-post-then-DequeueHead-on-success
-                // so a failed dispatch leaves the message queued (never dropped). Gated on the dedicated
-                // LastSendFailed flag — NOT StatusText, which also carries success notices (mode change,
-                // "context cleared") that must not stall the queue — so one failure pauses the drain
-                // (until the operator's next send/enqueue) rather than cascading or busy-retrying.
-                if (!chat.IsSending && !chat.LastSendFailed && chat.TryPeekQueuedMessage(out var queued) && queued is not null)
+                // so a failed dispatch leaves the message queued (never dropped). The gate conditions
+                // live on ChatViewModel.CanDrainQueue (its doc carries #1167's open-gate clause;
+                // LastSendFailed's own doc carries why it, not StatusText, pauses the drain).
+                if (chat.CanDrainQueue && chat.TryPeekQueuedMessage(out var queued) && queued is not null)
                 {
                     chat.BeginDrainedSend(queued.Text, sessionMetadata.Turns.Count);
                     if (await PostChatTurnAsync(currentRoomDirectoryPath, queued.Text).ConfigureAwait(true))
