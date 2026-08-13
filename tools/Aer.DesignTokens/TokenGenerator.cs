@@ -60,7 +60,8 @@ public static class TokenGenerator
     public const string InteractionStatesPath = "design/interaction-states.json";
 
     /// <summary>
-    /// The thirteen interaction states as a C# type (#616), same pattern and same reasoning as
+    /// The interaction states as a C# type (#616) — however many the register holds, which is the
+    /// point of generating it rather than counting it here — same pattern and same reasoning as
     /// <see cref="UiCoreOutputPath"/>: a surface can only be forced to handle every state when
     /// "every state" is a closed type the compiler can quantify over, and generating that type
     /// means the register and the code cannot disagree about what the states even are.

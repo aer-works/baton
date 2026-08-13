@@ -85,15 +85,6 @@ internal sealed class SessionTurnStubAdapter : IWorkerAdapter
     /// live vendor CLI, the same way <see cref="FailureSentinel"/> stands in for an ordinary vendor
     /// rejection.
     /// </summary>
-    /// <summary>
-    /// Sentinel (issue #1180) forcing a turn to fail (exit 1, like <see cref="FailureSentinel"/>)
-    /// while printing a stdout result envelope this adapter's own <see cref="TryClassifyFailure"/>
-    /// override recognizes as exhausted plan/quota -- the daemon seam's (Program.cs,
-    /// <c>ExecuteSessionTurnCoreAsync</c>) two-tail classifier consultation needs a deterministic,
-    /// CI-safe way to reach the <see cref="FailureClassification.ExhaustedUntil"/> branch without a
-    /// live vendor CLI, the same way <see cref="FailureSentinel"/> stands in for an ordinary vendor
-    /// rejection.
-    /// </summary>
     public const string ExhaustionSentinel = "STUB_FORCE_EXHAUSTION";
 
     /// <summary>
