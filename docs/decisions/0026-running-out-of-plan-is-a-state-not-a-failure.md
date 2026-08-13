@@ -131,8 +131,9 @@ reset instant is recoverable on both vendors.
 
 **Obliges us to** never spend retry attempts against an exhausted quota; record the reset instant at
 mutation time and never re-read a clock on replay; keep exhaustion per vendor rather than per room;
-treat it as an attention state only where the operator just tried to use it; and never fabricate a
-reset time — required now for `agy` specifically, not as a generic caution.
+treat it as an attention state only where the operator just tried to use it — and, per the 2026-08-13
+amendment above, pace the wait only where nobody is; and never fabricate a reset time — required now
+for `agy` specifically, not as a generic caution.
 
 **Relates to** [0018](0018-attention-is-the-primary-signal.md), whose band-4 assignment for
 rate-limited this amends. [0008](0008-runtime-streaming-over-append-log.md) — per-turn cost is

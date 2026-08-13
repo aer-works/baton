@@ -1005,8 +1005,7 @@ namespace Aer.Daemon
                         var outcome = await session.RunAsync(
                             request.DirectoryPath,
                             request.WorkflowTemplateFilePath,
-                            request.BindingsFilePath,
-                            settleOnVendorExhaustion: request.SettleOnVendorExhaustion);
+                            request.BindingsFilePath);
                         if (outcome.ErrorMessage is { } errorMessage)
                         {
                             await AppendTurnErrorAsync(request.DirectoryPath, "/api/rooms/run", errorMessage).ConfigureAwait(false);
@@ -1080,8 +1079,7 @@ namespace Aer.Daemon
                             request.TargetStepId != null ? new StepId(request.TargetStepId) : null,
                             revisionFilePath,
                             request.SupplementaryWorker,
-                            request.SupplementaryOutputName,
-                            settleOnVendorExhaustion: request.SettleOnVendorExhaustion);
+                            request.SupplementaryOutputName);
                         if (outcome.ErrorMessage is { } errorMessage)
                         {
                             await AppendTurnErrorAsync(request.DirectoryPath, "/api/rooms/decide", errorMessage).ConfigureAwait(false);

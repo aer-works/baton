@@ -24,6 +24,10 @@ namespace Aer.Cli;
 /// </param>
 /// <param name="BindingsFilePath">The worker-binding config file (M11 Phase 1's sidecar shape).</param>
 /// <param name="WorkflowId">Defaults to the bound snapshot's <c>WorkflowTemplateId</c> when not given, same as <c>aer run</c>.</param>
+/// <param name="SettleOnVendorExhaustion">
+/// The same in-process-only attended flag <see cref="RunOptions"/> carries, for the decide half of a
+/// chat turn (#1184).
+/// </param>
 public sealed record DecideOptions(
     string RoomDirectoryPath,
     string ExecutionId,

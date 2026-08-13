@@ -404,12 +404,19 @@ public class SessionTurnBranchingTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// #1184 at the session seam: a chat turn refused for quota, with a reset instant hours away.
+    /// #1184 at the session seam: a chat turn refused for quota, with a reset instant years away.
     /// How the stub reaches that refusal is recorded on
-    /// <see cref="SessionTurnStubAdapter.ImmediateExhaustionSentinel"/>. What this fact is about is
-    /// the attended half of 0026 §4 — the send returns, the turn is recorded exhausted, and nobody
-    /// sits watching "sending" until the vendor's window resets. The engine-side pair in
-    /// MutationInterfaceRetryBackoffTests pins the obligation that must not be scheduled.
+    /// <see cref="SessionTurnStubAdapter.ImmediateExhaustionSentinel"/>.
+    ///
+    /// <para>
+    /// What discriminates here is <b>completion, not the assertions</b>: the reset instant is 2030,
+    /// so a parked turn's pump waits for it and this send never lands at all. Flipping the daemon's
+    /// three <c>settleOnVendorExhaustion: true</c> call sites to <c>false</c> fails it with
+    /// "never reached 1 turn(s) within 60s (545 polls); last seen: 0" — measured, not assumed. The
+    /// assertions below then say what the settled turn is; the obligation that must not be
+    /// scheduled is pinned at the engine, in MutationInterfaceRetryBackoffTests' polarity pair,
+    /// because the attended path hardcodes the flag and cannot drive its own false branch.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task SendMessage_WhenPumpClassifiesExhaustionOnFirstCall_SettlesImmediatelyWithoutParking()

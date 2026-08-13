@@ -32,6 +32,12 @@ namespace Aer.Cli;
 /// <param name="EchoWorker">
 /// When true, streams worker stdout lines live to <c>Console.Out</c> as they arrive (#882).
 /// </param>
+/// <param name="SettleOnVendorExhaustion">
+/// 0026 §4's attended half (#1184): an <c>ExhaustedUntil</c> step settles rather than pacing itself
+/// to the vendor's reset. Deliberately has no <c>aer run</c> flag and no wire field — the only
+/// caller that may set it is the daemon's own interactive session turn, which reaches the pump
+/// in-process, because attendedness is not something a command line or an HTTP body can attest to.
+/// </param>
 public sealed record RunOptions(
     string? WorkflowFilePath,
     string BindingsFilePath,
