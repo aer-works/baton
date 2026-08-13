@@ -565,8 +565,7 @@ public class ChatViewModelTests
         Assert.Equal("agy", card.SenderLabel);
         Assert.Equal(PlainLanguage.ForExhaustion(resetInstant), card.Text);
         Assert.Equal($"Out of plan — resumes {resetInstant.ToLocalTime():yyyy-MM-dd HH:mm}", card.Text);
-        // 0026 §4: an offer to spend against the very quota that is out is the confusion this
-        // record exists to remove -- so this NEVER carries PrepareFixPrompt.
+        // NEVER a PrepareFixPrompt on this card -- rationale on ChatMessageViewModel.IsOutOfPlan.
         Assert.Null(card.PrepareFixPromptCommand);
         // Copy carries the raw vendor text, not the plain-language sentence rendered above.
         Assert.Equal("Individual quota reached. Resets in 1h39m10s.", card.CopyText);

@@ -159,9 +159,8 @@
                     <Button Content="{Binding SenderLabel, StringFormat='Ask {0} to fix'}" Command="{Binding PrepareFixPromptCommand}" />
                     <Button Content="Copy" Click="OnCopyFailureClick" />
                   </StackPanel>
-                  <!-- 0026 §4/#1180: out of plan is a state with a reset time, not a failure, so
-                       this is Copy only, no fix-ask affordance (an offer to spend against the very
-                       quota that is out is the confusion 0026 exists to remove). -->
+                  <!-- 0026 §4/#1180: Copy only, deliberately no fix-ask affordance -- rationale on
+                       ChatMessageViewModel.IsOutOfPlan (Aer.Ui.Core/ChatViewModel.cs). -->
                   <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}" IsVisible="{Binding IsOutOfPlan}">
                     <Button Content="Copy" Click="OnCopyFailureClick" />
                   </StackPanel>

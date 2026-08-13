@@ -432,8 +432,8 @@ void main() {
 
       expect(find.text('keep going'), findsOneWidget);
       expect(find.text(forExhaustion(resetInstant)), findsOneWidget);
-      // 0026 §4: an offer to spend against the very quota that is out is the confusion this record
-      // exists to remove -- never a fix button for this card, unlike the ordinary failure card above.
+      // Never a fix button on this card (unlike the ordinary failure card above) -- rationale on
+      // ChatMessageViewModel.IsOutOfPlan (Aer.Ui.Core/ChatViewModel.cs).
       expect(find.textContaining('to fix'), findsNothing);
       expect(find.text('Copy'), findsOneWidget);
 

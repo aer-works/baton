@@ -1099,8 +1099,8 @@ class _MessageBubble extends StatelessWidget {
               ),
             ],
             if (message.isOutOfPlan) ...[
-              // Copy only, no fix-ask affordance -- an offer to spend against the very quota that
-              // is out is the confusion 0026 exists to remove.
+              // Copy only, deliberately no fix-ask affordance -- rationale on
+              // ChatMessageViewModel.IsOutOfPlan (Aer.Ui.Core/ChatViewModel.cs).
               const SizedBox(height: 8),
               OutlinedButton(
                 onPressed: () {
