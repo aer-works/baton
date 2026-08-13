@@ -59,12 +59,13 @@ public class GeneratedPaletteBrushTests
 
     public static IEnumerable<object[]> StatusAliases() => new[]
     {
-        new object[] { "Status.Running", "StatusWorkingColor" },
-        new object[] { "Status.NeedsYou", "StatusNeedsInputColor" },
-        new object[] { "Status.Succeeded", "StatusFinishedColor" },
+        new object[] { "Status.Working", "StatusWorkingColor" },
+        new object[] { "Status.NeedsInput", "StatusNeedsInputColor" },
+        new object[] { "Status.Finished", "StatusFinishedColor" },
         new object[] { "Status.Failed", "StatusFailedColor" },
         new object[] { "Status.Idle", "StatusIdleColor" },
-        new object[] { "Status.Stale", "StatusUnavailableColor" },
+        new object[] { "Status.Unavailable", "StatusUnavailableColor" },
+        new object[] { "Status.OutOfPlan", "StatusOutOfPlanColor" },
     };
 
     // Discrimination limit (#1135 review): the quiet-state tokens are deliberately same-valued

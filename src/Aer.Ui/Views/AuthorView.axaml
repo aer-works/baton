@@ -97,7 +97,7 @@
           </ItemsControl>
 
           <!-- Owner feedback: liked the guidance concept but found it "hard to parse — just lots of
-               text." Every line rendered in Status.NeedsYou (the loudest color in the system,
+               text." Every line rendered in Status.NeedsInput (the loudest color in the system,
                design-language.md's status table) regardless of whether it was a real blocker or
                just "give it a name" on a form nobody has filled in yet — an empty form starts with
                two guidance lines by construction, so the loudest color in the app was the very

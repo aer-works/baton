@@ -1506,11 +1506,11 @@ public partial class MainWindow : Window
         new Dictionary<StepStatus, (string, string)>
         {
             [StepStatus.Pending] = ("Status.Idle", "Status.IdleBg"),
-            [StepStatus.Running] = ("Status.Running", "Status.RunningBg"),
-            [StepStatus.Succeeded] = ("Status.Succeeded", "Status.SucceededBg"),
+            [StepStatus.Running] = ("Status.Working", "Status.WorkingBg"),
+            [StepStatus.Succeeded] = ("Status.Finished", "Status.FinishedBg"),
             [StepStatus.Failed] = ("Status.Failed", "Status.FailedBg"),
             [StepStatus.Cancelled] = ("Status.Idle", "Status.IdleBg"),
-            [StepStatus.Paused] = ("Status.NeedsYou", "Status.NeedsYouBg"),
+            [StepStatus.Paused] = ("Status.NeedsInput", "Status.NeedsInputBg"),
             [StepStatus.Rejected] = ("Status.Failed", "Status.FailedBg"),
         };
 
@@ -1598,7 +1598,10 @@ public partial class MainWindow : Window
                 EndPoint = new Point(
                     to.Column * DagCellWidth + DagNodeWidth / 2,
                     to.Rank * DagCellHeight),
-                Stroke = edge.IsSupersede ? Token("Status.Stale") : Token("Color.Border"),
+                // A supersede edge is prospective — DagEdge.IsSupersede's doc has the canonical
+                // wording — so it borrows the muted RESTING hue (Idle), not Unavailable's
+                // "no longer readable": possible and quiet, never yet a constraint.
+                Stroke = edge.IsSupersede ? Token("Status.Idle") : Token("Color.Border"),
                 StrokeThickness = 1.5,
             };
 

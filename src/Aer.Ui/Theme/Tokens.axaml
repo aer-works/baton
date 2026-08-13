@@ -42,12 +42,12 @@
       <!-- The Status.* FOREGROUND brushes moved to GeneratedTokens.axaml (#1135) — why lives on
            TokenGenerator.SemanticBrushAliases. The Bg tints below are desktop-only, hand-authored
            pending their own tokenization. -->
-      <SolidColorBrush x:Key="Status.NeedsYouBg">#F1E7D2</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.RunningBg">#E4E9F0</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.SucceededBg">#E2ECE4</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.NeedsInputBg">#F1E7D2</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.WorkingBg">#E4E9F0</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.FinishedBg">#E2ECE4</SolidColorBrush>
       <SolidColorBrush x:Key="Status.FailedBg">#F1E3E1</SolidColorBrush>
       <SolidColorBrush x:Key="Status.IdleBg">#F0F1F3</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.StaleBg">#E9E5EF</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.UnavailableBg">#E9E5EF</SolidColorBrush>
 
       <!-- Elevation (design-language.md's shape/depth section): shadow + the Surface/SurfaceRaised
            color step above. Light leans on both shadow and the color step. -->
@@ -75,12 +75,12 @@
       <!-- The Status.* FOREGROUND brushes moved to GeneratedTokens.axaml (#1135) — see the Light
            variant's note. The Bg tints below are desktop-only, hand-authored pending their own
            tokenization. -->
-      <SolidColorBrush x:Key="Status.NeedsYouBg">#332C1E</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.RunningBg">#1E2836</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.SucceededBg">#1E2A22</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.NeedsInputBg">#332C1E</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.WorkingBg">#1E2836</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.FinishedBg">#1E2A22</SolidColorBrush>
       <SolidColorBrush x:Key="Status.FailedBg">#302321</SolidColorBrush>
       <SolidColorBrush x:Key="Status.IdleBg">#22262C</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.StaleBg">#26222E</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.UnavailableBg">#26222E</SolidColorBrush>
 
       <!-- Elevation: dark leans on the Surface/SurfaceRaised color step alone (already distinct
            here) — a shadow barely reads against a near-black background, per the file header's
