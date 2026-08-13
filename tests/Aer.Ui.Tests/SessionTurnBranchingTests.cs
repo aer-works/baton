@@ -404,11 +404,12 @@ public class SessionTurnBranchingTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// #1184: verifies the session seam where an interactive turn's dispatch classifies
-    /// ExhaustedUntil on the VERY FIRST consultation (during the pump execution in MutationInterface)
-    /// carrying a known future reset instant.
-    /// Under SettleOnVendorExhaustion=true, the pump schedules no retry obligation and settles
-    /// immediately (the HTTP call returns, turn is recorded, no multi-hour wait).
+    /// #1184 at the session seam: a chat turn refused for quota, with a reset instant hours away.
+    /// How the stub reaches that refusal is recorded on
+    /// <see cref="SessionTurnStubAdapter.ImmediateExhaustionSentinel"/>. What this fact is about is
+    /// the attended half of 0026 §4 — the send returns, the turn is recorded exhausted, and nobody
+    /// sits watching "sending" until the vendor's window resets. The engine-side pair in
+    /// MutationInterfaceRetryBackoffTests pins the obligation that must not be scheduled.
     /// </summary>
     [Fact]
     public async Task SendMessage_WhenPumpClassifiesExhaustionOnFirstCall_SettlesImmediatelyWithoutParking()
