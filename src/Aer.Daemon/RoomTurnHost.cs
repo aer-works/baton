@@ -132,8 +132,10 @@ public sealed class RoomTurnHost : BackgroundService
     /// <summary>
     /// The <see cref="EscalationSubject.HostCondition"/> condition name the dormancy breaker
     /// raises. The status endpoint (#994) matches on it to surface the tripping escalation.
+    /// Canonical value lives on <see cref="RoomEvent.TurnHostDormancyEntered.DormancyConditionName"/>
+    /// (#1178: the projector pairs on it too and cannot reference this assembly).
     /// </summary>
-    public const string DormancyConditionName = "turn-host-dormancy";
+    public const string DormancyConditionName = RoomEvent.TurnHostDormancyEntered.DormancyConditionName;
 
     public static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
 

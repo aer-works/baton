@@ -148,13 +148,19 @@
         <ItemsControl x:Name="ChatMessagesList" ItemsSource="{Binding Chat.Messages}">
           <ItemsControl.ItemTemplate>
             <DataTemplate x:DataType="vm:ChatMessageViewModel">
-              <Border Classes="card" Classes.you="{Binding IsFromUser}" Classes.system="{Binding IsSystem}" Classes.failure="{Binding IsFailure}" Margin="0,0,0,8">
+              <Border Classes="card" Classes.you="{Binding IsFromUser}" Classes.system="{Binding IsSystem}" Classes.failure="{Binding IsFailure}" Classes.dormancy="{Binding IsDormancy}" Margin="0,0,0,8">
                 <StackPanel Spacing="{DynamicResource Space.1}">
-                  <TextBlock Classes="caption who" Text="{Binding SenderLabel}" />
+                  <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.1}">
+                    <TextBlock Text="⏾" Classes="caption who" IsVisible="{Binding IsDormancy}" />
+                    <TextBlock Classes="caption who" Text="{Binding SenderLabel}" />
+                  </StackPanel>
                   <md:MarkdownPresenter Markdown="{Binding Text}" />
                   <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}" IsVisible="{Binding IsFailure}">
                     <Button Content="{Binding SenderLabel, StringFormat='Ask {0} to fix'}" Command="{Binding PrepareFixPromptCommand}" />
                     <Button Content="Copy" Click="OnCopyFailureClick" />
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}" IsVisible="{Binding IsDormancy}">
+                    <Button Content="Wake" Command="{Binding WakeCommand}" IsVisible="{Binding WakeCommand, Converter={x:Static ObjectConverters.IsNotNull}}" />
                   </StackPanel>
                 </StackPanel>
               </Border>

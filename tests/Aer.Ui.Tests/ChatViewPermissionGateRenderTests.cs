@@ -1,5 +1,7 @@
 using Aer.Adapters;
+using Aer.Flow.Domain;
 using Aer.Flow.Projection;
+using Aer.Flow.Templates;
 using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
@@ -7,6 +9,7 @@ using Avalonia.Headless.XUnit;
 using Avalonia.Input;
 using Avalonia.LogicalTree;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 
 namespace Aer.Ui.Tests;
 
@@ -30,6 +33,19 @@ public class ChatViewPermissionGateRenderTests
 
     private static PendingPermission ShellAsk(string requestId = "req-1") =>
         new(requestId, "chat-worker", "claude", "Bash", "{\"command\":\"rm -rf build/\"}", "shell", DateTimeOffset.UtcNow);
+
+    private static SessionMetadata MetadataWithTurns(params SessionTurn[] turns) => new(
+        SessionId: "sess-1",
+        RoomDirectoryPath: "/tmp/sess-1",
+        CurrentAdapter: "claude",
+        CurrentVendorSessionId: "vendor-1",
+        Model: null,
+        WorkingDirectory: null,
+        TurnCount: turns.Length,
+        SafetyCeiling: 100,
+        CreatedAt: DateTimeOffset.UtcNow,
+        UpdatedAt: DateTimeOffset.UtcNow,
+        Turns: [.. turns]);
 
     [AvaloniaFact]
     public void Gate_IsHidden_WhenNoPermissionPending()
@@ -158,5 +174,77 @@ public class ChatViewPermissionGateRenderTests
         Dispatcher.UIThread.RunJobs();
 
         Assert.False(gate.IsVisible);
+    }
+
+    [AvaloniaFact]
+    public void DormancyCard_IsDescendantOfChatMessagesScroll_WhenSurfaced()
+    {
+        var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+        window.ViewModel.CurrentSection = ShellSection.Chat;
+        window.Show();
+        var chat = window.ViewModel.Chat;
+
+        var scroll = window.FindViewControl<ScrollViewer>("ChatMessagesScroll");
+        Assert.NotNull(scroll);
+
+        chat.LoadFromMetadata(MetadataWithTurns(new SessionTurn(1, "claude", "hi", "hello", DateTimeOffset.UtcNow, false, false)), "/tmp/sess-1");
+
+        var transition = new Aer.Flow.Domain.DormancyTransition(true, 3, "3 turns no progress", null, DateTimeOffset.UtcNow);
+        chat.SurfacePendingPermission(
+            null,
+            null,
+            (_, _, _) => Task.CompletedTask,
+            [transition],
+            isDormant: true,
+            wake: () => { });
+        Dispatcher.UIThread.RunJobs();
+
+        var dormancyCards = scroll!.GetVisualDescendants()
+            .OfType<Border>()
+            .Where(b => b.Classes.Contains("dormancy"))
+            .ToList();
+
+        var dormancyCard = Assert.Single(dormancyCards);
+        Assert.True(dormancyCard.IsVisible);
+    }
+
+    /// <summary>
+    /// The render-dedup fingerprint must include dormancy: transitions ride room.jsonl, so a
+    /// dormancy-only change (the Wake refresh included) alters no step/status/decision/gate term and,
+    /// before the #1178-review fix, the second <c>RenderProjection</c> short-circuited and never
+    /// surfaced the card — the same bug class the fingerprint's pendingPermissionId term fixed for
+    /// gates. Two full renders through <c>RenderProjection</c>, identical except the transition list.
+    /// </summary>
+    [AvaloniaFact]
+    public void RenderProjection_ReRenders_WhenOnlyDormancyTransitionsChange()
+    {
+        var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+        window.ViewModel.CurrentSection = ShellSection.Chat;
+        window.Show();
+
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("dormancy-fingerprint-fixture"),
+            WorkflowTemplateVersion: 1,
+            Steps: [new WorkflowStepDefinition(new StepId("only"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+        var state = new FlowState(snapshot.WorkflowDefinitionSnapshotId, [], WorkflowStatus.Running);
+        var history = new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []);
+        var lineage = new ArtifactLineage([]);
+
+        window.ViewModel.Chat.LoadFromMetadata(
+            MetadataWithTurns(new SessionTurn(1, "claude", "hi", "hello", DateTimeOffset.UtcNow.AddMinutes(-1), false, false)),
+            "/tmp/dormancy-fp");
+
+        var withoutDormancy = new RoomProjection(snapshot, state, history, lineage);
+        var withDormancy = withoutDormancy with
+        {
+            DormancyTransitions =
+                [new Aer.Flow.Domain.DormancyTransition(true, 3, "no progress", null, DateTimeOffset.UtcNow)],
+        };
+
+        window.RenderProjection(withoutDormancy, "/tmp/dormancy-fp");
+        window.RenderProjection(withDormancy, "/tmp/dormancy-fp");
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Contains(window.ViewModel.Chat.Messages, m => m.IsDormancy);
     }
 }

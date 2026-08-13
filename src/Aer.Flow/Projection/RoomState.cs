@@ -17,7 +17,8 @@ public sealed record RoomState(
     IReadOnlyList<RoomEvent.EscalationRaised>? OpenEscalations = null,
     bool IsDormant = false,
     PendingPermission? PendingPermission = null,
-    IReadOnlyList<PermissionAnswer>? PermissionAnswers = null)
+    IReadOnlyList<PermissionAnswer>? PermissionAnswers = null,
+    IReadOnlyList<DormancyTransition>? DormancyTransitions = null)
 {
     public IReadOnlyDictionary<GrantId, GrantState> ActiveGrants { get; init; } = ActiveGrants ?? new Dictionary<GrantId, GrantState>();
 
@@ -33,6 +34,12 @@ public sealed record RoomState(
     /// Default empty list, never null.
     /// </summary>
     public IReadOnlyList<PermissionAnswer> PermissionAnswers { get; init; } = PermissionAnswers ?? [];
+
+    /// <summary>
+    /// Journal of transitions into and out of turn host dormancy (#1178).
+    /// Default empty list, never null.
+    /// </summary>
+    public IReadOnlyList<DormancyTransition> DormancyTransitions { get; init; } = DormancyTransitions ?? [];
 
     public bool Equals(RoomState? other)
     {
@@ -53,7 +60,8 @@ public sealed record RoomState(
             !Equals(PendingPermission, other.PendingPermission) ||
             !UnmatchedEntries.SequenceEqual(other.UnmatchedEntries) ||
             !OpenEscalations.SequenceEqual(other.OpenEscalations) ||
-            !PermissionAnswers.SequenceEqual(other.PermissionAnswers))
+            !PermissionAnswers.SequenceEqual(other.PermissionAnswers) ||
+            !DormancyTransitions.SequenceEqual(other.DormancyTransitions))
         {
             return false;
         }
@@ -108,6 +116,11 @@ public sealed record RoomState(
         foreach (var answer in PermissionAnswers)
         {
             hash.Add(answer);
+        }
+
+        foreach (var transition in DormancyTransitions)
+        {
+            hash.Add(transition);
         }
 
         return hash.ToHashCode();

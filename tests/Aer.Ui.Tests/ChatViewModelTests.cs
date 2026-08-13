@@ -1,4 +1,5 @@
 using Aer.Adapters;
+using Aer.Flow.Projection;
 
 namespace Aer.Ui.Tests;
 
@@ -518,5 +519,138 @@ public class ChatViewModelTests
         Assert.Equal(2, viewModel.Messages.Count);
         Assert.False(viewModel.Messages[0].IsFailure);
         Assert.False(viewModel.Messages[1].IsFailure);
+    }
+
+    [Fact]
+    public void SurfacePendingPermission_RendersDormancyTransitions_InTimestampOrder_AndWakeVisibilityPolarity()
+    {
+        var viewModel = new ChatViewModel();
+        var t0 = DateTimeOffset.UtcNow;
+        var t1 = t0.AddMinutes(1);
+        var t2 = t0.AddMinutes(2);
+        var t3 = t0.AddMinutes(3);
+        var t4 = t0.AddMinutes(4);
+
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "First turn", "Done turn 1", t1, false, false));
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        var transition1 = new Aer.Flow.Domain.DormancyTransition(true, 3, "build failed", null, t2);
+        var transition2 = new Aer.Flow.Domain.DormancyTransition(false, 0, null, "operator", t3);
+        var transition3 = new Aer.Flow.Domain.DormancyTransition(true, 3, "build failed again", null, t4);
+
+        bool wakeCalled = false;
+        Action wakeAction = () => wakeCalled = true;
+
+        viewModel.SurfacePendingPermission(
+            null,
+            null,
+            (_, _, _) => Task.CompletedTask,
+            [transition1, transition2, transition3],
+            isDormant: true,
+            wake: wakeAction);
+
+        Assert.Equal(5, viewModel.Messages.Count);
+
+        var msgEntered1 = viewModel.Messages[2];
+        Assert.True(msgEntered1.IsDormancy);
+        Assert.Contains("Dormant — stopped after 3 machine turns without progress.", msgEntered1.Text);
+        Assert.Contains("build failed", msgEntered1.Text);
+        Assert.Null(msgEntered1.WakeCommand);
+
+        var msgCleared1 = viewModel.Messages[3];
+        Assert.True(msgCleared1.IsSystem);
+        Assert.False(msgCleared1.IsDormancy);
+        Assert.Equal("Woken by operator.", msgCleared1.Text);
+
+        var msgEntered2 = viewModel.Messages[4];
+        Assert.True(msgEntered2.IsDormancy);
+        Assert.NotNull(msgEntered2.WakeCommand);
+
+        msgEntered2.WakeCommand!.Execute(null);
+        Assert.True(wakeCalled);
+
+        viewModel.SurfacePendingPermission(
+            null,
+            null,
+            (_, _, _) => Task.CompletedTask,
+            [transition1, transition2, transition3],
+            isDormant: false,
+            wake: wakeAction);
+
+        Assert.Null(viewModel.Messages[4].WakeCommand);
+    }
+
+    [Fact]
+    public void SurfacePendingPermission_TranscriptClear_WatermarkHidesOldDormancyTransitions()
+    {
+        var viewModel = new ChatViewModel();
+        var t0 = DateTimeOffset.UtcNow;
+        var t1 = t0.AddMinutes(1);
+
+        var transition = new Aer.Flow.Domain.DormancyTransition(true, 3, "build failed", null, t1);
+        viewModel.SurfacePendingPermission(
+            null,
+            null,
+            (_, _, _) => Task.CompletedTask,
+            [transition],
+            isDormant: true,
+            wake: () => { });
+
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "First turn", "Done", t0, false, false));
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.Contains(viewModel.Messages, m => m.IsDormancy);
+
+        viewModel.MarkTranscriptCleared();
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.DoesNotContain(viewModel.Messages, m => m.IsDormancy);
+    }
+
+    [Fact]
+    public void SurfacePendingPermission_NoTransitions_RendersExactlyAsBefore()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+        viewModel.SurfacePendingPermission(null, null, (_, _, _) => Task.CompletedTask, [], isDormant: false, wake: null);
+
+        Assert.Equal(2, viewModel.Messages.Count);
+        Assert.False(viewModel.Messages[0].IsDormancy);
+        Assert.False(viewModel.Messages[1].IsDormancy);
+    }
+
+    /// <summary>
+    /// Pins the three-way merge's tie rule the #1178 review found unexercised: on an exact
+    /// timestamp tie, an answer renders BEFORE a dormancy transition (turns already win any tie
+    /// with either). A swapped tie priority in <c>RebuildMessages</c> flips the order here.
+    /// </summary>
+    [Fact]
+    public void SurfacePendingPermission_AnswerAndTransitionAtTheSameInstant_AnswerRendersFirst()
+    {
+        var viewModel = new ChatViewModel();
+        viewModel.LoadFromMetadata(MetadataWithTurns(), "/tmp/sess-1");
+        var sharedInstant = DateTimeOffset.UtcNow;
+
+        var answer = new PermissionAnswer(
+            "req-1", "Bash", "shell", "AllowOnce", null, "operator", sharedInstant, WasRevoked: false);
+        var transition = new Aer.Flow.Domain.DormancyTransition(true, 3, "no progress", null, sharedInstant);
+
+        viewModel.SurfacePendingPermission(
+            null,
+            [answer],
+            (_, _, _) => Task.CompletedTask,
+            [transition],
+            isDormant: true,
+            wake: () => { });
+
+        Assert.Equal(2, viewModel.Messages.Count);
+        Assert.True(viewModel.Messages[0].IsSystem);
+        Assert.False(viewModel.Messages[0].IsDormancy);
+        Assert.True(viewModel.Messages[1].IsDormancy);
     }
 }

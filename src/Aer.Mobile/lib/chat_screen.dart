@@ -21,7 +21,9 @@ class _ChatMessage {
   final bool isFromUser;
   final bool isSystem;
   final bool isFailure;
+  final bool isDormancy;
   final VoidCallback? onFix;
+  final VoidCallback? onWake;
 
   _ChatMessage({
     required this.senderLabel,
@@ -29,7 +31,9 @@ class _ChatMessage {
     required this.isFromUser,
     this.isSystem = false,
     this.isFailure = false,
+    this.isDormancy = false,
     this.onFix,
+    this.onWake,
   });
 }
 
@@ -114,6 +118,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// History of answered or revoked permissions from the latest projection.
   List<PermissionAnswer> _permissionAnswers = const [];
+  List<DormancyTransition> _dormancyTransitions = const [];
+  bool _isDormant = false;
 
   /// The /clear orphan-bubble guard: [_buildMessages] drops any answer stamped at or under this.
   /// Mechanism, daemon-clock choice, and the restart limitation are documented canonically on the
@@ -155,6 +161,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (projection.directoryPath == widget.directoryPath) {
           _surfacePendingPermission(projection.pendingPermission);
           _surfacePermissionAnswers(projection.permissionAnswers);
+          _surfaceDormancyTransitions(projection.dormancyTransitions, projection.isDormant);
           _refresh();
         }
       },
@@ -237,6 +244,25 @@ class _ChatScreenState extends State<ChatScreen> {
   void _surfacePermissionAnswers(List<PermissionAnswer> answers) {
     if (mounted) {
       setState(() => _permissionAnswers = answers);
+    }
+  }
+
+  void _surfaceDormancyTransitions(List<DormancyTransition> transitions, bool isDormant) {
+    if (mounted) {
+      setState(() {
+        _dormancyTransitions = transitions;
+        _isDormant = isDormant;
+      });
+    }
+  }
+
+  Future<void> _clearDormancy() async {
+    try {
+      await widget.client.clearTurnHostDormancy(widget.directoryPath);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to wake: $e')));
+      }
     }
   }
 
@@ -584,30 +610,56 @@ class _ChatScreenState extends State<ChatScreen> {
     final answers = _answersClearedThrough == null
         ? _permissionAnswers
         : _permissionAnswers.where((a) => a.answeredAt.isAfter(_answersClearedThrough!)).toList();
+    final transitions = _answersClearedThrough == null
+        ? _dormancyTransitions
+        : _dormancyTransitions.where((t) => t.timestamp.isAfter(_answersClearedThrough!)).toList();
+
+    final latestEntered = _isDormant && transitions.any((t) => t.isEntered)
+        ? transitions.lastWhere((t) => t.isEntered)
+        : null;
+
     int turnIdx = 0;
     int ansIdx = 0;
+    int transIdx = 0;
 
-    while (turnIdx < turns.length || ansIdx < answers.length) {
-      if (turnIdx < turns.length && ansIdx < answers.length) {
-        final turn = turns[turnIdx];
-        final answer = answers[ansIdx];
+    final farFuture = DateTime(9999);
 
-        if (turn.executedAt.isBefore(answer.answeredAt) || turn.executedAt.isAtSameMomentAs(answer.answeredAt)) {
-          _addTurnMessages(messages, turn);
-          turnIdx++;
-        } else {
-          final text = formatPermissionAnswerWording(answer);
-          messages.add(_ChatMessage(senderLabel: 'System', text: text, isFromUser: false, isSystem: true));
-          ansIdx++;
-        }
-      } else if (turnIdx < turns.length) {
+    while (turnIdx < turns.length || ansIdx < answers.length || transIdx < transitions.length) {
+      final turnTs = turnIdx < turns.length ? turns[turnIdx].executedAt : farFuture;
+      final ansTs = ansIdx < answers.length ? answers[ansIdx].answeredAt : farFuture;
+      final transTs = transIdx < transitions.length ? transitions[transIdx].timestamp : farFuture;
+
+      if ((turnTs.isBefore(ansTs) || turnTs.isAtSameMomentAs(ansTs)) &&
+          (turnTs.isBefore(transTs) || turnTs.isAtSameMomentAs(transTs))) {
         _addTurnMessages(messages, turns[turnIdx]);
         turnIdx++;
-      } else {
+      } else if (ansTs.isBefore(transTs) || ansTs.isAtSameMomentAs(transTs)) {
         final answer = answers[ansIdx];
         final text = formatPermissionAnswerWording(answer);
         messages.add(_ChatMessage(senderLabel: 'System', text: text, isFromUser: false, isSystem: true));
         ansIdx++;
+      } else {
+        final transition = transitions[transIdx];
+        if (transition.isEntered) {
+          final isLatest = _isDormant && transition == latestEntered;
+          var text = 'Dormant — stopped after ${transition.consecutiveFailures} machine turns without progress.';
+          if (transition.detail != null && transition.detail!.isNotEmpty) {
+            text += '\n${transition.detail}';
+          }
+          messages.add(
+            _ChatMessage(
+              senderLabel: 'System',
+              text: text,
+              isFromUser: false,
+              isDormancy: true,
+              onWake: isLatest ? _clearDormancy : null,
+            ),
+          );
+        } else {
+          var text = 'Woken by ${transition.clearedBy}.';
+          messages.add(_ChatMessage(senderLabel: 'System', text: text, isFromUser: false, isSystem: true));
+        }
+        transIdx++;
       }
     }
 
@@ -924,16 +976,20 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
-    final background = message.isFailure
-        ? scheme.errorContainer
-        : message.isFromUser
-            ? scheme.primaryContainer
-            : scheme.surfaceContainerHighest;
-    final foreground = message.isFailure
-        ? scheme.onErrorContainer
-        : message.isFromUser
-            ? scheme.onPrimaryContainer
-            : scheme.onSurfaceVariant;
+    final background = message.isDormancy
+        ? scheme.surfaceContainerHighest
+        : message.isFailure
+            ? scheme.errorContainer
+            : message.isFromUser
+                ? scheme.primaryContainer
+                : scheme.surfaceContainerHighest;
+    final foreground = message.isDormancy
+        ? scheme.onSurfaceVariant
+        : message.isFailure
+            ? scheme.onErrorContainer
+            : message.isFromUser
+                ? scheme.onPrimaryContainer
+                : scheme.onSurfaceVariant;
 
     return Align(
       alignment: message.isFromUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -945,7 +1001,15 @@ class _MessageBubble extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(message.senderLabel, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: foreground)),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (message.isDormancy) ...[
+                  const Text('⏾ ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                ],
+                Text(message.senderLabel, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: foreground)),
+              ],
+            ),
             const SizedBox(height: 4),
             MarkdownBodyWidget(text: message.text, foreground: foreground),
             if (message.isFailure) ...[
@@ -964,6 +1028,13 @@ class _MessageBubble extends StatelessWidget {
                     child: const Text('Copy'),
                   ),
                 ],
+              ),
+            ],
+            if (message.isDormancy && message.onWake != null) ...[
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: message.onWake,
+                child: const Text('Wake'),
               ),
             ],
           ],

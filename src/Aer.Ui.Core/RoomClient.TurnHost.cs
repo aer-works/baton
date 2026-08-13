@@ -64,10 +64,7 @@ public sealed partial class RoomClient
         var status = await TryGetTurnHostStatusAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(true);
         if (status != null)
         {
-            ViewModel.RoomTurnHostBanner = new RoomTurnHostBannerViewModel(
-                status,
-                () => ClearTurnHostDormancyAsync(roomDirectoryPath, CancellationToken.None),
-                () => LoadAsync(roomDirectoryPath, CancellationToken.None));
+            ViewModel.RoomTurnHostBanner = new RoomTurnHostBannerViewModel(status);
         }
         else
         {

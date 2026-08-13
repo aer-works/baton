@@ -1318,7 +1318,11 @@ public partial class MainWindow : Window
         // can raise or clear a gate with no step/status/decision change, so without this the fingerprint
         // would short-circuit the render that must show or hide it.
         var pendingPermissionId = projection.PendingPermission?.PermissionRequestId ?? "none";
-        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}|{pendingPermissionId}"; // vocabulary-ok: state fingerprint key
+        // #1178: dormancy transitions ride room.jsonl like the gate does, so a dormancy-only change
+        // (including the one a successful Wake produces) alters no other term — same class of bug as
+        // the pendingPermissionId note above, same fix.
+        var dormancyCount = projection.DormancyTransitions.Count;
+        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}|{pendingPermissionId}|{dormancyCount}"; // vocabulary-ok: state fingerprint key
 
         if (_lastRenderedProjectionFingerprint == fingerprint)
         {
@@ -1388,7 +1392,19 @@ public partial class MainWindow : Window
             projection.PendingPermission,
             projection.PermissionAnswers,
             (permissionRequestId, decisionKind, reason) =>
-                AnswerPermissionFromGateAsync(roomDirectoryPath, permissionRequestId, decisionKind, reason));
+                AnswerPermissionFromGateAsync(roomDirectoryPath, permissionRequestId, decisionKind, reason),
+            projection.DormancyTransitions,
+            projection.IsDormant,
+            () => _ = WakeDormantRoomAsync(roomDirectoryPath));
+    }
+
+    private async Task WakeDormantRoomAsync(string roomDirectoryPath)
+    {
+        var success = await _session.ClearTurnHostDormancyAsync(roomDirectoryPath).ConfigureAwait(true);
+        if (success)
+        {
+            await LoadAsync(roomDirectoryPath).ConfigureAwait(true);
+        }
     }
 
     /// <summary>

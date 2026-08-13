@@ -196,6 +196,21 @@
       "wasRevoked": true
     }
   ],
+  "dormancyTransitions": [
+    {
+      "isEntered": true,
+      "consecutiveFailures": 3,
+      "detail": "The last three turns tried to fix build",
+      "timestamp": "2026-08-03T14:30:00\u002B00:00"
+    },
+    {
+      "isEntered": false,
+      "consecutiveFailures": 0,
+      "clearedBy": "operator",
+      "timestamp": "2026-08-03T15:00:00\u002B00:00"
+    }
+  ],
+  "isDormant": false,
   "directoryPath": "C:/tasks/foo",
   "sessionId": "session-123",
   "workerAdapters": {

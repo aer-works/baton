@@ -52,29 +52,12 @@
         </StackPanel>
       </Border>
 
-      <!-- #994: room throttle surface (values, live usage, dormancy visibility) -->
+      <!-- #994: room throttle surface (values, live usage) -->
       <Border Classes="card" IsVisible="{Binding HasRoomTurnHostBanner}" Background="{DynamicResource Color.SurfaceSubtle}" Margin="0,4,0,4">
-        <StackPanel Spacing="8" DataContext="{Binding RoomTurnHostBanner}" x:DataType="vm:RoomTurnHostBannerViewModel">
-          <!-- Non-dormant presentation -->
-          <StackPanel IsVisible="{Binding !IsDormant}" Spacing="4">
-            <TextBlock Classes="body-strong" Text="{Binding MeterText}" />
-            <TextBlock Classes="secondary" Text="{Binding ValuesText}" />
-            <TextBlock x:Name="TurnHostMeterLoadError" Classes="secondary" Text="{Binding LoadErrorText}" IsVisible="{Binding LoadErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-          </StackPanel>
-
-          <!-- Dormant presentation -->
-          <StackPanel IsVisible="{Binding IsDormant}" Spacing="8">
-            <StackPanel Orientation="Horizontal" Spacing="8">
-              <TextBlock Text="⏾" FontSize="14" VerticalAlignment="Center" />
-              <TextBlock Classes="body-strong" Text="{Binding DormancyText}" VerticalAlignment="Center" />
-            </StackPanel>
-            <TextBlock Classes="secondary" Text="{Binding DormancyEscalationText}" IsVisible="{Binding HasDormancyEscalationText}" TextWrapping="Wrap" />
-            <TextBlock Classes="secondary" Text="{Binding ValuesText}" />
-            <TextBlock x:Name="TurnHostDormantLoadError" Classes="secondary" Text="{Binding LoadErrorText}" IsVisible="{Binding LoadErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-            <Button Command="{Binding WakeCommand}" Width="80">
-              <TextBlock Text="Wake" HorizontalAlignment="Center" VerticalAlignment="Center" />
-            </Button>
-          </StackPanel>
+        <StackPanel Spacing="4" DataContext="{Binding RoomTurnHostBanner}" x:DataType="vm:RoomTurnHostBannerViewModel">
+          <TextBlock Classes="body-strong" Text="{Binding MeterText}" />
+          <TextBlock Classes="secondary" Text="{Binding ValuesText}" />
+          <TextBlock x:Name="TurnHostMeterLoadError" Classes="secondary" Text="{Binding LoadErrorText}" IsVisible="{Binding LoadErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
         </StackPanel>
       </Border>
 

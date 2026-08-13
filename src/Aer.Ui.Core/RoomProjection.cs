@@ -33,7 +33,10 @@ namespace Aer.Ui.Core;
 public sealed record RoomProjection(
     WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage,
     PendingPermission? PendingPermission = null,
-    IReadOnlyList<PermissionAnswer>? PermissionAnswers = null)
+    IReadOnlyList<PermissionAnswer>? PermissionAnswers = null,
+    IReadOnlyList<DormancyTransition>? DormancyTransitions = null)
 {
     public IReadOnlyList<PermissionAnswer> PermissionAnswers { get; init; } = PermissionAnswers ?? [];
+    public IReadOnlyList<DormancyTransition> DormancyTransitions { get; init; } = DormancyTransitions ?? [];
+    public bool IsDormant => DormancyTransitions.Count > 0 && DormancyTransitions[^1].IsEntered;
 }
