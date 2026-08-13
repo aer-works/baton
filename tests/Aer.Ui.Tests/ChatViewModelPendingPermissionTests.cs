@@ -121,10 +121,9 @@ public class ChatViewModelPendingPermissionTests
     }
 
     /// <summary>
-    /// #1142 second-reader: /clear wipes the vendor turns but room.jsonl's permission history
-    /// survives, so without the watermark every old answer re-rendered as an orphan bubble above an
-    /// empty transcript. Both polarities: answers at-or-before the watermark are hidden, an answer
-    /// AFTER it still renders.
+    /// #1142 second-reader: the /clear orphan-bubble guard (why and how: the doc on
+    /// <c>ChatViewModel._answersClearedThrough</c>, the canonical record). Both polarities: answers
+    /// at-or-before the watermark are hidden, an answer AFTER it still renders.
     /// </summary>
     [Fact]
     public void MarkTranscriptCleared_HidesOldAnswers_ButNotOnesAnsweredAfterward()

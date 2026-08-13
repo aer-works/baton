@@ -110,12 +110,9 @@ class _ChatScreenState extends State<ChatScreen> {
   /// History of answered or revoked permissions from the latest projection.
   List<PermissionAnswer> _permissionAnswers = const [];
 
-  /// Answers at or before this watermark are hidden from the transcript. Set on /clear: the vendor
-  /// turns are wiped but room.jsonl's permission history survives, so without this every old answer
-  /// re-renders as an orphan bubble above an empty transcript. Derived from the answers' own
-  /// daemon-stamped timestamps, never this device's clock. In-memory only — after the screen is
-  /// reopened the old answers reappear with the room's other durable history, the same disclosed
-  /// limitation as the desktop's ChatViewModel watermark (#1142 review).
+  /// The /clear orphan-bubble guard: [_buildMessages] drops any answer stamped at or under this.
+  /// Mechanism, daemon-clock choice, and the restart limitation are documented canonically on the
+  /// desktop twin, ChatViewModel._answersClearedThrough (#1142 review).
   DateTime? _answersClearedThrough;
 
   /// True while an answer POST is in flight — disables the gate's rungs (mirrors InboxScreen's
