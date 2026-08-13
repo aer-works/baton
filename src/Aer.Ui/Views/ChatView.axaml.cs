@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Aer.Ui.Core;
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
 using Avalonia.Threading;
 
 namespace Aer.Ui.Views;
