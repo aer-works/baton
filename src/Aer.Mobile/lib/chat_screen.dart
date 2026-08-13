@@ -226,6 +226,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _pendingPermission = pending;
       _isAnsweringPermission = false;
     });
+    _scrollToEnd();
   }
 
   void _surfacePermissionAnswers(List<PermissionAnswer> answers) {
@@ -631,12 +632,6 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           Expanded(child: _buildBody(context, metadata)),
-          if (_pendingPermission != null)
-            PermissionGateCard(
-              pending: _pendingPermission!,
-              enabled: !_isAnsweringPermission,
-              onAnswer: _answerPermission,
-            ),
           if (_isSending && _liveProgressText.isNotEmpty)
             Container(
               width: double.infinity,
@@ -764,11 +759,23 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     final messages = _buildMessages(metadata);
+    final hasGate = _pendingPermission != null;
+    final itemCount = messages.length + (hasGate ? 1 : 0);
+
     return ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.all(12),
-      itemCount: messages.length,
-      itemBuilder: (context, index) => _MessageBubble(message: messages[index]),
+      itemCount: itemCount,
+      itemBuilder: (context, index) {
+        if (hasGate && index == messages.length) {
+          return PermissionGateCard(
+            pending: _pendingPermission!,
+            enabled: !_isAnsweringPermission,
+            onAnswer: _answerPermission,
+          );
+        }
+        return _MessageBubble(message: messages[index]);
+      },
     );
   }
 }
