@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:aer_mobile/chat_screen.dart';
@@ -391,6 +392,73 @@ void main() {
       await pumpChatScreen(tester, turns: turns);
 
       expect(find.text('command completed successfully'), findsOneWidget);
+      expect(find.textContaining('to fix'), findsNothing);
+    });
+
+    /// Mirrors [PlainLanguage.ForExhaustion]'s formatting (Aer.Ui.Core/RoomStepViewModels.cs) --
+    /// this file has no shared formatter with the C# side, so digits are hand-padded the same way
+    /// `_forExhaustion` (chat_screen.dart) does.
+    String forExhaustion(DateTime utcInstant) {
+      final local = utcInstant.toLocal();
+      String two(int n) => n.toString().padLeft(2, '0');
+      return 'Out of plan — resumes ${local.year.toString().padLeft(4, '0')}-${two(local.month)}-${two(local.day)} ${two(local.hour)}:${two(local.minute)}';
+    }
+
+    testWidgets('0026 §4/#1180: an exhausted turn with a known reset renders the out-of-plan card, no fix button, and Copy carries the raw vendor text', (tester) async {
+      final resetInstant = DateTime.utc(2030, 1, 1, 12, 0);
+      final turns = [
+        SessionTurn(
+          turnIndex: 0,
+          vendor: 'agy',
+          humanMessage: 'keep going',
+          assistantResponse: null,
+          executedAt: DateTime.utc(2026, 8, 12, 10, 0),
+          errorMessage: 'Individual quota reached. Resets in 1h39m10s.',
+          isExhausted: true,
+          exhaustedUntil: resetInstant,
+        ),
+      ];
+
+      String? clipboardText;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          clipboardText = (call.arguments as Map)['text'] as String?;
+        }
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+
+      await pumpChatScreen(tester, turns: turns);
+
+      expect(find.text('keep going'), findsOneWidget);
+      expect(find.text(forExhaustion(resetInstant)), findsOneWidget);
+      // 0026 §4: an offer to spend against the very quota that is out is the confusion this record
+      // exists to remove -- never a fix button for this card, unlike the ordinary failure card above.
+      expect(find.textContaining('to fix'), findsNothing);
+      expect(find.text('Copy'), findsOneWidget);
+
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      expect(clipboardText, 'Individual quota reached. Resets in 1h39m10s.');
+    });
+
+    testWidgets('0026 §5: an exhausted turn with no reset instant renders the honest-unknown wording', (tester) async {
+      final turns = [
+        SessionTurn(
+          turnIndex: 0,
+          vendor: 'claude',
+          humanMessage: 'keep going',
+          assistantResponse: null,
+          executedAt: DateTime.utc(2026, 8, 12, 10, 0),
+          errorMessage: 'credits_required',
+          isExhausted: true,
+          exhaustedUntil: null,
+        ),
+      ];
+
+      await pumpChatScreen(tester, turns: turns);
+
+      expect(find.text('Out of plan — reset unknown'), findsOneWidget);
       expect(find.textContaining('to fix'), findsNothing);
     });
 

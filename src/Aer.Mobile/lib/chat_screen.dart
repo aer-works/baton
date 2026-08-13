@@ -22,8 +22,15 @@ class _ChatMessage {
   final bool isSystem;
   final bool isFailure;
   final bool isDormancy;
+  final bool isOutOfPlan;
   final VoidCallback? onFix;
   final VoidCallback? onWake;
+
+  /// What Copy puts on the clipboard. Null means "copy [text]" (every other bubble's behaviour,
+  /// including [isFailure]'s). The out-of-plan bubble sets this to the turn's raw errorMessage --
+  /// [text] is the plain-language 0026 sentence, this is the vendor's own words. Mirrors
+  /// ChatMessageViewModel.CopyText (Aer.Ui.Core/ChatViewModel.cs).
+  final String? copyText;
 
   _ChatMessage({
     required this.senderLabel,
@@ -32,8 +39,10 @@ class _ChatMessage {
     this.isSystem = false,
     this.isFailure = false,
     this.isDormancy = false,
+    this.isOutOfPlan = false,
     this.onFix,
     this.onWake,
+    this.copyText,
   });
 }
 
@@ -583,6 +592,19 @@ class _ChatScreenState extends State<ChatScreen> {
     return 'Denied — ${answer.toolName}$reasonSuffix';
   }
 
+  /// The 0026 §5 exhaustion sentence, derived locally to match the shape
+  /// `PlainLanguage.ForExhaustion` produces (Aer.Ui.Core/RoomStepViewModels.cs) -- this file has no
+  /// `intl` dependency to share the C# formatter with, so the digits are padded by hand.
+  static String _forExhaustion(DateTime? exhaustedUntil) {
+    if (exhaustedUntil == null) {
+      return 'Out of plan — reset unknown';
+    }
+
+    final local = exhaustedUntil.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return 'Out of plan — resumes ${local.year.toString().padLeft(4, '0')}-${two(local.month)}-${two(local.day)} ${two(local.hour)}:${two(local.minute)}';
+  }
+
   void _addTurnMessages(List<_ChatMessage> messages, SessionTurn turn) {
     messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
 
@@ -597,6 +619,27 @@ class _ChatScreenState extends State<ChatScreen> {
           isFromUser: false,
           isDormancy: true,
           onWake: _isDormant ? _clearDormancy : null,
+        ),
+      );
+      return;
+    }
+
+    // 0026 §4/#1180: mirrors ChatViewModel.AddTurnMessages' IsExhausted arm -- checked BEFORE the
+    // errorMessage/isFailure arm below so the failure bubble is unreachable for it, even though
+    // errorMessage is still populated on this turn (it feeds the out-of-plan bubble's Copy). A
+    // partial response can coexist with exhaustion, so it still renders first.
+    if (turn.isExhausted) {
+      if (turn.assistantResponse != null) {
+        messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
+      }
+
+      messages.add(
+        _ChatMessage(
+          senderLabel: turn.vendor,
+          text: _forExhaustion(turn.exhaustedUntil),
+          isFromUser: false,
+          isOutOfPlan: true,
+          copyText: turn.errorMessage,
         ),
       );
       return;
@@ -993,20 +1036,28 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
-    final background = message.isDormancy
-        ? scheme.surfaceContainerHighest
-        : message.isFailure
-            ? scheme.errorContainer
-            : message.isFromUser
-                ? scheme.primaryContainer
-                : scheme.surfaceContainerHighest;
-    final foreground = message.isDormancy
-        ? scheme.onSurfaceVariant
-        : message.isFailure
-            ? scheme.onErrorContainer
-            : message.isFromUser
-                ? scheme.onPrimaryContainer
-                : scheme.onSurfaceVariant;
+    // 0026 §4/#1180: exhaustion is a STATE with a reset time, visually distinct from a failure --
+    // the outOfPlan token colour (AerTokens/AerStatus in theme/tokens.dart, same source rooms_screen
+    // reads for the room-list status dot), never scheme.errorContainer/onErrorContainer.
+    final outOfPlanColor = AerStatus.outOfPlan.color(Theme.of(context).brightness);
+    final background = message.isOutOfPlan
+        ? outOfPlanColor.withValues(alpha: 0.15)
+        : message.isDormancy
+            ? scheme.surfaceContainerHighest
+            : message.isFailure
+                ? scheme.errorContainer
+                : message.isFromUser
+                    ? scheme.primaryContainer
+                    : scheme.surfaceContainerHighest;
+    final foreground = message.isOutOfPlan
+        ? outOfPlanColor
+        : message.isDormancy
+            ? scheme.onSurfaceVariant
+            : message.isFailure
+                ? scheme.onErrorContainer
+                : message.isFromUser
+                    ? scheme.onPrimaryContainer
+                    : scheme.onSurfaceVariant;
 
     return Align(
       alignment: message.isFromUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -1045,6 +1096,17 @@ class _MessageBubble extends StatelessWidget {
                     child: const Text('Copy'),
                   ),
                 ],
+              ),
+            ],
+            if (message.isOutOfPlan) ...[
+              // Copy only, no fix-ask affordance -- an offer to spend against the very quota that
+              // is out is the confusion 0026 exists to remove.
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: message.copyText ?? message.text));
+                },
+                child: const Text('Copy'),
               ),
             ],
             if (message.isDormancy && message.onWake != null) ...[

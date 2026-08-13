@@ -294,6 +294,16 @@ class SessionTurn {
   /// Aer.Adapters/InteractiveSessions.cs for what it means and why [assistantResponse] stays null.
   final bool isDormancyAnswer;
 
+  /// 0026 §4/#1180: mirrors `SessionTurn.IsExhausted`/`ExhaustedUntil` in
+  /// Aer.Adapters/InteractiveSessions.cs -- a failed turn the resolved adapter classified as
+  /// exhausted plan/quota rather than an ordinary failure. Renderers must key on [isExhausted]
+  /// FIRST, before [errorMessage]: an exhausted turn must never reach the failure-bubble arm, even
+  /// though [errorMessage] stays populated (raw vendor text) for Copy. Tolerant parse: absent on
+  /// metadata written before this field existed, which reads as "not exhausted" (false/null) --
+  /// the safe direction, same idiom as [isDormancyAnswer].
+  final bool isExhausted;
+  final DateTime? exhaustedUntil;
+
   SessionTurn({
     required this.turnIndex,
     required this.vendor,
@@ -302,6 +312,8 @@ class SessionTurn {
     required this.executedAt,
     this.errorMessage,
     this.isDormancyAnswer = false,
+    this.isExhausted = false,
+    this.exhaustedUntil,
   });
 
   factory SessionTurn.fromJson(Map<String, dynamic> json) {
@@ -314,6 +326,8 @@ class SessionTurn {
       executedAt: DateTime.tryParse(j['executedat']?.toString() ?? '') ?? DateTime.now(),
       errorMessage: j['errormessage']?.toString(),
       isDormancyAnswer: j['isdormancyanswer'] == true,
+      isExhausted: j['isexhausted'] == true,
+      exhaustedUntil: j['exhausteduntil'] == null ? null : DateTime.tryParse(j['exhausteduntil'].toString()),
     );
   }
 }

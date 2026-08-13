@@ -246,4 +246,48 @@ void main() {
       expect(turn.isDormancyAnswer, isFalse);
     });
   });
+
+  group('SessionTurn.fromJson (isExhausted/exhaustedUntil parse, 0026 §4/#1180)', () {
+    test('parses camelCase isExhausted/exhaustedUntil', () {
+      final turn = SessionTurn.fromJson({
+        'turnIndex': 3,
+        'vendor': 'agy',
+        'humanMessage': 'keep going',
+        'assistantResponse': null,
+        'executedAt': '2026-08-13T08:00:00Z',
+        'errorMessage': 'Individual quota reached. Resets in 1h39m10s.',
+        'isExhausted': true,
+        'exhaustedUntil': '2030-01-01T12:00:00Z',
+      });
+      expect(turn.isExhausted, isTrue);
+      expect(turn.exhaustedUntil, DateTime.utc(2030, 1, 1, 12, 0));
+    });
+
+    test('parses PascalCase IsExhausted/ExhaustedUntil', () {
+      final turn = SessionTurn.fromJson({
+        'TurnIndex': 3,
+        'Vendor': 'claude',
+        'HumanMessage': 'keep going',
+        'AssistantResponse': null,
+        'ExecutedAt': '2026-08-13T08:00:00Z',
+        'ErrorMessage': 'credits_required',
+        'IsExhausted': true,
+        'ExhaustedUntil': null,
+      });
+      expect(turn.isExhausted, isTrue);
+      expect(turn.exhaustedUntil, isNull);
+    });
+
+    test('parses absent isExhausted/exhaustedUntil as false/null (old metadata, tolerant per InteractiveSessions.SessionTurn)', () {
+      final turn = SessionTurn.fromJson({
+        'turnIndex': 1,
+        'vendor': 'claude',
+        'humanMessage': 'Hello',
+        'assistantResponse': 'Hi',
+        'executedAt': '2026-08-13T08:00:00Z',
+      });
+      expect(turn.isExhausted, isFalse);
+      expect(turn.exhaustedUntil, isNull);
+    });
+  });
 }
