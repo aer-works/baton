@@ -22,6 +22,14 @@ class _ChatMessage {
   _ChatMessage({required this.senderLabel, required this.text, required this.isFromUser});
 }
 
+/// One queued composer entry (#1131) — deliberately a class with default identity equality, the
+/// Flutter stand-in for QueuedChatMessageViewModel: two same-text entries must stay two entries.
+class _QueuedMessage {
+  final String text;
+
+  _QueuedMessage(this.text);
+}
+
 /// The mobile chat/codebase-session screen (M24, issue #262) — the Flutter counterpart of
 /// Aer.Ui's dedicated Chat view. `Turns` (the actual message content) live outside RoomProjection
 /// entirely, in SessionMetadata, so this screen re-fetches GET /api/sessions/{sessionId} rather
@@ -73,8 +81,10 @@ class _ChatScreenState extends State<ChatScreen> {
   String _liveProgressText = '';
 
   /// Client-local queue preventing concurrent turns per ChatViewModel.EnqueueMessage
-  /// (src/Aer.Ui.Core/ChatViewModel.cs:246-260).
-  final List<String> _queuedMessages = [];
+  /// (src/Aer.Ui.Core/ChatViewModel.cs:246-260). Entries are identity-carrying objects, not bare
+  /// strings, for TryPeekQueuedMessage's reason: the drain consumes its exact head, so a removal
+  /// racing the in-flight dispatch can never make two same-text entries collapse into one.
+  final List<_QueuedMessage> _queuedMessages = [];
 
   /// Pauses queue draining after a failed send until the operator's next manual send or enqueue,
   /// per ChatViewModel.EnqueueMessage / FailSend (src/Aer.Ui.Core/ChatViewModel.cs:246-304).
@@ -273,7 +283,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     if (_isSending || _queuedMessages.isNotEmpty) {
       setState(() {
-        _queuedMessages.add(message);
+        _queuedMessages.add(_QueuedMessage(message));
         _inputController.clear();
         _drainPaused = false;
       });
@@ -311,12 +321,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final head = _queuedMessages.first;
     setState(() {
-      _setupSendState(head, metadata.turnCount);
+      _setupSendState(head.text, metadata.turnCount);
     });
     _scrollToEnd();
 
     try {
-      await widget.client.sendSessionMessage(sessionId: widget.sessionId, message: head);
+      await widget.client.sendSessionMessage(sessionId: widget.sessionId, message: head.text);
       if (mounted) {
         setState(() {
           _queuedMessages.remove(head);
@@ -599,7 +609,7 @@ class _ChatScreenState extends State<ChatScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    _queuedMessages[i],
+                    _queuedMessages[i].text,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: textTheme.bodySmall,

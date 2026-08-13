@@ -197,5 +197,44 @@ void main() {
       // Drain resumed: sent head ('Queued message 1')
       expect(client.sentMessages.contains('Queued message 1'), isTrue);
     });
+
+    testWidgets(
+        '5. Two same-text entries stay two entries: removing the in-flight head mid-drain never collapses them (identity, not value)',
+        (tester) async {
+      final client = await pumpChatScreen(tester);
+
+      // Turn in flight, then two identical messages queued.
+      await tester.enterText(find.byType(TextField), 'First turn message');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), 'dup');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'dup');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pumpAndSettle();
+      expect(find.text('dup'), findsNWidgets(2));
+
+      // Hold the drain's dispatch open so the head is in flight but still visible in the strip.
+      client.sendGate = Completer<void>();
+      client.turnCount = 1;
+      client.push(projection());
+      await tester.pump();
+      await tester.pump();
+
+      // Remove the in-flight head via the strip while its dispatch is held open.
+      await tester.tap(find.byTooltip('Remove').first);
+      await tester.pump();
+
+      // Release the dispatch; its success must consume the (already-removed) head and NOTHING
+      // else — with value-based removal the second same-text entry would vanish here instead.
+      // Count strip rows via their Remove buttons: the drained head's text also appears in the
+      // transcript as the pending message, so find.text can't scope this.
+      client.sendGate!.complete();
+      client.sendGate = null;
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Remove'), findsOneWidget);
+    });
   });
 }
