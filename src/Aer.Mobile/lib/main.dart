@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'daemon/credentials_store.dart';
@@ -9,6 +10,17 @@ import 'theme/tokens.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // #1176: Mobile app-level unhandled exception guard.
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+  };
+
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    debugPrint('Unhandled app error: $error\n$stack');
+    return true;
+  };
+
   await TailnetGateway.init();
   runApp(const AerMobileApp());
 }
