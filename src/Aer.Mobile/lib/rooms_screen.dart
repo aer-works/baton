@@ -7,6 +7,16 @@ import 'daemon/models.dart';
 import 'inbox_screen.dart';
 import 'pairing_screen.dart';
 
+/// Maps a status string to decision 0018's (docs/decisions/0018-attention-is-the-primary-signal.md)
+/// attention band; unknown strings stay visible in band 2, never the muted band.
+int attentionBand(String? status) => switch (status) {
+      'NeedsYou' => 0,
+      'Running' => 1,
+      'Finished' || 'Failed' => 2,
+      'Cancelled' || 'Unavailable' || 'OutOfPlan' => 3,
+      _ => 2,
+    };
+
 /// The switcher — the phone's front door (#337/#1044): every known room at once, and the screen a
 /// paired device lands on. Tapping a room enters it directly (a session opens its chat; a workflow
 /// opens its decision view), so a room row is a place, not a dead card. It also carries the
@@ -19,15 +29,6 @@ import 'pairing_screen.dart';
 /// rather than inventing one). Selected paths are tracked by directory path (a task's stable
 /// identity), not list index, since `_refresh()` rebuilds `_items` from scratch after every
 /// mutation.
-/// Maps a status string to decision 0018's (docs/decisions/0018-attention-is-the-primary-signal.md) attention band.
-int attentionBand(String? status) => switch (status) {
-      'NeedsYou' => 0,
-      'Running' => 1,
-      'Finished' || 'Failed' => 2,
-      'Cancelled' || 'Unavailable' || 'OutOfPlan' => 3,
-      _ => 2,
-    };
-
 class RoomsScreen extends StatefulWidget {
   final DaemonClient client;
 
