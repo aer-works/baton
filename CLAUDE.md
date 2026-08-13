@@ -65,7 +65,7 @@ The hook is in the repo but git does not use it until that command has been run 
 | `lint` | `dotnet build -warnaserror` |
 | `fmt` | `dotnet format` (fix) |
 | `fmt-check` | `dotnet format --verify-no-changes` (CI) |
-| `gates` | every local gate — `fmt-check`, `lint`, the four audits, `test` — under **one exit code** (#685). Run this rather than the members individually: reading seven statuses is what has twice reported green while a checker exited 1 |
+| `gates` | every local gate under **one exit code** (#685) — membership lives in `tools/gates/gates.py`, never restated here. Run this rather than the members individually: reading per-member statuses is what has twice reported green while a checker exited 1 |
 | `gates-fast` | the same minus `test`. What the pre-push hook runs |
 | `setup-hooks` | one-time per clone: `git config core.hooksPath .githooks` |
 
