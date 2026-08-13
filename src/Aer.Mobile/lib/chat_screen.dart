@@ -587,11 +587,9 @@ class _ChatScreenState extends State<ChatScreen> {
     messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
 
     if (turn.isDormancyAnswer) {
-      // #1179: the room was dormant when this message arrived -- the PRODUCT answered with the
-      // dormancy state instead of dispatching a worker turn, so neither assistantResponse nor
-      // errorMessage below is ever populated on this turn. Gated on the same current-dormancy rule
-      // as the room's dormancy-entered bubble (`_isDormant`), not the latest-entered watermark that
-      // rule uses across transitions -- see changes.md.
+      // #1179: mirrors ChatViewModel.AddTurnMessages' IsDormancyAnswer arm (Aer.Ui.Core/ChatViewModel.cs)
+      // -- see that comment for why AssistantResponse/errorMessage are never populated here and why
+      // onWake gates on `_isDormant` alone rather than the latest-entered watermark.
       messages.add(
         _ChatMessage(
           senderLabel: 'System',

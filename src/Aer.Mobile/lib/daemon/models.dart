@@ -290,8 +290,8 @@ class SessionTurn {
   final DateTime executedAt;
   final String? errorMessage;
 
-  /// #1179: true when the room was dormant and the PRODUCT answered instead of dispatching a worker
-  /// turn -- no vendor process ran, which is why [assistantResponse] stays null on this turn.
+  /// #1179: the dormancy-answer marker -- see `SessionTurn.IsDormancyAnswer`'s doc comment in
+  /// Aer.Adapters/InteractiveSessions.cs for what it means and why [assistantResponse] stays null.
   final bool isDormancyAnswer;
 
   SessionTurn({
