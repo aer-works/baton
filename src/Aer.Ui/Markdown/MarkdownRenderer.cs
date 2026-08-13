@@ -14,7 +14,9 @@ namespace Aer.Ui.Markdown;
 
 internal static class MarkdownRenderer
 {
-    private static readonly FontFamily MonospaceFont = new("Cascadia Code, Consolas, monospace");
+    // #1125: the shipped code face, never a bare platform-family chain — a bare name resolves
+    // per-machine, which is the divergence decision 0006 exists to prevent (see AerFonts).
+    private static readonly FontFamily MonospaceFont = new(AerFonts.Mono);
 
     // #1076 review (MEDIUM), confirmed by measurement (tests/.../MarkdownRendererTests deep-nesting
     // cases): 0051 §1 is that the input is untrusted model output. Markdig caps its own *block*

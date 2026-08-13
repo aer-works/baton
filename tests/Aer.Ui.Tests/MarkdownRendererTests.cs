@@ -43,13 +43,7 @@ public class MarkdownRendererTests
         var selectableTextBlock = scrollViewer.Content as SelectableTextBlock;
         Assert.NotNull(selectableTextBlock);
         Assert.Equal("var x = 42;", selectableTextBlock.Text?.TrimEnd());
-        Assert.NotNull(selectableTextBlock.FontFamily);
-        Assert.True(
-            selectableTextBlock.FontFamily.Name.Contains("monospace") ||
-            selectableTextBlock.FontFamily.Name.Contains("Cascadia") ||
-            selectableTextBlock.FontFamily.Name.Contains("Consolas"),
-            $"Expected monospace font family, got: {selectableTextBlock.FontFamily.Name}"
-        );
+        AssertIsTheShippedCodeFace(selectableTextBlock.FontFamily);
     }
 
     [AvaloniaFact]
@@ -73,13 +67,7 @@ public class MarkdownRendererTests
 
         var codeRun = inlines.OfType<Run>().FirstOrDefault(r => r.Text == "inline code");
         Assert.NotNull(codeRun);
-        Assert.NotNull(codeRun.FontFamily);
-        Assert.True(
-            codeRun.FontFamily.Name.Contains("monospace") ||
-            codeRun.FontFamily.Name.Contains("Cascadia") ||
-            codeRun.FontFamily.Name.Contains("Consolas"),
-            $"Expected monospace font family on inline code, got: {codeRun.FontFamily.Name}"
-        );
+        AssertIsTheShippedCodeFace(codeRun.FontFamily);
     }
 
     [AvaloniaFact]
@@ -245,6 +233,18 @@ public class MarkdownRendererTests
         }
 
         return string.Concat(parts);
+    }
+
+    // #1125: the renderer previously named a Cascadia/Consolas platform chain here, which resolved
+    // to a different face per OS. Name alone would also pass for a same-named font installed on the
+    // machine — the asset-URI Key is what proves it is the copy shipped in this repo, the same
+    // discrimination ShippedTypefaceTests.AssertResolvesToAShippedAsset makes for the app-wide faces.
+    private static void AssertIsTheShippedCodeFace(FontFamily? family)
+    {
+        Assert.NotNull(family);
+        Assert.Equal("JetBrains Mono", family.Name);
+        Assert.NotNull(family.Key);
+        Assert.Contains("Aer.Ui/Assets/Fonts", family.Key!.Source.ToString());
     }
 
     private static IEnumerable<Control> GetAllControls(Control parent)
