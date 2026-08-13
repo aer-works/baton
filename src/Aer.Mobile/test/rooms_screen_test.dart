@@ -159,6 +159,7 @@ void main() {
         if (request.method == 'GET' && request.url.path == '/api/rooms') {
           final items = [
             fleetItemJson('/tasks/cancelled', status: 'Cancelled'),
+            fleetItemJson('/tasks/unavailable', status: 'Unavailable'),
             fleetItemJson('/tasks/needs', status: 'NeedsYou'),
             fleetItemJson('/tasks/running', status: 'Running'),
             fleetItemJson('/tasks/finished', status: 'Finished'),
@@ -175,7 +176,14 @@ void main() {
 
       final state = tester.state(find.byType(RoomsScreen)) as dynamic;
       final paths = (state.itemsForTests as List<RoomFleetItem>).map((i) => i.roomDirectoryPath).toList();
-      expect(paths, ['/tasks/needs', '/tasks/running', '/tasks/finished', '/tasks/cancelled', '/tasks/outofplan']);
+      expect(paths, [
+        '/tasks/needs',
+        '/tasks/running',
+        '/tasks/finished',
+        '/tasks/cancelled',
+        '/tasks/unavailable',
+        '/tasks/outofplan',
+      ]);
     });
   });
 }

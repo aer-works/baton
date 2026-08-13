@@ -413,6 +413,26 @@ public class RoomsViewModelTests
     }
 
     [Fact]
+    public void An_unavailable_room_sorts_below_a_finished_one()
+    {
+        var unavailableButNewer = NewItem("/tasks/unavailable") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(9),
+            Status = RoomCardStatus.Unavailable,
+        };
+        var finishedButOlder = NewItem("/tasks/finished") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(1),
+            Status = RoomCardStatus.Finished,
+        };
+
+        var ordered = RoomsViewModel.InFleetOrderForTests([unavailableButNewer, finishedButOlder]).ToList();
+
+        Assert.Equal("/tasks/finished", ordered[0].RoomDirectoryPath);
+        Assert.Equal("/tasks/unavailable", ordered[1].RoomDirectoryPath);
+    }
+
+    [Fact]
     public void Failed_ties_with_finished_by_recency()
     {
         var failedButNewer = NewItem("/tasks/failed") with

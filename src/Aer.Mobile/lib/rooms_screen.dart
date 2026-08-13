@@ -80,25 +80,16 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
       final items = await widget.client.listRooms(includeArchived: _includeArchived);
       if (!mounted) return;
       // Group by decision 0018's four attention bands while preserving daemon recency within each group (stable partition).
-      final band0 = <RoomFleetItem>[];
-      final band1 = <RoomFleetItem>[];
-      final band2 = <RoomFleetItem>[];
-      final band3 = <RoomFleetItem>[];
+      final bands = [
+        <RoomFleetItem>[],
+        <RoomFleetItem>[],
+        <RoomFleetItem>[],
+        <RoomFleetItem>[],
+      ];
       for (final item in items) {
-        switch (attentionBand(item.status)) {
-          case 0:
-            band0.add(item);
-          case 1:
-            band1.add(item);
-          case 2:
-            band2.add(item);
-          case 3:
-            band3.add(item);
-          default:
-            band2.add(item);
-        }
+        bands[attentionBand(item.status)].add(item);
       }
-      setState(() => _items = [...band0, ...band1, ...band2, ...band3]);
+      setState(() => _items = [for (final band in bands) ...band]);
     } on DaemonException catch (e) {
       if (!mounted) return;
       setState(() => _loadError = e.message);
