@@ -214,6 +214,14 @@ void main() {
       client.push(projection(withPending: pending('perm-1')));
       await tester.pumpAndSettle();
 
+      // Tree order alone cannot discriminate: the OLD docked card also followed the list in
+      // traversal order (it sat below the Expanded list in the same Column). The discriminator is
+      // DESCENDANCY — as a transcript turn the card lives INSIDE the message ListView.
+      expect(
+        find.descendant(of: find.byType(ListView), matching: find.byType(PermissionGateCard)),
+        findsOneWidget,
+      );
+
       final sequence = <String>[];
       for (final w in tester.widgetList(find.byWidgetPredicate((w) => w is RichText || w is SelectableText))) {
         final text = w is RichText ? w.text.toPlainText() : (w as SelectableText).textSpan?.toPlainText() ?? (w).data ?? '';
