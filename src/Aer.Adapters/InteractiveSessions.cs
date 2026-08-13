@@ -27,7 +27,12 @@ public sealed record SessionTurn(
     DateTimeOffset ExecutedAt,
     bool NativeSessionResumed,
     bool VendorHandoffSynthesized,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    // #1179: a turn the PRODUCT answered because the room was dormant when the message arrived --
+    // no vendor process ran, which is why AssistantResponse stays null on this turn. Trailing
+    // optional, like ErrorMessage above, so metadata files written before this field existed still
+    // load unchanged (defaults to false).
+    bool IsDormancyAnswer = false);
 
 public sealed record SessionMetadata(
     string SessionId,

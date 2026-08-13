@@ -1519,6 +1519,47 @@ namespace Aer.Daemon
                     return Results.BadRequest("Not a valid interactive session directory.");
                 }
 
+                // #1179: a freshly materialized room (POST /api/sessions/start) is never dormant --
+                // its room.jsonl has no dormancy transition yet -- so that endpoint needs no change;
+                // this check only ever matters on a send into an already-existing room.
+                if (await IsRoomDormantAsync(directoryPath).ConfigureAwait(true))
+                {
+                    // 03-interaction-depth.md: "Dormancy answers, it never resumes" -- a message to a
+                    // dormant room is answered by the product with the dormancy state, not dispatched
+                    // to a worker. No ExecuteSessionTurnAsync call, no Task.Run: the human message is
+                    // recorded as an answered turn (no vendor process ran, hence AssistantResponse
+                    // stays null) and the ONLY way a real turn runs again is the existing Wake path
+                    // (/api/rooms/turn-host/clear-dormancy).
+                    var dormancyTurn = new SessionTurn(
+                        TurnIndex: metadata.TurnCount + 1,
+                        Vendor: "System",
+                        HumanMessage: request.Message,
+                        AssistantResponse: null,
+                        ExecutedAt: DateTimeOffset.UtcNow,
+                        NativeSessionResumed: false,
+                        VendorHandoffSynthesized: false,
+                        IsDormancyAnswer: true);
+
+                    var updatedMetadata = metadata with
+                    {
+                        TurnCount = metadata.TurnCount + 1,
+                        UpdatedAt = DateTimeOffset.UtcNow,
+                        Turns = new List<SessionTurn>(metadata.Turns) { dormancyTurn },
+                    };
+
+                    await InteractiveSessionMaterializer.SaveMetadataAsync(updatedMetadata, metadataPath).ConfigureAwait(true);
+
+                    // Same broadcast a completed turn ends with (ExecuteSessionTurnAsync's finally
+                    // block), so both surfaces update without waiting on their own poll.
+                    var refreshedProjection = (await session.LoadAsync(directoryPath).ConfigureAwait(true)).Projection;
+                    if (refreshedProjection != null)
+                    {
+                        await broadcast.BroadcastStateAsync(refreshedProjection, directoryPath).ConfigureAwait(true);
+                    }
+
+                    return Results.Ok(new { SessionId = metadata.SessionId, RoomDirectoryPath = directoryPath });
+                }
+
                 pathHolder.BindingsFilePath = Path.Combine(directoryPath, "bindings.json");
 
                 _ = Task.Run(async () =>
@@ -1933,6 +1974,27 @@ namespace Aer.Daemon
             {
                 Console.Error.WriteLine($"Could not persist session turn error: {recordError}");
             }
+        }
+
+        /// <summary>
+        /// #1179: whether <paramref name="directoryPath"/>'s room is currently dormant, per its
+        /// <c>room.jsonl</c> -- same read as the turn-throttles endpoint's dormancy check above
+        /// (<c>RoomEventLogReader</c> -&gt; <c>RoomProjector.Project</c> -&gt; <c>RoomState.IsDormant</c>).
+        /// An absent log (no dormancy transition has ever been recorded, e.g. a brand-new room) reads
+        /// as not dormant, following <see cref="RoomProjectionLoader.LoadJournalStateAsync"/>'s own
+        /// absence handling -- never a throw.
+        /// </summary>
+        private static async Task<bool> IsRoomDormantAsync(string directoryPath)
+        {
+            var roomLogPath = Path.Combine(directoryPath, "room.jsonl");
+            if (!File.Exists(roomLogPath))
+            {
+                return false;
+            }
+
+            var reader = new RoomEventLogReader(roomLogPath);
+            var events = await reader.ReadAllRoomEventsAsync().ConfigureAwait(false);
+            return RoomProjector.Project(events).IsDormant;
         }
 
         /// <summary>
