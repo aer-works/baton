@@ -849,7 +849,7 @@ public class MutationInterfaceRetryBackoffTests
             var stateExhausted = StateProjector.Project(eventsExhausted, snapshotA);
 
             var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var obligationsExhausted = (IEnumerable<object>)getObligationsMethod.Invoke(null, [stateExhausted, snapshotA, fakeTime, (Func<double>)(() => 0.0)])!;
+            var obligationsExhausted = (IEnumerable<object>)getObligationsMethod.Invoke(null, [stateExhausted, snapshotA, fakeTime, (Func<double>)(() => 0.0), false])!;
             var exhaustedObligation = obligationsExhausted.Single();
 
             var notBeforeProperty = exhaustedObligation.GetType().GetProperty("RetryNotBefore")!;
@@ -871,7 +871,7 @@ public class MutationInterfaceRetryBackoffTests
             var eventsRetryable = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var stateRetryable = StateProjector.Project(eventsRetryable, snapshotB);
 
-            var obligationsRetryable = (IEnumerable<object>)getObligationsMethod.Invoke(null, [stateRetryable, snapshotB, fakeTime, (Func<double>)(() => 0.0)])!;
+            var obligationsRetryable = (IEnumerable<object>)getObligationsMethod.Invoke(null, [stateRetryable, snapshotB, fakeTime, (Func<double>)(() => 0.0), false])!;
             var retryableObligation = obligationsRetryable.Single();
             var retryableNotBefore = (DateTimeOffset)notBeforeProperty.GetValue(retryableObligation)!;
 
@@ -917,9 +917,59 @@ public class MutationInterfaceRetryBackoffTests
             var state = StateProjector.Project(events, snapshot);
 
             var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0)])!;
+            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false])!;
 
             Assert.Empty(obligations);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // #1184 / 0026 §4 discriminator pair:
+    // When settleOnVendorExhaustion is false (unattended workflow step), an ExhaustedUntil step carrying a
+    // KNOWN future reset instant DOES get the paced obligation (unchanged).
+    // When settleOnVendorExhaustion is true (attended interactive session turn), the exact same step gets NO obligation.
+    [Fact]
+    public async Task ExhaustedUntil_with_known_reset_instant_gets_no_obligation_when_settleOnVendorExhaustion_is_true_and_gets_obligation_when_false()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 8, 13, 15, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var resetMoment = now.AddHours(2);
+
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var execId = new ExecutionId("exec-exhausted-known");
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                new ExecutionRequest(execId, new WorkflowId("wf-ex-known"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", resetMoment), TestContext.Current.CancellationToken);
+
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snap-ex-known"),
+                new WorkflowTemplateId("tpl-ex-known"),
+                1,
+                [new WorkflowStepDefinition(StepA, "worker-a", [], [], [], RetryPolicy: new RetryPolicy(MaxAttempts: 3, Backoff: BackoffPolicy.Steady))]);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var state = StateProjector.Project(events, snapshot);
+
+            var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+            // When settleOnVendorExhaustion = false (unattended): DOES get paced obligation
+            var obligationsUnattended = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligation = obligationsUnattended.Single();
+            var notBeforeProperty = obligation.GetType().GetProperty("RetryNotBefore")!;
+            Assert.Equal(resetMoment, (DateTimeOffset)notBeforeProperty.GetValue(obligation)!);
+
+            // When settleOnVendorExhaustion = true (attended): gets NO obligation (settles immediately)
+            var obligationsAttended = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), true])!;
+            Assert.Empty(obligationsAttended);
         }
         finally
         {

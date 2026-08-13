@@ -402,4 +402,31 @@ public class SessionTurnBranchingTests : IAsyncLifetime
         Assert.NotNull(turn.ErrorMessage);
         Assert.False(afterExhaustion.VendorSessionEstablished);
     }
+
+    /// <summary>
+    /// #1184: verifies the session seam where an interactive turn's dispatch classifies
+    /// ExhaustedUntil on the VERY FIRST consultation (during the pump execution in MutationInterface)
+    /// carrying a known future reset instant.
+    /// Under SettleOnVendorExhaustion=true, the pump schedules no retry obligation and settles
+    /// immediately (the HTTP call returns, turn is recorded, no multi-hour wait).
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_WhenPumpClassifiesExhaustionOnFirstCall_SettlesImmediatelyWithoutParking()
+    {
+        var started = await StartStubSessionWithNoInitialMessageAsync();
+
+        var exhaustedSend = await _client.PostAsJsonAsync($"{_baseUrl}/api/sessions/send",
+            new SendSessionMessageRequest(SessionId: started.SessionId, Message: SessionTurnStubAdapter.ImmediateExhaustionSentinel),
+            TestContext.Current.CancellationToken);
+        Assert.True(exhaustedSend.IsSuccessStatusCode);
+
+        var afterExhaustion = await PollUntilTurnCountAsync(started.SessionId, expectedTurnCount: 1);
+        var turn = afterExhaustion.Turns[0];
+
+        Assert.Null(turn.AssistantResponse);
+        Assert.True(turn.IsExhausted);
+        Assert.Equal(SessionTurnStubAdapter.ExhaustionResetInstant, turn.ExhaustedUntil);
+        Assert.NotNull(turn.ErrorMessage);
+        Assert.False(afterExhaustion.VendorSessionEstablished);
+    }
 }

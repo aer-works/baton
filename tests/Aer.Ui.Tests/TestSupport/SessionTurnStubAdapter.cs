@@ -85,10 +85,29 @@ internal sealed class SessionTurnStubAdapter : IWorkerAdapter
     /// live vendor CLI, the same way <see cref="FailureSentinel"/> stands in for an ordinary vendor
     /// rejection.
     /// </summary>
+    /// <summary>
+    /// Sentinel (issue #1180) forcing a turn to fail (exit 1, like <see cref="FailureSentinel"/>)
+    /// while printing a stdout result envelope this adapter's own <see cref="TryClassifyFailure"/>
+    /// override recognizes as exhausted plan/quota -- the daemon seam's (Program.cs,
+    /// <c>ExecuteSessionTurnCoreAsync</c>) two-tail classifier consultation needs a deterministic,
+    /// CI-safe way to reach the <see cref="FailureClassification.ExhaustedUntil"/> branch without a
+    /// live vendor CLI, the same way <see cref="FailureSentinel"/> stands in for an ordinary vendor
+    /// rejection.
+    /// </summary>
     public const string ExhaustionSentinel = "STUB_FORCE_EXHAUSTION";
+
+    /// <summary>
+    /// Sentinel (issue #1184) forcing a turn to fail and classify as <see cref="FailureClassification.ExhaustedUntil"/>
+    /// on the VERY FIRST consultation (during the pump execution in <c>MutationInterface</c>).
+    /// Used to verify that an interactive turn's pump settles immediately without parking.
+    /// </summary>
+    public const string ImmediateExhaustionSentinel = "STUB_FORCE_IMMEDIATE_EXHAUSTION";
 
     /// <summary>The marker <see cref="TryClassifyFailure"/> looks for in the stdout tail to recognize <see cref="ExhaustionSentinel"/>'s payload.</summary>
     private const string ExhaustionMarker = "STUB_EXHAUSTION_MARKER";
+
+    /// <summary>The marker <see cref="TryClassifyFailure"/> looks for in the stdout tail to recognize <see cref="ImmediateExhaustionSentinel"/>'s payload.</summary>
+    private const string ImmediateExhaustionMarker = "STUB_IMMEDIATE_EXHAUSTION_MARKER";
 
     /// <summary>The fixed reset instant a classified <see cref="ExhaustionSentinel"/> turn reports -- known, so tests can assert on it exactly.</summary>
     public static readonly DateTimeOffset ExhaustionResetInstant = new(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
@@ -107,28 +126,23 @@ internal sealed class SessionTurnStubAdapter : IWorkerAdapter
         return path;
     });
 
-    /// <summary>
-    /// A script that prints a failed (<c>is_error: true</c>) result envelope carrying
-    /// <see cref="ExhaustionMarker"/> in its <c>result</c> text -- shaped like a real vendor's
-    /// refusal prose (#1128's "Resets in 1h39m10s" measured live on agy), which is what
-    /// <c>TryExtractVendorErrorMessage</c> (Program.cs) reads into the turn's raw
-    /// <c>ErrorMessage</c>, and what this adapter's own <see cref="TryClassifyFailure"/> override
-    /// then reclassifies as exhausted -- then exits 1, reaching Program.cs's failed-turn branch
-    /// exactly like <see cref="FailureSentinel"/> does.
-    /// <para>
-    /// A SCRIPT file, deliberately, not a payload file combined inline with <c>&amp;</c>/<c>;</c>
-    /// the way <see cref="NoOutputFileSentinel"/>'s single-command payload is read: cmd's <c>/c</c>
-    /// quote-stripping of a combined "print, then exit 1" command line is exactly the "unusually
-    /// finicky" quoting <see cref="NoOutputFileSentinel"/>'s own comment already warns about, and
-    /// this needs two effects (a stdout line, then a non-zero exit) rather than that sentinel's one.
-    /// A script file removes quoting from the problem entirely, the same fix that comment applied.
-    /// </para>
-    /// </summary>
     private static readonly Lazy<string> ExhaustionScriptFile = new(() =>
     {
         var payload = "{\"type\":\"result\",\"is_error\":true,\"result\":\"" + ExhaustionMarker + " out of plan\"}";
         var extension = OperatingSystem.IsWindows() ? "cmd" : "sh";
         var path = Path.Combine(Path.GetTempPath(), $"aer-stub-exhaustion-{Environment.ProcessId}.{extension}");
+        var script = OperatingSystem.IsWindows()
+            ? $"@echo off{Environment.NewLine}echo {payload}{Environment.NewLine}exit /b 1{Environment.NewLine}"
+            : $"#!/bin/sh{Environment.NewLine}echo '{payload}'{Environment.NewLine}exit 1{Environment.NewLine}";
+        File.WriteAllText(path, script);
+        return path;
+    });
+
+    private static readonly Lazy<string> ImmediateExhaustionScriptFile = new(() =>
+    {
+        var payload = "{\"type\":\"result\",\"is_error\":true,\"result\":\"" + ImmediateExhaustionMarker + " out of plan\"}";
+        var extension = OperatingSystem.IsWindows() ? "cmd" : "sh";
+        var path = Path.Combine(Path.GetTempPath(), $"aer-stub-imm-exhaustion-{Environment.ProcessId}.{extension}");
         var script = OperatingSystem.IsWindows()
             ? $"@echo off{Environment.NewLine}echo {payload}{Environment.NewLine}exit /b 1{Environment.NewLine}"
             : $"#!/bin/sh{Environment.NewLine}echo '{payload}'{Environment.NewLine}exit 1{Environment.NewLine}";
@@ -198,6 +212,14 @@ internal sealed class SessionTurnStubAdapter : IWorkerAdapter
                 : new CoreDispatchTarget("sh", [script]);
         }
 
+        if (invocation.PromptTemplate.Contains(ImmediateExhaustionSentinel, StringComparison.Ordinal))
+        {
+            var script = ImmediateExhaustionScriptFile.Value;
+            return OperatingSystem.IsWindows()
+                ? new CoreDispatchTarget("cmd", ["/c", script])
+                : new CoreDispatchTarget("sh", [script]);
+        }
+
         if (invocation.PromptTemplate.Contains(AgySilentSuccessSentinel, StringComparison.Ordinal))
         {
             // Exits 0, writes nothing at all -- no output file, no log line. Reproduces a genuinely
@@ -257,6 +279,13 @@ internal sealed class SessionTurnStubAdapter : IWorkerAdapter
         out FailureClassification? classification,
         out DateTimeOffset? retryNotBefore)
     {
+        if (stdoutTail?.Contains(ImmediateExhaustionMarker, StringComparison.Ordinal) == true)
+        {
+            classification = FailureClassification.ExhaustedUntil;
+            retryNotBefore = ExhaustionResetInstant;
+            return true;
+        }
+
         if (stdoutTail?.Contains(ExhaustionMarker, StringComparison.Ordinal) == true
             && Interlocked.Increment(ref _exhaustionClassifyCalls) >= 2)
         {
