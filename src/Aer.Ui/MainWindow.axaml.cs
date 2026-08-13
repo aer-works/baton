@@ -1248,11 +1248,10 @@ public partial class MainWindow : Window
 
                 // #1074: LoadFromMetadata clears IsSending when the turn lands — drain the head here,
                 // on the same tick that observed completion. Peek-then-post-then-DequeueHead-on-success
-                // so a failed dispatch leaves the message queued (never dropped). Gated on the dedicated
-                // LastSendFailed flag — NOT StatusText, which also carries success notices (mode change,
-                // "context cleared") that must not stall the queue — so one failure pauses the drain
-                // (until the operator's next send/enqueue) rather than cascading or busy-retrying.
-                if (!chat.IsSending && !chat.LastSendFailed && chat.TryPeekQueuedMessage(out var queued) && queued is not null)
+                // so a failed dispatch leaves the message queued (never dropped). The gate conditions
+                // live on ChatViewModel.CanDrainQueue (its doc carries #1167's open-gate clause;
+                // LastSendFailed's own doc carries why it, not StatusText, pauses the drain).
+                if (chat.CanDrainQueue && chat.TryPeekQueuedMessage(out var queued) && queued is not null)
                 {
                     chat.BeginDrainedSend(queued.Text, sessionMetadata.Turns.Count);
                     if (await PostChatTurnAsync(currentRoomDirectoryPath, queued.Text).ConfigureAwait(true))
