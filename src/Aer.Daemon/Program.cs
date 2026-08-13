@@ -1005,7 +1005,8 @@ namespace Aer.Daemon
                         var outcome = await session.RunAsync(
                             request.DirectoryPath,
                             request.WorkflowTemplateFilePath,
-                            request.BindingsFilePath);
+                            request.BindingsFilePath,
+                            settleOnVendorExhaustion: request.SettleOnVendorExhaustion);
                         if (outcome.ErrorMessage is { } errorMessage)
                         {
                             await AppendTurnErrorAsync(request.DirectoryPath, "/api/rooms/run", errorMessage).ConfigureAwait(false);
@@ -1079,7 +1080,8 @@ namespace Aer.Daemon
                             request.TargetStepId != null ? new StepId(request.TargetStepId) : null,
                             revisionFilePath,
                             request.SupplementaryWorker,
-                            request.SupplementaryOutputName);
+                            request.SupplementaryOutputName,
+                            settleOnVendorExhaustion: request.SettleOnVendorExhaustion);
                         if (outcome.ErrorMessage is { } errorMessage)
                         {
                             await AppendTurnErrorAsync(request.DirectoryPath, "/api/rooms/decide", errorMessage).ConfigureAwait(false);
@@ -2335,7 +2337,7 @@ namespace Aer.Daemon
             {
                 if (isInitial)
                 {
-                    var runOutcome = await session.RunAsync(directoryPath, workflowFilePath, bindingsFilePath, onWorkerStdoutLine: onWorkerStdoutLine).ConfigureAwait(false);
+                    var runOutcome = await session.RunAsync(directoryPath, workflowFilePath, bindingsFilePath, onWorkerStdoutLine: onWorkerStdoutLine, settleOnVendorExhaustion: true).ConfigureAwait(false);
                     if (runOutcome.ErrorMessage is { } runError)
                     {
                         // #285: RunAsync's in-process fallback catches AerFlowException into an
@@ -2385,7 +2387,8 @@ namespace Aer.Daemon
                             revisionFilePath: messageFilePath,
                             supplementaryWorker: "human",
                             supplementaryOutputName: "message.txt",
-                            onWorkerStdoutLine: onWorkerStdoutLine).ConfigureAwait(false);
+                            onWorkerStdoutLine: onWorkerStdoutLine,
+                            settleOnVendorExhaustion: true).ConfigureAwait(false);
 
                         if (decideOutcome.ErrorMessage is { } decideError)
                         {
@@ -2438,7 +2441,7 @@ namespace Aer.Daemon
                             Directory.Delete(artifactsPath, recursive: true);
                         }
 
-                        var runOutcome = await session.RunAsync(directoryPath, workflowFilePath, bindingsFilePath, onWorkerStdoutLine: onWorkerStdoutLine).ConfigureAwait(false);
+                        var runOutcome = await session.RunAsync(directoryPath, workflowFilePath, bindingsFilePath, onWorkerStdoutLine: onWorkerStdoutLine, settleOnVendorExhaustion: true).ConfigureAwait(false);
                         if (runOutcome.ErrorMessage is { } runError)
                         {
                             // #285: RunAsync's in-process fallback catches AerFlowException into an

@@ -31,4 +31,5 @@ public sealed record DecideOptions(
     StepId? TargetStepId,
     string? SupplementaryExecutionId,
     string BindingsFilePath,
-    string? WorkflowId = null);
+    string? WorkflowId = null,
+    bool SettleOnVendorExhaustion = false);

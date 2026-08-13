@@ -37,4 +37,5 @@ public sealed record RunOptions(
     string BindingsFilePath,
     string RoomDirectoryPath,
     string? WorkflowId = null,
-    bool EchoWorker = false);
+    bool EchoWorker = false,
+    bool SettleOnVendorExhaustion = false);

@@ -17,7 +17,7 @@ using Aer.Flow.Mutation;
 namespace Aer.Ui.Core;
 
 public record OpenRoomRequest(string DirectoryPath);
-public record RunRoomRequest(string DirectoryPath, string? WorkflowTemplateFilePath, string BindingsFilePath);
+public record RunRoomRequest(string DirectoryPath, string? WorkflowTemplateFilePath, string BindingsFilePath, bool SettleOnVendorExhaustion = false);
 public record ArtifactReference(string ExecutionId, string FileName);
 
 public record DecideRoomRequest(
@@ -29,7 +29,8 @@ public record DecideRoomRequest(
     string? RevisionFilePath = null,
     string? SupplementaryWorker = null,
     string? SupplementaryOutputName = null,
-    ArtifactReference? ArtifactReference = null);
+    ArtifactReference? ArtifactReference = null,
+    bool SettleOnVendorExhaustion = false);
 
 public record RunTemplateRequest(
     string TemplateId,
@@ -458,7 +459,8 @@ public sealed partial class RoomClient
     /// </param>
     public async Task<MutationOutcome> RunAsync(
         string roomDirectoryPath, string? workflowTemplateFilePath, string bindingsFilePath, CancellationToken cancellationToken = default,
-        Action<string, string>? onWorkerStdoutLine = null)
+        Action<string, string>? onWorkerStdoutLine = null,
+        bool settleOnVendorExhaustion = false)
     {
         CurrentRoomDirectoryPath = roomDirectoryPath;
 
@@ -466,7 +468,7 @@ public sealed partial class RoomClient
         {
             try
             {
-                var request = new RunRoomRequest(roomDirectoryPath, workflowTemplateFilePath, bindingsFilePath);
+                var request = new RunRoomRequest(roomDirectoryPath, workflowTemplateFilePath, bindingsFilePath, settleOnVendorExhaustion);
                 ViewModel.IsMutationInFlight = true;
                 ViewModel.RunStatusText = "Running…";
                 _mutationStarted();
@@ -511,7 +513,8 @@ public sealed partial class RoomClient
         var options = new RunOptions(
             string.IsNullOrWhiteSpace(workflowTemplateFilePath) ? null : workflowTemplateFilePath,
             bindingsFilePath,
-            roomDirectoryPath);
+            roomDirectoryPath,
+            SettleOnVendorExhaustion: settleOnVendorExhaustion);
 
         ViewModel.IsMutationInFlight = true;
         ViewModel.RunStatusText = "Running…";
@@ -607,7 +610,8 @@ public sealed partial class RoomClient
         string? supplementaryWorker,
         string? supplementaryOutputName,
         CancellationToken cancellationToken = default,
-        Action<string, string>? onWorkerStdoutLine = null)
+        Action<string, string>? onWorkerStdoutLine = null,
+        bool settleOnVendorExhaustion = false)
     {
         if (await EnsureDaemonConnectedAsync(cancellationToken).ConfigureAwait(true))
         {
@@ -625,7 +629,8 @@ public sealed partial class RoomClient
                     targetStepId?.Value,
                     revisionFilePath,
                     supplementaryWorker,
-                    supplementaryOutputName);
+                    supplementaryOutputName,
+                    SettleOnVendorExhaustion: settleOnVendorExhaustion);
 
                 var response = await _httpClient.PostAsJsonAsync($"{_activeDaemonUrl}/api/rooms/decide", request, cancellationToken).ConfigureAwait(true);
                 if (response.IsSuccessStatusCode)
@@ -691,7 +696,8 @@ public sealed partial class RoomClient
                 decisionType,
                 targetStepId,
                 supplementaryExecutionId?.Value,
-                _bindingsFilePathProvider() ?? string.Empty);
+                _bindingsFilePathProvider() ?? string.Empty,
+                SettleOnVendorExhaustion: settleOnVendorExhaustion);
 
             var pumpTask = Task.Run(
                 () => DecideCommand.ExecuteAsync(options, _adapters, inFlightExecutions, hostStopSource.Token, onWorkerStdoutLine), hostStopSource.Token);
