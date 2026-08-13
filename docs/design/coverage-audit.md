@@ -1,5 +1,7 @@
 # Coverage audit — what the corpus holds, and where each item went
 
+Repointed to the consolidation umbrellas 2026-08-13 (#1149).
+
 **Purpose: nothing in the corpus may disappear silently.** Every settled call below either names its
 destination or is listed as a deliberate drop with a reason. This is the check that was missing when
 the decision records were first written from these artifacts — seven records were produced, reviewed
@@ -48,7 +50,7 @@ correct, not duplication: the record says *why*, the journey says *what you get*
 | **One state machine.** Every surface renders the room's state; none derives its own. | 02 | ✅ **landed** — [0020](../decisions/0020-one-state-machine.md) (the record that generalises `#467`/`#468`), enforced by the one `RoomCardViewModel.DeriveStatus` every surface reads; `StatusDerivationTests` pins the task-headline↔card parity so the shell cannot disagree with itself about "running". |
 | **Errors are content.** A failure shows what broke, in the room, with the worker that failed right there to be asked about it. Not a status word with the reason behind a drill-in. | 02, 03 | ✅ **landed** — the rule rides [0020](../decisions/0020-one-state-machine.md); the surface is `#482` (RoomView's failed-step banner shows the error inline) + `#404` (the per-step drill-in shows every outcome's output/detail, not just failures). |
 | **Stale, not blank.** Refreshing never empties a list; previous content stays and is marked stale. | 03 | ✅ **landed** — [0018](../decisions/0018-attention-is-the-primary-signal.md)'s freshness amendment. Arrived independently via the power-cut analysis. |
-| **Success collapses, failure opens.** A passing command shows one line; a failing one opens itself. Status and duration stay visible either way. | 03, 07 | **◐ partial** — `#267` (open `#750`). The **markdown/code rendering** half is landing per surface, governed by [0051](../decisions/0051-markdown-rendering-is-a-defined-subset-parsed-per-platform.md): **desktop** via `#1076` (Markdig → a token-set renderer in the chat transcript; no remote content), **mobile** via `#1080` (`flutter_markdown_plus`, same subset, no remote content). The failure-opens half exists as the `#482` failed-step banner; the **success-collapse** half is still absent. |
+| **Success collapses, failure opens.** A passing command shows one line; a failing one opens itself. Status and duration stay visible either way. | 03, 07 | **◐ partial** — `#267` (closed as grouped; tracked on umbrella `#750`). The **markdown/code rendering** half is landing per surface, governed by [0051](../decisions/0051-markdown-rendering-is-a-defined-subset-parsed-per-platform.md): **desktop** via `#1076` (Markdig → a token-set renderer in the chat transcript; no remote content), **mobile** via `#1080` (`flutter_markdown_plus`, same subset, no remote content). The failure-opens half exists as the `#482` failed-step banner; the **success-collapse** half is still absent. |
 | **Readiness up front.** Which vendor CLIs were detected, at first run and in Settings — the most likely first failure is the least self-evident. | 02 | ✅ **landed** — `#478`. Shown at first run (the ▤ front door's Workers line, `#1071`) and in Settings (`#1069`), both from one derivation (`NewWorkflow.VendorReadinessLines`). |
 
 ## 4 · Workers, models, effort
@@ -58,7 +60,7 @@ correct, not duplication: the record says *why*, the journey says *what you get*
 | Vendor / model / effort are three choices, all on the chip | 04 | ✅ **landed** — [0017](../decisions/0017-vendor-model-effort-are-three-choices.md). |
 | **Effort is named by behaviour** — quick / standard / careful / exhaustive — never a token budget or a vendor's flag name. | 04, 05 | **→ extends 0017.** The axis landed; the *naming rule* did not. `#472` confirmed both CLIs expose a real `--effort`, so this is now implementable. |
 | **Models are offered by purpose** — deep / balanced / fast. Nobody should need this month's model string. | 04 | **→ extends 0017.** Absent. |
-| Two workers may share a vendor at different models/efforts — a normal room, not an edge case | 04, 07 | ✅ **landed** — 0017. |
+| Two workers may share a vendor at different models/efforts — a normal room, not an edge case | 04, 07 | ✅ **landed** — 0017 (multi-worker room model blocked structurally by `#493`). |
 | **Context is per worker**, and running out is offered as a choice before it becomes an event. | 04 | **→ `#395`** — scope extended: per-worker headroom, and the choice offered before the event. |
 | **Limits, not dollars.** Spend shown against the subscription's own limits. | 04 | **→ `#751`** (umbrella). The unit this product actually runs on. What each CLI reports about quota is still unprobed. |
 
@@ -83,7 +85,7 @@ correct, not duplication: the record says *why*, the journey says *what you get*
 | **Artifacts are files** — vendor-neutral, versioned, attributed, explicitly attached, diffable between vendors. | 03, 07 | **→ new decision record.** Only partially implied today; `#377` (under `#751`) covers the viewer, not the model. |
 | **Saving a working document into the project: diff-and-choose, never overwrite by default**, and flag divergence since derivation. | 06 | **→ same record.** |
 | **Documents stay, plumbing goes.** One file list; the only distinction is "in your project" or not. Execution directories are never surfaced. | 04 | **→ same record.** |
-| **Child rooms** nest in the list and report back as a turn; the parent never blocks. | 06 | **→ `#340`** (under `#756`) — scope extended with the non-blocking parent, and its interaction with `#480`'s directory lock. |
+| **Child rooms** nest in the list and report back as a turn; the parent never blocks. | 06 | **→ `#340`** (closed as grouped; tracked on umbrella `#756`) — scope extended with the non-blocking parent, and its interaction with `#480`'s directory lock. |
 | **Two rooms on one folder**: serialised already (verified — the turn lock is keyed on directory path). Surface the wait, name the holder, warn on a duplicate room. | 06 | **→ `#480`** (under `#752`). The engine behaviour is verified and correct; only the *surfacing* is absent. |
 | **Gates render inline**, in the conversation that produced them, reachable from a "needs you" filter and the phone. The separate decision surface goes away. | 02 | Inline gates + phone entry point **→ `#474`/`#751`**. Desktop "needs you" filter: ✅ **landed** — `#1072` (a filter on the switcher; needs-you rows expand in place to their paused steps, decision 0007's middle level, and the Home decision inbox retired into it). |
 | Rooms are the front door on both surfaces; "needs you" is a filter, not the landing screen | 02 | ✅ **landed** — 0018 + `#337`; the desktop rail is now the three icon-only destinations 02-screens draws (`#1071`), with Home folded into the ▤ rooms front door. |
@@ -99,7 +101,7 @@ change under `ReconcileTests`. None exists today.
 | Cross-examination | At a live gate, a worker not previously in the room is asked, answers, contradicts the first — and the gate is still open |
 | Two subscriptions | A room where both vendors act, on plan auth, no key configured anywhere |
 | Shared memory | A fact established by one vendor is used by a different vendor later in the same room |
-| Two of one vendor | Two chips, same vendor, different model and effort, both answering |
+| Two of one vendor | Two chips, same vendor, different model and effort, both answering (multi-worker room model blocked structurally by `#493`) |
 | Files with receipts | One document authored by one vendor and edited by another, with a diff between their versions |
 | Work outside the UI | Quit the desktop app mid-run; answer the permission on the phone; reopen and find it continued |
 | Scoped permissions | Grant "allow in this room", see it not asked again, find and revoke it in settings |
@@ -109,17 +111,17 @@ change under `ReconcileTests`. None exists today.
 ## 8 · The eight delights
 
 Not differentiators alone; collectively the difference between a tool you tolerate and one you like.
-**All eight are tracked — four shipped (y/n `#481`, `#482`, `#463`, refresh-rule), one partial (`#462`'s never-block half, `#1074`); the other three remain unbuilt.**
+**All eight are tracked — four shipped (y/n `#481`, `#482`, `#463`, refresh-rule), one partial (`#462`'s never-block half [closed as grouped; tracked on umbrella `#750`], `#1074`); the other three remain unbuilt.**
 
 | Delight | Status |
 |---|---|
 | `y`/`n` for permissions, never bound to Enter, so a reflex cannot approve | **✅ both surfaces built** (`#481`/`#390`, source 2026-08): the runtime permission gate renders inline in chat with the scope ladder. **Desktop** — a bare `y` allows / `n` denies, never on Enter and never with a modifier (`MainWindow.PermissionAnswerFor`, `PermissionGateKeystrokeTests`); config-time `AuthorView` flags still exist alongside it. **Phone** — the same gate card (`chat_screen.dart` `PermissionGateCard`) with tap rungs (no keyboard shortcuts on mobile). Both **live-driven 2026-08-09**: the full scope ladder renders per `04`'s mockup and the cross-room rung is absent (0052); the drive exercised the **Allow once** rung, which clears the gate (a `runtimePermissionAnswered` turn is recorded) — desktop from the daemon's `/api/rooms/open` response, phone from the WS projection push. The other rungs render but were not individually clicked. Scope is the **permission** kind only; the consult/escalation kinds remain absent (`#474`/`#751`). |
-| Typing never blocks; the queue is visible, with interrupt and remove | **◐ partial** — `#462` (open `#750`). The **never-block + visible + removable queue** half landed via **`#1074`**: the desktop composer no longer disables mid-turn; a send joins a visible, removable FIFO that drains one message per turn-completion. **Interrupt** ("Send now" cancels the running turn) is the deferred half — a distinct mechanism, its own slice. |
+| Typing never blocks; the queue is visible, with interrupt and remove | **◐ partial** — `#462` (closed as grouped; tracked on umbrella `#750`). The **never-block + visible + removable queue** half landed via **`#1074`**: the desktop composer no longer disables mid-turn; a send joins a visible, removable FIFO that drains one message per turn-completion. **Interrupt** ("Send now" cancels the running turn) is the deferred half — a distinct mechanism, its own slice. |
 | Failures offer the fix, with the worker that failed already holding the context | ✅ **shipped** — `#482` (desktop verified: `RoomView`'s failed-step banner shows the error text inline with **Try again** / **Ask ⟨worker⟩ to fix it** / **Show full output**) |
-| Jump to the last decision via an event rail | **→ `#459`** — grouped into open `#750`, **unbuilt** (the earlier "(exists)" was wrong): no event rail or keyboard nav to a decision exists anywhere |
+| Jump to the last decision via an event rail | **→ `#459`** (closed as grouped; tracked on umbrella `#750`) — **unbuilt** (the earlier "(exists)" was wrong): no event rail or keyboard nav to a decision exists anywhere |
 | Status readable without colour | ✅ **shipped** — `#463` |
-| *"Thought for 12s"* reported after the fact, never a live counter | **→ `#483`** (under `#752`) — **unbuilt** (source checked 2026-08): no duration / thinking-time rendering exists |
-| Success collapses, failure opens | **→ `#267`** — grouped into open `#750`. The **markdown/code-rendering** half of `#267` is landing per surface (desktop `#1076`, [0051](../decisions/0051-markdown-rendering-is-a-defined-subset-parsed-per-platform.md)) — canonical status in the §7 row above. The two halves this row names: failure-open exists via `#482`'s inline banner; **success-collapse is still absent** |
+| *"Thought for 12s"* reported after the fact, never a live counter | **→ `#483`** (closed as grouped; tracked on umbrella `#752`) — **unbuilt** (source checked 2026-08): no duration / thinking-time rendering exists |
+| Success collapses, failure opens | **→ `#267`** (closed as grouped; tracked on umbrella `#750`). The **markdown/code-rendering** half of `#267` is landing per surface (desktop `#1076`, [0051](../decisions/0051-markdown-rendering-is-a-defined-subset-parsed-per-platform.md)) — canonical status in the §7 row above. The two halves this row names: failure-open exists via `#482`'s inline banner; **success-collapse is still absent** |
 | Refresh never blanks | ✅ **landed** as a rule — [0018](../decisions/0018-attention-is-the-primary-signal.md); built with the rebuild |
 
 ## 9 · Deliberate drops
@@ -141,7 +143,7 @@ each row cites the issue tracked elsewhere in this doc rather than restating it 
 |---|---|---|---|
 | First run | ✅ | ✅ | Front door + readiness (`#1071`/`#478`); phone pairing+QR. |
 | The daily driver | ✅ | ✅ | Switcher-landing (`#1046`/`#1071`), state-grouped list (`#1072`), single worker chip, markdown chat (`#1076`/`#1080`). |
-| Two workers, a gate | ◐ | ◐ | The spine gap narrows: the **conversational gate as a turn** now renders on **both** surfaces for the permission kind (`#390`, 0022) — desktop and phone, both live-driven 2026-08-09. Still unbuilt: add-worker + multi-worker chips (M27); the consult/escalation kinds (§1 cross-examination is decided in 0019; its UI is `#474`/`#751`). |
+| Two workers, a gate | ◐ | ◐ | The spine gap narrows: the **conversational gate as a turn** now renders on **both** surfaces for the permission kind (`#390`, 0022) — desktop and phone, both live-driven 2026-08-09. Still unbuilt: add-worker + multi-worker chips (M27; blocked structurally by `#493`); the consult/escalation kinds (§1 cross-examination is decided in 0019; its UI is `#474`/`#751`). |
 | When it fails | ✅ | ◐ | Desktop `#482` inline failed-banner matches the screen; phone shows failed card state, not the full inline fix-affordance set. |
 | Starting from a template | ✅ | n/a | `TemplatePickerWindow` + guided flow (phone template use out-of-scope, 0041). |
 | Drawing a shape (editor) | ◐ | n/a | `AuthorView` list-not-canvas + DAG preview (0014); the per-row **"ask me first" gate toggle** and named-blocker fan-out UI are the thin part (§6 "ask me first" → extends 0014). |

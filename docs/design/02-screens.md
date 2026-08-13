@@ -286,6 +286,8 @@ Density Comfortable Compact
 
 ### Phone
 
+> **Amendment (2026-08-13, #1149):** Shipped pairing reality diverges deliberately from the drawing below — QR is primary, the code field is free-text, and a Host field exists that the original drawing omitted; recorded as accepted 2026-08-12 (owner decision), tracked by #1149. Note that the "Settings → Your phone" copy divergence is a code defect being fixed separately rather than an intended spec amendment.
+
 Same product, held differently. Rooms is the root here as on the desktop — you are visiting your work, not working a queue.
 
 Phone · first run · rooms · a gate · a notification
