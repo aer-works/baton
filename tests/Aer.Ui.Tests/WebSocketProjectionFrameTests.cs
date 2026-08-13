@@ -49,6 +49,27 @@ public class WebSocketProjectionFrameTests
         Assert.Same(pending, projection.PendingPermission);
     }
 
+    [Fact]
+    public void ToProjection_carries_the_answer_history_from_the_frame_into_the_projection()
+    {
+        // #1142's member, same mapping half as the gate above — plus the null-frame default, which
+        // must land as the projection's empty list, not a null a renderer then dereferences.
+        var answers = new List<PermissionAnswer>
+        {
+            new("req-1", "Bash", "Shell", "AllowOnce", null, "op", DateTimeOffset.UnixEpoch, WasRevoked: false)
+        };
+
+        var frame = new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null, answers);
+        var projection = RoomClient.ToProjection(frame);
+
+        Assert.Same(answers, projection.PermissionAnswers);
+
+        var defaulted = RoomClient.ToProjection(
+            new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null));
+        Assert.NotNull(defaulted.PermissionAnswers);
+        Assert.Empty(defaulted.PermissionAnswers);
+    }
+
     // The record's PRIMARY constructor. A record also emits a copy constructor (one parameter), so the
     // longest-parameter ctor is the declared one.
     private static ParameterInfo[] Primary(Type type) =>
