@@ -21,6 +21,7 @@ public static class RoomProjector
         PendingPermission? pendingPermission = null;
         var askedPermissions = new Dictionary<string, (string ToolName, string Category)>(StringComparer.Ordinal);
         var permissionAnswers = new List<PermissionAnswer>();
+        var dormancyTransitions = new List<DormancyTransition>();
         // Ids already answered or revoked. A permission ask can be journaled AFTER its resolution — the
         // MCP host writes the ask file and the daemon appends `Asked` asynchronously, while the answer
         // path appends `Answered` directly, so an automated/fast answer (or crash reconciliation) can
@@ -131,12 +132,30 @@ public static class RoomProjector
                     openEscalations.Add(escalation);
                     break;
 
-                case RoomEvent.TurnHostDormancyEntered:
+                case RoomEvent.TurnHostDormancyEntered entered:
                     isDormant = true;
+                    var detail = openEscalations
+                        .Where(e => e.Timestamp <= entered.Timestamp)
+                        .Select(e => e.Subject)
+                        .OfType<EscalationSubject.HostCondition>()
+                        .LastOrDefault(s => s.Condition == RoomEvent.TurnHostDormancyEntered.DormancyConditionName)
+                        ?.Detail;
+                    dormancyTransitions.Add(new DormancyTransition(
+                        IsEntered: true,
+                        ConsecutiveFailures: entered.ConsecutiveFailures,
+                        Detail: detail,
+                        ClearedBy: null,
+                        Timestamp: entered.Timestamp));
                     break;
 
-                case RoomEvent.TurnHostDormancyCleared:
+                case RoomEvent.TurnHostDormancyCleared cleared:
                     isDormant = false;
+                    dormancyTransitions.Add(new DormancyTransition(
+                        IsEntered: false,
+                        ConsecutiveFailures: 0,
+                        Detail: null,
+                        ClearedBy: cleared.ClearedBy,
+                        Timestamp: cleared.Timestamp));
                     break;
 
                 case RoomEvent.RuntimePermissionAsked asked:
@@ -215,7 +234,7 @@ public static class RoomProjector
             }
         }
 
-        return new RoomState(heldWork, unmatchedEntries, activeGrants, openEscalations, isDormant, pendingPermission, permissionAnswers);
+        return new RoomState(heldWork, unmatchedEntries, activeGrants, openEscalations, isDormant, pendingPermission, permissionAnswers, dormancyTransitions);
 
     }
 }

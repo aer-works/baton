@@ -80,7 +80,17 @@ public abstract record RoomEvent
     /// <summary>Records that the turn host entered dormancy due to consecutive failures.</summary>
     public sealed record TurnHostDormancyEntered(
         int ConsecutiveFailures,
-        DateTimeOffset Timestamp) : RoomEvent;
+        DateTimeOffset Timestamp) : RoomEvent
+    {
+        /// <summary>
+        /// The <see cref="EscalationSubject.HostCondition"/> condition name the dormancy breaker
+        /// raises alongside this event. Canonical here because both the writer
+        /// (<c>Aer.Daemon.RoomTurnHost</c>) and the reader (<see cref="Projection.RoomProjector"/>,
+        /// which pairs the escalation's detail onto the entered transition, #1178) must agree on
+        /// it, and the projector cannot reference the daemon.
+        /// </summary>
+        public const string DormancyConditionName = "turn-host-dormancy";
+    }
 
     /// <summary>Records that turn host dormancy was cleared.</summary>
     public sealed record TurnHostDormancyCleared(

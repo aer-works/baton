@@ -394,4 +394,57 @@ public class RoomProjectorTests
         Assert.Equal("req-6", state.PermissionAnswers[0].PermissionRequestId);
         Assert.Equal("req-55", state.PermissionAnswers[49].PermissionRequestId);
     }
+
+    [Fact]
+    public void Projects_DormancyTransitions_in_order_with_detail_paired()
+    {
+        var ts1 = DateTimeOffset.UtcNow;
+        var ts2 = ts1.AddMinutes(1);
+        var ts3 = ts2.AddMinutes(5);
+
+        var escalation = new RoomEvent.EscalationRaised(
+            new WorkerId("worker-1"),
+            EscalationTrigger.Direction,
+            new EscalationSubject.HostCondition("turn-host-dormancy", "3 consecutive turns without progress"),
+            ts1);
+
+        var entered = new RoomEvent.TurnHostDormancyEntered(3, ts2);
+        var cleared = new RoomEvent.TurnHostDormancyCleared("operator", ts3);
+
+        var state = RoomProjector.Project([escalation, entered, cleared]);
+
+        Assert.False(state.IsDormant);
+        Assert.Equal(2, state.DormancyTransitions.Count);
+
+        var t1 = state.DormancyTransitions[0];
+        Assert.True(t1.IsEntered);
+        Assert.Equal(3, t1.ConsecutiveFailures);
+        Assert.Equal("3 consecutive turns without progress", t1.Detail);
+        Assert.Null(t1.ClearedBy);
+        Assert.Equal(ts2, t1.Timestamp);
+
+        var t2 = state.DormancyTransitions[1];
+        Assert.False(t2.IsEntered);
+        Assert.Equal(0, t2.ConsecutiveFailures);
+        Assert.Null(t2.Detail);
+        Assert.Equal("operator", t2.ClearedBy);
+        Assert.Equal(ts3, t2.Timestamp);
+    }
+
+    [Fact]
+    public void RoomState_Equals_discriminates_on_DormancyTransitions()
+    {
+        var ts = DateTimeOffset.UtcNow;
+        var t1 = new DormancyTransition(true, 3, "detail", null, ts);
+        var t2 = new DormancyTransition(false, 0, null, "operator", ts.AddMinutes(1));
+
+        var emptyDict = new Dictionary<HeldWorkRef, HeldWorkState>();
+        var s1 = new RoomState(emptyDict, [], DormancyTransitions: [t1]);
+        var s2 = new RoomState(emptyDict, [], DormancyTransitions: [t1]);
+        var s3 = new RoomState(emptyDict, [], DormancyTransitions: [t1, t2]);
+
+        Assert.Equal(s1, s2);
+        Assert.Equal(s1.GetHashCode(), s2.GetHashCode());
+        Assert.NotEqual(s1, s3);
+    }
 }
