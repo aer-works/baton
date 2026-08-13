@@ -72,6 +72,14 @@ class _ChatScreenState extends State<ChatScreen> {
   int _turnsCountAtSendTime = 0;
   String _liveProgressText = '';
 
+  /// Client-local queue preventing concurrent turns per ChatViewModel.EnqueueMessage
+  /// (src/Aer.Ui.Core/ChatViewModel.cs:246-260).
+  final List<String> _queuedMessages = [];
+
+  /// Pauses queue draining after a failed send until the operator's next manual send or enqueue,
+  /// per ChatViewModel.EnqueueMessage / FailSend (src/Aer.Ui.Core/ChatViewModel.cs:246-304).
+  bool _drainPaused = false;
+
   bool _isLoadingCommands = false;
 
   /// The active session mode (#286), or null until [_refreshMode] resolves it — shown persistently
@@ -143,6 +151,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final metadata = await widget.client.getSession(widget.sessionId);
       if (!mounted) return;
+      bool turnCompleted = false;
       setState(() {
         _metadata = metadata;
         _isLoading = false;
@@ -153,9 +162,14 @@ class _ChatScreenState extends State<ChatScreen> {
           _liveProgressText = '';
           _pendingUserMessage = null;
           _sendTimeoutTimer?.cancel();
+          turnCompleted = true;
         }
       });
       _scrollToEnd();
+
+      if (turnCompleted && _queuedMessages.isNotEmpty && !_drainPaused) {
+        _drainQueue();
+      }
     } on DaemonException catch (e) {
       if (mounted) setState(() { _isLoading = false; _loadError = e.message; });
     }
@@ -229,20 +243,13 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _send() async {
-    final message = _inputController.text.trim();
-    final metadata = _metadata;
-    if (message.isEmpty || metadata == null || _isSending) return;
-
-    setState(() {
-      _turnsCountAtSendTime = metadata.turnCount;
-      _pendingUserMessage = message;
-      _liveProgressText = '';
-      _isSending = true;
-      _sendError = null;
-      _inputController.clear();
-    });
-    _scrollToEnd();
+  /// Sets the send state and starts the 5-minute client-side response timeout.
+  void _setupSendState(String message, int turnCount) {
+    _turnsCountAtSendTime = turnCount;
+    _pendingUserMessage = message;
+    _liveProgressText = '';
+    _isSending = true;
+    _sendError = null;
 
     // The daemon runs a turn fire-and-forget in the background and never reports failure back to
     // any client (Aer.Daemon.Program's /api/sessions/send handler only logs to Console.Error) — a
@@ -257,6 +264,30 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       }
     });
+  }
+
+  Future<void> _send() async {
+    final message = _inputController.text.trim();
+    final metadata = _metadata;
+    if (message.isEmpty || metadata == null) return;
+
+    if (_isSending || _queuedMessages.isNotEmpty) {
+      setState(() {
+        _queuedMessages.add(message);
+        _inputController.clear();
+        _drainPaused = false;
+      });
+      if (!_isSending) {
+        _drainQueue();
+      }
+      return;
+    }
+
+    setState(() {
+      _inputController.clear();
+      _setupSendState(message, metadata.turnCount);
+    });
+    _scrollToEnd();
 
     try {
       await widget.client.sendSessionMessage(sessionId: widget.sessionId, message: message);
@@ -266,6 +297,38 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _isSending = false;
           _pendingUserMessage = null;
+          _sendError = e.message;
+        });
+      }
+    }
+  }
+
+  /// Peek-then-remove-on-success, removing by identity of the head entry per
+  /// ChatViewModel.TryPeekQueuedMessage (src/Aer.Ui.Core/ChatViewModel.cs:262-274).
+  Future<void> _drainQueue() async {
+    final metadata = _metadata;
+    if (_isSending || _queuedMessages.isEmpty || _drainPaused || metadata == null) return;
+
+    final head = _queuedMessages.first;
+    setState(() {
+      _setupSendState(head, metadata.turnCount);
+    });
+    _scrollToEnd();
+
+    try {
+      await widget.client.sendSessionMessage(sessionId: widget.sessionId, message: head);
+      if (mounted) {
+        setState(() {
+          _queuedMessages.remove(head);
+        });
+      }
+    } on DaemonException catch (e) {
+      _sendTimeoutTimer?.cancel();
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+          _pendingUserMessage = null;
+          _drainPaused = true;
           _sendError = e.message;
         });
       }
@@ -486,6 +549,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
+          if (_queuedMessages.isNotEmpty) _buildQueuedStrip(context),
           SafeArea(
             top: false,
             child: Padding(
@@ -499,17 +563,60 @@ class _ChatScreenState extends State<ChatScreen> {
                       maxLines: 5,
                       textInputAction: TextInputAction.newline,
                       decoration: const InputDecoration(hintText: 'Message', border: OutlineInputBorder()),
-                      enabled: !_isSending,
                     ),
                   ),
                   const SizedBox(width: 8),
-                  _isSending
-                      ? const SizedBox(width: 48, height: 48, child: Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 2)))
-                      : IconButton.filled(icon: const Icon(Icons.send), onPressed: _send),
+                  IconButton.filled(icon: const Icon(Icons.send), onPressed: _send),
                 ],
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQueuedStrip(BuildContext context) {
+    final theme = Theme.of(context);
+    final textTheme = theme.textTheme;
+    final scheme = theme.colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      color: scheme.surfaceContainerHighest,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Queued — sends when the reply finishes.',
+            style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 4),
+          for (int i = 0; i < _queuedMessages.length; i++)
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _queuedMessages[i],
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: textTheme.bodySmall,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: 'Remove',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    setState(() {
+                      _queuedMessages.removeAt(i);
+                    });
+                  },
+                ),
+              ],
+            ),
         ],
       ),
     );
