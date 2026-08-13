@@ -19,6 +19,13 @@ namespace Aer.Daemon.Tests;
 /// path for what clients render. Green pieces composed wrong is exactly how the projection member
 /// itself shipped dropped (#1142's review), so the assertion here is on the projection, not the
 /// journal.
+/// <para>
+/// Scope, precisely (#1168 second reader): this proves the reconcile→projection CHAIN, not
+/// production's startup ORDERING — Program.cs fires reconcile fire-and-forget while Kestrel is
+/// already serving reads, and no reconcile path broadcasts, so a client can observe the
+/// pre-reconcile projection in that window and not be pushed the correction. That gap is #1171,
+/// deliberately not smuggled into these facts' claims.
+/// </para>
 /// </summary>
 [Collection(PendingGateRegistryCollection.Name)]
 public sealed class RestartGateRepresentationTests : IDisposable
@@ -76,7 +83,13 @@ public sealed class RestartGateRepresentationTests : IDisposable
 
         // The restart: process state is gone (a cold PendingGateRegistry — the ctor cleared it),
         // only the disk survives. Run the SAME entry point Program.cs fires after builder.Build().
-        await DaemonHost.ReconcilePendingPermissionsAsync(_roomsDir, TestContext.Current.CancellationToken);
+        // #1171: the startup site passes the WS broadcast — record what a connected client is
+        // pushed, since reconcile journaling without pushing was exactly the found gap.
+        var broadcasts = new List<(RoomProjection Projection, string RoomDir)>();
+        await DaemonHost.ReconcilePendingPermissionsAsync(
+            _roomsDir,
+            broadcastStateAsync: (proj, dir) => { broadcasts.Add((proj, dir)); return Task.CompletedTask; },
+            TestContext.Current.CancellationToken);
 
         var projection = await RoomProjectionLoader.LoadAsync(_roomDir, TestContext.Current.CancellationToken);
 
@@ -89,6 +102,11 @@ public sealed class RestartGateRepresentationTests : IDisposable
         Assert.Equal(askedAt, pending.AskedAt);
 
         Assert.True(PendingGateRegistry.TryGet("req-restart-1", out _));
+
+        // The push a connected client received carries the same re-presented gate (#1171).
+        var pushed = Assert.Single(broadcasts);
+        Assert.Equal(_roomDir, pushed.RoomDir);
+        Assert.Equal("req-restart-1", pushed.Projection.PendingPermission?.PermissionRequestId);
     }
 
     [Fact]
@@ -97,7 +115,11 @@ public sealed class RestartGateRepresentationTests : IDisposable
         await PersistMinimalSnapshotAsync();
         await WriteAskFileAsync("req-restart-2", DateTimeOffset.UtcNow.AddMinutes(-10), timeoutSeconds: 5);
 
-        await DaemonHost.ReconcilePendingPermissionsAsync(_roomsDir, TestContext.Current.CancellationToken);
+        var broadcasts = new List<(RoomProjection Projection, string RoomDir)>();
+        await DaemonHost.ReconcilePendingPermissionsAsync(
+            _roomsDir,
+            broadcastStateAsync: (proj, dir) => { broadcasts.Add((proj, dir)); return Task.CompletedTask; },
+            TestContext.Current.CancellationToken);
 
         var projection = await RoomProjectionLoader.LoadAsync(_roomDir, TestContext.Current.CancellationToken);
 
@@ -112,5 +134,10 @@ public sealed class RestartGateRepresentationTests : IDisposable
         Assert.False(PendingGateRegistry.TryGet("req-restart-2", out _));
         Assert.True(File.Exists(Path.Combine(
             _roomDir, ArtifactManager.ArtifactsDirectoryName, "execution_ex-restart", "revoked-req-restart-2.json")));
+
+        // The expiry is pushed too (#1171) — a client rendering the stale gate sees it retire.
+        var pushed = Assert.Single(broadcasts);
+        Assert.Null(pushed.Projection.PendingPermission);
+        Assert.True(Assert.Single(pushed.Projection.PermissionAnswers).WasRevoked);
     }
 }
