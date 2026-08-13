@@ -1,4 +1,5 @@
 using Aer.Adapters.Tests.TestSupport;
+using Aer.Flow.Domain;
 using Aer.Flow.Templates;
 using Aer.Workers.Dialogue;
 
@@ -78,11 +79,16 @@ public class BuiltInWorkflowTemplatesTests
     [Fact]
     public void Materialize_ReviewRun_DefaultsReviewerPromptWhenNoSecondaryCustomPromptGiven()
     {
+        var role = WorkerRoleCatalog.For("review");
         var (_, bindings) = BuiltInWorkflowTemplates.Materialize("review-run", "claude", "agy", "Write a roast");
 
-        Assert.Equal(
-            "Review draft.md carefully, provide feedback and recommendations, and write to report.md.",
+        Assert.StartsWith(
+            "Review draft.md carefully, provide feedback and recommendations.",
             bindings["review-worker"].PromptTemplate);
+        foreach (var output in role.Outputs)
+        {
+            Assert.Contains(output.Instruction, bindings["review-worker"].PromptTemplate);
+        }
     }
 
     [Fact]
@@ -91,11 +97,54 @@ public class BuiltInWorkflowTemplatesTests
         // Review follow-up (issue #255): the reviewer's prompt used to be hardcoded no matter what
         // the drafter was asked to do -- e.g. asking the drafter for a roast still got the reviewer
         // told to "review draft.md carefully" as a document, not respond to it.
+        var role = WorkerRoleCatalog.For("review");
         var (_, bindings) = BuiltInWorkflowTemplates.Materialize(
             "review-run", "claude", "agy", "Write a roast", "Write your own roast back");
 
         Assert.Equal("Write a roast", bindings["draft-worker"].PromptTemplate);
-        Assert.Equal("Write your own roast back", bindings["review-worker"].PromptTemplate);
+        Assert.StartsWith("Write your own roast back", bindings["review-worker"].PromptTemplate);
+        foreach (var output in role.Outputs)
+        {
+            Assert.Contains(output.Instruction, bindings["review-worker"].PromptTemplate);
+        }
+    }
+
+    [Fact]
+    public void Materialize_ReviewRun_AdoptsCatalogReviewRole_ClaudeSecondary()
+    {
+        var role = WorkerRoleCatalog.For("review");
+        var (definition, bindings) = BuiltInWorkflowTemplates.Materialize("review-run", "claude", "claude");
+
+        var reviewBinding = bindings["review-worker"]!;
+        Assert.NotNull(reviewBinding.PermissionGrant);
+        Assert.False(reviewBinding.PermissionGrant!.WriteFiles);
+        Assert.Equal(GrantAuditMode.Enforced, reviewBinding.GrantAuditMode);
+
+        var expectedProducedOutputs = role.Outputs
+            .Select(o => new ProducedOutput(o.Name, Schema: o.Schema))
+            .ToList();
+        Assert.Equal(expectedProducedOutputs, reviewBinding.Contract.ProducedOutputs);
+
+        foreach (var output in role.Outputs)
+        {
+            Assert.Contains(output.Instruction, reviewBinding.PromptTemplate);
+        }
+
+        Assert.Equal(reviewBinding.Contract.ProducedOutputs[0].Name, definition.Steps[1].Outputs.Single());
+    }
+
+    [Fact]
+    public void Materialize_ReviewRun_AdoptsCatalogReviewRole_AgySecondary()
+    {
+        var role = WorkerRoleCatalog.For("review");
+        var (definition, bindings) = BuiltInWorkflowTemplates.Materialize("review-run", "claude", "agy");
+
+        var reviewBinding = bindings["review-worker"]!;
+        Assert.NotNull(reviewBinding.PermissionGrant);
+        Assert.True(reviewBinding.PermissionGrant!.WriteFiles);
+        Assert.Equal(GrantAuditMode.AuditedNotEnforced, reviewBinding.GrantAuditMode);
+
+        Assert.Equal(reviewBinding.Contract.ProducedOutputs[0].Name, definition.Steps[1].Outputs.Single());
     }
 
     [Fact]

@@ -233,13 +233,9 @@ public static class BuiltInWorkflowTemplates
 
         if (string.Equals(templateId, ReviewRun.Id, StringComparison.OrdinalIgnoreCase))
         {
-            // Writes stay granted here even though #649 made a read-only reviewer expressible, and the
-            // reason is that this template is adapter-agnostic: `normalizedPrimary` is whatever the
-            // caller asked for. `WriteFiles: false` plus a declared output binds on claude and is
-            // refused at bind time on agy (IWorkerAdapter.WithheldWritesReachTheOutbox), so narrowing
-            // it here would make a built-in template that works today fail on one vendor.
-            // `tools/aer-agy-loop/dispatch.py` does take the narrowing, because its reviewing
-            // templates pin the adapter.
+            // The review-worker binding is sourced from the catalog's review role via RoleDispatch.ToBinding.
+            // write_files: false is the role's intent and GrantAuditMode materializes the vendor-conditional
+            // realization (agy: audited single-output write) (#901, #1146).
             var defaultGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false, ShellCommandPatterns: [], NetworkAccess: false);
 
             var definition = new WorkflowDefinition(
@@ -277,16 +273,13 @@ public static class BuiltInWorkflowTemplates
                     PromptTemplate: string.IsNullOrWhiteSpace(customPrompt) ? "Draft initial content for the requested topic and write to draft.md." : customPrompt,
                     Timeout: TimeSpan.FromMinutes(10),
                     PermissionGrant: defaultGrant),
-                ["review-worker"] = new WorkerBindingConfigEntry(
-                    Adapter: normalizedSecondary,
-                    Contract: new WorkerContract(
-                        WorkerName: "review-worker",
-                        RequiredInputs: ["draft.md"],
-                        ProducedOutputs: [new ProducedOutput("report.md")],
-                        OptionalMetadata: []),
-                    PromptTemplate: string.IsNullOrWhiteSpace(secondaryCustomPrompt) ? "Review draft.md carefully, provide feedback and recommendations, and write to report.md." : secondaryCustomPrompt,
-                    Timeout: TimeSpan.FromMinutes(10),
-                    PermissionGrant: defaultGrant)
+                ["review-worker"] = RoleDispatch.ToBinding(
+                    WorkerRoleCatalog.For("review"),
+                    string.IsNullOrWhiteSpace(secondaryCustomPrompt)
+                        ? "Review draft.md carefully, provide feedback and recommendations."
+                        : secondaryCustomPrompt,
+                    adapterOverride: normalizedSecondary,
+                    workerName: "review-worker")
             };
 
             return (definition, bindings);
