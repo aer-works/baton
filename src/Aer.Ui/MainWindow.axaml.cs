@@ -1598,7 +1598,10 @@ public partial class MainWindow : Window
                 EndPoint = new Point(
                     to.Column * DagCellWidth + DagNodeWidth / 2,
                     to.Rank * DagCellHeight),
-                Stroke = edge.IsSupersede ? Token("Status.Unavailable") /* recorded, no longer live */ : Token("Color.Border"),
+                // A supersede edge is prospective — DagEdge.IsSupersede's doc has the canonical
+                // wording — so it borrows the muted RESTING hue (Idle), not Unavailable's
+                // "no longer readable": possible and quiet, never yet a constraint.
+                Stroke = edge.IsSupersede ? Token("Status.Idle") : Token("Color.Border"),
                 StrokeThickness = 1.5,
             };
 

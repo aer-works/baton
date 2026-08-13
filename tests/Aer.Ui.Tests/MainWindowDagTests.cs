@@ -138,7 +138,13 @@ public class MainWindowDagTests
 
         Assert.Equal(4, nodes.Count);
         Assert.Equal(4, lines.Count);
-        Assert.Single(lines, line => line.StrokeDashArray is not null);
+        var supersedeLine = Assert.Single(lines, line => line.StrokeDashArray is not null);
+
+        // #1140 review: Token() falls back to Transparent on a missing key rather than throwing,
+        // so a typo at the supersede-edge call site renders an invisible line and fails nothing —
+        // this pins the resolved stroke to the muted resting hue the edge borrows.
+        Assert.True(Application.Current!.TryGetResource("StatusIdleColor", window.ActualThemeVariant, out var idleColor));
+        Assert.Equal((Color)idleColor!, ((ISolidColorBrush)supersedeLine.Stroke!).Color);
 
         var nodeC = nodes.Single(node => LabelOf(node).Text!.StartsWith("c"));
         Assert.Contains("[pause -> a]", LabelOf(nodeC).Text);
