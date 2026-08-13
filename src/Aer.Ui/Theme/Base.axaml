@@ -225,6 +225,13 @@
   <Style Selector="Border.card.system TextBlock.who">
     <Setter Property="Foreground" Value="{DynamicResource Color.TextSecondary}" />
   </Style>
+  <Style Selector="Border.card.failure">
+    <Setter Property="BorderBrush" Value="{DynamicResource Status.Failed}" />
+    <Setter Property="BorderThickness" Value="1" />
+  </Style>
+  <Style Selector="Border.card.failure TextBlock.who">
+    <Setter Property="Foreground" Value="{DynamicResource Status.Failed}" />
+  </Style>
 
   <!-- The navigation rail (#1071): icon-only bordered squares, per docs/design/mockups/02-screens.html's
        .rail styling — a 29x29 icon in a 1px rule border, radius 6, quiet by default (rule border,

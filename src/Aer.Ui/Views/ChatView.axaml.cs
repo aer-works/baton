@@ -54,4 +54,16 @@ public partial class ChatView : UserControl
             Dispatcher.UIThread.Post(() => ChatMessagesScroll.ScrollToEnd());
         }
     }
+
+    private async void OnCopyFailureClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (sender is Control control && control.DataContext is ChatMessageViewModel message)
+        {
+            var topLevel = TopLevel.GetTopLevel(control);
+            if (topLevel?.Clipboard is { } clipboard)
+            {
+                await clipboard.SetTextAsync(message.Text);
+            }
+        }
+    }
 }
