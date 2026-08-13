@@ -68,7 +68,8 @@ the role cannot be removed without reassigning first.
 
 **7. Removal is interrupt plus a departure record.** No graceful-stop protocol exists to lean on
 — the vendor CLIs have none; what exists is the M4 cancel handle, and crash reconciliation
-already heals a hard cancel (idempotent gate revoke, live-proven on #1109/#1113). Removal =
+already heals a hard cancel (the idempotent gate revoke that turn-end, scheduled expiry (#1113),
+and startup reconcile all reuse, pinned by `RestartGateRepresentationTests`). Removal =
 cancel any in-flight turn, revoke that participant's pending gates (`WasRevoked`), journal the
 departure. History keeps the departed participant's name — present or absent like a person in a
 thread means the thread keeps the messages of the person who left. Membership is episodic:
@@ -86,7 +87,7 @@ the nouns they build on.
 |---|---|---|
 | Nothing consumes a room-global turn sequence as a domain fact | 0019/0022 read as identity references; the transcript renders a timestamp merge of streams (#1142–#1185); `TurnIndex` is per-session display metadata | a total order must be journaled and per-participant concurrency needs a sequencer |
 | Per-participant concurrency does not break metadata safety | the metadata write is guarded by lock-plus-re-read, not by the beat (PR #1182's reviewed fix) | writes need a coarser lock and the room partially re-serializes |
-| A hard cancel leaves healable state | #1109/#1113: turn-end gate revoke is idempotent, journaled, and live-proven | removal needs its own reconciliation design before shipping |
+| A hard cancel leaves healable state | the turn-end/expiry/reconcile paths share one idempotent, journaled gate revoke (#1113 reuses it; `tests/Aer.Daemon.Tests/RestartGateRepresentationTests.cs` pins it, red-proven) | removal needs its own reconciliation design before shipping |
 | `SessionTurn` tolerates additive evolution | five trailing-optional additions in one week (`ErrorMessage`, `IsDormancyAnswer`, `IsExhausted`, `ExhaustedUntil`), old metadata loading unchanged each time | attribution/contribution shape needs a versioned metadata migration |
 
 ## Consequences
