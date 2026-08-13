@@ -65,7 +65,7 @@ The hook is in the repo but git does not use it until that command has been run 
 | `lint` | `dotnet build -warnaserror` |
 | `fmt` | `dotnet format` (fix) |
 | `fmt-check` | `dotnet format --verify-no-changes` (CI) |
-| `gates` | every local gate — `fmt-check`, `lint`, the four audits, `test` — under **one exit code** (#685). Run this rather than the members individually: reading seven statuses is what has twice reported green while a checker exited 1 |
+| `gates` | every local gate under **one exit code** (#685) — membership lives in `tools/gates/gates.py`, never restated here. Run this rather than the members individually: reading per-member statuses is what has twice reported green while a checker exited 1 |
 | `gates-fast` | the same minus `test`. What the pre-push hook runs |
 | `setup-hooks` | one-time per clone: `git config core.hooksPath .githooks` |
 
@@ -78,6 +78,8 @@ The hook is in the repo but git does not use it until that command has been run 
 **Rust toolchain** is required to build `external/aer-core`'s native library (`pixi run build-core`) — also installed separately, not pixi-managed, same convention as the .NET SDK above. GitHub Actions' standard runner images (`windows-latest`, `ubuntu-latest`) already have one; for local dev, install via [rustup](https://rustup.rs).
 
 **Go 1.26+ and, on Windows, a mingw-w64 gcc** (e.g. `winget install BrechtSanders.WinLibs.POSIX.UCRT`) are required for the mobile tasks — `mobile-build`/`mobile-test` compile the tailscale native asset via cgo, and on Windows the host build additionally needs the #958 pub-cache patch: run `pixi run mobile-patch` once after any fresh `flutter pub get`. Same separately-installed convention as above.
+
+**Flutter SDK (stable channel)** is required on every dev machine, not just for mobile work: `gates`/`gates-fast` — and therefore the pre-push hook — include `mobile-analyze` (#1138), which runs its own `flutter pub get` so a fresh clone or worktree self-resolves. Same separately-installed convention as above.
 
 **aer-core** (`external/aer-core`) is a git submodule, not a package — there is no NuGet feed for it yet (a single-developer project doesn't need the auth/RID-packaging overhead a real feed would add; see AER Overview §6). `pixi run build-core` builds its native library from source via `cargo build`.
 
