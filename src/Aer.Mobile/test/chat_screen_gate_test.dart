@@ -443,5 +443,44 @@ void main() {
       expect(find.text('Woken by operator.'), findsOneWidget);
       expect(find.text('Wake'), findsNothing);
     });
+
+    testWidgets('with two dormancy episodes only the latest entered transition offers Wake', (tester) async {
+      // The #1178 review's mobile coverage gap: the previous fact hides Wake because the room is no
+      // longer dormant, which never exercises the latest-entered identity gate. Two entered
+      // transitions while still dormant does — exactly one Wake, on the newest card.
+      final client = _FakeDaemonClient();
+      final transitions = [
+        DormancyTransition(
+          isEntered: true,
+          consecutiveFailures: 3,
+          detail: 'episode one',
+          timestamp: DateTime.utc(2026, 8, 12, 10, 5),
+        ),
+        DormancyTransition(
+          isEntered: false,
+          consecutiveFailures: 0,
+          clearedBy: 'operator',
+          timestamp: DateTime.utc(2026, 8, 12, 10, 10),
+        ),
+        DormancyTransition(
+          isEntered: true,
+          consecutiveFailures: 3,
+          detail: 'episode two',
+          timestamp: DateTime.utc(2026, 8, 12, 10, 20),
+        ),
+      ];
+
+      await pumpChatScreen(tester, client: client);
+      client.push(projection(withDormancy: transitions));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('episode one'), findsOneWidget);
+      expect(find.textContaining('episode two'), findsOneWidget);
+      expect(find.text('Wake'), findsOneWidget);
+
+      await tester.tap(find.text('Wake'));
+      await tester.pumpAndSettle();
+      expect(client.clearDormancyCallCount, 1);
+    });
   });
 }

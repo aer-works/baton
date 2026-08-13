@@ -1,4 +1,5 @@
 using Aer.Adapters;
+using Aer.Flow.Projection;
 
 namespace Aer.Ui.Tests;
 
@@ -621,5 +622,35 @@ public class ChatViewModelTests
         Assert.Equal(2, viewModel.Messages.Count);
         Assert.False(viewModel.Messages[0].IsDormancy);
         Assert.False(viewModel.Messages[1].IsDormancy);
+    }
+
+    /// <summary>
+    /// Pins the three-way merge's tie rule the #1178 review found unexercised: on an exact
+    /// timestamp tie, an answer renders BEFORE a dormancy transition (turns already win any tie
+    /// with either). A swapped tie priority in <c>RebuildMessages</c> flips the order here.
+    /// </summary>
+    [Fact]
+    public void SurfacePendingPermission_AnswerAndTransitionAtTheSameInstant_AnswerRendersFirst()
+    {
+        var viewModel = new ChatViewModel();
+        viewModel.LoadFromMetadata(MetadataWithTurns(), "/tmp/sess-1");
+        var sharedInstant = DateTimeOffset.UtcNow;
+
+        var answer = new PermissionAnswer(
+            "req-1", "Bash", "shell", "AllowOnce", null, "operator", sharedInstant, WasRevoked: false);
+        var transition = new Aer.Flow.Domain.DormancyTransition(true, 3, "no progress", null, sharedInstant);
+
+        viewModel.SurfacePendingPermission(
+            null,
+            [answer],
+            (_, _, _) => Task.CompletedTask,
+            [transition],
+            isDormant: true,
+            wake: () => { });
+
+        Assert.Equal(2, viewModel.Messages.Count);
+        Assert.True(viewModel.Messages[0].IsSystem);
+        Assert.False(viewModel.Messages[0].IsDormancy);
+        Assert.True(viewModel.Messages[1].IsDormancy);
     }
 }

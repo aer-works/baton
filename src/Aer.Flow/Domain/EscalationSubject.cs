@@ -35,7 +35,8 @@ public abstract record EscalationSubject
 
     /// <summary>#992: a mechanical condition the room's host observed, self-describing rather
     /// than citing another record. <paramref name="Condition"/> is a stable machine-readable
-    /// name (e.g. "turn-watchdog-timeout", "turn-host-dormancy"); <paramref name="Detail"/> is
-    /// the human-readable specifics.</summary>
+    /// name (e.g. "turn-watchdog-timeout", or the dormancy breaker's
+    /// <see cref="RoomEvent.TurnHostDormancyEntered.DormancyConditionName"/>);
+    /// <paramref name="Detail"/> is the human-readable specifics.</summary>
     public sealed record HostCondition(string Condition, string Detail) : EscalationSubject;
 }

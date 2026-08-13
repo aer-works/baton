@@ -395,23 +395,28 @@ public class RoomProjectorTests
         Assert.Equal("req-55", state.PermissionAnswers[49].PermissionRequestId);
     }
 
+    /// <summary>
+    /// The event order here is the one production actually writes: RoomTurnHost journals
+    /// TurnHostDormancyEntered FIRST, then raises the breaker escalation carrying the detail
+    /// (the #1178 review refuted a backward-looking pairing that only worked on the reversed,
+    /// never-produced order). The detail must land on the entered transition via backfill.
+    /// </summary>
     [Fact]
-    public void Projects_DormancyTransitions_in_order_with_detail_paired()
+    public void Projects_DormancyTransitions_in_order_with_detail_paired_on_the_real_write_order()
     {
         var ts1 = DateTimeOffset.UtcNow;
-        var ts2 = ts1.AddMinutes(1);
+        var ts2 = ts1.AddSeconds(1);
         var ts3 = ts2.AddMinutes(5);
 
+        var entered = new RoomEvent.TurnHostDormancyEntered(3, ts1);
         var escalation = new RoomEvent.EscalationRaised(
-            new WorkerId("worker-1"),
-            EscalationTrigger.Direction,
+            new WorkerId("turn-host"),
+            EscalationTrigger.Confidence,
             new EscalationSubject.HostCondition("turn-host-dormancy", "3 consecutive turns without progress"),
-            ts1);
-
-        var entered = new RoomEvent.TurnHostDormancyEntered(3, ts2);
+            ts2);
         var cleared = new RoomEvent.TurnHostDormancyCleared("operator", ts3);
 
-        var state = RoomProjector.Project([escalation, entered, cleared]);
+        var state = RoomProjector.Project([entered, escalation, cleared]);
 
         Assert.False(state.IsDormant);
         Assert.Equal(2, state.DormancyTransitions.Count);
@@ -421,7 +426,7 @@ public class RoomProjectorTests
         Assert.Equal(3, t1.ConsecutiveFailures);
         Assert.Equal("3 consecutive turns without progress", t1.Detail);
         Assert.Null(t1.ClearedBy);
-        Assert.Equal(ts2, t1.Timestamp);
+        Assert.Equal(ts1, t1.Timestamp);
 
         var t2 = state.DormancyTransitions[1];
         Assert.False(t2.IsEntered);
@@ -429,6 +434,33 @@ public class RoomProjectorTests
         Assert.Null(t2.Detail);
         Assert.Equal("operator", t2.ClearedBy);
         Assert.Equal(ts3, t2.Timestamp);
+    }
+
+    /// <summary>
+    /// Cross-episode polarity for the backfill: a second dormancy entry whose own escalation never
+    /// arrives must stay Detail-null rather than inheriting the FIRST episode's escalation (which is
+    /// still sitting in OpenEscalations — the exact misattribution the #1178 review caught).
+    /// </summary>
+    [Fact]
+    public void A_second_dormancy_entry_never_inherits_the_previous_episodes_escalation_detail()
+    {
+        var t0 = DateTimeOffset.UtcNow;
+
+        var state = RoomProjector.Project([
+            new RoomEvent.TurnHostDormancyEntered(3, t0),
+            new RoomEvent.EscalationRaised(
+                new WorkerId("turn-host"),
+                EscalationTrigger.Confidence,
+                new EscalationSubject.HostCondition("turn-host-dormancy", "episode one detail"),
+                t0.AddSeconds(1)),
+            new RoomEvent.TurnHostDormancyCleared("operator", t0.AddMinutes(1)),
+            new RoomEvent.TurnHostDormancyEntered(3, t0.AddMinutes(2)),
+        ]);
+
+        Assert.True(state.IsDormant);
+        Assert.Equal(3, state.DormancyTransitions.Count);
+        Assert.Equal("episode one detail", state.DormancyTransitions[0].Detail);
+        Assert.Null(state.DormancyTransitions[2].Detail);
     }
 
     [Fact]

@@ -130,20 +130,32 @@ public static class RoomProjector
 
                 case RoomEvent.EscalationRaised escalation:
                     openEscalations.Add(escalation);
+
+                    // #1178: the breaker's escalation is journaled AFTER its TurnHostDormancyEntered
+                    // event (RoomTurnHost.ExecuteSingleTickAsync writes entered first, then raises the
+                    // escalation on the same writer), so the entered transition starts with a null
+                    // Detail and the matching escalation backfills it here. Gating on the LAST
+                    // transition being an entered one with no detail yet keeps the pairing within the
+                    // current dormancy episode — after a cleared event the last transition is the
+                    // cleared one, so a stale escalation from an earlier episode can never attach to a
+                    // later entry (the cross-episode misattribution the #1178 review caught in the
+                    // original backward-looking pairing).
+                    if (escalation.Subject is EscalationSubject.HostCondition hostCondition
+                        && hostCondition.Condition == RoomEvent.TurnHostDormancyEntered.DormancyConditionName
+                        && dormancyTransitions.Count > 0
+                        && dormancyTransitions[^1] is { IsEntered: true, Detail: null } enteredAwaitingDetail)
+                    {
+                        dormancyTransitions[^1] = enteredAwaitingDetail with { Detail = hostCondition.Detail };
+                    }
+
                     break;
 
                 case RoomEvent.TurnHostDormancyEntered entered:
                     isDormant = true;
-                    var detail = openEscalations
-                        .Where(e => e.Timestamp <= entered.Timestamp)
-                        .Select(e => e.Subject)
-                        .OfType<EscalationSubject.HostCondition>()
-                        .LastOrDefault(s => s.Condition == RoomEvent.TurnHostDormancyEntered.DormancyConditionName)
-                        ?.Detail;
                     dormancyTransitions.Add(new DormancyTransition(
                         IsEntered: true,
                         ConsecutiveFailures: entered.ConsecutiveFailures,
-                        Detail: detail,
+                        Detail: null,
                         ClearedBy: null,
                         Timestamp: entered.Timestamp));
                     break;
