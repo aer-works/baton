@@ -23,6 +23,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- #1176: the app-level exception guard's error surface (App.ErrorSurface) is internal — it is
+         wiring, not API — and the headless UI tests must be able to point it at a window they own,
+         because the test session has no desktop lifetime to reach one through. Same shape as
+         Aer.Adapters/Aer.Flow already use for their own test assemblies. -->
+    <InternalsVisibleTo Include="Aer.Ui.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- M19 Phase 5 (#190): the app icon — a mini-DAG mark on the accent teal, generated into a
          multi-size PNG-in-ICO; window chrome + taskbar identity. -->
     <AvaloniaResource Include="Assets\**" />

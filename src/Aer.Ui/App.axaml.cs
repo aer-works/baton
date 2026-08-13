@@ -36,6 +36,7 @@ public partial class App : Application
 
             var window = new MainWindow();
             desktop.MainWindow = window;
+            ErrorSurface = window.ViewModel;
 
             _ = RunStartupAsync(window, desktop.Args ?? []);
         }
@@ -44,25 +45,37 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Issue #1176: App-level unhandled exception guard. Prevents process termination, appends
-    /// the exception durably to the AER-home sink, and surfaces it through existing non-modal failure text.
+    /// Where an unexpected error goes on screen (#1176). The window's own view model, held here
+    /// rather than reached for through <see cref="IClassicDesktopStyleApplicationLifetime"/>: the
+    /// guard must work wherever the app is hosted, and the headless session the UI tests run in has
+    /// no desktop lifetime at all — resolving the surface through one meant the surfacing half of
+    /// the guard could never be exercised by a test, which is how it shipped unverified the first
+    /// time.
+    /// </summary>
+    internal MainWindowViewModel? ErrorSurface { get; set; }
+
+    /// <summary>
+    /// Issue #1176: the one app-level unhandled exception guard. An <c>async void</c> handler's
+    /// exception is observable on no <see cref="Task"/> — it is rethrown on the dispatcher, and
+    /// with nothing hooked here it ends the process. Marks it handled, appends the detail to the
+    /// durable sink, and says so through the failure text already on screen (never a dialog: the
+    /// interaction-state register's own "Folder gone" row is where that constraint is recorded).
     /// </summary>
     private void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         e.Handled = true;
         AppUnhandledExceptionSink.LogException(e.Exception);
 
-        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop &&
-            desktop.MainWindow is MainWindow mainWindow)
+        if (ErrorSurface is { } surface)
         {
             var message = $"{PlainLanguage.ForUnexpectedAppError()}: {e.Exception.Message}";
-            if (mainWindow.ViewModel?.Chat is { } chat)
+            if (surface.Chat is { } chat)
             {
                 chat.StatusText = message;
             }
-            else if (mainWindow.ViewModel != null)
+            else
             {
-                mainWindow.ViewModel.RunStatusText = message;
+                surface.RunStatusText = message;
             }
         }
     }
