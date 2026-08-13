@@ -351,10 +351,10 @@ public sealed partial class ChatViewModel : ObservableObject
         {
             // #1179: the room was dormant when this message arrived -- the PRODUCT answered with the
             // dormancy state instead of dispatching a worker turn, so neither AssistantResponse nor
-            // ErrorMessage below is ever populated on this turn. Wake gates on _isDormant alone here
-            // (not #1178's per-transition "latest entered" rule -- see changes.md for why) rather than
-            // whether this is the newest dormancy-shaped entry in the transcript: every dormancy-answer
-            // turn while the room is still dormant is an equally valid place to offer the same Wake.
+            // ErrorMessage below is ever populated on this turn. Wake gates on _isDormant alone here,
+            // not #1178's per-transition "latest entered" rule: every dormancy-answer turn while the
+            // room is still dormant is an equally valid place to offer the same Wake action, so the
+            // cross-collection "newest dormancy-shaped entry" bookkeeping buys nothing (#1179).
             Messages.Add(new ChatMessageViewModel(
                 "System",
                 "Still dormant — waking is yours to choose.",
