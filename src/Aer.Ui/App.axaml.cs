@@ -2,6 +2,7 @@ using Aer.Ui.Core;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 
 namespace Aer.Ui;
 
@@ -11,6 +12,8 @@ public partial class App : Application
 
     public override void OnFrameworkInitializationCompleted()
     {
+        Dispatcher.UIThread.UnhandledException += OnUnhandledException;
+
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.ShutdownMode = Avalonia.Controls.ShutdownMode.OnExplicitShutdown;
@@ -38,6 +41,30 @@ public partial class App : Application
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    /// <summary>
+    /// Issue #1176: App-level unhandled exception guard. Prevents process termination, appends
+    /// the exception durably to the AER-home sink, and surfaces it through existing non-modal failure text.
+    /// </summary>
+    private void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        e.Handled = true;
+        AppUnhandledExceptionSink.LogException(e.Exception);
+
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop &&
+            desktop.MainWindow is MainWindow mainWindow)
+        {
+            var message = $"{PlainLanguage.ForUnexpectedAppError()}: {e.Exception.Message}";
+            if (mainWindow.ViewModel?.Chat is { } chat)
+            {
+                chat.StatusText = message;
+            }
+            else if (mainWindow.ViewModel != null)
+            {
+                mainWindow.ViewModel.RunStatusText = message;
+            }
+        }
     }
 
     /// <summary>
