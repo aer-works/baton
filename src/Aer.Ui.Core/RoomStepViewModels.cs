@@ -218,36 +218,19 @@ public sealed partial class WaitingOnLockBannerViewModel : ObservableObject
 }
 
 /// <summary>
-/// Issue #994: the room turn-host status card / banner — values, live usage, and dormancy visibility.
+/// Issue #994: the room turn-host status card / banner — values and live usage. Dormancy left this
+/// surface in #1178: it renders as a transcript turn (with Wake) in the chat, so the banner keeps
+/// only the meter presentation.
 /// </summary>
 public sealed partial class RoomTurnHostBannerViewModel : ObservableObject
 {
-    private readonly Func<Task<bool>>? _clearDormancyAsyncFunc;
-    private readonly Func<Task>? _refreshAsyncFunc;
-
     public string MeterText { get; }
     public string ValuesText { get; }
     public string? LoadErrorText { get; }
-    public bool IsDormant { get; }
-    public string DormancyText { get; }
 
-    /// <summary>
-    /// The breaker escalation that tripped dormancy (#994 acceptance: never a silent stall).
-    /// Null when the room record carries no matching hostCondition escalation.
-    /// </summary>
-    public string? DormancyEscalationText { get; }
-
-    public bool HasDormancyEscalationText => !string.IsNullOrWhiteSpace(DormancyEscalationText);
-
-    public RoomTurnHostBannerViewModel(
-        RoomTurnHostStatus status,
-        Func<Task<bool>>? clearDormancyAsyncFunc = null,
-        Func<Task>? refreshAsyncFunc = null)
+    public RoomTurnHostBannerViewModel(RoomTurnHostStatus status)
     {
         ArgumentNullException.ThrowIfNull(status);
-
-        _clearDormancyAsyncFunc = clearDormancyAsyncFunc;
-        _refreshAsyncFunc = refreshAsyncFunc;
 
         MeterText = $"machine turns {status.TurnsInTrailingHourCount}/{status.MachineTurnsPerHourCap} this hour";
 
@@ -257,23 +240,6 @@ public sealed partial class RoomTurnHostBannerViewModel : ObservableObject
         ValuesText = $"{status.Throttles.MachineTurnMinimumGapSeconds}s gap · {status.Throttles.MachineTurnsPerHour}/h cap · limit {status.Throttles.ConsecutiveFailureLimit} ({sourceText})";
 
         LoadErrorText = status.LoadError;
-        IsDormant = status.IsDormant;
-        DormancyText = $"Dormant · stopped after {status.ConsecutiveFailures} machine turns without progress";
-        DormancyEscalationText = status.DormancyEscalationDetail;
-
-    }
-
-    [RelayCommand]
-    private async Task Wake()
-    {
-        if (_clearDormancyAsyncFunc != null)
-        {
-            var success = await _clearDormancyAsyncFunc().ConfigureAwait(true);
-            if (success && _refreshAsyncFunc != null)
-            {
-                await _refreshAsyncFunc().ConfigureAwait(true);
-            }
-        }
     }
 }
 
