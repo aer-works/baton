@@ -102,7 +102,7 @@ void main() {
     testWidgets(
         '2. The remove button removes exactly that entry (enqueue two, remove the first, strip shows the second)',
         (tester) async {
-      final client = await pumpChatScreen(tester);
+      await pumpChatScreen(tester);
 
       // Turn in flight
       await tester.enterText(find.byType(TextField), 'First turn message');
