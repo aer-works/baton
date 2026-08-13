@@ -261,6 +261,16 @@ class DaemonClient {
     _throwIfFailed(response);
   }
 
+  /// Clears turn host dormancy for [roomDirectoryPath] (#1178).
+  Future<void> clearTurnHostDormancy(String roomDirectoryPath) async {
+    final response = await _post(
+      Uri.http(host, '/api/rooms/turn-host/clear-dormancy'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'roomDirectoryPath': roomDirectoryPath}),
+    );
+    _throwIfFailed(response);
+  }
+
   /// Text content of one execution's output file, or null if the daemon has no such file (already
   /// deleted, or the execution/fileName pair doesn't match its recorded OutputFiles). See
   /// src/Aer.Daemon/Program.cs's /api/rooms/artifact handler (M21 Phase 2, #232).

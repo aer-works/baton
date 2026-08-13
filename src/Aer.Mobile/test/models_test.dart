@@ -55,6 +55,24 @@ void main() {
       expect(projection.permissionAnswers[0].wasRevoked, isFalse);
       expect(projection.permissionAnswers[1].wasRevoked, isTrue);
       expect(projection.permissionAnswers[1].reason, 'turn_ended');
+
+      // #1178: the fixture carries one entered and one cleared dormancy transition.
+      expect(projection.dormancyTransitions, hasLength(2));
+      expect(projection.dormancyTransitions[0].isEntered, isTrue);
+      expect(projection.dormancyTransitions[0].consecutiveFailures, 3);
+      expect(projection.dormancyTransitions[0].detail, 'The last three turns tried to fix build');
+      expect(projection.dormancyTransitions[1].isEntered, isFalse);
+      expect(projection.dormancyTransitions[1].clearedBy, 'operator');
+      expect(projection.isDormant, isFalse);
+    });
+
+    test('parses absent dormancyTransitions as empty list', () {
+      final projection = RoomProjection.fromJson({
+        'snapshot': {'workflowTemplateId': 'wf', 'steps': <dynamic>[]},
+        'state': {'status': 'Paused', 'steps': <dynamic>[]},
+      });
+      expect(projection.dormancyTransitions, isEmpty);
+      expect(projection.isDormant, isFalse);
     });
   }
 

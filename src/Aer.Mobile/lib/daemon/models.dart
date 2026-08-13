@@ -156,6 +156,36 @@ class PermissionAnswer {
   }
 }
 
+/// Wire twin of the engine's DormancyTransition (#1178).
+class DormancyTransition {
+  final bool isEntered;
+  final int consecutiveFailures;
+  final String? detail;
+  final String? clearedBy;
+  final DateTime timestamp;
+
+  DormancyTransition({
+    required this.isEntered,
+    required this.consecutiveFailures,
+    this.detail,
+    this.clearedBy,
+    required this.timestamp,
+  });
+
+  factory DormancyTransition.fromJson(Map<String, dynamic> json) {
+    final j = caseInsensitive(json);
+    return DormancyTransition(
+      isEntered: j['isentered'] == true,
+      consecutiveFailures: j['consecutivefailures'] is int
+          ? j['consecutivefailures'] as int
+          : int.tryParse(j['consecutivefailures']?.toString() ?? '0') ?? 0,
+      detail: j['detail']?.toString(),
+      clearedBy: j['clearedby']?.toString(),
+      timestamp: DateTime.tryParse(j['timestamp']?.toString() ?? '') ?? DateTime.now(),
+    );
+  }
+}
+
 /// A projection Aer.Daemon pushes for one room directory. Aer.Daemon still has only one
 /// "current" task server-side (RoomClient.CurrentRoomDirectoryPath) and broadcasts every
 /// change to every connected WS client regardless of which directory it's for — but this app
@@ -185,6 +215,9 @@ class RoomProjection {
   /// History of answered or revoked runtime permissions (bounded to newest 50).
   final List<PermissionAnswer> permissionAnswers;
 
+  /// History of turn host dormancy transitions (#1178).
+  final List<DormancyTransition> dormancyTransitions;
+
   RoomProjection({
     required this.directoryPath,
     required this.sessionId,
@@ -196,7 +229,10 @@ class RoomProjection {
     required this.workerAdapters,
     this.pendingPermission,
     this.permissionAnswers = const [],
+    this.dormancyTransitions = const [],
   });
+
+  bool get isDormant => dormancyTransitions.isNotEmpty && dormancyTransitions.last.isEntered;
 
   List<WorkflowStepState> get pausedSteps => steps.where((s) => s.isPaused).toList();
 
@@ -237,6 +273,9 @@ class RoomProjection {
           : PendingPermission.fromJson(j['pendingpermission'] as Map<String, dynamic>),
       permissionAnswers: ((j['permissionanswers'] as List<dynamic>?) ?? [])
           .map((a) => PermissionAnswer.fromJson(a as Map<String, dynamic>))
+          .toList(),
+      dormancyTransitions: ((j['dormancytransitions'] as List<dynamic>?) ?? [])
+          .map((t) => DormancyTransition.fromJson(t as Map<String, dynamic>))
           .toList(),
     );
   }

@@ -30,6 +30,7 @@ class _FakeDaemonClient extends DaemonClient {
   Completer<void>? answerGate;
 
   int answerCallCount = 0;
+  int clearDormancyCallCount = 0;
 
   /// Turns [getSession] serves — set before pumping so the transcript-merge tests can interleave
   /// real turns with permission answers instead of asserting against an empty transcript.
@@ -61,6 +62,11 @@ class _FakeDaemonClient extends DaemonClient {
   Future<String> getSessionMode(String sessionId) async => 'default';
 
   @override
+  Future<void> clearTurnHostDormancy(String roomDirectoryPath) async {
+    clearDormancyCallCount++;
+  }
+
+  @override
   Future<void> answerPermission({
     required String directoryPath,
     required String permissionRequestId,
@@ -86,7 +92,12 @@ void main() {
         askedAt: DateTime.utc(2026, 8, 9, 12),
       );
 
-  RoomProjection projection({PendingPermission? withPending, List<PermissionAnswer>? withAnswers}) => RoomProjection(
+  RoomProjection projection({
+    PendingPermission? withPending,
+    List<PermissionAnswer>? withAnswers,
+    List<DormancyTransition>? withDormancy,
+  }) =>
+      RoomProjection(
         directoryPath: '/tasks/foo',
         sessionId: 'sess-1',
         workflowTemplateId: 'chat',
@@ -97,15 +108,16 @@ void main() {
         workerAdapters: const {},
         pendingPermission: withPending,
         permissionAnswers: withAnswers ?? const [],
+        dormancyTransitions: withDormancy ?? const [],
       );
 
-  Future<_FakeDaemonClient> pumpChatScreen(WidgetTester tester, {List<SessionTurn> turns = const []}) async {
-    final client = _FakeDaemonClient()..turns = turns;
+  Future<_FakeDaemonClient> pumpChatScreen(WidgetTester tester, {_FakeDaemonClient? client, List<SessionTurn> turns = const []}) async {
+    final c = (client ?? _FakeDaemonClient())..turns = turns;
     await tester.pumpWidget(MaterialApp(
-      home: ChatScreen(client: client, sessionId: 'sess-1', directoryPath: '/tasks/foo'),
+      home: ChatScreen(client: c, sessionId: 'sess-1', directoryPath: '/tasks/foo'),
     ));
     await tester.pumpAndSettle();
-    return client;
+    return c;
   }
 
   group('_ChatScreenState permission gate wiring (0022, #390 mobile, second-reader finding)', () {
@@ -380,6 +392,56 @@ void main() {
 
       expect(find.text('command completed successfully'), findsOneWidget);
       expect(find.textContaining('to fix'), findsNothing);
+    });
+
+    testWidgets('renders dormancy transitions in transcript order and triggers Wake button', (tester) async {
+      final client = _FakeDaemonClient();
+      final transitions = [
+        DormancyTransition(
+          isEntered: true,
+          consecutiveFailures: 3,
+          detail: 'no progress made',
+          timestamp: DateTime.utc(2026, 8, 12, 10, 5),
+        ),
+      ];
+
+      await pumpChatScreen(tester, client: client);
+      client.push(projection(withDormancy: transitions));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Dormant — stopped after 3 machine turns'), findsOneWidget);
+      expect(find.textContaining('no progress made'), findsOneWidget);
+      expect(find.text('Wake'), findsOneWidget);
+
+      await tester.tap(find.text('Wake'));
+      await tester.pumpAndSettle();
+      expect(client.clearDormancyCallCount, 1);
+    });
+
+    testWidgets('Wake button is hidden for older entered transition when cleared', (tester) async {
+      final client = _FakeDaemonClient();
+      final transitions = [
+        DormancyTransition(
+          isEntered: true,
+          consecutiveFailures: 3,
+          detail: 'no progress made',
+          timestamp: DateTime.utc(2026, 8, 12, 10, 5),
+        ),
+        DormancyTransition(
+          isEntered: false,
+          consecutiveFailures: 0,
+          clearedBy: 'operator',
+          timestamp: DateTime.utc(2026, 8, 12, 10, 10),
+        ),
+      ];
+
+      await pumpChatScreen(tester, client: client);
+      client.push(projection(withDormancy: transitions));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Dormant — stopped after 3 machine turns'), findsOneWidget);
+      expect(find.text('Woken by operator.'), findsOneWidget);
+      expect(find.text('Wake'), findsNothing);
     });
   });
 }
