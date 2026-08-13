@@ -39,9 +39,9 @@
       <SolidColorBrush x:Key="Color.AccentSubtleBgPressedTransparent">#010A4D74</SolidColorBrush>
       <SolidColorBrush x:Key="Color.AccentSubtleBgHoverTransparent">#010C5F8F</SolidColorBrush>
 
-      <!-- The Status.* FOREGROUND brushes moved to GeneratedTokens.axaml (#1135) — emitted from the
-           same token values as their Status<X>Color twins, so the two spellings cannot drift. The
-           Bg tints below are desktop-only, hand-authored pending their own tokenization. -->
+      <!-- The Status.* FOREGROUND brushes moved to GeneratedTokens.axaml (#1135) — why lives on
+           TokenGenerator.SemanticBrushAliases. The Bg tints below are desktop-only, hand-authored
+           pending their own tokenization. -->
       <SolidColorBrush x:Key="Status.NeedsYouBg">#F1E7D2</SolidColorBrush>
       <SolidColorBrush x:Key="Status.RunningBg">#E4E9F0</SolidColorBrush>
       <SolidColorBrush x:Key="Status.SucceededBg">#E2ECE4</SolidColorBrush>
