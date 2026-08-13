@@ -97,7 +97,11 @@ lint = { cmd = "dotnet build -warnaserror --no-incremental", depends-on = ["buil
 
 # M21 Phase 2 (#232): mobile-build produces a debug APK only — Aer.Mobile is sideload-only for this
 # milestone (no Play Store signing/release config exists).
-mobile-analyze = { cmd = "flutter analyze", cwd = "src/Aer.Mobile" }
+# `pub get` first, matching CI's mobile job: the analyzer needs resolved packages, and a fresh
+# worktree (the self-dispatched-worker pattern above) has no .dart_tool yet — without this, its
+# first `gates` run fails with import-resolution noise instead of resolving itself (#1138 review).
+# Near-free when already resolved.
+mobile-analyze = { cmd = "flutter pub get && flutter analyze", cwd = "src/Aer.Mobile" }
 # Excludes the `journey` tag: journey tests (#313) are red-specs run separately via
 # `pixi run journey-mobile`, so the default suite stays green (see dart_test.yaml).
 # Routed through a script for the same reason mobile-build is — the script's header says why (#958).
