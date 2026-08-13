@@ -5,6 +5,7 @@ using Aer.Flow.Store;
 using Aer.Flow.Templates;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
+using Avalonia;
 using Avalonia.Headless.XUnit;
 using Avalonia.Media;
 using Avalonia.Styling;
@@ -226,10 +227,14 @@ public class MainWindowDagTests
             var architectNode = dagCanvas.Children.OfType<Border>()
                 .Single(node => LabelOf(node).Text!.StartsWith("architect"));
 
-            // Tokens.axaml's Dark dictionary, not Default's light palette. Border updated for the
-            // #216 accent/status-succeeded color separation — was #5FAE7C.
+            // The Dark dictionary, not Default's light palette. The Bg tint is Tokens.axaml's
+            // hand-authored dark value; the border resolves the REGISTER's finished color under
+            // Dark explicitly (#1135 made Status.Succeeded an alias of it) — resolved, not
+            // transcribed, so a palette change can't re-break this variant test, while a window
+            // wrongly resolving Light would still mismatch the Dark-resolved expectation.
             Assert.Equal(Color.Parse("#1E2A22"), ((ISolidColorBrush)architectNode.Background!).Color);
-            Assert.Equal(Color.Parse("#4CAE68"), ((ISolidColorBrush)architectNode.BorderBrush!).Color);
+            Assert.True(Application.Current!.TryGetResource("StatusFinishedColor", ThemeVariant.Dark, out var finishedDark));
+            Assert.Equal((Color)finishedDark!, ((ISolidColorBrush)architectNode.BorderBrush!).Color);
         }
         finally
         {
