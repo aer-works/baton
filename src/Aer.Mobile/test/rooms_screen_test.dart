@@ -15,11 +15,11 @@ import 'package:aer_mobile/theme/tokens.dart';
 /// daemon (same approach `daemon_client_rooms_test.dart` already uses for the single-item calls this
 /// screen was built on).
 void main() {
-  Map<String, dynamic> fleetItemJson(String path, {bool archived = false, String? status}) => {
+  Map<String, dynamic> fleetItemJson(String path, {bool archived = false, String? status, String? statusText}) => {
         'roomDirectoryPath': path,
         'friendlyName': path.split('/').last,
         'typeLabel': 'solo-run-template',
-        'statusText': status ?? 'Idle',
+        'statusText': statusText ?? status ?? 'Idle',
         'status': status,
         'pausedStepCount': 0,
         'isArchived': archived,
@@ -210,16 +210,26 @@ void main() {
             fleetItemJson('/tasks/failed', status: 'Failed'),
             fleetItemJson('/tasks/cancelled', status: 'Cancelled'),
             fleetItemJson('/tasks/unavailable', status: 'Unavailable'),
-            fleetItemJson('/tasks/outofplan', status: 'OutOfPlan'),
+            // The review's overflow case (#1132): OutOfPlan's realistic status line is the longest
+            // in the vocabulary, and the mark's Row must width-bound it so it wraps as the bare
+            // Text did — at phone width, not a widened test surface, or the hazard is invisible.
+            fleetItemJson('/tasks/outofplan',
+                status: 'OutOfPlan',
+                statusText: 'Out of plan — resumes 2026-08-12 18:00 (vendor plan window)'),
             fleetItemJson('/tasks/unknown', status: 'UnknownState'),
           ];
-          return http.Response(jsonEncode(items), 200);
+          // Response.bytes + explicit UTF-8: the String overload encodes Latin-1 by default and
+          // rejects the em dash the daemon's real "Out of plan — resumes …" line carries.
+          return http.Response.bytes(utf8.encode(jsonEncode(items)), 200,
+              headers: {'content-type': 'application/json; charset=utf-8'});
         }
         return http.Response('unexpected request: ${request.method} ${request.url}', 500);
       });
       final client = DaemonClient(host: 'localhost:5000', token: 'fake-token', httpClient: mockClient);
 
-      await tester.binding.setSurfaceSize(const Size(800, 2000));
+      // Phone width on purpose (the overflow hazard hides on a widened surface); tall enough that
+      // the lazy ListView builds every fixture row without scrolling.
+      await tester.binding.setSurfaceSize(const Size(400, 4000));
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       await tester.pumpWidget(MaterialApp(home: RoomsScreen(client: client)));

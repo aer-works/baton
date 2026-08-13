@@ -467,10 +467,19 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
                                       // for a chat turn, "Waiting for your review" for a real gate. Replaces
                                       // the old raw "N step(s) awaiting a decision", which mislabelled a chat.
                                       Row(
+                                        // Top-align the mark against a wrapping status line, and keep
+                                        // the Text width-bounded: a Row does not pass the Column's
+                                        // width constraint to non-flex children, so without Expanded a
+                                        // long line ("Out of plan — resumes …") overflows instead of
+                                        // wrapping the way the bare Text here always did.
+                                        crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
-                                          StatusMark(roomStatus(item.status), size: 12),
+                                          Padding(
+                                            padding: const EdgeInsets.only(top: 2),
+                                            child: StatusMark(roomStatus(item.status), size: 12),
+                                          ),
                                           const SizedBox(width: 4),
-                                          Text(item.statusText),
+                                          Expanded(child: Text(item.statusText)),
                                         ],
                                       ),
                                       Text(item.roomDirectoryPath, style: Theme.of(context).textTheme.bodySmall),
