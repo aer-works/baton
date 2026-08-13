@@ -46,6 +46,15 @@ void main() {
       expect(failedStep.latestExecutionId, 'exec-3');
       expect(failedStep.latestFailureReason, 'Syntax error on line 42');
       expect(failedStep.latestFailureClassification, 'Permanent');
+
+      // #1142: the fixture carries one answered and one expired permission entry, so the parse of
+      // both PermissionAnswer shapes is pinned against the daemon's real serializer output.
+      expect(projection.permissionAnswers, hasLength(2));
+      expect(projection.permissionAnswers[0].decisionKind, 'AllowOnce');
+      expect(projection.permissionAnswers[0].toolName, 'Bash');
+      expect(projection.permissionAnswers[0].wasRevoked, isFalse);
+      expect(projection.permissionAnswers[1].wasRevoked, isTrue);
+      expect(projection.permissionAnswers[1].reason, 'turn_ended');
     });
   }
 

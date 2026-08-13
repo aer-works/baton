@@ -138,7 +138,17 @@ public static class WireFixtureGenerator
 
         var lineage = new ArtifactLineage(executions);
 
-        return new RoomProjection(snapshot, state, history, lineage);
+        // #1142: one answered and one expired entry, so the fixture (and the Dart parse test that
+        // reads it) exercises both PermissionAnswer shapes rather than an always-empty list.
+        var permissionAnswers = new List<Aer.Flow.Projection.PermissionAnswer>
+        {
+            new("perm-1", "Bash", "run_command", "AllowOnce", null, "operator",
+                new DateTimeOffset(2026, 8, 3, 13, 0, 0, TimeSpan.Zero), WasRevoked: false),
+            new("perm-2", "Bash", "run_command", "", "turn_ended", "",
+                new DateTimeOffset(2026, 8, 3, 14, 0, 0, TimeSpan.Zero), WasRevoked: true),
+        };
+
+        return new RoomProjection(snapshot, state, history, lineage, PermissionAnswers: permissionAnswers);
     }
 
     private static JsonSerializerOptions IndentedOptions(JsonSerializerOptions baseOptions) =>

@@ -119,7 +119,7 @@ class PendingPermission {
   }
 }
 
-/// A historical answer to a runtime permission request (0022), from RoomProjection.PermissionAnswers.
+/// Wire twin of the engine's PermissionAnswer (its doc in src/Aer.Flow/Projection is canonical).
 class PermissionAnswer {
   final String permissionRequestId;
   final String toolName;
