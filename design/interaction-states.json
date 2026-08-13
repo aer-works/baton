@@ -95,6 +95,12 @@
       "behaviour": "The room stopped machine turns after repeated turns that committed nothing, and says so in the transcript with the reason and the wake control. A message to a dormant room is answered with this state — waking is your explicit action, never a side effect of asking how it's going.",
       "provenance": "#778 turn-throttle addendum, ratified 2026-08-04 on #495",
       "coverage": { "pending": "#778 turn host — engine half shipped (RoomTurnDecider); surface unbuilt" }
+    },
+    "outOfPlan": {
+      "name": "Out of plan",
+      "behaviour": "Displays quota/subscription exhaustion with its reset time when known (\"Out of plan — resumes {local time}\") or an explicit unknown (\"Out of plan — reset unknown\"), distinct from failure.",
+      "provenance": "0026 decision record, 2026-07-25 (#1123 rooms, #1185 chat)",
+      "coverage": { "renderedBy": ["src/Aer.Ui.Core/HomeViewModel.cs", "src/Aer.Ui.Core/RoomStepViewModels.cs", "src/Aer.Ui.Core/ChatViewModel.cs"] }
     }
   }
 }
