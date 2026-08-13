@@ -585,6 +585,25 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _addTurnMessages(List<_ChatMessage> messages, SessionTurn turn) {
     messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
+
+    if (turn.isDormancyAnswer) {
+      // #1179: the room was dormant when this message arrived -- the PRODUCT answered with the
+      // dormancy state instead of dispatching a worker turn, so neither assistantResponse nor
+      // errorMessage below is ever populated on this turn. Gated on the same current-dormancy rule
+      // as the room's dormancy-entered bubble (`_isDormant`), not the latest-entered watermark that
+      // rule uses across transitions -- see changes.md.
+      messages.add(
+        _ChatMessage(
+          senderLabel: 'System',
+          text: "Still dormant — waking is yours to choose.",
+          isFromUser: false,
+          isDormancy: true,
+          onWake: _isDormant ? _clearDormancy : null,
+        ),
+      );
+      return;
+    }
+
     if (turn.assistantResponse != null) {
       messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
     }

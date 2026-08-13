@@ -209,4 +209,41 @@ void main() {
       expect(turn.errorMessage, isNull);
     });
   });
+
+  group('SessionTurn.fromJson (isDormancyAnswer parse, #1179)', () {
+    test('parses camelCase isDormancyAnswer true', () {
+      final turn = SessionTurn.fromJson({
+        'turnIndex': 2,
+        'vendor': 'System',
+        'humanMessage': "how's it going?",
+        'assistantResponse': null,
+        'executedAt': '2026-08-13T08:00:00Z',
+        'isDormancyAnswer': true,
+      });
+      expect(turn.isDormancyAnswer, isTrue);
+    });
+
+    test('parses PascalCase IsDormancyAnswer true', () {
+      final turn = SessionTurn.fromJson({
+        'TurnIndex': 2,
+        'Vendor': 'System',
+        'HumanMessage': "how's it going?",
+        'AssistantResponse': null,
+        'ExecutedAt': '2026-08-13T08:00:00Z',
+        'IsDormancyAnswer': true,
+      });
+      expect(turn.isDormancyAnswer, isTrue);
+    });
+
+    test('parses absent isDormancyAnswer as false', () {
+      final turn = SessionTurn.fromJson({
+        'turnIndex': 1,
+        'vendor': 'claude',
+        'humanMessage': 'Hello',
+        'assistantResponse': 'Hi',
+        'executedAt': '2026-08-13T08:00:00Z',
+      });
+      expect(turn.isDormancyAnswer, isFalse);
+    });
+  });
 }
