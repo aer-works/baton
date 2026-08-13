@@ -306,6 +306,8 @@ Dormant | The room stopped machine turns after repeated turns that committed not
 
 Out of plan | Displays quota/subscription exhaustion with its reset time when known ("Out of plan — resumes {local time}") or an explicit unknown ("Out of plan — reset unknown"), distinct from failure. *(0026 decision record, 2026-07-25 (#1123 rooms, #1185 chat))* |
 
+Unexpected app error | The app stays up and says what went wrong in the failure text already on screen — never a dialog, never a silent disappearance, and never a window that vanishes mid-task. The detail is kept on disk so the failure is still there to read afterwards. *(#1176, surfaced by #1175's second reader; decided 2026-08-13)* |
+
 <!-- /generated: interaction-states -->
 
 Two of these are the defects from the last manual run , promoted from bugs to rules: cancelled reading as finished, and a room that existed but appeared nowhere. Writing them here is what stops them being rediscovered.

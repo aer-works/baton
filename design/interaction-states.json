@@ -101,6 +101,12 @@
       "behaviour": "Displays quota/subscription exhaustion with its reset time when known (\"Out of plan — resumes {local time}\") or an explicit unknown (\"Out of plan — reset unknown\"), distinct from failure.",
       "provenance": "0026 decision record, 2026-07-25 (#1123 rooms, #1185 chat)",
       "coverage": { "renderedBy": ["src/Aer.Ui.Core/HomeViewModel.cs", "src/Aer.Ui.Core/RoomStepViewModels.cs", "src/Aer.Ui.Core/ChatViewModel.cs"] }
+    },
+    "unexpectedAppError": {
+      "name": "Unexpected app error",
+      "behaviour": "The app stays up and says what went wrong in the failure text already on screen — never a dialog, never a silent disappearance, and never a window that vanishes mid-task. The detail is kept on disk so the failure is still there to read afterwards.",
+      "provenance": "#1176, surfaced by #1175's second reader; decided 2026-08-13",
+      "coverage": { "renderedBy": ["src/Aer.Ui/App.axaml.cs", "src/Aer.Mobile/lib/main.dart"] }
     }
   }
 }
