@@ -346,6 +346,25 @@ public sealed partial class ChatViewModel : ObservableObject
     private void AddTurnMessages(SessionTurn turn)
     {
         Messages.Add(new ChatMessageViewModel("You", turn.HumanMessage, turn.ExecutedAt, IsFromUser: true));
+
+        if (turn.IsDormancyAnswer)
+        {
+            // #1179: the room was dormant when this message arrived -- the PRODUCT answered with the
+            // dormancy state instead of dispatching a worker turn, so neither AssistantResponse nor
+            // ErrorMessage below is ever populated on this turn. Wake gates on _isDormant alone here
+            // (not #1178's per-transition "latest entered" rule -- see changes.md for why) rather than
+            // whether this is the newest dormancy-shaped entry in the transcript: every dormancy-answer
+            // turn while the room is still dormant is an equally valid place to offer the same Wake.
+            Messages.Add(new ChatMessageViewModel(
+                "System",
+                "Still dormant — waking is yours to choose.",
+                turn.ExecutedAt,
+                IsFromUser: false,
+                IsDormancy: true,
+                Wake: _isDormant ? _wakeAction : null));
+            return;
+        }
+
         if (turn.AssistantResponse is { } response)
         {
             Messages.Add(new ChatMessageViewModel(turn.Vendor, response, turn.ExecutedAt, IsFromUser: false));
