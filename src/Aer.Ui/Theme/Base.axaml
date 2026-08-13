@@ -168,12 +168,12 @@
     <Setter Property="BoxShadow" Value="{DynamicResource Elevation.Raised}" />
   </Style>
 
-  <!-- The attention card: Status.NeedsYou is the loudest thing in the system (ux-principles §4) —
+  <!-- The attention card: Status.NeedsInput is the loudest thing in the system (ux-principles §4) —
        Elevation.Overlay gives it more lift than an ordinary card, on top of its border/fill. -->
   <Style Selector="Border.card.needs-you">
-    <Setter Property="BorderBrush" Value="{DynamicResource Status.NeedsYou}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource Status.NeedsInput}" />
     <Setter Property="BorderThickness" Value="1.5" />
-    <Setter Property="Background" Value="{DynamicResource Status.NeedsYouBg}" />
+    <Setter Property="Background" Value="{DynamicResource Status.NeedsInputBg}" />
     <Setter Property="BoxShadow" Value="{DynamicResource Elevation.Overlay}" />
   </Style>
 

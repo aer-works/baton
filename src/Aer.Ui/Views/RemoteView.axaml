@@ -36,7 +36,7 @@
            pairing is routed over the tailnet, so the plain-LAN listener stays reachable by anyone
            on the network the whole time remote is enabled. Previously gated on
            !IsPairingOverTailnet, which hid this warning exactly when a live QR was being offered. -->
-      <Border Classes="card" BorderBrush="{DynamicResource Status.NeedsYou}"
+      <Border Classes="card" BorderBrush="{DynamicResource Status.NeedsInput}"
               IsVisible="{Binding Remote.ShowLanEncryptionWarning}">
         <TextBlock Classes="secondary" TextWrapping="Wrap"
                     Text="While remote access is on, anyone on this network can reach the Baton daemon — traffic isn't encrypted yet (that's planned for a later phase). Turn it off when you're done pairing." />
@@ -106,7 +106,7 @@
                      Text="{Binding Remote.TailscaleAuthKey}" PlaceholderText="tskey-auth-..." />
             <Button x:Name="SaveTailscaleAuthKeyButton" IsEnabled="{Binding !Remote.IsBusy}" Content="Save" />
           </StackPanel>
-          <TextBlock Classes="caption" Foreground="{DynamicResource Status.NeedsYou}" TextWrapping="Wrap"
+          <TextBlock Classes="caption" Foreground="{DynamicResource Status.NeedsInput}" TextWrapping="Wrap"
                      IsVisible="{Binding Remote.NeedsTailscaleAuthKey}"
                      Text="No key saved yet — scanning this QR will fail on a phone with no prior Tailscale sign-in." />
         </StackPanel>

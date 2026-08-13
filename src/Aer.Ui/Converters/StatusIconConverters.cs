@@ -55,10 +55,10 @@ internal static class StatusIconMap
 
     public static string ColorKeyFor(StepStatus status) => status switch
     {
-        StepStatus.Running => "Status.Running",
-        StepStatus.Succeeded => "Status.Succeeded",
+        StepStatus.Running => "Status.Working",
+        StepStatus.Succeeded => "Status.Finished",
         StepStatus.Failed or StepStatus.Rejected => "Status.Failed",
-        StepStatus.Paused => "Status.NeedsYou",
+        StepStatus.Paused => "Status.NeedsInput",
         StepStatus.Cancelled => "Status.Idle",
         StepStatus.Pending => "Status.Idle",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped step status."), // #616
@@ -85,17 +85,18 @@ internal static class StatusIconMap
 
     public static string ColorKeyFor(RoomCardStatus status) => status switch
     {
-        RoomCardStatus.Running => "Status.Running",
-        RoomCardStatus.NeedsYou => "Status.NeedsYou",
-        RoomCardStatus.Finished => "Status.Succeeded",
+        RoomCardStatus.Running => "Status.Working",
+        RoomCardStatus.NeedsYou => "Status.NeedsInput",
+        RoomCardStatus.Finished => "Status.Finished",
         RoomCardStatus.Failed => "Status.Failed",
         // Cancelled shares the muted brush rather than earning a hue: it is a quiet outcome, and
         // colouring it like a failure is exactly the alarm #461 exists to remove.
         RoomCardStatus.Cancelled => "Status.Idle",
-        RoomCardStatus.Unavailable => "Status.Idle",
+        // Honest name for the unavailable state (#1140).
+        RoomCardStatus.Unavailable => "Status.Unavailable",
         // 0026 §5/0018 band 4: a quiet wait, muted like Cancelled — the status text carries the
-        // reset instant (or "reset unknown"), so the color never has to shout.
-        RoomCardStatus.OutOfPlan => "Status.Idle",
+        // reset instant (or "reset unknown"), so the color never has to shout (register now names it #1140).
+        RoomCardStatus.OutOfPlan => "Status.OutOfPlan",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped card status."), // #616
     };
 }

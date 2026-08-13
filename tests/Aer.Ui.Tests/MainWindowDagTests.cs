@@ -95,7 +95,7 @@ public class MainWindowDagTests
 
             // M19 Phase 5 (#190): status renders from the token system, not named framework colors.
             Assert.Equal(
-                window.FindResource("Status.SucceededBg"),
+                window.FindResource("Status.FinishedBg"),
                 nodes.Single(node => LabelOf(node).Text!.StartsWith("architect")).Background);
 
             // A known status also carries a status icon (post-M19 design review, #206/#209) — the

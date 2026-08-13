@@ -282,18 +282,18 @@ public static class TokenGenerator
         ("Color.Border", "surface", "rule"),
         ("Color.Text", "text", "primary"),
         ("Color.TextSecondary", "text", "secondary"),
-        // #1135: the pre-#334 status vocabulary the desktop views still bind by name. Each alias
+        // #1135: the status vocabulary the desktop views bind by name. Each brush alias
         // takes the SAME token value as its Status<X>Color twin above, so the two spellings cannot
         // drift — the hand-authored Tokens.axaml copies of these had already diverged (Stale was
         // purple where the token file's own prose says quiet states share one muted colour). The
-        // aliases retire when the consumers migrate to the generated vocabulary; the Status.*Bg
-        // tints have no token yet and stay in Tokens.axaml.
-        ("Status.Running", "status", "working"),
-        ("Status.NeedsYou", "status", "needsInput"),
-        ("Status.Succeeded", "status", "finished"),
+        // Status.*Bg tints have no token yet and stay in Tokens.axaml.
+        ("Status.Working", "status", "working"),
+        ("Status.NeedsInput", "status", "needsInput"),
+        ("Status.Finished", "status", "finished"),
         ("Status.Failed", "status", "failed"),
         ("Status.Idle", "status", "idle"),
-        ("Status.Stale", "status", "unavailable"),
+        ("Status.Unavailable", "status", "unavailable"),
+        ("Status.OutOfPlan", "status", "outOfPlan"),
     };
 
     /// <summary>

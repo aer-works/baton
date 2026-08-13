@@ -37,7 +37,7 @@
       <Border Classes="card" IsVisible="{Binding HasWaitingOnLockBanner}" Background="{DynamicResource Color.SurfaceSubtle}" Margin="0,4,0,4">
         <StackPanel Spacing="8" DataContext="{Binding WaitingOnLockBanner}" x:DataType="vm:WaitingOnLockBannerViewModel">
           <StackPanel Orientation="Horizontal" Spacing="8">
-            <Path Data="{StaticResource Icon.Dot}" Fill="{DynamicResource Status.NeedsYou}"
+            <Path Data="{StaticResource Icon.Dot}" Fill="{DynamicResource Status.NeedsInput}"
                   Width="13" Height="13" Stretch="Uniform" VerticalAlignment="Center" />
             <TextBlock Classes="heading" Text="{Binding Title}" VerticalAlignment="Center" />
           </StackPanel>
@@ -87,7 +87,7 @@
             <Border Classes="card needs-you" Margin="0,0,0,8">
               <StackPanel Spacing="{DynamicResource Space.3}">
                 <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
-                  <Path Data="{StaticResource Icon.Dot}" Fill="{DynamicResource Status.NeedsYou}"
+                  <Path Data="{StaticResource Icon.Dot}" Fill="{DynamicResource Status.NeedsInput}"
                         Width="13" Height="13" Stretch="Uniform" VerticalAlignment="Center" />
                   <TextBlock Classes="heading" Text="{Binding StepId, StringFormat='Waiting for your review — {0}'}" />
                 </StackPanel>
