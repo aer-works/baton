@@ -264,9 +264,9 @@ void main() {
       expect(client.sentMessages.contains('Queued message 1'), isTrue);
     });
 
-    // A contract pin, not a red-provable discriminator: the drain's only automatic trigger
-    // requires _isSending at completion time, so this holds structurally — the pin keeps a future
-    // refactor from adding a post-timeout auto-drain without noticing this test.
+    // A contract pin, not a red-provable discriminator — the hold is structural (why: the send
+    // timeout Timer's comment in chat_screen.dart). The pin keeps a future refactor from adding a
+    // post-timeout auto-drain without noticing this test.
     testWidgets(
         '7. After the 5-minute timeout the backlog holds: a late completion push does not auto-dispatch it, the next manual send does (#1131 review)',
         (tester) async {
