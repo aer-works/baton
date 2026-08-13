@@ -522,6 +522,47 @@ public class ChatViewModelTests
     }
 
     [Fact]
+    public void LoadFromMetadata_DormancyAnswerTurn_RendersYouAndDormancyCard_GatedOnIsDormant()
+    {
+        // #1179: a send into a dormant room is answered by the PRODUCT (IsDormancyAnswer turn), not
+        // dispatched -- rendered as You + a dormancy card, same wording/shape as #1178's transition
+        // card, never AssistantResponse/ErrorMessage handling.
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "System", "how's it going?", null, DateTimeOffset.UtcNow, false, false, IsDormancyAnswer: true));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.Equal(2, viewModel.Messages.Count);
+        Assert.True(viewModel.Messages[0].IsFromUser);
+        Assert.Equal("how's it going?", viewModel.Messages[0].Text);
+
+        var card = viewModel.Messages[1];
+        Assert.False(card.IsFromUser);
+        Assert.True(card.IsDormancy);
+        Assert.False(card.IsFailure);
+        Assert.Equal("System", card.SenderLabel);
+        Assert.Equal("Still dormant — waking is yours to choose.", card.Text);
+
+        // Wake absent while _isDormant is false (the default before any SurfacePendingPermission call).
+        Assert.Null(card.WakeCommand);
+
+        bool wakeCalled = false;
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, [], isDormant: true, wake: () => wakeCalled = true);
+
+        var cardWhileDormant = viewModel.Messages[1];
+        Assert.NotNull(cardWhileDormant.WakeCommand);
+        cardWhileDormant.WakeCommand!.Execute(null);
+        Assert.True(wakeCalled);
+
+        // Polarity: once the room is no longer reported dormant, Wake disappears from the same card.
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, [], isDormant: false, wake: null);
+        Assert.Null(viewModel.Messages[1].WakeCommand);
+    }
+
+    [Fact]
     public void SurfacePendingPermission_RendersDormancyTransitions_InTimestampOrder_AndWakeVisibilityPolarity()
     {
         var viewModel = new ChatViewModel();

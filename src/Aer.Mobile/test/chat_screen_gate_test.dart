@@ -482,5 +482,44 @@ void main() {
       await tester.pumpAndSettle();
       expect(client.clearDormancyCallCount, 1);
     });
+
+    testWidgets('a dormancy-answer turn renders You + dormancy card with the exact wording, Wake gated on current dormancy (#1179)', (tester) async {
+      final turns = [
+        SessionTurn(
+          turnIndex: 2,
+          vendor: 'System',
+          humanMessage: "how's it going?",
+          assistantResponse: null,
+          executedAt: DateTime.utc(2026, 8, 13, 9, 0),
+          isDormancyAnswer: true,
+        ),
+      ];
+
+      final client = _FakeDaemonClient();
+      await pumpChatScreen(tester, client: client, turns: turns);
+
+      expect(find.text("how's it going?"), findsOneWidget);
+      expect(find.text('Still dormant — waking is yours to choose.'), findsOneWidget);
+      // Control: the room is not currently dormant (no dormancy transition pushed yet), so Wake is
+      // absent -- gated on _isDormant alone for this card, same as the daemon-answered turn's rule.
+      expect(find.text('Wake'), findsNothing);
+
+      client.push(projection(withDormancy: [
+        DormancyTransition(
+          isEntered: true,
+          consecutiveFailures: 3,
+          detail: 'no progress made',
+          timestamp: DateTime.utc(2026, 8, 13, 8, 55),
+        ),
+      ]));
+      await tester.pumpAndSettle();
+
+      // Now the room is currently dormant: our card's Wake is present (alongside the entered-
+      // transition's own card, which legitimately offers Wake too while the room stays dormant).
+      expect(find.text('Wake'), findsWidgets);
+      await tester.tap(find.text('Wake').last);
+      await tester.pumpAndSettle();
+      expect(client.clearDormancyCallCount, 1);
+    });
   });
 }

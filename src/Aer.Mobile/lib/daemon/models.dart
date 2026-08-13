@@ -290,6 +290,10 @@ class SessionTurn {
   final DateTime executedAt;
   final String? errorMessage;
 
+  /// #1179: the dormancy-answer marker -- see `SessionTurn.IsDormancyAnswer`'s doc comment in
+  /// Aer.Adapters/InteractiveSessions.cs for what it means and why [assistantResponse] stays null.
+  final bool isDormancyAnswer;
+
   SessionTurn({
     required this.turnIndex,
     required this.vendor,
@@ -297,6 +301,7 @@ class SessionTurn {
     required this.assistantResponse,
     required this.executedAt,
     this.errorMessage,
+    this.isDormancyAnswer = false,
   });
 
   factory SessionTurn.fromJson(Map<String, dynamic> json) {
@@ -308,6 +313,7 @@ class SessionTurn {
       assistantResponse: j['assistantresponse']?.toString(),
       executedAt: DateTime.tryParse(j['executedat']?.toString() ?? '') ?? DateTime.now(),
       errorMessage: j['errormessage']?.toString(),
+      isDormancyAnswer: j['isdormancyanswer'] == true,
     );
   }
 }

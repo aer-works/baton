@@ -585,6 +585,23 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _addTurnMessages(List<_ChatMessage> messages, SessionTurn turn) {
     messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
+
+    if (turn.isDormancyAnswer) {
+      // #1179: mirrors ChatViewModel.AddTurnMessages' IsDormancyAnswer arm (Aer.Ui.Core/ChatViewModel.cs)
+      // -- see that comment for why AssistantResponse/errorMessage are never populated here and why
+      // onWake gates on `_isDormant` alone rather than the latest-entered watermark.
+      messages.add(
+        _ChatMessage(
+          senderLabel: 'System',
+          text: "Still dormant — waking is yours to choose.",
+          isFromUser: false,
+          isDormancy: true,
+          onWake: _isDormant ? _clearDormancy : null,
+        ),
+      );
+      return;
+    }
+
     if (turn.assistantResponse != null) {
       messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
     }
