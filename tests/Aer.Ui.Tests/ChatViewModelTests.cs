@@ -240,10 +240,9 @@ public class ChatViewModelTests
     }
 
     /// <summary>
-    /// #1167's second call site (its second reader's HIGH): a FRESH typed send during an open
-    /// cross-client gate must join the queue — it used to post straight past the gate because the
-    /// send guard predated the gate clause. And LastSendFailed must NOT reroute a typed retry into
-    /// the queue (the #1074 contract): both polarities pinned.
+    /// #1167's second call site (its second reader's HIGH) — the why lives on
+    /// <see cref="ChatViewModel.SendJoinsQueue"/>'s doc. Both polarities pinned: gate-open joins,
+    /// the post-failure typed retry stays direct.
     /// </summary>
     [Fact]
     public void SendJoinsQueue_for_an_open_gate_but_a_typed_retry_after_a_failure_posts_directly()
