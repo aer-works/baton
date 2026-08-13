@@ -57,6 +57,37 @@ public class GeneratedPaletteBrushTests
         Assert.NotEqual(lightBrush.Color, darkBrush.Color);
     }
 
+    public static IEnumerable<object[]> StatusAliases() => new[]
+    {
+        new object[] { "Status.Running", "StatusWorkingColor" },
+        new object[] { "Status.NeedsYou", "StatusNeedsInputColor" },
+        new object[] { "Status.Succeeded", "StatusFinishedColor" },
+        new object[] { "Status.Failed", "StatusFailedColor" },
+        new object[] { "Status.Idle", "StatusIdleColor" },
+        new object[] { "Status.Stale", "StatusUnavailableColor" },
+    };
+
+    // Discrimination limit (#1135 review): the quiet-state tokens are deliberately same-valued
+    // (why: design/tokens.json's status $about), so for Status.Idle/Status.Stale this cannot tell
+    // "aliased from the right token" apart from "aliased from a same-valued sibling" — the
+    // generator's alias table stays the eyeball check there. The four loud keys each map a unique
+    // value, where this does discriminate.
+    [AvaloniaTheory]
+    [MemberData(nameof(StatusAliases))]
+    public void Status_brush_resolves_to_its_own_variants_colour(string brushKey, string colorKey)
+    {
+        var app = Application.Current!;
+
+        var lightColor = Resolve<Color>(app, colorKey, ThemeVariant.Light);
+        var darkColor = Resolve<Color>(app, colorKey, ThemeVariant.Dark);
+        var lightBrush = Resolve<ISolidColorBrush>(app, brushKey, ThemeVariant.Light);
+        var darkBrush = Resolve<ISolidColorBrush>(app, brushKey, ThemeVariant.Dark);
+
+        Assert.Equal(lightColor, lightBrush.Color);
+        Assert.Equal(darkColor, darkBrush.Color);
+        Assert.NotEqual(lightBrush.Color, darkBrush.Color);
+    }
+
     private static T Resolve<T>(Application app, object key, ThemeVariant variant)
     {
         Assert.True(app.TryGetResource(key, variant, out var value), $"{key} unresolved under {variant}");

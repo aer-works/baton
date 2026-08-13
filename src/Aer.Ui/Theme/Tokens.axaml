@@ -39,19 +39,10 @@
       <SolidColorBrush x:Key="Color.AccentSubtleBgPressedTransparent">#010A4D74</SolidColorBrush>
       <SolidColorBrush x:Key="Color.AccentSubtleBgHoverTransparent">#010C5F8F</SolidColorBrush>
 
-      <!-- Desaturated from the prior stock Tailwind primaries (#2563EB/#B45309/#15803D/#B91C1C/
-           #7C3AED) — those read as a generic component-library default, not a considered palette. -->
-      <SolidColorBrush x:Key="Status.Running">#4C6C99</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.NeedsYou">#A6741F</SolidColorBrush>
+      <!-- The Status.* FOREGROUND brushes moved to GeneratedTokens.axaml (#1135) — why lives on
+           TokenGenerator.SemanticBrushAliases. The Bg tints below are desktop-only, hand-authored
+           pending their own tokenization. -->
       <SolidColorBrush x:Key="Status.NeedsYouBg">#F1E7D2</SolidColorBrush>
-      <!-- #216: pushed further toward true/forest green, away from Color.Accent's blue-teal. -->
-      <SolidColorBrush x:Key="Status.Succeeded">#2F7A42</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.Failed">#A8433D</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.Idle">#6B7280</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.Stale">#7A6BA3</SolidColorBrush>
-
-      <!-- Status tints (M19 Phase 5, #190): the fill behind a status-colored border — the DAG
-           nodes and any surface that carries a status as area rather than line. -->
       <SolidColorBrush x:Key="Status.RunningBg">#E4E9F0</SolidColorBrush>
       <SolidColorBrush x:Key="Status.SucceededBg">#E2ECE4</SolidColorBrush>
       <SolidColorBrush x:Key="Status.FailedBg">#F1E3E1</SolidColorBrush>
@@ -81,14 +72,10 @@
       <SolidColorBrush x:Key="Color.AccentSubtleBgPressedTransparent">#012C86BA</SolidColorBrush>
       <SolidColorBrush x:Key="Color.AccentSubtleBgHoverTransparent">#0157B3E8</SolidColorBrush>
 
-      <SolidColorBrush x:Key="Status.Running">#6E93C2</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.NeedsYou">#C9A15C</SolidColorBrush>
+      <!-- The Status.* FOREGROUND brushes moved to GeneratedTokens.axaml (#1135) — see the Light
+           variant's note. The Bg tints below are desktop-only, hand-authored pending their own
+           tokenization. -->
       <SolidColorBrush x:Key="Status.NeedsYouBg">#332C1E</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.Succeeded">#4CAE68</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.Failed">#C97F79</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.Idle">#9CA3AF</SolidColorBrush>
-      <SolidColorBrush x:Key="Status.Stale">#9684C4</SolidColorBrush>
-
       <SolidColorBrush x:Key="Status.RunningBg">#1E2836</SolidColorBrush>
       <SolidColorBrush x:Key="Status.SucceededBg">#1E2A22</SolidColorBrush>
       <SolidColorBrush x:Key="Status.FailedBg">#302321</SolidColorBrush>

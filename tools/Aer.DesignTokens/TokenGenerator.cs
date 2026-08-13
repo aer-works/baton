@@ -268,7 +268,7 @@ public static class TokenGenerator
     /// The app's semantic colour vocabulary (the <c>Color.*</c> keys views bind by name) mapped to
     /// the <c>tokens.json</c> path (<c>group.name</c>) it resolves to. Only keys whose target has a
     /// generated twin belong here; a legacy key without one (Color.Surface, Color.BorderSubtle, the
-    /// accent hover/pressed/subtle family, the status ramp, vendor marks) stays defined in
+    /// accent hover/pressed/subtle family, the Status.*Bg tints, vendor marks) stays defined in
     /// Theme/Tokens.axaml until its value is added to design/tokens.json. Each becomes ONE brush per
     /// theme variant (see GenerateAvalonia) so a brush resolves to its own variant's colour.
     /// </summary>
@@ -282,6 +282,18 @@ public static class TokenGenerator
         ("Color.Border", "surface", "rule"),
         ("Color.Text", "text", "primary"),
         ("Color.TextSecondary", "text", "secondary"),
+        // #1135: the pre-#334 status vocabulary the desktop views still bind by name. Each alias
+        // takes the SAME token value as its Status<X>Color twin above, so the two spellings cannot
+        // drift — the hand-authored Tokens.axaml copies of these had already diverged (Stale was
+        // purple where the token file's own prose says quiet states share one muted colour). The
+        // aliases retire when the consumers migrate to the generated vocabulary; the Status.*Bg
+        // tints have no token yet and stay in Tokens.axaml.
+        ("Status.Running", "status", "working"),
+        ("Status.NeedsYou", "status", "needsInput"),
+        ("Status.Succeeded", "status", "finished"),
+        ("Status.Failed", "status", "failed"),
+        ("Status.Idle", "status", "idle"),
+        ("Status.Stale", "status", "unavailable"),
     };
 
     /// <summary>

@@ -40,6 +40,12 @@
       <SolidColorBrush x:Key="Color.Border">#D6DDDF</SolidColorBrush>
       <SolidColorBrush x:Key="Color.Text">#1B2226</SolidColorBrush>
       <SolidColorBrush x:Key="Color.TextSecondary">#5A676D</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Running">#1F6FA8</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.NeedsYou">#8F5E0E</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Succeeded">#2C6E4C</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Failed">#9E382C</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Idle">#88969C</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Stale">#88969C</SolidColorBrush>
     </ResourceDictionary>
     <ResourceDictionary x:Key="Dark">
       <Color x:Key="BrandAccentColor">#5FB3AD</Color>
@@ -71,6 +77,12 @@
       <SolidColorBrush x:Key="Color.Border">#2A3236</SolidColorBrush>
       <SolidColorBrush x:Key="Color.Text">#DCE4E6</SolidColorBrush>
       <SolidColorBrush x:Key="Color.TextSecondary">#94A3A8</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Running">#5AB0E0</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.NeedsYou">#DFA84E</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Succeeded">#6DBE94</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Failed">#E08274</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Idle">#6C7A80</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Stale">#6C7A80</SolidColorBrush>
     </ResourceDictionary>
   </ResourceDictionary.ThemeDictionaries>
 
