@@ -3060,10 +3060,21 @@ namespace Aer.Daemon
                 }
             }
 
+            // The push is wrapped like RevokePendingGatesForRoomAsync wraps its own (#1171 review):
+            // today's DaemonBroadcast never throws, but a future delegate that did would otherwise
+            // silently truncate reconciliation for every room enumerated after this one.
             if (journalMutated && broadcastStateAsync is not null
-                && await TryLoadProjectionAsync(roomDir).ConfigureAwait(false) is { } refreshed)
+                && await TryLoadProjectionAsync(roomDir, cancellationToken).ConfigureAwait(false) is { } refreshed)
             {
-                await broadcastStateAsync(refreshed, roomDir).ConfigureAwait(false);
+                try
+                {
+                    await broadcastStateAsync(refreshed, roomDir).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        $"reconcile: broadcast after healing '{roomDir}' failed: {ex.GetType().Name}: {ex.Message}");
+                }
             }
         }
 
@@ -3072,11 +3083,15 @@ namespace Aer.Daemon
         /// absent or malformed must not kill reconciliation of the rest — the broadcast is skipped
         /// loudly, the journal heal already happened.
         /// </summary>
-        private static async Task<RoomProjection?> TryLoadProjectionAsync(string roomDir)
+        private static async Task<RoomProjection?> TryLoadProjectionAsync(string roomDir, CancellationToken cancellationToken = default)
         {
             try
             {
-                return await RoomProjectionLoader.LoadAsync(roomDir).ConfigureAwait(false);
+                return await RoomProjectionLoader.LoadAsync(roomDir, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {

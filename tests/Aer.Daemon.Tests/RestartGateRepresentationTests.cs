@@ -140,4 +140,26 @@ public sealed class RestartGateRepresentationTests : IDisposable
         Assert.Null(pushed.Projection.PendingPermission);
         Assert.True(Assert.Single(pushed.Projection.PermissionAnswers).WasRevoked);
     }
+
+    [Fact]
+    public async Task Multiple_healed_asks_in_one_room_push_one_broadcast_not_one_per_heal()
+    {
+        // #1171 review's coverage note: "one push per mutated room" was pinned by reading the
+        // single-flag structure, not empirically. Two mutations of different kinds in one room —
+        // a re-raise and an expiry — must still push exactly once.
+        await PersistMinimalSnapshotAsync();
+        await WriteAskFileAsync("req-multi-live", DateTimeOffset.UtcNow, timeoutSeconds: 300);
+        await WriteAskFileAsync("req-multi-dead", DateTimeOffset.UtcNow.AddMinutes(-10), timeoutSeconds: 5);
+
+        var broadcasts = new List<(RoomProjection Projection, string RoomDir)>();
+        await DaemonHost.ReconcilePendingPermissionsAsync(
+            _roomsDir,
+            broadcastStateAsync: (proj, dir) => { broadcasts.Add((proj, dir)); return Task.CompletedTask; },
+            TestContext.Current.CancellationToken);
+
+        var pushed = Assert.Single(broadcasts);
+        // And the one push carries BOTH heals: the live gate re-presented, the dead one expired.
+        Assert.Equal("req-multi-live", pushed.Projection.PendingPermission?.PermissionRequestId);
+        Assert.Equal("req-multi-dead", Assert.Single(pushed.Projection.PermissionAnswers).PermissionRequestId);
+    }
 }
