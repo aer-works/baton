@@ -77,6 +77,23 @@ internal sealed class SessionTurnStubAdapter : IWorkerAdapter
     public const string StdoutOnlyAnswer = "stub answer that only ever reached stdout";
 
     /// <summary>
+    /// Sentinel (issue #1180) forcing a turn to fail (exit 1, like <see cref="FailureSentinel"/>)
+    /// while printing a stdout result envelope this adapter's own <see cref="TryClassifyFailure"/>
+    /// override recognizes as exhausted plan/quota -- the daemon seam's (Program.cs,
+    /// <c>ExecuteSessionTurnCoreAsync</c>) two-tail classifier consultation needs a deterministic,
+    /// CI-safe way to reach the <see cref="FailureClassification.ExhaustedUntil"/> branch without a
+    /// live vendor CLI, the same way <see cref="FailureSentinel"/> stands in for an ordinary vendor
+    /// rejection.
+    /// </summary>
+    public const string ExhaustionSentinel = "STUB_FORCE_EXHAUSTION";
+
+    /// <summary>The marker <see cref="TryClassifyFailure"/> looks for in the stdout tail to recognize <see cref="ExhaustionSentinel"/>'s payload.</summary>
+    private const string ExhaustionMarker = "STUB_EXHAUSTION_MARKER";
+
+    /// <summary>The fixed reset instant a classified <see cref="ExhaustionSentinel"/> turn reports -- known, so tests can assert on it exactly.</summary>
+    public static readonly DateTimeOffset ExhaustionResetInstant = new(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    /// <summary>
     /// The payload the no-output-file turn prints. Written once per test run rather than once per
     /// dispatch — the content is constant, and a fresh Guid-named file per dispatch left one small
     /// file behind in <c>%TEMP%</c> for every turn any test in the suite ran.
@@ -87,6 +104,35 @@ internal sealed class SessionTurnStubAdapter : IWorkerAdapter
         File.WriteAllText(path,
             "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\""
             + StdoutOnlyAnswer + "\"}");
+        return path;
+    });
+
+    /// <summary>
+    /// A script that prints a failed (<c>is_error: true</c>) result envelope carrying
+    /// <see cref="ExhaustionMarker"/> in its <c>result</c> text -- shaped like a real vendor's
+    /// refusal prose (#1128's "Resets in 1h39m10s" measured live on agy), which is what
+    /// <c>TryExtractVendorErrorMessage</c> (Program.cs) reads into the turn's raw
+    /// <c>ErrorMessage</c>, and what this adapter's own <see cref="TryClassifyFailure"/> override
+    /// then reclassifies as exhausted -- then exits 1, reaching Program.cs's failed-turn branch
+    /// exactly like <see cref="FailureSentinel"/> does.
+    /// <para>
+    /// A SCRIPT file, deliberately, not a payload file combined inline with <c>&amp;</c>/<c>;</c>
+    /// the way <see cref="NoOutputFileSentinel"/>'s single-command payload is read: cmd's <c>/c</c>
+    /// quote-stripping of a combined "print, then exit 1" command line is exactly the "unusually
+    /// finicky" quoting <see cref="NoOutputFileSentinel"/>'s own comment already warns about, and
+    /// this needs two effects (a stdout line, then a non-zero exit) rather than that sentinel's one.
+    /// A script file removes quoting from the problem entirely, the same fix that comment applied.
+    /// </para>
+    /// </summary>
+    private static readonly Lazy<string> ExhaustionScriptFile = new(() =>
+    {
+        var payload = "{\"type\":\"result\",\"is_error\":true,\"result\":\"" + ExhaustionMarker + " out of plan\"}";
+        var extension = OperatingSystem.IsWindows() ? "cmd" : "sh";
+        var path = Path.Combine(Path.GetTempPath(), $"aer-stub-exhaustion-{Environment.ProcessId}.{extension}");
+        var script = OperatingSystem.IsWindows()
+            ? $"@echo off{Environment.NewLine}echo {payload}{Environment.NewLine}exit /b 1{Environment.NewLine}"
+            : $"#!/bin/sh{Environment.NewLine}echo '{payload}'{Environment.NewLine}exit 1{Environment.NewLine}";
+        File.WriteAllText(path, script);
         return path;
     });
 
@@ -142,6 +188,16 @@ internal sealed class SessionTurnStubAdapter : IWorkerAdapter
                 : new CoreDispatchTarget("sh", ["-c", "exit 0"]);
         }
 
+        if (invocation.PromptTemplate.Contains(ExhaustionSentinel, StringComparison.Ordinal))
+        {
+            // See ExhaustionScriptFile's own remarks for why this runs a script rather than an
+            // inline combined command.
+            var script = ExhaustionScriptFile.Value;
+            return OperatingSystem.IsWindows()
+                ? new CoreDispatchTarget("cmd", ["/c", script])
+                : new CoreDispatchTarget("sh", [script]);
+        }
+
         if (invocation.PromptTemplate.Contains(AgySilentSuccessSentinel, StringComparison.Ordinal))
         {
             // Exits 0, writes nothing at all -- no output file, no log line. Reproduces a genuinely
@@ -158,5 +214,59 @@ internal sealed class SessionTurnStubAdapter : IWorkerAdapter
         return OperatingSystem.IsWindows()
             ? new CoreDispatchTarget("cmd", ["/c", $"echo stub-turn-response>%AER_OUTPUT_DIR%\\{outputName}"])
             : new CoreDispatchTarget("sh", ["-c", $"echo stub-turn-response > \"$AER_OUTPUT_DIR/{outputName}\""]);
+    }
+
+    /// <summary>
+    /// How many times <see cref="TryClassifyFailure(string?, string?, TimeProvider, out FailureClassification?, out DateTimeOffset?)"/>
+    /// has seen <see cref="ExhaustionMarker"/> for THIS instance -- see that method's remarks for why
+    /// this counts calls at all. Instance-scoped, not static: <c>SessionTurnBranchingTests</c>
+    /// constructs a fresh <see cref="SessionTurnStubAdapter"/> per test (its <c>InitializeAsync</c>),
+    /// so this never leaks between tests.
+    /// </summary>
+    private int _exhaustionClassifyCalls;
+
+    /// <summary>
+    /// The two-tail overload BOTH Program.cs's <c>ExecuteSessionTurnCoreAsync</c> (#1180's daemon
+    /// seam) and <c>Aer.Flow.Outcomes.OutcomeClassifier</c> (the already-shipped dispatch path,
+    /// #1115/#1119/#1128) consult -- the SAME <see cref="IWorkerAdapter"/> instance is wired as
+    /// BOTH the daemon's per-vendor adapter AND, via <c>WorkerBindingResolver</c>, the flow pump's
+    /// own <c>WorkerBinding.Process.FailureClassifier</c>, since a chat turn dispatches through the
+    /// identical <c>MutationInterface</c> pump every workflow step does.
+    /// <para>
+    /// <b>Why this returns false on the FIRST call and only classifies on the SECOND:</b> measured,
+    /// not assumed -- returning <see cref="FailureClassification.ExhaustedUntil"/> unconditionally
+    /// here made <c>RetryEngine.MayRetry</c> bypass the chat step's <c>RetryPolicy(1)</c> entirely
+    /// (by 0026 §1's own design: an exhausted quota must never burn retry budget), so the flow pump
+    /// auto-parks and re-dispatches this same failing stub forever -- with a FIXED
+    /// <see cref="ExhaustionResetInstant"/>, every re-check after the first wait sees a
+    /// past deadline and spins with no further wait at all. <c>session.RunAsync</c> never returns,
+    /// and #1180's daemon-seam code (which only runs AFTER it returns) is never reached. That
+    /// engine-level auto-retry behavior is real, already shipped, and explicitly out of scope here
+    /// (see #1180's SCOPE BOUNDARIES) -- it already has its own coverage on the dispatch path, and
+    /// this stub does not need to re-exercise it. Returning false on the first (flow-level) call
+    /// instead lets the chat step fail terminally after its one allowed attempt, exactly like
+    /// <see cref="FailureSentinel"/> does today -- <c>session.RunAsync</c> returns promptly, and
+    /// ONLY THEN does the daemon seam's own (second) consultation classify it as exhausted, which is
+    /// the one thing this sentinel exists to test.
+    /// </para>
+    /// </summary>
+    public bool TryClassifyFailure(
+        string? stderrTail,
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        if (stdoutTail?.Contains(ExhaustionMarker, StringComparison.Ordinal) == true
+            && Interlocked.Increment(ref _exhaustionClassifyCalls) >= 2)
+        {
+            classification = FailureClassification.ExhaustedUntil;
+            retryNotBefore = ExhaustionResetInstant;
+            return true;
+        }
+
+        classification = null;
+        retryNotBefore = null;
+        return false;
     }
 }

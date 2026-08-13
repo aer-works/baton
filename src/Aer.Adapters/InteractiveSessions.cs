@@ -32,7 +32,20 @@ public sealed record SessionTurn(
     // no vendor process ran, which is why AssistantResponse stays null on this turn. Trailing
     // optional, like ErrorMessage above, so metadata files written before this field existed still
     // load unchanged (defaults to false).
-    bool IsDormancyAnswer = false);
+    bool IsDormancyAnswer = false,
+    // 0026 §4/#1180: a failed turn the resolved adapter's IFailureClassifier keyed to
+    // FailureClassification.ExhaustedUntil -- a STATE with a reset time, not a failure. Renderers
+    // MUST key on IsExhausted FIRST, before ErrorMessage: an exhausted turn must never reach the
+    // failure-card arm, even though ErrorMessage stays populated (below) for exactly that turn.
+    // Trailing optional, same idiom as ErrorMessage/IsDormancyAnswer, so old metadata loads
+    // unchanged (defaults to false/null).
+    bool IsExhausted = false,
+    // The reset instant the vendor reported, frozen at classification time (0026 §2's no-wall-
+    // clock-on-replay rule). Null is an honest "reset unknown" (0026 §5), not "not exhausted" --
+    // that distinction is IsExhausted's job. ErrorMessage is deliberately left populated (the raw
+    // vendor text) even when IsExhausted is true: it still feeds Copy and the disclosure path, just
+    // never the fix-ask affordance an exhausted quota can't answer.
+    DateTimeOffset? ExhaustedUntil = null);
 
 public sealed record SessionMetadata(
     string SessionId,

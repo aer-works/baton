@@ -2564,6 +2564,27 @@ namespace Aer.Daemon
             var establishedThisTurn = assistantResponse != null || agyLogFreshThisTurn;
             var errorMessage = establishedThisTurn ? null : TryExtractVendorErrorMessage(rawStdoutCapture.ToString());
 
+            // 0026 §4: a failed turn is consulted against the resolved adapter's failure classifier
+            // BEFORE it is left as a generic error -- exhausted plan/quota is a STATE with a reset
+            // time, never a failure (#1180). Reuses the same classifiers the dispatch path already
+            // has (claude's typed `errorCode: "credits_required"` match, #1115; agy's result-envelope
+            // "Resets in" prose, #1128) rather than re-implementing either. The stderr tail is always
+            // null here -- unlike the dispatch path's CoreDispatchResult, this session seam never
+            // captures the failed process's stderr (aer-core's P/Invoke boundary doesn't surface it,
+            // see rawStdoutCapture's comment above) -- so only the stdout tail is offered, which is
+            // where both vendors' refusal text has been measured to land for this seam.
+            var isExhausted = false;
+            DateTimeOffset? exhaustedUntil = null;
+            if (!establishedThisTurn
+                && adapters.TryGetValue(targetAdapter, out var resolvedAdapter)
+                && resolvedAdapter.TryClassifyFailure(
+                    null, rawStdoutCapture.ToString(), TimeProvider.System, out var failureClassification, out var retryNotBefore)
+                && failureClassification == FailureClassification.ExhaustedUntil)
+            {
+                isExhausted = true;
+                exhaustedUntil = retryNotBefore;
+            }
+
             var newTurnIndex = metadata.TurnCount + 1;
             var turn = new SessionTurn(
                 TurnIndex: newTurnIndex,
@@ -2573,7 +2594,9 @@ namespace Aer.Daemon
                 ExecutedAt: DateTimeOffset.UtcNow,
                 NativeSessionResumed: resumeSession,
                 VendorHandoffSynthesized: handoff,
-                ErrorMessage: errorMessage);
+                ErrorMessage: errorMessage,
+                IsExhausted: isExhausted,
+                ExhaustedUntil: exhaustedUntil);
 
             var updatedTurns = new List<SessionTurn>(metadata.Turns) { turn };
             var updatedTurnCount = isCeilingReached ? 1 : newTurnIndex;
