@@ -18,6 +18,7 @@ public enum AerStatus
     Failed,
     Cancelled,
     Queued,
+    OutOfPlan,
     Unavailable,
 }
 
@@ -45,6 +46,7 @@ public static class AerStatusPresentation
         AerStatus.Failed => "Icon.Cross",
         AerStatus.Cancelled => "Icon.Dash",
         AerStatus.Queued => "Icon.Ellipsis",
+        AerStatus.OutOfPlan => "Icon.Ellipsis",
         AerStatus.Unavailable => "Icon.Slashed",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };
@@ -60,6 +62,7 @@ public static class AerStatusPresentation
         AerStatus.Failed => "Failed",
         AerStatus.Cancelled => "Cancelled",
         AerStatus.Queued => "Queued",
+        AerStatus.OutOfPlan => "Out of plan",
         AerStatus.Unavailable => "Unavailable",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };
@@ -80,6 +83,7 @@ public static class AerStatusPresentation
         AerStatus.Failed => "StatusFailedColor",
         AerStatus.Cancelled => "StatusCancelledColor",
         AerStatus.Queued => "StatusQueuedColor",
+        AerStatus.OutOfPlan => "StatusOutOfPlanColor",
         AerStatus.Unavailable => "StatusUnavailableColor",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };
@@ -100,6 +104,7 @@ public static class AerStatusPresentation
         AerStatus.Failed => false,
         AerStatus.Cancelled => false,
         AerStatus.Queued => true,
+        AerStatus.OutOfPlan => true,
         AerStatus.Unavailable => false,
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };

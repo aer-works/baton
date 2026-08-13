@@ -319,11 +319,10 @@ class RoomFleetItem {
   /// its presence is also how a row tells a session from a workflow without parsing typeLabel.
   final String? sessionId;
 
-  /// The canonical RoomCardStatus (J3, slice 2a) as a string — 'NeedsYou' / 'Running' / 'Finished' /
-  /// 'Failed' / 'Cancelled' / 'Unavailable' / 'OutOfPlan' (0026, #1116), or null for a never-run
-  /// room. Drives the waiting-on-you first sort; `statusText` already carries the human line
-  /// ("Waiting for your reply" vs "review", "Out of plan — resumes …"). Unrecognized values are
-  /// tolerated by design — every consumer is an equality check, never an exhaustive switch.
+  /// The status vocabulary is the wire form of `RoomCardStatus` (`src/Aer.Ui.Core/HomeViewModel.cs`),
+  /// or null for a never-run room. Drives the waiting-on-you first sort; `statusText` already carries
+  /// the human line ("Waiting for your reply" vs "review", "Out of plan — resumes …"). Unrecognized
+  /// values are tolerated by design — every consumer is an equality check, never an exhaustive switch.
   final String? status;
 
   RoomFleetItem({

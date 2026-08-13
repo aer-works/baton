@@ -46,6 +46,8 @@ class AerTokens {
   static const Color statusCancelledDark = Color(0xFF6C7A80);
   static const Color statusQueuedLight = Color(0xFF88969C);
   static const Color statusQueuedDark = Color(0xFF6C7A80);
+  static const Color statusOutOfPlanLight = Color(0xFF88969C);
+  static const Color statusOutOfPlanDark = Color(0xFF6C7A80);
   static const Color statusUnavailableLight = Color(0xFF88969C);
   static const Color statusUnavailableDark = Color(0xFF6C7A80);
 
@@ -92,6 +94,7 @@ enum AerStatus {
   failed,
   cancelled,
   queued,
+  outOfPlan,
   unavailable,
 }
 
@@ -113,6 +116,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.failed => 'cross',
         AerStatus.cancelled => 'dash',
         AerStatus.queued => 'ellipsis',
+        AerStatus.outOfPlan => 'ellipsis',
         AerStatus.unavailable => 'slashed',
       };
 
@@ -128,6 +132,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.failed => false,
         AerStatus.cancelled => false,
         AerStatus.queued => true,
+        AerStatus.outOfPlan => true,
         AerStatus.unavailable => false,
       };
 
@@ -140,6 +145,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.failed => 'Failed',
         AerStatus.cancelled => 'Cancelled',
         AerStatus.queued => 'Queued',
+        AerStatus.outOfPlan => 'Out of plan',
         AerStatus.unavailable => 'Unavailable',
       };
 
@@ -153,6 +159,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.failed => AerTokens.statusFailedDark,
         AerStatus.cancelled => AerTokens.statusCancelledDark,
         AerStatus.queued => AerTokens.statusQueuedDark,
+        AerStatus.outOfPlan => AerTokens.statusOutOfPlanDark,
         AerStatus.unavailable => AerTokens.statusUnavailableDark,
         }
       : switch (this) {
@@ -164,6 +171,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.failed => AerTokens.statusFailedLight,
         AerStatus.cancelled => AerTokens.statusCancelledLight,
         AerStatus.queued => AerTokens.statusQueuedLight,
+        AerStatus.outOfPlan => AerTokens.statusOutOfPlanLight,
         AerStatus.unavailable => AerTokens.statusUnavailableLight,
         };
 }
