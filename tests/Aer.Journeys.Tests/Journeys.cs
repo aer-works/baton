@@ -101,9 +101,9 @@ public static class Journeys
         new("J3",
         [
             new("desktop inbox / cards (Home)", Runner.DesktopHeadless, Coverage.Pending,
-                "Home already segregates waiting/running/finished and labels failed on the card; the remaining red edge (#355 summary counts a failed task as \"finished\") is a fast-follow view-mounted assertion."),
-            new("phone inbox — running work still reads \"nothing waiting\" (#337)", Runner.PhoneWidget, Coverage.Pending,
-                "InboxScreen builds its own DaemonClient from stored credentials, so it needs a client-injection seam before a widget test can drive it. Tracked with #337."),
+                "Home already segregates waiting/running/finished and labels failed on the card; the remaining red edge (tracked on umbrella #752, former #355) is a fast-follow view-mounted assertion."),
+            new("phone inbox — client-injection seam (#753, former #337)", Runner.PhoneWidget, Coverage.Pending,
+                "InboxScreen builds its own DaemonClient from stored credentials, so it needs a client-injection seam before a widget test can drive it (phone lands on switcher since PR #1046; tracked on umbrella #753, former #337)."),
         ], [337, 355, 334]),
 
         new("J4",
