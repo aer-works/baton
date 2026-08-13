@@ -67,6 +67,10 @@ public class GeneratedPaletteBrushTests
         new object[] { "Status.Stale", "StatusUnavailableColor" },
     };
 
+    // Discrimination limit (#1135 review): the quiet states share one muted colour by design, so
+    // for Status.Idle/Status.Stale this cannot tell "aliased from the right token" apart from
+    // "aliased from a same-valued sibling" — the generator's alias table stays the eyeball check
+    // there. The four loud keys each map a unique value, where this does discriminate.
     [AvaloniaTheory]
     [MemberData(nameof(StatusAliases))]
     public void Status_brush_resolves_to_its_own_variants_colour(string brushKey, string colorKey)
