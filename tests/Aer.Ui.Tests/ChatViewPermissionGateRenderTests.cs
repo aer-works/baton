@@ -4,6 +4,7 @@ using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+using Avalonia.Input;
 using Avalonia.LogicalTree;
 using Avalonia.Threading;
 
@@ -78,6 +79,59 @@ public class ChatViewPermissionGateRenderTests
 
         var answer = Assert.Single(answers);
         Assert.Equal("req-99", answer.Id);
+        Assert.Equal(PermissionDecisionKind.AllowOnce, answer.Kind);
+    }
+
+    /// <summary>
+    /// #1173's second reader named the gap: <c>PermissionGateKeystrokeTests</c> exercises the pure
+    /// <c>PermissionAnswerFor</c> decision with no window — a seam that cannot see routing by
+    /// construction (the #1060 "green tests, unwired feature" class). This raises a REAL KeyDown
+    /// on the live window with the gate mounted at its transcript position: a bare <c>y</c>
+    /// reaches the answer delegate, and the same <c>y</c> with the composer focused does not
+    /// (the typing guard).
+    /// </summary>
+    [AvaloniaFact]
+    public void A_bare_y_on_the_live_window_answers_AllowOnce_but_not_while_the_composer_is_focused()
+    {
+        var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+        var chat = window.ViewModel.Chat;
+
+        var answers = new List<(string Id, string Kind, string? Reason)>();
+        chat.SurfacePendingPermission(ShellAsk("req-key"), (id, kind, reason) =>
+        {
+            answers.Add((id, kind, reason));
+            return Task.CompletedTask;
+        });
+        Dispatcher.UIThread.RunJobs();
+
+        // Guard arm first: composer focused → y is typing, never an answer.
+        var composer = window.FindViewControl<TextBox>("ChatInputBox");
+        Assert.NotNull(composer);
+        composer!.Focusable = true;
+        composer.Focus();
+        Dispatcher.UIThread.RunJobs();
+        composer.RaiseEvent(new KeyEventArgs
+        {
+            RoutedEvent = InputElement.KeyDownEvent,
+            Key = Key.Y,
+            KeyModifiers = KeyModifiers.None,
+        });
+        Dispatcher.UIThread.RunJobs();
+        Assert.Empty(answers);
+
+        // Focus off the composer: the same bubbled keystroke now answers.
+        window.Focus();
+        Dispatcher.UIThread.RunJobs();
+        window.RaiseEvent(new KeyEventArgs
+        {
+            RoutedEvent = InputElement.KeyDownEvent,
+            Key = Key.Y,
+            KeyModifiers = KeyModifiers.None,
+        });
+        Dispatcher.UIThread.RunJobs();
+
+        var answer = Assert.Single(answers);
+        Assert.Equal("req-key", answer.Id);
         Assert.Equal(PermissionDecisionKind.AllowOnce, answer.Kind);
     }
 
