@@ -1388,7 +1388,19 @@ public partial class MainWindow : Window
             projection.PendingPermission,
             projection.PermissionAnswers,
             (permissionRequestId, decisionKind, reason) =>
-                AnswerPermissionFromGateAsync(roomDirectoryPath, permissionRequestId, decisionKind, reason));
+                AnswerPermissionFromGateAsync(roomDirectoryPath, permissionRequestId, decisionKind, reason),
+            projection.DormancyTransitions,
+            projection.IsDormant,
+            () => _ = WakeDormantRoomAsync(roomDirectoryPath));
+    }
+
+    private async Task WakeDormantRoomAsync(string roomDirectoryPath)
+    {
+        var success = await _session.ClearTurnHostDormancyAsync(roomDirectoryPath).ConfigureAwait(true);
+        if (success)
+        {
+            await LoadAsync(roomDirectoryPath).ConfigureAwait(true);
+        }
     }
 
     /// <summary>

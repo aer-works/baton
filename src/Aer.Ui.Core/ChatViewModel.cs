@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Linq;
 using Aer.Adapters;
+using Aer.Flow.Domain;
 using Aer.Flow.Projection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -15,9 +16,12 @@ public sealed record ChatMessageViewModel(
     bool IsFromUser,
     bool IsSystem = false,
     bool IsFailure = false,
-    Action? PrepareFixPrompt = null)
+    Action? PrepareFixPrompt = null,
+    bool IsDormancy = false,
+    Action? Wake = null)
 {
     public IRelayCommand? PrepareFixPromptCommand { get; } = PrepareFixPrompt != null ? new RelayCommand(PrepareFixPrompt) : null;
+    public IRelayCommand? WakeCommand { get; } = Wake != null ? new RelayCommand(Wake) : null;
 }
 
 /// <summary>
@@ -49,12 +53,16 @@ public sealed partial class ChatViewModel : ObservableObject
 {
     private SessionMetadata? _lastMetadata;
     private IReadOnlyList<PermissionAnswer> _permissionAnswers = [];
+    private IReadOnlyList<DormancyTransition> _dormancyTransitions = [];
+    private bool _isDormant = false;
+    private Action? _wakeAction = null;
 
     /// <summary>
-    /// Answers at or before this watermark are hidden from the transcript. Set by
+    /// Room-journal entries (permission answers, and since #1178 dormancy transitions) at or before
+    /// this watermark are hidden from the transcript. Set by
     /// <see cref="MarkTranscriptCleared"/> when /clear wipes the vendor turns: room.jsonl's
-    /// permission history survives the wipe, so without this every old answer would re-render as an
-    /// orphan bubble above an empty transcript. Derived from the answers' own timestamps rather than
+    /// history survives the wipe, so without this every old entry would re-render as an
+    /// orphan bubble above an empty transcript. Derived from the entries' own timestamps rather than
     /// the UI host's clock (the daemon stamped AnsweredAt; the two clocks can disagree). In-memory
     /// only — after an app restart the old answers reappear alongside the room's other durable
     /// history, which is the disclosed limitation (#1142 review) until clears are themselves room
@@ -169,16 +177,37 @@ public sealed partial class ChatViewModel : ObservableObject
     /// <see cref="LoadFromMetadata"/> on every load/refresh.
     /// </summary>
     public void SurfacePendingPermission(Aer.Flow.Projection.PendingPermission? pending, AnswerPermissionDelegate answer)
-        => SurfacePendingPermission(pending, null, answer);
+        => SurfacePendingPermission(pending, null, answer, null, false, null);
 
     public void SurfacePendingPermission(
         Aer.Flow.Projection.PendingPermission? pending,
         IReadOnlyList<PermissionAnswer>? permissionAnswers,
         AnswerPermissionDelegate answer)
+        => SurfacePendingPermission(pending, permissionAnswers, answer, null, false, null);
+
+    public void SurfacePendingPermission(
+        Aer.Flow.Projection.PendingPermission? pending,
+        IReadOnlyList<PermissionAnswer>? permissionAnswers,
+        AnswerPermissionDelegate answer,
+        IReadOnlyList<DormancyTransition>? dormancyTransitions,
+        bool isDormant = false,
+        Action? wake = null)
     {
-        if (permissionAnswers != null)
+        if (dormancyTransitions != null)
         {
-            _permissionAnswers = permissionAnswers;
+            _dormancyTransitions = dormancyTransitions;
+        }
+
+        _isDormant = isDormant;
+        _wakeAction = wake;
+
+        if (permissionAnswers != null || dormancyTransitions != null)
+        {
+            if (permissionAnswers != null)
+            {
+                _permissionAnswers = permissionAnswers;
+            }
+
             RebuildMessages();
         }
 
@@ -263,39 +292,39 @@ public sealed partial class ChatViewModel : ObservableObject
         }
 
         var turns = _lastMetadata.Turns;
-        var answers = _answersClearedThrough is { } clearedThrough
-            ? _permissionAnswers.Where(a => a.AnsweredAt > clearedThrough).ToList()
+        var answers = _answersClearedThrough is { } clearedThroughAnswers
+            ? _permissionAnswers.Where(a => a.AnsweredAt > clearedThroughAnswers).ToList()
             : _permissionAnswers;
+        var transitions = _answersClearedThrough is { } clearedThroughTransitions
+            ? _dormancyTransitions.Where(t => t.Timestamp > clearedThroughTransitions).ToList()
+            : _dormancyTransitions;
+
+        var latestEnteredTransition = _isDormant ? transitions.LastOrDefault(t => t.IsEntered) : null;
+
         int turnIdx = 0;
         int ansIdx = 0;
+        int transIdx = 0;
 
-        while (turnIdx < turns.Count || ansIdx < answers.Count)
+        while (turnIdx < turns.Count || ansIdx < answers.Count || transIdx < transitions.Count)
         {
-            if (turnIdx < turns.Count && ansIdx < answers.Count)
-            {
-                var turn = turns[turnIdx];
-                var answer = answers[ansIdx];
+            var turnTs = turnIdx < turns.Count ? turns[turnIdx].ExecutedAt : DateTimeOffset.MaxValue;
+            var ansTs = ansIdx < answers.Count ? answers[ansIdx].AnsweredAt : DateTimeOffset.MaxValue;
+            var transTs = transIdx < transitions.Count ? transitions[transIdx].Timestamp : DateTimeOffset.MaxValue;
 
-                if (turn.ExecutedAt <= answer.AnsweredAt)
-                {
-                    AddTurnMessages(turn);
-                    turnIdx++;
-                }
-                else
-                {
-                    AddAnswerMessage(answer);
-                    ansIdx++;
-                }
-            }
-            else if (turnIdx < turns.Count)
+            if (turnTs <= ansTs && turnTs <= transTs)
             {
                 AddTurnMessages(turns[turnIdx]);
                 turnIdx++;
             }
-            else
+            else if (ansTs <= transTs)
             {
                 AddAnswerMessage(answers[ansIdx]);
                 ansIdx++;
+            }
+            else
+            {
+                AddDormancyMessage(transitions[transIdx], isLatestEntered: _isDormant && transitions[transIdx] == latestEnteredTransition);
+                transIdx++;
             }
         }
 
@@ -339,6 +368,38 @@ public sealed partial class ChatViewModel : ObservableObject
     {
         var text = FormatPermissionAnswerWording(answer);
         Messages.Add(new ChatMessageViewModel("System", text, answer.AnsweredAt, IsFromUser: false, IsSystem: true));
+    }
+
+    private void AddDormancyMessage(DormancyTransition transition, bool isLatestEntered)
+    {
+        if (transition.IsEntered)
+        {
+            var text = $"Dormant — stopped after {transition.ConsecutiveFailures} machine turns without progress.";
+            if (!string.IsNullOrEmpty(transition.Detail))
+            {
+                text += $"\n{transition.Detail}";
+            }
+
+            Action? wake = isLatestEntered ? _wakeAction : null;
+            Messages.Add(new ChatMessageViewModel(
+                "System",
+                text,
+                transition.Timestamp,
+                IsFromUser: false,
+                IsSystem: false,
+                IsDormancy: true,
+                Wake: wake));
+        }
+        else
+        {
+            var text = $"Woken by {transition.ClearedBy}.";
+            Messages.Add(new ChatMessageViewModel(
+                "System",
+                text,
+                transition.Timestamp,
+                IsFromUser: false,
+                IsSystem: true));
+        }
     }
 
     public static string FormatPermissionAnswerWording(PermissionAnswer answer)
@@ -494,9 +555,20 @@ public sealed partial class ChatViewModel : ObservableObject
     /// </summary>
     public void MarkTranscriptCleared()
     {
-        if (_permissionAnswers.Count > 0)
+        var latestAnswer = _permissionAnswers.Count > 0 ? _permissionAnswers.Max(a => a.AnsweredAt) : (DateTimeOffset?)null;
+        var latestTransition = _dormancyTransitions.Count > 0 ? _dormancyTransitions.Max(t => t.Timestamp) : (DateTimeOffset?)null;
+
+        if (latestAnswer != null && latestTransition != null)
         {
-            _answersClearedThrough = _permissionAnswers.Max(a => a.AnsweredAt);
+            _answersClearedThrough = latestAnswer > latestTransition ? latestAnswer : latestTransition;
+        }
+        else if (latestAnswer != null)
+        {
+            _answersClearedThrough = latestAnswer;
+        }
+        else if (latestTransition != null)
+        {
+            _answersClearedThrough = latestTransition;
         }
     }
 
@@ -504,7 +576,10 @@ public sealed partial class ChatViewModel : ObservableObject
     {
         _lastMetadata = null;
         _permissionAnswers = [];
+        _dormancyTransitions = [];
         _answersClearedThrough = null;
+        _isDormant = false;
+        _wakeAction = null;
         SessionId = null;
         RoomDirectoryPath = null;
         CurrentAdapter = null;

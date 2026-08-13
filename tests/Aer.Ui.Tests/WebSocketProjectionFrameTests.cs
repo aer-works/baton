@@ -70,6 +70,25 @@ public class WebSocketProjectionFrameTests
         Assert.Empty(defaulted.PermissionAnswers);
     }
 
+    [Fact]
+    public void ToProjection_carries_the_dormancy_transitions_from_the_frame_into_the_projection()
+    {
+        var transitions = new List<Aer.Flow.Domain.DormancyTransition>
+        {
+            new(IsEntered: true, ConsecutiveFailures: 3, Detail: "no progress", ClearedBy: null, Timestamp: DateTimeOffset.UnixEpoch)
+        };
+
+        var frame = new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null, null, transitions);
+        var projection = RoomClient.ToProjection(frame);
+
+        Assert.Same(transitions, projection.DormancyTransitions);
+
+        var defaulted = RoomClient.ToProjection(
+            new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null));
+        Assert.NotNull(defaulted.DormancyTransitions);
+        Assert.Empty(defaulted.DormancyTransitions);
+    }
+
     // The record's PRIMARY constructor. A record also emits a copy constructor (one parameter), so the
     // longest-parameter ctor is the declared one.
     private static ParameterInfo[] Primary(Type type) =>

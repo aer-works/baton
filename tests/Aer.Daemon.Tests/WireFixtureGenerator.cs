@@ -148,7 +148,16 @@ public static class WireFixtureGenerator
                 new DateTimeOffset(2026, 8, 3, 14, 0, 0, TimeSpan.Zero), WasRevoked: true),
         };
 
-        return new RoomProjection(snapshot, state, history, lineage, PermissionAnswers: permissionAnswers);
+        // #1178: one entered and one cleared transition, so wire fixtures carry real DormancyTransition shapes.
+        var dormancyTransitions = new List<Aer.Flow.Domain.DormancyTransition>
+        {
+            new(IsEntered: true, ConsecutiveFailures: 3, Detail: "The last three turns tried to fix build", ClearedBy: null,
+                Timestamp: new DateTimeOffset(2026, 8, 3, 14, 30, 0, TimeSpan.Zero)),
+            new(IsEntered: false, ConsecutiveFailures: 0, Detail: null, ClearedBy: "operator",
+                Timestamp: new DateTimeOffset(2026, 8, 3, 15, 0, 0, TimeSpan.Zero)),
+        };
+
+        return new RoomProjection(snapshot, state, history, lineage, PermissionAnswers: permissionAnswers, DormancyTransitions: dormancyTransitions);
     }
 
     private static JsonSerializerOptions IndentedOptions(JsonSerializerOptions baseOptions) =>
