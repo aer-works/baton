@@ -117,7 +117,7 @@ public class AppUnhandledExceptionGuardTests
                 return;
             }
 
-            await Task.Delay(100);
+            await Task.Delay(100); // wait-ok: a poll interval between forced collections; the 60s deadline above is the ceiling.
         }
 
         Assert.Fail($"The unobserved fault never reached the durable sink at {logPath}.");
