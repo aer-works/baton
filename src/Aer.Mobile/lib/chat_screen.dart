@@ -22,6 +22,14 @@ class _ChatMessage {
   _ChatMessage({required this.senderLabel, required this.text, required this.isFromUser});
 }
 
+/// One queued composer entry (#1131) — deliberately a class with default identity equality, the
+/// Flutter stand-in for QueuedChatMessageViewModel: two same-text entries must stay two entries.
+class _QueuedMessage {
+  final String text;
+
+  _QueuedMessage(this.text);
+}
+
 /// The mobile chat/codebase-session screen (M24, issue #262) — the Flutter counterpart of
 /// Aer.Ui's dedicated Chat view. `Turns` (the actual message content) live outside RoomProjection
 /// entirely, in SessionMetadata, so this screen re-fetches GET /api/sessions/{sessionId} rather
@@ -71,6 +79,16 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _pendingUserMessage;
   int _turnsCountAtSendTime = 0;
   String _liveProgressText = '';
+
+  /// Client-local queue preventing concurrent turns per ChatViewModel.EnqueueMessage
+  /// (src/Aer.Ui.Core/ChatViewModel.cs:246-260). Entries are identity-carrying objects, not bare
+  /// strings, for TryPeekQueuedMessage's reason: the drain consumes its exact head, so a removal
+  /// racing the in-flight dispatch can never make two same-text entries collapse into one.
+  final List<_QueuedMessage> _queuedMessages = [];
+
+  /// Pauses queue draining after a failed send until the operator's next manual send or enqueue,
+  /// per ChatViewModel.EnqueueMessage / FailSend (src/Aer.Ui.Core/ChatViewModel.cs:246-304).
+  bool _drainPaused = false;
 
   bool _isLoadingCommands = false;
 
@@ -143,6 +161,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final metadata = await widget.client.getSession(widget.sessionId);
       if (!mounted) return;
+      bool turnCompleted = false;
       setState(() {
         _metadata = metadata;
         _isLoading = false;
@@ -153,9 +172,14 @@ class _ChatScreenState extends State<ChatScreen> {
           _liveProgressText = '';
           _pendingUserMessage = null;
           _sendTimeoutTimer?.cancel();
+          turnCompleted = true;
         }
       });
       _scrollToEnd();
+
+      if (turnCompleted && _queuedMessages.isNotEmpty && !_drainPaused) {
+        _drainQueue();
+      }
     } on DaemonException catch (e) {
       if (mounted) setState(() { _isLoading = false; _loadError = e.message; });
     }
@@ -229,20 +253,13 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _send() async {
-    final message = _inputController.text.trim();
-    final metadata = _metadata;
-    if (message.isEmpty || metadata == null || _isSending) return;
-
-    setState(() {
-      _turnsCountAtSendTime = metadata.turnCount;
-      _pendingUserMessage = message;
-      _liveProgressText = '';
-      _isSending = true;
-      _sendError = null;
-      _inputController.clear();
-    });
-    _scrollToEnd();
+  /// Sets the send state and starts the 5-minute client-side response timeout.
+  void _setupSendState(String message, int turnCount) {
+    _turnsCountAtSendTime = turnCount;
+    _pendingUserMessage = message;
+    _liveProgressText = '';
+    _isSending = true;
+    _sendError = null;
 
     // The daemon runs a turn fire-and-forget in the background and never reports failure back to
     // any client (Aer.Daemon.Program's /api/sessions/send handler only logs to Console.Error) — a
@@ -253,20 +270,88 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted && _isSending) {
         setState(() {
           _isSending = false;
-          _sendError = 'No response after 5 minutes — the room may still be working in the background.';
+          // The backlog deliberately holds here rather than auto-draining (#1131 review): the
+          // timeout is a client-side guess and the turn may still be running server-side, and the
+          // drain's only automatic trigger requires _isSending at completion time — so queued
+          // messages wait for the operator's next manual send, the same resume contract as a
+          // failed drained send. Say so, or a held queue reads as a hang.
+          _sendError = _queuedMessages.isEmpty
+              ? 'No response after 5 minutes — the room may still be working in the background.'
+              : 'No response after 5 minutes — the room may still be working in the background. Queued messages wait for your next send.';
         });
       }
     });
+  }
+
+  Future<void> _send() async {
+    final message = _inputController.text.trim();
+    final metadata = _metadata;
+    if (message.isEmpty || metadata == null) return;
+
+    if (_isSending || _queuedMessages.isNotEmpty) {
+      setState(() {
+        _queuedMessages.add(_QueuedMessage(message));
+        _inputController.clear();
+        _drainPaused = false;
+      });
+      if (!_isSending) {
+        _drainQueue();
+      }
+      return;
+    }
+
+    setState(() {
+      _inputController.clear();
+      _setupSendState(message, metadata.turnCount);
+    });
+    _scrollToEnd();
 
     try {
       await widget.client.sendSessionMessage(sessionId: widget.sessionId, message: message);
-    } on DaemonException catch (e) {
+    } catch (e) {
+      // Catch EVERY error, not just DaemonException — _answerPermission's comment above has the
+      // canonical why; a narrow catch here would strand _isSending true and jam the composer.
       _sendTimeoutTimer?.cancel();
       if (mounted) {
         setState(() {
           _isSending = false;
           _pendingUserMessage = null;
-          _sendError = e.message;
+          _sendError = e is DaemonException ? e.message : e.toString();
+        });
+      }
+    }
+  }
+
+  /// Peek-then-remove-on-success, removing by identity of the head entry per
+  /// ChatViewModel.TryPeekQueuedMessage (src/Aer.Ui.Core/ChatViewModel.cs:262-274).
+  Future<void> _drainQueue() async {
+    final metadata = _metadata;
+    if (_isSending || _queuedMessages.isEmpty || _drainPaused || metadata == null) return;
+
+    final head = _queuedMessages.first;
+    setState(() {
+      _setupSendState(head.text, metadata.turnCount);
+    });
+    _scrollToEnd();
+
+    try {
+      await widget.client.sendSessionMessage(sessionId: widget.sessionId, message: head.text);
+      if (mounted) {
+        setState(() {
+          _queuedMessages.remove(head);
+        });
+      }
+    } catch (e) {
+      // Catch EVERY error, not just DaemonException — _answerPermission's comment has the
+      // canonical why; a narrow catch here would strand _isSending true and jam both the
+      // composer's enqueue gate and this drain's own re-entry guard.
+      _sendTimeoutTimer?.cancel();
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+          _pendingUserMessage = null;
+          _drainPaused = true;
+          _sendError = e is DaemonException ? e.message : e.toString();
         });
       }
     }
@@ -486,6 +571,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
+          if (_queuedMessages.isNotEmpty) _buildQueuedStrip(context),
           SafeArea(
             top: false,
             child: Padding(
@@ -499,17 +585,61 @@ class _ChatScreenState extends State<ChatScreen> {
                       maxLines: 5,
                       textInputAction: TextInputAction.newline,
                       decoration: const InputDecoration(hintText: 'Message', border: OutlineInputBorder()),
-                      enabled: !_isSending,
                     ),
                   ),
                   const SizedBox(width: 8),
-                  _isSending
-                      ? const SizedBox(width: 48, height: 48, child: Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 2)))
-                      : IconButton.filled(icon: const Icon(Icons.send), onPressed: _send),
+                  IconButton.filled(icon: const Icon(Icons.send), onPressed: _send),
                 ],
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQueuedStrip(BuildContext context) {
+    final theme = Theme.of(context);
+    final textTheme = theme.textTheme;
+    final scheme = theme.colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      color: scheme.surfaceContainerHighest,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Queued — sends when the reply finishes.',
+            style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 4),
+          for (int i = 0; i < _queuedMessages.length; i++)
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _queuedMessages[i].text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: textTheme.bodySmall,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: 'Remove',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    setState(() {
+                      // By identity like the drain, never by captured index — one removal idiom.
+                      _queuedMessages.remove(_queuedMessages[i]);
+                    });
+                  },
+                ),
+              ],
+            ),
         ],
       ),
     );
