@@ -56,7 +56,7 @@ public class DormantRoomSendTests : IAsyncLifetime
             }
             catch
             {
-                await Task.Delay(100, TestContext.Current.CancellationToken);
+                await Task.Delay(100, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon /api/version readiness check
             }
         }
 
@@ -152,7 +152,7 @@ public class DormantRoomSendTests : IAsyncLifetime
         // The broadcast the dormant-answer branch fires -- proves both surfaces learn of the answer
         // without waiting on their own poll (same requirement a completed turn's own broadcast meets).
         var buffer = new byte[1024 * 64];
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // wait-ok: bounded wait for the send's WS broadcast, same shape as DaemonIntegrationTests' own broadcast tests
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, TestContext.Current.CancellationToken);
         var broadcastResult = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), linked.Token);
         var broadcastPayload = JsonDocument.Parse(System.Text.Encoding.UTF8.GetString(buffer, 0, broadcastResult.Count)).RootElement;
@@ -172,7 +172,7 @@ public class DormantRoomSendTests : IAsyncLifetime
         // ran. Since the dormant branch returns synchronously with no Task.Run at all, there is no
         // "hasn't happened yet" race to guard against -- but wait a beat anyway so this reads as a
         // decision, not a not-yet.
-        await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken);
+        await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken); // wait-ok: negative assertion control window, no async dispatch exists on this branch to race against
         Assert.Equal(resolveCountBeforeSend, Volatile.Read(ref _claudeAdapter.ResolveCount));
     }
 
