@@ -148,7 +148,7 @@
         <ItemsControl x:Name="ChatMessagesList" ItemsSource="{Binding Chat.Messages}">
           <ItemsControl.ItemTemplate>
             <DataTemplate x:DataType="vm:ChatMessageViewModel">
-              <Border Classes="card" Classes.you="{Binding IsFromUser}" Classes.system="{Binding IsSystem}" Classes.failure="{Binding IsFailure}" Classes.dormancy="{Binding IsDormancy}" Margin="0,0,0,8">
+              <Border Classes="card" Classes.you="{Binding IsFromUser}" Classes.system="{Binding IsSystem}" Classes.failure="{Binding IsFailure}" Classes.dormancy="{Binding IsDormancy}" Classes.outofplan="{Binding IsOutOfPlan}" Margin="0,0,0,8">
                 <StackPanel Spacing="{DynamicResource Space.1}">
                   <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.1}">
                     <TextBlock Text="⏾" Classes="caption who" IsVisible="{Binding IsDormancy}" />
@@ -157,6 +157,12 @@
                   <md:MarkdownPresenter Markdown="{Binding Text}" />
                   <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}" IsVisible="{Binding IsFailure}">
                     <Button Content="{Binding SenderLabel, StringFormat='Ask {0} to fix'}" Command="{Binding PrepareFixPromptCommand}" />
+                    <Button Content="Copy" Click="OnCopyFailureClick" />
+                  </StackPanel>
+                  <!-- 0026 §4/#1180: out of plan is a state with a reset time, not a failure, so
+                       this is Copy only, no fix-ask affordance (an offer to spend against the very
+                       quota that is out is the confusion 0026 exists to remove). -->
+                  <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}" IsVisible="{Binding IsOutOfPlan}">
                     <Button Content="Copy" Click="OnCopyFailureClick" />
                   </StackPanel>
                   <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}" IsVisible="{Binding IsDormancy}">

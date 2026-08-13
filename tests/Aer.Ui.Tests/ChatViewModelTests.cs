@@ -521,6 +521,97 @@ public class ChatViewModelTests
         Assert.False(viewModel.Messages[1].IsFailure);
     }
 
+    /// <summary>
+    /// 0026 §4/#1180 control arm: a plain ErrorMessage-only turn (IsExhausted false, the #1177
+    /// shape) still renders the failure card with its fix button unchanged -- proves this feature
+    /// did not perturb the pre-existing failure path.
+    /// </summary>
+    [Fact]
+    public void LoadFromMetadata_OrdinaryFailureTurn_StillRendersTheFailureCardWithFixButton()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Do work", null, DateTimeOffset.UtcNow, false, false,
+                ErrorMessage: "Process exited with code 1", IsExhausted: false));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        var failureMsg = viewModel.Messages[1];
+        Assert.True(failureMsg.IsFailure);
+        Assert.False(failureMsg.IsOutOfPlan);
+        Assert.NotNull(failureMsg.PrepareFixPromptCommand);
+    }
+
+    [Fact]
+    public void LoadFromMetadata_ExhaustedTurn_WithKnownResetInstant_RendersOutOfPlanCard_NoFixPrompt()
+    {
+        var resetInstant = new DateTimeOffset(2030, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "agy", "Keep going", null, DateTimeOffset.UtcNow, false, false,
+                ErrorMessage: "Individual quota reached. Resets in 1h39m10s.",
+                IsExhausted: true, ExhaustedUntil: resetInstant));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.Equal(2, viewModel.Messages.Count);
+        Assert.True(viewModel.Messages[0].IsFromUser);
+        Assert.Equal("Keep going", viewModel.Messages[0].Text);
+
+        var card = viewModel.Messages[1];
+        Assert.False(card.IsFromUser);
+        Assert.True(card.IsOutOfPlan);
+        Assert.False(card.IsFailure);
+        Assert.Equal("agy", card.SenderLabel);
+        Assert.Equal(PlainLanguage.ForExhaustion(resetInstant), card.Text);
+        Assert.Equal($"Out of plan — resumes {resetInstant.ToLocalTime():yyyy-MM-dd HH:mm}", card.Text);
+        // 0026 §4: an offer to spend against the very quota that is out is the confusion this
+        // record exists to remove -- so this NEVER carries PrepareFixPrompt.
+        Assert.Null(card.PrepareFixPromptCommand);
+        // Copy carries the raw vendor text, not the plain-language sentence rendered above.
+        Assert.Equal("Individual quota reached. Resets in 1h39m10s.", card.CopyText);
+    }
+
+    [Fact]
+    public void LoadFromMetadata_ExhaustedTurn_WithUnknownReset_RendersHonestUnknownWording()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Keep going", null, DateTimeOffset.UtcNow, false, false,
+                ErrorMessage: "credits_required", IsExhausted: true, ExhaustedUntil: null));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        var card = viewModel.Messages[1];
+        Assert.True(card.IsOutOfPlan);
+        Assert.Equal("Out of plan — reset unknown", card.Text);
+        Assert.Null(card.PrepareFixPromptCommand);
+    }
+
+    /// <summary>
+    /// A partial response can precede exhaustion (the vendor said something before refusing) --
+    /// mirrors <see cref="LoadFromMetadata_TurnWithBothPartialResponseAndErrorMessage_RendersResponseThenFailure"/>
+    /// for the out-of-plan arm.
+    /// </summary>
+    [Fact]
+    public void LoadFromMetadata_ExhaustedTurn_WithPartialResponse_RendersResponseThenOutOfPlanCard()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Keep going", "Partial output before refusal...", DateTimeOffset.UtcNow, false, false,
+                ErrorMessage: "credits_required", IsExhausted: true, ExhaustedUntil: null));
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.Equal(3, viewModel.Messages.Count);
+        Assert.False(viewModel.Messages[1].IsOutOfPlan);
+        Assert.Equal("Partial output before refusal...", viewModel.Messages[1].Text);
+
+        var card = viewModel.Messages[2];
+        Assert.True(card.IsOutOfPlan);
+        Assert.Equal("Out of plan — reset unknown", card.Text);
+    }
+
     [Fact]
     public void LoadFromMetadata_DormancyAnswerTurn_RendersYouAndDormancyCard_GatedOnIsDormant()
     {

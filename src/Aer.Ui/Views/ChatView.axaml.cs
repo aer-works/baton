@@ -63,7 +63,11 @@ public partial class ChatView : UserControl
             var topLevel = TopLevel.GetTopLevel(control);
             if (topLevel?.Clipboard is { } clipboard)
             {
-                await clipboard.SetTextAsync(message.Text);
+                // #1180: the out-of-plan card's Text is the plain-language 0026 sentence, but its
+                // Copy carries the vendor's raw words (ChatMessageViewModel.CopyText) instead --
+                // shared with the failure card's own Copy button, which never sets CopyText and so
+                // keeps copying Text unchanged.
+                await clipboard.SetTextAsync(message.CopyText ?? message.Text);
             }
         }
     }
