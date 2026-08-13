@@ -375,7 +375,7 @@ public sealed partial class ChatViewModel : ObservableObject
             return;
         }
 
-        // 0026 §4/#1180: an exhausted turn is a STATE with a reset time, never a failure -- checked
+        // #1180 (the SessionTurn.IsExhausted doc carries the 0026 framing): checked
         // BEFORE the ErrorMessage/IsFailure arm below so the failure card is unreachable for it, even
         // though ErrorMessage is still populated on this turn (it feeds the out-of-plan card's Copy).
         // A partial response can coexist with exhaustion (the vendor said something before refusing),

@@ -372,9 +372,8 @@ public class SessionTurnBranchingTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// 0026 §4/#1180: a failed turn the resolved adapter's <c>TryClassifyFailure</c> keys to
-    /// <see cref="FailureClassification.ExhaustedUntil"/> is recorded as a STATE with a reset time,
-    /// not the #1177 ordinary-failure shape -- <see cref="SessionTurnStubAdapter.ExhaustionSentinel"/>
+    /// #1180: pins the classification the <c>SessionTurn.IsExhausted</c> doc
+    /// (Aer.Adapters/InteractiveSessions.cs) specifies -- <see cref="SessionTurnStubAdapter.ExhaustionSentinel"/>
     /// forces exactly that classification with a known instant
     /// (<see cref="SessionTurnStubAdapter.ExhaustionResetInstant"/>), so this pins the daemon seam
     /// (Program.cs's <c>ExecuteSessionTurnCoreAsync</c>) without a live vendor CLI. The control for

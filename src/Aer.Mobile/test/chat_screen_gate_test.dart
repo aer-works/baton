@@ -395,9 +395,9 @@ void main() {
       expect(find.textContaining('to fix'), findsNothing);
     });
 
-    /// Mirrors [PlainLanguage.ForExhaustion]'s formatting (Aer.Ui.Core/RoomStepViewModels.cs) --
-    /// this file has no shared formatter with the C# side, so digits are hand-padded the same way
-    /// `_forExhaustion` (chat_screen.dart) does.
+    /// Independently re-derives the sentence `_forExhaustion` (chat_screen.dart) renders, so a
+    /// formatting drift between that helper and the C# canonical turns this test red instead of
+    /// both sides drifting together.
     String forExhaustion(DateTime utcInstant) {
       final local = utcInstant.toLocal();
       String two(int n) => n.toString().padLeft(2, '0');
@@ -432,8 +432,8 @@ void main() {
 
       expect(find.text('keep going'), findsOneWidget);
       expect(find.text(forExhaustion(resetInstant)), findsOneWidget);
-      // Never a fix button on this card (unlike the ordinary failure card above) -- rationale on
-      // ChatMessageViewModel.IsOutOfPlan (Aer.Ui.Core/ChatViewModel.cs).
+      // No fix button here, unlike the ordinary failure card above (see the desktop IsOutOfPlan
+      // field doc for why).
       expect(find.textContaining('to fix'), findsNothing);
       expect(find.text('Copy'), findsOneWidget);
 

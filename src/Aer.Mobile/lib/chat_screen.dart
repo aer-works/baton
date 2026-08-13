@@ -26,10 +26,9 @@ class _ChatMessage {
   final VoidCallback? onFix;
   final VoidCallback? onWake;
 
-  /// What Copy puts on the clipboard. Null means "copy [text]" (every other bubble's behaviour,
-  /// including [isFailure]'s). The out-of-plan bubble sets this to the turn's raw errorMessage --
-  /// [text] is the plain-language 0026 sentence, this is the vendor's own words. Mirrors
-  /// ChatMessageViewModel.CopyText (Aer.Ui.Core/ChatViewModel.cs).
+  /// Overrides what Copy places on the clipboard (null → [text]). See the canonical
+  /// `ChatMessageViewModel.CopyText` doc in Aer.Ui.Core/ChatViewModel.cs for the raw-vendor-words
+  /// rationale on the out-of-plan bubble.
   final String? copyText;
 
   _ChatMessage({
@@ -624,10 +623,9 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
-    // 0026 §4/#1180: mirrors ChatViewModel.AddTurnMessages' IsExhausted arm -- checked BEFORE the
-    // errorMessage/isFailure arm below so the failure bubble is unreachable for it, even though
-    // errorMessage is still populated on this turn (it feeds the out-of-plan bubble's Copy). A
-    // partial response can coexist with exhaustion, so it still renders first.
+    // #1180: mirrors ChatViewModel.AddTurnMessages' IsExhausted arm -- that comment carries the
+    // ordering rationale (why this precedes the failure arm, why errorMessage stays populated,
+    // why a partial response still renders first).
     if (turn.isExhausted) {
       if (turn.assistantResponse != null) {
         messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
@@ -1036,9 +1034,10 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
-    // 0026 §4/#1180: exhaustion is a STATE with a reset time, visually distinct from a failure --
-    // the outOfPlan token colour (AerTokens/AerStatus in theme/tokens.dart, same source rooms_screen
-    // reads for the room-list status dot), never scheme.errorContainer/onErrorContainer.
+    // #1180: out-of-plan styling comes from the outOfPlan token colour (AerTokens/AerStatus in
+    // theme/tokens.dart, same source rooms_screen reads for the room-list status dot), never
+    // scheme.errorContainer/onErrorContainer -- the state-vs-failure distinction Base.axaml's
+    // .card.outofplan style draws on desktop.
     final outOfPlanColor = AerStatus.outOfPlan.color(Theme.of(context).brightness);
     final background = message.isOutOfPlan
         ? outOfPlanColor.withValues(alpha: 0.15)
@@ -1099,8 +1098,8 @@ class _MessageBubble extends StatelessWidget {
               ),
             ],
             if (message.isOutOfPlan) ...[
-              // Copy only, deliberately no fix-ask affordance -- rationale on
-              // ChatMessageViewModel.IsOutOfPlan (Aer.Ui.Core/ChatViewModel.cs).
+              // Copy only; the deliberate absence of a fix button is documented on the desktop
+              // twin's IsOutOfPlan field.
               const SizedBox(height: 8),
               OutlinedButton(
                 onPressed: () {

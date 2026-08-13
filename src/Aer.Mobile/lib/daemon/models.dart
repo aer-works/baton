@@ -295,12 +295,10 @@ class SessionTurn {
   final bool isDormancyAnswer;
 
   /// 0026 §4/#1180: mirrors `SessionTurn.IsExhausted`/`ExhaustedUntil` in
-  /// Aer.Adapters/InteractiveSessions.cs -- a failed turn the resolved adapter classified as
-  /// exhausted plan/quota rather than an ordinary failure. Renderers must key on [isExhausted]
-  /// FIRST, before [errorMessage]: an exhausted turn must never reach the failure-bubble arm, even
-  /// though [errorMessage] stays populated (raw vendor text) for Copy. Tolerant parse: absent on
-  /// metadata written before this field existed, which reads as "not exhausted" (false/null) --
-  /// the safe direction, same idiom as [isDormancyAnswer].
+  /// See `SessionTurn.IsExhausted`'s doc in Aer.Adapters/InteractiveSessions.cs (canonical: what
+  /// the flag means, the render-before-errorMessage ordering rule, why [errorMessage] stays
+  /// populated). Tolerant parse: absent on old metadata reads false/null, same idiom as
+  /// [isDormancyAnswer].
   final bool isExhausted;
   final DateTime? exhaustedUntil;
 
