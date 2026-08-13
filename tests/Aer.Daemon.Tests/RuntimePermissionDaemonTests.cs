@@ -12,6 +12,7 @@ using Xunit;
 
 namespace Aer.Daemon.Tests;
 
+[Collection(PendingGateRegistryCollection.Name)]
 public sealed class RuntimePermissionDaemonTests : IDisposable
 {
     private readonly string _tempRoomDir;

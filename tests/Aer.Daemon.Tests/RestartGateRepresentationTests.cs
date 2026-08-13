@@ -20,6 +20,7 @@ namespace Aer.Daemon.Tests;
 /// itself shipped dropped (#1142's review), so the assertion here is on the projection, not the
 /// journal.
 /// </summary>
+[Collection(PendingGateRegistryCollection.Name)]
 public sealed class RestartGateRepresentationTests : IDisposable
 {
     private readonly string _roomsDir;
