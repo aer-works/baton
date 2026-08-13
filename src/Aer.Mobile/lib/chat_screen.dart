@@ -270,7 +270,14 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted && _isSending) {
         setState(() {
           _isSending = false;
-          _sendError = 'No response after 5 minutes — the room may still be working in the background.';
+          // The backlog deliberately holds here rather than auto-draining (#1131 review): the
+          // timeout is a client-side guess and the turn may still be running server-side, and the
+          // drain's only automatic trigger requires _isSending at completion time — so queued
+          // messages wait for the operator's next manual send, the same resume contract as a
+          // failed drained send. Say so, or a held queue reads as a hang.
+          _sendError = _queuedMessages.isEmpty
+              ? 'No response after 5 minutes — the room may still be working in the background.'
+              : 'No response after 5 minutes — the room may still be working in the background. Queued messages wait for your next send.';
         });
       }
     });
@@ -301,13 +308,15 @@ class _ChatScreenState extends State<ChatScreen> {
 
     try {
       await widget.client.sendSessionMessage(sessionId: widget.sessionId, message: message);
-    } on DaemonException catch (e) {
+    } catch (e) {
+      // Catch EVERY error, not just DaemonException — _answerPermission's comment above has the
+      // canonical why; a narrow catch here would strand _isSending true and jam the composer.
       _sendTimeoutTimer?.cancel();
       if (mounted) {
         setState(() {
           _isSending = false;
           _pendingUserMessage = null;
-          _sendError = e.message;
+          _sendError = e is DaemonException ? e.message : e.toString();
         });
       }
     }
@@ -332,14 +341,17 @@ class _ChatScreenState extends State<ChatScreen> {
           _queuedMessages.remove(head);
         });
       }
-    } on DaemonException catch (e) {
+    } catch (e) {
+      // Catch EVERY error, not just DaemonException — _answerPermission's comment has the
+      // canonical why; a narrow catch here would strand _isSending true and jam both the
+      // composer's enqueue gate and this drain's own re-entry guard.
       _sendTimeoutTimer?.cancel();
       if (mounted) {
         setState(() {
           _isSending = false;
           _pendingUserMessage = null;
           _drainPaused = true;
-          _sendError = e.message;
+          _sendError = e is DaemonException ? e.message : e.toString();
         });
       }
     }
@@ -621,7 +633,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   visualDensity: VisualDensity.compact,
                   onPressed: () {
                     setState(() {
-                      _queuedMessages.removeAt(i);
+                      // By identity like the drain, never by captured index — one removal idiom.
+                      _queuedMessages.remove(_queuedMessages[i]);
                     });
                   },
                 ),

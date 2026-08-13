@@ -236,5 +236,67 @@ void main() {
 
       expect(find.byTooltip('Remove'), findsOneWidget);
     });
+
+    testWidgets(
+        '6. A raw transport exception (not DaemonException) on a drained send does not strand _isSending: the entry stays queued and the composer still works (#1131 review)',
+        (tester) async {
+      final client = await pumpChatScreen(tester);
+
+      await tester.enterText(find.byType(TextField), 'First turn message');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), 'Queued message 1');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pumpAndSettle();
+
+      // The drain's dispatch dies with a RAW exception — the kind _post does not wrap.
+      client.sendError = StateError('socket died');
+      client.turnCount = 1;
+      client.push(projection());
+      await tester.pumpAndSettle();
+
+      // Still queued, and the composer is not jammed: a fresh manual send resumes the drain.
+      expect(find.text('Queued message 1'), findsOneWidget);
+      client.sendError = null;
+      await tester.enterText(find.byType(TextField), 'After recovery');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pumpAndSettle();
+      expect(client.sentMessages.contains('Queued message 1'), isTrue);
+    });
+
+    // A contract pin, not a red-provable discriminator: the drain's only automatic trigger
+    // requires _isSending at completion time, so this holds structurally — the pin keeps a future
+    // refactor from adding a post-timeout auto-drain without noticing this test.
+    testWidgets(
+        '7. After the 5-minute timeout the backlog holds: a late completion push does not auto-dispatch it, the next manual send does (#1131 review)',
+        (tester) async {
+      final client = await pumpChatScreen(tester);
+
+      await tester.enterText(find.byType(TextField), 'First turn message');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), 'Queued message 1');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pumpAndSettle();
+
+      // The client-side timeout gives up on the turn; the daemon may still be running it. The
+      // error must disclose that the backlog is held, or the strip reads as a hang.
+      await tester.pump(const Duration(minutes: 5));
+      expect(client.sentMessages, ['First turn message']);
+      expect(find.textContaining('Queued messages wait for your next send'), findsOneWidget);
+
+      // A late completion push must NOT auto-drain into a possibly-live turn.
+      client.turnCount = 1;
+      client.push(projection());
+      await tester.pumpAndSettle();
+      expect(client.sentMessages, ['First turn message']);
+      expect(find.text('Queued message 1'), findsOneWidget);
+
+      // The operator's next manual send resumes: enqueue clears the pause, then drains the head.
+      await tester.enterText(find.byType(TextField), 'Resume');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pumpAndSettle();
+      expect(client.sentMessages.contains('Queued message 1'), isTrue);
+    });
   });
 }
