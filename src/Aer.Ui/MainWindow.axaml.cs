@@ -834,11 +834,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        // #1074: the composer never blocks (slice of #462). A send while a turn is in flight — OR
-        // while messages are already queued — joins the queue rather than posting ahead of them; the
-        // HasQueuedMessages half preserves FIFO if the queue is non-empty while nothing is in flight
-        // (e.g. paused after a failed drain). MainWindow's live-refresh poll drains one per completion.
-        if (chat.IsSending || chat.HasQueuedMessages)
+        // #1074: the composer never blocks (slice of #462) — the enqueue-vs-post decision lives on
+        // ChatViewModel.SendJoinsQueue (its doc carries the FIFO and #1167 open-gate clauses).
+        // MainWindow's live-refresh poll drains one per completion.
+        if (chat.SendJoinsQueue)
         {
             chat.EnqueueMessage(message);
             return;

@@ -239,6 +239,34 @@ public class ChatViewModelTests
         Assert.True(chat.CanDrainQueue); // gate answered elsewhere — drain resumes
     }
 
+    /// <summary>
+    /// #1167's second call site (its second reader's HIGH): a FRESH typed send during an open
+    /// cross-client gate must join the queue — it used to post straight past the gate because the
+    /// send guard predated the gate clause. And LastSendFailed must NOT reroute a typed retry into
+    /// the queue (the #1074 contract): both polarities pinned.
+    /// </summary>
+    [Fact]
+    public void SendJoinsQueue_for_an_open_gate_but_a_typed_retry_after_a_failure_posts_directly()
+    {
+        var chat = new ChatViewModel();
+        chat.LoadFromMetadata(MetadataWithTurns(), "/tmp/sess-1");
+
+        Assert.False(chat.SendJoinsQueue); // idle, no gate, no queue — a typed send posts
+
+        var gate = new Aer.Flow.Projection.PendingPermission(
+            "req-1", "chat-worker", "claude", "Bash", "{}", "shell", DateTimeOffset.UtcNow);
+        chat.SurfacePendingPermission(gate, (_, _, _) => Task.CompletedTask);
+        Assert.True(chat.SendJoinsQueue);  // open gate — the send joins the queue
+        chat.SurfacePendingPermission(null, (_, _, _) => Task.CompletedTask);
+
+        chat.BeginSend("hello", currentTurnsCount: 0);
+        chat.FailSend("daemon unreachable");
+        Assert.False(chat.SendJoinsQueue); // failed dispatch: the typed retry stays direct (#1074)
+
+        chat.EnqueueMessage("queued");
+        Assert.True(chat.SendJoinsQueue);  // non-empty queue — FIFO preserved
+    }
+
     [Fact]
     public void CanDrainQueue_holds_while_sending_and_while_paused_by_a_failed_dispatch()
     {
