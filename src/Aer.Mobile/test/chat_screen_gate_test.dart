@@ -199,6 +199,36 @@ void main() {
       expect(find.text('Deny once'), findsOneWidget);
     });
 
+    testWidgets('the open gate card renders AFTER the last message in tree order while open, and is absent when cleared', (tester) async {
+      final turns = [
+        SessionTurn(
+          turnIndex: 0,
+          vendor: 'claude',
+          humanMessage: 'first question',
+          assistantResponse: 'first reply',
+          executedAt: DateTime.utc(2026, 8, 12, 10, 0),
+        ),
+      ];
+      final client = await pumpChatScreen(tester, turns: turns);
+
+      client.push(projection(withPending: pending('perm-1')));
+      await tester.pumpAndSettle();
+
+      final sequence = <String>[];
+      for (final w in tester.widgetList(find.byWidgetPredicate((w) => w is RichText || w is SelectableText))) {
+        final text = w is RichText ? w.text.toPlainText() : (w as SelectableText).textSpan?.toPlainText() ?? (w).data ?? '';
+        if (text == 'first question' || text == 'first reply' || text == 'Allow once') {
+          sequence.add(text);
+        }
+      }
+      expect(sequence, ['first question', 'first reply', 'Allow once']);
+
+      client.push(projection());
+      await tester.pumpAndSettle();
+
+      expect(find.text('Allow once'), findsNothing);
+    });
+
     testWidgets(
         'a second push with the SAME permissionRequestId while an answer is in flight does not reset the in-flight flag',
         (tester) async {
