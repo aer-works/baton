@@ -49,14 +49,21 @@ public static class RoleDispatch
     /// vendor-specific model string is dropped for that vendor's own default (#1082).
     /// </param>
     /// <param name="effortOverride">The effort axis, independent of the role — a behavioural name ([0023]), null keeps the role's tier effort.</param>
-    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null)
+    /// <param name="requiredInputs">
+    /// The upstream artifacts this worker consumes, in the SAME order as its step definition's
+    /// <c>Inputs</c> (#1147): the adapters' prompt builders key the "inputs are available at
+    /// <c>AER_INPUT_&lt;n&gt;</c>" disclosure on the contract's <see cref="WorkerContract.RequiredInputs"/>,
+    /// and the variables are positional per the step's list — an input the contract omits is delivered
+    /// but never disclosed, so the worker cannot find it. Empty for a role dispatched alone.
+    /// </param>
+    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
 
         var contract = new WorkerContract(
             WorkerName: string.IsNullOrWhiteSpace(workerName) ? role.Id : workerName,
-            RequiredInputs: [],
+            RequiredInputs: requiredInputs ?? [],
             ProducedOutputs: role.Outputs.Select(o => new ProducedOutput(o.Name, Schema: o.Schema)).ToList(),
             OptionalMetadata: []);
 

@@ -41,6 +41,11 @@ public class WorkflowTemplateComposerTests
         Assert.True(bindings.ContainsKey("build"));
         Assert.True(bindings.ContainsKey("check"));
         Assert.Equal("claude", bindings["build"].Adapter);          // override applied uniformly
+
+        // #1147: the contract must mirror the step's Inputs, or the prompt never discloses the
+        // AER_INPUT_<n> path and the phase is handed its upstream artifact undisclosed.
+        Assert.Empty(bindings["build"].Contract.RequiredInputs);
+        Assert.Equal(second.Inputs, bindings["check"].Contract.RequiredInputs);
     }
 
     [Fact]
@@ -117,6 +122,10 @@ public class WorkflowTemplateComposerTests
 
         Assert.Equal(WorkflowTemplateComposer.CaptureAdapter, bindings["review-capture"].Adapter);
         Assert.False(bindings["review-capture"].PermissionGrant!.RunShellCommands); // engine-run, no vendor grant
+
+        // #1147: the reviewing phase's contract discloses the captured diff — the feature is
+        // decorative if the reviewer is never told where the diff landed.
+        Assert.Equal(review.Inputs, bindings["review"].Contract.RequiredInputs);
     }
 
     [Fact]

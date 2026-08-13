@@ -123,8 +123,11 @@ public static class WorkflowTemplateComposer
                 // (Resume/Reject/RetryWithRevision); the template model carries no supersede targets, so
                 // empty is the faithful mapping until it does.
                 PausePoint: phase.AskFirst ? new PausePoint([]) : null));
+            // requiredInputs mirrors the step's Inputs above — why the mirroring matters (and its
+            // ordering rule) is on RoleDispatch.ToBinding's requiredInputs doc (#1147).
             bindings[phase.Name] = RoleDispatch.ToBinding(
-                role, phase.Instruction, adapterOverride, workerName: phase.Name, workingDirectory: workingDirectory);
+                role, phase.Instruction, adapterOverride, workerName: phase.Name, workingDirectory: workingDirectory,
+                requiredInputs: blockerOutputs);
 
             blockerId = stepId;
             blockerOutputs = outputs;
