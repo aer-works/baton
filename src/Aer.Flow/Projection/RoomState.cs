@@ -16,7 +16,8 @@ public sealed record RoomState(
     IReadOnlyDictionary<GrantId, GrantState>? ActiveGrants = null,
     IReadOnlyList<RoomEvent.EscalationRaised>? OpenEscalations = null,
     bool IsDormant = false,
-    PendingPermission? PendingPermission = null)
+    PendingPermission? PendingPermission = null,
+    IReadOnlyList<PermissionAnswer>? PermissionAnswers = null)
 {
     public IReadOnlyDictionary<GrantId, GrantState> ActiveGrants { get; init; } = ActiveGrants ?? new Dictionary<GrantId, GrantState>();
 
@@ -26,6 +27,12 @@ public sealed record RoomState(
     /// work; until it lands, "open" means "ever raised", not a live open/closed status.
     /// </summary>
     public IReadOnlyList<RoomEvent.EscalationRaised> OpenEscalations { get; init; } = OpenEscalations ?? [];
+
+    /// <summary>
+    /// Answer history for runtime permissions. Bounded to the newest 50 answers (drop oldest).
+    /// Default empty list, never null.
+    /// </summary>
+    public IReadOnlyList<PermissionAnswer> PermissionAnswers { get; init; } = PermissionAnswers ?? [];
 
     public bool Equals(RoomState? other)
     {
@@ -45,7 +52,8 @@ public sealed record RoomState(
             IsDormant != other.IsDormant ||
             !Equals(PendingPermission, other.PendingPermission) ||
             !UnmatchedEntries.SequenceEqual(other.UnmatchedEntries) ||
-            !OpenEscalations.SequenceEqual(other.OpenEscalations))
+            !OpenEscalations.SequenceEqual(other.OpenEscalations) ||
+            !PermissionAnswers.SequenceEqual(other.PermissionAnswers))
         {
             return false;
         }
@@ -95,6 +103,11 @@ public sealed record RoomState(
         foreach (var entry in UnmatchedEntries)
         {
             hash.Add(entry);
+        }
+
+        foreach (var answer in PermissionAnswers)
+        {
+            hash.Add(answer);
         }
 
         return hash.ToHashCode();

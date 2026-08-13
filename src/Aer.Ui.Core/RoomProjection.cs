@@ -32,4 +32,8 @@ namespace Aer.Ui.Core;
 /// </param>
 public sealed record RoomProjection(
     WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage,
-    PendingPermission? PendingPermission = null);
+    PendingPermission? PendingPermission = null,
+    IReadOnlyList<PermissionAnswer>? PermissionAnswers = null)
+{
+    public IReadOnlyList<PermissionAnswer> PermissionAnswers { get; init; } = PermissionAnswers ?? [];
+}

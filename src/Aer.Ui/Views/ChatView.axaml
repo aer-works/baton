@@ -176,7 +176,7 @@
       <ItemsControl x:Name="ChatMessagesList" ItemsSource="{Binding Chat.Messages}">
         <ItemsControl.ItemTemplate>
           <DataTemplate x:DataType="vm:ChatMessageViewModel">
-            <Border Classes="card" Classes.you="{Binding IsFromUser}" Margin="0,0,0,8">
+            <Border Classes="card" Classes.you="{Binding IsFromUser}" Classes.system="{Binding IsSystem}" Margin="0,0,0,8">
               <StackPanel Spacing="{DynamicResource Space.1}">
                 <TextBlock Classes="caption who" Text="{Binding SenderLabel}" />
                 <md:MarkdownPresenter Markdown="{Binding Text}" />

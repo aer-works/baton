@@ -216,6 +216,15 @@
   <Style Selector="Border.card.you TextBlock.who">
     <Setter Property="Foreground" Value="{DynamicResource Color.TextSecondary}" />
   </Style>
+  <Style Selector="Border.card.system">
+    <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="BoxShadow" Value="0 0 0 0 #00000000" />
+    <Setter Property="Opacity" Value="0.75" />
+  </Style>
+  <Style Selector="Border.card.system TextBlock.who">
+    <Setter Property="Foreground" Value="{DynamicResource Color.TextSecondary}" />
+  </Style>
 
   <!-- The navigation rail (#1071): icon-only bordered squares, per docs/design/mockups/02-screens.html's
        .rail styling — a 29x29 icon in a 1px rule border, radius 6, quiet by default (rule border,

@@ -9,9 +9,20 @@ public class WireFixtureStalenessTests
     {
         var repositoryRoot = FindRepositoryRoot();
 
+        // #1142: the failure text below says "run the fixture generator", which had no runnable
+        // form — regeneration was hand-editing JSON. This is it: set the variable, run this one
+        // test, commit the diff it writes, unset.
+        var regenerate = Environment.GetEnvironmentVariable("AER_REGENERATE_WIRE_FIXTURES") == "1";
+
         foreach (var (relativePath, expected) in WireFixtureGenerator.GenerateAll())
         {
             var path = Path.Combine(repositoryRoot, relativePath);
+            if (regenerate)
+            {
+                File.WriteAllText(path, expected.ReplaceLineEndings("\n"));
+                continue;
+            }
+
             Assert.True(File.Exists(path), $"{relativePath} is missing. Run generator or test to create.");
 
             var actual = File.ReadAllText(path).ReplaceLineEndings("\n");

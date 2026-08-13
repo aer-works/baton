@@ -31,6 +31,10 @@ class _FakeDaemonClient extends DaemonClient {
 
   int answerCallCount = 0;
 
+  /// Turns [getSession] serves — set before pumping so the transcript-merge tests can interleave
+  /// real turns with permission answers instead of asserting against an empty transcript.
+  List<SessionTurn> turns = const [];
+
   void push(RoomProjection projection) => _projectionController.add(projection);
 
   /// Drops an error onto the projection stream — stands in for a WebSocket transport failure so a
@@ -49,8 +53,8 @@ class _FakeDaemonClient extends DaemonClient {
         sessionId: sessionId,
         roomDirectoryPath: '/tasks/foo',
         currentAdapter: 'claude',
-        turnCount: 0,
-        turns: const [],
+        turnCount: turns.length,
+        turns: turns,
       );
 
   @override
@@ -82,7 +86,7 @@ void main() {
         askedAt: DateTime.utc(2026, 8, 9, 12),
       );
 
-  RoomProjection projection({PendingPermission? withPending}) => RoomProjection(
+  RoomProjection projection({PendingPermission? withPending, List<PermissionAnswer>? withAnswers}) => RoomProjection(
         directoryPath: '/tasks/foo',
         sessionId: 'sess-1',
         workflowTemplateId: 'chat',
@@ -92,10 +96,11 @@ void main() {
         executions: const [],
         workerAdapters: const {},
         pendingPermission: withPending,
+        permissionAnswers: withAnswers ?? const [],
       );
 
-  Future<_FakeDaemonClient> pumpChatScreen(WidgetTester tester) async {
-    final client = _FakeDaemonClient();
+  Future<_FakeDaemonClient> pumpChatScreen(WidgetTester tester, {List<SessionTurn> turns = const []}) async {
+    final client = _FakeDaemonClient()..turns = turns;
     await tester.pumpWidget(MaterialApp(
       home: ChatScreen(client: client, sessionId: 'sess-1', directoryPath: '/tasks/foo'),
     ));
@@ -104,6 +109,86 @@ void main() {
   }
 
   group('_ChatScreenState permission gate wiring (0022, #390 mobile, second-reader finding)', () {
+    testWidgets('a push with permissionAnswers renders system transcript lines in order', (tester) async {
+      // #1142 second-reader: find.text alone is position-blind, so the merge could interleave in
+      // any order and still pass. Real turns bracket the answers by timestamp, and the assertion
+      // walks the rendered Text widgets in tree order and compares the filtered SEQUENCE.
+      final turns = [
+        SessionTurn(
+          turnIndex: 0,
+          vendor: 'claude',
+          humanMessage: 'first question',
+          assistantResponse: 'first reply',
+          executedAt: DateTime.utc(2026, 8, 12, 10, 0),
+        ),
+        SessionTurn(
+          turnIndex: 1,
+          vendor: 'claude',
+          humanMessage: 'second question',
+          assistantResponse: 'second reply',
+          executedAt: DateTime.utc(2026, 8, 12, 10, 10),
+        ),
+      ];
+      final client = await pumpChatScreen(tester, turns: turns);
+
+      final answers = [
+        PermissionAnswer(
+          permissionRequestId: 'req-1',
+          toolName: 'Bash',
+          category: 'Shell',
+          decisionKind: 'AllowOnce',
+          reason: null,
+          deciderIdentity: 'op',
+          answeredAt: DateTime.utc(2026, 8, 12, 10, 2),
+          wasRevoked: false,
+        ),
+        PermissionAnswer(
+          permissionRequestId: 'req-2',
+          toolName: 'Edit',
+          category: 'Files',
+          decisionKind: 'Deny',
+          reason: 'user declined',
+          deciderIdentity: 'op',
+          answeredAt: DateTime.utc(2026, 8, 12, 10, 5),
+          wasRevoked: false,
+        ),
+        PermissionAnswer(
+          permissionRequestId: 'req-3',
+          toolName: 'Bash',
+          category: 'Shell',
+          decisionKind: '',
+          reason: 'turn_ended',
+          deciderIdentity: '',
+          answeredAt: DateTime.utc(2026, 8, 12, 10, 12),
+          wasRevoked: true,
+        ),
+      ];
+
+      client.push(projection(withAnswers: answers));
+      await tester.pumpAndSettle();
+
+      const expectedSequence = [
+        'first question', // 10:00
+        'first reply',
+        'Allowed once — Bash', // 10:02
+        'Denied — Edit: user declined', // 10:05
+        'second question', // 10:10
+        'second reply',
+        'Expired unanswered — turn ended', // 10:12
+      ];
+      // Turn bubbles render through MarkdownBodyWidget (RichText), system lines through Text —
+      // and every Text builds a RichText underneath, so RichText in tree order covers both kinds.
+      // System lines are Text (whose build emits a RichText); turn bodies go through
+      // MarkdownBodyWidget with selectable: true, which renders SelectableText and therefore no
+      // RichText at all — so the walk needs both kinds, in tree order.
+      final rendered = tester
+          .widgetList(find.byWidgetPredicate((w) => w is RichText || w is SelectableText))
+          .map((w) => w is RichText ? w.text.toPlainText() : (w as SelectableText).textSpan?.toPlainText() ?? (w).data ?? '')
+          .where(expectedSequence.contains)
+          .toList();
+      expect(rendered, expectedSequence);
+    });
+
     testWidgets('a push with a pendingPermission renders the gate', (tester) async {
       final client = await pumpChatScreen(tester);
 

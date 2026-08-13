@@ -341,4 +341,57 @@ public class RoomProjectorTests
 
         Assert.Null(state.PendingPermission);
     }
+
+    [Fact]
+    public void Projects_Answered_and_Revoked_events_accumulate_joined_permission_answers()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var askedEvent = new RoomEvent.RuntimePermissionAsked(
+            "req-1", new ExecutionId("exec-01"), new StepId("step-01"), "worker-alpha", "claude",
+            "tool_use_123", "Bash", """{"command":"ls"}""", "Shell", at);
+
+        var answeredEvent = new RoomEvent.RuntimePermissionAnswered(
+            "req-1", "AllowOnce", null, "Allowed by operator", "operator-bob", at.AddSeconds(2));
+
+        var revokedEvent = new RoomEvent.RuntimePermissionRevoked(
+            "req-2", "turn_ended", at.AddSeconds(5));
+
+        var state = RoomProjector.Project([askedEvent, answeredEvent, revokedEvent]);
+
+        Assert.Equal(2, state.PermissionAnswers.Count);
+
+        var ans1 = state.PermissionAnswers[0];
+        Assert.Equal("req-1", ans1.PermissionRequestId);
+        Assert.Equal("Bash", ans1.ToolName);
+        Assert.Equal("Shell", ans1.Category);
+        Assert.Equal("AllowOnce", ans1.DecisionKind);
+        Assert.Equal("Allowed by operator", ans1.Reason);
+        Assert.Equal("operator-bob", ans1.DeciderIdentity);
+        Assert.False(ans1.WasRevoked);
+
+        var ans2 = state.PermissionAnswers[1];
+        Assert.Equal("req-2", ans2.PermissionRequestId);
+        Assert.Equal("(unknown)", ans2.ToolName);
+        Assert.Equal("", ans2.Category);
+        Assert.True(ans2.WasRevoked);
+        Assert.Equal("turn_ended", ans2.Reason);
+    }
+
+    [Fact]
+    public void Projects_PermissionAnswers_bounds_list_to_newest_50_dropping_oldest()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var events = new List<RoomEvent>();
+
+        for (int i = 1; i <= 55; i++)
+        {
+            events.Add(new RoomEvent.RuntimePermissionRevoked($"req-{i}", "timeout", at.AddSeconds(i)));
+        }
+
+        var state = RoomProjector.Project(events);
+
+        Assert.Equal(50, state.PermissionAnswers.Count);
+        Assert.Equal("req-6", state.PermissionAnswers[0].PermissionRequestId);
+        Assert.Equal("req-55", state.PermissionAnswers[49].PermissionRequestId);
+    }
 }

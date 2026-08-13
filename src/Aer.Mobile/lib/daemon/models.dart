@@ -119,6 +119,43 @@ class PendingPermission {
   }
 }
 
+/// Wire twin of the engine's PermissionAnswer (its doc in src/Aer.Flow/Projection is canonical).
+class PermissionAnswer {
+  final String permissionRequestId;
+  final String toolName;
+  final String category;
+  final String decisionKind;
+  final String? reason;
+  final String deciderIdentity;
+  final DateTime answeredAt;
+  final bool wasRevoked;
+
+  PermissionAnswer({
+    required this.permissionRequestId,
+    required this.toolName,
+    required this.category,
+    required this.decisionKind,
+    this.reason,
+    required this.deciderIdentity,
+    required this.answeredAt,
+    required this.wasRevoked,
+  });
+
+  factory PermissionAnswer.fromJson(Map<String, dynamic> json) {
+    final j = caseInsensitive(json);
+    return PermissionAnswer(
+      permissionRequestId: j['permissionrequestid']?.toString() ?? '',
+      toolName: j['toolname']?.toString() ?? '',
+      category: j['category']?.toString() ?? '',
+      decisionKind: j['decisionkind']?.toString() ?? '',
+      reason: j['reason']?.toString(),
+      deciderIdentity: j['decideridentity']?.toString() ?? '',
+      answeredAt: DateTime.tryParse(j['answeredat']?.toString() ?? '') ?? DateTime.now(),
+      wasRevoked: j['wasrevoked'] == true,
+    );
+  }
+}
+
 /// A projection Aer.Daemon pushes for one room directory. Aer.Daemon still has only one
 /// "current" task server-side (RoomClient.CurrentRoomDirectoryPath) and broadcasts every
 /// change to every connected WS client regardless of which directory it's for — but this app
@@ -145,6 +182,9 @@ class RoomProjection {
   /// is blocked on one — see [PendingPermission]'s doc comment for where this sits on the wire.
   final PendingPermission? pendingPermission;
 
+  /// History of answered or revoked runtime permissions (bounded to newest 50).
+  final List<PermissionAnswer> permissionAnswers;
+
   RoomProjection({
     required this.directoryPath,
     required this.sessionId,
@@ -155,6 +195,7 @@ class RoomProjection {
     required this.executions,
     required this.workerAdapters,
     this.pendingPermission,
+    this.permissionAnswers = const [],
   });
 
   List<WorkflowStepState> get pausedSteps => steps.where((s) => s.isPaused).toList();
@@ -194,6 +235,9 @@ class RoomProjection {
       pendingPermission: j['pendingpermission'] == null
           ? null
           : PendingPermission.fromJson(j['pendingpermission'] as Map<String, dynamic>),
+      permissionAnswers: ((j['permissionanswers'] as List<dynamic>?) ?? [])
+          .map((a) => PermissionAnswer.fromJson(a as Map<String, dynamic>))
+          .toList(),
     );
   }
 }

@@ -175,6 +175,27 @@
       }
     ]
   },
+  "permissionAnswers": [
+    {
+      "permissionRequestId": "perm-1",
+      "toolName": "Bash",
+      "category": "run_command",
+      "decisionKind": "AllowOnce",
+      "deciderIdentity": "operator",
+      "answeredAt": "2026-08-03T13:00:00\u002B00:00",
+      "wasRevoked": false
+    },
+    {
+      "permissionRequestId": "perm-2",
+      "toolName": "Bash",
+      "category": "run_command",
+      "decisionKind": "",
+      "reason": "turn_ended",
+      "deciderIdentity": "",
+      "answeredAt": "2026-08-03T14:00:00\u002B00:00",
+      "wasRevoked": true
+    }
+  ],
   "directoryPath": "C:/tasks/foo",
   "sessionId": "session-123",
   "workerAdapters": {

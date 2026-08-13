@@ -1,13 +1,14 @@
 using System.Collections.ObjectModel;
 using System.Linq;
 using Aer.Adapters;
+using Aer.Flow.Projection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
 namespace Aer.Ui.Core;
 
 /// <summary>One rendered row in <see cref="ChatViewModel.Messages"/> — a human turn or an assistant response, never both (M24 Phase 1 desktop chat UI, issue #262).</summary>
-public sealed record ChatMessageViewModel(string SenderLabel, string Text, DateTimeOffset Timestamp, bool IsFromUser);
+public sealed record ChatMessageViewModel(string SenderLabel, string Text, DateTimeOffset Timestamp, bool IsFromUser, bool IsSystem = false);
 
 /// <summary>
 /// One row in the chat capability picker (M24 Phase 2 follow-up). <paramref name="IsInvokable"/> is
@@ -36,6 +37,20 @@ public sealed record ChatCapabilityItemViewModel(string Name, string Kind, strin
 /// </summary>
 public sealed partial class ChatViewModel : ObservableObject
 {
+    private SessionMetadata? _lastMetadata;
+    private IReadOnlyList<PermissionAnswer> _permissionAnswers = [];
+
+    /// <summary>
+    /// Answers at or before this watermark are hidden from the transcript. Set by
+    /// <see cref="MarkTranscriptCleared"/> when /clear wipes the vendor turns: room.jsonl's
+    /// permission history survives the wipe, so without this every old answer would re-render as an
+    /// orphan bubble above an empty transcript. Derived from the answers' own timestamps rather than
+    /// the UI host's clock (the daemon stamped AnsweredAt; the two clocks can disagree). In-memory
+    /// only — after an app restart the old answers reappear alongside the room's other durable
+    /// history, which is the disclosed limitation (#1142 review) until clears are themselves room
+    /// events.
+    /// </summary>
+    private DateTimeOffset? _answersClearedThrough;
     public ObservableCollection<ChatMessageViewModel> Messages { get; } = [];
 
     /// <summary>Invokable skills/commands/agents (M24 Phase 2 follow-up chat capability picker) — recently-used first, per <see cref="LoadCommands"/>.</summary>
@@ -144,7 +159,19 @@ public sealed partial class ChatViewModel : ObservableObject
     /// <see cref="LoadFromMetadata"/> on every load/refresh.
     /// </summary>
     public void SurfacePendingPermission(Aer.Flow.Projection.PendingPermission? pending, AnswerPermissionDelegate answer)
+        => SurfacePendingPermission(pending, null, answer);
+
+    public void SurfacePendingPermission(
+        Aer.Flow.Projection.PendingPermission? pending,
+        IReadOnlyList<PermissionAnswer>? permissionAnswers,
+        AnswerPermissionDelegate answer)
     {
+        if (permissionAnswers != null)
+        {
+            _permissionAnswers = permissionAnswers;
+            RebuildMessages();
+        }
+
         if (pending is null)
         {
             PendingPermission = null;
@@ -180,6 +207,7 @@ public sealed partial class ChatViewModel : ObservableObject
     /// <summary>Rebuilds <see cref="Messages"/> from a freshly loaded/polled <see cref="SessionMetadata"/> — the chat view's counterpart of <see cref="MainWindowViewModel.RebuildRoomSteps"/>.</summary>
     public void LoadFromMetadata(SessionMetadata metadata, string roomDirectoryPath)
     {
+        _lastMetadata = metadata;
         SessionId = metadata.SessionId;
         RoomDirectoryPath = roomDirectoryPath;
         CurrentAdapter = metadata.CurrentAdapter;
@@ -190,17 +218,55 @@ public sealed partial class ChatViewModel : ObservableObject
         WorkerChipText = metadata.CurrentAdapter;
         OnPropertyChanged(nameof(IsSessionOpen));
 
+        RebuildMessages();
+    }
+
+    private void RebuildMessages()
+    {
         Messages.Clear();
-        foreach (var turn in metadata.Turns)
+        if (_lastMetadata is null)
         {
-            Messages.Add(new ChatMessageViewModel("You", turn.HumanMessage, turn.ExecutedAt, IsFromUser: true));
-            if (turn.AssistantResponse is { } response)
+            return;
+        }
+
+        var turns = _lastMetadata.Turns;
+        var answers = _answersClearedThrough is { } clearedThrough
+            ? _permissionAnswers.Where(a => a.AnsweredAt > clearedThrough).ToList()
+            : _permissionAnswers;
+        int turnIdx = 0;
+        int ansIdx = 0;
+
+        while (turnIdx < turns.Count || ansIdx < answers.Count)
+        {
+            if (turnIdx < turns.Count && ansIdx < answers.Count)
             {
-                Messages.Add(new ChatMessageViewModel(turn.Vendor, response, turn.ExecutedAt, IsFromUser: false));
+                var turn = turns[turnIdx];
+                var answer = answers[ansIdx];
+
+                if (turn.ExecutedAt <= answer.AnsweredAt)
+                {
+                    AddTurnMessages(turn);
+                    turnIdx++;
+                }
+                else
+                {
+                    AddAnswerMessage(answer);
+                    ansIdx++;
+                }
+            }
+            else if (turnIdx < turns.Count)
+            {
+                AddTurnMessages(turns[turnIdx]);
+                turnIdx++;
+            }
+            else
+            {
+                AddAnswerMessage(answers[ansIdx]);
+                ansIdx++;
             }
         }
 
-        if (IsSending && metadata.Turns.Count > _turnsCountAtSendTime)
+        if (IsSending && turns.Count > _turnsCountAtSendTime)
         {
             IsSending = false;
             LiveProgressText = string.Empty;
@@ -213,6 +279,50 @@ public sealed partial class ChatViewModel : ObservableObject
             // leaving the box looking like Send did nothing until the response completes.
             Messages.Add(new ChatMessageViewModel("You", pending, DateTimeOffset.UtcNow, IsFromUser: true));
         }
+    }
+
+    private void AddTurnMessages(SessionTurn turn)
+    {
+        Messages.Add(new ChatMessageViewModel("You", turn.HumanMessage, turn.ExecutedAt, IsFromUser: true));
+        if (turn.AssistantResponse is { } response)
+        {
+            Messages.Add(new ChatMessageViewModel(turn.Vendor, response, turn.ExecutedAt, IsFromUser: false));
+        }
+    }
+
+    private void AddAnswerMessage(PermissionAnswer answer)
+    {
+        var text = FormatPermissionAnswerWording(answer);
+        Messages.Add(new ChatMessageViewModel("System", text, answer.AnsweredAt, IsFromUser: false, IsSystem: true));
+    }
+
+    public static string FormatPermissionAnswerWording(PermissionAnswer answer)
+    {
+        if (answer.WasRevoked)
+        {
+            var reasonText = answer.Reason switch
+            {
+                "turn_ended" => "turn ended",
+                "timeout" => "timed out",
+                _ => answer.Reason ?? string.Empty
+            };
+            return $"Expired unanswered — {reasonText}";
+        }
+
+        if (answer.DecisionKind.StartsWith("Allow", StringComparison.Ordinal))
+        {
+            var scope = answer.DecisionKind switch
+            {
+                PermissionDecisionKind.AllowRoom => "for this room",
+                PermissionDecisionKind.AllowCommandInRoom => "command in this room",
+                PermissionDecisionKind.AllowCommandAnyRoom => "command in any room",
+                _ => "once"
+            };
+            return $"Allowed {scope} — {answer.ToolName}";
+        }
+
+        var reasonSuffix = !string.IsNullOrEmpty(answer.Reason) ? $": {answer.Reason}" : string.Empty;
+        return $"Denied — {answer.ToolName}{reasonSuffix}";
     }
 
     /// <summary>Marks a send as in flight and captures enough state for <see cref="LoadFromMetadata"/> to detect completion. Called by <c>MainWindow</c> right before it posts the operator's just-typed message; clears the composer.</summary>
@@ -332,8 +442,24 @@ public sealed partial class ChatViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Called when /clear wipes the vendor turns so already-rendered permission answers don't
+    /// resurface as orphan bubbles — see <see cref="_answersClearedThrough"/> for the mechanism and
+    /// its restart limitation.
+    /// </summary>
+    public void MarkTranscriptCleared()
+    {
+        if (_permissionAnswers.Count > 0)
+        {
+            _answersClearedThrough = _permissionAnswers.Max(a => a.AnsweredAt);
+        }
+    }
+
     public void Clear()
     {
+        _lastMetadata = null;
+        _permissionAnswers = [];
+        _answersClearedThrough = null;
         SessionId = null;
         RoomDirectoryPath = null;
         CurrentAdapter = null;

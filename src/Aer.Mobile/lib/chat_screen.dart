@@ -18,8 +18,14 @@ class _ChatMessage {
   final String senderLabel;
   final String text;
   final bool isFromUser;
+  final bool isSystem;
 
-  _ChatMessage({required this.senderLabel, required this.text, required this.isFromUser});
+  _ChatMessage({
+    required this.senderLabel,
+    required this.text,
+    required this.isFromUser,
+    this.isSystem = false,
+  });
 }
 
 /// One queued composer entry (#1131) — deliberately a class with default identity equality, the
@@ -101,6 +107,14 @@ class _ChatScreenState extends State<ChatScreen> {
   /// re-derived (never carried over) whenever the projection's own value changes.
   PendingPermission? _pendingPermission;
 
+  /// History of answered or revoked permissions from the latest projection.
+  List<PermissionAnswer> _permissionAnswers = const [];
+
+  /// The /clear orphan-bubble guard: [_buildMessages] drops any answer stamped at or under this.
+  /// Mechanism, daemon-clock choice, and the restart limitation are documented canonically on the
+  /// desktop twin, ChatViewModel._answersClearedThrough (#1142 review).
+  DateTime? _answersClearedThrough;
+
   /// True while an answer POST is in flight — disables the gate's rungs (mirrors InboxScreen's
   /// `_decide`'s in-flight discipline) so a slow round trip can't be double-submitted. Independent of
   /// [_pendingPermission]'s identity: the gate disappears entirely once the next projection clears
@@ -135,6 +149,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (_connectionError != null) setState(() => _connectionError = null);
         if (projection.directoryPath == widget.directoryPath) {
           _surfacePendingPermission(projection.pendingPermission);
+          _surfacePermissionAnswers(projection.permissionAnswers);
           _refresh();
         }
       },
@@ -211,6 +226,12 @@ class _ChatScreenState extends State<ChatScreen> {
       _pendingPermission = pending;
       _isAnsweringPermission = false;
     });
+  }
+
+  void _surfacePermissionAnswers(List<PermissionAnswer> answers) {
+    if (mounted) {
+      setState(() => _permissionAnswers = answers);
+    }
   }
 
   /// Answers the open gate with one of [PermissionDecisionKind]'s rungs — mirrors InboxScreen's
@@ -471,7 +492,14 @@ class _ChatScreenState extends State<ChatScreen> {
         try {
           final cleared = await widget.client.clearSession(widget.sessionId);
           if (mounted) {
-            setState(() => _metadata = cleared);
+            setState(() {
+              if (_permissionAnswers.isNotEmpty) {
+                _answersClearedThrough = _permissionAnswers
+                    .map((a) => a.answeredAt)
+                    .reduce((a, b) => a.isAfter(b) ? a : b);
+              }
+              _metadata = cleared;
+            });
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Room context cleared.')));
           }
         } on DaemonException catch (e) {
@@ -488,14 +516,81 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  static String formatPermissionAnswerWording(PermissionAnswer answer) {
+    if (answer.wasRevoked) {
+      final reasonText = answer.reason == 'turn_ended'
+          ? 'turn ended'
+          : answer.reason == 'timeout'
+              ? 'timed out'
+              : (answer.reason ?? '');
+      return 'Expired unanswered — $reasonText';
+    }
+
+    if (answer.decisionKind.startsWith('Allow')) {
+      final String scope;
+      switch (answer.decisionKind) {
+        case PermissionDecisionKind.allowRoom:
+          scope = 'for this room';
+          break;
+        case PermissionDecisionKind.allowCommandInRoom:
+          scope = 'command in this room';
+          break;
+        // A literal on purpose: PermissionDecisionKind deliberately doesn't port this rung (its
+        // 0052 note) — the phone never OFFERS it, but a desktop-given answer still renders here.
+        case 'AllowCommandAnyRoom':
+          scope = 'command in any room';
+          break;
+        default:
+          scope = 'once';
+          break;
+      }
+      return 'Allowed $scope — ${answer.toolName}';
+    }
+
+    final reasonSuffix = (answer.reason != null && answer.reason!.isNotEmpty) ? ': ${answer.reason}' : '';
+    return 'Denied — ${answer.toolName}$reasonSuffix';
+  }
+
   List<_ChatMessage> _buildMessages(SessionMetadata metadata) {
     final messages = <_ChatMessage>[];
-    for (final turn in metadata.turns) {
-      messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
-      if (turn.assistantResponse != null) {
-        messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
+    final turns = metadata.turns;
+    final answers = _answersClearedThrough == null
+        ? _permissionAnswers
+        : _permissionAnswers.where((a) => a.answeredAt.isAfter(_answersClearedThrough!)).toList();
+    int turnIdx = 0;
+    int ansIdx = 0;
+
+    while (turnIdx < turns.length || ansIdx < answers.length) {
+      if (turnIdx < turns.length && ansIdx < answers.length) {
+        final turn = turns[turnIdx];
+        final answer = answers[ansIdx];
+
+        if (turn.executedAt.isBefore(answer.answeredAt) || turn.executedAt.isAtSameMomentAs(answer.answeredAt)) {
+          messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
+          if (turn.assistantResponse != null) {
+            messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
+          }
+          turnIdx++;
+        } else {
+          final text = formatPermissionAnswerWording(answer);
+          messages.add(_ChatMessage(senderLabel: 'System', text: text, isFromUser: false, isSystem: true));
+          ansIdx++;
+        }
+      } else if (turnIdx < turns.length) {
+        final turn = turns[turnIdx];
+        messages.add(_ChatMessage(senderLabel: 'You', text: turn.humanMessage, isFromUser: true));
+        if (turn.assistantResponse != null) {
+          messages.add(_ChatMessage(senderLabel: turn.vendor, text: turn.assistantResponse!, isFromUser: false));
+        }
+        turnIdx++;
+      } else {
+        final answer = answers[ansIdx];
+        final text = formatPermissionAnswerWording(answer);
+        messages.add(_ChatMessage(senderLabel: 'System', text: text, isFromUser: false, isSystem: true));
+        ansIdx++;
       }
     }
+
     if (_isSending && _pendingUserMessage != null) {
       messages.add(_ChatMessage(senderLabel: 'You', text: _pendingUserMessage!, isFromUser: true));
     }
@@ -787,6 +882,22 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+
+    if (message.isSystem) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Center(
+          child: Text(
+            message.text,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
+                ),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+
     final background = message.isFromUser ? scheme.primaryContainer : scheme.surfaceContainerHighest;
     final foreground = message.isFromUser ? scheme.onPrimaryContainer : scheme.onSurfaceVariant;
 
