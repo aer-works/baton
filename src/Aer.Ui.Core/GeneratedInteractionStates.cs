@@ -31,6 +31,7 @@ public enum InteractionState
     GateUnverified,
     WaitingOnLock,
     Dormant,
+    OutOfPlan,
 }
 
 public static class InteractionStatePresentation
@@ -51,6 +52,7 @@ public static class InteractionStatePresentation
         InteractionState.GateUnverified => "Gate unverified",
         InteractionState.WaitingOnLock => "Waiting on another room's lock",
         InteractionState.Dormant => "Dormant",
+        InteractionState.OutOfPlan => "Out of plan",
         _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unmapped interaction state."),
     };
 
@@ -70,6 +72,7 @@ public static class InteractionStatePresentation
         InteractionState.GateUnverified => "A worker whose permission mechanism could not be confirmed working at start says so before any tool runs, rather than silently rendering a gate that might never fire — a broken hook or a disabled callback both look exactly like a working one otherwise.",
         InteractionState.WaitingOnLock => "Reads as a wait, never as an error and never as generic working: names the room that holds this folder, linked, so the choice — wait, or go there — is discoverable. Opening a second room on a folder that already has one warns first; legal, but a choice made knowingly.",
         InteractionState.Dormant => "The room stopped machine turns after repeated turns that committed nothing, and says so in the transcript with the reason and the wake control. A message to a dormant room is answered with this state — waking is your explicit action, never a side effect of asking how it's going.",
+        InteractionState.OutOfPlan => "Displays quota/subscription exhaustion with its reset time when known (\"Out of plan — resumes {local time}\") or an explicit unknown (\"Out of plan — reset unknown\"), distinct from failure.",
         _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unmapped interaction state."),
     };
 }
