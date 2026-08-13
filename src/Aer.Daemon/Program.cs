@@ -231,7 +231,12 @@ namespace Aer.Daemon
             {
                 try
                 {
-                    await ReconcilePendingPermissionsAsync().ConfigureAwait(false);
+                    // #1171: reconcile pushes each mutated room's refreshed projection, so a client
+                    // connected across the restart renders a re-presented (or expiring) gate
+                    // without waiting for an unrelated event to broadcast.
+                    await ReconcilePendingPermissionsAsync(
+                        broadcastStateAsync: async (proj, dir) =>
+                            await broadcast.BroadcastStateAsync(proj, dir).ConfigureAwait(false)).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -2689,7 +2694,10 @@ namespace Aer.Daemon
                 : lastLine;
         }
 
-        internal static async Task ReconcilePendingPermissionsAsync(string? roomsDirOverride = null, CancellationToken cancellationToken = default)
+        internal static async Task ReconcilePendingPermissionsAsync(
+            string? roomsDirOverride = null,
+            Func<RoomProjection, string, Task>? broadcastStateAsync = null,
+            CancellationToken cancellationToken = default)
         {
             var baseRoomsDir = roomsDirOverride ?? AerPaths.Rooms;
             if (!Directory.Exists(baseRoomsDir)) return;
@@ -2706,7 +2714,7 @@ namespace Aer.Daemon
 
             foreach (var roomDir in roomDirs)
             {
-                await ReconcileRoomPermissionsAsync(roomDir, cancellationToken).ConfigureAwait(false);
+                await ReconcileRoomPermissionsAsync(roomDir, broadcastStateAsync, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -2798,7 +2806,13 @@ namespace Aer.Daemon
             }
         }
 
-        internal static async Task ReconcileRoomPermissionsAsync(string roomDir, CancellationToken cancellationToken = default)
+        internal static Task ReconcileRoomPermissionsAsync(string roomDir, CancellationToken cancellationToken = default)
+            => ReconcileRoomPermissionsAsync(roomDir, broadcastStateAsync: null, cancellationToken);
+
+        internal static async Task ReconcileRoomPermissionsAsync(
+            string roomDir,
+            Func<RoomProjection, string, Task>? broadcastStateAsync,
+            CancellationToken cancellationToken = default)
         {
             var artifactsDir = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
             if (!Directory.Exists(artifactsDir)) return;
@@ -2829,6 +2843,11 @@ namespace Aer.Daemon
             var answeredById = events.OfType<RoomEvent.RuntimePermissionAnswered>()
                 .GroupBy(a => a.PermissionRequestId, StringComparer.Ordinal)
                 .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+            // #1171: reconcile journals without pushing, so a WS-connected client never learned a
+            // gate was re-presented or expired at startup. Track whether this room's journal
+            // changed; one broadcast at the end covers every mutation kind.
+            var journalMutated = false;
             var resolvedIds = answeredById.Keys
                 .Concat(events.OfType<RoomEvent.RuntimePermissionRevoked>().Select(r => r.PermissionRequestId))
                 .ToHashSet(StringComparer.Ordinal);
@@ -2906,6 +2925,7 @@ namespace Aer.Daemon
                                 revokedReason,
                                 cancellationToken: cancellationToken).ConfigureAwait(false);
                         }).ConfigureAwait(false);
+                        journalMutated = true;
                     }
                     catch (Exception ex)
                     {
@@ -2968,6 +2988,7 @@ namespace Aer.Daemon
                             "expired_during_shutdown",
                             cancellationToken: cancellationToken).ConfigureAwait(false);
 
+                        journalMutated = true;
                         continue;
                     }
 
@@ -2990,6 +3011,7 @@ namespace Aer.Daemon
                         toolName,
                         askedAt,
                         cancellationToken).ConfigureAwait(false);
+                    journalMutated = true;
 
                     // #1113: a re-raised young ask usually has no live PermissionGateTool left to
                     // enforce its own timeout — the worker that would write the timeout sentinel was
@@ -3011,7 +3033,13 @@ namespace Aer.Daemon
                                 await Task.Delay(remaining).ConfigureAwait(false);
                             }
 
-                            await RevokePendingGatesForRoomAsync(roomDir, expiryExecutionId, "timeout").ConfigureAwait(false);
+                            // #1171: the expiry fires minutes after startup, into clients that may
+                            // be rendering the gate — push the refreshed projection so the card
+                            // retires instead of lingering until an unrelated event broadcasts.
+                            await RevokePendingGatesForRoomAsync(
+                                roomDir, expiryExecutionId, "timeout",
+                                broadcastStateAsync,
+                                broadcastStateAsync is null ? null : () => TryLoadProjectionAsync(roomDir)).ConfigureAwait(false);
                         }
                         catch (Exception ex)
                         {
@@ -3030,6 +3058,46 @@ namespace Aer.Daemon
                     Console.Error.WriteLine(
                         $"reconcile: failed to re-raise permission ask '{askFile}': {ex.GetType().Name}: {ex.Message}");
                 }
+            }
+
+            // The push is wrapped like RevokePendingGatesForRoomAsync wraps its own (#1171 review):
+            // today's DaemonBroadcast never throws, but a future delegate that did would otherwise
+            // silently truncate reconciliation for every room enumerated after this one.
+            if (journalMutated && broadcastStateAsync is not null
+                && await TryLoadProjectionAsync(roomDir, cancellationToken).ConfigureAwait(false) is { } refreshed)
+            {
+                try
+                {
+                    await broadcastStateAsync(refreshed, roomDir).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        $"reconcile: broadcast after healing '{roomDir}' failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Best-effort projection load for reconcile broadcasts (#1171): a room whose snapshot is
+        /// absent or malformed must not kill reconciliation of the rest — the broadcast is skipped
+        /// loudly, the journal heal already happened.
+        /// </summary>
+        private static async Task<RoomProjection?> TryLoadProjectionAsync(string roomDir, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                return await RoomProjectionLoader.LoadAsync(roomDir, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"reconcile: projection load for broadcast failed for '{roomDir}': {ex.GetType().Name}: {ex.Message}");
+                return null;
             }
         }
     }
