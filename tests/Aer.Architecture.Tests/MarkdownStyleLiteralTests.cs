@@ -33,12 +33,9 @@ public class MarkdownStyleLiteralTests
             var lines = File.ReadAllLines(filePath);
             for (var i = 0; i < lines.Length; i++)
             {
-                // Strip line comments so prose about fonts cannot fire the scan; a literal hiding
-                // after `//` is not compiled and is not drift.
-                var code = StripLineComment(lines[i]);
-                if (FontLiteral.IsMatch(code) || ColorLiteral.IsMatch(code))
+                if (IsOffendingLine(lines[i]))
                 {
-                    offenders.Add($"{Path.GetFileName(filePath)}:{i + 1}: {code.Trim()}");
+                    offenders.Add($"{Path.GetFileName(filePath)}:{i + 1}: {lines[i].Trim()}");
                 }
             }
         }
@@ -51,19 +48,35 @@ public class MarkdownStyleLiteralTests
 
     /// <summary>
     /// The control arm: the exact line this test exists to keep out (the pre-#1125 renderer line)
-    /// must match, and the fixed line must not — a scan that fails both directions of that polarity
-    /// is a statement about the harness, not the sources.
+    /// must fire, and the fixed line must not — a scan that fails both directions of that polarity
+    /// is a statement about the harness, not the sources. Every fixture goes through
+    /// <see cref="IsOffendingLine"/>, the same path the real scan walks, so the comment-stripping
+    /// half is exercised too — a polarity check against the bare regexes would certify a scan whose
+    /// stripping had gone blind.
     /// </summary>
     [Fact]
     public void The_scan_discriminates_the_removed_literal_from_its_replacement()
     {
-        Assert.Matches(FontLiteral, @"private static readonly FontFamily MonospaceFont = new(""Cascadia Code, Consolas, monospace"");");
-        Assert.DoesNotMatch(FontLiteral, "private static readonly FontFamily MonospaceFont = new(AerFonts.Mono);");
+        Assert.True(IsOffendingLine(@"private static readonly FontFamily MonospaceFont = new(""Cascadia Code, Consolas, monospace"");"));
+        Assert.False(IsOffendingLine("private static readonly FontFamily MonospaceFont = new(AerFonts.Mono);"));
 
-        Assert.Matches(ColorLiteral, "Foreground = new SolidColorBrush(Color.Parse(\"#FF0000\"))");
-        Assert.Matches(ColorLiteral, "Foreground = Brushes.Red");
-        Assert.Matches(ColorLiteral, "Background = new SolidColorBrush(Colors.Black)");
-        Assert.DoesNotMatch(ColorLiteral, "border.Bind(Border.BackgroundProperty, border.GetResourceObservable(\"Color.SurfaceSubtle\"));");
+        Assert.True(IsOffendingLine("Foreground = new SolidColorBrush(Color.Parse(\"#FF0000\"))"));
+        Assert.True(IsOffendingLine("Foreground = Brushes.Red"));
+        Assert.True(IsOffendingLine("Background = new SolidColorBrush(Colors.Black)"));
+        Assert.False(IsOffendingLine("border.Bind(Border.BackgroundProperty, border.GetResourceObservable(\"Color.SurfaceSubtle\"));"));
+
+        // The stripping half of the pipeline, both polarities: prose about the old literal in a
+        // comment must not fire, and a live literal must still fire with a trailing comment present.
+        Assert.False(IsOffendingLine(@"    // previously new FontFamily(""Cascadia Code"") — see #1125"));
+        Assert.True(IsOffendingLine(@"    FontFamily = new FontFamily(""Cascadia Code"") // migrated later"));
+    }
+
+    private static bool IsOffendingLine(string rawLine)
+    {
+        // Strip line comments so prose about fonts cannot fire the scan; a literal hiding
+        // after `//` is not compiled and is not drift.
+        var code = StripLineComment(rawLine);
+        return FontLiteral.IsMatch(code) || ColorLiteral.IsMatch(code);
     }
 
     private static string StripLineComment(string line)

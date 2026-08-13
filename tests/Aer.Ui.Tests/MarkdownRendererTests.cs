@@ -236,15 +236,22 @@ public class MarkdownRendererTests
     }
 
     // #1125: the renderer previously named a Cascadia/Consolas platform chain here, which resolved
-    // to a different face per OS. Name alone would also pass for a same-named font installed on the
-    // machine — the asset-URI Key is what proves it is the copy shipped in this repo, the same
-    // discrimination ShippedTypefaceTests.AssertResolvesToAShippedAsset makes for the app-wide faces.
+    // to a different face per OS. Three layers, each discriminating a distinct failure: the Name pins
+    // which face was asked for; the asset-URI Key separates the repo's copy from a same-named font
+    // installed on the machine; and the live glyph resolution is the half a string check cannot
+    // give — an avares:// reference to a missing or misnamed asset parses fine and falls back
+    // silently (why ShippedTypefaceTests resolves through FontManager rather than checking strings).
     private static void AssertIsTheShippedCodeFace(FontFamily? family)
     {
         Assert.NotNull(family);
         Assert.Equal("JetBrains Mono", family.Name);
         Assert.NotNull(family.Key);
         Assert.Contains("Aer.Ui/Assets/Fonts", family.Key!.Source.ToString());
+
+        Assert.True(
+            FontManager.Current.TryGetGlyphTypeface(new Typeface(family), out var glyphTypeface),
+            $"{family} did not resolve to any typeface at all.");
+        Assert.Equal("JetBrains Mono", glyphTypeface.FamilyName);
     }
 
     private static IEnumerable<Control> GetAllControls(Control parent)
