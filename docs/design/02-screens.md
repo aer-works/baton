@@ -49,6 +49,19 @@ The readiness line is the real feature here. Every vendor CLI is authenticated o
 
 One room, one worker. This is the screen you look at most, so it has to be boring and fast. Nothing here is a mode you enter.
 
+> **Amendment (2026-08-14, #1204 / umbrella #1196):** A **workflow** room now opens in this screen too,
+> not on a separate one — its decisions are answered in the transcript where they were raised, and its
+> shape (steps, evidence, lineage, diff) sits beside the transcript rather than instead of it. The
+> drawings below are of a chat room, and they are unchanged for that case.
+>
+> The one thing they do not cover is the composer in a workflow room, and #1196 settled it: **present
+> but disabled**, with a sentence saying why — "This room's workers aren't conversational yet." Absent
+> was the alternative and it is the wrong one: a composer that vanishes reads as a capability that was
+> taken away, where a disabled one reads as a capability that has not arrived. It becomes live when
+> 0054's participant and turn identity land and a worker can be addressed. Until then the transcript
+> of a workflow room carries the room's own events — pause, decision, failure, cancellation — and not
+> the workers' turns, which is thin on purpose and disclosed rather than hidden.
+
 Desktop · one worker
 
 Baton

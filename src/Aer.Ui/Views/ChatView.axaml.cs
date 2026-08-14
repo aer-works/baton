@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Aer.Ui.Core;
 using Avalonia.Controls;
 using Avalonia.Input.Platform;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 
 namespace Aer.Ui.Views;
@@ -53,6 +54,32 @@ public partial class ChatView : UserControl
             && _subscribedChat is { HasPendingPermission: true })
         {
             Dispatcher.UIThread.Post(() => ChatMessagesScroll.ScrollToEnd());
+        }
+    }
+
+    /// <summary>
+    /// The feedback-file picker, moved here with the decision card it belongs to (#1196 slice 3) —
+    /// a real OS file dialog writing into <see cref="PausedStepViewModel.RevisionFilePath"/>, the
+    /// same property the visible text box binds (still swappable by hand, and what headless tests
+    /// set directly — a dialog cannot be driven headlessly).
+    /// </summary>
+    private async void OnChooseFeedbackFileClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is not PausedStepViewModel pausedStep ||
+            TopLevel.GetTopLevel(this)?.StorageProvider is not { CanOpen: true } storageProvider)
+        {
+            return;
+        }
+
+        var files = await storageProvider.OpenFilePickerAsync(new Avalonia.Platform.Storage.FilePickerOpenOptions
+        {
+            Title = "Choose the feedback file",
+            AllowMultiple = false,
+        });
+
+        if (files.Count == 1 && files[0].TryGetLocalPath() is { } localPath)
+        {
+            pausedStep.RevisionFilePath = localPath;
         }
     }
 

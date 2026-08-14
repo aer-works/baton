@@ -151,6 +151,37 @@ public sealed partial class ChatViewModel : ObservableObject
     /// </summary>
     public bool IsSessionOpen => RoomDirectoryPath != null;
 
+    /// <summary>
+    /// True while the room open in this rendering is a workflow room rather than a chat session
+    /// (#1196 slice 3). Both open here now — that is the whole point of the slice, a decision
+    /// answered where it was raised — but only one of them can be talked to, so the composer and
+    /// the "start new chat" entry point key on this rather than on <see cref="IsSessionOpen"/>.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsComposerVisible))]
+    [NotifyPropertyChangedFor(nameof(IsNewChatVisible))]
+    private bool isPipelineRoom;
+
+    /// <summary>
+    /// Whether the composer is on screen at all — true in a workflow room, where it is disabled
+    /// rather than removed. The choice and its reasoning are the dated 2026-08-14 amendment in
+    /// <c>docs/design/02-screens.md</c>, "Desktop · the daily driver".
+    /// </summary>
+    public bool IsComposerVisible => IsSessionOpen || IsPipelineRoom;
+
+    /// <summary>Whether it can be typed into — a workflow room's workers are not conversational yet.</summary>
+    public bool IsComposerEnabled => IsSessionOpen;
+
+    /// <summary>The "start new chat" entry point (#290) belongs to neither of the two open states.</summary>
+    public bool IsNewChatVisible => !IsSessionOpen && !IsPipelineRoom;
+
+    /// <summary>
+    /// Whether the room's shape — its steps, evidence, lineage and diff — is showing beside the
+    /// transcript. Pure presentation state, remembered for the session but never projected.
+    /// </summary>
+    [ObservableProperty]
+    private bool isShapePanelOpen;
+
     /// <summary>Adapters offered by the "start new chat" picker (#290) — populated from <see cref="Aer.Adapters.VendorCliPresence.Probe"/>, same source and same all-unavailable fallback ["claude","agy"] the existing template picker already uses, so the two entry points never disagree about what's offered.</summary>
     public ObservableCollection<string> AvailableAdapters { get; } = [];
 
@@ -354,20 +385,65 @@ public sealed partial class ChatViewModel : ObservableObject
         // The name is the SAME canonical derivation the switcher renders — never a second one (#461/#976).
         HeadlineText = RoomProjectionLoader.FriendlyNameFor(roomDirectoryPath);
         WorkerChipText = metadata.CurrentAdapter;
-        OnPropertyChanged(nameof(IsSessionOpen));
+        RaiseOpenStateChanged();
 
         RebuildMessages();
+    }
+
+    /// <summary>
+    /// Opens a workflow room in this rendering (#1196 slice 3): same transcript, same decision
+    /// cards, no session behind it. There is no <see cref="Aer.Adapters.SessionMetadata"/> for such a
+    /// room and there never will be — its content is the room's own event streams, which
+    /// <see cref="SurfacePendingPermission"/> already supplies.
+    /// </summary>
+    /// <param name="pausedSteps">
+    /// The room's open decisions as the render that just ran projected them. Passed in rather than
+    /// left to the next render because the caller's order is load-then-open: the decisions are
+    /// already built by the time this runs, and <see cref="Clear"/> — which the caller rightly calls
+    /// first, to drop any previous room's turns — takes them with it. Driving the built app is what
+    /// showed that: routing, composer and toggle were all correct on screen and the card simply was
+    /// not there, with every test green.
+    /// </param>
+    public void OpenPipelineRoom(string roomDirectoryPath, IReadOnlyList<PausedStepViewModel>? pausedSteps = null)
+    {
+        IsPipelineRoom = true;
+        ReconcilePendingDecisions(pausedSteps ?? []);
+        OnPropertyChanged(nameof(HasPendingDecision));
+        // The SAME canonical name derivation the switcher and the session path use, never a second
+        // one (#461/#976).
+        HeadlineText = RoomProjectionLoader.FriendlyNameFor(roomDirectoryPath);
+        RaiseOpenStateChanged();
+
+        RebuildMessages();
+    }
+
+    /// <summary>
+    /// <see cref="IsSessionOpen"/> is derived from a plain field rather than an observable property,
+    /// so every place that changes what "open" means has to say so — and the three states that read
+    /// from it move together or the composer contradicts the transcript.
+    /// </summary>
+    private void RaiseOpenStateChanged()
+    {
+        OnPropertyChanged(nameof(IsSessionOpen));
+        OnPropertyChanged(nameof(IsComposerVisible));
+        OnPropertyChanged(nameof(IsComposerEnabled));
+        OnPropertyChanged(nameof(IsNewChatVisible));
     }
 
     private void RebuildMessages()
     {
         Messages.Clear();
-        if (_lastMetadata is null)
+
+        // A workflow room has no session metadata and never will (#1196 slice 3), so the early
+        // return that used to guard this method would have left its transcript permanently empty —
+        // every decision row and pause dropped on the floor, in the surface built to show them.
+        // Its streams come from the projection instead, by way of SurfacePendingPermission.
+        if (_lastMetadata is null && !IsPipelineRoom)
         {
             return;
         }
 
-        var turns = _lastMetadata.Turns;
+        var turns = _lastMetadata?.Turns ?? [];
         var answers = _answersClearedThrough is { } clearedThroughAnswers
             ? _permissionAnswers.Where(a => a.AnsweredAt > clearedThroughAnswers).ToList()
             : _permissionAnswers;
@@ -757,8 +833,12 @@ public sealed partial class ChatViewModel : ObservableObject
         InvokableCommands.Clear();
         InfoCommands.Clear();
         IsCommandMenuOpen = false;
+        IsPipelineRoom = false;
+        IsShapePanelOpen = false;
+        PendingDecisions.Clear();
         OnPropertyChanged(nameof(HasQueuedMessages));
-        OnPropertyChanged(nameof(IsSessionOpen));
+        OnPropertyChanged(nameof(HasPendingDecision));
+        RaiseOpenStateChanged();
     }
 
     /// <summary>Populates <see cref="AvailableAdapters"/> from a live PATH probe (#290) — same source and fallback as the desktop template picker's own vendor combo, so the two entry points never disagree about what's offered. Safe to call repeatedly; caller decides cadence (once at startup is enough since PATH doesn't change mid-session in practice).</summary>

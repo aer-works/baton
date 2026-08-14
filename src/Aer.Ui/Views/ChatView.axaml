@@ -20,6 +20,12 @@
               CornerRadius="20" Padding="10,2">
         <TextBlock Classes="caption" Text="{Binding Chat.WorkerChipText}" VerticalAlignment="Center" />
       </Border>
+      <!-- Offered only for a workflow room: a chat session's single repeatedly-superseded step has
+           no graph worth drawing (ChatViewModel's own remarks). What the panel holds and where it
+           renders is on ChatViewModel.IsShapePanelOpen and MainWindow.ApplyShellLayout. -->
+      <ToggleButton x:Name="ChatShapeToggle" VerticalAlignment="Center" Content="Shape"
+                    IsVisible="{Binding Chat.IsPipelineRoom}"
+                    IsChecked="{Binding Chat.IsShapePanelOpen}" />
     </StackPanel>
 
     <!-- Persistent mode indicator (#286): mode buttons live in the collapsed Commands panel below,
@@ -79,18 +85,27 @@
           </StackPanel>
         </ScrollViewer>
       </Border>
+      <!-- The sentence beside the disabled composer. Why it is disabled rather than removed is on
+           ChatViewModel.IsComposerVisible, which cites the design record that settled it. -->
+      <TextBlock Classes="caption secondary" TextWrapping="Wrap" Margin="0,0,0,4"
+                 IsVisible="{Binding Chat.IsPipelineRoom}"
+                 Text="This room's workers aren't conversational yet — you can answer its decisions here, but not talk to it." />
       <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}"
-                  IsVisible="{Binding Chat.IsSessionOpen}">
+                  IsVisible="{Binding Chat.IsComposerVisible}">
         <!-- AcceptsReturn stays true so Shift+Enter inserts a newline; a bare Enter is intercepted by
              MainWindow's OnChatInputBoxKeyDown and sends instead. -->
         <!-- #1074 (slice of #462): the composer never disables while a turn is in flight — a send
              then queues (below) instead of posting a concurrent turn. "A busy anything is never a
-             reason you cannot act" (02-screens.md). -->
+             reason you cannot act" (02-screens.md). IsComposerEnabled is a different question:
+             whether this room can be talked to at all, which a pipeline room cannot. -->
         <TextBox x:Name="ChatInputBox" Width="600" AcceptsReturn="True" MaxHeight="80"
                  Text="{Binding Chat.InputText}"
+                 IsEnabled="{Binding Chat.IsComposerEnabled}"
                  PlaceholderText="Reply…" />
-        <Button x:Name="ChatSendButton" Classes="accent" Content="Send" />
-        <Button x:Name="ChatCommandsButton" Content="Commands" />
+        <Button x:Name="ChatSendButton" Classes="accent" Content="Send"
+                IsEnabled="{Binding Chat.IsComposerEnabled}" />
+        <Button x:Name="ChatCommandsButton" Content="Commands"
+                IsEnabled="{Binding Chat.IsComposerEnabled}" />
         <ProgressBar IsIndeterminate="True" Width="20" Height="20" VerticalAlignment="Center"
                      IsVisible="{Binding Chat.IsSending}" />
       </StackPanel>
@@ -122,7 +137,7 @@
            plain chat. Working directory is optional — omitting it starts a plain chat session, same
            as the template picker's own "chat session" option with no project directory set. -->
       <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}"
-                  IsVisible="{Binding !Chat.IsSessionOpen}">
+                  IsVisible="{Binding Chat.IsNewChatVisible}">
         <!-- #981: OneWay, deliberately. Two-way SelectedItem let the control write its own
              cleared selection (from every ItemsSource Clear/refill) back into NewChatAdapter,
              after which each re-assert pushed null and the combo rendered blank while the
@@ -202,7 +217,92 @@
             </StackPanel>
           </StackPanel>
         </Border>
+
+        <!-- #1196 slice 3: the room's open decisions, moved here from RoomView unchanged — same
+             template, same commands, same feedback-file row. A position move is the shipped
+             convention of this family (#1145/#1174/#1177/#1181/#1185), and it is a MOVE rather than a
+             copy on purpose: two places to answer the same decision would be two decision surfaces,
+             which is the thing this slice exists to end.
+             Needs-you first: the review gate's inline decisions, in plain words, before anything
+             read-only. Same M15 commands, same semantics — Approve is Resume, Send back is
+             Supersede (feedback file mandatory), Retry is RetryWithRevision (§17). -->
+        <ItemsControl x:Name="PausedStepsList" ItemsSource="{Binding Chat.PendingDecisions}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:PausedStepViewModel">
+              <Border Classes="card needs-you" Margin="0,0,0,8">
+                <StackPanel Spacing="{DynamicResource Space.3}">
+                  <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
+                    <Path Data="{StaticResource Icon.Dot}" Fill="{DynamicResource Status.NeedsInput}"
+                          Width="13" Height="13" Stretch="Uniform" VerticalAlignment="Center" />
+                    <TextBlock Classes="heading" Text="{Binding StepId, StringFormat='Waiting for your review — {0}'}" />
+                  </StackPanel>
+                  <TextBlock Classes="caption" Text="{Binding Label}" />
+                  <!-- Wraps rather than clips (#1204). The transcript column narrows when the Shape
+                       panel opens beside it, and the horizontal StackPanel this replaces cut "Send
+                       back" and the supplementary fields off the right edge — found by driving the
+                       built app, invisible to every headless test, which measures no width. -->
+                  <WrapPanel ItemSpacing="8" LineSpacing="8">
+                    <!-- #218: Approve/Retry/Reject reuse the status check/refresh/cross glyphs
+                         already established (#206) — same shapes, same meaning, no new vocabulary. -->
+                    <Button Classes="accent" Command="{Binding ApproveCommand}"
+                            ToolTip.Tip="Accept this step's output and let the workflow continue.">
+                      <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
+                        <Path Classes="action-icon" Data="{StaticResource Icon.Check}"
+                              StrokeThickness="1.6" StrokeLineCap="Round" StrokeJoin="Round"
+                              Width="12" Height="12" Stretch="Uniform" VerticalAlignment="Center" />
+                        <AccessText Text="A_pprove" VerticalAlignment="Center" />
+                      </StackPanel>
+                    </Button>
+                    <Button Command="{Binding RetryCommand}"
+                            ToolTip.Tip="Run this step again, optionally with your feedback file attached.">
+                      <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
+                        <Path Classes="action-icon" Data="{StaticResource Icon.Refresh}"
+                              StrokeThickness="1.4" StrokeLineCap="Round" StrokeJoin="Round"
+                              Width="12" Height="12" Stretch="Uniform" VerticalAlignment="Center" />
+                        <AccessText Text="_Retry this step" VerticalAlignment="Center" />
+                      </StackPanel>
+                    </Button>
+                    <Button Command="{Binding RejectCommand}"
+                            ToolTip.Tip="End this step here — the workflow does not continue past it.">
+                      <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
+                        <Path Classes="action-icon" Data="{StaticResource Icon.Cross}"
+                              StrokeThickness="1.6" StrokeLineCap="Round" StrokeJoin="Round"
+                              Width="12" Height="12" Stretch="Uniform" VerticalAlignment="Center" />
+                        <AccessText Text="Re_ject" VerticalAlignment="Center" />
+                      </StackPanel>
+                    </Button>
+                    <ItemsControl ItemsSource="{Binding SendBackTargets}">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                          <StackPanel Orientation="Horizontal" Spacing="8" />
+                        </ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:SendBackTargetViewModel">
+                          <Button Content="{Binding Label}" Command="{Binding SendBackCommand}"
+                                  ToolTip.Tip="Send the work back to an earlier step, with your feedback file — the feedback is what that step revises against." />
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </WrapPanel>
+                  <WrapPanel ItemSpacing="8" LineSpacing="8">
+                    <TextBlock Text="Feedback file:" VerticalAlignment="Center" />
+                    <TextBox Text="{Binding RevisionFilePath}" Width="260"
+                             PlaceholderText="Optional for Retry, required to send back" />
+                    <Button Content="Choose file…" Click="OnChooseFeedbackFileClick" />
+                    <TextBlock Text="Worker:" VerticalAlignment="Center" />
+                    <TextBox Text="{Binding SupplementaryWorker}" Width="110" />
+                    <TextBlock Text="Output:" VerticalAlignment="Center" />
+                    <TextBox Text="{Binding SupplementaryOutputName}" Width="110" />
+                  </WrapPanel>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <TextBlock x:Name="DecisionStatusText" Text="{Binding DecisionStatusText}" />
       </StackPanel>
     </ScrollViewer>
   </DockPanel>
 </UserControl>
+

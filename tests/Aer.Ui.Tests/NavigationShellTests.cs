@@ -204,8 +204,11 @@ public class NavigationShellTests
 
             await window.LandOnTopRoomAsync(TestContext.Current.CancellationToken);
 
-            Assert.Equal(ShellSection.Task, window.ViewModel.CurrentSection);
-            Assert.True(window.ViewModel.IsRoomVisible);
+            // Since #1196 slice 3 the room it lands in is the transcript, not the shape — what this
+            // fact is about is that startup lands in the work rather than on Home, and that claim is
+            // unchanged.
+            Assert.Equal(ShellSection.Chat, window.ViewModel.CurrentSection);
+            Assert.True(window.ViewModel.IsChatVisible);
             Assert.False(window.ViewModel.IsHomeVisible);
         }
         finally
@@ -228,7 +231,11 @@ public class NavigationShellTests
     }
 
     [AvaloniaFact]
-    public async Task OpenAsync_navigates_to_the_task_section()
+    /// <summary>
+    /// One room, one surface (#1196 slice 3): a workflow room lands in the same rendering a chat
+    /// session does, and is marked as a pipeline room — the flag the composer's three states read.
+    /// </summary>
+    public async Task OpenAsync_routes_a_workflow_room_to_the_transcript()
     {
         var executionId = new ExecutionId("a-1");
         var roomDirectory = await CreateRoomDirectoryAsync(
@@ -243,9 +250,48 @@ public class NavigationShellTests
             var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
             await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
 
-            Assert.Equal(ShellSection.Task, window.ViewModel.CurrentSection);
-            Assert.True(window.ViewModel.IsRoomVisible);
+            Assert.Equal(ShellSection.Chat, window.ViewModel.CurrentSection);
+            Assert.True(window.ViewModel.IsChatVisible);
             Assert.False(window.ViewModel.IsHomeVisible);
+
+            Assert.True(window.ViewModel.Chat.IsPipelineRoom);
+            Assert.True(window.ViewModel.Chat.IsComposerVisible);
+            // The whole of the composer's honesty: on screen, saying what it is, and refusing typing.
+            Assert.False(window.ViewModel.Chat.IsComposerEnabled);
+            Assert.False(window.ViewModel.Chat.IsNewChatVisible);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// The room's open decision is on the transcript the moment it opens, not one render later.
+    /// <para>
+    /// This exists because everything above it passed while the card was invisible in the running app:
+    /// <c>OpenAsync</c> loads the projection (building the decisions) and only then clears the chat for
+    /// the incoming room, which threw them away. Nothing that asserts on sections or composer state can
+    /// see that, and only driving the built app did. What discriminates here is asserting the card
+    /// after the WHOLE open path, rather than calling the view model's own entry point directly.
+    /// </para>
+    /// </summary>
+    [AvaloniaFact]
+    public async Task OpenAsync_puts_a_paused_workflow_rooms_decision_on_the_transcript()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            var decision = Assert.Single(window.ViewModel.Chat.PendingDecisions);
+            Assert.Equal(Critic, decision.StepId);
+            Assert.True(window.ViewModel.Chat.HasPendingDecision);
+
+            // The same instance the room's own paused-step list holds, not a second one built for the
+            // transcript — one decision, answered once, wherever it is rendered.
+            Assert.Same(Assert.Single(window.ViewModel.PausedSteps), decision);
         }
         finally
         {

@@ -130,7 +130,39 @@ public partial class MainWindow : Window
     internal TextBlock StatusText => RoomViewControl.StatusText;
     internal StackPanel StepsPanel => RoomViewControl.StepsPanel;
     internal TextBlock CancelStatusText => RoomViewControl.CancelStatusText;
-    internal TextBlock DecisionStatusText => RoomViewControl.DecisionStatusText;
+    // #1196 slice 3: follows the decision cards into the transcript. The status of answering a
+    // decision belongs beside the decision, not in the panel that no longer offers it.
+    internal TextBlock DecisionStatusText => ChatViewControl.DecisionStatusText;
+
+    /// <summary>The width the room's shape takes beside a transcript. Wide enough for the DAG's own minimum plus its drill-in.</summary>
+    private const double ShapePanelWidth = 460;
+
+    /// <summary>
+    /// Which of the shell's two columns holds the width (#1196 slice 3). Three states, and the
+    /// middle one is the whole point of the slice:
+    /// <list type="bullet">
+    /// <item><c>ShellSection.Task</c> — the shape alone, full width. What opening a room used to do,
+    /// and still what a template file opened by path does until slice 5 retires the section.</item>
+    /// <item>A workflow room in the transcript with its shape toggled on — both, side by side.</item>
+    /// <item>Anything else — the shape is not on screen at all, and its column takes no space.</item>
+    /// </list>
+    /// Imperative rather than bound because <c>GridLength</c> is an Avalonia type and
+    /// <see cref="MainWindowViewModel"/> is deliberately Avalonia-free.
+    /// </summary>
+    private void ApplyShellLayout()
+    {
+        var shapeAlone = ViewModel.IsRoomVisible;
+        var shapeBeside = ViewModel.IsChatVisible && ViewModel.Chat.IsPipelineRoom && ViewModel.Chat.IsShapePanelOpen;
+
+        MainRegion.IsVisible = !shapeAlone;
+        ShapeRegion.IsVisible = shapeAlone || shapeBeside;
+        // NaN is "unset", which lets the column's own width decide — a star column fills, an Auto
+        // column would collapse to content, which is why the two cases set different column widths.
+        ShapeRegion.Width = shapeAlone ? double.NaN : ShapePanelWidth;
+
+        ShellGrid.ColumnDefinitions[0].Width = shapeAlone ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        ShellGrid.ColumnDefinitions[1].Width = shapeAlone ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
+    }
     internal Canvas DagCanvas => RoomViewControl.DagCanvas;
     internal StackPanel HistoryPanel => RoomViewControl.HistoryPanel;
     internal StackPanel ConversationExecutionsPanel => RoomViewControl.ConversationExecutionsPanel;
@@ -467,7 +499,20 @@ public partial class MainWindow : Window
             {
                 _ = ShowSelectedStepFirstOutputAsync();
             }
+
+            if (e.PropertyName == nameof(MainWindowViewModel.CurrentSection))
+            {
+                ApplyShellLayout();
+            }
         };
+        ViewModel.Chat.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(ChatViewModel.IsShapePanelOpen) or nameof(ChatViewModel.IsPipelineRoom))
+            {
+                ApplyShellLayout();
+            }
+        };
+        ApplyShellLayout();
         Closed += (_, _) =>
         {
             _liveRefreshTimer.Stop();
@@ -729,9 +774,13 @@ public partial class MainWindow : Window
         }
         else
         {
+            // The fork above is no longer "which screen" — both kinds of room render in the
+            // transcript — only "is there a session to talk to", which is what IsPipelineRoom
+            // carries into the composer.
             ViewModel.Chat.Clear();
-            ViewModel.CurrentSection = ShellSection.Task;
-            _lastRoomSection = ShellSection.Task;
+            ViewModel.Chat.OpenPipelineRoom(roomDirectoryPath, ViewModel.PausedSteps);
+            ViewModel.CurrentSection = ShellSection.Chat;
+            _lastRoomSection = ShellSection.Chat;
         }
 
         if (_session.LastLoadSucceeded)
