@@ -186,7 +186,7 @@ public class NavigationShellTests
 
         Assert.Equal(ShellSection.Home, window.ViewModel.CurrentSection);
         Assert.True(window.ViewModel.IsHomeVisible);
-        Assert.False(window.ViewModel.IsRoomVisible);
+        Assert.False(window.ViewModel.IsChatVisible);
         // #1071: a bare launch lands on the ▤ front door's first-run surface, with no room open.
         Assert.True(window.ViewModel.Home.HasNoRooms);
     }
@@ -623,9 +623,106 @@ public class NavigationShellTests
     }
 
     /// <summary>
-    /// The shell's three layout states (#1196 slice 3). Driving the built app is what verifies this
-    /// looks right; what this pins is that each state still puts the width on the column whose
-    /// content is actually visible, which is the part a later edit can silently invert.
+    /// #1222: a workflow file is not a room, and opening one by path says so instead of drawing its
+    /// graph as though it were. Why — the corpus passages that decide it, and where the capability
+    /// went instead — is in <c>MainWindow.OpenAsync</c>, beside the branch this pins.
+    /// <para>
+    /// The discriminating assertion is the empty canvas, not the message: the retired branch also
+    /// wrote to <c>StatusText</c>, and only the graph tells the two apart.
+    /// </para>
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Opening_a_workflow_file_by_path_says_it_is_not_a_room_and_draws_no_graph()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"ui-shell-file-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(testRoot);
+        try
+        {
+            var definition = new WorkflowDefinition(
+                new WorkflowTemplateId("two-step"),
+                1,
+                [
+                    new WorkflowStepDefinition(new StepId("architect"), "architect", [], ["plan"], [], new RetryPolicy(1)),
+                    new WorkflowStepDefinition(new StepId("critic"), "critic", ["plan"], ["review"], [new StepId("architect")], new RetryPolicy(1)),
+                ]);
+            var workflowFilePath = Path.Combine(testRoot, "workflow.json");
+            await File.WriteAllTextAsync(
+                workflowFilePath,
+                System.Text.Json.JsonSerializer.Serialize(definition),
+                TestContext.Current.CancellationToken);
+
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.InitializeAsync(TestContext.Current.CancellationToken);
+
+            await window.OpenAsync(workflowFilePath, TestContext.Current.CancellationToken);
+
+            Assert.Empty(window.DagCanvas.Children);
+            Assert.Contains("not a room", window.FindViewControl<TextBlock>("StatusText")!.Text);
+            Assert.Contains("Author", window.FindViewControl<TextBlock>("StatusText")!.Text);
+            // It did not navigate anywhere either — a file cannot be the record the shell has open.
+            Assert.Equal(ShellSection.Home, window.ViewModel.CurrentSection);
+            // And it did not quietly start an editing session instead: M14 Phase 3's separation of
+            // inspecting from authoring outlives the read-only view it was written about, so this
+            // half of the retired MainWindowTemplateEditorTests fact lives on here.
+            Assert.False(window.ViewModel.TemplateEditor.IsOpen);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1222: and it leaves the room you already had open exactly as it was. A mistyped path is a
+    /// mistake, not a command to close anything, so the transcript, its section and its live refresh
+    /// all stay — only the message changes.
+    /// <para>
+    /// This is the successor to <c>MainWindowDagTests.Opening_a_template_does_not_start_the_live_refresh_timer</c>,
+    /// whose claim was that a file cannot change so nothing should poll for it. With no template
+    /// rendering left, the honest version of that claim is about what the open room's poller does,
+    /// which is: keep running, because that room really can change.
+    /// </para>
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Opening_a_workflow_file_by_path_leaves_the_room_already_open_alone()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        var testRoot = Path.Combine(Path.GetTempPath(), $"ui-shell-file-open-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(testRoot);
+        try
+        {
+            var workflowFilePath = Path.Combine(testRoot, "workflow.json");
+            await File.WriteAllTextAsync(
+                workflowFilePath,
+                System.Text.Json.JsonSerializer.Serialize(new WorkflowDefinition(
+                    new WorkflowTemplateId("one-step"),
+                    1,
+                    [new WorkflowStepDefinition(new StepId("architect"), "architect", [], ["plan"], [], new RetryPolicy(1))])),
+                TestContext.Current.CancellationToken);
+
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+            var headlineWhileOpen = window.ViewModel.Chat.HeadlineText;
+
+            await window.OpenAsync(workflowFilePath, TestContext.Current.CancellationToken);
+
+            Assert.Equal(ShellSection.Chat, window.ViewModel.CurrentSection);
+            Assert.Equal(headlineWhileOpen, window.ViewModel.Chat.HeadlineText);
+            Assert.True(window.ViewModel.Chat.IsPipelineRoom);
+            Assert.Contains("not a room", window.FindViewControl<TextBlock>("StatusText")!.Text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// The shell's layout states — three at #1196 slice 3, two since #1222 retired the full-width
+    /// shape. Driving the built app is what verifies this looks right; what this pins is that each
+    /// state still puts the width on the column whose content is actually visible, which is the part
+    /// a later edit can silently invert, and that the retired state does not come back by accident.
     /// </summary>
     [AvaloniaFact]
     public async Task Each_shell_layout_state_puts_the_width_on_the_column_that_is_showing()
@@ -649,13 +746,15 @@ public class NavigationShellTests
             Assert.Equal(new GridLength(1, GridUnitType.Star), window.MainColumnWidth);
             Assert.Equal(GridLength.Auto, window.ShapeColumnWidth);
 
-            // The Task section: the shape alone, and the transcript's column gives up its width
-            // rather than merely hiding its content.
-            window.ViewModel.CurrentSection = ShellSection.Task;
-            Assert.False(window.IsMainRegionVisible);
-            Assert.True(window.IsShapeRegionVisible);
-            Assert.Equal(GridLength.Auto, window.MainColumnWidth);
-            Assert.Equal(new GridLength(1, GridUnitType.Star), window.ShapeColumnWidth);
+            // #1222 retired the third state — the shape alone, full width, the transcript's column
+            // giving up its width entirely. There is no section left that produces it, so the
+            // transcript is never the thing that yields: switching the shape back off returns to
+            // exactly the state above it, and the transcript stays.
+            window.ViewModel.Chat.IsShapePanelOpen = false;
+            Assert.True(window.IsMainRegionVisible);
+            Assert.False(window.IsShapeRegionVisible);
+            Assert.Equal(new GridLength(1, GridUnitType.Star), window.MainColumnWidth);
+            Assert.Equal(GridLength.Auto, window.ShapeColumnWidth);
         }
         finally
         {
@@ -663,7 +762,13 @@ public class NavigationShellTests
         }
     }
 
-    /// <summary>M24 Phase 1 desktop chat UI (issue #262): opening a directory that materialized an interactive session (.aer/session.json present) routes to the dedicated Chat view instead of the generic Task view — see <c>MainWindow.OpenAsync</c>'s remarks.</summary>
+    /// <summary>
+    /// M24 Phase 1 desktop chat UI (issue #262): opening a directory that materialized an interactive
+    /// session (.aer/session.json present) loads that session into the transcript — see
+    /// <c>MainWindow.OpenAsync</c>'s remarks. What this used to pin was the *routing* — Chat rather
+    /// than the generic Task view — and since #1222 there is nowhere else to route to, so what is
+    /// left to pin is that the session's own identity arrives with it.
+    /// </summary>
     [AvaloniaFact]
     public async Task OpenAsync_routes_an_interactive_session_directory_to_the_chat_section()
     {
@@ -681,7 +786,6 @@ public class NavigationShellTests
 
             Assert.Equal(ShellSection.Chat, window.ViewModel.CurrentSection);
             Assert.True(window.ViewModel.IsChatVisible);
-            Assert.False(window.ViewModel.IsRoomVisible);
             Assert.Equal(metadata.SessionId, window.ViewModel.Chat.SessionId);
         }
         finally
@@ -936,7 +1040,6 @@ public class NavigationShellTests
 
         Assert.True(window.ViewModel.IsRoomsVisible);
         Assert.False(window.ViewModel.IsHomeVisible);
-        Assert.False(window.ViewModel.IsRoomVisible);
         Assert.False(window.ViewModel.IsChatVisible);
         Assert.False(window.ViewModel.IsSettingsVisible);
     }
@@ -956,7 +1059,6 @@ public class NavigationShellTests
 
         Assert.True(window.ViewModel.IsSettingsVisible);
         Assert.False(window.ViewModel.IsHomeVisible);
-        Assert.False(window.ViewModel.IsRoomVisible);
         Assert.False(window.ViewModel.IsChatVisible);
         Assert.False(window.ViewModel.IsRoomsVisible);
 

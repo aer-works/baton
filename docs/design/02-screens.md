@@ -235,6 +235,8 @@ A template names the shape and the roles. It does not name the folder — that i
 
 "Edit shape" is the only door to the editor — and the editor edits a template, never a running room. That separation is what stops the graph creeping back into the daily path. A template deliberately does not remember a folder, so one shape serves every project.
 
+**Amendment (2026-08-14, #1222 / umbrella #1196):** Typing a workflow file's path into Home's room box used to render that template's shape full width, read-only, under a "not a running room" banner. That rendering is gone, and this is a design call, not a consequence of the passages above — "Edit shape" being the only door to the editor governs the editor, and this route never was one. It goes because it was a third place a template's graph appeared, reachable only by putting a file where a directory belongs, and Author already shows the same graph and can edit it. A file path in the room box now gets a plain correction pointing at Author. A mistake deserves a sentence, not a screen.
+
 ### Drawing a shape
 
 The one place the product asks you to think structurally. It gets the strongest opinion in this document: it is not a freeform canvas.

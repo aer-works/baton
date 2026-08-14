@@ -152,32 +152,29 @@ public partial class MainWindow : Window
     private const double ShapePanelWidth = 460;
 
     /// <summary>
-    /// Which of the shell's two columns holds the width (#1196 slice 3). Three states, and the
-    /// middle one is the whole point of the slice:
-    /// <list type="bullet">
-    /// <item><c>ShellSection.Task</c> — the shape alone, full width. What opening a room used to do,
-    /// and still what a template file opened by path does until slice 5 retires the section.</item>
-    /// <item>A workflow room in the transcript with its shape toggled on — both, side by side.</item>
-    /// <item>Anything else — the shape is not on screen at all, and its column takes no space.</item>
-    /// </list>
+    /// Whether the shape sits beside the transcript (#1196 slice 3), and how wide it is. Two states
+    /// since #1222 retired <c>ShellSection.Task</c>: a workflow room whose shape is toggled on shows
+    /// both side by side, and anything else shows no shape at all, its column taking no space. The
+    /// third state — the shape alone, full width — is gone with the section that was its only route,
+    /// which is what "a room has one rendering" means concretely.
+    /// <para>
     /// Imperative rather than bound because <c>GridLength</c> is an Avalonia type and
     /// <see cref="MainWindowViewModel"/> is deliberately Avalonia-free.
+    /// </para>
     /// </summary>
     private void ApplyShellLayout()
     {
-        var shapeAlone = ViewModel.IsRoomVisible;
         var shapeBeside = ViewModel.IsChatVisible && ViewModel.Chat.IsShapeToggleVisible && ViewModel.Chat.IsShapePanelOpen;
 
-        MainRegion.IsVisible = !shapeAlone;
-        ShapeRegion.IsVisible = shapeAlone || shapeBeside;
-        // NaN is "unset", which lets the column's own width decide — a star column fills, an Auto
-        // column would collapse to content, which is why the two cases set different column widths.
-        ShapeRegion.Width = shapeAlone ? double.NaN : ShapePanelWidth;
+        MainRegion.IsVisible = true;
+        ShapeRegion.IsVisible = shapeBeside;
+        ShapeRegion.Width = ShapePanelWidth;
 
-        // Auto, not a zero pixel width, for whichever column is hiding its content: an Auto column
-        // sizes to an invisible child as zero, and a zero GridLength does not survive on this grid.
-        ShellGrid.ColumnDefinitions[0].Width = shapeAlone ? GridLength.Auto : new GridLength(1, GridUnitType.Star);
-        ShellGrid.ColumnDefinitions[1].Width = shapeAlone ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
+        // Auto, not a zero pixel width, for the shape column when it is hiding its content: an Auto
+        // column sizes to an invisible child as zero, and a zero GridLength does not survive on this
+        // grid.
+        ShellGrid.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
+        ShellGrid.ColumnDefinitions[1].Width = GridLength.Auto;
     }
     /// <summary>What <see cref="ApplyShellLayout"/> last decided, for the test that pins its three states.</summary>
     internal bool IsMainRegionVisible => MainRegion.IsVisible;
@@ -331,12 +328,13 @@ public partial class MainWindow : Window
             RefreshBindingsTemplateCrossCheck();
         };
         CheckBindingsAgainstTemplateButton.Click += (_, _) => RefreshBindingsTemplateCrossCheck();
-        // #1071: one ▤ Rooms button covers the front door. With a room open it returns to that room's
-        // own pane (Task or Chat, whichever OpenAsync last showed — _lastRoomSection); with nothing
-        // open it lands on the first-run/empty surface (Home). #336 folded Chat into "the record you
-        // have open"; this folds Home in too, so the rail is the three glyphs 02-screens draws.
+        // #1071: one ▤ Rooms button covers the front door. With a room open it returns to that room;
+        // with nothing open it lands on the first-run/empty surface (Home). #336 folded Chat into
+        // "the record you have open"; this folds Home in too, so the rail is the three glyphs
+        // 02-screens draws. Which pane to return to stopped being a question at #1222 — a room has
+        // one rendering — so this no longer remembers one.
         NavRoomsButton.Click += (_, _) => ViewModel.CurrentSection =
-            _session.CurrentRoomDirectoryPath is not null ? _lastRoomSection : ShellSection.Home;
+            _session.CurrentRoomDirectoryPath is not null ? ShellSection.Chat : ShellSection.Home;
         NavAuthorButton.Click += (_, _) => ViewModel.CurrentSection = ShellSection.Author;
         NavSettingsButton.Click += (_, _) => ViewModel.CurrentSection = ShellSection.Settings;
         // #336: Chat and Tasks are no longer rail destinations. Chat is reached by opening a session
@@ -497,19 +495,14 @@ public partial class MainWindow : Window
         };
         // M19 Phase 4 (#189): Save & Run without leaving the flow — each run gets a fresh room
         // directory beside the authored files (one workspace per workflow, rooms inside it), then
-        // the shell navigates to the Task view and drives the same RunAsync as the Run button.
-        ViewModel.NewWorkflow.RunRequested += async (workflowFilePath, bindingsFilePath) =>
-        {
-            var roomDirectoryPath = System.IO.Path.Combine(
-                System.IO.Path.GetDirectoryName(workflowFilePath)!,
-                $"room-{DateTime.Now:yyyyMMdd-HHmmss}");
-            ViewModel.CurrentSection = ShellSection.Task;
-            // #1071: Save & Run shows a workflow room in the Task pane, so the ▤ button must return
-            // here (not a stale Chat) if the user later navigates away and back. RunAsync sets the
-            // session's current room; _lastRoomSection is the other half of that invariant.
-            _lastRoomSection = ShellSection.Task;
-            await RunAsync(roomDirectoryPath, workflowFilePath, bindingsFilePath);
-        };
+        // the shell shows that room and drives the same RunAsync every other caller drives.
+        //
+        // #1222: it shows it as a transcript, like every other room. It used to navigate to the Task
+        // pane, which meant a room started here rendered as a full-width graph for exactly as long as
+        // its pump ran and then became a transcript underneath the person when the run settled and
+        // the reopen callback (see reopenRoomAsync above) called OpenAsync. One room, two renderings,
+        // swapping mid-run.
+        ViewModel.NewWorkflow.RunRequested += StartAuthoredRunAsync;
         // #211: the Outputs preview box is imperative control state, not bound — nothing cleared
         // or refreshed it when the drill-in moved to a different step, so it kept showing the
         // previously-selected step's last-previewed file. Clear on every change, then auto-load
@@ -727,15 +720,6 @@ public partial class MainWindow : Window
     private bool _isOpeningFromSwitcher;
 
     /// <summary>
-    /// Which pane the currently-open room renders in — <see cref="ShellSection.Task"/> or
-    /// <see cref="ShellSection.Chat"/>, set by <see cref="OpenAsync"/> (#1071). The one ▤ Rooms rail
-    /// button uses it to return to the open room's own pane when clicked from Author/Settings, so a
-    /// session room doesn't snap to the workflow pane. Defaults to Task; only meaningful while
-    /// <c>_session.CurrentRoomDirectoryPath</c> is non-null.
-    /// </summary>
-    private ShellSection _lastRoomSection = ShellSection.Task;
-
-    /// <summary>
     /// Opens the record a switcher row points at (#336). Routing between the chat and workflow panes
     /// is <see cref="OpenAsync"/>'s existing job — it already decides by whether the directory has
     /// session metadata, the same structural fact <see cref="RoomFleetItem.IsSession"/> carries, so
@@ -766,13 +750,15 @@ public partial class MainWindow : Window
     {
         RoomDirectoryPathBox.Text = roomDirectoryPath;
 
+        // #1222: a file is not a room, and this no longer draws one as though it were. The decision
+        // and its reasons are 02-screens.md's #1222 amendment — including that it IS a decision
+        // rather than a reading of the passages around it, which a second reader was right to press
+        // on. Said rather than silently ignored: the box is labelled "Room directory", so a file in
+        // it is a mistake worth a sentence.
         if (File.Exists(roomDirectoryPath) && !Directory.Exists(roomDirectoryPath))
         {
-            ViewModel.CurrentSection = ShellSection.Task;
-            ViewModel.WorkflowTemplateFilePath = roomDirectoryPath;
-            _session.SetCurrentRoomDirectory(null);
-            await LoadTemplateAsync(roomDirectoryPath, cancellationToken);
-            _liveRefreshTimer.Stop();
+            StatusText.Text =
+                "That is a file, not a room. A workflow file is opened in Author — Edit shape.";
             return;
         }
 
@@ -783,26 +769,23 @@ public partial class MainWindow : Window
 
         await LoadAsync(roomDirectoryPath, cancellationToken);
 
-        // M24 Phase 1 (issue #262): a directory that materialized an interactive session
-        // (.aer/room.json marker with Kind=Interactive) routes to the dedicated Chat view instead of the generic
-        // Task view opened above — see RoomClient.LoadSessionMetadataAsync's remarks.
+        // M24 Phase 1 (issue #262): whether the directory materialized an interactive session
+        // (.aer/room.json marker with Kind=Interactive) — see RoomClient.LoadSessionMetadataAsync's
+        // remarks.
         var sessionMetadata = await _session.LoadSessionMetadataAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(true);
+        ViewModel.CurrentSection = ShellSection.Chat;
         if (sessionMetadata != null)
         {
             ViewModel.Chat.LoadFromMetadata(sessionMetadata, roomDirectoryPath);
-            ViewModel.CurrentSection = ShellSection.Chat;
-            _lastRoomSection = ShellSection.Chat;
             await RefreshChatModeAsync(sessionMetadata.SessionId, cancellationToken).ConfigureAwait(true);
         }
         else
         {
-            // The fork above is no longer "which screen" — both kinds of room render in the
-            // transcript — only "is there a session to talk to", which is what IsPipelineRoom
-            // carries into the composer.
+            // The fork here is no longer "which screen" — both kinds of room render in the
+            // transcript, which is why the section is set once above them both — only "is there a
+            // session to talk to", which is what IsPipelineRoom carries into the composer.
             ViewModel.Chat.Clear();
             ViewModel.Chat.OpenPipelineRoom(roomDirectoryPath, ViewModel.PausedSteps);
-            ViewModel.CurrentSection = ShellSection.Chat;
-            _lastRoomSection = ShellSection.Chat;
         }
 
         if (_session.LastLoadSucceeded)
@@ -847,6 +830,36 @@ public partial class MainWindow : Window
         ViewModel.BindingsFilePath = bindingsFilePath;
 
         await _session.RunAsync(roomDirectoryPath, workflowTemplateFilePath, bindingsFilePath, cancellationToken);
+    }
+
+    /// <summary>
+    /// Author's Save &amp; Run (M19 Phase 4, #189): each run gets a fresh room directory beside the
+    /// authored files — one workspace per workflow, rooms inside it — and the shell shows that room
+    /// while it runs.
+    /// <para>
+    /// #1222: it shows it as a transcript, like every other room. It used to navigate to the Task
+    /// pane, so a room started here rendered as a full-width graph for exactly as long as its pump
+    /// ran, then turned into a transcript underneath the person when the run settled and the reopen
+    /// callback (see <c>reopenRoomAsync</c> in the constructor) called <see cref="OpenAsync"/>. One
+    /// room, two renderings, swapping mid-run.
+    /// </para>
+    /// <para>
+    /// The room is opened <em>before</em> the run rather than after it: <see cref="RunAsync"/> does
+    /// not return until the pump reaches its fixed point, and the transcript has to be on screen
+    /// while the work happens, not once it is over. Nothing here touches the directory itself, which
+    /// <see cref="RunAsync"/> creates. A named method rather than the lambda it used to be so a test
+    /// can drive the claim without authoring a workflow through the guided flow first.
+    /// </para>
+    /// </summary>
+    internal async Task StartAuthoredRunAsync(string workflowFilePath, string bindingsFilePath)
+    {
+        var roomDirectoryPath = System.IO.Path.Combine(
+            System.IO.Path.GetDirectoryName(workflowFilePath)!,
+            $"room-{DateTime.Now:yyyyMMdd-HHmmss}");
+        ViewModel.Chat.Clear();
+        ViewModel.Chat.OpenPipelineRoom(roomDirectoryPath, ViewModel.PausedSteps);
+        ViewModel.CurrentSection = ShellSection.Chat;
+        await RunAsync(roomDirectoryPath, workflowFilePath, bindingsFilePath);
     }
 
     /// <summary>
@@ -1622,35 +1635,6 @@ public partial class MainWindow : Window
         ClearArtifactPreview();
         DiffPanel.Children.Clear();
         ViewModel.ClearRoomSteps();
-    }
-
-    /// <summary>
-    /// Renders a raw, not-yet-instantiated <see cref="WorkflowDefinition"/> template's DAG
-    /// (M14 Phase 3, issue #120; UI spec §5, §10) — the counterpart to <see cref="LoadAsync"/> for
-    /// paths that name a file rather than a room directory. There is no <see cref="FlowState"/> to
-    /// overlay (a template is not bound to any room, so it has never executed) and no execution
-    /// history/decisions/supplementary-execution surface either — those are all per-room facts;
-    /// only the graph itself is meaningful for a template.
-    /// </summary>
-    private async Task LoadTemplateAsync(string templateFilePath, CancellationToken cancellationToken)
-    {
-        var outcome = await _session.LoadTemplateAsync(templateFilePath, cancellationToken);
-
-        ViewModel.IsRoomFinished = false;
-
-        if (outcome.Definition is not { } definition)
-        {
-            StatusText.Text = outcome.ErrorMessage;
-            ClearProjectionPanels();
-            return;
-        }
-
-        StatusText.Text =
-            $"Template: {definition.WorkflowTemplateId} v{definition.WorkflowTemplateVersion} " +
-            $"({definition.Steps.Count} step(s)) — not a room, no execution state.";
-        ClearProjectionPanels();
-        RenderDag(definition.Steps, statusByStepId: null);
-        ViewModel.RoomHeadlineText = "A workflow file — not a running room.";
     }
 
     /// <summary>The one status system's token keys (M19 Phase 5, #190) — line color and area tint per <see cref="StepStatus"/>, resolved from the active theme at render time so the DAG follows light/dark like every other surface.</summary>

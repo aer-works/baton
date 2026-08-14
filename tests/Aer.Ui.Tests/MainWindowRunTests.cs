@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Aer.Adapters;
+using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 using Aer.Flow.Templates;
 using Aer.Ui.Tests.TestSupport;
@@ -146,6 +147,74 @@ public class MainWindowRunTests
         finally
         {
             DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1222: Author's Save &amp; Run puts the room it started in the transcript, the one rendering a
+    /// room has. What it did before, and why that was one room in two renderings, is on
+    /// <see cref="MainWindow.StartAuthoredRunAsync"/>.
+    /// <para>
+    /// Observed <em>while the run is happening</em>, from inside the adapter, because the end state
+    /// cannot tell the two apart: the reopen callback lands every finished room on Chat regardless,
+    /// so asserting after the await passes even with the navigation deleted outright — measured, not
+    /// assumed. What discriminates is what was on screen at dispatch time, which is the whole claim.
+    /// </para>
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Save_and_Run_shows_the_room_in_the_transcript_while_it_runs_not_once_it_is_over()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"ui-run-authored-{Guid.NewGuid():N}");
+        try
+        {
+            var workflowFilePath = await WriteThreeStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteThreeStepBindingsAsync(testRoot);
+
+            MainWindow? window = null;
+            var watcher = new SectionWatchingAdapter(() => window is null
+                ? null
+                : (window.ViewModel.CurrentSection, window.ViewModel.Chat.IsPipelineRoom, window.ViewModel.Chat.HeadlineText));
+            window = new MainWindow(
+                new LocalUiConfigurationStore(NewConfigFilePath()),
+                new Dictionary<string, IWorkerAdapter> { ["shell"] = watcher });
+
+            await window.StartAuthoredRunAsync(workflowFilePath, bindingsFilePath);
+
+            var (section, isPipelineRoom, headline) = Assert.Single(watcher.Observations.Distinct());
+            Assert.Equal(ShellSection.Chat, section);
+            Assert.True(isPipelineRoom);
+            // The room it just started, not a stale one: Save & Run names the directory itself, and
+            // the transcript's headline is where that name surfaces.
+            Assert.StartsWith("room-", headline);
+
+            // And the run itself still went through, so the observation above is of a real dispatch.
+            Assert.Equal("Workflow status: Terminal", window.FindViewControl<TextBlock>("StatusText")!.Text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// A <see cref="ShellCommandWorkerAdapter"/> that records what the shell was showing each time it
+    /// was asked to resolve a command — i.e. during the run, which is the only moment the claim above
+    /// is about. Everything else is delegated, so the workflow really executes.
+    /// </summary>
+    private sealed class SectionWatchingAdapter(Func<(ShellSection, bool, string)?> observe) : IWorkerAdapter
+    {
+        private readonly ShellCommandWorkerAdapter _inner = new();
+
+        public List<(ShellSection Section, bool IsPipelineRoom, string Headline)> Observations { get; } = [];
+
+        public CoreDispatchTarget Resolve(WorkerInvocation invocation, WorkerContract contract)
+        {
+            if (observe() is { } observation)
+            {
+                Observations.Add(observation);
+            }
+
+            return _inner.Resolve(invocation, contract);
         }
     }
 

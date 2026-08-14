@@ -116,23 +116,26 @@ public class MainWindowDagTests
         }
     }
 
+    /// <summary>
+    /// A template's graph draws with no status overlay: nothing has executed, so no node carries a
+    /// status, an icon, or a tint, and the pause point is a label rather than a state.
+    /// <para>
+    /// #1222 changed the vehicle, not the claim. This used to reach the template rendering through
+    /// <c>OpenAsync</c> on a file path, which drew a full-width graph in the room shell; that door is
+    /// closed and Author is the one that remains. The rendering itself is untouched — both routes
+    /// call the same <c>RenderDag(layout, canvas, statusByStepId: null)</c>, so what is pinned here
+    /// is exactly what was pinned before, on the canvas that still exists.
+    /// </para>
+    /// </summary>
     [AvaloniaFact]
     public async Task Renders_a_raw_templates_dag_with_no_status_overlay_and_marks_the_pause_point()
     {
         var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "diamond-workflow-with-pause.json");
 
         var window = new MainWindow();
-        await window.OpenAsync(fixturePath, TestContext.Current.CancellationToken);
+        await window.OpenTemplateInEditorAsync(fixturePath, TestContext.Current.CancellationToken);
 
-        var statusText = window.FindViewControl<TextBlock>("StatusText")!;
-        Assert.Contains("Template", statusText.Text);
-        Assert.Contains("diamond-with-pause", statusText.Text);
-
-        // A template is not a task: nothing per-task renders alongside the graph.
-        var stepsPanel = window.FindViewControl<StackPanel>("StepsPanel")!;
-        Assert.Empty(stepsPanel.Children);
-
-        var dagCanvas = window.FindViewControl<Canvas>("DagCanvas")!;
+        var dagCanvas = window.TemplateEditorDagCanvas;
         var nodes = dagCanvas.Children.OfType<Border>().ToList();
         var lines = dagCanvas.Children.OfType<Line>().ToList();
 
@@ -158,16 +161,14 @@ public class MainWindowDagTests
         Assert.Equal(window.FindResource("Color.Surface"), nodeC.Background);
     }
 
-    [AvaloniaFact]
-    public async Task Opening_a_template_does_not_start_the_live_refresh_timer()
-    {
-        var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "three-step-linear-workflow.json");
-
-        var window = new MainWindow();
-        await window.OpenAsync(fixturePath, TestContext.Current.CancellationToken);
-
-        Assert.False(window.IsLiveRefreshTimerEnabled);
-    }
+    // #1222 retired this file's live-refresh-timer fact about opening a template. It opened a
+    // workflow *file* through OpenAsync and asserted the poller stayed off, which was a real claim
+    // while that call rendered a template: nothing about a file can change, so nothing should be
+    // polled. #1222 deleted that route, and the second reader caught that the test went on passing
+    // for a wholly different and much weaker reason — the early return now fires before the timer is
+    // even considered. A test that passes for the wrong reason is worse than no test, so it goes.
+    // NavigationShellTests carries both surviving halves: what the route does now, and what it
+    // leaves an already-open room's poller doing.
 
     /// <summary>
     /// Regression test for a real M19 Phase 5 defect found post-milestone (2026-07-18): the DAG

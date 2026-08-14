@@ -198,17 +198,11 @@ public class MainWindowTemplateEditorTests
         Assert.Contains("Enter a template file path", window.ViewModel.TemplateEditor.StatusText);
     }
 
-    [AvaloniaFact]
-    public async Task The_read_only_template_view_is_untouched_by_the_editor_surface()
-    {
-        // M14 Phase 3's routing decision holds: OpenAsync on a template file still renders the
-        // read-only DAG view and never starts an editing session — inspecting and authoring are
-        // separate surfaces (the phase's editing-model decision of record).
-        var window = new MainWindow();
-        await window.OpenAsync(FixturePath("three-step-linear-workflow.json"), TestContext.Current.CancellationToken);
-
-        var statusText = window.FindViewControl<TextBlock>("StatusText")!;
-        Assert.Contains("not a room, no execution state", statusText.Text);
-        Assert.False(window.ViewModel.TemplateEditor.IsOpen);
-    }
+    // #1222 retired The_read_only_template_view_is_untouched_by_the_editor_surface. It pinned M14
+    // Phase 3's routing decision — "OpenAsync on a template file renders the read-only DAG view and
+    // never starts an editing session" — and the first half of that is the thing #1222 deleted:
+    // there is no read-only template view, because a workflow file is not a room and Author is the
+    // one door to a shape — see 02-screens.md's #1222 amendment. The half that survives, that opening
+    // a file by path never silently starts an editing session, moved into NavigationShellTests
+    // rather than being dropped.
 }
