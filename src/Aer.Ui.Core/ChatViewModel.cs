@@ -64,6 +64,7 @@ public sealed partial class ChatViewModel : ObservableObject
     private SessionMetadata? _lastMetadata;
     private IReadOnlyList<PermissionAnswer> _permissionAnswers = [];
     private IReadOnlyList<DormancyTransition> _dormancyTransitions = [];
+    private IReadOnlyList<RecordedDecisionMoment> _recordedDecisionMoments = [];
     private bool _isDormant = false;
     private Action? _wakeAction = null;
 
@@ -179,6 +180,23 @@ public sealed partial class ChatViewModel : ObservableObject
     public bool HasPendingPermission => PendingPermission != null;
 
     /// <summary>
+    /// The open workflow decisions rendered inline in the transcript as live cards (#1196/#1199), empty
+    /// when nothing is paused. Reconciled by <see cref="SurfacePendingPermission"/> from the projection's
+    /// paused steps on every render — a projected fact, so a card leaves the moment the projection stops
+    /// carrying its step.
+    /// </summary>
+    /// <remarks>
+    /// A collection, not one card: a room can hold several steps paused at once, which the product
+    /// already models everywhere else it counts them (<c>RoomsViewModel.PausedStepCount</c>,
+    /// <c>RoomProjectionLoader</c>'s own count). Showing the first and dropping the rest would be a
+    /// transcript claiming to be the room's whole chronology while hiding part of it.
+    /// </remarks>
+    public ObservableCollection<PausedStepViewModel> PendingDecisions { get; } = [];
+
+    /// <summary>True while at least one step is paused waiting for a decision — drives the inline decision cards' visibility.</summary>
+    public bool HasPendingDecision => PendingDecisions.Count > 0;
+
+    /// <summary>
     /// Reconciles the inline gate with the projection's current <paramref name="pending"/>: builds a
     /// fresh <see cref="PendingPermissionViewModel"/> when a new permission appears, keeps the existing
     /// instance while the same one is still open (so an in-flight <see cref="PendingPermissionViewModel.IsEnabled"/>
@@ -187,13 +205,13 @@ public sealed partial class ChatViewModel : ObservableObject
     /// <see cref="LoadFromMetadata"/> on every load/refresh.
     /// </summary>
     public void SurfacePendingPermission(Aer.Flow.Projection.PendingPermission? pending, AnswerPermissionDelegate answer)
-        => SurfacePendingPermission(pending, null, answer, null, false, null);
+        => SurfacePendingPermission(pending, null, answer, null, false, null, null, null);
 
     public void SurfacePendingPermission(
         Aer.Flow.Projection.PendingPermission? pending,
         IReadOnlyList<PermissionAnswer>? permissionAnswers,
         AnswerPermissionDelegate answer)
-        => SurfacePendingPermission(pending, permissionAnswers, answer, null, false, null);
+        => SurfacePendingPermission(pending, permissionAnswers, answer, null, false, null, null, null);
 
     public void SurfacePendingPermission(
         Aer.Flow.Projection.PendingPermission? pending,
@@ -202,16 +220,32 @@ public sealed partial class ChatViewModel : ObservableObject
         IReadOnlyList<DormancyTransition>? dormancyTransitions,
         bool isDormant = false,
         Action? wake = null)
+        => SurfacePendingPermission(pending, permissionAnswers, answer, dormancyTransitions, isDormant, wake, null, null);
+
+    public void SurfacePendingPermission(
+        Aer.Flow.Projection.PendingPermission? pending,
+        IReadOnlyList<PermissionAnswer>? permissionAnswers,
+        AnswerPermissionDelegate answer,
+        IReadOnlyList<DormancyTransition>? dormancyTransitions,
+        bool isDormant = false,
+        Action? wake = null,
+        IReadOnlyList<RecordedDecisionMoment>? recordedDecisionMoments = null,
+        IReadOnlyList<PausedStepViewModel>? pendingDecisions = null)
     {
         if (dormancyTransitions != null)
         {
             _dormancyTransitions = dormancyTransitions;
         }
 
+        if (recordedDecisionMoments != null)
+        {
+            _recordedDecisionMoments = recordedDecisionMoments;
+        }
+
         _isDormant = isDormant;
         _wakeAction = wake;
 
-        if (permissionAnswers != null || dormancyTransitions != null)
+        if (permissionAnswers != null || dormancyTransitions != null || recordedDecisionMoments != null)
         {
             if (permissionAnswers != null)
             {
@@ -224,15 +258,47 @@ public sealed partial class ChatViewModel : ObservableObject
         if (pending is null)
         {
             PendingPermission = null;
-            return;
         }
-
-        if (PendingPermission?.PermissionRequestId == pending.PermissionRequestId)
+        else if (PendingPermission?.PermissionRequestId != pending.PermissionRequestId)
         {
-            return; // same open permission — keep the live instance rather than resetting its state
+            PendingPermission = new PendingPermissionViewModel(pending, answer);
         }
 
-        PendingPermission = new PendingPermissionViewModel(pending, answer);
+        ReconcilePendingDecisions(pendingDecisions ?? []);
+    }
+
+    /// <summary>
+    /// Brings <see cref="PendingDecisions"/> into line with the projection's paused steps, keyed on
+    /// (step, execution): a card whose key is still open keeps its existing instance, so an in-flight
+    /// <see cref="PausedStepViewModel.IsEnabled"/> toggle survives a poll that changed nothing else —
+    /// the same discipline <see cref="PendingPermission"/> has kept since #1145. A key that is gone
+    /// leaves; a key that is new arrives.
+    /// </summary>
+    private void ReconcilePendingDecisions(IReadOnlyList<PausedStepViewModel> pausedSteps)
+    {
+        var before = PendingDecisions.Count;
+
+        for (var index = PendingDecisions.Count - 1; index >= 0; index--)
+        {
+            var existing = PendingDecisions[index];
+            if (!pausedSteps.Any(step => step.StepId == existing.StepId && step.ExecutionId == existing.ExecutionId))
+            {
+                PendingDecisions.RemoveAt(index);
+            }
+        }
+
+        foreach (var step in pausedSteps)
+        {
+            if (!PendingDecisions.Any(existing => existing.StepId == step.StepId && existing.ExecutionId == step.ExecutionId))
+            {
+                PendingDecisions.Add(step);
+            }
+        }
+
+        if (PendingDecisions.Count != before)
+        {
+            OnPropertyChanged(nameof(HasPendingDecision));
+        }
     }
 
     /// <summary>
@@ -308,33 +374,67 @@ public sealed partial class ChatViewModel : ObservableObject
         var transitions = _answersClearedThrough is { } clearedThroughTransitions
             ? _dormancyTransitions.Where(t => t.Timestamp > clearedThroughTransitions).ToList()
             : _dormancyTransitions;
+        // A decision with no recorded time is treated as older than any clear, so it goes with the
+        // transcript the person cleared. That is the same reading that puts it before the first
+        // stamped row in the merge below — unknown means "from before what I can place" in both
+        // places — and it is the conservative half of the choice: a clear is a request to stop
+        // seeing what came before, and a moment that cannot be placed cannot be shown to be after it.
+        // The sibling lists never face this; PermissionAnswer.AnsweredAt and DormancyTransition.Timestamp
+        // are both non-nullable.
+        //
+        // Sorted here rather than assumed: the merge below only ever peeks the head of each stream,
+        // so an out-of-order list renders out of order silently. RoomProjectionLoader appends these
+        // in journal read order, which is ascending today only because a null timestamp can come
+        // only from a journal written before #1197 — the oldest lines in the file. That is a fact
+        // about history, not a guarantee the type carries (LogEntry's writer timestamp is an
+        // ordinary nullable), so the ordering the merge needs is established here instead of hoped for.
+        var decisions = (_answersClearedThrough is { } clearedThroughDecisions
+                ? _recordedDecisionMoments.Where(d => (d.RecordedAt ?? DateTimeOffset.MinValue) > clearedThroughDecisions)
+                : _recordedDecisionMoments)
+            .OrderBy(d => d.RecordedAt ?? DateTimeOffset.MinValue)
+            .ToList();
 
         var latestEnteredTransition = _isDormant ? transitions.LastOrDefault(t => t.IsEntered) : null;
 
         int turnIdx = 0;
         int ansIdx = 0;
         int transIdx = 0;
+        int decIdx = 0;
 
-        while (turnIdx < turns.Count || ansIdx < answers.Count || transIdx < transitions.Count)
+        while (turnIdx < turns.Count || ansIdx < answers.Count || transIdx < transitions.Count || decIdx < decisions.Count)
         {
             var turnTs = turnIdx < turns.Count ? turns[turnIdx].ExecutedAt : DateTimeOffset.MaxValue;
             var ansTs = ansIdx < answers.Count ? answers[ansIdx].AnsweredAt : DateTimeOffset.MaxValue;
             var transTs = transIdx < transitions.Count ? transitions[transIdx].Timestamp : DateTimeOffset.MaxValue;
+            var decTs = decIdx < decisions.Count ? (decisions[decIdx].RecordedAt ?? DateTimeOffset.MinValue) : DateTimeOffset.MaxValue;
 
-            if (turnTs <= ansTs && turnTs <= transTs)
+            // The decision arm goes LAST, and every arm above it now also outranks decTs. On an exact
+            // tie this repo already had a precedence — turn, then answer, then transition — and
+            // putting decisions first would have quietly reversed it against turns, a new rule
+            // nothing had asked for. Appending instead leaves every pre-existing pair rendering
+            // exactly as before (with no decisions in play decTs is MaxValue, so the added clauses
+            // are vacuously true) and pins the new one: a decision recorded at the same instant as a
+            // turn renders after it. Pinned by
+            // ChatViewModelTests.SurfacePendingPermission_DecisionAndTurnAtTheSameInstant_TurnRendersFirst.
+            if (turnTs <= ansTs && turnTs <= transTs && turnTs <= decTs)
             {
                 AddTurnMessages(turns[turnIdx]);
                 turnIdx++;
             }
-            else if (ansTs <= transTs)
+            else if (ansTs <= transTs && ansTs <= decTs)
             {
                 AddAnswerMessage(answers[ansIdx]);
                 ansIdx++;
             }
-            else
+            else if (transTs <= decTs)
             {
                 AddDormancyMessage(transitions[transIdx], isLatestEntered: _isDormant && transitions[transIdx] == latestEnteredTransition);
                 transIdx++;
+            }
+            else
+            {
+                AddRecordedDecisionMessage(decisions[decIdx]);
+                decIdx++;
             }
         }
 
@@ -419,6 +519,13 @@ public sealed partial class ChatViewModel : ObservableObject
     {
         var text = FormatPermissionAnswerWording(answer);
         Messages.Add(new ChatMessageViewModel("System", text, answer.AnsweredAt, IsFromUser: false, IsSystem: true));
+    }
+
+    private void AddRecordedDecisionMessage(RecordedDecisionMoment moment)
+    {
+        var text = PlainLanguage.ForRecordedDecision(moment);
+        var timestamp = moment.RecordedAt ?? DateTimeOffset.MinValue;
+        Messages.Add(new ChatMessageViewModel("System", text, timestamp, IsFromUser: false, IsSystem: true));
     }
 
     private void AddDormancyMessage(DormancyTransition transition, bool isLatestEntered)

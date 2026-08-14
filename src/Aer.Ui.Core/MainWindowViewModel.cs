@@ -332,6 +332,17 @@ public sealed partial class MainWindowViewModel : ObservableObject
             gate.IsEnabled = !value;
         }
 
+        // Not redundant with the PausedSteps loop above, and not an edge case: RoomClient's
+        // RebuildPausedSteps clears and re-constructs that collection on every load, while the
+        // transcript's cards deliberately keep the instance whose (step, execution) key is still
+        // open. So from the second poll a decision stays open across, these are different objects
+        // by design, and the loop above reaches none of the cards. Missing them would leave a card
+        // live during a mutation this process is already driving.
+        foreach (var decisionCard in Chat.PendingDecisions)
+        {
+            decisionCard.IsEnabled = !value;
+        }
+
         foreach (var execution in RunningExecutions)
         {
             execution.UpdateEnabled(value);

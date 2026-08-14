@@ -1,6 +1,7 @@
 using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
 using Aer.Flow.Outcomes;
+using Aer.Flow.Projection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -69,6 +70,25 @@ public static class PlainLanguage
         // #616: throws, never a raw enum name — the golden map in StatusDerivationTests reddens on a new member.
         _ => throw new ArgumentOutOfRangeException(nameof(decisionType), decisionType, "Unmapped decision type."),
     };
+
+    /// <summary>
+    /// Plain-language sentence for a recorded decision moment in a transcript history row (#1196/#1199).
+    /// The verb comes from <see cref="ForDecision"/> rather than a second phrasing of the same choice.
+    /// </summary>
+    /// <remarks>
+    /// Only <see cref="DecisionType.Supersede"/> names a target — `FlowEvent.ExternalDecisionRecorded`
+    /// says so of its own `TargetStepId` — and only its verb ("Sent back") takes one grammatically.
+    /// Appending the target to whatever verb happened to arrive would read "Approved to review" the
+    /// day another decision type carries one.
+    /// </remarks>
+    public static string ForRecordedDecision(RecordedDecisionMoment moment)
+    {
+        ArgumentNullException.ThrowIfNull(moment);
+        var verb = ForDecision(moment.DecisionType);
+        return moment is { DecisionType: DecisionType.Supersede, TargetStepId: { } targetStepId }
+            ? $"{verb} to {targetStepId.Value}"
+            : verb;
+    }
 
     /// <summary>
     /// The room-level headline — the shared room-status derivation (<c>RoomCardViewModel.DeriveStatus</c>), by delegation rather than by copy. This

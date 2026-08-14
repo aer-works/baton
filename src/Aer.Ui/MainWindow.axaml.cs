@@ -1396,7 +1396,9 @@ public partial class MainWindow : Window
                 AnswerPermissionFromGateAsync(roomDirectoryPath, permissionRequestId, decisionKind, reason),
             projection.DormancyTransitions,
             projection.IsDormant,
-            () => _ = WakeDormantRoomAsync(roomDirectoryPath));
+            () => _ = WakeDormantRoomAsync(roomDirectoryPath),
+            projection.RecordedDecisionMoments,
+            ViewModel.PausedSteps);
     }
 
     private async Task WakeDormantRoomAsync(string roomDirectoryPath)
