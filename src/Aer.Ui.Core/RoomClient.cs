@@ -906,6 +906,8 @@ public sealed partial class RoomClient
                 IsEnabled = !ViewModel.IsMutationInFlight,
             });
         }
+
+        ViewModel.Chat.SyncPendingDecisions(ViewModel.PausedSteps);
     }
 
     private void RebuildRunningExecutions(RoomProjection projection, string roomDirectoryPath)

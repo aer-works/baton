@@ -300,6 +300,31 @@ public class NavigationShellTests
     }
 
     /// <summary>
+    /// Reopening the same room leaves one card per open decision, not one per open. Second reader's
+    /// finding on #1204: the clear-order fix was traced correct but nothing pinned it, so a later
+    /// change to the reconcile could accumulate duplicates with every test still green.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Reopening_a_workflow_room_leaves_one_card_per_open_decision()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            var decision = Assert.Single(window.ViewModel.Chat.PendingDecisions);
+            Assert.Equal(Critic, decision.StepId);
+            Assert.Same(Assert.Single(window.ViewModel.PausedSteps), decision);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
     /// The shell's three layout states (#1196 slice 3). Driving the built app is what verifies this
     /// looks right; what this pins is that each state still puts the width on the column whose
     /// content is actually visible, which is the part a later edit can silently invert.

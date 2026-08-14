@@ -305,7 +305,22 @@ public sealed partial class ChatViewModel : ObservableObject
     /// the same discipline <see cref="PendingPermission"/> has kept since #1145. A key that is gone
     /// leaves; a key that is new arrives.
     /// </summary>
-    private void ReconcilePendingDecisions(IReadOnlyList<PausedStepViewModel> pausedSteps)
+    /// <summary>
+    /// Re-points the transcript's cards at the room's current paused steps. Called whenever the room
+    /// rebuilds them, because that rebuild replaces every view model and the transcript would
+    /// otherwise keep rendering the previous generation.
+    /// </summary>
+    public void SyncPendingDecisions(IReadOnlyList<PausedStepViewModel> pausedSteps)
+    {
+        if (!IsPipelineRoom)
+        {
+            return;
+        }
+
+        ReconcilePendingDecisions(pausedSteps, adoptRebuiltInstances: true);
+    }
+
+    private void ReconcilePendingDecisions(IReadOnlyList<PausedStepViewModel> pausedSteps, bool adoptRebuiltInstances = false)
     {
         var before = PendingDecisions.Count;
 
@@ -320,9 +335,26 @@ public sealed partial class ChatViewModel : ObservableObject
 
         foreach (var step in pausedSteps)
         {
-            if (!PendingDecisions.Any(existing => existing.StepId == step.StepId && existing.ExecutionId == step.ExecutionId))
+            var existingIndex = -1;
+            for (var index = 0; index < PendingDecisions.Count; index++)
+            {
+                if (PendingDecisions[index].StepId == step.StepId && PendingDecisions[index].ExecutionId == step.ExecutionId)
+                {
+                    existingIndex = index;
+                    break;
+                }
+            }
+
+            if (existingIndex < 0)
             {
                 PendingDecisions.Add(step);
+            }
+            else if (adoptRebuiltInstances && !ReferenceEquals(PendingDecisions[existingIndex], step))
+            {
+                // Only the room's own rebuild is authoritative about identity. A poll passing a
+                // freshly-projected card for the same key keeps the live one instead, so an in-flight
+                // IsEnabled toggle survives — the #1145 discipline the caller default preserves.
+                PendingDecisions[existingIndex] = step;
             }
         }
 
