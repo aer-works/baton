@@ -254,6 +254,86 @@ public sealed partial class WaitingOnLockBannerViewModel : ObservableObject
 }
 
 /// <summary>
+/// Why a room is not going anywhere on its own, and therefore which offer its transcript carries
+/// (#1215). Deliberately closed and deliberately not "not running": a room waiting on a decision is
+/// also not running, and it is neither of these — it already has the person's action on screen.
+/// </summary>
+public enum RoomStoppedReason
+{
+    /// <summary>
+    /// Non-terminal, nothing paused, and no live pump owns the directory — the process died mid-run.
+    /// <see cref="WorkflowStatus.Running"/> cannot say this on its own; read its own summary, which
+    /// covers a live attempt and a crashed one in one clause. What separates them is
+    /// <see cref="Aer.Flow.Concurrency.ConcurrencyGuard.IsHeld"/> — a kernel-held lock the OS drops
+    /// the instant its holder exits, crashed or not, held by <c>MutationInterface</c> across the
+    /// whole of <c>PumpToFixedPointAsync</c> (a #1094 vendor-quota park included, which is why a
+    /// day-long paced wait does not read as stopped).
+    /// </summary>
+    StoppedMidRun,
+
+    /// <summary>
+    /// Terminal. Resuming this directory is a proven silent no-op (see
+    /// <see cref="MainWindowViewModel.IsRoomFinished"/>), so the offer is a fresh room cloned from it.
+    /// </summary>
+    Finished,
+}
+
+/// <summary>
+/// #1215: the offer a stopped room's own transcript carries. Replaces the header Run button, whose
+/// only unique job was resuming a room no other desktop path resumes. (Worth knowing while reading
+/// this: <c>RoomWakeBridge</c> is not that path — #799 wakes a room whose <em>delegated</em> workflow
+/// reached terminal, which is the other direction entirely, and it starts dormant on restart.)
+/// It sits on the turn rather than in chrome. What this replaced, which precedents it follows, and
+/// what was rejected on the way — including why it is a click and not something that happens when a
+/// room is opened — is recorded in <c>docs/design/02-screens.md</c>'s 2026-08-14 amendment.
+/// </summary>
+public sealed partial class RoomStoppedCardViewModel : ObservableObject
+{
+    private readonly Func<Task> _runAsyncAction;
+
+    public RoomStoppedReason Reason { get; }
+
+    public string Headline => Reason == RoomStoppedReason.Finished
+        ? "This room has finished"
+        : "This room stopped mid-run";
+
+    public string BodyText => Reason == RoomStoppedReason.Finished
+        ? "Run it again and its work starts in a fresh room cloned from this one — this room's own history is left as it is."
+        : "Nothing is running it and it is not waiting on you. Resume picks it up where it left off.";
+
+    public string ActionLabel => Reason == RoomStoppedReason.Finished ? "Run it again" : "Resume";
+
+    /// <summary>
+    /// False while this card's own action is in flight, so a second click cannot post a second run.
+    /// A competing <em>external</em> pump is a different question and is refused by the room's own
+    /// §15 lock, surfacing as the waiting-on-lock banner — this flag neither can nor tries to.
+    /// </summary>
+    [ObservableProperty]
+    private bool isEnabled = true;
+
+    public RoomStoppedCardViewModel(RoomStoppedReason reason, Func<Task> runAsyncAction)
+    {
+        ArgumentNullException.ThrowIfNull(runAsyncAction);
+        Reason = reason;
+        _runAsyncAction = runAsyncAction;
+    }
+
+    [RelayCommand]
+    private async Task Run()
+    {
+        IsEnabled = false;
+        try
+        {
+            await _runAsyncAction();
+        }
+        finally
+        {
+            IsEnabled = true;
+        }
+    }
+}
+
+/// <summary>
 /// Issue #994: the room turn-host status card / banner — values and live usage. Dormancy left this
 /// surface in #1178: it renders as a transcript turn (with Wake) in the chat, so the banner keeps
 /// only the meter presentation.

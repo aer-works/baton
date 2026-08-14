@@ -325,6 +325,10 @@ public sealed partial class RoomClient
         {
             RebuildPausedSteps(projection, CurrentRoomDirectoryPath);
             RebuildRunningExecutions(projection, CurrentRoomDirectoryPath);
+            // A fresh reading here, not the one LoadAsync took: this path is also the WS push, which
+            // can land long after a load. A stopped room emits no pushes at all, so this probe runs
+            // only for a room something is actually doing something to.
+            RefreshRoomStoppedCard(projection, ConcurrencyGuard.IsHeld(CurrentRoomDirectoryPath));
             LastLoadSucceeded = true;
             LastWorkflowStatus = projection.State.Status;
             LastSnapshot = projection.Snapshot;
@@ -337,9 +341,9 @@ public sealed partial class RoomClient
     /// the desktop can read whether the daemon or this process answers the load, and clearing on
     /// the not-held arm is what stops a released lock leaving a stale banner behind.
     /// </summary>
-    private void RefreshWaitingOnLockBanner(string roomDirectoryPath)
+    private void RefreshWaitingOnLockBanner(string roomDirectoryPath, bool isFlowLockHeld)
     {
-        if (ConcurrencyGuard.IsHeld(roomDirectoryPath))
+        if (isFlowLockHeld)
         {
             var (holderDescription, _) = ConcurrencyGuard.ReadHolderInfo(roomDirectoryPath);
             ViewModel.WaitingOnLockBanner = new WaitingOnLockBannerViewModel(holderDescription, () => LoadAsync(roomDirectoryPath));
@@ -348,6 +352,67 @@ public sealed partial class RoomClient
         {
             ViewModel.WaitingOnLockBanner = null;
         }
+    }
+
+    /// <summary>
+    /// #1215: why the open room is stopped, or null if it is not stopped at all. Pure, so both
+    /// polarities are testable without holding a lock — the impure half is the single
+    /// <see cref="ConcurrencyGuard.IsHeld"/> probe its caller performs.
+    /// <para>
+    /// The order is load-bearing. Terminal wins first because a finished room never has a live pump,
+    /// so asking about the lock there would only add a filesystem read that cannot change the answer.
+    /// The lock is next: while it is held, some process is genuinely pumping this directory, and that
+    /// is the <em>only</em> thing that distinguishes a live run from a crashed one —
+    /// <see cref="WorkflowStatus.Running"/> covers both by its own definition. Paused is last and is
+    /// not "stopped" at all: that room already has the person's action on screen, and answering the
+    /// decision re-pumps it, so offering Resume beside a gate would be two offers for one turn.
+    /// </para>
+    /// </summary>
+    internal static RoomStoppedReason? DeriveRoomStoppedReason(FlowState state, bool isFlowLockHeld)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (state.Status == WorkflowStatus.Terminal)
+        {
+            return RoomStoppedReason.Finished;
+        }
+
+        if (isFlowLockHeld)
+        {
+            return null;
+        }
+
+        if (state.Steps.Any(step => step.Status == StepStatus.Paused))
+        {
+            return null;
+        }
+
+        return RoomStoppedReason.StoppedMidRun;
+    }
+
+    /// <summary>
+    /// Sets or clears <see cref="MainWindowViewModel.RoomStoppedCard"/> from the projection plus the
+    /// lock reading <see cref="LoadAsync"/> took. Mode-independent for the same reason
+    /// <see cref="RefreshWaitingOnLockBanner"/> is: the §15 lock is a local filesystem fact, and which
+    /// process answered the load does not change who holds the directory.
+    /// <para>
+    /// <b>This runs on the live-refresh tick</b> — roughly every 2s for as long as a non-terminal room
+    /// is open, because <c>MainWindow</c>'s timer calls <c>RefreshAsync</c> which calls
+    /// <see cref="LoadAsync"/>. A second reader refuted the first version of this comment, which
+    /// claimed the opposite. That is accepted rather than worked around: the probe is one local file
+    /// open/close, #618's banner has been paying it on this exact path since long before this card
+    /// existed, and the reading is now taken <em>once</em> in <see cref="LoadAsync"/> and shared, so
+    /// this card costs nothing on top of what was already there. It also means both surfaces answer
+    /// from the same instant rather than from two probes a few statements apart.
+    /// </para>
+    /// </summary>
+    private void RefreshRoomStoppedCard(RoomProjection projection, bool isFlowLockHeld)
+    {
+        var reason = DeriveRoomStoppedReason(projection.State, isFlowLockHeld);
+
+        ViewModel.RoomStoppedCard = reason is { } stoppedReason
+            ? new RoomStoppedCardViewModel(stoppedReason, () => ViewModel.RequestRoomRunAsync())
+            : null;
     }
 
     /// <summary>
@@ -362,7 +427,11 @@ public sealed partial class RoomClient
         // the waiting-on-lock state at all — and the daemon's own locked answer is a plain string
         // this method's caller drops. The lock is a local filesystem fact the desktop can read in
         // either mode; which process answers the load does not change who holds the directory.
-        RefreshWaitingOnLockBanner(roomDirectoryPath);
+        // One reading, shared by everything below that asks the same question — see
+        // RefreshRoomStoppedCard's remarks for what this costs and how often it actually runs.
+        var isFlowLockHeld = ConcurrencyGuard.IsHeld(roomDirectoryPath);
+
+        RefreshWaitingOnLockBanner(roomDirectoryPath, isFlowLockHeld);
         await RefreshRoomTurnHostBannerAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(true);
 
         if (await EnsureDaemonConnectedAsync(cancellationToken).ConfigureAwait(true))
@@ -398,6 +467,7 @@ public sealed partial class RoomClient
 
             RebuildPausedSteps(projection, roomDirectoryPath);
             RebuildRunningExecutions(projection, roomDirectoryPath);
+            RefreshRoomStoppedCard(projection, isFlowLockHeld);
 
             LastLoadSucceeded = true;
             LastWorkflowStatus = projection.State.Status;
@@ -410,6 +480,9 @@ public sealed partial class RoomClient
             ViewModel.DecisionStatusText = string.Empty;
             ViewModel.RunningExecutions.Clear();
             ViewModel.CancelStatusText = string.Empty;
+            // No projection means nothing is known about whether this room is stopped; an offer left
+            // over from the last room that did load would be an offer against the wrong directory.
+            ViewModel.RoomStoppedCard = null;
 
             if (ex is WorkflowLockedException wle)
             {
@@ -517,7 +590,7 @@ public sealed partial class RoomClient
                     _mutationFailed();
                     // The daemon's locked refusal is a plain string with no holder in it — the
                     // local probe is what turns it into the waiting-on-lock state (#618).
-                    RefreshWaitingOnLockBanner(roomDirectoryPath);
+                    RefreshWaitingOnLockBanner(roomDirectoryPath, ConcurrencyGuard.IsHeld(roomDirectoryPath));
                     ViewModel.RunStatusText = err;
                     ViewModel.IsMutationInFlight = false;
                     return new MutationOutcome(err);
@@ -670,7 +743,7 @@ public sealed partial class RoomClient
                     _mutationFailed();
                     // Same reason as RunAsync's daemon-refusal arm: the string carries no holder;
                     // the local probe renders the state (#618).
-                    RefreshWaitingOnLockBanner(roomDirectoryPath);
+                    RefreshWaitingOnLockBanner(roomDirectoryPath, ConcurrencyGuard.IsHeld(roomDirectoryPath));
                     ViewModel.DecisionStatusText = err;
                     ViewModel.IsMutationInFlight = false;
                     return new MutationOutcome(err);

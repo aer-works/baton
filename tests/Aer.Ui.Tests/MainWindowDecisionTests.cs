@@ -113,7 +113,7 @@ public class MainWindowDecisionTests
             // competing external pump's WorkflowLockedException included), which this phase's
             // decision surface must render as a message, never crash the window.
             var unresolvableBindingsFilePath = await WriteUnresolvableBindingsAsync(testRoot);
-            window.FindViewControl<TextBox>("BindingsFilePathBox")!.Text = unresolvableBindingsFilePath;
+            window.ViewModel.BindingsFilePath = unresolvableBindingsFilePath;
             var pausedStep = Assert.Single(window.ViewModel.PausedSteps);
 
             await pausedStep.ApproveCommand.ExecuteAsync(null);

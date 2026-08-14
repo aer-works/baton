@@ -139,7 +139,6 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// exactly while this flag is true (Phase 4) — see <see cref="RunningExecutionViewModel.UpdateEnabled"/>.
     /// </summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanRun))]
     private bool isMutationInFlight;
 
     /// <summary>
@@ -147,24 +146,43 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// but not in place: <c>MutationInterface.StartWorkflowAsync</c>'s pump finds nothing ready and
     /// nothing in flight for an already-<see cref="Aer.Flow.Domain.WorkflowStatus.Terminal"/> room's
     /// own directory and returns the same state unchanged, a safe but silent no-op, so resuming the
-    /// same directory was never an option. <c>MainWindow</c>'s Run click handler checks this flag and,
-    /// when true, clones the open room's recorded workflow/bindings files into a fresh sibling
+    /// same directory was never an option. <c>MainWindow.OnRoomRunRequestedAsync</c> checks this flag
+    /// and, when true, clones the open room's recorded workflow/bindings files into a fresh sibling
     /// <c>room-{timestamp}</c> directory (the same naming the "Save &amp; Run" and template flows
     /// already use) instead of resuming in place — the finished room's own directory and history are
     /// left untouched. Set by <c>MainWindow.RenderProjection</c> from the loaded projection's
     /// <c>State.Status</c>, alongside every other read-only render there.
+    /// <para>
+    /// #1215 retired the Run button whose <c>IsEnabled</c> and tooltip used to live here as
+    /// <c>CanRun</c>/<c>RunButtonToolTipText</c>. What they said is now said by the thing a person
+    /// actually reads: <see cref="RoomStoppedCardViewModel"/>'s own headline, body and
+    /// <see cref="RoomStoppedCardViewModel.IsEnabled"/>. A tooltip naming a button that no longer
+    /// exists is a claim about code that no longer exists.
+    /// </para>
     /// </summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(RunButtonToolTipText))]
     private bool isRoomFinished;
 
-    public bool CanRun => !IsMutationInFlight;
+    /// <summary>
+    /// The open room's workflow definition file, as recorded in its own <c>.aer/workflow-path</c>
+    /// (or its <c>workflow.json</c> fallback). Null or empty on a room that has no recorded workflow
+    /// file — the "fresh start only" case the retired header box used to say in a placeholder.
+    /// <para>
+    /// #1215 lifted this and <see cref="BindingsFilePath"/> out of two <c>TextBox</c>es in the room
+    /// header, which is the whole point of that slice: a file path is engine plumbing, and the room
+    /// header is the room's. They are state, not chrome, which is why the lift is a property here and
+    /// not a XAML deletion — <c>RoomClient</c> asks for the bindings path at decide-time ("ask, don't
+    /// infer", M14 Phase 2's decision of record), and both are what a Run or a Resume dispatches.
+    /// Nullable to preserve exactly what the boxes' own <c>Text</c> carried: the session's
+    /// last-path loaders may return null, and callers coalesce at the point of use rather than here.
+    /// </para>
+    /// </summary>
+    [ObservableProperty]
+    private string? workflowTemplateFilePath;
 
-    public string RunButtonToolTipText => IsMutationInFlight
-        ? "Execution is currently in flight."
-        : IsRoomFinished
-            ? "This room has finished — Run starts a fresh room cloned from it."
-            : "Start a fresh room from a workflow file, or resume the room open above.";
+    /// <summary>Who runs each step, for the open room — see <see cref="WorkflowTemplateFilePath"/> for why both live here.</summary>
+    [ObservableProperty]
+    private string? bindingsFilePath;
 
     /// <summary>In-window message surface for a Run's progress ("Running…") or failure — moved here from a directly-set TextBlock when the orchestration moved to <see cref="RoomClient"/> (M19 Phase 2, #187).</summary>
     [ObservableProperty]
@@ -184,6 +202,18 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private WaitingOnLockBannerViewModel? waitingOnLockBanner;
 
     public bool HasWaitingOnLockBanner => WaitingOnLockBanner is not null;
+
+    /// <summary>
+    /// #1215: non-null while the open room is stopped and its transcript therefore carries an offer —
+    /// see <see cref="RoomStoppedCardViewModel"/> for which, and <see cref="RoomStoppedReason"/> for
+    /// why "stopped" is not the same question as "not running". Set by <see cref="RoomClient"/> on
+    /// every load and every applied push, the same places the sibling banners above are set.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasRoomStoppedCard))]
+    private RoomStoppedCardViewModel? roomStoppedCard;
+
+    public bool HasRoomStoppedCard => RoomStoppedCard is not null;
 
     /// <summary>Issue #994: non-null while turn-host status applies for the open room.</summary>
     [ObservableProperty]
@@ -214,8 +244,16 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    /// <summary>Raised when a failed step's "Try again" affordance requests a re-run (#617).</summary>
-    public event Action? ReRunRequested;
+    /// <summary>
+    /// Raised when something in the room asks for it to be run — a failed step's "Try again" (#617),
+    /// or the stopped-room card's Resume / Run it again (#1215). One event rather than one per
+    /// caller: they all mean the same thing to the shell, which decides resume-in-place versus
+    /// clone-to-a-fresh-room from the room's own state, not from who asked.
+    /// </summary>
+    public event Func<Task>? RoomRunRequested;
+
+    /// <summary>Invokes <see cref="RoomRunRequested"/>, or completes immediately if nothing is listening.</summary>
+    internal Task RequestRoomRunAsync() => RoomRunRequested?.Invoke() ?? Task.CompletedTask;
 
     /// <summary>
     /// Routes "Ask <worker> to fix it" (#617) to the Chat section with the input drafted — a
@@ -287,7 +325,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             projection, roomDirectoryPath, PausedSteps, previewFileAsync, showConversation,
             select: item => SelectedStep = item,
             workerAdapters: workerAdapters,
-            reRunAction: reRunAvailable ? () => ReRunRequested?.Invoke() : null,
+            reRunAction: reRunAvailable ? () => _ = RequestRoomRunAsync() : null,
             askWorkerToFixAction: (adapter, stepId, reason) => AskWorkerToFix(adapter, stepId, reason, roomDirectoryPath)))
         {
             RoomSteps.Add(item);

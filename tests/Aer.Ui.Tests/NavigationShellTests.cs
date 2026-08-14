@@ -131,6 +131,18 @@ public class NavigationShellTests
         return roomDirectory;
     }
 
+    /// <summary>
+    /// The journal a crash leaves behind (#1215): an accepted execution request with no terminal event
+    /// after it — which, by §6, is also exactly what a live run's journal looks like. No lock is held
+    /// over this directory, and that is the whole difference; see
+    /// <see cref="Aer.Ui.Core.RoomClient.DeriveRoomStoppedReason"/>.
+    /// </summary>
+    private static Task<string> CreateStalledRoomDirectoryAsync(CancellationToken cancellationToken) =>
+        CreateRoomDirectoryAsync(
+            TwoStepSnapshot(),
+            [new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("a-1"), Architect))],
+            cancellationToken);
+
     /// <summary>A task paused at a NeedsInput pause point (#334) — the shape an interactive session settles into: "your turn to reply", not an approval gate.</summary>
     private static async Task<string> CreateNeedsInputRoomDirectoryAsync(string replyContent, CancellationToken cancellationToken)
     {
@@ -317,6 +329,78 @@ public class NavigationShellTests
             var decision = Assert.Single(window.ViewModel.Chat.PendingDecisions);
             Assert.Equal(Critic, decision.StepId);
             Assert.Same(Assert.Single(window.ViewModel.PausedSteps), decision);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1215, through the whole open path rather than the derivation alone: a room that stopped
+    /// mid-run offers Resume on its transcript, and a room waiting on a decision offers nothing —
+    /// it already has the person's action there. Both arms in one fact because the pair is the
+    /// claim; either alone passes under a predicate that always answers the same way.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task A_stopped_room_offers_resume_on_its_transcript_and_a_room_awaiting_a_decision_does_not()
+    {
+        var stalledRoom = await CreateStalledRoomDirectoryAsync(TestContext.Current.CancellationToken);
+        var pausedRoom = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+
+            await window.OpenAsync(stalledRoom, TestContext.Current.CancellationToken);
+            var card = window.ViewModel.RoomStoppedCard;
+            Assert.NotNull(card);
+            Assert.Equal(RoomStoppedReason.StoppedMidRun, card.Reason);
+            Assert.Equal("Resume", card.ActionLabel);
+            Assert.True(window.ViewModel.HasRoomStoppedCard);
+
+            // Same window, next room: the offer has to clear, or it is an offer against the wrong
+            // directory — which is how the retired Run button could resume a room you were not looking at.
+            await window.OpenAsync(pausedRoom, TestContext.Current.CancellationToken);
+            Assert.Null(window.ViewModel.RoomStoppedCard);
+            Assert.False(window.ViewModel.HasRoomStoppedCard);
+            Assert.Single(window.ViewModel.Chat.PendingDecisions);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(stalledRoom);
+            DirectoryCleanup.DeleteRecursively(pausedRoom);
+        }
+    }
+
+    /// <summary>
+    /// #1215: slice 3 put Stop inside the Shape panel, which is closed by default, so the brake was
+    /// unreachable on the surface a person actually sits on — the design rule it broke, and why it is
+    /// present-and-disabled rather than hidden, is on the button in <c>ChatView.axaml</c>. This pins
+    /// both halves: Stop is in the room header, and it is <em>not</em> also in the shape panel, since
+    /// two of them would be two surfaces for one action.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Stop_is_in_the_room_header_and_not_in_the_collapsible_shape_panel()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            // The default state a person lands in: transcript showing, shape panel closed.
+            Assert.False(window.ViewModel.Chat.IsShapePanelOpen);
+            Assert.True(window.IsMainRegionVisible);
+            Assert.False(window.IsShapeRegionVisible);
+
+            Assert.NotNull(window.ChatViewControl.FindControl<Button>("StopButton"));
+            Assert.Null(window.RoomViewControl.FindControl<Button>("StopButton"));
+
+            // Present, not merely reachable: disabled with nothing in flight, enabled the moment
+            // there is — the same binding it carried in the header it came from.
+            Assert.False(window.StopButton.IsEnabled);
+            window.ViewModel.IsMutationInFlight = true;
+            Assert.True(window.StopButton.IsEnabled);
         }
         finally
         {

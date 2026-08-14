@@ -138,7 +138,9 @@ public class MainWindowRunTests
 
             var runStatusText = window.FindViewControl<TextBlock>("RunStatusText")!;
             Assert.Contains(roomDirectory, runStatusText.Text);
-            Assert.True(window.FindViewControl<Button>("RunButton")!.IsEnabled);
+            // The surface is usable again after the failure. Asserted on the flag the retired Run
+            // button's IsEnabled was bound to (#1215), which is what the claim was always about.
+            Assert.False(window.ViewModel.IsMutationInFlight);
         }
         finally
         {

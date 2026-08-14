@@ -26,6 +26,17 @@
       <ToggleButton x:Name="ChatShapeToggle" VerticalAlignment="Center" Content="Shape"
                     IsVisible="{Binding Chat.IsPipelineRoom}"
                     IsChecked="{Binding Chat.IsShapePanelOpen}" />
+      <!-- #1215: Stop's always-present rule is docs/design/03-interaction-depth.md's, and the
+           amendment recording this move is 02-screens.md's. Slice 3 moved RoomView into the
+           collapsible Shape panel and Stop went with it, so Stop existed only while a panel that is
+           closed by default was open. Disabled rather than hidden is what that rule requires: a
+           person looking for the brake must find it in the same place whether or not anything is
+           running. Enablement mirrors the binding it had in RoomView, unchanged. -->
+      <Button x:Name="StopButton" VerticalAlignment="Center"
+              IsEnabled="{Binding IsMutationInFlight}"
+              ToolTip.Tip="Cancel every execution this window currently has in flight.">
+        <AccessText Text="_Stop" />
+      </Button>
     </StackPanel>
 
     <!-- Persistent mode indicator (#286): mode buttons live in the collapsed Commands panel below,
@@ -217,6 +228,27 @@
             </StackPanel>
           </StackPanel>
         </Border>
+
+        <!-- #1215: the stopped-room offer that retires the header Run button — see
+             RoomStoppedCardViewModel for what it offers and why it sits here. Gated on a workflow
+             room: a chat session is never "stopped mid-run", and a finished one is not re-run from a
+             workflow file. RunStatusText rides beside it because this is where a failed Resume has to
+             be readable — its other home is RoomView, which is the Shape panel, closed by default. -->
+        <StackPanel Spacing="{DynamicResource Space.2}" IsVisible="{Binding Chat.IsPipelineRoom}">
+          <Border Classes="card" IsVisible="{Binding HasRoomStoppedCard}"
+                  Background="{DynamicResource Color.SurfaceSubtle}" Margin="0,4,0,4">
+            <StackPanel Spacing="8" DataContext="{Binding RoomStoppedCard}" x:DataType="vm:RoomStoppedCardViewModel">
+              <TextBlock Classes="body-strong" Text="{Binding Headline}" TextWrapping="Wrap" />
+              <TextBlock Classes="secondary" Text="{Binding BodyText}" TextWrapping="Wrap" />
+              <Button x:Name="RoomStoppedRunButton" Classes="accent" HorizontalAlignment="Left"
+                      Content="{Binding ActionLabel}" Command="{Binding RunCommand}"
+                      IsEnabled="{Binding IsEnabled}" />
+            </StackPanel>
+          </Border>
+          <TextBlock x:Name="RoomRunStatusText" Classes="secondary" TextWrapping="Wrap"
+                     Text="{Binding RunStatusText}"
+                     IsVisible="{Binding RunStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        </StackPanel>
 
         <!-- #1196 slice 3: the room's open decisions, moved here from RoomView unchanged — same
              template, same commands, same feedback-file row. A position move is the shipped

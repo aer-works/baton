@@ -62,6 +62,36 @@ One room, one worker. This is the screen you look at most, so it has to be borin
 > of a workflow room carries the room's own events — pause, decision, failure, cancellation — and not
 > the workers' turns, which is thin on purpose and disclosed rather than hidden.
 
+> **Amendment (2026-08-14, #1215 / umbrella #1196):** The room header no longer carries file paths or a
+> **Run** button. A workflow file and a bindings file are engine plumbing; the header is the room's.
+>
+> **What replaced Run**, which is the fork #1196 reserved for an amendment rather than a decision
+> record. Run did two jobs. Starting a room was never only its — Author's "Save & Run" and the template
+> picker both do it, and both survive. Resuming a room that was running when its process died was its
+> alone, and nothing else in the desktop does it: every other caller starts a fresh room, and nothing
+> rehydrates a crashed one on startup. So Run could not simply go.
+>
+> It is now an offer on the stopped room's own transcript — *"This room stopped mid-run — Resume"* —
+> the same put-the-offer-on-the-turn move dormancy's Wake and #617's "Try again" already make. A
+> finished room gets the matching offer in the same place, *"Run it again"*, which starts a fresh room
+> cloned from it and leaves the finished one as it is.
+>
+> **Auto-resuming a stopped room when it is opened was considered and rejected** (owner, 2026-08-14):
+> opening a room would then spend vendor budget nobody asked for, and what is spent is the operator's
+> call. Resume is a click.
+>
+> **A room waiting on a decision gets no such offer.** It is also not running, and it is not stopped —
+> its next move is already on screen as the decision itself, and a second offer beside it would be two
+> answers to one turn. Note this is why "stopped" cannot be read off the journal: `WorkflowStatus`
+> defines `Running` as *"still in flight **or** Flow crashed before recording its outcome"*, so the
+> record cannot tell a live room from a dead one. What can is the room's §15 lock, which the OS
+> releases the instant its holder exits.
+>
+> **Stop stays in the header**, present whether or not anything is running — "Stop is always present
+> and always distinct from a gate" (`03-interaction-depth.md`). Slice 3 had moved it into the
+> collapsible Shape panel, where it was only findable if you had already opened a panel that is closed
+> by default.
+
 Desktop · one worker
 
 Baton

@@ -28,10 +28,12 @@ public class AccentButtonThemeTests
         var window = new MainWindow { RequestedThemeVariant = ThemeVariant.Light };
         window.Show();
 
-        var runButton = window.FindViewControl<Button>("RunButton")!;
-        runButton.ApplyTemplate();
+        // Any Classes="accent" button answers this — #1215 retired the header Run button this used
+        // to reach for, and the token resolution under test is the theme's, not that button's.
+        var accentButton = window.FindViewControl<Button>("ChatSendButton")!;
+        accentButton.ApplyTemplate();
 
-        var contentPresenter = runButton.GetVisualDescendants().OfType<ContentPresenter>().First();
+        var contentPresenter = accentButton.GetVisualDescendants().OfType<ContentPresenter>().First();
 
         // GeneratedTokens.axaml's Light dictionary Color.Accent (brand.accent) — not any SystemAccentColor brush.
         Assert.Equal(Color.Parse("#3F8C87"), ((ISolidColorBrush)contentPresenter.Background!).Color);
@@ -44,10 +46,12 @@ public class AccentButtonThemeTests
         var window = new MainWindow { RequestedThemeVariant = ThemeVariant.Dark };
         window.Show();
 
-        var runButton = window.FindViewControl<Button>("RunButton")!;
-        runButton.ApplyTemplate();
+        // Any Classes="accent" button answers this — #1215 retired the header Run button this used
+        // to reach for, and the token resolution under test is the theme's, not that button's.
+        var accentButton = window.FindViewControl<Button>("ChatSendButton")!;
+        accentButton.ApplyTemplate();
 
-        var contentPresenter = runButton.GetVisualDescendants().OfType<ContentPresenter>().First();
+        var contentPresenter = accentButton.GetVisualDescendants().OfType<ContentPresenter>().First();
 
         // GeneratedTokens.axaml's Dark dictionary Color.Accent (brand.accent).
         Assert.Equal(Color.Parse("#5FB3AD"), ((ISolidColorBrush)contentPresenter.Background!).Color);

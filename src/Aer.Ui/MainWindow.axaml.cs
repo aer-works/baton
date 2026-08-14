@@ -122,10 +122,7 @@ public partial class MainWindow : Window
     internal Button OpenButton => HomeViewControl.OpenButton;
     internal Button RefreshButton => HomeViewControl.RefreshButton;
 
-    internal TextBox WorkflowTemplatePathBox => RoomViewControl.WorkflowTemplatePathBox;
-    internal TextBox BindingsFilePathBox => RoomViewControl.BindingsFilePathBox;
-    internal Button RunButton => RoomViewControl.RunButton;
-    internal Button StopButton => RoomViewControl.StopButton;
+    internal Button StopButton => ChatViewControl.StopButton;
     internal TextBlock RunStatusText => RoomViewControl.RunStatusText;
     internal TextBlock StatusText => RoomViewControl.StatusText;
     internal StackPanel StepsPanel => RoomViewControl.StepsPanel;
@@ -271,7 +268,7 @@ public partial class MainWindow : Window
             configurationStore,
             adapters,
             ViewModel,
-            bindingsFilePathProvider: () => BindingsFilePathBox.Text,
+            bindingsFilePathProvider: () => ViewModel.BindingsFilePath,
             mutationStarted: _liveRefreshTimer.Start,
             mutationFailed: _liveRefreshTimer.Stop,
             reopenRoomAsync: (roomDirectoryPath, cancellationToken) => OpenAsync(roomDirectoryPath, cancellationToken),
@@ -294,8 +291,7 @@ public partial class MainWindow : Window
         OpenButton.Click += (_, _) => _ = OpenAsync(RoomDirectoryPathBox.Text ?? string.Empty);
         RefreshButton.Click += (_, _) => _ = RefreshAsync();
         CompareButton.Click += (_, _) => _ = CompareToTemplateAsync(TemplateComparePathBox.Text ?? string.Empty);
-        RunButton.Click += (_, _) => _ = OnRunButtonClickAsync();
-        ViewModel.ReRunRequested += () => _ = OnRunButtonClickAsync();
+        ViewModel.RoomRunRequested += OnRoomRunRequestedAsync;
         StopButton.Click += (_, _) => _ = StopAsync();
         NewTemplateButton.Click += (_, _) => NewTemplate();
         EditTemplateButton.Click += (_, _) => _ = OpenTemplateInEditorAsync(TemplateEditorPathBox.Text ?? string.Empty);
@@ -634,8 +630,8 @@ public partial class MainWindow : Window
         // existence — it has to be populated once at startup and kept current by pushes thereafter.
         await ViewModel.Rooms.RefreshAsync(_session, cancellationToken);
 
-        BindingsFilePathBox.Text = await _session.LoadLastBindingsFilePathAsync(cancellationToken);
-        WorkflowTemplatePathBox.Text = await _session.LoadLastWorkflowTemplateFilePathAsync(cancellationToken);
+        ViewModel.BindingsFilePath = await _session.LoadLastBindingsFilePathAsync(cancellationToken);
+        ViewModel.WorkflowTemplateFilePath = await _session.LoadLastWorkflowTemplateFilePathAsync(cancellationToken);
 
         // #1068: the theme was already applied to the app by App startup; this syncs the Settings
         // toggle's selected button to the persisted choice (or System when nothing was ever chosen).
@@ -755,15 +751,15 @@ public partial class MainWindow : Window
         if (File.Exists(roomDirectoryPath) && !Directory.Exists(roomDirectoryPath))
         {
             ViewModel.CurrentSection = ShellSection.Task;
-            WorkflowTemplatePathBox.Text = roomDirectoryPath;
+            ViewModel.WorkflowTemplateFilePath = roomDirectoryPath;
             _session.SetCurrentRoomDirectory(null);
             await LoadTemplateAsync(roomDirectoryPath, cancellationToken);
             _liveRefreshTimer.Stop();
             return;
         }
 
-        BindingsFilePathBox.Text = await _session.LoadLastBindingsFilePathAsync(cancellationToken);
-        WorkflowTemplatePathBox.Text = await _session.LoadLastWorkflowTemplateFilePathAsync(cancellationToken);
+        ViewModel.BindingsFilePath = await _session.LoadLastBindingsFilePathAsync(cancellationToken);
+        ViewModel.WorkflowTemplateFilePath = await _session.LoadLastWorkflowTemplateFilePathAsync(cancellationToken);
 
         _session.SetCurrentRoomDirectory(roomDirectoryPath);
 
@@ -826,11 +822,11 @@ public partial class MainWindow : Window
         string roomDirectoryPath, string? workflowTemplateFilePath, string bindingsFilePath, CancellationToken cancellationToken = default)
     {
         RoomDirectoryPathBox.Text = roomDirectoryPath;
-        // Kept in sync here, not just read from at Run-button-click time, so a later decision —
-        // whose bindings path the session asks this same box for at call time ("ask, don't infer",
+        // Kept in sync here, not just read from at dispatch time, so a later decision — whose
+        // bindings path the session asks this same property for at call time ("ask, don't infer",
         // M14 Phase 2's decision of record) — has a value even when RunAsync was invoked directly
-        // (a test, or a future non-button caller) rather than through the click handler.
-        BindingsFilePathBox.Text = bindingsFilePath;
+        // (a test, or a future non-button caller) rather than through a click handler.
+        ViewModel.BindingsFilePath = bindingsFilePath;
 
         await _session.RunAsync(roomDirectoryPath, workflowTemplateFilePath, bindingsFilePath, cancellationToken);
     }
@@ -1148,19 +1144,25 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The Run button's click handler (review follow-up, issue #250): on a room that hasn't
-    /// finished, this is exactly the old unconditional resume-in-place call. On a finished room —
-    /// <see cref="MainWindowViewModel.IsTaskFinished"/> — resuming the same directory is a proven
+    /// Everything that asks for the open room to be run (review follow-up, issue #250; #1215 made it
+    /// one event rather than one handler per caller). On a room that hasn't finished, this is exactly
+    /// the old unconditional resume-in-place call. On a finished room —
+    /// <see cref="MainWindowViewModel.IsRoomFinished"/> — resuming the same directory is a proven
     /// no-op (see that property's remarks), so this clones the currently-open room's recorded
     /// <c>.aer/workflow-path</c>/bindings file into a fresh sibling <c>room-{timestamp}</c> directory
     /// instead, the same naming <see cref="MainWindow"/>'s "Save &amp; Run" and template flows
     /// already use, and runs that. The finished room's own directory is left untouched.
+    /// <para>
+    /// The fork stays here rather than moving to the card: which of the two a click means is the
+    /// room's state's answer, not the caller's, and duplicating it per caller is how the two would
+    /// drift apart.
+    /// </para>
     /// </summary>
-    private async Task OnRunButtonClickAsync()
+    private async Task OnRoomRunRequestedAsync()
     {
         var roomDirectoryPath = RoomDirectoryPathBox.Text ?? string.Empty;
-        var workflowTemplateFilePath = WorkflowTemplatePathBox.Text;
-        var bindingsFilePath = BindingsFilePathBox.Text ?? string.Empty;
+        var workflowTemplateFilePath = ViewModel.WorkflowTemplateFilePath;
+        var bindingsFilePath = ViewModel.BindingsFilePath ?? string.Empty;
 
         if (ViewModel.IsRoomFinished && !string.IsNullOrWhiteSpace(roomDirectoryPath))
         {
@@ -1393,25 +1395,25 @@ public partial class MainWindow : Window
         var workflowPathFile = System.IO.Path.Combine(roomDirectoryPath, ".aer", "workflow-path");
         if (File.Exists(workflowPathFile))
         {
-            try { WorkflowTemplatePathBox.Text = File.ReadAllText(workflowPathFile).Trim(); } catch { }
+            try { ViewModel.WorkflowTemplateFilePath = File.ReadAllText(workflowPathFile).Trim(); } catch { }
         }
         else
         {
             var fallbackWorkflowJson = System.IO.Path.Combine(roomDirectoryPath, "workflow.json");
             if (File.Exists(fallbackWorkflowJson))
             {
-                WorkflowTemplatePathBox.Text = fallbackWorkflowJson;
+                ViewModel.WorkflowTemplateFilePath = fallbackWorkflowJson;
             }
             else
             {
-                WorkflowTemplatePathBox.Text = string.Empty;
+                ViewModel.WorkflowTemplateFilePath = string.Empty;
             }
         }
 
         var bindingsPathFile = System.IO.Path.Combine(roomDirectoryPath, ".aer", "bindings-path"); // vocabulary-ok: technical file path
         if (File.Exists(bindingsPathFile))
         {
-            try { BindingsFilePathBox.Text = File.ReadAllText(bindingsPathFile).Trim(); } catch { }
+            try { ViewModel.BindingsFilePath = File.ReadAllText(bindingsPathFile).Trim(); } catch { }
         }
 
         ViewModel.IsRoomFinished = projection.State.Status == WorkflowStatus.Terminal;
@@ -1433,7 +1435,7 @@ public partial class MainWindow : Window
         RenderConversationExecutions(projection, roomDirectoryPath);
         RenderConversation();
 
-        var workerAdapters = GetWorkerAdapters(roomDirectoryPath, BindingsFilePathBox.Text);
+        var workerAdapters = GetWorkerAdapters(roomDirectoryPath, ViewModel.BindingsFilePath);
 
         // M19 Phase 3 (#188): the per-step drill-in — built after the session has rebuilt
         // PausedSteps, so each paused step's inline decision card is the same live VM instance.
