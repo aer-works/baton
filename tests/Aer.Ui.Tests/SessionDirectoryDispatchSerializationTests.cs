@@ -260,8 +260,9 @@ public class SessionDirectoryDispatchSerializationTests : IAsyncLifetime
     [Fact]
     public async Task ConcurrentRuns_OnDifferentDirectories_StillProceedConcurrently()
     {
-        var (directoryA, bindingsA) = await CreateReadyRoomDirectoryAsync();
-        var (directoryB, bindingsB) = await CreateReadyRoomDirectoryAsync();
+        var rendezvous = CreateRendezvousDirectory();
+        var (directoryA, bindingsA) = await CreateReadyRoomDirectoryAsync(rendezvous);
+        var (directoryB, bindingsB) = await CreateReadyRoomDirectoryAsync(rendezvous);
 
         var runA = _client.PostAsJsonAsync(
             $"{_baseUrl}/api/rooms/run", new RunRoomRequest(directoryA, null, bindingsA), TestContext.Current.CancellationToken);
@@ -277,18 +278,49 @@ public class SessionDirectoryDispatchSerializationTests : IAsyncLifetime
         await WaitForCompletionsAsync(directoryA, expectedCompletions: 1);
         await WaitForCompletionsAsync(directoryB, expectedCompletions: 1);
 
-        // The discriminator is the GAP between the two dispatches' start stamps, not total wall
-        // time -- why, and why the earlier 1.5x-DispatchDelay wall-clock bound failed a genuinely
-        // concurrent CI run, is SlowCollisionStubAdapter.StartStampFilePrefix's doc.
-        var startA = ReadDispatchStartUtc(directoryA);
-        var startB = ReadDispatchStartUtc(directoryB);
-        var gap = (startA - startB).Duration();
-        Assert.True(gap < SlowCollisionStubAdapter.DispatchDelay,
-            $"The two dispatches' start stamps are {gap.TotalMilliseconds:0}ms apart -- looks serialised, not concurrent.");
+        // Both dispatches saw the other's arrival, which only a pair in flight at once can do.
+        Assert.Equal(2, CountRendezvousProofs(rendezvous));
 
         AssertNoCollision(directoryA);
         AssertNoCollision(directoryB);
     }
+
+    /// <summary>
+    /// The control for the fact above (#1211): the same two directories dispatched one after the
+    /// other, which is what global serialisation would look like. Only the second run can find two
+    /// arrivals -- the first waited out <see cref="SlowCollisionStubAdapter.RendezvousTimeout"/>
+    /// alone and exited before the second announced itself -- so a serialised pair yields one proof
+    /// and can never reach the two the fact above requires.
+    /// </summary>
+    [Fact]
+    public async Task SequentialRuns_OnDifferentDirectories_DoNotClearTheRendezvous()
+    {
+        var rendezvous = CreateRendezvousDirectory();
+        var (directoryA, bindingsA) = await CreateReadyRoomDirectoryAsync(rendezvous);
+        var (directoryB, bindingsB) = await CreateReadyRoomDirectoryAsync(rendezvous);
+
+        var runA = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/run", new RunRoomRequest(directoryA, null, bindingsA), TestContext.Current.CancellationToken);
+        Assert.True(runA.IsSuccessStatusCode);
+        await WaitForCompletionsAsync(directoryA, expectedCompletions: 1);
+
+        var runB = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/run", new RunRoomRequest(directoryB, null, bindingsB), TestContext.Current.CancellationToken);
+        Assert.True(runB.IsSuccessStatusCode);
+        await WaitForCompletionsAsync(directoryB, expectedCompletions: 1);
+
+        Assert.Equal(1, CountRendezvousProofs(rendezvous));
+    }
+
+    private static string CreateRendezvousDirectory()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"aer_1211_rendezvous_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static int CountRendezvousProofs(string rendezvousDirectory) =>
+        Directory.GetFiles(rendezvousDirectory, SlowCollisionStubAdapter.ConcurrencyProofFilePrefix + "*").Length;
 
     private static void AssertNoCollision(string roomDirectory)
     {
@@ -303,15 +335,8 @@ public class SessionDirectoryDispatchSerializationTests : IAsyncLifetime
         return File.Exists(completionsFile) ? LiveFileReader.ReadLines(completionsFile).Count : 0;
     }
 
-    /// <summary>The one dispatch's start-stamp file time in this directory; fails loudly on zero or several.</summary>
-    private static DateTime ReadDispatchStartUtc(string roomDirectory)
-    {
-        var stamps = Directory.GetFiles(roomDirectory, SlowCollisionStubAdapter.StartStampFilePrefix + "*");
-        var stamp = Assert.Single(stamps);
-        return File.GetLastWriteTimeUtc(stamp);
-    }
-
-    private static async Task<(string RoomDirectory, string BindingsFilePath)> CreateReadyRoomDirectoryAsync()
+    private static async Task<(string RoomDirectory, string BindingsFilePath)> CreateReadyRoomDirectoryAsync(
+        string? rendezvousDirectory = null)
     {
         var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
             new WorkflowTemplateId("dispatch-serialization-test"),
@@ -322,8 +347,12 @@ public class SessionDirectoryDispatchSerializationTests : IAsyncLifetime
         Directory.CreateDirectory(roomDirectory);
         await SnapshotBinder.PersistAsync(snapshot, Path.Combine(roomDirectory, "snapshot.json"), TestContext.Current.CancellationToken);
 
+        var promptTemplate = rendezvousDirectory is null
+            ? "irrelevant, no vendor is really invoked"
+            : SlowCollisionStubAdapter.RendezvousSentinelPrefix + rendezvousDirectory;
+
         var bindingsFilePath = Path.Combine(roomDirectory, "bindings.json");
-        await WriteSlowCollisionBindingsAsync(bindingsFilePath, roomDirectory, promptTemplate: "irrelevant, no vendor is really invoked");
+        await WriteSlowCollisionBindingsAsync(bindingsFilePath, roomDirectory, promptTemplate);
 
         return (roomDirectory, bindingsFilePath);
     }
