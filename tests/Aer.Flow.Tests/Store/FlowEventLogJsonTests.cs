@@ -25,6 +25,10 @@ public class FlowEventLogJsonTests
     /// existence so each is a realistic line; <see cref="Every_FlowEvent_variant_is_covered_by_these_tests"/>
     /// is what stops the list from silently falling behind the type.
     /// </summary>
+    // See RoomEventSerializationTests.FixedInstant (#1206): a clock reading in theory data renames
+    // the case on every run.
+    private static readonly DateTimeOffset FixedInstant = new(2026, 8, 14, 12, 0, 0, TimeSpan.Zero);
+
     public static TheoryData<FlowEvent> AllVariants() =>
     [
         new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
@@ -38,7 +42,7 @@ public class FlowEventLogJsonTests
         new FlowEvent.WorkflowPaused(ExecutionId, StepId),
         new FlowEvent.ExternalDecisionRecorded(DecisionId, ExecutionId, DecisionType.Resume, StepId, null),
         new FlowEvent.WorkflowResumed(DecisionId),
-        new FlowEvent.StepRetryScheduled(StepId, ExecutionId, DateTimeOffset.UtcNow, 100),
+        new FlowEvent.StepRetryScheduled(StepId, ExecutionId, FixedInstant, 100),
     ];
 
     /// <summary>
@@ -369,3 +373,6 @@ public class FlowEventLogJsonTests
             .Any(p => string.Equals(p.Name, memberName, StringComparison.OrdinalIgnoreCase)
                 && p.HasDefaultValue);
 }
+
+
+

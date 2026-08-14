@@ -17,21 +17,26 @@ public class RoomEventLogJsonTests
     private static readonly HeldWorkRef LaneRef = new("lanes/lane-1");
     private const string CitedSubject = "exec-lane-1";
 
+    // A constant, not a clock: a theory case's NAME is built from its arguments, so a reading of
+    // UtcNow here renamed these cases on every run (#1206). Reasoned out once, on
+    // RoomEventSerializationTests.FixedInstant.
+    private static readonly DateTimeOffset FixedInstant = new(2026, 8, 14, 12, 0, 0, TimeSpan.Zero);
+
     public static TheoryData<RoomEvent> AllRoomEventVariants() =>
     [
         new RoomEvent.HeldWorkDispatched(LaneRef, "shape-flow", TimeSpan.FromMinutes(15), "operator-decider"),
         new RoomEvent.HeldWorkEscalated(LaneRef, "escalation-target"),
         new RoomEvent.HeldWorkResolved(LaneRef, new HeldWorkCitation(CitedSubject, "executionSucceeded", 0)),
-        new RoomEvent.GrantRecorded(new GrantId("g-1"), new WorkerId("w-1"), GrantLevel.L1Dispatch, new GrantScope(), new SpendBounds(), "operator", DateTimeOffset.UtcNow),
-        new RoomEvent.GrantAmended(new GrantId("g-2"), new GrantId("g-1"), new WorkerId("w-1"), GrantLevel.L2Tend, new GrantScope(), new SpendBounds(), "operator", DateTimeOffset.UtcNow),
-        new RoomEvent.GrantRevoked(new GrantId("g-1"), "operator", DateTimeOffset.UtcNow, "reason"),
-        new RoomEvent.EscalationRaised(new WorkerId("w-1"), EscalationTrigger.Spend, new EscalationSubject.Decision(new DecisionId("d-1")), DateTimeOffset.UtcNow),
-        new RoomEvent.EscalationRaised(new WorkerId("turn-host"), EscalationTrigger.Confidence, new EscalationSubject.HostCondition("turn-watchdog-timeout", "turn exceeded its budget"), DateTimeOffset.UtcNow),
-        new RoomEvent.TurnHostDormancyEntered(3, DateTimeOffset.UtcNow),
-        new RoomEvent.TurnHostDormancyCleared("operator", DateTimeOffset.UtcNow),
-        new RoomEvent.RuntimePermissionAsked("req-1", new ExecutionId("ex-1"), new StepId("st-1"), "w-1", "claude", "corr-1", "ReadFiles", "{}", "ReadFiles", DateTimeOffset.UtcNow),
-        new RoomEvent.RuntimePermissionAnswered("req-1", "AllowOnce", "{}", "ok", "op-1", DateTimeOffset.UtcNow),
-        new RoomEvent.RuntimePermissionRevoked("req-1", "timeout", DateTimeOffset.UtcNow),
+        new RoomEvent.GrantRecorded(new GrantId("g-1"), new WorkerId("w-1"), GrantLevel.L1Dispatch, new GrantScope(), new SpendBounds(), "operator", FixedInstant),
+        new RoomEvent.GrantAmended(new GrantId("g-2"), new GrantId("g-1"), new WorkerId("w-1"), GrantLevel.L2Tend, new GrantScope(), new SpendBounds(), "operator", FixedInstant),
+        new RoomEvent.GrantRevoked(new GrantId("g-1"), "operator", FixedInstant, "reason"),
+        new RoomEvent.EscalationRaised(new WorkerId("w-1"), EscalationTrigger.Spend, new EscalationSubject.Decision(new DecisionId("d-1")), FixedInstant),
+        new RoomEvent.EscalationRaised(new WorkerId("turn-host"), EscalationTrigger.Confidence, new EscalationSubject.HostCondition("turn-watchdog-timeout", "turn exceeded its budget"), FixedInstant),
+        new RoomEvent.TurnHostDormancyEntered(3, FixedInstant),
+        new RoomEvent.TurnHostDormancyCleared("operator", FixedInstant),
+        new RoomEvent.RuntimePermissionAsked("req-1", new ExecutionId("ex-1"), new StepId("st-1"), "w-1", "claude", "corr-1", "ReadFiles", "{}", "ReadFiles", FixedInstant),
+        new RoomEvent.RuntimePermissionAnswered("req-1", "AllowOnce", "{}", "ok", "op-1", FixedInstant),
+        new RoomEvent.RuntimePermissionRevoked("req-1", "timeout", FixedInstant),
     ];
 
 
@@ -183,3 +188,4 @@ public class RoomEventLogJsonTests
         Assert.True(cursor.Remove(path[^1]));
     }
 }
+

@@ -7,8 +7,8 @@ number anywhere saying whether any of the fixes made the suite more deterministi
 
 What counts as a fault here is *disagreement*, not failure. A test that fails in all N passes is a
 broken test and the suite's own red says so; a test that passes in some and fails in others is the
-thing this exists to name. A test missing from a pass entirely counts as disagreement too -- a run
-that crashed before reaching it is exactly the shape of #984.
+thing this exists to name. A test missing from a pass is reported too, but separately and in
+different words -- see find_disagreements.
 """
 from __future__ import annotations
 
@@ -32,29 +32,40 @@ def outcomes_in_trx(trx_path: Path) -> dict[str, str]:
     return outcomes
 
 
-def find_disagreements(passes: list[dict[str, str]]) -> dict[str, dict[str, int]]:
-    """Tests whose outcome was not identical across every pass, with a count per outcome.
+def find_disagreements(passes: list[dict[str, str]]) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+    """Splits tests that did not behave identically into the two very different reasons why.
 
-    A test absent from a pass is recorded as "NotRun" for that pass rather than skipped: a pass that
-    died before reaching a test disagrees with one that ran it, and treating absence as "no opinion"
-    would silently forgive the crash-mid-suite shape.
+    Returns (varied, unstable). **varied** ran in every pass and did not agree with itself — the
+    flake this watch exists to find. **unstable** is missing from at least one pass: either a pass
+    died before reaching it, or the test's NAME is not the same from run to run, which xunit produces
+    whenever theory data contains a clock reading or a GUID.
+
+    They are reported apart because conflating them is how this becomes noise. The first run of this
+    watch found 81 of the second kind and none of the first; had they arrived in one undifferentiated
+    list headed "non-deterministic tests", the true reading — that nothing flaked, and that 81 cases
+    cannot be tracked across runs at all — would have been invisible.
     """
     if len(passes) < 2:
-        return {}
+        return {}, {}
 
     every_name: set[str] = set()
     for outcomes in passes:
         every_name.update(outcomes)
 
-    disagreements: dict[str, dict[str, int]] = {}
+    varied: dict[str, dict[str, int]] = {}
+    unstable: dict[str, dict[str, int]] = {}
     for name in sorted(every_name):
         tally: dict[str, int] = defaultdict(int)
         for outcomes in passes:
             tally[outcomes.get(name, "NotRun")] += 1
-        if len(tally) > 1:
-            disagreements[name] = dict(tally)
+        if len(tally) == 1:
+            continue
+        if "NotRun" in tally:
+            unstable[name] = dict(tally)
+        else:
+            varied[name] = dict(tally)
 
-    return disagreements
+    return varied, unstable
 
 
 def load_passes(results_root: Path) -> list[tuple[str, dict[str, str]]]:
@@ -78,32 +89,42 @@ def _selftest() -> int:
         {"A.Test1": "Passed", "A.Test2": "Failed"},
         {"A.Test1": "Passed", "A.Test2": "Failed"},
     ]
-    if find_disagreements(stable):
+    if any(find_disagreements(stable)):
         failures.append("Arm (a) FAIL: consistent outcomes reported as disagreement")
 
-    # (b) a test that passes once and fails once -> fires, with both outcomes counted
+    # (b) a test that passes once and fails once -> fires as a FLAKE, with both outcomes counted
     flaky = [
         {"A.Test1": "Passed", "A.Test2": "Passed"},
         {"A.Test1": "Passed", "A.Test2": "Failed"},
     ]
-    found = find_disagreements(flaky)
-    if list(found) != ["A.Test2"] or found["A.Test2"] != {"Passed": 1, "Failed": 1}:
-        failures.append(f"Arm (b) FAIL: flaky test not reported correctly, got {found!r}")
+    varied_b, unstable_b = find_disagreements(flaky)
+    if list(varied_b) != ["A.Test2"] or varied_b["A.Test2"] != {"Passed": 1, "Failed": 1} or unstable_b:
+        failures.append(f"Arm (b) FAIL: flaky test not reported as varied, got {varied_b!r} / {unstable_b!r}")
 
-    # (c) a test missing from one pass entirely -> fires as NotRun, not forgiven
+    # (c) a test missing from one pass -> fires as UNSTABLE, never as a flake. The two are different
+    # findings and the report that conflated them would have buried the first real one.
     partial = [{"A.Test1": "Passed", "A.Test2": "Passed"}, {"A.Test1": "Passed"}]
-    found_c = find_disagreements(partial)
-    if list(found_c) != ["A.Test2"] or found_c["A.Test2"].get("NotRun") != 1:
-        failures.append(f"Arm (c) FAIL: test absent from a pass not reported, got {found_c!r}")
+    varied_c, unstable_c = find_disagreements(partial)
+    if varied_c or list(unstable_c) != ["A.Test2"] or unstable_c["A.Test2"].get("NotRun") != 1:
+        failures.append(f"Arm (c) FAIL: absent test not reported as unstable, got {varied_c!r} / {unstable_c!r}")
 
     # (d) a single pass cannot disagree with anything -> silent rather than falsely confident
-    if find_disagreements([{"A.Test1": "Passed"}]):
+    if any(find_disagreements([{"A.Test1": "Passed"}])):
         failures.append("Arm (d) FAIL: a single pass produced a disagreement")
+
+    # (e) both kinds at once -> each lands in its own bucket, neither swallowing the other
+    both = [
+        {"A.Flaky": "Passed", "A.Renamed1": "Passed"},
+        {"A.Flaky": "Failed", "A.Renamed2": "Passed"},
+    ]
+    varied_e, unstable_e = find_disagreements(both)
+    if list(varied_e) != ["A.Flaky"] or sorted(unstable_e) != ["A.Renamed1", "A.Renamed2"]:
+        failures.append(f"Arm (e) FAIL: mixed findings not split, got {varied_e!r} / {unstable_e!r}")
 
     if failures:
         print("flake-watch selftest: FAIL -- " + "; ".join(failures), file=sys.stderr)
         return 1
-    print("flake-watch selftest: pass (all 4 arms discriminate)")
+    print("flake-watch selftest: pass (all 5 arms discriminate)")
     return 0
 
 
@@ -136,17 +157,33 @@ def main(argv: list[str]) -> int:
     print(f"flake-watch: compared {len(passes)} passes ({', '.join(names)}), "
           f"{len(passes[0])} tests in the first")
 
-    disagreements = find_disagreements(passes)
-    if not disagreements:
+    varied, unstable = find_disagreements(passes)
+    if not varied and not unstable:
         print(f" OK every test agreed with itself across all {len(passes)} passes")
         return 0
 
-    print(f" !! {len(disagreements)} non-deterministic test(s):\n", file=sys.stderr)
-    for name, tally in disagreements.items():
-        breakdown = ", ".join(f"{outcome} x{count}" for outcome, count in sorted(tally.items()))
-        print(f"  {name}\n      {breakdown}", file=sys.stderr)
+    if varied:
+        print(f" !! {len(varied)} test(s) whose OUTCOME varied — this is a flake:\n", file=sys.stderr)
+        for name, tally in varied.items():
+            print(f"  {name}\n      {_breakdown(tally)}", file=sys.stderr)
+
+    if unstable:
+        print(
+            f"\n !! {len(unstable)} test(s) missing from at least one pass. Either a pass died before "
+            "reaching them, or their NAME changes between runs — which xunit produces when theory data "
+            "contains a clock reading or a GUID, and which makes a test impossible to follow across "
+            "runs at all:\n",
+            file=sys.stderr)
+        for name, tally in unstable.items():
+            print(f"  {name}\n      {_breakdown(tally)}", file=sys.stderr)
+
     return 1
+
+
+def _breakdown(tally: dict[str, int]) -> str:
+    return ", ".join(f"{outcome} x{count}" for outcome, count in sorted(tally.items()))
 
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))
+
