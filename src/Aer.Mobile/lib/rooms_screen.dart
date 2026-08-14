@@ -4,7 +4,6 @@ import 'chat_screen.dart';
 import 'daemon/credentials_store.dart';
 import 'daemon/daemon_client.dart';
 import 'daemon/models.dart';
-import 'inbox_screen.dart';
 import 'pairing_screen.dart';
 import 'theme/status_mark.dart';
 import 'theme/tokens.dart';
@@ -134,8 +133,8 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Reuses `_cancelRun`'s existing `showDialog` + `AlertDialog` confirm pattern
-  /// (inbox_screen.dart) — mobile already has this precedent, unlike desktop, which has no
+  /// Reuses the `showDialog` + `AlertDialog` confirm pattern `ChatScreen._cancelRun` uses —
+  /// mobile already has this precedent, unlike desktop, which has no
   /// modal-dialog infrastructure and uses an inline two-step confirm instead.
   Future<void> _delete(RoomFleetItem item) async {
     final confirmed = await showDialog<bool>(
@@ -259,9 +258,9 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
 
   /// The empty-state's "start work" action — J8's "a real first action, not a dead-end" (#337): an
   /// empty rooms surface must offer a way to begin, not just report that it is empty. A minimal chat
-  /// start — pick a vendor, open a room, land in its chat — deliberately mirroring InboxScreen's own
-  /// `_startNewChat`; both collapse into one start affordance when the phone's front door is unified
-  /// (#337/J3), so this is early rather than duplicated for its own sake.
+  /// start — pick a vendor, open a room, land in its chat. It was one of two such affordances, the
+  /// other on the phone's old decision surface, and #337/J3 always intended them to collapse into
+  /// one when the front door was unified; #1226 retired that surface, so this is now the one.
   Future<void> _startNewRoom() async {
     var availableVendorNames = <String>[];
     try {
@@ -331,30 +330,26 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Enters a room from its fleet row (row-as-place, #1044): a session opens its chat; a workflow
-  /// opens InboxScreen bound to that room via initialDirectoryPath. Wired only outside selection mode.
+  /// Enters a room from its fleet row (row-as-place, #1044). Both kinds open the same screen since
+  /// #1226 (#1196 slice 6a): a room has one rendering on the phone as on the desktop, and which kind
+  /// it is decides what the transcript carries and whether the composer is live, not which screen
+  /// you land on. `ChatScreen.sessionId` being null IS the workflow case. Wired only outside
+  /// selection mode.
   Future<void> _openRoom(RoomFleetItem item) async {
     final navigator = Navigator.of(context);
-    final sessionId = item.sessionId;
-    if (sessionId != null) {
-      await navigator.push(MaterialPageRoute(
-        builder: (_) => ChatScreen(
-            client: widget.client, sessionId: sessionId, directoryPath: item.roomDirectoryPath),
-      ));
-    } else {
-      await navigator.push(MaterialPageRoute(
-        builder: (_) => InboxScreen(client: widget.client, initialDirectoryPath: item.roomDirectoryPath),
-      ));
-    }
+    await navigator.push(MaterialPageRoute(
+      builder: (_) => ChatScreen(
+          client: widget.client, sessionId: item.sessionId, directoryPath: item.roomDirectoryPath),
+    ));
     // Re-fetch on return: the room's status (or its very existence, if cancelled/deleted in there)
     // may have changed while it was open.
     if (mounted) await _refresh();
   }
 
-  /// Clears this phone's pairing and returns to the pairing screen. Moved here from the inbox now
-  /// that the switcher is the landing — a paired device must be able to unpair from its front door.
-  /// Mirrors InboxScreen._forgetPairing: this clears credentials on this phone only; the desktop
-  /// still lists the device until it is removed there.
+  /// Clears this phone's pairing and returns to the pairing screen. Moved here from the old decision
+  /// surface once the switcher became the landing — a paired device must be able to unpair from its
+  /// front door. Clears credentials on this phone only; the desktop still lists the device until it
+  /// is removed there.
   Future<void> _signOut() async {
     final confirmed = await showDialog<bool>(
       context: context,
