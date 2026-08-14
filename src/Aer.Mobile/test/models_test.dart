@@ -64,6 +64,10 @@ void main() {
       expect(projection.dormancyTransitions[1].isEntered, isFalse);
       expect(projection.dormancyTransitions[1].clearedBy, 'operator');
       expect(projection.isDormant, isFalse);
+
+      // #1216: the fixture's room has its workflow on, which is also what the field's absence means —
+      // so the polarity that discriminates is the one below.
+      expect(projection.isWorkflowOff, isFalse);
     });
 
     test('parses absent dormancyTransitions as empty list', () {
@@ -73,6 +77,21 @@ void main() {
       });
       expect(projection.dormancyTransitions, isEmpty);
       expect(projection.isDormant, isFalse);
+    });
+
+    // #1216: both wire casings, and both polarities. Absence must read as ON — an older daemon, or a
+    // room that has never been switched, is not a room with its workflow off.
+    test('parses isWorkflowOff in ${entry.key} casing, and absence as on', () {
+      final key = entry.key.startsWith('camel') ? 'isWorkflowOff' : 'IsWorkflowOff';
+      Map<String, dynamic> withSwitch(Object? value) => {
+            'snapshot': {'workflowTemplateId': 'wf', 'steps': <dynamic>[]},
+            'state': {'status': 'Paused', 'steps': <dynamic>[]},
+            if (value != null) key: value,
+          };
+
+      expect(RoomProjection.fromJson(withSwitch(true)).isWorkflowOff, isTrue);
+      expect(RoomProjection.fromJson(withSwitch(false)).isWorkflowOff, isFalse);
+      expect(RoomProjection.fromJson(withSwitch(null)).isWorkflowOff, isFalse);
     });
   }
 

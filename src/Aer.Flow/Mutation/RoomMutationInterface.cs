@@ -328,6 +328,88 @@ public static class RoomMutationInterface
         return RoomProjector.Project([.. existingEvents, roomEvent]);
     }
 
+    /// <summary>
+    /// Switches the room's workflow on or off (#1216) — a durable room-level fact, so it survives a
+    /// restart. Nothing is deleted: the shape, the journal, and every worker stay exactly as they
+    /// were, which is what the design corpus means by calling the toggle a "non-event"
+    /// (<c>docs/design/02-screens.md</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Refused while the room has work in flight</b>, with a reason, rather than silently mutating
+    /// a room something is still driving — the same shape as the DAG dependency check at
+    /// <c>02-screens.md:616-621</c>, which refuses rather than repairing the graph. The escape hatch
+    /// there ("Stop Workflow &amp; Remove") is explicitly destructive and confirmed; the bare switch is
+    /// not, so it refuses and the person stops the room first.
+    /// </para>
+    /// <para>
+    /// "In flight" is <b>not</b> <c>StepStatus.Running</c>. <see cref="Domain.WorkflowStatus.Running"/>
+    /// is defined as a live attempt <em>or</em> a crash before the outcome was recorded (§6), so a
+    /// room whose process died days ago is indistinguishable from a live one by the journal alone —
+    /// testing it would leave such a room permanently unable to switch off. The honest test, the one
+    /// #1219 established for the same reason, is the pair of primitives underneath: the room's §15
+    /// flow lock (held only by a live pump, dropped by the OS the instant its holder exits) and any
+    /// step actually <see cref="Domain.StepStatus.Paused"/> awaiting a person.
+    /// </para>
+    /// <para>
+    /// This is not a second copy of the UI's <c>RoomCardViewModel.DeriveStatus</c> — <c>Aer.Flow</c>
+    /// cannot depend on <c>Aer.Ui.Core</c> (UI spec §2) and does not need to, since both read the same
+    /// two primitives. In that vocabulary the refusal is exactly "Running or NeedsYou": a room parked
+    /// on a vendor quota is refused because its pump is alive and holding the lock, while a dead one
+    /// is permitted.
+    /// </para>
+    /// <para>
+    /// <paramref name="flowReader"/> and <paramref name="snapshot"/> are required rather than
+    /// defaulted: a caller that could omit them would silently skip half the rule, which is the exact
+    /// defect #1219's review found in a defaulted lock argument. The flow log is read <em>inside</em>
+    /// the room-events guard so the paused reading is taken fresh, not handed in already stale.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidRoomMutationException">The room has work in flight.</exception>
+    public static async Task<RoomState> SetWorkflowSwitchAsync(
+        string roomDirectoryPath,
+        bool isOn,
+        string switchedBy,
+        IRoomEventLogReader reader,
+        IRoomEventLogWriter writer,
+        IEventLogReader flowReader,
+        WorkflowDefinitionSnapshot snapshot,
+        DateTimeOffset? timestamp = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentException.ThrowIfNullOrEmpty(switchedBy);
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(flowReader);
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
+
+        if (ConcurrencyGuard.IsHeld(roomDirectoryPath))
+        {
+            throw new InvalidRoomMutationException(
+                "This room is running. Stop it before switching its workflow off or on.");
+        }
+
+        var flowEvents = await flowReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+        var flowState = StateProjector.Project(flowEvents, snapshot);
+        var pausedStep = flowState.Steps.FirstOrDefault(s => s.Status == StepStatus.Paused);
+        if (pausedStep is not null)
+        {
+            throw new InvalidRoomMutationException(
+                $"Step '{pausedStep.StepId}' is waiting on a decision. Answer it, or stop the room, before switching its workflow off or on.");
+        }
+
+        var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+
+        var ts = timestamp ?? DateTimeOffset.UtcNow;
+        var roomEvent = new RoomEvent.WorkflowSwitched(isOn, switchedBy, ts);
+        await writer.AppendAsync(roomEvent, cancellationToken).ConfigureAwait(false);
+
+        return RoomProjector.Project([.. existingEvents, roomEvent]);
+    }
+
     public static async Task<RoomState> RaisePermissionAsync(
         string roomDirectoryPath,
         IRoomEventLogReader reader,

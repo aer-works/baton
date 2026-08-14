@@ -775,6 +775,60 @@ namespace Aer.Daemon
                 return Results.Ok();
             });
 
+            // #1216: the room header's Workflow ON/OFF switch. A durable room-level fact, so it goes
+            // through RoomMutationInterface like every other room.jsonl append rather than being
+            // written here -- and that is also where the in-flight refusal lives, so a phone and a
+            // desktop cannot disagree about when the switch is available. A refusal comes back as a
+            // 409 carrying the engine's own reason, which is what the surface shows the person; it is
+            // never flattened into a bare failure, since "why not" is the whole point of refusing
+            // rather than silently mutating.
+            app.MapPost("/api/rooms/workflow-switch", async ([FromBody] SetWorkflowSwitchRequest request) =>
+            {
+                if (string.IsNullOrWhiteSpace(request.RoomDirectoryPath))
+                {
+                    return Results.BadRequest("RoomDirectoryPath is required.");
+                }
+
+                // Same guard as /api/rooms/held-work/resolve below: RoomMutationInterface's own
+                // ConcurrencyGuard creates the directory it locks, so a typo'd path would leave a
+                // stray directory behind before any "not found" could fire.
+                if (!Directory.Exists(request.RoomDirectoryPath))
+                {
+                    return Results.BadRequest($"RoomDirectoryPath '{request.RoomDirectoryPath}' does not exist.");
+                }
+
+                var switchSnapshotPath = Path.Combine(request.RoomDirectoryPath, "snapshot.json");
+                if (!File.Exists(switchSnapshotPath))
+                {
+                    return Results.BadRequest($"'{request.RoomDirectoryPath}' is not a room directory (no snapshot.json).");
+                }
+
+                var switchSnapshot = await Aer.Flow.Templates.SnapshotBinder.LoadFromFileAsync(switchSnapshotPath).ConfigureAwait(false);
+                var switchFlowReader = new FlowEventLogReader(Path.Combine(request.RoomDirectoryPath, "flow.jsonl"));
+
+                var switchRoomLogPath = Path.Combine(request.RoomDirectoryPath, "room.jsonl");
+                var switchReader = new RoomEventLogReader(switchRoomLogPath);
+                await using var switchWriter = new RoomEventLogWriter(switchRoomLogPath);
+
+                try
+                {
+                    await RoomMutationInterface.SetWorkflowSwitchAsync(
+                        request.RoomDirectoryPath,
+                        request.IsOn,
+                        switchedBy: "operator",
+                        switchReader,
+                        switchWriter,
+                        switchFlowReader,
+                        switchSnapshot).ConfigureAwait(false);
+                }
+                catch (InvalidRoomMutationException ex)
+                {
+                    return Results.Conflict(ex.Message);
+                }
+
+                return Results.Ok();
+            });
+
             // #672: the operator's decision surface for held work escalated into a room, and the
             // seam where approving a memory-proposal-shaped item actually applies it (decision
             // 0044 point 3). One endpoint with an Outcome field, mirroring /api/rooms/decide's own
@@ -3243,6 +3297,9 @@ namespace Aer.Daemon
 
     /// <summary>#992: clears dormancy on a room.</summary>
     public record ClearDormancyRequest(string RoomDirectoryPath);
+
+    /// <summary>#1216: switches a room's workflow on or off — see <see cref="RoomMutationInterface.SetWorkflowSwitchAsync"/>.</summary>
+    public record SetWorkflowSwitchRequest(string RoomDirectoryPath, bool IsOn);
 
     public record AnswerPermissionRequest(
         string DirectoryPath,

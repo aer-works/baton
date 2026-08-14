@@ -24,8 +24,23 @@
            no graph worth drawing (ChatViewModel's own remarks). What the panel holds and where it
            renders is on ChatViewModel.IsShapePanelOpen and MainWindow.ApplyShellLayout. -->
       <ToggleButton x:Name="ChatShapeToggle" VerticalAlignment="Center" Content="Shape"
-                    IsVisible="{Binding Chat.IsPipelineRoom}"
+                    IsVisible="{Binding Chat.IsShapeToggleVisible}"
                     IsChecked="{Binding Chat.IsShapePanelOpen}" />
+      <!-- #1216: the header's Workflow ON/OFF switch (02-screens.md's "the workflow-toggle-off
+           control"). One-way on purpose — it renders the room's durable state, and the click asks the
+           engine rather than setting it, so a refusal leaves the switch showing the truth instead of
+           a position nothing agreed to. What refusal means, and why it refuses rather than stopping
+           the room for you, is the dated amendment in 02-screens.md. -->
+      <ToggleButton x:Name="WorkflowSwitch" VerticalAlignment="Center"
+                    IsVisible="{Binding Chat.IsWorkflowSwitchVisible}"
+                    IsChecked="{Binding Chat.IsWorkflowOn, Mode=OneWay}"
+                    Content="{Binding Chat.WorkflowSwitchLabel}"
+                    Command="{Binding ToggleWorkflowSwitchCommand}"
+                    ToolTip.Tip="Switch this room's workflow off, or back on. Nothing is deleted — the shape, and every worker, stay exactly as they are." />
+      <TextBlock x:Name="WorkflowSwitchStatusText" Classes="caption secondary" VerticalAlignment="Center"
+                 TextWrapping="Wrap" MaxWidth="360"
+                 Text="{Binding WorkflowSwitchStatusText}"
+                 IsVisible="{Binding HasWorkflowSwitchStatusText}" />
       <!-- #1215: Stop's always-present rule is docs/design/03-interaction-depth.md's, and the
            amendment recording this move is 02-screens.md's. Slice 3 moved RoomView into the
            collapsible Shape panel and Stop went with it, so Stop existed only while a panel that is

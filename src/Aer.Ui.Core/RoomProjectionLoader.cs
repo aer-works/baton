@@ -133,36 +133,38 @@ public static class RoomProjectionLoader
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactsDirectoryName);
         var lineage = ArtifactLineageProjector.Project(events, snapshot, artifactsRootPath);
 
-        var (pendingPermission, permissionAnswers, dormancyTransitions) =
+        var (pendingPermission, permissionAnswers, dormancyTransitions, isWorkflowOff) =
             await LoadJournalStateAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
 
         return new RoomProjection(
             snapshot, state, history, lineage,
             pendingPermission, permissionAnswers, dormancyTransitions,
-            stepPauseMoments, recordedDecisionMoments);
+            stepPauseMoments, recordedDecisionMoments, isWorkflowOff);
     }
 
     /// <summary>
     /// Projects the room's <c>room.jsonl</c> journal — a SEPARATE event store from the
     /// <c>flow.jsonl</c> the rest of <see cref="LoadAsync"/> reads (#445/#390) — for the one gate a
-    /// worker may currently be blocked on, the answer history (#1142), and dormancy transitions (#1178).
+    /// worker may currently be blocked on, the answer history (#1142), dormancy transitions (#1178),
+    /// and whether the room's workflow is switched off (#1216).
     /// Most rooms never write a RoomEvent, so the file is usually absent; absence is an empty projection,
     /// never a throw. The room-journal filename is the literal <c>Aer.Daemon</c> writes and reads
     /// it under (there is no shared constant to cite yet).
     /// </summary>
-    private static async Task<(PendingPermission? Pending, IReadOnlyList<PermissionAnswer> Answers, IReadOnlyList<DormancyTransition> Transitions)> LoadJournalStateAsync(
+    private static async Task<(PendingPermission? Pending, IReadOnlyList<PermissionAnswer> Answers, IReadOnlyList<DormancyTransition> Transitions, bool IsWorkflowOff)> LoadJournalStateAsync(
         string roomDirectoryPath, CancellationToken cancellationToken)
     {
         var roomLogPath = Path.Combine(roomDirectoryPath, "room.jsonl");
         if (!File.Exists(roomLogPath))
         {
-            return (null, [], []);
+            // No journal is the common case, and it must read as workflow ON (#1216).
+            return (null, [], [], false);
         }
 
         var reader = new RoomEventLogReader(roomLogPath);
         var roomEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var projected = RoomProjector.Project(roomEvents);
-        return (projected.PendingPermission, projected.PermissionAnswers, projected.DormancyTransitions);
+        return (projected.PendingPermission, projected.PermissionAnswers, projected.DormancyTransitions, projected.IsWorkflowOff);
     }
 
     /// <summary>
@@ -246,7 +248,7 @@ public static class RoomProjectionLoader
         var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
         var state = StateProjector.Project(events, snapshot, checkpoint);
         var pausedStepCount = state.Steps.Count(s => s.Status == StepStatus.Paused);
-        var (pendingPermission, _, _) = await LoadJournalStateAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
+        var (pendingPermission, _, _, _) = await LoadJournalStateAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
 
         // Reuse the ONE status derivation (#616/#976 — never a second copy) so the fleet reads
         // "Waiting for your reply" for a chat turn and "Waiting for your review" for a real gate,

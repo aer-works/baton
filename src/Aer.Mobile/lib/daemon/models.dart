@@ -218,6 +218,12 @@ class RoomProjection {
   /// History of turn host dormancy transitions (#1178).
   final List<DormancyTransition> dormancyTransitions;
 
+  /// Whether the room's workflow has been switched off (#1216). Defaults false, because absence of a
+  /// `WorkflowSwitched` event in `room.jsonl` means the workflow is ON — an older room, or a daemon
+  /// predating the field, must not read as switched off. Parsed here so the wire twin stays complete;
+  /// the phone's own switch is #1196 slice 6.
+  final bool isWorkflowOff;
+
   RoomProjection({
     required this.directoryPath,
     required this.sessionId,
@@ -230,6 +236,7 @@ class RoomProjection {
     this.pendingPermission,
     this.permissionAnswers = const [],
     this.dormancyTransitions = const [],
+    this.isWorkflowOff = false,
   });
 
   bool get isDormant => dormancyTransitions.isNotEmpty && dormancyTransitions.last.isEntered;
@@ -277,6 +284,7 @@ class RoomProjection {
       dormancyTransitions: ((j['dormancytransitions'] as List<dynamic>?) ?? [])
           .map((t) => DormancyTransition.fromJson(t as Map<String, dynamic>))
           .toList(),
+      isWorkflowOff: j['isworkflowoff'] == true,
     );
   }
 }

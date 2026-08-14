@@ -19,6 +19,7 @@ namespace Aer.Flow.Domain;
 [JsonDerivedType(typeof(RuntimePermissionAsked), "runtimePermissionAsked")]
 [JsonDerivedType(typeof(RuntimePermissionAnswered), "runtimePermissionAnswered")]
 [JsonDerivedType(typeof(RuntimePermissionRevoked), "runtimePermissionRevoked")]
+[JsonDerivedType(typeof(WorkflowSwitched), "workflowSwitched")]
 public abstract record RoomEvent
 {
     private RoomEvent()
@@ -124,5 +125,27 @@ public abstract record RoomEvent
         string PermissionRequestId,
         string Reason,
         DateTimeOffset RevokedAt) : RoomEvent;
+
+    /// <summary>
+    /// Records that the room's workflow was switched on or off (#1216). A room does not require a
+    /// workflow (0001), and switching one off leaves every worker and skill in the room as free-form
+    /// conversation partners — the design corpus calls it a "non-event", so nothing here deletes a
+    /// shape, a journal, or a worker.
+    /// </summary>
+    /// <remarks>
+    /// One event carrying <paramref name="IsOn"/>, deliberately NOT the Entered/Cleared pair
+    /// <see cref="TurnHostDormancyEntered"/>/<see cref="TurnHostDormancyCleared"/> uses. That pair
+    /// exists because dormancy's transitions <em>are</em> the record — <see cref="DormancyTransition"/>
+    /// is surfaced to the person as history. Nothing reads a history of workflow switches, so a single
+    /// case carries the same durable fact with one discriminator and one projector arm.
+    ///
+    /// Absence means ON. Every room that predates this event has no <c>WorkflowSwitched</c> in its
+    /// journal and must keep its workflow, so <see cref="Projection.RoomState.IsWorkflowOff"/> defaults
+    /// false rather than the state being written eagerly at room creation.
+    /// </remarks>
+    public sealed record WorkflowSwitched(
+        bool IsOn,
+        string SwitchedBy,
+        DateTimeOffset Timestamp) : RoomEvent;
 }
 

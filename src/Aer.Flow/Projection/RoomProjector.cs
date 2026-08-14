@@ -18,6 +18,8 @@ public static class RoomProjector
         var openEscalations = new List<RoomEvent.EscalationRaised>();
         var unmatchedEntries = new List<string>();
         var isDormant = false;
+        // Absence means ON (#1216) — a room that has never been switched keeps its workflow.
+        var isWorkflowOff = false;
         PendingPermission? pendingPermission = null;
         var askedPermissions = new Dictionary<string, (string ToolName, string Category)>(StringComparer.Ordinal);
         var permissionAnswers = new List<PermissionAnswer>();
@@ -243,10 +245,14 @@ public static class RoomProjector
                     }
 
                     break;
+
+                case RoomEvent.WorkflowSwitched switched:
+                    isWorkflowOff = !switched.IsOn;
+                    break;
             }
         }
 
-        return new RoomState(heldWork, unmatchedEntries, activeGrants, openEscalations, isDormant, pendingPermission, permissionAnswers, dormancyTransitions);
+        return new RoomState(heldWork, unmatchedEntries, activeGrants, openEscalations, isDormant, pendingPermission, permissionAnswers, dormancyTransitions, isWorkflowOff);
 
     }
 }

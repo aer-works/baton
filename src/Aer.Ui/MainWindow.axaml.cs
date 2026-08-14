@@ -150,7 +150,7 @@ public partial class MainWindow : Window
     private void ApplyShellLayout()
     {
         var shapeAlone = ViewModel.IsRoomVisible;
-        var shapeBeside = ViewModel.IsChatVisible && ViewModel.Chat.IsPipelineRoom && ViewModel.Chat.IsShapePanelOpen;
+        var shapeBeside = ViewModel.IsChatVisible && ViewModel.Chat.IsShapeToggleVisible && ViewModel.Chat.IsShapePanelOpen;
 
         MainRegion.IsVisible = !shapeAlone;
         ShapeRegion.IsVisible = shapeAlone || shapeBeside;
@@ -293,6 +293,7 @@ public partial class MainWindow : Window
         RefreshButton.Click += (_, _) => _ = RefreshAsync();
         CompareButton.Click += (_, _) => _ = CompareToTemplateAsync(TemplateComparePathBox.Text ?? string.Empty);
         ViewModel.RoomRunRequested += OnRoomRunRequestedAsync;
+        ViewModel.WorkflowSwitchRequested += OnWorkflowSwitchRequestedAsync;
         StopButton.Click += (_, _) => _ = StopAsync();
         NewTemplateButton.Click += (_, _) => NewTemplate();
         EditTemplateButton.Click += (_, _) => _ = OpenTemplateInEditorAsync(TemplateEditorPathBox.Text ?? string.Empty);
@@ -512,7 +513,7 @@ public partial class MainWindow : Window
         };
         ViewModel.Chat.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName is nameof(ChatViewModel.IsShapePanelOpen) or nameof(ChatViewModel.IsPipelineRoom))
+            if (e.PropertyName is nameof(ChatViewModel.IsShapePanelOpen) or nameof(ChatViewModel.IsPipelineRoom) or nameof(ChatViewModel.IsWorkflowOn))
             {
                 ApplyShellLayout();
             }
@@ -1178,6 +1179,26 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Handles the header's Workflow switch (#1216). Returns the engine's refusal reason, or null on
+    /// success, and re-loads either way: on success so the switch renders the journal it just changed,
+    /// and on refusal so a <see cref="ToggleButton"/> that flipped its own visual on click is put back
+    /// to what the room actually says.
+    /// </summary>
+    private async Task<string?> OnWorkflowSwitchRequestedAsync(bool isOn)
+    {
+        var roomDirectoryPath = RoomDirectoryPathBox.Text ?? string.Empty;
+        var refusal = await _session.SetWorkflowSwitchAsync(roomDirectoryPath, isOn).ConfigureAwait(true);
+
+        // The fingerprint's isWorkflowOff term is what makes this re-render rather than short-circuit.
+        if (!string.IsNullOrWhiteSpace(roomDirectoryPath))
+        {
+            await LoadAsync(roomDirectoryPath).ConfigureAwait(true);
+        }
+
+        return refusal;
+    }
+
+    /// <summary>
     /// Starts a fresh template-editing session over a blank in-memory <see cref="WorkflowDefinition"/>
     /// (M16 Phase 1, issue #150) — nothing touches disk until <see cref="SaveTemplateAsync"/>.
     /// Deliberately synchronous: there is no file to read.
@@ -1390,7 +1411,10 @@ public partial class MainWindow : Window
         // short-circuits, and a room that dies while you are looking at it goes on saying "Working"
         // indefinitely. One reading, used for the key and for the render below.
         var isFlowLockHeld = ConcurrencyGuard.IsHeld(roomDirectoryPath);
-        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}|{pendingPermissionId}|{dormancyCount}|{isFlowLockHeld}"; // vocabulary-ok: state fingerprint key
+        // #1216: the workflow switch is another room.jsonl fact that moves nothing else — throwing it
+        // changes no step, no status and no decision — so it joins the list above for the same reason.
+        var isWorkflowOff = projection.IsWorkflowOff;
+        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}|{pendingPermissionId}|{dormancyCount}|{isFlowLockHeld}|{isWorkflowOff}"; // vocabulary-ok: state fingerprint key
 
         if (_lastRenderedProjectionFingerprint == fingerprint)
         {
@@ -1466,6 +1490,10 @@ public partial class MainWindow : Window
             () => _ = WakeDormantRoomAsync(roomDirectoryPath),
             projection.RecordedDecisionMoments,
             ViewModel.PausedSteps);
+
+        // #1216: the header switch renders the room's durable fact rather than remembering what was
+        // last clicked — 0020's rule 1, and the reason a room switched off on the phone shows off here.
+        ViewModel.Chat.IsWorkflowOn = !isWorkflowOff;
     }
 
     private async Task WakeDormantRoomAsync(string roomDirectoryPath)
