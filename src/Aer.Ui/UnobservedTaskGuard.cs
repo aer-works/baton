@@ -2,7 +2,7 @@ namespace Aer.Ui;
 
 /// <summary>
 /// The half of #1176's app-level guard that has nothing to do with Avalonia: a faulted Task nobody
-/// awaited (<c>_ = SomethingAsync()</c>, 47 sites in this app), whose exception reaches no
+/// awaited (<c>_ = SomethingAsync()</c>, the app's commonest way of starting work), whose exception reaches no
 /// synchronization context and is dropped by the runtime — not a crash, a silence, which the
 /// error-handling rules forbid just as firmly.
 /// </summary>
