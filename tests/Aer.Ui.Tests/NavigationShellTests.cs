@@ -94,7 +94,7 @@ public class NavigationShellTests
         {
             var projection = await RoomProjectionLoader.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
 
-            var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission);
+            var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld: true);
             Assert.Equal(RoomCardStatus.Cancelled, status);
             Assert.Equal("Cancelled", statusText);
         }
@@ -613,7 +613,7 @@ public class NavigationShellTests
         {
             var projection = await RoomProjectionLoader.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
 
-            var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission);
+            var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld: true);
             Assert.Equal(RoomCardStatus.NeedsYou, status);
             Assert.Equal("Waiting for your review", statusText);
 
@@ -670,7 +670,7 @@ public class NavigationShellTests
         {
             var projection = await RoomProjectionLoader.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
 
-            var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission);
+            var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld: true);
             Assert.Equal(RoomCardStatus.NeedsYou, status);
             Assert.Equal("Waiting for your reply", statusText);
 

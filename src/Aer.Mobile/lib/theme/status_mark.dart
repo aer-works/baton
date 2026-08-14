@@ -129,6 +129,16 @@ class _StatusMarkPainter extends CustomPainter {
       // Cancelled: a bare dash - "no outcome". Never a filled square; that is a stop *control*.
       case 'dash':
         canvas.drawLine(at(3.5, 8), at(12.5, 8), stroke);
+      // Stopped (#1219): a square outline — the run halted because its process died. Matches
+      // Icon.Square: (3.5,3.5) to (12.5,12.5) on the same grid. Stroked, never filled, for exactly
+      // the reason the 'dash' case above gives: a *filled* square is a stop control, and a state
+      // that looks like an action is a trap (owner review, #461). The outline keeps the one
+      // hard-edged silhouette in a set otherwise made of circles and arcs.
+      case 'square':
+        canvas.drawRect(
+          Rect.fromPoints(at(3.5, 3.5), at(12.5, 12.5)),
+          stroke,
+        );
       // Queued: an ellipsis, filled so it holds at row size.
       case 'ellipsis':
         for (final cx in [4.2, 8.0, 11.8]) {

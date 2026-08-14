@@ -119,11 +119,15 @@ NeedsInput --> Working: you decide
 Working --> Finished: completes
 Working --> Failed: errors
 Working --> Cancelled: you stop it
+Working --> Stopped: its process dies
 Finished --> Working: you send again
 Cancelled --> Working: you send again
+Stopped --> Working: you resume
 Failed --> Working: retry
 
 One source of truth per room. Every surface — switcher row, header, inbox, phone — renders this state and nothing derived independently. Cancelled and Failed are states, not absences: a stopped room must never read as "Finished."
+
+Stopped was added 2026-08-14 (#1219, amending [0020](../decisions/0020-one-state-machine.md)) and is the one state no reading of the journal can produce — a room whose process died records exactly what a running one does. It is separated by the room's own lock, which the OS drops when its holder exits. Note "a stopped room" in the sentence above is the general sense, halted without finishing, and covers all three of Cancelled, Failed and Stopped.
 
 ### The surface this implies
 

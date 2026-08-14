@@ -97,8 +97,13 @@ public static class PlainLanguage
     /// alive on a second surface) and hard-coded the review wording for every pause, missing
     /// #334's reply/review split. Delegating is what makes "can never drift" true.
     /// </summary>
-    public static string ForWorkflow(RoomProjection projection)
-        => RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission).StatusText;
+    /// <param name="isFlowLockHeld">
+    /// #1219: threaded through rather than probed here, because this overload is handed a projection
+    /// and no directory — see <c>DeriveStatus</c> for why <c>true</c> is the honest default for a
+    /// caller that cannot answer (it reproduces the pre-#1219 reading exactly).
+    /// </param>
+    public static string ForWorkflow(RoomProjection projection, bool isFlowLockHeld = true)
+        => RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld).StatusText;
 
     /// <summary>
     /// #215: real execution/decision ids are 32-char generated Guids — pure visual noise to a
@@ -276,6 +281,14 @@ public enum RoomStoppedReason
     /// <see cref="MainWindowViewModel.IsRoomFinished"/>), so the offer is a fresh room cloned from it.
     /// </summary>
     Finished,
+
+    /// <summary>
+    /// Terminal because someone stopped it (#1219). The same offer as <see cref="Finished"/> and
+    /// deliberately not the same words: telling a room you had just stopped that it "finished" is the
+    /// exact sentence #461 was filed to delete, and it would come straight back if this shared
+    /// <see cref="Finished"/>'s copy.
+    /// </summary>
+    Cancelled,
 }
 
 /// <summary>
@@ -293,15 +306,23 @@ public sealed partial class RoomStoppedCardViewModel : ObservableObject
 
     public RoomStoppedReason Reason { get; }
 
-    public string Headline => Reason == RoomStoppedReason.Finished
-        ? "This room has finished"
-        : "This room stopped mid-run";
+    public string Headline => Reason switch
+    {
+        RoomStoppedReason.Finished => "This room has finished",
+        RoomStoppedReason.Cancelled => "You stopped this room",
+        _ => "This room stopped mid-run",
+    };
 
-    public string BodyText => Reason == RoomStoppedReason.Finished
-        ? "Run it again and its work starts in a fresh room cloned from this one — this room's own history is left as it is."
-        : "Nothing is running it and it is not waiting on you. Resume picks it up where it left off.";
+    public string BodyText => Reason switch
+    {
+        RoomStoppedReason.Finished =>
+            "Run it again and its work starts in a fresh room cloned from this one — this room's own history is left as it is.",
+        RoomStoppedReason.Cancelled =>
+            "Run it again and its work starts in a fresh room cloned from this one — what this room did up to the stop is left as it is.",
+        _ => "Nothing is running it and it is not waiting on you. Resume picks it up where it left off.",
+    };
 
-    public string ActionLabel => Reason == RoomStoppedReason.Finished ? "Run it again" : "Resume";
+    public string ActionLabel => Reason == RoomStoppedReason.StoppedMidRun ? "Resume" : "Run it again";
 
     /// <summary>
     /// False while this card's own action is in flight, so a second click cannot post a second run.

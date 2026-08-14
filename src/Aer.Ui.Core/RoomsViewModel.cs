@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using Aer.Adapters;
 using Aer.Flow;
+using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -609,7 +610,11 @@ public sealed partial class RoomFleetItemViewModel : ObservableObject
     /// </summary>
     internal void ApplyProjection(RoomProjection projection)
     {
-        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission);
+        // #1219: this row's own directory, so a push for a room nothing is pumping settles to
+        // "Stopped" instead of leaving the spinner turning. Pushes only arrive for rooms something is
+        // doing something to, so this is not a per-tick probe.
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(
+            projection, projection.PendingPermission, ConcurrencyGuard.IsHeld(RoomDirectoryPath));
         StatusText = statusText;
         Status = status;
         PausedStepCount = projection.State.Steps.Count(s => s.Status == StepStatus.Paused);

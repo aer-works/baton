@@ -1,6 +1,6 @@
 # 0020 — One state machine: every surface renders the room's state, none derives its own
 
-Status: accepted
+Status: accepted; **amended 2026-08-14 (#1219) — tenth state `stopped`, derived with the room's §15 lock**
 Date: 2026-07-24
 
 ## Context
@@ -57,6 +57,36 @@ wrong answer.
 > drew `Icon.Dot` for it, Flutter could not draw it, and the drift gate was blind to both because it
 > only walked token → toolkit. Naming the token file as the source rather than duplicating a list is
 > the fix: **one place, machine-checked, in both directions.**
+
+> **Amendment, 2026-08-14 (#1219).** A tenth state, `stopped`: **the run halted because its process
+> died** — not finished, not failed, and nobody stopped it. There was no value for this, and rule 2
+> says absence is not a state, so the switcher fell through to `working` and turned a spinner over
+> rooms where nothing had been happening for days. #1215 made it visible rather than causing it: that
+> slice put an offer on such a room's transcript reading "This room stopped mid-run", and the row
+> beside it still said "Working — implement". The shell disagreeing with itself about "running" is the
+> defect in this record's own opening paragraph, arrived at from a new direction.
+>
+> The mechanism is worth recording, because it is the reason this took a decision rather than a patch.
+> **No predicate over the journal can produce this state.** `WorkflowStatus.Running` is defined, in its
+> own summary, as "at least one step's latest attempt is still in flight *or* Flow crashed before
+> recording its outcome" — a live room and a dead one are the same recorded state by construction. The
+> answer is the room's §15 lock: `ConcurrencyGuard` holds a kernel-level file lock for the whole of a
+> pump, and the OS releases it the instant the holder exits, crashed or not. So `DeriveStatus` takes it
+> as an argument. That is a genuine extension of rule 1 rather than an exception to it — the rule says
+> that when a surface needs an answer the room does not expose, the fix is *to expose it from the
+> room*, and this exposes it once, in the one derivation, rather than letting each surface probe.
+>
+> Two consequences worth naming. `stopped` is deliberately distinct from `cancelled` on the same
+> grounds `cancelled` is distinct from `failed`: "it died" is not "you stopped it", and a person is
+> owed the difference. And its arm is ordered ahead of every other `Running` arm, including the
+> permission one — an orphaned ask on a dead room must not headline "Permission requested" for a
+> worker nothing is left to release, which is a hazard the permission arm's own comment already named
+> for the `Paused`/`Terminal` case and could not detect until the lock was consulted.
+>
+> Note also that `01-definition.md`'s "a stopped room must never read as 'Finished'" predates this and
+> uses "stopped" in the general sense of *halted without finishing* — it covers `cancelled`, `failed`
+> and now `stopped` alike. The state name matches what a person is shown, per
+> [0002](0002-one-vocabulary.md); the older sentence is unchanged and means what it always meant.
 
 Three rules govern how the states are consumed:
 
