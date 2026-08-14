@@ -11,6 +11,7 @@ import 'daemon/models.dart';
 import 'daemon/permission_decision_kind.dart';
 import 'daemon/permission_grant_wording.dart';
 import 'daemon/shell_command_pattern_matcher.dart';
+import 'paused_step_card.dart';
 import 'theme/tokens.dart';
 
 /// One rendered row in the chat transcript — a human turn or an assistant response, never both.
@@ -53,10 +54,17 @@ class _QueuedMessage {
   _QueuedMessage(this.text);
 }
 
-/// The mobile chat/codebase-session screen (M24, issue #262) — the Flutter counterpart of
-/// Aer.Ui's dedicated Chat view. `Turns` (the actual message content) live outside RoomProjection
-/// entirely, in SessionMetadata, so this screen re-fetches GET /api/sessions/{sessionId} rather
-/// than reading anything off InboxScreen's projection.
+/// The mobile room screen (M24, issue #262) — the Flutter counterpart of Aer.Ui's `ChatView`, and
+/// since #1226 (#1196 slice 6a) the **only** rendering a room has on the phone, whether it is a
+/// chat session or a workflow. `Turns` (the actual message content of a session) live outside
+/// RoomProjection entirely, in SessionMetadata, so a session room re-fetches
+/// GET /api/sessions/{sessionId} for those; everything a workflow room shows — its gate, its paused
+/// steps, its permission and dormancy history — comes off the projection this screen already
+/// watches.
+///
+/// It absorbed the phone's separate decision surface, `InboxScreen`, which #1226 deleted: with rooms
+/// routed here, nothing opened it, and every capability it held (approve/reject/send-back, stopping
+/// the run) came with the room rather than being left behind.
 ///
 /// Unlike desktop (which polls `.aer/session.json` off disk on a 2-second timer, since it's the
 /// same machine), this phone has no filesystem access to the daemon host — it instead re-fetches
@@ -70,7 +78,15 @@ class _QueuedMessage {
 /// yank this phone into a chat it didn't ask to view.
 class ChatScreen extends StatefulWidget {
   final DaemonClient client;
-  final String sessionId;
+
+  /// The interactive session this room materialized, or **null for a workflow room** — which has no
+  /// session and never will (#1226, #1196 slice 6a). Null is not "not loaded yet": it is the room
+  /// kind, and it decides whether there is anything to talk to. Everything else on this screen —
+  /// the projection subscription, the gate, the decision cards, the transcript merge — is keyed on
+  /// [directoryPath] and works the same either way, which is why a workflow room can render here at
+  /// all rather than needing a second screen.
+  final String? sessionId;
+
   final String directoryPath;
 
   const ChatScreen({super.key, required this.client, required this.sessionId, required this.directoryPath});
@@ -92,8 +108,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _loadError;
   String? _sendError;
 
-  /// A dropped projection socket, surfaced as a recoverable banner (mirrors InboxScreen's
-  /// `_connectionError`). Without this the `watch()` stream's error was swallowed silently and every
+  /// A dropped projection socket, surfaced as a recoverable banner. Without this the `watch()` stream's error was swallowed silently and every
   /// future push — including the inline permission gate's appear/clear — stopped arriving with no
   /// signal to the user (found while live-driving #390's mobile gate).
   String? _connectionError;
@@ -134,11 +149,32 @@ class _ChatScreenState extends State<ChatScreen> {
   /// desktop twin, ChatViewModel._answersClearedThrough (#1142 review).
   DateTime? _answersClearedThrough;
 
-  /// True while an answer POST is in flight — disables the gate's rungs (mirrors InboxScreen's
-  /// `_decide`'s in-flight discipline) so a slow round trip can't be double-submitted. Independent of
+  /// True while an answer POST is in flight — disables the gate's rungs, the same in-flight
+  /// discipline [_decideStep] applies, so a slow round trip can't be double-submitted. Independent of
   /// [_pendingPermission]'s identity: the gate disappears entirely once the next projection clears
   /// it, so this never needs to be reset on success.
   bool _isAnsweringPermission = false;
+
+  /// The latest projection for this room, kept for a workflow room's paused steps and their
+  /// definitions/artifacts (#1226). A session room reads its transcript from [getSession] instead
+  /// and does not need this held.
+  RoomProjection? _projection;
+
+  /// Step ids with a decision POST in flight — the same in-flight discipline
+  /// `InboxScreen._decide` applies, moved with the cards.
+  final Set<String> _pendingStepIds = {};
+
+  /// Whether this room has a session to talk to. A workflow room does not, which is what decides
+  /// the composer and the transcript's source — never "is it still loading".
+  bool get _isSessionRoom => widget.sessionId != null;
+
+  /// The session id, for the paths that exist only in a session room — send, drain, the commands
+  /// sheet, mode, compact, clear. Every one of them is unreachable in a workflow room: the composer
+  /// and its send button are disabled, and the commands action is not rendered at all. Stating that
+  /// invariant once, here, is deliberate — the alternative is threading a nullable through seven
+  /// call sites whose operations are meaningless without a session, which would turn a structural
+  /// impossibility into seven silent no-ops.
+  String get _sessionId => widget.sessionId!;
 
   @override
   void initState() {
@@ -146,6 +182,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _refresh();
     _refreshMode();
     _subscribeProjection();
+    _requestFirstProjection();
     _progressSubscription = widget.client.watchProgress().listen((event) {
       if (!mounted) return;
       if (event.directoryPath == widget.directoryPath && _isSending) {
@@ -154,7 +191,30 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  /// (Re)subscribes to the daemon's filtered projection stream. Mirrors InboxScreen's `_connect`:
+  /// Rings the daemon's doorbell so this room's CURRENT projection is pushed over the socket
+  /// [_subscribeProjection] just opened. Without it a workflow room opens **empty** and stays empty
+  /// until something else in the world happens to change — which for a paused room waiting on a
+  /// person is never, since the thing that would change it is the answer they came here to give.
+  ///
+  /// Found by driving the built app, not by a test: the widget tests push a projection in by hand,
+  /// so every one of them passed against a screen that could never obtain one. `InboxScreen._init`
+  /// did exactly this before #1226 deleted it, and this is that call restored to the screen that
+  /// inherited its job — the WS broadcast path #390 established, never an out-of-band read.
+  ///
+  /// Only for a workflow room: a session room's content comes from `getSession`, and `openRoom`
+  /// reassigns the daemon's own notion of the current room (see its remarks), so it is not called
+  /// where it is not needed. Opening a room from the switcher is the explicit user action that call
+  /// requires.
+  Future<void> _requestFirstProjection() async {
+    if (_isSessionRoom) return;
+    try {
+      await widget.client.openRoom(widget.directoryPath);
+    } on DaemonException catch (e) {
+      if (mounted) setState(() => _connectionError = e.message);
+    }
+  }
+
+  /// (Re)subscribes to the daemon's filtered projection stream.
   /// `onError`/`onDone` surface a recoverable [_connectionError] banner rather than letting a dropped
   /// socket swallow every future push — the silent-swallow that would otherwise strand the inline
   /// permission gate. Also the Reconnect button's action. A push that arrives after an error clears
@@ -167,6 +227,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!mounted) return;
         if (_connectionError != null) setState(() => _connectionError = null);
         if (projection.directoryPath == widget.directoryPath) {
+          setState(() => _projection = projection);
           _surfacePendingPermission(projection.pendingPermission);
           _surfacePermissionAnswers(projection.permissionAnswers);
           _surfaceDormancyTransitions(projection.dormancyTransitions, projection.isDormant);
@@ -193,8 +254,18 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _refresh() async {
+    // A workflow room has no session to fetch (#1226). Its transcript comes from the projection
+    // pushes this screen is already subscribed to, so there is nothing to load and nothing to wait
+    // for — leaving _isLoading true here would spin a progress indicator forever over a room whose
+    // content had already arrived.
+    final sessionId = widget.sessionId;
+    if (sessionId == null) {
+      if (mounted) setState(() { _isLoading = false; _loadError = null; });
+      return;
+    }
+
     try {
-      final metadata = await widget.client.getSession(widget.sessionId);
+      final metadata = await widget.client.getSession(sessionId);
       if (!mounted) return;
       bool turnCompleted = false;
       setState(() {
@@ -222,8 +293,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// Best-effort: a stale/missing mode indicator is cosmetic, not worth surfacing as a chat error.
   Future<void> _refreshMode() async {
+    final sessionId = widget.sessionId;
+    if (sessionId == null) return;
     try {
-      final mode = await widget.client.getSessionMode(widget.sessionId);
+      final mode = await widget.client.getSessionMode(sessionId);
       if (mounted) setState(() => _currentMode = mode);
     } on DaemonException {
       // Leave _currentMode as-is (null on first load, last-known value otherwise).
@@ -274,8 +347,8 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Answers the open gate with one of [PermissionDecisionKind]'s rungs — mirrors InboxScreen's
-  /// `_decide`: disable-during-flight, then let the next projection push (via
+  /// Answers the open gate with one of [PermissionDecisionKind]'s rungs — the same shape as
+  /// [_decideStep]: disable-during-flight, then let the next projection push (via
   /// [_surfacePendingPermission]) clear the gate on success rather than clearing it locally, since
   /// the daemon's answer may itself raise the *next* pending permission in the same push.
   Future<void> _answerPermission(String decisionKind) async {
@@ -368,7 +441,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToEnd();
 
     try {
-      await widget.client.sendSessionMessage(sessionId: widget.sessionId, message: message);
+      await widget.client.sendSessionMessage(sessionId: _sessionId, message: message);
     } catch (e) {
       // Catch EVERY error, not just DaemonException — _answerPermission's comment above has the
       // canonical why; a narrow catch here would strand _isSending true and jam the composer.
@@ -396,7 +469,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToEnd();
 
     try {
-      await widget.client.sendSessionMessage(sessionId: widget.sessionId, message: head.text);
+      await widget.client.sendSessionMessage(sessionId: _sessionId, message: head.text);
       if (mounted) {
         setState(() {
           _queuedMessages.remove(head);
@@ -419,14 +492,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Chat capability picker (M24 Phase 2 follow-up): fetches this session's discovered skills/
-  /// commands/agents (recently-used first) plus session-level mode buttons, in a bottom sheet
-  /// matching InboxScreen's own `_pickRecentRoom` idiom.
+  /// commands/agents (recently-used first) plus session-level mode buttons, in a bottom sheet.
   Future<void> _openCommandsSheet() async {
     if (_isLoadingCommands) return;
     setState(() => _isLoadingCommands = true);
     SessionCommandsResult? commands;
     try {
-      commands = await widget.client.getSessionCommands(widget.sessionId);
+      commands = await widget.client.getSessionCommands(_sessionId);
     } on DaemonException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
@@ -462,7 +534,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       onPressed: () async {
                         Navigator.of(sheetContext).pop();
                         try {
-                          await widget.client.setSessionMode(widget.sessionId, mode.$1);
+                          await widget.client.setSessionMode(_sessionId, mode.$1);
                           await _refreshMode();
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Mode set to ${mode.$2}.')));
@@ -514,12 +586,12 @@ class _ChatScreenState extends State<ChatScreen> {
   /// vendor-owned) slash-command handling, not because AER actually invoked anything. Everything
   /// else still inserts into the message box for the user to review/edit before Send.
   Future<void> _handleCommandItemTap(ChatCapabilityItem item) async {
-    unawaited(widget.client.recordCommandUsed(widget.sessionId, item.name));
+    unawaited(widget.client.recordCommandUsed(_sessionId, item.name));
 
     switch (item.name) {
       case '/compact':
         try {
-          await widget.client.compactSession(widget.sessionId);
+          await widget.client.compactSession(_sessionId);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Compacting room context…')));
           }
@@ -530,7 +602,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
       case '/clear':
         try {
-          final cleared = await widget.client.clearSession(widget.sessionId);
+          final cleared = await widget.client.clearSession(_sessionId);
           if (mounted) {
             setState(() {
               if (_permissionAnswers.isNotEmpty) {
@@ -662,9 +734,14 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  List<_ChatMessage> _buildMessages(SessionMetadata metadata) {
+  /// Merges what this room has to show, whichever kind it is. [metadata] is null for a workflow
+  /// room (#1226), which has no turns — so the merge below runs on the permission and dormancy
+  /// streams alone, exactly as desktop's `ChatViewModel.RebuildMessages` does for the same case
+  /// (`src/Aer.Ui.Core/ChatViewModel.cs:526-560`, which carries the canonical reasoning). Thin on
+  /// purpose until 0054's participant and turn identity make a worker's turns renderable.
+  List<_ChatMessage> _buildMessages(SessionMetadata? metadata) {
     final messages = <_ChatMessage>[];
-    final turns = metadata.turns;
+    final turns = metadata?.turns ?? const <SessionTurn>[];
     final answers = _answersClearedThrough == null
         ? _permissionAnswers
         : _permissionAnswers.where((a) => a.answeredAt.isAfter(_answersClearedThrough!)).toList();
@@ -749,13 +826,24 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
         actions: [
-          IconButton(
-            icon: _isLoadingCommands
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.tune),
-            tooltip: 'Commands & mode',
-            onPressed: _isLoadingCommands ? null : _openCommandsSheet,
-          ),
+          // Stop, for a workflow room. It came with the room rather than being left behind (#1226):
+          // this was InboxScreen's only home, and routing workflow rooms here would otherwise have
+          // taken the phone's ability to stop a run away until slice 6b builds the room header.
+          // Losing Stop, even for one slice, is not a trade worth a tidier PR boundary.
+          if (!_isSessionRoom)
+            IconButton(
+              icon: const Icon(Icons.stop_circle_outlined),
+              tooltip: 'Stop this room',
+              onPressed: _cancelRun,
+            ),
+          if (_isSessionRoom)
+            IconButton(
+              icon: _isLoadingCommands
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.tune),
+              tooltip: 'Commands & mode',
+              onPressed: _isLoadingCommands ? null : _openCommandsSheet,
+            ),
         ],
       ),
       body: Column(
@@ -791,6 +879,20 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
           if (_queuedMessages.isNotEmpty) _buildQueuedStrip(context),
+          // Present but disabled in a workflow room, with a sentence saying why — 02-screens.md:57-63
+          // settled that fork for both clients and desktop shipped this wording in #1204. Absent was
+          // the alternative and is the wrong one: a composer that vanishes reads as a capability
+          // taken away, a disabled one as a capability that has not arrived.
+          if (!_isSessionRoom)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Text(
+                "This room's workers aren't conversational yet — you can answer its decisions here, but not talk to it.",
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ),
           SafeArea(
             top: false,
             child: Padding(
@@ -800,6 +902,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   Expanded(
                     child: TextField(
                       controller: _inputController,
+                      enabled: _isSessionRoom,
                       minLines: 1,
                       maxLines: 5,
                       textInputAction: TextInputAction.newline,
@@ -807,7 +910,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  IconButton.filled(icon: const Icon(Icons.send), onPressed: _send),
+                  IconButton.filled(icon: const Icon(Icons.send), onPressed: _isSessionRoom ? _send : null),
                 ],
               ),
             ),
@@ -883,19 +986,29 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
     }
-    if (metadata == null) {
+    // A session room with no metadata yet has genuinely nothing to draw. A workflow room never has
+    // metadata at all (#1226) and must not take this exit, or its transcript would be permanently
+    // blank — the same trap desktop's RebuildMessages documents falling into.
+    if (metadata == null && _isSessionRoom) {
       return const SizedBox.shrink();
     }
 
     final messages = _buildMessages(metadata);
     final hasGate = _pendingPermission != null;
-    final itemCount = messages.length + (hasGate ? 1 : 0);
+    // The steps waiting on a person, rendered as cards at the end of the transcript — where the
+    // permission gate renders, because they are the same act: a decision answered where it was
+    // raised rather than on a screen of its own.
+    final pausedSteps = _isSessionRoom ? const <WorkflowStepState>[] : (_projection?.pausedSteps ?? const []);
+    final itemCount = messages.length + (hasGate ? 1 : 0) + pausedSteps.length;
 
     return ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.all(12),
       itemCount: itemCount,
       itemBuilder: (context, index) {
+        if (index < messages.length) {
+          return _MessageBubble(message: messages[index]);
+        }
         if (hasGate && index == messages.length) {
           return PermissionGateCard(
             pending: _pendingPermission!,
@@ -903,9 +1016,101 @@ class _ChatScreenState extends State<ChatScreen> {
             onAnswer: _answerPermission,
           );
         }
-        return _MessageBubble(message: messages[index]);
+        final step = pausedSteps[index - messages.length - (hasGate ? 1 : 0)];
+        final projection = _projection!;
+        return PausedStepCard(
+          client: widget.client,
+          directoryPath: projection.directoryPath,
+          step: step,
+          definition: projection.definitionFor(step.stepId),
+          execution: projection.executionFor(step.latestExecutionId),
+          workerAdapters: projection.workerAdapters,
+          isPending: _pendingStepIds.contains(step.stepId),
+          onApprove: () => _decideStep(step, 'Resume'),
+          onReject: () => _decideStep(step, 'Reject'),
+          onSendBack: (targetStepId, fileName) =>
+              _decideStepWithReference(step, 'Supersede', targetStepId, fileName), // vocabulary-ok: decision type label
+        );
       },
     );
+  }
+
+  /// Answers a paused step from the transcript — moved from `InboxScreen._decide` with its snackbar
+  /// confirmation and its in-flight guard intact. The confirmation earns its place for the reason
+  /// recorded there: the card vanishes as soon as the next projection lands, which without a word
+  /// reads as "did that even work?".
+  Future<void> _decideStep(WorkflowStepState step, String decisionType) async {
+    final directoryPath = _projection?.directoryPath;
+    final executionId = step.latestExecutionId;
+    if (directoryPath == null || executionId == null) return;
+
+    setState(() => _pendingStepIds.add(step.stepId));
+    try {
+      await widget.client.decide(
+          directoryPath: directoryPath, stepId: step.stepId, executionId: executionId, decisionType: decisionType);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(decisionType == 'Reject' ? 'Rejected ${step.stepId}' : 'Approved ${step.stepId}')),
+        );
+      }
+    } on DaemonException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      if (mounted) setState(() => _pendingStepIds.remove(step.stepId));
+    }
+  }
+
+  /// Stops the whole room, moved from `InboxScreen._cancelRun` unchanged — including the confirm,
+  /// which earns its place because the thing being stopped is bigger than the button suggests.
+  Future<void> _cancelRun() async {
+    final directoryPath = _projection?.directoryPath ?? widget.directoryPath;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancel this run?'),
+        content: const Text('This stops the whole room, not just one step.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep running')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Cancel run')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await widget.client.cancelRun(directoryPath: directoryPath);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Run cancelled')));
+    } on DaemonException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
+  /// Send-back, moved from `InboxScreen._decideWithReference` unchanged.
+  Future<void> _decideStepWithReference(
+      WorkflowStepState step, String decisionType, String targetStepId, String fileName) async {
+    final directoryPath = _projection?.directoryPath;
+    final executionId = step.latestExecutionId;
+    if (directoryPath == null || executionId == null) return;
+
+    setState(() => _pendingStepIds.add(step.stepId));
+    try {
+      await widget.client.decide(
+        directoryPath: directoryPath,
+        stepId: step.stepId,
+        executionId: executionId,
+        decisionType: decisionType,
+        targetStepId: targetStepId,
+        artifactReference: {'executionId': executionId, 'fileName': fileName},
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sent back to $targetStepId for revision')));
+      }
+    } on DaemonException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      if (mounted) setState(() => _pendingStepIds.remove(step.stepId));
+    }
   }
 }
 
@@ -927,7 +1132,7 @@ class PermissionGateCard extends StatelessWidget {
   final PendingPermission pending;
 
   /// False while an answer is in flight — disables every rung so a slow round trip can't be
-  /// double-submitted (mirrors `InboxScreen._decide`'s in-flight discipline).
+  /// double-submitted — the same in-flight discipline every decision on this screen applies.
   final bool enabled;
 
   /// Called with one of [PermissionDecisionKind]'s values when a rung is tapped.

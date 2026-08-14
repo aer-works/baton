@@ -15,8 +15,8 @@ import 'tokens.dart';
 ///
 /// So `design/tokens.json` names a *shape* and each toolkit draws it. These coordinates are
 /// authored on the same 16x16 grid as `Aer.Ui/Theme/Icons.axaml` and match its `Icon.*` geometries
-/// point for point, following the precedent `_VendorGlyphPainter` in `inbox_screen.dart` already
-/// set for cross-toolkit shapes. `Aer.Architecture.Tests` fails the build if a status names a mark
+/// point for point, following the precedent `_VendorGlyphPainter` in `paused_step_card.dart`
+/// already set for cross-toolkit shapes. `Aer.Architecture.Tests` fails the build if a status names a mark
 /// this file does not handle.
 ///
 /// The marks differ in silhouette, not merely in colour — open arc, solid bubble, wide lens,

@@ -247,4 +247,66 @@ void main() {
       handle.dispose();
     });
   });
+
+  /// The capability #1226's second reader caught going missing — see `RoomsScreen._startNewRoom` for
+  /// what was lost and how. It had no test, which is how it nearly left silently; it has one now, on
+  /// the entry point that owns it.
+  group('Starting a room from a template (#1226)', () {
+    Map<String, dynamic> templatesJson() => {
+          'templates': [
+            {'id': 'solo-run', 'title': 'Solo Run (Advanced)', 'requiresSecondaryVendor': false},
+          ],
+          'availableVendors': [
+            {'adapterName': 'claude', 'isAvailable': true},
+          ],
+        };
+
+    testWidgets('picking a template runs it and opens the workflow room it started', (tester) async {
+      String? ranTemplateId;
+      String? ranPrimaryAdapter;
+      var startSessionCalls = 0;
+
+      final mockClient = MockClient((request) async {
+        if (request.method == 'GET' && request.url.path == '/api/rooms') {
+          return http.Response(jsonEncode(<Map<String, dynamic>>[]), 200);
+        }
+        if (request.method == 'GET' && request.url.path == '/api/templates') {
+          return http.Response(jsonEncode(templatesJson()), 200);
+        }
+        if (request.method == 'POST' && request.url.path == '/api/templates/run') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          ranTemplateId = body['templateId']?.toString();
+          ranPrimaryAdapter = body['primaryAdapter']?.toString();
+          return http.Response(jsonEncode({'roomDirectoryPath': '/rooms/from-template'}), 200);
+        }
+        if (request.method == 'POST' && request.url.path == '/api/sessions') {
+          startSessionCalls++;
+          return http.Response(jsonEncode({'roomDirectoryPath': '/rooms/chat', 'sessionId': 'sess-1'}), 200);
+        }
+        // A projection socket the opened room would subscribe to is not served here; the room screen
+        // renders its empty transcript without one.
+        return http.Response('unexpected request: ${request.method} ${request.url}', 500);
+      });
+      final client = DaemonClient(host: 'localhost:5000', token: 'fake-token', httpClient: mockClient);
+
+      await tester.pumpWidget(MaterialApp(home: RoomsScreen(client: client)));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('New room').first);
+      await tester.pumpAndSettle();
+
+      // "Just talk" is the default; choosing a shape is what this pins.
+      await tester.tap(find.text('Just talk'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Solo Run (Advanced)').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Start'));
+      await tester.pumpAndSettle();
+
+      expect(ranTemplateId, 'solo-run');
+      expect(ranPrimaryAdapter, 'claude');
+      // A template's room is a workflow room, so it must NOT have been started as a chat session.
+      expect(startSessionCalls, 0);
+    });
+  });
 }

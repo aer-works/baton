@@ -189,7 +189,7 @@ class DormancyTransition {
 /// A projection Aer.Daemon pushes for one room directory. Aer.Daemon still has only one
 /// "current" task server-side (RoomClient.CurrentRoomDirectoryPath) and broadcasts every
 /// change to every connected WS client regardless of which directory it's for — but this app
-/// filters incoming pushes against InboxScreen's own `_openDirectoryPath` before applying one
+/// filters incoming pushes against the directory the open room screen is bound to before applying one
 /// (fixed alongside issue #262's chat work; see `_connect`'s listener), so a different client
 /// opening a different task no longer silently changes what this phone shows. directoryPath
 /// comes from the DirectoryPath sibling property Aer.Daemon adds to the WS payload (M21 Phase 2,

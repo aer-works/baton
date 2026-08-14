@@ -4,7 +4,6 @@ import 'chat_screen.dart';
 import 'daemon/credentials_store.dart';
 import 'daemon/daemon_client.dart';
 import 'daemon/models.dart';
-import 'inbox_screen.dart';
 import 'pairing_screen.dart';
 import 'theme/status_mark.dart';
 import 'theme/tokens.dart';
@@ -134,8 +133,8 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Reuses `_cancelRun`'s existing `showDialog` + `AlertDialog` confirm pattern
-  /// (inbox_screen.dart) — mobile already has this precedent, unlike desktop, which has no
+  /// Reuses the `showDialog` + `AlertDialog` confirm pattern `ChatScreen._cancelRun` uses —
+  /// mobile already has this precedent, unlike desktop, which has no
   /// modal-dialog infrastructure and uses an inline two-step confirm instead.
   Future<void> _delete(RoomFleetItem item) async {
     final confirmed = await showDialog<bool>(
@@ -259,11 +258,18 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
 
   /// The empty-state's "start work" action — J8's "a real first action, not a dead-end" (#337): an
   /// empty rooms surface must offer a way to begin, not just report that it is empty. A minimal chat
-  /// start — pick a vendor, open a room, land in its chat — deliberately mirroring InboxScreen's own
-  /// `_startNewChat`; both collapse into one start affordance when the phone's front door is unified
-  /// (#337/J3), so this is early rather than duplicated for its own sake.
+  /// start — pick a vendor, open a room, land in its chat. It was one of two such affordances, the
+  /// other on the phone's old decision surface, and #337/J3 always intended them to collapse into
+  /// one when the front door was unified; #1226 retired that surface, so this is now the one.
+  /// It offers the **shape** as well as the vendor. The second reader on #1226 caught that retiring
+  /// the phone's decision surface took its "Start from template" dialog with it, leaving
+  /// `DaemonClient.runTemplate` with no caller anywhere in the app and no way on the phone to start
+  /// a workflow room at all — a capability `docs/milestone-history.md` records the phone gaining, so
+  /// losing it silently to a refactor is not a trade this slice gets to make. One dialog now covers
+  /// both: pick what to run, pick who runs it, start.
   Future<void> _startNewRoom() async {
     var availableVendorNames = <String>[];
+    var templates = <_StartableTemplate>[];
     try {
       final data = await widget.client.listTemplates();
       final vendors = (data['availableVendors'] as List<dynamic>?) ?? [];
@@ -271,8 +277,16 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
           .where((v) => (v as Map<String, dynamic>)['isAvailable'] == true)
           .map((v) => v['adapterName'].toString())
           .toList();
+      templates = ((data['templates'] as List<dynamic>?) ?? [])
+          .map((t) => caseInsensitive(t as Map<String, dynamic>))
+          .map((t) => _StartableTemplate(
+                id: t['id'].toString(),
+                title: t['title']?.toString() ?? t['id'].toString(),
+                requiresSecondaryVendor: t['requiressecondaryvendor'] == true,
+              ))
+          .toList();
     } catch (_) {
-      // Best-effort probe -- the fallback list below still lets the dialog work.
+      // Best-effort probe -- the fallbacks below still let the dialog work.
     }
     if (availableVendorNames.isEmpty) {
       availableVendorNames = ['claude', 'agy']; // vocabulary-ok: vendor key
@@ -280,6 +294,9 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
     if (!mounted) return;
 
     var selectedAdapter = availableVendorNames.first;
+    // A plain chat is the default because it is the cheapest thing to want, and it is the one entry
+    // that needs no template at all — startSession, not runTemplate.
+    _StartableTemplate? selectedTemplate;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -289,7 +306,18 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Vendor'),
+              const Text('What to run'),
+              DropdownButton<_StartableTemplate?>(
+                value: selectedTemplate,
+                isExpanded: true,
+                items: [
+                  const DropdownMenuItem<_StartableTemplate?>(value: null, child: Text('Just talk')),
+                  ...templates.map((t) => DropdownMenuItem<_StartableTemplate?>(value: t, child: Text(t.title))),
+                ],
+                onChanged: (val) => setDialogState(() => selectedTemplate = val),
+              ),
+              const SizedBox(height: 12),
+              const Text('Who runs it'),
               DropdownButton<String>(
                 value: selectedAdapter,
                 isExpanded: true,
@@ -313,7 +341,27 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
 
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
+    final template = selectedTemplate;
     try {
+      if (template != null) {
+        // A template's room is a workflow room: it opens with no session id, which is exactly the
+        // state ChatScreen now renders. The daemon picks the second vendor for a two-vendor shape;
+        // the phone asks for one worker, which is all its dialog has room to ask for honestly.
+        final directoryPath = await widget.client.runTemplate(
+          templateId: template.id,
+          primaryAdapter: selectedAdapter,
+        );
+        if (directoryPath.isEmpty) {
+          messenger.showSnackBar(const SnackBar(content: Text('Room started.')));
+        } else {
+          await navigator.push(MaterialPageRoute(
+            builder: (_) => ChatScreen(client: widget.client, sessionId: null, directoryPath: directoryPath),
+          ));
+        }
+        if (mounted) await _refresh();
+        return;
+      }
+
       final meta = await widget.client.startSession(adapter: selectedAdapter);
       final metaCi = caseInsensitive(meta);
       final directoryPath = metaCi['roomdirectorypath']?.toString();
@@ -331,30 +379,26 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Enters a room from its fleet row (row-as-place, #1044): a session opens its chat; a workflow
-  /// opens InboxScreen bound to that room via initialDirectoryPath. Wired only outside selection mode.
+  /// Enters a room from its fleet row (row-as-place, #1044). Both kinds open the same screen since
+  /// #1226 (#1196 slice 6a): a room has one rendering on the phone as on the desktop, and which kind
+  /// it is decides what the transcript carries and whether the composer is live, not which screen
+  /// you land on. `ChatScreen.sessionId` being null IS the workflow case. Wired only outside
+  /// selection mode.
   Future<void> _openRoom(RoomFleetItem item) async {
     final navigator = Navigator.of(context);
-    final sessionId = item.sessionId;
-    if (sessionId != null) {
-      await navigator.push(MaterialPageRoute(
-        builder: (_) => ChatScreen(
-            client: widget.client, sessionId: sessionId, directoryPath: item.roomDirectoryPath),
-      ));
-    } else {
-      await navigator.push(MaterialPageRoute(
-        builder: (_) => InboxScreen(client: widget.client, initialDirectoryPath: item.roomDirectoryPath),
-      ));
-    }
+    await navigator.push(MaterialPageRoute(
+      builder: (_) => ChatScreen(
+          client: widget.client, sessionId: item.sessionId, directoryPath: item.roomDirectoryPath),
+    ));
     // Re-fetch on return: the room's status (or its very existence, if cancelled/deleted in there)
     // may have changed while it was open.
     if (mounted) await _refresh();
   }
 
-  /// Clears this phone's pairing and returns to the pairing screen. Moved here from the inbox now
-  /// that the switcher is the landing — a paired device must be able to unpair from its front door.
-  /// Mirrors InboxScreen._forgetPairing: this clears credentials on this phone only; the desktop
-  /// still lists the device until it is removed there.
+  /// Clears this phone's pairing and returns to the pairing screen. Moved here from the old decision
+  /// surface once the switcher became the landing — a paired device must be able to unpair from its
+  /// front door. Clears credentials on this phone only; the desktop still lists the device until it
+  /// is removed there.
   Future<void> _signOut() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -515,4 +559,21 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+/// One entry in the New-room dialog's "what to run" list — a built-in template the daemon offers
+/// (`GET /api/templates`). Identity is the id, so a rebuilt list still matches the dropdown's
+/// current value across a `setState`.
+class _StartableTemplate {
+  final String id;
+  final String title;
+  final bool requiresSecondaryVendor;
+
+  const _StartableTemplate({required this.id, required this.title, required this.requiresSecondaryVendor});
+
+  @override
+  bool operator ==(Object other) => other is _StartableTemplate && other.id == id;
+
+  @override
+  int get hashCode => id.hashCode;
 }
