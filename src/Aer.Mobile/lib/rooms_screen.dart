@@ -26,6 +26,10 @@ AerStatus roomStatus(String? status) => switch (status) {
       'Finished' => AerStatus.finished,
       'Failed' => AerStatus.failed,
       'Cancelled' => AerStatus.cancelled,
+      // #1219: the phone renders the same tenth state the desktop does. Without this row it would
+      // fall to `idle` below, and a room whose process died would read as one that had never
+      // started — the two surfaces disagreeing again, one platform over.
+      'Stopped' => AerStatus.stopped,
       'Unavailable' => AerStatus.unavailable,
       'OutOfPlan' => AerStatus.outOfPlan,
       _ => AerStatus.idle,

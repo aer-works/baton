@@ -281,17 +281,10 @@ public enum RoomCardStatus
     Cancelled,
 
     /// <summary>
-    /// The run halted because its process died — not finished, not failed, and nobody stopped it
-    /// (#1219). The tenth canonical state, added because there was no value for this and the switcher
-    /// consequently called such a room <see cref="Running"/> ("Working — …", with a spinner) while the
-    /// room's own transcript said it had stopped. That is the shape 0020 exists to rule out, and its
-    /// own worked example — a <see cref="Cancelled"/> room reading as <see cref="Finished"/> because
-    /// the derivation had no case for it — is this one exactly.
-    /// <para>
-    /// Distinct from <see cref="Cancelled"/> on the same grounds <see cref="Cancelled"/> is distinct
-    /// from <see cref="Failed"/>: "it died" is not "you stopped it". Both are quiet and both resume;
-    /// what differs is what a person is being told happened.
-    /// </para>
+    /// The tenth canonical state (#1219). What it means, why it could not be read off the journal,
+    /// and why it is separate from <see cref="Cancelled"/> are all in 0020's 2026-08-14 amendment;
+    /// this member is the value that record defines, and <see cref="DeriveStatus"/> is where it is
+    /// produced.
     /// </summary>
     Stopped,
 

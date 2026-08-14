@@ -48,6 +48,7 @@
       <SolidColorBrush x:Key="Status.Idle">#88969C</SolidColorBrush>
       <SolidColorBrush x:Key="Status.Unavailable">#88969C</SolidColorBrush>
       <SolidColorBrush x:Key="Status.OutOfPlan">#88969C</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Stopped">#88969C</SolidColorBrush>
     </ResourceDictionary>
     <ResourceDictionary x:Key="Dark">
       <Color x:Key="BrandAccentColor">#5FB3AD</Color>
@@ -87,6 +88,7 @@
       <SolidColorBrush x:Key="Status.Idle">#6C7A80</SolidColorBrush>
       <SolidColorBrush x:Key="Status.Unavailable">#6C7A80</SolidColorBrush>
       <SolidColorBrush x:Key="Status.OutOfPlan">#6C7A80</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Stopped">#6C7A80</SolidColorBrush>
     </ResourceDictionary>
   </ResourceDictionary.ThemeDictionaries>
 
