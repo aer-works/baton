@@ -435,10 +435,9 @@ public class NavigationShellTests
     }
 
     /// <summary>
-    /// #1191: an execution that declared an output and did not write it previews NOTHING. The
-    /// tempting fallback — show whatever file is there — is the defect this issue is about: it
-    /// dresses the worker's own prompt as the thing you are being asked to approve. Silence here
-    /// is a choice, so it is pinned rather than left to be "fixed" by a later reader.
+    /// #1191: an execution that declared an output and did not write it previews NOTHING. Why the
+    /// obvious fallback is wrong is written on <c>HomeViewModel.BuildInboxItem</c>'s selection;
+    /// this pins that the silence is deliberate, so a later reader does not "fix" it back.
     /// </summary>
     [Fact]
     public async Task A_pause_whose_declared_output_is_missing_previews_nothing_rather_than_whatever_else_is_there()
@@ -446,7 +445,9 @@ public class NavigationShellTests
         var roomDirectory = await CreatePausedRoomDirectoryAsync("unused", TestContext.Current.CancellationToken);
         try
         {
-            File.Delete(Path.Combine(roomDirectory, "artifacts", "execution_c-1", "review.md"));
+            // EnsureDeleted, not Delete: this is the arrangement, not cleanup — a swallowed failure
+            // here would leave the file in place and the test would pass on the wrong state.
+            FileCleanup.EnsureDeleted(Path.Combine(roomDirectory, "artifacts", "execution_c-1", "review.md"));
 
             var projection = await RoomProjectionLoader.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
             var pausedStep = projection.State.Steps.Single(s => s.Status == StepStatus.Paused);

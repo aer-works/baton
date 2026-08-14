@@ -25,10 +25,9 @@ public class RoomDrillInTests
         WorkflowTemplateVersion: 1,
         Steps:
         [
-            // #1191: declared outputs are file names, extension included — the engine satisfies a
-            // contract with File.Exists on the declared name. This fixture declared "review" while
-            // writing review.md; the suite hand-writes its ExecutionSucceeded events so nothing
-            // caught it, but it described a run that cannot happen.
+            // #1191: corrected to the file names a real run would carry — NavigationShellTests'
+            // own snapshot fixture records why. This suite hand-writes its ExecutionSucceeded
+            // events, so nothing here would ever have objected.
             new WorkflowStepDefinition(Architect, "architect", ["goal.md"], ["plan.md"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
             new WorkflowStepDefinition(
                 Critic, "critic", ["plan.md"], ["review.md"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(1),
