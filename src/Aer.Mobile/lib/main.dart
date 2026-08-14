@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'daemon/credentials_store.dart';
@@ -9,6 +10,24 @@ import 'theme/tokens.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // #1176, the phone half of one app-level guard per surface. Framework errors already reach
+  // FlutterError.onError, whose default presents them — that half of the bar Flutter's own
+  // defaults meet, so it is left alone. Errors raised outside the framework's own zones reach
+  // PlatformDispatcher.onError instead, which has NO default handler: unhandled there, an async
+  // failure can take the app down, and a debugPrint would make it silent in a release build.
+  // Report it through the same channel the framework errors use, and return true so a surprise
+  // does not end the session.
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    FlutterError.presentError(FlutterErrorDetails(
+      exception: error,
+      stack: stack,
+      library: 'aer',
+      context: ErrorDescription('in an app-level unhandled error'),
+    ));
+    return true;
+  };
+
   await TailnetGateway.init();
   runApp(const AerMobileApp());
 }

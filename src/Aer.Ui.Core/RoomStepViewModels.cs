@@ -87,6 +87,11 @@ public static class PlainLanguage
     /// (§12 traceability), which this projection never touches.
     /// </summary>
     public static string ShortId(string id) => id.Length > 8 ? id[..8] : id;
+
+    /// <summary>
+    /// #1176: The user-facing wording seam for an app-level unhandled exception state sentence.
+    /// </summary>
+    public static string ForUnexpectedAppError() => InteractionState.UnexpectedAppError.DisplayName();
 }
 
 /// <summary>
