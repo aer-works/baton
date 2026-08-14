@@ -164,6 +164,11 @@ public static class WireFixtureGenerator
         // exercises nothing, and the phone's parser is the consumer that will read these next
         // (#1196 slice 6). The pause belongs to the critic execution the state above has Paused;
         // the decision answers it, so the pairing a transcript needs is visible in the fixture.
+        //
+        // Deliberately NOT self-consistent: critic stays Paused above while carrying a Resume
+        // decision here, which a folded projection would never produce. This fixture is one static
+        // snapshot whose job is to exercise every member at once, not to depict a reachable
+        // instant — "fixing" the state to agree would delete the pairing it exists to carry.
         var stepPauseMoments = new List<Aer.Flow.Projection.StepPauseMoment>
         {
             new(new ExecutionId("exec-2"), new StepId("critic"), new DateTimeOffset(2026, 8, 3, 15, 30, 0, TimeSpan.Zero)),
