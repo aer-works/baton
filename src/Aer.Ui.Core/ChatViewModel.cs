@@ -192,12 +192,10 @@ public sealed partial class ChatViewModel : ObservableObject
     /// workflow-shaped affordance keys on, so they cannot drift apart.
     /// </summary>
     /// <remarks>
-    /// Nothing in the engine refuses a run because the switch is off (#1216 is the durable fact and
-    /// the surface; routing is later work in #1196). That makes it the UI's job not to offer a
-    /// workflow action beside a header that says the workflow is off — the second reader's finding:
-    /// a room reading "Workflow OFF" was still showing "Run it again", which would have run the very
-    /// graph the header said was not there. Hiding the offer is honest about what the room has,
-    /// rather than pretending an enforcement that does not exist.
+    /// Why a workflow-off room offers no run at all — including the enforcement that does not yet
+    /// exist behind it — is settled in <c>docs/design/02-screens.md</c>'s #1216 amendment. This is
+    /// the single flag that decision is spent through, so the header, the Shape toggle and the run
+    /// offer cannot disagree about it.
     /// </remarks>
     public bool IsWorkflowActive => IsPipelineRoom && IsWorkflowOn;
 

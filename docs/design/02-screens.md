@@ -702,9 +702,16 @@ left. Running it again is a separate, deliberate act through the Resume / Run it
 Resuming on a flick of the switch was rejected for the reason auto-resume-on-open was rejected in
 #1215: it spends the operator's subscription on a gesture nobody meant as a run.
 
-One consequence worth stating, since the drawings do not: when the workflow is off, the `Shape` toggle
-goes with the panel rather than staying on screen to open an empty one, and a panel that was already
-open closes.
+Two consequences worth stating, since the drawings do not. When the workflow is off, the `Shape`
+toggle goes with the panel rather than staying on screen to open an empty one, and a panel that was
+already open closes.
+
+And **a room with its workflow off offers no way to run it** — the Resume / Run it again card goes
+with the shape. Nothing in the engine yet refuses a dispatch because the switch is off (routing is
+later work in #1196), so leaving the offer up would let a room whose header reads `Workflow OFF` run
+the very graph the header says is not attached. Hiding it is honest about what the room has, rather
+than implying an enforcement that does not exist; when routing lands, the offer's absence and the
+engine's refusal will be saying the same thing.
 
 ### Resident-room addition (2026-08-04) — spend controls, dormancy, waiting on a lock
 
