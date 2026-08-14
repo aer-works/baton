@@ -160,9 +160,17 @@ public partial class MainWindow : Window
         // column would collapse to content, which is why the two cases set different column widths.
         ShapeRegion.Width = shapeAlone ? double.NaN : ShapePanelWidth;
 
-        ShellGrid.ColumnDefinitions[0].Width = shapeAlone ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        // Auto, not a zero pixel width, for whichever column is hiding its content: an Auto column
+        // sizes to an invisible child as zero, and a zero GridLength does not survive on this grid.
+        ShellGrid.ColumnDefinitions[0].Width = shapeAlone ? GridLength.Auto : new GridLength(1, GridUnitType.Star);
         ShellGrid.ColumnDefinitions[1].Width = shapeAlone ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
     }
+    /// <summary>What <see cref="ApplyShellLayout"/> last decided, for the test that pins its three states.</summary>
+    internal bool IsMainRegionVisible => MainRegion.IsVisible;
+    internal bool IsShapeRegionVisible => ShapeRegion.IsVisible;
+    internal GridLength MainColumnWidth => ShellGrid.ColumnDefinitions[0].Width;
+    internal GridLength ShapeColumnWidth => ShellGrid.ColumnDefinitions[1].Width;
+
     internal Canvas DagCanvas => RoomViewControl.DagCanvas;
     internal StackPanel HistoryPanel => RoomViewControl.HistoryPanel;
     internal StackPanel ConversationExecutionsPanel => RoomViewControl.ConversationExecutionsPanel;

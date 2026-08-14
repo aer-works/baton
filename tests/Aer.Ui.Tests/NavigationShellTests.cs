@@ -299,6 +299,47 @@ public class NavigationShellTests
         }
     }
 
+    /// <summary>
+    /// The shell's three layout states (#1196 slice 3). Driving the built app is what verifies this
+    /// looks right; what this pins is that each state still puts the width on the column whose
+    /// content is actually visible, which is the part a later edit can silently invert.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Each_shell_layout_state_puts_the_width_on_the_column_that_is_showing()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            // A workflow room in the transcript, shape closed: the transcript takes everything.
+            Assert.True(window.IsMainRegionVisible);
+            Assert.False(window.IsShapeRegionVisible);
+            Assert.Equal(new GridLength(1, GridUnitType.Star), window.MainColumnWidth);
+            Assert.Equal(GridLength.Auto, window.ShapeColumnWidth);
+
+            // Shape toggled on: both, side by side.
+            window.ViewModel.Chat.IsShapePanelOpen = true;
+            Assert.True(window.IsMainRegionVisible);
+            Assert.True(window.IsShapeRegionVisible);
+            Assert.Equal(new GridLength(1, GridUnitType.Star), window.MainColumnWidth);
+            Assert.Equal(GridLength.Auto, window.ShapeColumnWidth);
+
+            // The Task section: the shape alone, and the transcript's column gives up its width
+            // rather than merely hiding its content.
+            window.ViewModel.CurrentSection = ShellSection.Task;
+            Assert.False(window.IsMainRegionVisible);
+            Assert.True(window.IsShapeRegionVisible);
+            Assert.Equal(GridLength.Auto, window.MainColumnWidth);
+            Assert.Equal(new GridLength(1, GridUnitType.Star), window.ShapeColumnWidth);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     /// <summary>M24 Phase 1 desktop chat UI (issue #262): opening a directory that materialized an interactive session (.aer/session.json present) routes to the dedicated Chat view instead of the generic Task view — see <c>MainWindow.OpenAsync</c>'s remarks.</summary>
     [AvaloniaFact]
     public async Task OpenAsync_routes_an_interactive_session_directory_to_the_chat_section()
