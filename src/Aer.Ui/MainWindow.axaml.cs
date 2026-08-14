@@ -1398,7 +1398,7 @@ public partial class MainWindow : Window
             projection.IsDormant,
             () => _ = WakeDormantRoomAsync(roomDirectoryPath),
             projection.RecordedDecisionMoments,
-            ViewModel.PausedSteps.FirstOrDefault());
+            ViewModel.PausedSteps);
     }
 
     private async Task WakeDormantRoomAsync(string roomDirectoryPath)

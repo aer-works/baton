@@ -332,7 +332,12 @@ public sealed partial class MainWindowViewModel : ObservableObject
             gate.IsEnabled = !value;
         }
 
-        if (Chat.PendingDecision is { } decisionCard)
+        // Not redundant with the PausedSteps loop above, though the two usually hold the same
+        // instances: the transcript's cards keep an instance while its (step, execution) key stays
+        // open, so between a rebuild of PausedSteps and the next reconcile a card can hold an
+        // instance that collection no longer contains. Missing it would leave that card live during
+        // a mutation this process is already driving.
+        foreach (var decisionCard in Chat.PendingDecisions)
         {
             decisionCard.IsEnabled = !value;
         }

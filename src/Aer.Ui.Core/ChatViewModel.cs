@@ -180,16 +180,21 @@ public sealed partial class ChatViewModel : ObservableObject
     public bool HasPendingPermission => PendingPermission != null;
 
     /// <summary>
-    /// The open workflow decision card rendered inline in the transcript (#1196/#1199), or null when no
-    /// step is paused. Set by <see cref="SurfacePendingPermission"/> from the projection's paused step on
-    /// every render — a projected fact, so it clears itself the moment the projection stops carrying one.
+    /// The open workflow decisions rendered inline in the transcript as live cards (#1196/#1199), empty
+    /// when nothing is paused. Reconciled by <see cref="SurfacePendingPermission"/> from the projection's
+    /// paused steps on every render — a projected fact, so a card leaves the moment the projection stops
+    /// carrying its step.
     /// </summary>
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasPendingDecision))]
-    private PausedStepViewModel? pendingDecision;
+    /// <remarks>
+    /// A collection, not one card: a room can hold several steps paused at once, which the product
+    /// already models everywhere else it counts them (<c>RoomsViewModel.PausedStepCount</c>,
+    /// <c>RoomProjectionLoader</c>'s own count). Showing the first and dropping the rest would be a
+    /// transcript claiming to be the room's whole chronology while hiding part of it.
+    /// </remarks>
+    public ObservableCollection<PausedStepViewModel> PendingDecisions { get; } = [];
 
-    /// <summary>True while a workflow step is paused waiting for a decision — drives the inline decision card's visibility.</summary>
-    public bool HasPendingDecision => PendingDecision != null;
+    /// <summary>True while at least one step is paused waiting for a decision — drives the inline decision cards' visibility.</summary>
+    public bool HasPendingDecision => PendingDecisions.Count > 0;
 
     /// <summary>
     /// Reconciles the inline gate with the projection's current <paramref name="pending"/>: builds a
@@ -225,7 +230,7 @@ public sealed partial class ChatViewModel : ObservableObject
         bool isDormant = false,
         Action? wake = null,
         IReadOnlyList<RecordedDecisionMoment>? recordedDecisionMoments = null,
-        PausedStepViewModel? pendingDecision = null)
+        IReadOnlyList<PausedStepViewModel>? pendingDecisions = null)
     {
         if (dormancyTransitions != null)
         {
@@ -259,13 +264,40 @@ public sealed partial class ChatViewModel : ObservableObject
             PendingPermission = new PendingPermissionViewModel(pending, answer);
         }
 
-        if (pendingDecision is null)
+        ReconcilePendingDecisions(pendingDecisions ?? []);
+    }
+
+    /// <summary>
+    /// Brings <see cref="PendingDecisions"/> into line with the projection's paused steps, keyed on
+    /// (step, execution): a card whose key is still open keeps its existing instance, so an in-flight
+    /// <see cref="PausedStepViewModel.IsEnabled"/> toggle survives a poll that changed nothing else —
+    /// the same discipline <see cref="PendingPermission"/> has kept since #1145. A key that is gone
+    /// leaves; a key that is new arrives.
+    /// </summary>
+    private void ReconcilePendingDecisions(IReadOnlyList<PausedStepViewModel> pausedSteps)
+    {
+        var before = PendingDecisions.Count;
+
+        for (var index = PendingDecisions.Count - 1; index >= 0; index--)
         {
-            PendingDecision = null;
+            var existing = PendingDecisions[index];
+            if (!pausedSteps.Any(step => step.StepId == existing.StepId && step.ExecutionId == existing.ExecutionId))
+            {
+                PendingDecisions.RemoveAt(index);
+            }
         }
-        else if (PendingDecision?.StepId != pendingDecision.StepId || PendingDecision?.ExecutionId != pendingDecision.ExecutionId)
+
+        foreach (var step in pausedSteps)
         {
-            PendingDecision = pendingDecision;
+            if (!PendingDecisions.Any(existing => existing.StepId == step.StepId && existing.ExecutionId == step.ExecutionId))
+            {
+                PendingDecisions.Add(step);
+            }
+        }
+
+        if (PendingDecisions.Count != before)
+        {
+            OnPropertyChanged(nameof(HasPendingDecision));
         }
     }
 
@@ -342,6 +374,13 @@ public sealed partial class ChatViewModel : ObservableObject
         var transitions = _answersClearedThrough is { } clearedThroughTransitions
             ? _dormancyTransitions.Where(t => t.Timestamp > clearedThroughTransitions).ToList()
             : _dormancyTransitions;
+        // A decision with no recorded time is treated as older than any clear, so it goes with the
+        // transcript the person cleared. That is the same reading that puts it before the first
+        // stamped row in the merge below — unknown means "from before what I can place" in both
+        // places — and it is the conservative half of the choice: a clear is a request to stop
+        // seeing what came before, and a moment that cannot be placed cannot be shown to be after it.
+        // The sibling lists never face this; PermissionAnswer.AnsweredAt and DormancyTransition.Timestamp
+        // are both non-nullable.
         var decisions = _answersClearedThrough is { } clearedThroughDecisions
             ? _recordedDecisionMoments.Where(d => (d.RecordedAt ?? DateTimeOffset.MinValue) > clearedThroughDecisions).ToList()
             : _recordedDecisionMoments;

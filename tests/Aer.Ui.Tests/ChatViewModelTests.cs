@@ -795,30 +795,48 @@ public class ChatViewModelTests
         var execId = new ExecutionId("exec-100");
         DecideDelegate decide = (_, _, _, _, _, _, _) => Task.CompletedTask;
 
+        var otherStepId = new StepId("build_step");
+        var otherExecId = new ExecutionId("exec-200");
+
         var pausedStep1 = new PausedStepViewModel(stepId, execId, [], decide);
+        var otherPausedStep = new PausedStepViewModel(otherStepId, otherExecId, [], decide);
 
-        // Card appears when carrying a paused step
+        // Two steps paused at once are two cards — the room models a paused-step COUNT, not a
+        // paused step, so a transcript that showed one of them would be hiding the other.
         viewModel.SurfacePendingPermission(
-            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, pausedStep1);
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, [pausedStep1, otherPausedStep]);
 
         Assert.True(viewModel.HasPendingDecision);
-        Assert.Same(pausedStep1, viewModel.PendingDecision);
-        Assert.Equal("review_step (exec-100)", viewModel.PendingDecision!.Label);
+        Assert.Equal(2, viewModel.PendingDecisions.Count);
+        Assert.Same(pausedStep1, viewModel.PendingDecisions[0]);
+        Assert.Same(otherPausedStep, viewModel.PendingDecisions[1]);
+        Assert.Equal("review_step (exec-100)", viewModel.PendingDecisions[0].Label);
 
-        // Same decision (same StepId and ExecutionId) preserves existing VM instance
-        var pausedStep2 = new PausedStepViewModel(stepId, execId, [], decide);
+        // Same key (StepId and ExecutionId) keeps the live instance rather than swapping in the
+        // freshly-projected one, so an in-flight IsEnabled toggle survives a poll that changed nothing.
+        var pausedStep1Rebuilt = new PausedStepViewModel(stepId, execId, [], decide);
+        var otherRebuilt = new PausedStepViewModel(otherStepId, otherExecId, [], decide);
         viewModel.SurfacePendingPermission(
-            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, pausedStep2);
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, [pausedStep1Rebuilt, otherRebuilt]);
+
+        Assert.Equal(2, viewModel.PendingDecisions.Count);
+        Assert.Same(pausedStep1, viewModel.PendingDecisions[0]);
+        Assert.Same(otherPausedStep, viewModel.PendingDecisions[1]);
+
+        // One decision answered while the other stays open leaves exactly the other — the assertion
+        // a single-card shape could not make.
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, [otherRebuilt]);
 
         Assert.True(viewModel.HasPendingDecision);
-        Assert.Same(pausedStep1, viewModel.PendingDecision);
+        Assert.Same(otherPausedStep, Assert.Single(viewModel.PendingDecisions));
 
-        // Clears when subsequent projection does not carry a paused step
+        // And all of them clearing empties the collection.
         viewModel.SurfacePendingPermission(
             null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, null);
 
         Assert.False(viewModel.HasPendingDecision);
-        Assert.Null(viewModel.PendingDecision);
+        Assert.Empty(viewModel.PendingDecisions);
     }
 
     [Fact]
