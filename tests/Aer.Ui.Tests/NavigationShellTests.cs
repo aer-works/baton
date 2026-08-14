@@ -131,6 +131,17 @@ public class NavigationShellTests
         return roomDirectory;
     }
 
+    /// <summary>
+    /// A room that was running when its process died (#1215): an accepted execution request with no
+    /// terminal event after it, which is exactly what a crash leaves behind — and, by §6, exactly what
+    /// a live run looks like too. No lock is held over this directory, which is the difference.
+    /// </summary>
+    private static Task<string> CreateStalledRoomDirectoryAsync(CancellationToken cancellationToken) =>
+        CreateRoomDirectoryAsync(
+            TwoStepSnapshot(),
+            [new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("a-1"), Architect))],
+            cancellationToken);
+
     /// <summary>A task paused at a NeedsInput pause point (#334) — the shape an interactive session settles into: "your turn to reply", not an approval gate.</summary>
     private static async Task<string> CreateNeedsInputRoomDirectoryAsync(string replyContent, CancellationToken cancellationToken)
     {
@@ -321,6 +332,42 @@ public class NavigationShellTests
         finally
         {
             DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1215, through the whole open path rather than the derivation alone: a room that stopped
+    /// mid-run offers Resume on its transcript, and a room waiting on a decision offers nothing —
+    /// it already has the person's action there. Both arms in one fact because the pair is the
+    /// claim; either alone passes under a predicate that always answers the same way.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task A_stopped_room_offers_resume_on_its_transcript_and_a_room_awaiting_a_decision_does_not()
+    {
+        var stalledRoom = await CreateStalledRoomDirectoryAsync(TestContext.Current.CancellationToken);
+        var pausedRoom = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+
+            await window.OpenAsync(stalledRoom, TestContext.Current.CancellationToken);
+            var card = window.ViewModel.RoomStoppedCard;
+            Assert.NotNull(card);
+            Assert.Equal(RoomStoppedReason.StoppedMidRun, card.Reason);
+            Assert.Equal("Resume", card.ActionLabel);
+            Assert.True(window.ViewModel.HasRoomStoppedCard);
+
+            // Same window, next room: the offer has to clear, or it is an offer against the wrong
+            // directory — which is how the retired Run button could resume a room you were not looking at.
+            await window.OpenAsync(pausedRoom, TestContext.Current.CancellationToken);
+            Assert.Null(window.ViewModel.RoomStoppedCard);
+            Assert.False(window.ViewModel.HasRoomStoppedCard);
+            Assert.Single(window.ViewModel.Chat.PendingDecisions);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(stalledRoom);
+            DirectoryCleanup.DeleteRecursively(pausedRoom);
         }
     }
 

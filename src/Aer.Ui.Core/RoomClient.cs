@@ -325,6 +325,7 @@ public sealed partial class RoomClient
         {
             RebuildPausedSteps(projection, CurrentRoomDirectoryPath);
             RebuildRunningExecutions(projection, CurrentRoomDirectoryPath);
+            RefreshRoomStoppedCard(projection, CurrentRoomDirectoryPath);
             LastLoadSucceeded = true;
             LastWorkflowStatus = projection.State.Status;
             LastSnapshot = projection.Snapshot;
@@ -348,6 +349,58 @@ public sealed partial class RoomClient
         {
             ViewModel.WaitingOnLockBanner = null;
         }
+    }
+
+    /// <summary>
+    /// #1215: why the open room is stopped, or null if it is not stopped at all. Pure, so both
+    /// polarities are testable without holding a lock — the impure half is the single
+    /// <see cref="ConcurrencyGuard.IsHeld"/> probe its caller performs.
+    /// <para>
+    /// The order is load-bearing. Terminal wins first because a finished room never has a live pump,
+    /// so asking about the lock there would only add a filesystem read that cannot change the answer.
+    /// The lock is next: while it is held, some process is genuinely pumping this directory, and that
+    /// is the <em>only</em> thing that distinguishes a live run from a crashed one —
+    /// <see cref="WorkflowStatus.Running"/> covers both by its own definition. Paused is last and is
+    /// not "stopped" at all: that room already has the person's action on screen, and answering the
+    /// decision re-pumps it, so offering Resume beside a gate would be two offers for one turn.
+    /// </para>
+    /// </summary>
+    internal static RoomStoppedReason? DeriveRoomStoppedReason(FlowState state, bool isFlowLockHeld)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (state.Status == WorkflowStatus.Terminal)
+        {
+            return RoomStoppedReason.Finished;
+        }
+
+        if (isFlowLockHeld)
+        {
+            return null;
+        }
+
+        if (state.Steps.Any(step => step.Status == StepStatus.Paused))
+        {
+            return null;
+        }
+
+        return RoomStoppedReason.StoppedMidRun;
+    }
+
+    /// <summary>
+    /// Sets or clears <see cref="MainWindowViewModel.RoomStoppedCard"/> from the projection plus one
+    /// lock probe. Mode-independent for the same reason <see cref="RefreshWaitingOnLockBanner"/> is:
+    /// the §15 lock is a local filesystem fact, and which process answered the load does not change
+    /// who holds the directory. Called only where a projection has just been applied — never on the
+    /// live-refresh timer, since <see cref="ConcurrencyGuard.IsHeld"/> opens the lock file to test it.
+    /// </summary>
+    private void RefreshRoomStoppedCard(RoomProjection projection, string roomDirectoryPath)
+    {
+        var reason = DeriveRoomStoppedReason(projection.State, ConcurrencyGuard.IsHeld(roomDirectoryPath));
+
+        ViewModel.RoomStoppedCard = reason is { } stoppedReason
+            ? new RoomStoppedCardViewModel(stoppedReason, () => ViewModel.RequestRoomRunAsync())
+            : null;
     }
 
     /// <summary>
@@ -398,6 +451,7 @@ public sealed partial class RoomClient
 
             RebuildPausedSteps(projection, roomDirectoryPath);
             RebuildRunningExecutions(projection, roomDirectoryPath);
+            RefreshRoomStoppedCard(projection, roomDirectoryPath);
 
             LastLoadSucceeded = true;
             LastWorkflowStatus = projection.State.Status;
@@ -410,6 +464,9 @@ public sealed partial class RoomClient
             ViewModel.DecisionStatusText = string.Empty;
             ViewModel.RunningExecutions.Clear();
             ViewModel.CancelStatusText = string.Empty;
+            // No projection means nothing is known about whether this room is stopped; an offer left
+            // over from the last room that did load would be an offer against the wrong directory.
+            ViewModel.RoomStoppedCard = null;
 
             if (ex is WorkflowLockedException wle)
             {

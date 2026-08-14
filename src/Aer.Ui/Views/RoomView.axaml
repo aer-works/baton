@@ -8,32 +8,26 @@
              xmlns:vm="clr-namespace:Aer.Ui.Core;assembly=Aer.Ui.Core"
              x:Class="Aer.Ui.Views.RoomView"
              x:DataType="vm:MainWindowViewModel">
-  <!-- HorizontalScrollBarVisibility is #1204's: as the Shape panel this view is ~460px wide, and its
-       fixed-width header boxes (the path pair below, which slice 4 of #1196 retires) ran off the edge
-       with no way to reach them. Scrolling is the honest interim — nothing is unreachable, and
-       nothing pretends the header belongs at this width. -->
-  <ScrollViewer HorizontalScrollBarVisibility="Auto">
+  <!-- #1204's horizontal scroller is gone with what overflowed. It existed because this view's
+       fixed-width header path boxes ran off the edge at the Shape panel's ~460px; #1215 retired the
+       header, and what remains sizes to the panel — the DAG carries its own scroller and the step
+       chips wrap. -->
+  <ScrollViewer>
     <StackPanel Margin="24" Spacing="12">
       <TextBlock Classes="display" Text="{Binding RoomHeadlineText}" />
       <!-- The empty state says what to do next (Phase 5): nothing open, two ways forward. -->
       <TextBlock Classes="secondary" IsVisible="{Binding !HasSelectedStep}" TextWrapping="Wrap"
                  Text="Open a room from Home, or create and run a workflow in Author — this view fills in as soon as a room is open." />
 
-      <!-- #1215: the workflow and bindings path boxes were here. They are the room's *state*, not
-           chrome, so they moved to MainWindowViewModel.WorkflowTemplateFilePath/BindingsFilePath
-           rather than being deleted — see those properties for what still reads them. A file path
-           is engine plumbing; the room header is the room's. -->
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <!-- Owner feedback: "does Run make sense on a finished task?" — disabled once the open
-             task has actually finished, rather than leaving a click that quietly does nothing. -->
-        <Button x:Name="RunButton" Classes="accent" IsEnabled="{Binding CanRun}"
-                ToolTip.Tip="{Binding RunButtonToolTipText}">
-          <AccessText Text="R_un" />
-        </Button>
-        <!-- Stop moved to the room header in ChatView (#1215) — see its comment there. One Stop,
-             in the place a person looks for it, rather than one per surface. -->
-      </StackPanel>
-      <TextBlock x:Name="RunStatusText" Text="{Binding RunStatusText}" />
+      <!-- #1215 emptied this header. The workflow and bindings path boxes were the room's *state*,
+           not chrome, so they moved to MainWindowViewModel.WorkflowTemplateFilePath/BindingsFilePath
+           (see those properties for what still reads them) — a file path is engine plumbing, and the
+           room header is the room's. Stop moved to the room header in ChatView. Run is retired: its
+           start half is served by Author's Save & Run and the template picker, and its resume half is
+           now the stopped-room card on the transcript (RoomStoppedCardViewModel), where a person can
+           actually see it. What is left of this view is the room's shape. -->
+      <TextBlock x:Name="RunStatusText" Text="{Binding RunStatusText}"
+                 IsVisible="{Binding RunStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
       <!-- #618: waiting-on-lock banner (reads as a WAIT, never an error) -->
       <Border Classes="card" IsVisible="{Binding HasWaitingOnLockBanner}" Background="{DynamicResource Color.SurfaceSubtle}" Margin="0,4,0,4">

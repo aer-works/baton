@@ -254,6 +254,90 @@ public sealed partial class WaitingOnLockBannerViewModel : ObservableObject
 }
 
 /// <summary>
+/// Why a room is not going anywhere on its own, and therefore which offer its transcript carries
+/// (#1215). Deliberately closed and deliberately not "not running": a room waiting on a decision is
+/// also not running, and it is neither of these — it already has the person's action on screen.
+/// </summary>
+public enum RoomStoppedReason
+{
+    /// <summary>
+    /// Non-terminal, nothing paused, and no live pump owns the directory — the room was running when
+    /// its process died. <c>WorkflowStatus.Running</c> cannot say this on its own: <c>FlowState</c>'s
+    /// own doc defines it as "still in flight <em>or</em> Flow crashed before recording its outcome",
+    /// so the journal records a live room and a crashed one identically. What separates them is
+    /// <see cref="Aer.Flow.Concurrency.ConcurrencyGuard.IsHeld"/> — a kernel-held lock the OS drops
+    /// the instant its holder exits, crashed or not, held by <c>MutationInterface</c> across the
+    /// whole of <c>PumpToFixedPointAsync</c> (a #1094 vendor-quota park included, which is why a
+    /// day-long paced wait does not read as stopped).
+    /// </summary>
+    StoppedMidRun,
+
+    /// <summary>
+    /// Terminal. Resuming this directory is a proven silent no-op (see
+    /// <see cref="MainWindowViewModel.IsRoomFinished"/>), so the offer is a fresh room cloned from it.
+    /// </summary>
+    Finished,
+}
+
+/// <summary>
+/// #1215: the offer a stopped room's own transcript carries. Replaces the header Run button, whose
+/// only unique job was resuming a room nothing else in the desktop resumes — every other
+/// <c>RunAsync</c> caller starts a fresh room, and nothing rehydrates a crashed one on startup
+/// (<c>RoomWakeBridge</c> wakes a room whose <em>delegated</em> workflow finished, the other
+/// direction). Placed on the turn rather than in chrome, the same move dormancy's Wake and #617's
+/// "Try again" already made.
+/// <para>
+/// Auto-resuming on open was rejected by the owner (2026-08-14): opening a room would then spend
+/// vendor budget nobody asked for, against cost-is-the-operator's-call.
+/// </para>
+/// </summary>
+public sealed partial class RoomStoppedCardViewModel : ObservableObject
+{
+    private readonly Func<Task> _runAsyncAction;
+
+    public RoomStoppedReason Reason { get; }
+
+    public string Headline => Reason == RoomStoppedReason.Finished
+        ? "This room has finished"
+        : "This room stopped mid-run";
+
+    public string BodyText => Reason == RoomStoppedReason.Finished
+        ? "Run it again and its work starts in a fresh room cloned from this one — this room's own history is left as it is."
+        : "Nothing is running it and it is not waiting on you. Resume picks it up where it left off.";
+
+    public string ActionLabel => Reason == RoomStoppedReason.Finished ? "Run it again" : "Resume";
+
+    /// <summary>
+    /// False while this card's own action is in flight, so a second click cannot post a second run.
+    /// A competing <em>external</em> pump is a different question and is refused by the room's own
+    /// §15 lock, surfacing as the waiting-on-lock banner — this flag neither can nor tries to.
+    /// </summary>
+    [ObservableProperty]
+    private bool isEnabled = true;
+
+    public RoomStoppedCardViewModel(RoomStoppedReason reason, Func<Task> runAsyncAction)
+    {
+        ArgumentNullException.ThrowIfNull(runAsyncAction);
+        Reason = reason;
+        _runAsyncAction = runAsyncAction;
+    }
+
+    [RelayCommand]
+    private async Task Run()
+    {
+        IsEnabled = false;
+        try
+        {
+            await _runAsyncAction();
+        }
+        finally
+        {
+            IsEnabled = true;
+        }
+    }
+}
+
+/// <summary>
 /// Issue #994: the room turn-host status card / banner — values and live usage. Dormancy left this
 /// surface in #1178: it renders as a transcript turn (with Wake) in the chat, so the banner keeps
 /// only the meter presentation.

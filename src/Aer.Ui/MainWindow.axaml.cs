@@ -122,7 +122,6 @@ public partial class MainWindow : Window
     internal Button OpenButton => HomeViewControl.OpenButton;
     internal Button RefreshButton => HomeViewControl.RefreshButton;
 
-    internal Button RunButton => RoomViewControl.RunButton;
     internal Button StopButton => ChatViewControl.StopButton;
     internal TextBlock RunStatusText => RoomViewControl.RunStatusText;
     internal TextBlock StatusText => RoomViewControl.StatusText;
@@ -292,8 +291,7 @@ public partial class MainWindow : Window
         OpenButton.Click += (_, _) => _ = OpenAsync(RoomDirectoryPathBox.Text ?? string.Empty);
         RefreshButton.Click += (_, _) => _ = RefreshAsync();
         CompareButton.Click += (_, _) => _ = CompareToTemplateAsync(TemplateComparePathBox.Text ?? string.Empty);
-        RunButton.Click += (_, _) => _ = OnRunButtonClickAsync();
-        ViewModel.ReRunRequested += () => _ = OnRunButtonClickAsync();
+        ViewModel.RoomRunRequested += OnRoomRunRequestedAsync;
         StopButton.Click += (_, _) => _ = StopAsync();
         NewTemplateButton.Click += (_, _) => NewTemplate();
         EditTemplateButton.Click += (_, _) => _ = OpenTemplateInEditorAsync(TemplateEditorPathBox.Text ?? string.Empty);
@@ -1146,15 +1144,21 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The Run button's click handler (review follow-up, issue #250): on a room that hasn't
-    /// finished, this is exactly the old unconditional resume-in-place call. On a finished room —
-    /// <see cref="MainWindowViewModel.IsTaskFinished"/> — resuming the same directory is a proven
+    /// Everything that asks for the open room to be run (review follow-up, issue #250; #1215 made it
+    /// one event rather than one handler per caller). On a room that hasn't finished, this is exactly
+    /// the old unconditional resume-in-place call. On a finished room —
+    /// <see cref="MainWindowViewModel.IsRoomFinished"/> — resuming the same directory is a proven
     /// no-op (see that property's remarks), so this clones the currently-open room's recorded
     /// <c>.aer/workflow-path</c>/bindings file into a fresh sibling <c>room-{timestamp}</c> directory
     /// instead, the same naming <see cref="MainWindow"/>'s "Save &amp; Run" and template flows
     /// already use, and runs that. The finished room's own directory is left untouched.
+    /// <para>
+    /// The fork stays here rather than moving to the card: which of the two a click means is the
+    /// room's state's answer, not the caller's, and duplicating it per caller is how the two would
+    /// drift apart.
+    /// </para>
     /// </summary>
-    private async Task OnRunButtonClickAsync()
+    private async Task OnRoomRunRequestedAsync()
     {
         var roomDirectoryPath = RoomDirectoryPathBox.Text ?? string.Empty;
         var workflowTemplateFilePath = ViewModel.WorkflowTemplateFilePath;

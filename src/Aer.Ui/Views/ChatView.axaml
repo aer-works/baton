@@ -229,6 +229,28 @@
           </StackPanel>
         </Border>
 
+        <!-- #1215: the stopped-room offer, on the turn rather than in chrome — the same move
+             dormancy's Wake and #617's "Try again" already made, and what retires the header Run
+             button. Offered only for a workflow room: a chat session is never "stopped mid-run", and
+             a finished one is not re-run from a workflow file. RunStatusText rides beside it because
+             it is where a failed Resume has to be readable — its other home is RoomView, which is the
+             Shape panel, closed by default. -->
+        <StackPanel Spacing="{DynamicResource Space.2}" IsVisible="{Binding Chat.IsPipelineRoom}">
+          <Border Classes="card" IsVisible="{Binding HasRoomStoppedCard}"
+                  Background="{DynamicResource Color.SurfaceSubtle}" Margin="0,4,0,4">
+            <StackPanel Spacing="8" DataContext="{Binding RoomStoppedCard}" x:DataType="vm:RoomStoppedCardViewModel">
+              <TextBlock Classes="body-strong" Text="{Binding Headline}" TextWrapping="Wrap" />
+              <TextBlock Classes="secondary" Text="{Binding BodyText}" TextWrapping="Wrap" />
+              <Button x:Name="RoomStoppedRunButton" Classes="accent" HorizontalAlignment="Left"
+                      Content="{Binding ActionLabel}" Command="{Binding RunCommand}"
+                      IsEnabled="{Binding IsEnabled}" />
+            </StackPanel>
+          </Border>
+          <TextBlock x:Name="RoomRunStatusText" Classes="secondary" TextWrapping="Wrap"
+                     Text="{Binding RunStatusText}"
+                     IsVisible="{Binding RunStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        </StackPanel>
+
         <!-- #1196 slice 3: the room's open decisions, moved here from RoomView unchanged — same
              template, same commands, same feedback-file row. A position move is the shipped
              convention of this family (#1145/#1174/#1177/#1181/#1185), and it is a MOVE rather than a
