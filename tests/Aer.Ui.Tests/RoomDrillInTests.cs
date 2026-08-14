@@ -133,6 +133,12 @@ public class RoomDrillInTests
             Assert.Equal("critic", selected.StepId);
             Assert.True(selected.IsSelected);
             Assert.Same(Assert.Single(window.ViewModel.PausedSteps), selected.PausedStep);
+
+            // #1191: The evidence panel opens on the evidence ("Outputs" tab).
+            var tabControl = window.StepDetailTabControl;
+            Assert.NotNull(tabControl);
+            var selectedTab = Assert.IsType<TabItem>(tabControl.SelectedItem);
+            Assert.Equal("Outputs", selectedTab.Header);
         }
         finally
         {

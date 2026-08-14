@@ -139,6 +139,7 @@ public partial class MainWindow : Window
     internal StackPanel SupplementaryPanel => RoomViewControl.SupplementaryPanel;
     internal StackPanel LineagePanel => RoomViewControl.LineagePanel;
     internal TextBox ArtifactPreviewBox => RoomViewControl.ArtifactPreviewBox;
+    internal TabControl StepDetailTabControl => RoomViewControl.StepDetailTabControl;
     internal TextBox TemplateComparePathBox => RoomViewControl.TemplateComparePathBox;
     internal Button CompareButton => RoomViewControl.CompareButton;
     internal StackPanel DiffPanel => RoomViewControl.DiffPanel;
