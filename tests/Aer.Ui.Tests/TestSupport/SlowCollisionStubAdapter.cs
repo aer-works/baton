@@ -30,17 +30,19 @@ internal sealed class SlowCollisionStubAdapter : IWorkerAdapter
     public const string CompletionsFileName = ".dispatch-completions";
 
     /// <summary>
-    /// Prefix of a per-dispatch stamp file created the moment the dispatch's hold window opens.
-    /// The file's own <c>LastWriteTimeUtc</c> is the start timestamp -- filesystem clocks, no shell
-    /// date-format portability. Two dispatches on DIFFERENT directories are proven concurrent by
-    /// their start gap being under <see cref="DispatchDelay"/>: global serialisation forces the
-    /// second start to wait out the first's full hold, while true concurrency leaves only spawn
-    /// jitter (both processes pay the same interpreter cold-start, so it cancels out of the gap).
-    /// A total-wall-clock bound cannot make that distinction on a noisy CI runner -- measured: a
-    /// genuinely concurrent pair took 1390ms combined against a 1350ms bound (PR #831's first CI
-    /// run).
+    /// #1211: embed <c>STUB_RENDEZVOUS_DIR=&lt;path&gt;</c> in the prompt template and this dispatch
+    /// announces itself into that shared directory, then waits up to <see cref="RendezvousTimeout"/>
+    /// for a second dispatch to announce too. Only a pair that is genuinely in flight at once can
+    /// both clear the wait, so the timeout can be generous without weakening the claim -- which is
+    /// what the wall-clock start gap it replaces never had.
     /// </summary>
-    public const string StartStampFilePrefix = ".dispatch-start-";
+    public const string RendezvousSentinelPrefix = "STUB_RENDEZVOUS_DIR=";
+
+    public const string ArrivalFilePrefix = "arrived-";
+    public const string ConcurrencyProofFilePrefix = "concurrent-";
+
+    public static readonly TimeSpan RendezvousTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan RendezvousPollInterval = TimeSpan.FromMilliseconds(100);
 
     /// <summary>
     /// Embedded in <see cref="WorkerInvocation.PromptTemplate"/> (same convention as
@@ -62,6 +64,8 @@ internal sealed class SlowCollisionStubAdapter : IWorkerAdapter
         var collisionFile = Path.Combine(dir, CollisionFileName);
         var completionsFile = Path.Combine(dir, CompletionsFileName);
         var shouldFail = invocation.PromptTemplate.Contains(ForceFailureSentinel, StringComparison.Ordinal);
+        var rendezvousDir = ReadRendezvousDirectory(invocation.PromptTemplate);
+        var pollCount = (int)(RendezvousTimeout.TotalMilliseconds / RendezvousPollInterval.TotalMilliseconds);
 
         if (OperatingSystem.IsWindows())
         {
@@ -74,10 +78,17 @@ internal sealed class SlowCollisionStubAdapter : IWorkerAdapter
             var finalStep = shouldFail
                 ? "exit 1"
                 : $"Set-Content -Path (Join-Path $env:AER_OUTPUT_DIR '{outputName}') -Value 'stub-response'";
+            var rendezvous = rendezvousDir is null
+                ? ""
+                : $"New-Item -ItemType File -Force (Join-Path '{rendezvousDir}' ('{ArrivalFilePrefix}' + $PID)) | Out-Null; " +
+                  $"for ($i = 0; $i -lt {pollCount}; $i++) {{ " +
+                  $"if (@(Get-ChildItem -Path '{rendezvousDir}' -Filter '{ArrivalFilePrefix}*').Count -ge 2) {{ " +
+                  $"New-Item -ItemType File -Force (Join-Path '{rendezvousDir}' ('{ConcurrencyProofFilePrefix}' + $PID)) | Out-Null; break }}; " +
+                  $"Start-Sleep -Milliseconds {RendezvousPollInterval.TotalMilliseconds} }}; ";
             var script =
                 $"if (Test-Path '{markerFile}') {{ Add-Content -Path '{collisionFile}' -Value 'collision' }}; " +
                 $"New-Item -ItemType File -Force '{markerFile}' | Out-Null; " +
-                $"New-Item -ItemType File -Force (Join-Path '{dir}' ('{StartStampFilePrefix}' + $PID)) | Out-Null; " +
+                rendezvous +
                 $"Start-Sleep -Milliseconds {DispatchDelay.TotalMilliseconds}; " +
                 $"Remove-Item -Force '{markerFile}'; " +
                 $"Add-Content -Path '{completionsFile}' -Value 'done'; " +
@@ -87,15 +98,36 @@ internal sealed class SlowCollisionStubAdapter : IWorkerAdapter
         else
         {
             var finalStep = shouldFail ? "exit 1" : $"echo stub-response > \"$AER_OUTPUT_DIR/{outputName}\"";
+            var rendezvous = rendezvousDir is null
+                ? ""
+                : $"touch '{rendezvousDir}/{ArrivalFilePrefix}'$$; " +
+                  $"i=0; while [ $i -lt {pollCount} ]; do " +
+                  $"arrived=$(ls '{rendezvousDir}' | grep -c '^{ArrivalFilePrefix}'); " +
+                  $"if [ \"$arrived\" -ge 2 ]; then touch '{rendezvousDir}/{ConcurrencyProofFilePrefix}'$$; break; fi; " +
+                  $"sleep {RendezvousPollInterval.TotalSeconds:0.0#}; i=$((i+1)); done; ";
             var script =
                 $"if [ -f '{markerFile}' ]; then echo collision >> '{collisionFile}'; fi; " +
                 $"touch '{markerFile}'; " +
-                $"touch '{dir}/{StartStampFilePrefix}'$$; " +
+                rendezvous +
                 $"sleep 1; " +
                 $"rm -f '{markerFile}'; " +
                 $"echo done >> '{completionsFile}'; " +
                 finalStep;
             return new CoreDispatchTarget("sh", ["-c", script]);
         }
+    }
+
+    /// <summary>The path after <see cref="RendezvousSentinelPrefix"/>, or null if the template carries none.</summary>
+    private static string? ReadRendezvousDirectory(string promptTemplate)
+    {
+        var start = promptTemplate.IndexOf(RendezvousSentinelPrefix, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return null;
+        }
+
+        var valueStart = start + RendezvousSentinelPrefix.Length;
+        var end = promptTemplate.IndexOfAny(['\r', '\n'], valueStart);
+        return (end < 0 ? promptTemplate[valueStart..] : promptTemplate[valueStart..end]).Trim();
     }
 }
