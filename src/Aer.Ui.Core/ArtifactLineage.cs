@@ -26,7 +26,14 @@ public sealed record ExecutionArtifacts(
     StepId? StepId,
     string Worker,
     IReadOnlyList<string> OutputFiles,
-    IReadOnlyList<ArtifactInputLink> Inputs);
+    IReadOnlyList<ArtifactInputLink> Inputs,
+    // #1191: what this execution was CONTRACTED to produce, read off its own ExecutionRequest —
+    // the same list MutationInterface turns into the ProducedOutputs that ContractValidator
+    // satisfies with File.Exists, so it is the per-execution truth rather than a nearby
+    // approximation of it. OutputFiles above is every file that ended up in the directory, the
+    // worker's prompt included; the two are not the same question and a surface that wants "the
+    // thing this step produced" has to ask this one.
+    IReadOnlyList<string> DeclaredOutputs);
 
 /// <summary>
 /// One resolved input of an execution: the declared input name, which step's declared

@@ -25,9 +25,13 @@ public class RoomDrillInTests
         WorkflowTemplateVersion: 1,
         Steps:
         [
-            new WorkflowStepDefinition(Architect, "architect", ["goal"], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
+            // #1191: declared outputs are file names, extension included — the engine satisfies a
+            // contract with File.Exists on the declared name. This fixture declared "review" while
+            // writing review.md; the suite hand-writes its ExecutionSucceeded events so nothing
+            // caught it, but it described a run that cannot happen.
+            new WorkflowStepDefinition(Architect, "architect", ["goal.md"], ["plan.md"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
             new WorkflowStepDefinition(
-                Critic, "critic", ["plan"], ["review"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(1),
+                Critic, "critic", ["plan.md"], ["review.md"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(1),
                 PausePoint: new PausePoint(SupersedeTargets: [Architect])),
         ]));
 
@@ -84,7 +88,7 @@ public class RoomDrillInTests
 
         var architectOutputDirectory = Path.Combine(roomDirectory, "artifacts", "execution_a-2");
         Directory.CreateDirectory(architectOutputDirectory);
-        await File.WriteAllTextAsync(Path.Combine(architectOutputDirectory, "plan"), "The plan.", cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(architectOutputDirectory, "plan.md"), "The plan.", cancellationToken);
 
         var outputDirectory = Path.Combine(roomDirectory, "artifacts", "execution_c-1");
         Directory.CreateDirectory(outputDirectory);
