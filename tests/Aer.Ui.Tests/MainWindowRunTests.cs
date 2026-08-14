@@ -152,8 +152,8 @@ public class MainWindowRunTests
 
     /// <summary>
     /// #1222: Author's Save &amp; Run puts the room it started in the transcript, the one rendering a
-    /// room has. It used to navigate to <c>ShellSection.Task</c> and show a full-width graph for as
-    /// long as the pump ran, then turn into a transcript underneath the person when the run settled.
+    /// room has. What it did before, and why that was one room in two renderings, is on
+    /// <see cref="MainWindow.StartAuthoredRunAsync"/>.
     /// <para>
     /// Observed <em>while the run is happening</em>, from inside the adapter, because the end state
     /// cannot tell the two apart: the reopen callback lands every finished room on Chat regardless,

@@ -624,10 +624,8 @@ public class NavigationShellTests
 
     /// <summary>
     /// #1222: a workflow file is not a room, and opening one by path says so instead of drawing its
-    /// graph as though it were. The route existed only by hand-typing a *file* path into a box
-    /// labelled "Room directory", and it was a second door to a shape — which `02-screens.md:236`
-    /// closes ("'Edit shape' is the only door to the editor"). Author opens the same file, draws the
-    /// same graph, and can edit it.
+    /// graph as though it were. Why — the corpus passages that decide it, and where the capability
+    /// went instead — is in <c>MainWindow.OpenAsync</c>, beside the branch this pins.
     /// <para>
     /// The discriminating assertion is the empty canvas, not the message: the retired branch also
     /// wrote to <c>StatusText</c>, and only the graph tells the two apart.

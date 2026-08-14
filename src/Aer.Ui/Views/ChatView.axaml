@@ -9,22 +9,29 @@
              x:Class="Aer.Ui.Views.ChatView"
              x:DataType="vm:MainWindowViewModel">
   <UserControl.Styles>
-    <!-- #1216: the Workflow switch renders a STATE, not an action, so it must not borrow the
-         default ToggleButton's checked accent — which in this theme is the same loud red the app
-         uses for failure. Driving the built app is what showed it: "Workflow ON", the ordinary
-         healthy state every room is in, arrived looking like an alarm, while OFF — the unusual
-         state actually worth noticing — sat quiet and grey. Neutral in both states; the words carry
-         the difference, the way the corpus's own drawing does ("Workflow [● ON ]" / "[○ OFF]"). -->
-    <Style Selector="ToggleButton#WorkflowSwitch:checked">
+    <!-- #1216: a header toggle renders a STATE, not an action, so it must not borrow the default
+         ToggleButton's checked accent — which in this theme is the same loud red the app uses for
+         failure. Driving the built app is what showed it: "Workflow ON", the ordinary healthy state
+         every room is in, arrived looking like an alarm, while OFF — the unusual state actually
+         worth noticing — sat quiet and grey. Neutral in both states; the words carry the difference,
+         the way the corpus's own drawing does ("Workflow [● ON ]" / "[○ OFF]").
+
+         #1223 widened it from the Workflow switch to both header toggles. #1216 fixed the instance
+         it was found on and left `Shape` — two elements away, same header, same checked accent — to
+         shout that an open panel was a failure. The finding was always about what a checked toggle
+         MEANS here, so the selector says that. Deliberately still scoped to this header rather than
+         restyling ToggleButton app-wide: a toggle that genuinely toggles an action keeps the accent,
+         and nothing here changes the accent itself. -->
+    <Style Selector="ToggleButton#WorkflowSwitch:checked, ToggleButton#ChatShapeToggle:checked">
       <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
       <Setter Property="Foreground" Value="{DynamicResource Color.Text}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Color.BorderSubtle}" />
     </Style>
-    <Style Selector="ToggleButton#WorkflowSwitch:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+    <Style Selector="ToggleButton#WorkflowSwitch:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter, ToggleButton#ChatShapeToggle:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
       <Setter Property="TextElement.Foreground" Value="{DynamicResource Color.Text}" />
     </Style>
-    <Style Selector="ToggleButton#WorkflowSwitch:checked /template/ ContentPresenter#PART_ContentPresenter">
+    <Style Selector="ToggleButton#WorkflowSwitch:checked /template/ ContentPresenter#PART_ContentPresenter, ToggleButton#ChatShapeToggle:checked /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
       <Setter Property="TextElement.Foreground" Value="{DynamicResource Color.Text}" />
     </Style>
