@@ -28,51 +28,51 @@ public class RoomProjectionLoaderDecisionTests
 
             var logPath = Path.Combine(roomDirectory, "flow.jsonl");
 
-            var pauseTime1 = new DateTime(2026, 8, 13, 20, 0, 0, DateTimeKind.Utc);
-            var pauseTime2 = new DateTime(2026, 8, 13, 20, 5, 0, DateTimeKind.Utc);
-            var decisionTime = new DateTime(2026, 8, 13, 20, 10, 0, DateTimeKind.Utc);
-
             var exec1 = new ExecutionId("exec-step-1");
             var exec2 = new ExecutionId("exec-step-2");
             var step1 = new StepId("architect");
             var step2 = new StepId("critic");
             var decId = new DecisionId("dec-1");
 
-            await using (var stream = new FileStream(logPath, FileMode.Create, FileAccess.Write, FileShare.Read))
-            await using (var writer = new FlowEventLogWriter(stream, leaveOpen: true))
+            // Written by the REAL writer, deliberately: hand-rolled journal lines would pin a shape
+            // production may not emit, and this fact's whole job is that what the writer writes is
+            // what the loader reads. The cost is that the instants are the writer's own, so the
+            // assertions below are about presence, order and pairing rather than exact values.
+            var before = DateTimeOffset.UtcNow;
+            await using (var writer = new FlowEventLogWriter(logPath))
             {
-                // Write WorkflowPaused for step 1
                 await writer.AppendAsync(new FlowEvent.WorkflowPaused(exec1, step1), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.WorkflowPaused(exec2, step2), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(
+                    new FlowEvent.ExternalDecisionRecorded(decId, exec1, DecisionType.Resume, null, null, null),
+                    TestContext.Current.CancellationToken);
             }
-
-            // Append with custom timestamps to flow.jsonl directly
-            var line1 = $"{{\"owner\":\"flow\",\"Event\":{{\"eventType\":\"workflowPaused\",\"ExecutionId\":\"{exec1.Value}\",\"StepId\":\"{step1.Value}\"}},\"WriterUtcTimestamp\":\"{pauseTime1:o}\"}}\n";
-            var line2 = $"{{\"owner\":\"flow\",\"Event\":{{\"eventType\":\"workflowPaused\",\"ExecutionId\":\"{exec2.Value}\",\"StepId\":\"{step2.Value}\"}},\"WriterUtcTimestamp\":\"{pauseTime2:o}\"}}\n";
-            var line3 = $"{{\"owner\":\"flow\",\"Event\":{{\"eventType\":\"externalDecisionRecorded\",\"DecisionId\":\"{decId.Value}\",\"ReferencedExecutionId\":\"{exec1.Value}\",\"DecisionType\":\"Resume\",\"TargetStepId\":null,\"SupplementaryExecutionId\":null,\"Decider\":null}},\"WriterUtcTimestamp\":\"{decisionTime:o}\"}}\n";
-
-            await File.WriteAllTextAsync(logPath, line1 + line2 + line3, TestContext.Current.CancellationToken);
 
             var projection = await RoomProjectionLoader.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
 
-            // Assert step pause moments
+            // Both pauses, in the order the journal carries them.
             Assert.Equal(2, projection.StepPauseMoments.Count);
             var p1 = projection.StepPauseMoments[0];
             Assert.Equal(exec1, p1.ExecutionId);
             Assert.Equal(step1, p1.StepId);
-            Assert.Equal(new DateTimeOffset(pauseTime1), p1.PausedAt);
+            Assert.NotNull(p1.PausedAt);
+            Assert.InRange(p1.PausedAt!.Value, before, DateTimeOffset.UtcNow);
 
             var p2 = projection.StepPauseMoments[1];
             Assert.Equal(exec2, p2.ExecutionId);
             Assert.Equal(step2, p2.StepId);
-            Assert.Equal(new DateTimeOffset(pauseTime2), p2.PausedAt);
+            Assert.True(p2.PausedAt >= p1.PausedAt, "The second pause must not project as earlier than the first.");
 
-            // Assert recorded decision moments
+            // The decision pairs with the execution it was recorded against — exec1's pause, not
+            // exec2's, which is what a transcript needs to place it beside the right step.
             var d1 = Assert.Single(projection.RecordedDecisionMoments);
             Assert.Equal(decId, d1.DecisionId);
             Assert.Equal(exec1, d1.ReferencedExecutionId);
+            Assert.NotEqual(exec2, d1.ReferencedExecutionId);
             Assert.Equal(DecisionType.Resume, d1.DecisionType);
             Assert.Null(d1.TargetStepId);
-            Assert.Equal(new DateTimeOffset(decisionTime), d1.RecordedAt);
+            Assert.NotNull(d1.RecordedAt);
+            Assert.True(d1.RecordedAt >= p2.PausedAt, "The decision must not project as earlier than the pause it answers.");
         }
         finally
         {
@@ -97,7 +97,10 @@ public class RoomProjectionLoaderDecisionTests
             var step1 = new StepId("architect");
             var decId = new DecisionId("dec-1");
 
-            // Line with no WriterUtcTimestamp (older log envelope)
+            // Hand-rolled here, unlike the fact above, because the writer always stamps: a line
+            // without one can only come from a journal older than the stamp, and the point is that
+            // such a room still loads. The reader is asserted directly first so a shape this test
+            // invented — rather than the loader's handling — cannot be what passes.
             var line1 = $"{{\"owner\":\"flow\",\"Event\":{{\"eventType\":\"workflowPaused\",\"ExecutionId\":\"{exec1.Value}\",\"StepId\":\"{step1.Value}\"}}}}\n";
             var line2 = $"{{\"owner\":\"flow\",\"Event\":{{\"eventType\":\"externalDecisionRecorded\",\"DecisionId\":\"{decId.Value}\",\"ReferencedExecutionId\":\"{exec1.Value}\",\"DecisionType\":\"Resume\",\"TargetStepId\":null,\"SupplementaryExecutionId\":null,\"Decider\":null}}}}\n";
 
