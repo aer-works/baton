@@ -242,20 +242,7 @@
               </StackPanel>
             </StackPanel>
           </Border>
-          <TabControl>
-            <TabItem Header="Attempts">
-              <!-- #597: an attempt line now carries the failure reason, so it can run long. Without
-                   an item template these render through the default one as non-wrapping TextBlocks
-                   and the tail is lost — on the plain-language surface a non-expert actually reads,
-                   which matters more than the raw record panel that already wraps. -->
-              <ItemsControl x:Name="AttemptsList" ItemsSource="{Binding AttemptLines}" Margin="0,8,0,0">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate>
-                    <TextBlock Text="{Binding}" TextWrapping="Wrap" />
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-            </TabItem>
+          <TabControl x:Name="StepDetailTabControl">
             <TabItem Header="Outputs">
               <StackPanel Spacing="8" Margin="0,8,0,0">
                 <TextBlock Classes="secondary" Text="Nothing produced yet." IsVisible="{Binding !HasOutputFiles}" />
@@ -295,6 +282,19 @@
                 <TextBox x:Name="ArtifactPreviewBox" IsReadOnly="True" AcceptsReturn="True"
                          TextWrapping="Wrap" Height="140" Classes="mono" />
               </StackPanel>
+            </TabItem>
+            <TabItem Header="Attempts">
+              <!-- #597: an attempt line now carries the failure reason, so it can run long. Without
+                   an item template these render through the default one as non-wrapping TextBlocks
+                   and the tail is lost — on the plain-language surface a non-expert actually reads,
+                   which matters more than the raw record panel that already wraps. -->
+              <ItemsControl x:Name="AttemptsList" ItemsSource="{Binding AttemptLines}" Margin="0,8,0,0">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding}" TextWrapping="Wrap" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
             </TabItem>
             <TabItem Header="Conversation">
               <StackPanel Spacing="8" Margin="0,8,0,0">

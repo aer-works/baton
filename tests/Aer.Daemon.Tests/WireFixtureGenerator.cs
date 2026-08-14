@@ -131,9 +131,12 @@ public static class WireFixtureGenerator
 
         var executions = new List<ExecutionArtifacts>
         {
-            new(new ExecutionId("exec-1"), new StepId("planner"), "agy", ["plan.md"], []),
-            new(new ExecutionId("exec-2"), new StepId("critic"), "agy", ["review.md"], [new ArtifactInputLink("plan.md", new StepId("planner"), new ExecutionId("exec-1"))]),
-            new(new ExecutionId("exec-3"), new StepId("coder"), "agy", ["code.py"], [new ArtifactInputLink("review.md", new StepId("critic"), new ExecutionId("exec-2"))])
+            // #1191: the trailing list is DeclaredOutputs — what each execution was contracted to
+            // produce. Here it matches the files on disk; the two diverge in life (a worker's own
+            // prompt lands in the same directory), which is the whole reason the field exists.
+            new(new ExecutionId("exec-1"), new StepId("planner"), "agy", ["plan.md"], [], ["plan.md"]),
+            new(new ExecutionId("exec-2"), new StepId("critic"), "agy", ["review.md"], [new ArtifactInputLink("plan.md", new StepId("planner"), new ExecutionId("exec-1"))], ["review.md"]),
+            new(new ExecutionId("exec-3"), new StepId("coder"), "agy", ["code.py"], [new ArtifactInputLink("review.md", new StepId("critic"), new ExecutionId("exec-2"))], ["code.py"])
         };
 
         var lineage = new ArtifactLineage(executions);

@@ -141,7 +141,10 @@
         "OutputFiles": [
           "plan.md"
         ],
-        "Inputs": []
+        "Inputs": [],
+        "DeclaredOutputs": [
+          "plan.md"
+        ]
       },
       {
         "ExecutionId": "exec-2",
@@ -156,6 +159,9 @@
             "ProducerStepId": "planner",
             "ProducerExecutionId": "exec-1"
           }
+        ],
+        "DeclaredOutputs": [
+          "review.md"
         ]
       },
       {
@@ -171,6 +177,9 @@
             "ProducerStepId": "critic",
             "ProducerExecutionId": "exec-2"
           }
+        ],
+        "DeclaredOutputs": [
+          "code.py"
         ]
       }
     ]

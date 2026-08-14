@@ -84,7 +84,8 @@ public static class ArtifactLineageProjector
                     .ToList()
                 : (IReadOnlyList<string>)[];
 
-            executions.Add(new ExecutionArtifacts(request.ExecutionId, request.StepId, request.Worker, outputFiles, inputLinks));
+            executions.Add(new ExecutionArtifacts(
+                request.ExecutionId, request.StepId, request.Worker, outputFiles, inputLinks, request.Outputs));
         }
 
         return new ArtifactLineage(executions);

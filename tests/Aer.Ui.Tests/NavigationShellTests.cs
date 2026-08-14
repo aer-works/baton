@@ -25,20 +25,29 @@ public class NavigationShellTests
         WorkflowTemplateVersion: 1,
         Steps:
         [
-            new WorkflowStepDefinition(Architect, "architect", ["goal"], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
+            // #1191: declared outputs are FILE NAMES, extension included — the engine satisfies a
+            // contract with File.Exists on the declared name (OutcomeClassifier), and every built-in
+            // template names them that way ("draft.md", "output.md"). This fixture used to declare
+            // "plan"/"review" while writing plan.md/review.md, a pair no real run can produce: that
+            // step would have been classified Failed for a missing declared output.
+            new WorkflowStepDefinition(Architect, "architect", ["goal.md"], ["plan.md"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
             new WorkflowStepDefinition(
-                Critic, "critic", ["plan"], ["review"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(1),
+                Critic, "critic", ["plan.md"], ["review.md"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(1),
                 PausePoint: new PausePoint(SupersedeTargets: [Architect])),
         ]));
 
-    private static ExecutionRequest MakeRequest(ExecutionId executionId, StepId stepId)
+    // #1191: Outputs is what the execution was contracted to produce — the list MutationInterface
+    // turns into the ProducedOutputs ContractValidator satisfies with File.Exists. A request that
+    // declares none of them is not a shape a real run of a producing step takes, and leaving it
+    // empty here is what let the inbox preview pick the worker's own prompt file.
+    private static ExecutionRequest MakeRequest(ExecutionId executionId, StepId stepId, IReadOnlyList<string>? outputs = null)
         => new(
             executionId,
             new WorkflowId("wf-1"),
             stepId,
             "worker",
             Inputs: [],
-            Outputs: [],
+            Outputs: outputs ?? [],
             Timeout: TimeSpan.FromMinutes(10),
             Environment: [],
             UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
@@ -105,7 +114,7 @@ public class NavigationShellTests
             [
                 new FlowEvent.ExecutionRequestAccepted(MakeRequest(architectExecutionId, Architect)),
                 new FlowEvent.ExecutionSucceeded(architectExecutionId),
-                new FlowEvent.ExecutionRequestAccepted(MakeRequest(criticExecutionId, Critic)),
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(criticExecutionId, Critic, ["review.md"])),
                 new FlowEvent.ExecutionSucceeded(criticExecutionId),
                 new FlowEvent.WorkflowPaused(criticExecutionId, Critic),
             ],
@@ -113,6 +122,11 @@ public class NavigationShellTests
 
         var outputDirectory = Path.Combine(roomDirectory, "artifacts", "execution_c-1");
         Directory.CreateDirectory(outputDirectory);
+        // #1191: TWO undeclared files, and note where they sort. `notes.md` is here so the fact
+        // cannot pass under a "skip prompt.txt by name" implementation: excluding the prompt alone
+        // leaves notes.md first, and only asking what the execution declared reaches review.md.
+        await File.WriteAllTextAsync(Path.Combine(outputDirectory, "notes.md"), "Scratch the worker left behind", cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(outputDirectory, "prompt.txt"), "Undeclared prompt instructions", cancellationToken);
         await File.WriteAllTextAsync(Path.Combine(outputDirectory, "review.md"), reviewContent, cancellationToken);
         return roomDirectory;
     }
@@ -413,6 +427,36 @@ public class NavigationShellTests
             Assert.Equal("Waiting for your review — review.md ready", item.StatusText);
             Assert.True(item.HasPreview);
             Assert.Equal("The plan looks solid overall.", item.PreviewText);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1191: an execution that declared an output and did not write it previews NOTHING. Why the
+    /// obvious fallback is wrong is written on <c>HomeViewModel.BuildInboxItem</c>'s selection;
+    /// this pins that the silence is deliberate, so a later reader does not "fix" it back.
+    /// </summary>
+    [Fact]
+    public async Task A_pause_whose_declared_output_is_missing_previews_nothing_rather_than_whatever_else_is_there()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("unused", TestContext.Current.CancellationToken);
+        try
+        {
+            // EnsureDeleted, not Delete: this is the arrangement, not cleanup — a swallowed failure
+            // here would leave the file in place and the test would pass on the wrong state.
+            FileCleanup.EnsureDeleted(Path.Combine(roomDirectory, "artifacts", "execution_c-1", "review.md"));
+
+            var projection = await RoomProjectionLoader.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
+            var pausedStep = projection.State.Steps.Single(s => s.Status == StepStatus.Paused);
+            var item = HomeViewModel.BuildInboxItem(roomDirectory, projection, pausedStep, _ => Task.CompletedTask);
+
+            Assert.False(item.HasPreview);
+            Assert.Equal(string.Empty, item.PreviewText);
+            // Still an honest item, and it names no file it cannot show.
+            Assert.Equal("Waiting for your review", item.StatusText);
         }
         finally
         {

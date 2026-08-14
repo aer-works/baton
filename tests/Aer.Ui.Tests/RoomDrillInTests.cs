@@ -25,9 +25,12 @@ public class RoomDrillInTests
         WorkflowTemplateVersion: 1,
         Steps:
         [
-            new WorkflowStepDefinition(Architect, "architect", ["goal"], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
+            // #1191: corrected to the file names a real run would carry — NavigationShellTests'
+            // own snapshot fixture records why. This suite hand-writes its ExecutionSucceeded
+            // events, so nothing here would ever have objected.
+            new WorkflowStepDefinition(Architect, "architect", ["goal.md"], ["plan.md"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
             new WorkflowStepDefinition(
-                Critic, "critic", ["plan"], ["review"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(1),
+                Critic, "critic", ["plan.md"], ["review.md"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(1),
                 PausePoint: new PausePoint(SupersedeTargets: [Architect])),
         ]));
 
@@ -84,7 +87,7 @@ public class RoomDrillInTests
 
         var architectOutputDirectory = Path.Combine(roomDirectory, "artifacts", "execution_a-2");
         Directory.CreateDirectory(architectOutputDirectory);
-        await File.WriteAllTextAsync(Path.Combine(architectOutputDirectory, "plan"), "The plan.", cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(architectOutputDirectory, "plan.md"), "The plan.", cancellationToken);
 
         var outputDirectory = Path.Combine(roomDirectory, "artifacts", "execution_c-1");
         Directory.CreateDirectory(outputDirectory);
@@ -133,6 +136,12 @@ public class RoomDrillInTests
             Assert.Equal("critic", selected.StepId);
             Assert.True(selected.IsSelected);
             Assert.Same(Assert.Single(window.ViewModel.PausedSteps), selected.PausedStep);
+
+            // #1191: The evidence panel opens on the evidence ("Outputs" tab).
+            var tabControl = window.StepDetailTabControl;
+            Assert.NotNull(tabControl);
+            var selectedTab = Assert.IsType<TabItem>(tabControl.SelectedItem);
+            Assert.Equal("Outputs", selectedTab.Header);
         }
         finally
         {

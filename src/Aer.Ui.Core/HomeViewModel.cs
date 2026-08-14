@@ -58,19 +58,39 @@ public sealed partial class HomeViewModel : ObservableObject
             var execution = projection.Lineage.Executions.FirstOrDefault(e => e.ExecutionId == executionId);
             if (execution is { OutputFiles.Count: > 0 })
             {
-                previewFileName = execution.OutputFiles[0];
-                var outputDirectory = ArtifactManager.ResolveOutputDirectory(
-                    Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName), executionId);
-                try
+                // #1191: OutputFiles is every file in the execution's output directory, ordinal-sorted
+                // (ArtifactLineageProjector), so prompt.txt — the worker's own instructions, absolute
+                // artifact paths included — sorted ahead of review.md and became the preview. Ask what
+                // the execution was contracted to produce instead (ExecutionArtifacts.DeclaredOutputs
+                // records where that list comes from and why it is the right one). Exact match:
+                // declared outputs carry their extension, and fuzzier matching would let a stray
+                // review.md.bak outrank the real thing.
+                //
+                // When the execution declared outputs and none of them is on disk, this previews
+                // NOTHING rather than falling back to the first file: that case is the bug — an
+                // arbitrary file dressed as the thing you are being asked to approve — and the card
+                // already renders honestly without a preview (see above). Only an execution that
+                // declared nothing at all falls back.
+                previewFileName = execution.DeclaredOutputs.Count > 0
+                    ? execution.OutputFiles.FirstOrDefault(file => execution.DeclaredOutputs.Any(
+                        declared => string.Equals(file, declared, StringComparison.OrdinalIgnoreCase))) ?? string.Empty
+                    : execution.OutputFiles[0];
+
+                if (previewFileName.Length > 0)
                 {
-                    var content = File.ReadAllText(Path.Combine(outputDirectory, previewFileName));
-                    previewText = content.Length > InboxPreviewMaxLength
-                        ? content[..InboxPreviewMaxLength] + "…"
-                        : content;
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    previewText = string.Empty;
+                    var outputDirectory = ArtifactManager.ResolveOutputDirectory(
+                        Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName), executionId);
+                    try
+                    {
+                        var content = File.ReadAllText(Path.Combine(outputDirectory, previewFileName));
+                        previewText = content.Length > InboxPreviewMaxLength
+                            ? content[..InboxPreviewMaxLength] + "…"
+                            : content;
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        previewText = string.Empty;
+                    }
                 }
             }
         }
