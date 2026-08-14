@@ -332,6 +332,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
             gate.IsEnabled = !value;
         }
 
+        if (Chat.PendingDecision is { } decisionCard)
+        {
+            decisionCard.IsEnabled = !value;
+        }
+
         foreach (var execution in RunningExecutions)
         {
             execution.UpdateEnabled(value);

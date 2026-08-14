@@ -1,5 +1,7 @@
 using Aer.Adapters;
+using Aer.Flow.Domain;
 using Aer.Flow.Projection;
+using Aer.Ui.Core;
 
 namespace Aer.Ui.Tests;
 
@@ -783,5 +785,129 @@ public class ChatViewModelTests
         Assert.True(viewModel.Messages[0].IsSystem);
         Assert.False(viewModel.Messages[0].IsDormancy);
         Assert.True(viewModel.Messages[1].IsDormancy);
+    }
+
+    [Fact]
+    public void SurfacePendingPermission_LiveDecisionCard_AppearsAndClearsAndPreservesInstance()
+    {
+        var viewModel = new ChatViewModel();
+        var stepId = new StepId("review_step");
+        var execId = new ExecutionId("exec-100");
+        DecideDelegate decide = (_, _, _, _, _, _, _) => Task.CompletedTask;
+
+        var pausedStep1 = new PausedStepViewModel(stepId, execId, [], decide);
+
+        // Card appears when carrying a paused step
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, pausedStep1);
+
+        Assert.True(viewModel.HasPendingDecision);
+        Assert.Same(pausedStep1, viewModel.PendingDecision);
+        Assert.Equal("review_step (exec-100)", viewModel.PendingDecision!.Label);
+
+        // Same decision (same StepId and ExecutionId) preserves existing VM instance
+        var pausedStep2 = new PausedStepViewModel(stepId, execId, [], decide);
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, pausedStep2);
+
+        Assert.True(viewModel.HasPendingDecision);
+        Assert.Same(pausedStep1, viewModel.PendingDecision);
+
+        // Clears when subsequent projection does not carry a paused step
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, null);
+
+        Assert.False(viewModel.HasPendingDecision);
+        Assert.Null(viewModel.PendingDecision);
+    }
+
+    [Fact]
+    public void SurfacePendingPermission_AnsweredDecisionRow_LandsInRightInterleavedPosition()
+    {
+        var viewModel = new ChatViewModel();
+        var t1 = new DateTimeOffset(2026, 8, 13, 10, 0, 0, TimeSpan.Zero);
+        var t2 = new DateTimeOffset(2026, 8, 13, 10, 5, 0, TimeSpan.Zero);
+        var t3 = new DateTimeOffset(2026, 8, 13, 10, 10, 0, TimeSpan.Zero);
+        var t4 = new DateTimeOffset(2026, 8, 13, 10, 15, 0, TimeSpan.Zero);
+
+        var turn1 = new SessionTurn(1, "claude", "Human msg 1", null, t1, false, false);
+        var turn2 = new SessionTurn(2, "claude", "Human msg 2", null, t4, false, false);
+        var metadata = MetadataWithTurns(turn1, turn2);
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        var decider = DeciderInfo.DefaultHuman;
+        var decisionMoment = new RecordedDecisionMoment(
+            new DecisionId("dec-1"),
+            new ExecutionId("exec-1"),
+            DecisionType.Supersede,
+            new StepId("target_step"),
+            null,
+            decider,
+            t2);
+
+        var permissionAnswer = new PermissionAnswer(
+            "req-1", "Bash", "shell", "AllowOnce", null, "operator", t3, WasRevoked: false);
+
+        viewModel.SurfacePendingPermission(
+            null,
+            [permissionAnswer],
+            (_, _, _) => Task.CompletedTask,
+            null,
+            false,
+            null,
+            [decisionMoment],
+            null);
+
+        // Assert full SEQUENCE of messages:
+        // 0: Human msg 1 (Turn 1) at t1
+        // 1: Sent back to target_step (Decision moment) at t2
+        // 2: Allowed once — Bash (Permission answer) at t3
+        // 3: Human msg 2 (Turn 2) at t4
+        Assert.Equal(4, viewModel.Messages.Count);
+        Assert.Equal("Human msg 1", viewModel.Messages[0].Text);
+        Assert.Equal("Sent back to target_step", viewModel.Messages[1].Text);
+        Assert.True(viewModel.Messages[1].IsSystem);
+        Assert.Equal(t2, viewModel.Messages[1].Timestamp);
+        Assert.Equal("Allowed once — Bash", viewModel.Messages[2].Text);
+        Assert.True(viewModel.Messages[2].IsSystem);
+        Assert.Equal(t3, viewModel.Messages[2].Timestamp);
+        Assert.Equal("Human msg 2", viewModel.Messages[3].Text);
+    }
+
+    [Fact]
+    public void SurfacePendingPermission_NullTimestampDecisionMoment_RendersBeforeFirstStampedEntry()
+    {
+        var viewModel = new ChatViewModel();
+        var t1 = new DateTimeOffset(2026, 8, 13, 10, 0, 0, TimeSpan.Zero);
+
+        var turn1 = new SessionTurn(1, "claude", "Human msg 1", null, t1, false, false);
+        var metadata = MetadataWithTurns(turn1);
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        var decider = DeciderInfo.DefaultHuman;
+        var nullTimestampDecision = new RecordedDecisionMoment(
+            new DecisionId("dec-0"),
+            new ExecutionId("exec-0"),
+            DecisionType.Resume,
+            null,
+            null,
+            decider,
+            null);
+
+        viewModel.SurfacePendingPermission(
+            null,
+            null,
+            (_, _, _) => Task.CompletedTask,
+            null,
+            false,
+            null,
+            [nullTimestampDecision],
+            null);
+
+        Assert.Equal(2, viewModel.Messages.Count);
+        Assert.Equal("Approved", viewModel.Messages[0].Text);
+        Assert.True(viewModel.Messages[0].IsSystem);
+        Assert.Equal(DateTimeOffset.MinValue, viewModel.Messages[0].Timestamp);
+        Assert.Equal("Human msg 1", viewModel.Messages[1].Text);
     }
 }
