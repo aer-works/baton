@@ -116,23 +116,26 @@ public class MainWindowDagTests
         }
     }
 
+    /// <summary>
+    /// A template's graph draws with no status overlay: nothing has executed, so no node carries a
+    /// status, an icon, or a tint, and the pause point is a label rather than a state.
+    /// <para>
+    /// #1222 changed the vehicle, not the claim. This used to reach the template rendering through
+    /// <c>OpenAsync</c> on a file path, which drew a full-width graph in the room shell; that door is
+    /// closed and Author is the one that remains. The rendering itself is untouched — both routes
+    /// call the same <c>RenderDag(layout, canvas, statusByStepId: null)</c>, so what is pinned here
+    /// is exactly what was pinned before, on the canvas that still exists.
+    /// </para>
+    /// </summary>
     [AvaloniaFact]
     public async Task Renders_a_raw_templates_dag_with_no_status_overlay_and_marks_the_pause_point()
     {
         var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "diamond-workflow-with-pause.json");
 
         var window = new MainWindow();
-        await window.OpenAsync(fixturePath, TestContext.Current.CancellationToken);
+        await window.OpenTemplateInEditorAsync(fixturePath, TestContext.Current.CancellationToken);
 
-        var statusText = window.FindViewControl<TextBlock>("StatusText")!;
-        Assert.Contains("Template", statusText.Text);
-        Assert.Contains("diamond-with-pause", statusText.Text);
-
-        // A template is not a task: nothing per-task renders alongside the graph.
-        var stepsPanel = window.FindViewControl<StackPanel>("StepsPanel")!;
-        Assert.Empty(stepsPanel.Children);
-
-        var dagCanvas = window.FindViewControl<Canvas>("DagCanvas")!;
+        var dagCanvas = window.TemplateEditorDagCanvas;
         var nodes = dagCanvas.Children.OfType<Border>().ToList();
         var lines = dagCanvas.Children.OfType<Line>().ToList();
 

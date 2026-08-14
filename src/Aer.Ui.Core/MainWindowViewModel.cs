@@ -23,21 +23,19 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// <summary>
     /// Which shell section is active (M19 Phase 2, #187) — pure presentation state (like a text
     /// box's contents, UI spec §4), never a projected fact. Opening a room navigates to
-    /// <see cref="ShellSection.Task"/>; everything else is the user's own navigation.
+    /// <see cref="ShellSection.Chat"/> — the only section a room renders in since #1222 — and
+    /// everything else is the user's own navigation.
     /// </summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsHomeVisible))]
-    [NotifyPropertyChangedFor(nameof(IsRoomVisible))]
     [NotifyPropertyChangedFor(nameof(IsAuthorVisible))]
     [NotifyPropertyChangedFor(nameof(IsSettingsVisible))]
     [NotifyPropertyChangedFor(nameof(IsChatVisible))]
     [NotifyPropertyChangedFor(nameof(IsRoomsVisible))]
-    [NotifyPropertyChangedFor(nameof(IsDetailVisible))]
     [NotifyPropertyChangedFor(nameof(IsRoomsFrontDoorSelected))]
     private ShellSection currentSection = ShellSection.Home;
 
     public bool IsHomeVisible => CurrentSection == ShellSection.Home;
-    public bool IsRoomVisible => CurrentSection == ShellSection.Task;
     public bool IsAuthorVisible => CurrentSection == ShellSection.Author;
     public bool IsSettingsVisible => CurrentSection == ShellSection.Settings;
     public bool IsChatVisible => CurrentSection == ShellSection.Chat;
@@ -61,22 +59,19 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public bool IsThemeSystem => ThemePreference == ThemeNames.System;
 
     /// <summary>
-    /// Whether the shell is showing an opened record, whichever shape it has (#336). The switcher
-    /// collapsed six rail destinations to four by making "the thing you have open" *one* destination:
-    /// <see cref="ShellSection.Task"/> and <see cref="ShellSection.Chat"/> are no longer two places a
-    /// user navigates between, they are two renderings of one place, chosen by whether the selected
-    /// record is a session or a workflow. Both enum members survive because the two panes are still
-    /// genuinely different views; what went away is the user having to know which one they wanted.
-    /// </summary>
-    public bool IsDetailVisible => IsRoomVisible || IsChatVisible;
-
-    /// <summary>
     /// Whether the single <c>▤ Rooms</c> rail button (#1071) reads as active. The rail collapsed Home
     /// and "the record you have open" into one front-door button, so it is selected whenever the
     /// content pane is showing either the first-run/empty surface (<see cref="IsHomeVisible"/>) or an
-    /// open room (<see cref="IsDetailVisible"/>) — the two states that live behind the one glyph.
+    /// open room — the two states that live behind the one glyph.
+    /// <para>
+    /// "An open room" is now simply <see cref="IsChatVisible"/>. #336 collapsed six rail destinations
+    /// to four by making "the thing you have open" one destination while two renderings still sat
+    /// behind it, and it needed an <c>IsDetailVisible</c> to say so; #1222 finished the job by
+    /// leaving one rendering, so the alias would now be a second name for a fact that already has
+    /// one.
+    /// </para>
     /// </summary>
-    public bool IsRoomsFrontDoorSelected => IsHomeVisible || IsDetailVisible;
+    public bool IsRoomsFrontDoorSelected => IsHomeVisible || IsChatVisible;
 
     /// <summary>The Enable Remote Access view's state (M21 Phase 3, issue #234) — see <see cref="RemoteViewModel"/>.</summary>
     public RemoteViewModel Remote { get; } = new();

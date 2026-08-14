@@ -81,9 +81,6 @@ public sealed partial class RoomClient
     /// <summary>The outcome one load produces: exactly one of the two is non-null (§3's honest-error rule — an invalid directory is a rendered message, never a crash).</summary>
     public sealed record LoadOutcome(RoomProjection? Projection, string? ErrorMessage);
 
-    /// <summary>The outcome one template load produces — <see cref="LoadOutcome"/>'s counterpart for a raw, not-yet-instantiated template file (M14 Phase 3).</summary>
-    public sealed record TemplateLoadOutcome(Aer.Flow.Domain.WorkflowDefinition? Definition, string? ErrorMessage);
-
     /// <summary>Null on success; the in-window message otherwise (the M14 Phase 1 precedent: a GUI has no stderr/exit-code convention to fail into).</summary>
     public sealed record MutationOutcome(string? ErrorMessage);
 
@@ -492,34 +489,6 @@ public sealed partial class RoomClient
             LastWorkflowStatus = null;
             LastSnapshot = null;
             return new LoadOutcome(null, ex.Message);
-        }
-    }
-
-    /// <summary>
-    /// Loads a raw template file and clears the mutation surfaces.
-    /// </summary>
-    public async Task<TemplateLoadOutcome> LoadTemplateAsync(string templateFilePath, CancellationToken cancellationToken = default)
-    {
-        ViewModel.PausedSteps.Clear();
-        ViewModel.DecisionStatusText = string.Empty;
-        ViewModel.RunningExecutions.Clear();
-        ViewModel.CancelStatusText = string.Empty;
-
-        try
-        {
-            var definition = await TemplateProjectionLoader.LoadAsync(templateFilePath, cancellationToken).ConfigureAwait(true);
-
-            LastLoadSucceeded = true;
-            LastWorkflowStatus = null;
-            LastSnapshot = null;
-            return new TemplateLoadOutcome(definition, null);
-        }
-        catch (AerFlowException ex)
-        {
-            LastLoadSucceeded = false;
-            LastWorkflowStatus = null;
-            LastSnapshot = null;
-            return new TemplateLoadOutcome(null, ex.Message);
         }
     }
 
