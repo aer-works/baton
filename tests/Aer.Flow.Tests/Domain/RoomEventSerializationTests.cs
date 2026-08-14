@@ -10,16 +10,27 @@ public class RoomEventSerializationTests
     private static readonly HeldWorkRef LaneRef = new("lanes/lane-1");
     private const string CitedSubject = "exec-lane-1";
 
+    /// <summary>
+    /// A fixed instant, not <see cref="DateTimeOffset.UtcNow"/> (#1206). xunit builds a theory case's
+    /// NAME out of its arguments, so a clock reading in the data meant every run invented new test
+    /// names for the same cases — nothing downstream could follow one across runs, and a genuine
+    /// flake in one would have looked like a brand-new test each time rather than a recurrence.
+    /// Measured by flake-watch's first run: 81 cases here and in the two sibling round-trip classes,
+    /// each seen in exactly one of three passes. Nothing in these round-trips reads the value, only
+    /// carries it, so a constant costs the coverage nothing.
+    /// </summary>
+    private static readonly DateTimeOffset FixedInstant = new(2026, 8, 14, 12, 0, 0, TimeSpan.Zero);
+
     public static TheoryData<RoomEvent> AllRoomEventVariants() =>
     [
         new RoomEvent.HeldWorkDispatched(LaneRef, "shape-flow", TimeSpan.FromMinutes(10), "operator-alice"),
         new RoomEvent.HeldWorkEscalated(LaneRef, "operator-bob"),
         new RoomEvent.HeldWorkResolved(LaneRef, new HeldWorkCitation(CitedSubject, "executionSucceeded", 1)),
-        new RoomEvent.TurnHostDormancyEntered(3, DateTimeOffset.UtcNow),
-        new RoomEvent.TurnHostDormancyCleared("operator", DateTimeOffset.UtcNow),
-        new RoomEvent.RuntimePermissionAsked("req-1", new ExecutionId("ex-1"), new StepId("st-1"), "w-1", "claude", "corr-1", "ReadFiles", "{}", "ReadFiles", DateTimeOffset.UtcNow),
-        new RoomEvent.RuntimePermissionAnswered("req-1", "AllowOnce", "{}", "ok", "op-1", DateTimeOffset.UtcNow),
-        new RoomEvent.RuntimePermissionRevoked("req-1", "timeout", DateTimeOffset.UtcNow),
+        new RoomEvent.TurnHostDormancyEntered(3, FixedInstant),
+        new RoomEvent.TurnHostDormancyCleared("operator", FixedInstant),
+        new RoomEvent.RuntimePermissionAsked("req-1", new ExecutionId("ex-1"), new StepId("st-1"), "w-1", "claude", "corr-1", "ReadFiles", "{}", "ReadFiles", FixedInstant),
+        new RoomEvent.RuntimePermissionAnswered("req-1", "AllowOnce", "{}", "ok", "op-1", FixedInstant),
+        new RoomEvent.RuntimePermissionRevoked("req-1", "timeout", FixedInstant),
     ];
 
     [Theory]
