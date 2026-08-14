@@ -123,7 +123,7 @@ public partial class MainWindow : Window
     internal Button RefreshButton => HomeViewControl.RefreshButton;
 
     internal Button RunButton => RoomViewControl.RunButton;
-    internal Button StopButton => RoomViewControl.StopButton;
+    internal Button StopButton => ChatViewControl.StopButton;
     internal TextBlock RunStatusText => RoomViewControl.RunStatusText;
     internal TextBlock StatusText => RoomViewControl.StatusText;
     internal StackPanel StepsPanel => RoomViewControl.StepsPanel;

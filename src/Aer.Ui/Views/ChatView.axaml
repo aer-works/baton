@@ -26,6 +26,17 @@
       <ToggleButton x:Name="ChatShapeToggle" VerticalAlignment="Center" Content="Shape"
                     IsVisible="{Binding Chat.IsPipelineRoom}"
                     IsChecked="{Binding Chat.IsShapePanelOpen}" />
+      <!-- #1215: "Stop is always present and always distinct from a gate"
+           (docs/design/03-interaction-depth.md). Slice 3 moved RoomView into the collapsible Shape
+           panel and Stop went with it, so Stop existed only while a panel that is closed by default
+           was open. Present-and-disabled rather than hidden is what "always present" means here:
+           a person looking for the brake must find it in the same place whether or not anything is
+           running. Enablement mirrors the binding it had in RoomView, unchanged. -->
+      <Button x:Name="StopButton" VerticalAlignment="Center"
+              IsEnabled="{Binding IsMutationInFlight}"
+              ToolTip.Tip="Cancel every execution this window currently has in flight.">
+        <AccessText Text="_Stop" />
+      </Button>
     </StackPanel>
 
     <!-- Persistent mode indicator (#286): mode buttons live in the collapsed Commands panel below,

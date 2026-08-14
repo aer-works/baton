@@ -325,6 +325,42 @@ public class NavigationShellTests
     }
 
     /// <summary>
+    /// #1215: "Stop is always present and always distinct from a gate"
+    /// (docs/design/03-interaction-depth.md). Slice 3 put Stop inside the Shape panel, which is closed
+    /// by default, so the brake was unreachable on the surface a person actually sits on. This pins
+    /// both halves — Stop is in the room header, and it is <em>not</em> also in the shape panel, since
+    /// two Stops would be two surfaces for one action, which is the thing slice 3 exists to end.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Stop_is_in_the_room_header_and_not_in_the_collapsible_shape_panel()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            // The default state a person lands in: transcript showing, shape panel closed.
+            Assert.False(window.ViewModel.Chat.IsShapePanelOpen);
+            Assert.True(window.IsMainRegionVisible);
+            Assert.False(window.IsShapeRegionVisible);
+
+            Assert.NotNull(window.ChatViewControl.FindControl<Button>("StopButton"));
+            Assert.Null(window.RoomViewControl.FindControl<Button>("StopButton"));
+
+            // Present, not merely reachable: disabled with nothing in flight, enabled the moment
+            // there is — the same binding it carried in the header it came from.
+            Assert.False(window.StopButton.IsEnabled);
+            window.ViewModel.IsMutationInFlight = true;
+            Assert.True(window.StopButton.IsEnabled);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
     /// The shell's three layout states (#1196 slice 3). Driving the built app is what verifies this
     /// looks right; what this pins is that each state still puts the width on the column whose
     /// content is actually visible, which is the part a later edit can silently invert.

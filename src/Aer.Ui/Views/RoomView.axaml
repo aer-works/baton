@@ -30,9 +30,8 @@
                 ToolTip.Tip="{Binding RunButtonToolTipText}">
           <AccessText Text="R_un" />
         </Button>
-        <Button x:Name="StopButton" IsEnabled="{Binding IsMutationInFlight}" ToolTip.Tip="Cancel every execution this window currently has in flight.">
-          <AccessText Text="_Stop" />
-        </Button>
+        <!-- Stop moved to the room header in ChatView (#1215) — see its comment there. One Stop,
+             in the place a person looks for it, rather than one per surface. -->
       </StackPanel>
       <TextBlock x:Name="RunStatusText" Text="{Binding RunStatusText}" />
 
