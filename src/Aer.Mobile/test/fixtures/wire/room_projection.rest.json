@@ -219,8 +219,24 @@
       "timestamp": "2026-08-03T15:00:00\u002B00:00"
     }
   ],
-  "stepPauseMoments": [],
-  "recordedDecisionMoments": [],
+  "stepPauseMoments": [
+    {
+      "executionId": "exec-2",
+      "stepId": "critic",
+      "pausedAt": "2026-08-03T15:30:00\u002B00:00"
+    }
+  ],
+  "recordedDecisionMoments": [
+    {
+      "decisionId": "dec-1",
+      "referencedExecutionId": "exec-2",
+      "decisionType": "Resume",
+      "decider": {
+        "kind": "Human"
+      },
+      "recordedAt": "2026-08-03T15:45:00\u002B00:00"
+    }
+  ],
   "isDormant": false,
   "directoryPath": "C:/tasks/foo",
   "sessionId": "session-123",
