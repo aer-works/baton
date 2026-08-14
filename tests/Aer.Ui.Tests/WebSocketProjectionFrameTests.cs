@@ -89,6 +89,51 @@ public class WebSocketProjectionFrameTests
         Assert.Empty(defaulted.DormancyTransitions);
     }
 
+    [Fact]
+    public void ToProjection_carries_the_step_pause_moments_from_the_frame_into_the_projection()
+    {
+        var moments = new List<StepPauseMoment>
+        {
+            new(new Aer.Flow.Domain.ExecutionId("exec-1"), new Aer.Flow.Domain.StepId("step-1"), DateTimeOffset.UnixEpoch)
+        };
+
+        var frame = new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null, null, null, moments);
+        var projection = RoomClient.ToProjection(frame);
+
+        Assert.Same(moments, projection.StepPauseMoments);
+
+        var defaulted = RoomClient.ToProjection(
+            new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null));
+        Assert.NotNull(defaulted.StepPauseMoments);
+        Assert.Empty(defaulted.StepPauseMoments);
+    }
+
+    [Fact]
+    public void ToProjection_carries_the_recorded_decision_moments_from_the_frame_into_the_projection()
+    {
+        var moments = new List<RecordedDecisionMoment>
+        {
+            new(
+                new Aer.Flow.Domain.DecisionId("dec-1"),
+                new Aer.Flow.Domain.ExecutionId("exec-1"),
+                Aer.Flow.Domain.DecisionType.Resume,
+                null,
+                null,
+                Aer.Flow.Domain.DeciderInfo.DefaultHuman,
+                DateTimeOffset.UnixEpoch)
+        };
+
+        var frame = new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null, null, null, null, moments);
+        var projection = RoomClient.ToProjection(frame);
+
+        Assert.Same(moments, projection.RecordedDecisionMoments);
+
+        var defaulted = RoomClient.ToProjection(
+            new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null));
+        Assert.NotNull(defaulted.RecordedDecisionMoments);
+        Assert.Empty(defaulted.RecordedDecisionMoments);
+    }
+
     // The record's PRIMARY constructor. A record also emits a copy constructor (one parameter), so the
     // longest-parameter ctor is the declared one.
     private static ParameterInfo[] Primary(Type type) =>

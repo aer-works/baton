@@ -34,9 +34,13 @@ public sealed record RoomProjection(
     WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage,
     PendingPermission? PendingPermission = null,
     IReadOnlyList<PermissionAnswer>? PermissionAnswers = null,
-    IReadOnlyList<DormancyTransition>? DormancyTransitions = null)
+    IReadOnlyList<DormancyTransition>? DormancyTransitions = null,
+    IReadOnlyList<StepPauseMoment>? StepPauseMoments = null,
+    IReadOnlyList<RecordedDecisionMoment>? RecordedDecisionMoments = null)
 {
     public IReadOnlyList<PermissionAnswer> PermissionAnswers { get; init; } = PermissionAnswers ?? [];
     public IReadOnlyList<DormancyTransition> DormancyTransitions { get; init; } = DormancyTransitions ?? [];
+    public IReadOnlyList<StepPauseMoment> StepPauseMoments { get; init; } = StepPauseMoments ?? [];
+    public IReadOnlyList<RecordedDecisionMoment> RecordedDecisionMoments { get; init; } = RecordedDecisionMoments ?? [];
     public bool IsDormant => DormancyTransitions.Count > 0 && DormancyTransitions[^1].IsEntered;
 }
