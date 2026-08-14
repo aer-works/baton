@@ -381,9 +381,18 @@ public sealed partial class ChatViewModel : ObservableObject
         // seeing what came before, and a moment that cannot be placed cannot be shown to be after it.
         // The sibling lists never face this; PermissionAnswer.AnsweredAt and DormancyTransition.Timestamp
         // are both non-nullable.
-        var decisions = _answersClearedThrough is { } clearedThroughDecisions
-            ? _recordedDecisionMoments.Where(d => (d.RecordedAt ?? DateTimeOffset.MinValue) > clearedThroughDecisions).ToList()
-            : _recordedDecisionMoments;
+        //
+        // Sorted here rather than assumed: the merge below only ever peeks the head of each stream,
+        // so an out-of-order list renders out of order silently. RoomProjectionLoader appends these
+        // in journal read order, which is ascending today only because a null timestamp can come
+        // only from a journal written before #1197 — the oldest lines in the file. That is a fact
+        // about history, not a guarantee the type carries (LogEntry's writer timestamp is an
+        // ordinary nullable), so the ordering the merge needs is established here instead of hoped for.
+        var decisions = (_answersClearedThrough is { } clearedThroughDecisions
+                ? _recordedDecisionMoments.Where(d => (d.RecordedAt ?? DateTimeOffset.MinValue) > clearedThroughDecisions)
+                : _recordedDecisionMoments)
+            .OrderBy(d => d.RecordedAt ?? DateTimeOffset.MinValue)
+            .ToList();
 
         var latestEnteredTransition = _isDormant ? transitions.LastOrDefault(t => t.IsEntered) : null;
 
@@ -399,25 +408,33 @@ public sealed partial class ChatViewModel : ObservableObject
             var transTs = transIdx < transitions.Count ? transitions[transIdx].Timestamp : DateTimeOffset.MaxValue;
             var decTs = decIdx < decisions.Count ? (decisions[decIdx].RecordedAt ?? DateTimeOffset.MinValue) : DateTimeOffset.MaxValue;
 
-            if (decTs <= turnTs && decTs <= ansTs && decTs <= transTs)
-            {
-                AddRecordedDecisionMessage(decisions[decIdx]);
-                decIdx++;
-            }
-            else if (turnTs <= ansTs && turnTs <= transTs)
+            // The decision arm goes LAST, and every arm above it now also outranks decTs. On an exact
+            // tie this repo already had a precedence — turn, then answer, then transition — and
+            // putting decisions first would have quietly reversed it against turns, a new rule
+            // nothing had asked for. Appending instead leaves every pre-existing pair rendering
+            // exactly as before (with no decisions in play decTs is MaxValue, so the added clauses
+            // are vacuously true) and pins the new one: a decision recorded at the same instant as a
+            // turn renders after it. Pinned by
+            // ChatViewModelTests.SurfacePendingPermission_DecisionAndTurnAtTheSameInstant_TurnRendersFirst.
+            if (turnTs <= ansTs && turnTs <= transTs && turnTs <= decTs)
             {
                 AddTurnMessages(turns[turnIdx]);
                 turnIdx++;
             }
-            else if (ansTs <= transTs)
+            else if (ansTs <= transTs && ansTs <= decTs)
             {
                 AddAnswerMessage(answers[ansIdx]);
                 ansIdx++;
             }
-            else
+            else if (transTs <= decTs)
             {
                 AddDormancyMessage(transitions[transIdx], isLatestEntered: _isDormant && transitions[transIdx] == latestEnteredTransition);
                 transIdx++;
+            }
+            else
+            {
+                AddRecordedDecisionMessage(decisions[decIdx]);
+                decIdx++;
             }
         }
 

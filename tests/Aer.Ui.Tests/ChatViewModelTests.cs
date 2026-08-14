@@ -839,6 +839,99 @@ public class ChatViewModelTests
         Assert.Empty(viewModel.PendingDecisions);
     }
 
+    /// <summary>
+    /// A step paused, answered, and paused again on a retry keeps the same StepId with a new
+    /// ExecutionId. The reconcile keys on both, so the second pause is a different card — and this
+    /// fact is what stops that second half of the key being dropped as redundant: every other
+    /// reconcile fact here uses two distinct steps and would pass on StepId alone.
+    /// </summary>
+    [Fact]
+    public void SurfacePendingPermission_SameStepPausedOnANewExecution_IsADifferentCard()
+    {
+        var viewModel = new ChatViewModel();
+        var stepId = new StepId("review_step");
+        DecideDelegate decide = (_, _, _, _, _, _, _) => Task.CompletedTask;
+
+        var firstAttempt = new PausedStepViewModel(stepId, new ExecutionId("exec-1"), [], decide);
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, [firstAttempt]);
+
+        Assert.Same(firstAttempt, Assert.Single(viewModel.PendingDecisions));
+
+        var retryAttempt = new PausedStepViewModel(stepId, new ExecutionId("exec-2"), [], decide);
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, null, [retryAttempt]);
+
+        Assert.Same(retryAttempt, Assert.Single(viewModel.PendingDecisions));
+    }
+
+    /// <summary>
+    /// The transcript already had a tie-break — turn, then answer, then transition — and adding a
+    /// fourth stream is a chance to reverse it without noticing. A decision recorded at the very
+    /// instant of a turn renders after it.
+    /// </summary>
+    [Fact]
+    public void SurfacePendingPermission_DecisionAndTurnAtTheSameInstant_TurnRendersFirst()
+    {
+        var viewModel = new ChatViewModel();
+        var instant = new DateTimeOffset(2026, 8, 13, 10, 0, 0, TimeSpan.Zero);
+
+        viewModel.LoadFromMetadata(
+            MetadataWithTurns(new SessionTurn(1, "claude", "Human msg 1", null, instant, false, false)),
+            "/tmp/sess-1");
+
+        var decisionMoment = new RecordedDecisionMoment(
+            new DecisionId("dec-1"),
+            new ExecutionId("exec-1"),
+            DecisionType.Resume,
+            null,
+            null,
+            DeciderInfo.DefaultHuman,
+            instant);
+
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, [decisionMoment], null);
+
+        Assert.Equal(2, viewModel.Messages.Count);
+        Assert.Equal("Human msg 1", viewModel.Messages[0].Text);
+        Assert.Equal("Approved", viewModel.Messages[1].Text);
+    }
+
+    /// <summary>
+    /// The merge peeks only the head of each stream, so it needs its decision list ascending. The
+    /// loader appends in journal order, which is not the same promise — this hands it a list whose
+    /// unknown-time moment arrives last and still expects it rendered first.
+    /// </summary>
+    [Fact]
+    public void SurfacePendingPermission_DecisionMomentsOutOfOrder_StillRenderChronologically()
+    {
+        var viewModel = new ChatViewModel();
+        var t1 = new DateTimeOffset(2026, 8, 13, 10, 0, 0, TimeSpan.Zero);
+        var t2 = new DateTimeOffset(2026, 8, 13, 10, 5, 0, TimeSpan.Zero);
+
+        // A session with no turns, but a session: the transcript renders nothing at all without
+        // metadata, which is how every stream here behaves and is not this slice's to change.
+        viewModel.LoadFromMetadata(MetadataWithTurns(), "/tmp/sess-1");
+
+        var later = new RecordedDecisionMoment(
+            new DecisionId("dec-late"), new ExecutionId("exec-1"), DecisionType.Supersede,
+            new StepId("target_step"), null, DeciderInfo.DefaultHuman, t2);
+        var earlier = new RecordedDecisionMoment(
+            new DecisionId("dec-early"), new ExecutionId("exec-0"), DecisionType.Resume,
+            null, null, DeciderInfo.DefaultHuman, t1);
+        var unknownTime = new RecordedDecisionMoment(
+            new DecisionId("dec-unknown"), new ExecutionId("exec-x"), DecisionType.Reject,
+            null, null, DeciderInfo.DefaultHuman, null);
+
+        viewModel.SurfacePendingPermission(
+            null, null, (_, _, _) => Task.CompletedTask, null, false, null, [later, earlier, unknownTime], null);
+
+        Assert.Equal(3, viewModel.Messages.Count);
+        Assert.Equal("Rejected", viewModel.Messages[0].Text);
+        Assert.Equal("Approved", viewModel.Messages[1].Text);
+        Assert.Equal("Sent back to target_step", viewModel.Messages[2].Text);
+    }
+
     [Fact]
     public void SurfacePendingPermission_AnsweredDecisionRow_LandsInRightInterleavedPosition()
     {
