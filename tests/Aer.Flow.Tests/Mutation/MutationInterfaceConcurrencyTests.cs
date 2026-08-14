@@ -26,6 +26,13 @@ public class MutationInterfaceConcurrencyTests
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan NoFurtherDispatchWindow = TimeSpan.FromMilliseconds(300);
 
+    /// <summary>
+    /// A ceiling, not a pace. Every dispatch these facts wait for is event-driven — no step here
+    /// carries a wall-clock backoff (#1202) — so a wait that reaches this has stopped, not slowed,
+    /// and the ceiling only keeps a regression from hanging the suite.
+    /// </summary>
+    private static readonly TimeSpan DispatchCeiling = TimeSpan.FromSeconds(60);
+
     private static readonly CoreDispatchResult Succeeded = new(0, CoreExitReason.Natural);
     private static readonly CoreDispatchResult Failed = new(1, CoreExitReason.Natural);
 
@@ -98,7 +105,15 @@ public class MutationInterfaceConcurrencyTests
         var flaky = new StepId("flaky");
         var snapshot = MakeSnapshot(
             Step(slow, dependsOn: [], maxAttempts: 1),
-            Step(flaky, dependsOn: [], maxAttempts: 2));
+            // #1202: BackoffPolicy.None, not the default Steady. What this fact is about is the
+            // SCHEDULER — that an unrelated in-flight step does not gate a retry — and backoff
+            // pacing has its own tests. Under the default the retry sits behind a real 0.5-1.0s
+            // wall-clock timer (Steady: Initial 1s, Jitter Half), which is the only clock this test
+            // ever waited on, and a timer is exactly what a fully-parallel suite on a loaded runner
+            // cannot promise to fire on time. It went red on ubuntu CI having waited the full 60s
+            // ceiling for a dispatch that should arrive in under one, and passed on a plain re-run.
+            // Zero backoff removes the wait entirely: the retry now dispatches on re-projection.
+            Step(flaky, dependsOn: [], maxAttempts: 2, backoff: BackoffPolicy.None));
 
         var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
         try
@@ -197,8 +212,8 @@ public class MutationInterfaceConcurrencyTests
         }
     }
 
-    private static WorkflowStepDefinition Step(StepId stepId, IReadOnlyList<StepId> dependsOn, int maxAttempts = 1) =>
-        new(stepId, "stub-worker", [], [], dependsOn, new RetryPolicy(maxAttempts));
+    private static WorkflowStepDefinition Step(StepId stepId, IReadOnlyList<StepId> dependsOn, int maxAttempts = 1, BackoffPolicy? backoff = null) =>
+        new(stepId, "stub-worker", [], [], dependsOn, backoff is null ? new RetryPolicy(maxAttempts) : new RetryPolicy(maxAttempts, backoff));
 
     private static WorkflowDefinitionSnapshot MakeSnapshot(params WorkflowStepDefinition[] steps) => new(
         new WorkflowDefinitionSnapshotId($"snapshot-{Guid.NewGuid():N}"),
@@ -218,8 +233,20 @@ public class MutationInterfaceConcurrencyTests
     private static async Task<StepId> ReadNextDispatchAsync(StubCoreDispatcher stub)
     {
         var readTask = stub.DispatchStarted.ReadAsync().AsTask();
-        var completed = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(60)));
-        Assert.Same(readTask, completed);
+        var completed = await Task.WhenAny(readTask, Task.Delay(DispatchCeiling));
+
+        // Not Assert.Same: its message ("Values are not the same instance", two Task ToStrings) says
+        // nothing about what went wrong, which is what made #1202 cost a re-run to learn nothing
+        // from. Nothing in these facts waits on a clock except a retry backoff, so reaching this
+        // ceiling means the pump stopped scheduling, not that it was slow — say that.
+        if (completed != readTask)
+        {
+            Assert.Fail(
+                $"No dispatch began within {DispatchCeiling.TotalSeconds:0}s. Every wait in these facts is "
+                + "event-driven, so this is a pump that stopped scheduling rather than one running late. "
+                + $"Dispatches already delivered and consumed by this fact are in the assertions above it.");
+        }
+
         return await readTask;
     }
 
@@ -230,3 +257,5 @@ public class MutationInterfaceConcurrencyTests
         Assert.NotSame(waitTask, completed);
     }
 }
+
+
