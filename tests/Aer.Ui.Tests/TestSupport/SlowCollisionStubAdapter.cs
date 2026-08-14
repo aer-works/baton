@@ -1,3 +1,4 @@
+using System.Globalization;
 using Aer.Adapters;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
@@ -104,7 +105,9 @@ internal sealed class SlowCollisionStubAdapter : IWorkerAdapter
                   $"i=0; while [ $i -lt {pollCount} ]; do " +
                   $"arrived=$(ls '{rendezvousDir}' | grep -c '^{ArrivalFilePrefix}'); " +
                   $"if [ \"$arrived\" -ge 2 ]; then touch '{rendezvousDir}/{ConcurrencyProofFilePrefix}'$$; break; fi; " +
-                  $"sleep {RendezvousPollInterval.TotalSeconds:0.0#}; i=$((i+1)); done; ";
+                  // Invariant, not current culture: a comma-decimal locale would emit `sleep 0,1`, and
+                  // the poll would stop pacing itself rather than fail loudly.
+                  $"sleep {RendezvousPollInterval.TotalSeconds.ToString("0.0#", CultureInfo.InvariantCulture)}; i=$((i+1)); done; ";
             var script =
                 $"if [ -f '{markerFile}' ]; then echo collision >> '{collisionFile}'; fi; " +
                 $"touch '{markerFile}'; " +
