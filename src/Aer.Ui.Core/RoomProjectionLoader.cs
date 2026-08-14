@@ -91,7 +91,39 @@ public static class RoomProjectionLoader
 
         var logPath = Path.Combine(roomDirectoryPath, LogFileName);
         var reader = new FlowEventLogReader(logPath);
-        var events = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+        var entries = await reader.ReadAllEntriesWithTimestampsAsync(cancellationToken).ConfigureAwait(false);
+
+        var events = new List<FlowEvent>(entries.Count);
+        var stepPauseMoments = new List<StepPauseMoment>();
+        var recordedDecisionMoments = new List<RecordedDecisionMoment>();
+
+        foreach (var entry in entries)
+        {
+            if (entry is LogEntry.FlowLogEntry flowLogEntry)
+            {
+                events.Add(flowLogEntry.Event);
+                DateTimeOffset? timestamp = flowLogEntry.WriterUtcTimestamp.HasValue
+                    ? new DateTimeOffset(DateTime.SpecifyKind(flowLogEntry.WriterUtcTimestamp.Value, DateTimeKind.Utc))
+                    : null;
+
+                switch (flowLogEntry.Event)
+                {
+                    case FlowEvent.WorkflowPaused paused:
+                        stepPauseMoments.Add(new StepPauseMoment(paused.ExecutionId, paused.StepId, timestamp));
+                        break;
+                    case FlowEvent.ExternalDecisionRecorded decision:
+                        recordedDecisionMoments.Add(new RecordedDecisionMoment(
+                            decision.DecisionId,
+                            decision.ReferencedExecutionId,
+                            decision.DecisionType,
+                            decision.TargetStepId,
+                            decision.SupplementaryExecutionId,
+                            decision.EffectiveDecider,
+                            timestamp));
+                        break;
+                }
+            }
+        }
 
         var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
         var state = StateProjector.Project(events, snapshot, checkpoint);
@@ -103,7 +135,10 @@ public static class RoomProjectionLoader
         var (pendingPermission, permissionAnswers, dormancyTransitions) =
             await LoadJournalStateAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
 
-        return new RoomProjection(snapshot, state, history, lineage, pendingPermission, permissionAnswers, dormancyTransitions);
+        return new RoomProjection(
+            snapshot, state, history, lineage,
+            pendingPermission, permissionAnswers, dormancyTransitions,
+            stepPauseMoments, recordedDecisionMoments);
     }
 
     /// <summary>

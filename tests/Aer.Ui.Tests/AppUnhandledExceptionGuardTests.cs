@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Aer.Ui.Core;
 
@@ -90,15 +91,66 @@ public class AppUnhandledExceptionGuardTests
     /// <summary>
     /// #1189, the other half of the app's async surface: <c>_ = SomethingAsync()</c>. Its exception
     /// never reaches the dispatcher — it sits on a Task nobody awaits — so the fact above cannot see
-    /// it and this one drives the finalizer instead. Deliberately asserts only the durable sink:
-    /// the event arrives at collection time on a finalizer thread, so what a person sees and when
-    /// is a different (posted, best-effort) claim, and pinning it here would be pinning the GC.
+    /// it and this one drives the finalizer instead.
     /// </summary>
-    [AvaloniaFact]
+    /// <remarks>
+    /// A plain <c>[Fact]</c>, NOT an <c>[AvaloniaFact]</c>, and that is the point of #1200: forcing
+    /// a collection inside Avalonia's shared headless session destabilised it — green locally,
+    /// intermittently red on Windows CI, and the failure surfaced as a cleanup error in an
+    /// unrelated place. <see cref="UnobservedTaskGuard"/> needs no UI, so the fact takes none, and
+    /// registers its own surface instead of borrowing the app's.
+    /// </remarks>
+    [Fact]
     public async Task An_exception_on_a_task_nobody_awaited_is_still_written_down()
     {
         var expectedMessage = $"Simulated unobserved fault {Guid.NewGuid():N}";
+        // Concurrent, because the guard calls this from the finalizer thread while the poll below
+        // reads it from the test's own.
+        var surfaced = new ConcurrentQueue<Exception>();
+        // One delegate instance, held: registration is additive, so unregistering needs the same
+        // reference back. `surfaced.Enqueue` written twice would be two delegates, and would leak the first.
+        Action<Exception> surface = surfaced.Enqueue;
+        UnobservedTaskGuard.Register(surface);
 
+        try
+        {
+            await DriveTheFinalizerAsync(expectedMessage, surfaced);
+        }
+        finally
+        {
+            UnobservedTaskGuard.Unregister(surface);
+        }
+    }
+
+    /// <summary>
+    /// #1201: the sink writes while something else holds the log open. Two Baton windows are two
+    /// processes writing the same file, and the sink's own catch-all means a rejected write is
+    /// indistinguishable from an exception that never happened — the silence it exists to end.
+    /// </summary>
+    /// <remarks>
+    /// The holder here takes write access and shares read+write, which is what a second sink looks
+    /// like from the outside; under the old <c>File.AppendAllText</c> (write access, sharing read
+    /// only) the write is refused and the entry vanishes. One case stays uncovered and unfixable
+    /// from this side: a holder that shares nothing — an editor with the log open — locks the write
+    /// out however this end opens the file.
+    /// </remarks>
+    [Fact]
+    public void An_exception_is_written_down_even_while_another_writer_holds_the_log()
+    {
+        var expectedMessage = $"Simulated concurrent-writer fault {Guid.NewGuid():N}";
+        var logPath = AppUnhandledExceptionSink.LogPath;
+        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+
+        using (new FileStream(logPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite))
+        {
+            AppUnhandledExceptionSink.LogException(new InvalidOperationException(expectedMessage));
+        }
+
+        Assert.Contains(expectedMessage, ReadSharedText(logPath));
+    }
+
+    private static async Task DriveTheFinalizerAsync(string expectedMessage, ConcurrentQueue<Exception> surfaced)
+    {
         DropAFaultedTask(expectedMessage);
 
         // The event fires when the faulted Task is finalized, which is a collection away rather
@@ -112,15 +164,38 @@ public class AppUnhandledExceptionGuardTests
             GC.WaitForPendingFinalizers();
             GC.Collect();
 
-            if (File.Exists(logPath) && (await File.ReadAllTextAsync(logPath)).Contains(expectedMessage))
+            if (File.Exists(logPath) && ReadSharedText(logPath).Contains(expectedMessage))
             {
+                // Both halves: written down durably, AND handed to whatever shows it to a person.
+                // The app's own surface is a dispatcher post, which is why this fact supplies its
+                // own — the claim here is that the guard reports, not where the report lands.
+                Assert.Contains(surfaced, ex => ex.Message == expectedMessage);
                 return;
             }
 
             await Task.Delay(100); // wait-ok: a poll interval between forced collections; the 60s deadline above is the ceiling.
         }
 
-        Assert.Fail($"The unobserved fault never reached the durable sink at {logPath}.");
+        Assert.Fail(
+            $"The unobserved fault never reached the durable sink at {logPath}. Surfaced meanwhile: "
+            + $"[{string.Join(" | ", surfaced.Select(exception => exception.Message))}] — a fault that reached "
+            + "the surface but not the file is #1201's shape (a rejected write swallowed by the sink), "
+            + "not a finalizer event that never fired.");
+    }
+
+    /// <summary>
+    /// Reads the log without locking its writer out. <see cref="File.ReadAllText(string)"/> opens
+    /// with <see cref="FileShare.Read"/>, which denies write access for as long as the read is open —
+    /// so a poll built on it intermittently rejects the very write it is waiting for, and the sink's
+    /// catch-all turns that into a missing entry rather than an error (measured while fixing #1189;
+    /// the sink's own half of it is #1201). A poll that can suppress its subject is not an
+    /// instrument, so this one shares.
+    /// </summary>
+    private static string ReadSharedText(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
     }
 
     // Its own method so the Task is unreachable the moment it returns; a local in the test body

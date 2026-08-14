@@ -39,7 +39,15 @@ public static class AppUnhandledExceptionSink
             var entry = $"[{DateTimeOffset.UtcNow:O}] {ex}{Environment.NewLine}{Environment.NewLine}";
             lock (WriteLock)
             {
-                File.AppendAllText(logPath, entry);
+                // #1201: NOT File.AppendAllText — it opens with FileShare.Read, so anyone else
+                // holding the file open for reading (a person tailing it, a second Baton process,
+                // the test that polls it) makes the write fail with a sharing violation, which the
+                // catch below turns into a silently missing entry. FileShare.ReadWrite lets the
+                // write through instead. The lock above is still what orders this app's own two
+                // writer threads; sharing is the other half, not a replacement for it.
+                using var stream = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                using var writer = new StreamWriter(stream);
+                writer.Write(entry);
             }
         }
         catch
