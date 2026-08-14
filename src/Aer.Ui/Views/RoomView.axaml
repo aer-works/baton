@@ -8,7 +8,11 @@
              xmlns:vm="clr-namespace:Aer.Ui.Core;assembly=Aer.Ui.Core"
              x:Class="Aer.Ui.Views.RoomView"
              x:DataType="vm:MainWindowViewModel">
-  <ScrollViewer>
+  <!-- HorizontalScrollBarVisibility is #1204's: as the Shape panel this view is ~460px wide, and its
+       fixed-width header boxes (the path pair below, which slice 4 of #1196 retires) ran off the edge
+       with no way to reach them. Scrolling is the honest interim — nothing is unreachable, and
+       nothing pretends the header belongs at this width. -->
+  <ScrollViewer HorizontalScrollBarVisibility="Auto">
     <StackPanel Margin="24" Spacing="12">
       <TextBlock Classes="display" Text="{Binding RoomHeadlineText}" />
       <!-- The empty state says what to do next (Phase 5): nothing open, two ways forward. -->
@@ -61,80 +65,6 @@
         </StackPanel>
       </Border>
 
-      <!-- Needs-you first: the review gate's inline decisions, in plain words, before anything
-           read-only. Same M15 commands, same semantics — Approve is Resume, Send back is
-           Supersede (feedback file mandatory), Retry is RetryWithRevision (§17). -->
-      <ItemsControl x:Name="PausedStepsList" ItemsSource="{Binding PausedSteps}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate x:DataType="vm:PausedStepViewModel">
-            <Border Classes="card needs-you" Margin="0,0,0,8">
-              <StackPanel Spacing="{DynamicResource Space.3}">
-                <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
-                  <Path Data="{StaticResource Icon.Dot}" Fill="{DynamicResource Status.NeedsInput}"
-                        Width="13" Height="13" Stretch="Uniform" VerticalAlignment="Center" />
-                  <TextBlock Classes="heading" Text="{Binding StepId, StringFormat='Waiting for your review — {0}'}" />
-                </StackPanel>
-                <TextBlock Classes="caption" Text="{Binding Label}" />
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                  <!-- #218: Approve/Retry/Reject reuse the status check/refresh/cross glyphs
-                       already established (#206) — same shapes, same meaning, no new vocabulary. -->
-                  <Button Classes="accent" Command="{Binding ApproveCommand}"
-                          ToolTip.Tip="Accept this step's output and let the workflow continue.">
-                    <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
-                      <Path Classes="action-icon" Data="{StaticResource Icon.Check}"
-                            StrokeThickness="1.6" StrokeLineCap="Round" StrokeJoin="Round"
-                            Width="12" Height="12" Stretch="Uniform" VerticalAlignment="Center" />
-                      <AccessText Text="A_pprove" VerticalAlignment="Center" />
-                    </StackPanel>
-                  </Button>
-                  <Button Command="{Binding RetryCommand}"
-                          ToolTip.Tip="Run this step again, optionally with your feedback file attached.">
-                    <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
-                      <Path Classes="action-icon" Data="{StaticResource Icon.Refresh}"
-                            StrokeThickness="1.4" StrokeLineCap="Round" StrokeJoin="Round"
-                            Width="12" Height="12" Stretch="Uniform" VerticalAlignment="Center" />
-                      <AccessText Text="_Retry this step" VerticalAlignment="Center" />
-                    </StackPanel>
-                  </Button>
-                  <Button Command="{Binding RejectCommand}"
-                          ToolTip.Tip="End this step here — the workflow does not continue past it.">
-                    <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
-                      <Path Classes="action-icon" Data="{StaticResource Icon.Cross}"
-                            StrokeThickness="1.6" StrokeLineCap="Round" StrokeJoin="Round"
-                            Width="12" Height="12" Stretch="Uniform" VerticalAlignment="Center" />
-                      <AccessText Text="Re_ject" VerticalAlignment="Center" />
-                    </StackPanel>
-                  </Button>
-                  <ItemsControl ItemsSource="{Binding SendBackTargets}">
-                    <ItemsControl.ItemsPanel>
-                      <ItemsPanelTemplate>
-                        <StackPanel Orientation="Horizontal" Spacing="8" />
-                      </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:SendBackTargetViewModel">
-                        <Button Content="{Binding Label}" Command="{Binding SendBackCommand}"
-                                ToolTip.Tip="Send the work back to an earlier step, with your feedback file — the feedback is what that step revises against." />
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                  <TextBlock Text="Feedback file:" VerticalAlignment="Center" />
-                  <TextBox Text="{Binding RevisionFilePath}" Width="260"
-                           PlaceholderText="Optional for Retry, required to send back" />
-                  <Button Content="Choose file…" Click="OnChooseFeedbackFileClick" />
-                  <TextBlock Text="Worker:" VerticalAlignment="Center" />
-                  <TextBox Text="{Binding SupplementaryWorker}" Width="110" />
-                  <TextBlock Text="Output:" VerticalAlignment="Center" />
-                  <TextBox Text="{Binding SupplementaryOutputName}" Width="110" />
-                </StackPanel>
-              </StackPanel>
-            </Border>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
-      <TextBlock x:Name="DecisionStatusText" Text="{Binding DecisionStatusText}" />
 
       <!-- The DAG, primary: click a node to open that step's drill-in. A bordered, dot-gridded
            canvas region (n8n/Dagster's convention, per design-language.md's reference set) gives

@@ -232,13 +232,23 @@
         </ListBox>
       </DockPanel>
     </Border>
-    <Panel>
-      <views:HomeView x:Name="HomeViewControl" IsVisible="{Binding IsHomeVisible}" />
-      <views:RoomView x:Name="RoomViewControl" IsVisible="{Binding IsRoomVisible}" />
-      <views:AuthorView x:Name="AuthorViewControl" IsVisible="{Binding IsAuthorVisible}" />
-      <views:SettingsView x:Name="SettingsViewControl" IsVisible="{Binding IsSettingsVisible}" />
-      <views:ChatView x:Name="ChatViewControl" IsVisible="{Binding IsChatVisible}" />
-      <views:RoomsView x:Name="RoomsViewControl" IsVisible="{Binding IsRoomsVisible}" />
-    </Panel>
+    <!-- #1196 slice 3: the room's shape sits BESIDE what is open rather than being a place you
+         navigate to. Two columns, and which one holds the width is set by ApplyShellLayout in the
+         code-behind — a GridLength is an Avalonia type and MainWindowViewModel is deliberately
+         Avalonia-free, so the layout switch cannot be a binding. RoomView keeps its x:Name here, so
+         every accessor the shell already reaches through it is untouched by the move. -->
+    <Grid x:Name="ShellGrid" ColumnDefinitions="*,Auto">
+      <Panel x:Name="MainRegion" Grid.Column="0">
+        <views:HomeView x:Name="HomeViewControl" IsVisible="{Binding IsHomeVisible}" />
+        <views:AuthorView x:Name="AuthorViewControl" IsVisible="{Binding IsAuthorVisible}" />
+        <views:SettingsView x:Name="SettingsViewControl" IsVisible="{Binding IsSettingsVisible}" />
+        <views:ChatView x:Name="ChatViewControl" IsVisible="{Binding IsChatVisible}" />
+        <views:RoomsView x:Name="RoomsViewControl" IsVisible="{Binding IsRoomsVisible}" />
+      </Panel>
+      <Border x:Name="ShapeRegion" Grid.Column="1" IsVisible="False"
+              BorderBrush="{DynamicResource Color.BorderSubtle}" BorderThickness="1,0,0,0">
+        <views:RoomView x:Name="RoomViewControl" />
+      </Border>
+    </Grid>
   </DockPanel>
 </Window>
