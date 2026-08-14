@@ -219,6 +219,8 @@
       "timestamp": "2026-08-03T15:00:00\u002B00:00"
     }
   ],
+  "stepPauseMoments": [],
+  "recordedDecisionMoments": [],
   "isDormant": false,
   "directoryPath": "C:/tasks/foo",
   "sessionId": "session-123",
