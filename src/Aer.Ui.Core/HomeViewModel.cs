@@ -58,7 +58,20 @@ public sealed partial class HomeViewModel : ObservableObject
             var execution = projection.Lineage.Executions.FirstOrDefault(e => e.ExecutionId == executionId);
             if (execution is { OutputFiles.Count: > 0 })
             {
-                previewFileName = execution.OutputFiles[0];
+                // #1191: OutputFiles is every file in the execution's output directory, ordinal-sorted
+                // (ArtifactLineageProjector), so prompt.txt — the worker's own instructions — sorts
+                // ahead of review.md and became the preview. The step's contract already says which
+                // files it produces, so ask it. Exact match: declared outputs carry their extension
+                // (BuiltInWorkflowTemplates' "draft.md", "output.md"), and fuzzier matching would let
+                // a stray review.md.bak outrank the real one. Falls back to today's first-file
+                // behaviour when nothing matches — an honest degrade rather than a blank card.
+                var declaredOutputs = projection.Snapshot.Steps
+                    .FirstOrDefault(step => step.StepId == stepState.StepId)?.Outputs;
+                previewFileName = declaredOutputs is { Count: > 0 }
+                    ? execution.OutputFiles.FirstOrDefault(
+                        file => declaredOutputs.Any(declared => string.Equals(file, declared, StringComparison.OrdinalIgnoreCase)))
+                        ?? execution.OutputFiles[0]
+                    : execution.OutputFiles[0];
                 var outputDirectory = ArtifactManager.ResolveOutputDirectory(
                     Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName), executionId);
                 try

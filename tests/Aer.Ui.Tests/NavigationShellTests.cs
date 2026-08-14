@@ -25,9 +25,14 @@ public class NavigationShellTests
         WorkflowTemplateVersion: 1,
         Steps:
         [
-            new WorkflowStepDefinition(Architect, "architect", ["goal"], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
+            // #1191: declared outputs are FILE NAMES, extension included — the engine satisfies a
+            // contract with File.Exists on the declared name (OutcomeClassifier), and every built-in
+            // template names them that way ("draft.md", "output.md"). This fixture used to declare
+            // "plan"/"review" while writing plan.md/review.md, a pair no real run can produce: that
+            // step would have been classified Failed for a missing declared output.
+            new WorkflowStepDefinition(Architect, "architect", ["goal.md"], ["plan.md"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
             new WorkflowStepDefinition(
-                Critic, "critic", ["plan"], ["review"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(1),
+                Critic, "critic", ["plan.md"], ["review.md"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(1),
                 PausePoint: new PausePoint(SupersedeTargets: [Architect])),
         ]));
 
@@ -113,6 +118,7 @@ public class NavigationShellTests
 
         var outputDirectory = Path.Combine(roomDirectory, "artifacts", "execution_c-1");
         Directory.CreateDirectory(outputDirectory);
+        await File.WriteAllTextAsync(Path.Combine(outputDirectory, "prompt.txt"), "Undeclared prompt instructions", cancellationToken);
         await File.WriteAllTextAsync(Path.Combine(outputDirectory, "review.md"), reviewContent, cancellationToken);
         return roomDirectory;
     }
