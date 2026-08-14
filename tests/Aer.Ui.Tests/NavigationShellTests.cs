@@ -479,9 +479,8 @@ public class NavigationShellTests
             // The Shape toggle is not: a room with no workflow has no shape to open.
             Assert.Equal(!switchItOff, window.ViewModel.Chat.IsShapeToggleVisible);
 
-            // Nor is any workflow action. Nothing in the engine refuses a run because the switch is
-            // off, so a "Run it again" offered beside a header reading OFF would have run the very
-            // graph the header denies having — the second reader's finding.
+            // Nor is any workflow action — see ChatViewModel.IsWorkflowActive for why the offer has
+            // to go with the shape.
             Assert.Equal(!switchItOff, window.ViewModel.Chat.IsWorkflowActive);
         }
         finally
@@ -491,11 +490,9 @@ public class NavigationShellTests
     }
 
     /// <summary>
-    /// #1216, found by driving: another client switched a FINISHED room's workflow and the open
-    /// window went on showing the opposite indefinitely. The live poller used to stop outright at
-    /// <see cref="WorkflowStatus.Terminal"/> — sound while it only watched <c>flow.jsonl</c>, and
-    /// false the moment a room-level fact could change afterwards. A terminal room is in fact the
-    /// one most likely to be switched, since a room with work in flight is refused.
+    /// #1216, found by driving the built app: another client switched a FINISHED room's workflow and
+    /// the open window went on showing the opposite indefinitely. Why the poller no longer stops at
+    /// <see cref="WorkflowStatus.Terminal"/> is on <c>MainWindow.UpdateLiveRefreshTimer</c>.
     /// </summary>
     /// <remarks>
     /// Three arms, and the middle one is the control: the tick must NOT reload when the journal has

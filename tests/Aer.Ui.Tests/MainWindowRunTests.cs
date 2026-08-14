@@ -50,8 +50,8 @@ public class MainWindowRunTests
 
             // The UI never blocked its own thread on the pump (issue #137): RunAsync only returns
             // once the pump has already reached its fixed point (M14 Phase 2's terminal-status stop
-            // condition). Asks the flow question directly rather than reading it off the poller,
-            // which since #1216 keeps watching a settled room for room-level facts.
+            // condition). Asks the flow question directly rather than reading it off the poller —
+            // MainWindow.IsRoomFlowStillChanging says why those parted company (#1216).
             Assert.False(window.IsRoomFlowStillChanging);
         }
         finally

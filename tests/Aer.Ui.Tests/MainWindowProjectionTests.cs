@@ -300,12 +300,10 @@ public class MainWindowProjectionTests
     }
 
     /// <summary>
-    /// Reaching terminal used to STOP the poller outright. #1216 ended that — a room's workflow
-    /// switch is a <c>room.jsonl</c> fact that changes precisely when the flow cannot, and a
-    /// terminal room is the one most likely to be switched, since a room with work in flight is
-    /// refused. What survives is the saving that stop was actually for: a settled room must stop
-    /// paying for re-projection, which re-reads every execution's artifact directory. See
-    /// <c>MainWindow.UpdateLiveRefreshTimer</c>'s remarks, and
+    /// Reaching terminal used to STOP the poller outright; #1216 ended that, for the reason on
+    /// <c>MainWindow.UpdateLiveRefreshTimer</c>. What this pins is the saving that stop was actually
+    /// for, which survives: a settled room must stop paying for re-projection, which re-reads every
+    /// execution's artifact directory. See also
     /// <c>NavigationShellTests.A_finished_room_still_observes_its_workflow_being_switched_by_someone_else</c>
     /// for the behaviour that replaced it.
     /// </summary>
