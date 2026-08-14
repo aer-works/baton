@@ -166,6 +166,27 @@ public sealed partial class MainWindowViewModel : ObservableObject
             ? "This room has finished — Run starts a fresh room cloned from it."
             : "Start a fresh room from a workflow file, or resume the room open above.";
 
+    /// <summary>
+    /// The open room's workflow definition file, as recorded in its own <c>.aer/workflow-path</c>
+    /// (or its <c>workflow.json</c> fallback). Null or empty on a room that has no recorded workflow
+    /// file — the "fresh start only" case the retired header box used to say in a placeholder.
+    /// <para>
+    /// #1215 lifted this and <see cref="BindingsFilePath"/> out of two <c>TextBox</c>es in the room
+    /// header, which is the whole point of that slice: a file path is engine plumbing, and the room
+    /// header is the room's. They are state, not chrome, which is why the lift is a property here and
+    /// not a XAML deletion — <c>RoomClient</c> asks for the bindings path at decide-time ("ask, don't
+    /// infer", M14 Phase 2's decision of record), and both are what a Run or a Resume dispatches.
+    /// Nullable to preserve exactly what the boxes' own <c>Text</c> carried: the session's
+    /// last-path loaders may return null, and callers coalesce at the point of use rather than here.
+    /// </para>
+    /// </summary>
+    [ObservableProperty]
+    private string? workflowTemplateFilePath;
+
+    /// <summary>Who runs each step, for the open room — see <see cref="WorkflowTemplateFilePath"/> for why both live here.</summary>
+    [ObservableProperty]
+    private string? bindingsFilePath;
+
     /// <summary>In-window message surface for a Run's progress ("Running…") or failure — moved here from a directly-set TextBlock when the orchestration moved to <see cref="RoomClient"/> (M19 Phase 2, #187).</summary>
     [ObservableProperty]
     private string runStatusText = string.Empty;

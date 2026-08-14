@@ -248,7 +248,8 @@ public class RunCommandEndToEndTests
     [Fact]
     public async Task A_resume_naming_a_nonexistent_workflow_file_throws_validation_exception()
     {
-        // Issue #653: The desktop no longer populates WorkflowTemplatePathBox with bare template IDs.
+        // Issue #653: The desktop no longer populates its workflow-file path (#1215 lifted that out of
+        // a header TextBox into MainWindowViewModel.WorkflowTemplateFilePath) with bare template IDs.
         // A resume supplying a WorkflowFilePath to a file that does not exist throws WorkflowDefinitionValidationException
         // (an AerFlowException) rather than silently skipping the template mismatch check.
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");

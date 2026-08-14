@@ -123,9 +123,9 @@ public class MainWindowCancelAndStopTests
 
             // Never asked for by RunAsync in this test (only OpenAsync was called, standing in for
             // re-opening a task this window never itself ran) — the same "ask, don't infer" bindings
-            // box CancelExecutionAsync reads from (Phase 1's decision of record) needs a value before
-            // it can wrap a fresh CancelCommand call.
-            window.FindViewControl<TextBox>("BindingsFilePathBox")!.Text = bindingsFilePath;
+            // state CancelExecutionAsync reads from (Phase 1's decision of record) needs a value
+            // before it can wrap a fresh CancelCommand call.
+            window.ViewModel.BindingsFilePath = bindingsFilePath;
 
             var running = Assert.Single(window.ViewModel.RunningExecutions);
             Assert.Equal(new StepId("orphan"), running.StepId);

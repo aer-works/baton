@@ -346,7 +346,7 @@ public class MainWindowProjectionTests
     }
 
     [AvaloniaFact]
-    public async Task OpenAsync_when_room_directory_lacks_workflow_path_does_not_populate_box_with_bare_template_id()
+    public async Task OpenAsync_when_room_directory_lacks_workflow_path_does_not_populate_state_with_bare_template_id()
     {
         var snapshot = TwoStepSnapshot();
         var roomDirectory = await CreateRoomDirectoryAsync(
@@ -358,8 +358,8 @@ public class MainWindowProjectionTests
             var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
             await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
 
-            Assert.NotEqual(snapshot.WorkflowTemplateId.Value, window.WorkflowTemplatePathBox.Text);
-            Assert.Equal(string.Empty, window.WorkflowTemplatePathBox.Text);
+            Assert.NotEqual(snapshot.WorkflowTemplateId.Value, window.ViewModel.WorkflowTemplateFilePath);
+            Assert.Equal(string.Empty, window.ViewModel.WorkflowTemplateFilePath);
         }
         finally
         {
@@ -383,7 +383,7 @@ public class MainWindowProjectionTests
             var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
             await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
 
-            Assert.Equal(workflowJsonPath, window.WorkflowTemplatePathBox.Text);
+            Assert.Equal(workflowJsonPath, window.ViewModel.WorkflowTemplateFilePath);
         }
         finally
         {

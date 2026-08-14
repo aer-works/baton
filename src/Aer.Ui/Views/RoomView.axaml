@@ -19,12 +19,11 @@
       <TextBlock Classes="secondary" IsVisible="{Binding !HasSelectedStep}" TextWrapping="Wrap"
                  Text="Open a room from Home, or create and run a workflow in Author — this view fills in as soon as a room is open." />
 
+      <!-- #1215: the workflow and bindings path boxes were here. They are the room's *state*, not
+           chrome, so they moved to MainWindowViewModel.WorkflowTemplateFilePath/BindingsFilePath
+           rather than being deleted — see those properties for what still reads them. A file path
+           is engine plumbing; the room header is the room's. -->
       <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBlock Text="Workflow:" VerticalAlignment="Center" />
-        <TextBox x:Name="WorkflowTemplatePathBox" Width="300" PlaceholderText="(fresh start only)" />
-        <TextBlock Text="Bindings:" VerticalAlignment="Center" /> <!-- vocabulary-ok: technical setting label -->
-        <TextBox x:Name="BindingsFilePathBox" Width="300"
-                 ToolTip.Tip="Who runs each step — always visible, always swappable, never remembered as authority." />
         <!-- Owner feedback: "does Run make sense on a finished task?" — disabled once the open
              task has actually finished, rather than leaving a click that quietly does nothing. -->
         <Button x:Name="RunButton" Classes="accent" IsEnabled="{Binding CanRun}"
