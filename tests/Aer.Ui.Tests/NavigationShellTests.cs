@@ -478,6 +478,71 @@ public class NavigationShellTests
 
             // The Shape toggle is not: a room with no workflow has no shape to open.
             Assert.Equal(!switchItOff, window.ViewModel.Chat.IsShapeToggleVisible);
+
+            // Nor is any workflow action. Nothing in the engine refuses a run because the switch is
+            // off, so a "Run it again" offered beside a header reading OFF would have run the very
+            // graph the header denies having — the second reader's finding.
+            Assert.Equal(!switchItOff, window.ViewModel.Chat.IsWorkflowActive);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1216, found by driving: another client switched a FINISHED room's workflow and the open
+    /// window went on showing the opposite indefinitely. The live poller used to stop outright at
+    /// <see cref="WorkflowStatus.Terminal"/> — sound while it only watched <c>flow.jsonl</c>, and
+    /// false the moment a room-level fact could change afterwards. A terminal room is in fact the
+    /// one most likely to be switched, since a room with work in flight is refused.
+    /// </summary>
+    /// <remarks>
+    /// Three arms, and the middle one is the control: the tick must NOT reload when the journal has
+    /// not moved (that cheapness is the whole reason the poller was stopped here in the first place,
+    /// since a re-projection re-reads every execution's artifact directory). Without it this test
+    /// would pass just as well against a poller that re-projects unconditionally forever.
+    /// </remarks>
+    [AvaloniaFact]
+    public async Task A_finished_room_still_observes_its_workflow_being_switched_by_someone_else()
+    {
+        var roomDirectory = await CreateRoomDirectoryAsync(
+            TwoStepSnapshot(),
+            [
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("a-1"), Architect)),
+                new FlowEvent.ExecutionSucceeded(new ExecutionId("a-1")),
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("c-1"), Critic)),
+                new FlowEvent.ExecutionSucceeded(new ExecutionId("c-1")),
+            ],
+            TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            Assert.True(window.ViewModel.Chat.IsWorkflowOn);
+
+            // The premise that changed: a settled room is still watched.
+            Assert.True(window.IsLiveRefreshTimerEnabled);
+
+            // Control — nothing has been appended, so a tick must not re-project.
+            var renderedBefore = window.RenderedProjectionCountForTests;
+            await window.OnLiveRefreshTickAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(renderedBefore, window.RenderedProjectionCountForTests);
+            Assert.True(window.ViewModel.Chat.IsWorkflowOn);
+
+            // Someone else — a phone, a second window, the daemon — switches it off.
+            await using (var writer = new RoomEventLogWriter(Path.Combine(roomDirectory, "room.jsonl")))
+            {
+                await writer.AppendAsync(
+                    new RoomEvent.WorkflowSwitched(IsOn: false, "operator", DateTimeOffset.UtcNow),
+                    TestContext.Current.CancellationToken);
+            }
+
+            await window.OnLiveRefreshTickAsync(TestContext.Current.CancellationToken);
+
+            Assert.False(window.ViewModel.Chat.IsWorkflowOn);
+            Assert.False(window.ViewModel.Chat.IsShapeToggleVisible);
         }
         finally
         {
@@ -514,10 +579,10 @@ public class NavigationShellTests
     }
 
     /// <summary>
-    /// Two claims about the click. It asks for the OPPOSITE of what the room currently says — not the
-    /// opposite of the control, which is one-way and has already flipped itself by then — and a
-    /// refusal is shown rather than swallowed, since "stop the room first" is the only way the person
-    /// learns what to do next.
+    /// Two claims about the click: which value it asks for (see
+    /// <see cref="MainWindowViewModel.ToggleWorkflowSwitchCommand"/> for why it is the room's opposite
+    /// and not the control's), and that a refusal is shown rather than swallowed — "stop the room
+    /// first" being the only way the person learns what to do next.
     /// </summary>
     [AvaloniaFact]
     public async Task Throwing_the_switch_asks_for_the_opposite_of_the_room_and_surfaces_a_refusal()

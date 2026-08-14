@@ -106,6 +106,22 @@ public partial class MainWindow : Window
     internal bool IsLiveRefreshTimerEnabled => _liveRefreshTimer.IsEnabled;
 
     /// <summary>
+    /// Whether the open room's <em>flow</em> can still change — §12's fixed point, which is what
+    /// "the pump is done" means. Distinct from <see cref="IsLiveRefreshTimerEnabled"/> since #1216:
+    /// the poller keeps watching a settled room for room-level facts, so the timer being on no longer
+    /// answers this question and tests that mean this must ask it directly.
+    /// </summary>
+    internal bool IsRoomFlowStillChanging => _session.ShouldLiveRefresh;
+
+    /// <summary>
+    /// How many times <see cref="RenderProjection"/> has actually re-projected. Exists so a test can
+    /// assert a settled room's tick does NOT pay for a re-projection when its journal has not moved —
+    /// the cheapness <see cref="UpdateLiveRefreshTimer"/>'s remarks turn on, which no observable
+    /// state otherwise distinguishes from a tick that reloaded and found nothing different.
+    /// </summary>
+    internal int RenderedProjectionCountForTests { get; private set; }
+
+    /// <summary>
     /// This window's ViewModel (M15 Phase 2, issue #138) — set as <see cref="Window.DataContext"/> so
     /// <see cref="MainWindow.axaml"/> can bind the paused-step decision surface and the shared
     /// mutation-in-flight flag directly. See <see cref="MainWindowViewModel"/>'s own remarks for why
@@ -288,7 +304,7 @@ public partial class MainWindow : Window
         // entry point never disagrees with the template picker about what's offered.
         ViewModel.Chat.PopulateAvailableAdapters();
 
-        _liveRefreshTimer.Tick += (_, _) => _ = RefreshAsync();
+        _liveRefreshTimer.Tick += (_, _) => _ = OnLiveRefreshTickAsync();
         OpenButton.Click += (_, _) => _ = OpenAsync(RoomDirectoryPathBox.Text ?? string.Empty);
         RefreshButton.Click += (_, _) => _ = RefreshAsync();
         CompareButton.Click += (_, _) => _ = CompareToTemplateAsync(TemplateComparePathBox.Text ?? string.Empty);
@@ -1306,6 +1322,27 @@ public partial class MainWindow : Window
     /// on <see cref="_liveRefreshTimer"/>'s real elapsed-time tick, which is what actually calls this
     /// in production.
     /// </summary>
+    /// <summary>
+    /// One tick of <see cref="_liveRefreshTimer"/>. A room that can still change re-projects every
+    /// tick as it always has; a settled one pays only a <see cref="FileInfo"/> stat until its
+    /// <c>room.jsonl</c> actually moves — see <see cref="UpdateLiveRefreshTimer"/> for why a settled
+    /// room is watched at all now.
+    /// </summary>
+    internal async Task OnLiveRefreshTickAsync(CancellationToken cancellationToken = default)
+    {
+        if (_session.ShouldLiveRefresh)
+        {
+            await RefreshAsync(cancellationToken);
+            return;
+        }
+
+        if (_session.CurrentRoomDirectoryPath is { } settledRoomDirectoryPath
+            && HasRoomJournalChanged(settledRoomDirectoryPath))
+        {
+            await RefreshAsync(cancellationToken);
+        }
+    }
+
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
         if (_session.CurrentRoomDirectoryPath is not { } currentRoomDirectoryPath)
@@ -1392,6 +1429,7 @@ public partial class MainWindow : Window
     /// </summary>
     public void RenderProjection(RoomProjection projection, string roomDirectoryPath)
     {
+        RenderedProjectionCountForTests++;
         var stepsFingerprint = string.Join(",", projection.State.Steps.Select(s => $"{s.StepId.Value}:{s.Status}:{s.LatestExecutionId?.Value}"));
         var attemptsCount = projection.History.AttemptsByStepId.Sum(kv => kv.Value.Count);
         var convLength = _conversationOutputDirectory != null && File.Exists(System.IO.Path.Combine(_conversationOutputDirectory, "transcript.jsonl")) ? new FileInfo(System.IO.Path.Combine(_conversationOutputDirectory, "transcript.jsonl")).Length : 0;
@@ -2401,13 +2439,24 @@ public partial class MainWindow : Window
     /// <summary>
     /// Polling, not a <see cref="System.IO.FileSystemWatcher"/> (issue #119's named open question):
     /// simplest thing that works identically across the win/linux/mac CI matrix without depending on
-    /// a given filesystem's watch semantics inside a container. Runs only while a room is open and
-    /// not yet <see cref="WorkflowStatus.Terminal"/> — once nothing further can change (spec §12),
-    /// there is nothing left to observe.
+    /// a given filesystem's watch semantics inside a container. Runs while a room is open.
     /// </summary>
+    /// <remarks>
+    /// It used to stop outright at <see cref="WorkflowStatus.Terminal"/>, on the reasoning that once
+    /// nothing further can change (spec §12) there is nothing left to observe. #1216 ended that: the
+    /// workflow switch is a <c>room.jsonl</c> fact, and a room is *most* likely to be switched while
+    /// terminal, since one with work in flight is refused. Found by driving — another client switched
+    /// a finished room and the open window went on saying the opposite indefinitely.
+    ///
+    /// The saving that reasoning bought is kept rather than thrown away, because it was real:
+    /// <see cref="RefreshAsync"/> re-projects the whole room, and
+    /// <see cref="Aer.Flow.Projection.ArtifactLineageProjector"/> does per-execution directory I/O.
+    /// So a settled room ticks against <see cref="HasRoomJournalChanged"/> — one <see cref="FileInfo"/>
+    /// stat — and only pays for the reload when the journal actually moved.
+    /// </remarks>
     private void UpdateLiveRefreshTimer()
     {
-        if (_session.ShouldLiveRefresh)
+        if (_session.ShouldLiveRefresh || _session.CurrentRoomDirectoryPath is not null)
         {
             _liveRefreshTimer.Start();
         }
@@ -2415,5 +2464,33 @@ public partial class MainWindow : Window
         {
             _liveRefreshTimer.Stop();
         }
+    }
+
+    private (long Length, DateTime WrittenAtUtc)? _lastSeenRoomJournalStamp;
+
+    /// <summary>
+    /// Whether the open room's <c>room.jsonl</c> has changed since the last tick — the cheap gate a
+    /// settled room's tick runs instead of a full re-projection (see <see cref="UpdateLiveRefreshTimer"/>).
+    /// Length AND write time, because a switch off followed by a switch on appends two lines of
+    /// different lengths but could land inside one filesystem timestamp granule.
+    /// A room with no journal is the common case and reads as unchanged, not as a change every tick.
+    /// </summary>
+    private bool HasRoomJournalChanged(string roomDirectoryPath)
+    {
+        (long, DateTime)? stamp = null;
+        var journalPath = System.IO.Path.Combine(roomDirectoryPath, "room.jsonl");
+        if (File.Exists(journalPath))
+        {
+            var info = new FileInfo(journalPath);
+            stamp = (info.Length, info.LastWriteTimeUtc);
+        }
+
+        if (Equals(stamp, _lastSeenRoomJournalStamp))
+        {
+            return false;
+        }
+
+        _lastSeenRoomJournalStamp = stamp;
+        return true;
     }
 }

@@ -86,7 +86,7 @@ void main() {
       Map<String, dynamic> withSwitch(Object? value) => {
             'snapshot': {'workflowTemplateId': 'wf', 'steps': <dynamic>[]},
             'state': {'status': 'Paused', 'steps': <dynamic>[]},
-            if (value != null) key: value,
+            key: ?value,
           };
 
       expect(RoomProjection.fromJson(withSwitch(true)).isWorkflowOff, isTrue);

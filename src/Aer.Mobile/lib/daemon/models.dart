@@ -218,10 +218,9 @@ class RoomProjection {
   /// History of turn host dormancy transitions (#1178).
   final List<DormancyTransition> dormancyTransitions;
 
-  /// Whether the room's workflow has been switched off (#1216). Defaults false, because absence of a
-  /// `WorkflowSwitched` event in `room.jsonl` means the workflow is ON — an older room, or a daemon
-  /// predating the field, must not read as switched off. Parsed here so the wire twin stays complete;
-  /// the phone's own switch is #1196 slice 6.
+  /// Wire twin of the engine's `RoomState.IsWorkflowOff` (#1216) — see its doc comment for what the
+  /// flag means and why absence reads as ON. Parsed here so the twin stays complete; the phone's own
+  /// switch is #1196 slice 6.
   final bool isWorkflowOff;
 
   RoomProjection({

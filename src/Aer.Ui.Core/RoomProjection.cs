@@ -31,11 +31,10 @@ namespace Aer.Ui.Core;
 /// only <c>flow.jsonl</c> otherwise).
 /// </param>
 /// <param name="IsWorkflowOff">
-/// Whether this room's workflow has been switched off (#1216) — projected from <c>room.jsonl</c>'s
-/// <see cref="RoomEvent.WorkflowSwitched"/> alongside <paramref name="PendingPermission"/>. A plain
-/// bool rather than a transitions list (unlike <paramref name="DormancyTransitions"/>, whose history
-/// is shown to the person): the switch is a "non-event" and nothing reads its past. Defaults false so
-/// absence means "on" — see <see cref="Aer.Flow.Projection.RoomState.IsWorkflowOff"/>.
+/// The UI-side carrier of <see cref="Aer.Flow.Projection.RoomState.IsWorkflowOff"/> (#1216), which
+/// defines it — projected from <c>room.jsonl</c> alongside <paramref name="PendingPermission"/>. A
+/// plain bool rather than a transitions list (unlike <paramref name="DormancyTransitions"/>, whose
+/// history is shown to the person): the switch is a "non-event" and nothing reads its past.
 /// </param>
 public sealed record RoomProjection(
     WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage,

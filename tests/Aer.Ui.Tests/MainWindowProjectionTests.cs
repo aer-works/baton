@@ -299,8 +299,18 @@ public class MainWindowProjectionTests
         }
     }
 
+    /// <summary>
+    /// Reaching terminal used to STOP the poller outright. #1216 ended that — a room's workflow
+    /// switch is a <c>room.jsonl</c> fact that changes precisely when the flow cannot, and a
+    /// terminal room is the one most likely to be switched, since a room with work in flight is
+    /// refused. What survives is the saving that stop was actually for: a settled room must stop
+    /// paying for re-projection, which re-reads every execution's artifact directory. See
+    /// <c>MainWindow.UpdateLiveRefreshTimer</c>'s remarks, and
+    /// <c>NavigationShellTests.A_finished_room_still_observes_its_workflow_being_switched_by_someone_else</c>
+    /// for the behaviour that replaced it.
+    /// </summary>
     [AvaloniaFact]
-    public async Task Live_refresh_stops_once_the_workflow_reaches_a_terminal_state()
+    public async Task Live_refresh_stops_re_projecting_once_the_workflow_reaches_a_terminal_state()
     {
         var snapshot = TwoStepSnapshot();
         var architectExecutionId = new ExecutionId("a-1");
@@ -327,7 +337,13 @@ public class MainWindowProjectionTests
             await window.RefreshAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal("Workflow status: Terminal", window.FindViewControl<TextBlock>("StatusText")!.Text);
-            Assert.False(window.IsLiveRefreshTimerEnabled);
+
+            // Still watching — but a tick over an unchanged journal costs a stat, not a projection.
+            Assert.True(window.IsLiveRefreshTimerEnabled);
+            var renderedBefore = window.RenderedProjectionCountForTests;
+            await window.OnLiveRefreshTickAsync(TestContext.Current.CancellationToken);
+            await window.OnLiveRefreshTickAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(renderedBefore, window.RenderedProjectionCountForTests);
         }
         finally
         {

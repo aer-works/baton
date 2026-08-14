@@ -161,6 +161,7 @@ public sealed partial class ChatViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsComposerVisible))]
     [NotifyPropertyChangedFor(nameof(IsNewChatVisible))]
     [NotifyPropertyChangedFor(nameof(IsWorkflowSwitchVisible))]
+    [NotifyPropertyChangedFor(nameof(IsWorkflowActive))]
     [NotifyPropertyChangedFor(nameof(IsShapeToggleVisible))]
     private bool isPipelineRoom;
 
@@ -175,6 +176,7 @@ public sealed partial class ChatViewModel : ObservableObject
     /// is what keeps a phone and a desktop from disagreeing about when the switch is available (0020).
     /// </remarks>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsWorkflowActive))]
     [NotifyPropertyChangedFor(nameof(IsShapeToggleVisible))]
     [NotifyPropertyChangedFor(nameof(WorkflowSwitchLabel))]
     private bool isWorkflowOn = true;
@@ -186,11 +188,25 @@ public sealed partial class ChatViewModel : ObservableObject
     public bool IsWorkflowSwitchVisible => IsPipelineRoom;
 
     /// <summary>
+    /// Whether this room currently has a workflow to act on at all — the one canonical answer every
+    /// workflow-shaped affordance keys on, so they cannot drift apart.
+    /// </summary>
+    /// <remarks>
+    /// Nothing in the engine refuses a run because the switch is off (#1216 is the durable fact and
+    /// the surface; routing is later work in #1196). That makes it the UI's job not to offer a
+    /// workflow action beside a header that says the workflow is off — the second reader's finding:
+    /// a room reading "Workflow OFF" was still showing "Run it again", which would have run the very
+    /// graph the header said was not there. Hiding the offer is honest about what the room has,
+    /// rather than pretending an enforcement that does not exist.
+    /// </remarks>
+    public bool IsWorkflowActive => IsPipelineRoom && IsWorkflowOn;
+
+    /// <summary>
     /// Whether the Shape toggle is offered. A room whose workflow is off has no shape to show — the
     /// corpus's "toggling a room's workflow off hides the shape panel" — so the toggle goes with it
     /// rather than being left on screen opening an empty panel.
     /// </summary>
-    public bool IsShapeToggleVisible => IsPipelineRoom && IsWorkflowOn;
+    public bool IsShapeToggleVisible => IsWorkflowActive;
 
     partial void OnIsWorkflowOnChanged(bool value)
     {
