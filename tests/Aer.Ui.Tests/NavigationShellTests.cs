@@ -1,5 +1,6 @@
 using Aer.Ui.Tests.TestSupport;
 using Aer.Adapters;
+using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;
@@ -333,6 +334,40 @@ public class NavigationShellTests
         finally
         {
             DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1219, at the caller rather than at the derivation. A second reader found the Task view's
+    /// headline still reading "Working — …" for a room whose process had died, because its one
+    /// production call site took a defaulted lock reading while every other surface probed. The
+    /// parity fact in <c>StatusDerivationTests</c> could not catch that: it checks the two
+    /// derivations agree given the same answer, not that the caller asks the right question. This
+    /// drives the real open path and reads what the headline actually says.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task The_room_headline_says_stopped_for_a_room_whose_process_died()
+    {
+        var stalledRoom = await CreateStalledRoomDirectoryAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(stalledRoom, TestContext.Current.CancellationToken);
+
+            Assert.Equal("Stopped", window.ViewModel.RoomHeadlineText);
+
+            // The control arm, and the reason this is not a test of a constant: the same room with a
+            // live pump over it reads as working. Without this, a headline hard-coded to "Stopped"
+            // would pass.
+            using (ConcurrencyGuard.Acquire(stalledRoom, "headline control arm"))
+            {
+                await window.OpenAsync(stalledRoom, TestContext.Current.CancellationToken);
+                Assert.StartsWith("Working", window.ViewModel.RoomHeadlineText);
+            }
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(stalledRoom);
         }
     }
 

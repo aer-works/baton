@@ -98,11 +98,15 @@ public static class PlainLanguage
     /// #334's reply/review split. Delegating is what makes "can never drift" true.
     /// </summary>
     /// <param name="isFlowLockHeld">
-    /// #1219: threaded through rather than probed here, because this overload is handed a projection
-    /// and no directory — see <c>DeriveStatus</c> for why <c>true</c> is the honest default for a
-    /// caller that cannot answer (it reproduces the pre-#1219 reading exactly).
+    /// #1219: threaded through rather than probed here, since this is handed a projection and no
+    /// directory. <b>Deliberately not defaulted.</b> The first draft gave it <c>= true</c> on the
+    /// reasoning that a caller which cannot answer should reproduce the pre-#1219 reading — and a
+    /// second reader found that the one production caller simply omitted it, so the Task view's
+    /// headline went on saying "Working — …" for a room whose process had died. That is the same
+    /// disagreement this issue exists to remove, one surface over. A default here does not make a
+    /// caller honest; it makes the dishonest case invisible.
     /// </param>
-    public static string ForWorkflow(RoomProjection projection, bool isFlowLockHeld = true)
+    public static string ForWorkflow(RoomProjection projection, bool isFlowLockHeld)
         => RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld).StatusText;
 
     /// <summary>

@@ -2,6 +2,7 @@ using Aer.Adapters;
 using Aer.Cli;
 using Aer.Flow;
 using Aer.Flow.Artifacts;
+using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
 using Aer.Flow.Templates;
@@ -1382,7 +1383,14 @@ public partial class MainWindow : Window
         // (including the one a successful Wake produces) alters no other term — same class of bug as
         // the pendingPermissionId note above, same fix.
         var dormancyCount = projection.DormancyTransitions.Count;
-        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}|{pendingPermissionId}|{dormancyCount}"; // vocabulary-ok: state fingerprint key
+        // #1219: exactly the same class of bug as the two notes above, and found by a control arm
+        // rather than reasoned about. Since #1219 the room's §15 lock is an input to what this method
+        // renders (the headline reads Stopped or Working from it), and a process dying changes the
+        // lock while changing *nothing* in the projection — so without this term the fingerprint
+        // short-circuits, and a room that dies while you are looking at it goes on saying "Working"
+        // indefinitely. One reading, used for the key and for the render below.
+        var isFlowLockHeld = ConcurrencyGuard.IsHeld(roomDirectoryPath);
+        var fingerprint = $"{roomDirectoryPath}|{projection.State.Status}|{stepsFingerprint}|{attemptsCount}|{projection.History.Decisions.Count}|{projection.Lineage.Executions.Count}|{convLength}|{pendingPermissionId}|{dormancyCount}|{isFlowLockHeld}"; // vocabulary-ok: state fingerprint key
 
         if (_lastRenderedProjectionFingerprint == fingerprint)
         {
@@ -1440,7 +1448,7 @@ public partial class MainWindow : Window
         // M19 Phase 3 (#188): the per-step drill-in — built after the session has rebuilt
         // PausedSteps, so each paused step's inline decision card is the same live VM instance.
         ViewModel.RebuildRoomSteps(
-            projection, roomDirectoryPath,
+            projection, roomDirectoryPath, isFlowLockHeld,
             previewFileAsync: filePath => ShowArtifactPreviewAsync(filePath),
             showConversation: ShowConversation,
             workerAdapters: workerAdapters);

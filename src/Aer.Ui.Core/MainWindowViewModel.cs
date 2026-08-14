@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Aer.Flow.Concurrency;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Aer.Ui.Core;
@@ -304,9 +305,15 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// and conversation delegates are the skin's render targets — the same inversion
     /// <see cref="RoomClient"/> uses, keeping this assembly Avalonia-free.
     /// </summary>
+    /// <param name="isFlowLockHeld">
+    /// #1219: passed, not probed here, so this and <c>RenderProjection</c>'s own fingerprint answer
+    /// from one reading of the room's §15 lock — and required rather than defaulted, for the reason
+    /// on <see cref="PlainLanguage.ForWorkflow"/>.
+    /// </param>
     public void RebuildRoomSteps(
         RoomProjection projection,
         string roomDirectoryPath,
+        bool isFlowLockHeld,
         Func<string, Task> previewFileAsync,
         Action<string, string> showConversation,
         IReadOnlyDictionary<string, string>? workerAdapters = null)
@@ -331,7 +338,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
             RoomSteps.Add(item);
         }
 
-        RoomHeadlineText = PlainLanguage.ForWorkflow(projection);
+        // #1219: the Task view's headline reads the same lock every other surface does. It is still
+        // live until slice 5 retires the section, and without this a room whose process died kept
+        // saying "Working — …" here while the switcher and the transcript both said Stopped.
+        RoomHeadlineText = PlainLanguage.ForWorkflow(projection, isFlowLockHeld);
         SelectedStep =
             RoomSteps.FirstOrDefault(step => step.StepId == previousSelectedStepId) ??
             RoomSteps.FirstOrDefault(step => step.IsPaused) ??

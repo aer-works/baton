@@ -194,8 +194,19 @@ public static class RoomCardViewModel
             // The paused scan is a step scan, not `Status == Paused`: one step still Running forces
             // the whole workflow Running, so a crashed room with a live gate on a sibling branch would
             // slip past a status test and get a Stopped label beside a decision the person can answer.
+            //
+            // A genuine failure still outranks it, which is the third consequence of this ordering and
+            // the one a second reader had to find (the two above were reasoned about; this was not).
+            // The two above each replace an optimistic "still in progress" reading with an honest one.
+            // This one would replace an already-conclusive verdict: a room mixing an exhausted step
+            // with a separately, permanently failed one reaches WorkflowStatus.Running with nothing
+            // actually Running, so a crash mid-park frees the lock and "Stopped" would drop the
+            // sibling's recorded failure off the headline — and invite a Resume straight back into it.
+            // Exhaustion alone is not that: it is a wait, so a room blocked only on quota does fall
+            // through to Stopped once nothing is left to serve the wait.
             WorkflowStatus.Running when !isFlowLockHeld
                 && !projection.State.Steps.Any(s => s.Status == StepStatus.Paused)
+                && (failedOrRejectedSteps.Count == 0 || isOnlyBlockerExhaustion)
                 => ("Stopped", RoomCardStatus.Stopped),
             WorkflowStatus.Running when pendingPermission != null => ("Permission requested", RoomCardStatus.NeedsYou),
             WorkflowStatus.Paused => (PausedCardStatusText(projection), RoomCardStatus.NeedsYou),

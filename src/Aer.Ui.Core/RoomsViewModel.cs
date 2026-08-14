@@ -298,7 +298,17 @@ public sealed partial class RoomsViewModel : ObservableObject
         RoomCardStatus.Cancelled => 3,
         RoomCardStatus.Unavailable => 3,
         RoomCardStatus.OutOfPlan => 3,
-        _ => 2,
+        // #1219: named rather than left to the discard, which a second reader caught silently filing
+        // it beside Finished. Band 3 with Cancelled, its nearest sibling: a room whose process died is
+        // quiet — it is not competing for attention with a gate or a live run — and the person finds
+        // it when they go looking, with Resume on its own transcript.
+        RoomCardStatus.Stopped => 3,
+        // A never-run room the fleet reports no state for (see the property's own remarks) genuinely
+        // has no band; it sits with the settled outcomes. Split from the discard so that a NEW status
+        // member cannot inherit a tier by accident — the #616 lesson every other status switch in this
+        // file's neighbourhood already applies, and which this one was quietly missing.
+        null => 2,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unranked card status."),
     };
 
     /// <summary>
