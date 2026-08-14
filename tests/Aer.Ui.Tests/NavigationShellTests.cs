@@ -673,6 +673,52 @@ public class NavigationShellTests
     }
 
     /// <summary>
+    /// #1222: and it leaves the room you already had open exactly as it was. A mistyped path is a
+    /// mistake, not a command to close anything, so the transcript, its section and its live refresh
+    /// all stay — only the message changes.
+    /// <para>
+    /// This is the successor to <c>MainWindowDagTests.Opening_a_template_does_not_start_the_live_refresh_timer</c>,
+    /// whose claim was that a file cannot change so nothing should poll for it. With no template
+    /// rendering left, the honest version of that claim is about what the open room's poller does,
+    /// which is: keep running, because that room really can change.
+    /// </para>
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Opening_a_workflow_file_by_path_leaves_the_room_already_open_alone()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        var testRoot = Path.Combine(Path.GetTempPath(), $"ui-shell-file-open-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(testRoot);
+        try
+        {
+            var workflowFilePath = Path.Combine(testRoot, "workflow.json");
+            await File.WriteAllTextAsync(
+                workflowFilePath,
+                System.Text.Json.JsonSerializer.Serialize(new WorkflowDefinition(
+                    new WorkflowTemplateId("one-step"),
+                    1,
+                    [new WorkflowStepDefinition(new StepId("architect"), "architect", [], ["plan"], [], new RetryPolicy(1))])),
+                TestContext.Current.CancellationToken);
+
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+            var headlineWhileOpen = window.ViewModel.Chat.HeadlineText;
+
+            await window.OpenAsync(workflowFilePath, TestContext.Current.CancellationToken);
+
+            Assert.Equal(ShellSection.Chat, window.ViewModel.CurrentSection);
+            Assert.Equal(headlineWhileOpen, window.ViewModel.Chat.HeadlineText);
+            Assert.True(window.ViewModel.Chat.IsPipelineRoom);
+            Assert.Contains("not a room", window.FindViewControl<TextBlock>("StatusText")!.Text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
     /// The shell's layout states — three at #1196 slice 3, two since #1222 retired the full-width
     /// shape. Driving the built app is what verifies this looks right; what this pins is that each
     /// state still puts the width on the column whose content is actually visible, which is the part

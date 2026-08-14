@@ -161,16 +161,14 @@ public class MainWindowDagTests
         Assert.Equal(window.FindResource("Color.Surface"), nodeC.Background);
     }
 
-    [AvaloniaFact]
-    public async Task Opening_a_template_does_not_start_the_live_refresh_timer()
-    {
-        var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "three-step-linear-workflow.json");
-
-        var window = new MainWindow();
-        await window.OpenAsync(fixturePath, TestContext.Current.CancellationToken);
-
-        Assert.False(window.IsLiveRefreshTimerEnabled);
-    }
+    // #1222 retired Opening_a_template_does_not_start_the_live_refresh_timer. It opened a workflow
+    // *file* through OpenAsync and asserted the poller stayed off, which was a real claim while that
+    // call rendered a template: nothing about a file can change, so nothing should be polled. #1222
+    // deleted that route, and the second reader caught that the test went on passing for a wholly
+    // different and much weaker reason — the early return now fires before the timer is even
+    // considered. A test that passes for the wrong reason is worse than no test, so it goes; the
+    // route's actual behaviour is pinned by
+    // NavigationShellTests.Opening_a_workflow_file_by_path_says_it_is_not_a_room_and_draws_no_graph.
 
     /// <summary>
     /// Regression test for a real M19 Phase 5 defect found post-milestone (2026-07-18): the DAG
