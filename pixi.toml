@@ -282,6 +282,11 @@ audit-staleness-ext-selftest = { cmd = "python -u tools/audit-completeness/stale
 audit-waitceiling = { cmd = "python -u tools/audit-completeness/waitceiling.py" }
 audit-waitceiling-selftest = { cmd = "python -u tools/audit-completeness/waitceiling.py --selftest" }
 
+# #1206: the flake-watch reporter's control arm. The reporter itself only ever runs in the scheduled
+# flake-watch workflow, which is exactly why its selftest belongs in the local gates — a reporter that
+# has quietly stopped being able to report is indistinguishable, from the outside, from a quiet suite.
+flake-watch-selftest = { cmd = "python -u tools/flake-watch/summarize.py --selftest" }
+
 # Every local gate, one exit code. Report THIS command's exit status, never a per-gate line scraped
 # out of the combined output -- see tools/gates/gates.py for the two occasions that went wrong.
 gates = { cmd = "python -u tools/gates/gates.py" }

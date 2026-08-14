@@ -37,6 +37,7 @@ OVERLAP = [
     "audit-staleness-ext-selftest",
     "audit-waitceiling",
     "audit-waitceiling-selftest",
+    "flake-watch-selftest",
     # #1138: the Dart analyzer, which CI's mobile job already gates — without it here, an
     # analyzer-only defect passes every local gate and fails CI a round trip later. Overlap-safe:
     # the Dart analysis server reads files and never touches MSBuild or the built CLI binary.

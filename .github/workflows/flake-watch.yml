@@ -1,0 +1,142 @@
+# Measures how non-deterministic the test suite actually is (#1206).
+#
+# Deliberately its OWN workflow, on its own trigger: it adds nothing to the PR pipeline, so pushes,
+# pull requests and merges are untouched by it. This repo is public and these are standard runners,
+# so the minutes are free; the cost is wall-clock on a runner overnight.
+#
+# Why it exists, and what "non-deterministic" means here, are on tools/flake-watch/summarize.py —
+# this file is only the schedule and the runners it needs.
+#
+# What it does NOT do, on purpose: retry failed tests. A retry would hide the very signal this
+# exists to surface.
+name: flake-watch
+
+on:
+  schedule:
+    # 04:00 UTC daily — after the day's merges have landed, and nowhere near working hours, so it
+    # never queues ahead of a PR someone is waiting on.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      passes:
+        description: "How many times to run the suite"
+        required: false
+        default: "5"
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: repeat (${{ matrix.os }})
+    # An hour is not a pace: 5 passes of a ~5-minute suite is ~25 minutes, and Windows is slower.
+    # This only stops a hung pass burning a runner all day.
+    timeout-minutes: 90
+    strategy:
+      # Never fail-fast: the whole point is the report, and ubuntu finishing early must not cancel
+      # the Windows leg — Windows is where the largest mechanism (file locking) lives, so an
+      # ubuntu-only answer would be blind to it.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: external/aer-core
+
+      # Same one-bounded-retry shape as ci.yml's, and for the same measured reason (#1117): the
+      # pixi download itself flaked four times on 2026-08-12. A watch that dies before running any
+      # test reports nothing, which is the one outcome that would make this workflow worse than
+      # useless — it would look like a clean night.
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        id: pixi-attempt-1
+        continue-on-error: true
+        with:
+          run-install: false
+          cache: false
+      - if: steps.pixi-attempt-1.outcome == 'failure'
+        shell: bash
+        run: sleep 30
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        if: steps.pixi-attempt-1.outcome == 'failure'
+        with:
+          run-install: false
+          cache: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.x"
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: src/Aer.Sidecar/go.sum
+
+      # Explicit rather than trusting the runner image: every other `python` in this repo's CI runs
+      # in the audit job, which is ubuntu-only, so bare `python` on windows-latest has never been
+      # exercised here. If that assumption were wrong it would not fail early — it would fail at the
+      # one step that produces the report, on the platform this workflow most exists for.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build once
+        run: pixi run build
+
+      # Every pass runs the same already-built assemblies, so what varies between passes is only what
+      # the suite itself does — a rebuild between passes would put compiler and restore behaviour
+      # into the measurement.
+      - name: Run the suite ${{ github.event.inputs.passes || 5 }} times
+        shell: bash
+        run: |
+          set -u
+          passes="${{ github.event.inputs.passes || 5 }}"
+          # Per PROJECT, not per solution. A solution-level run writes one .trx per project into the
+          # same directory, named to the second — two projects finishing in the same second overwrite
+          # each other, and a lost file reads downstream as every test in it being "NotRun" for that
+          # pass. That is a false flake report, and a watch that cries wolf is one nobody reads.
+          # Measured locally: ten .trx files, several one second apart.
+          # Separators and line endings normalised: the solution stores Windows-style paths, which
+          # `dotnet test` on ubuntu will not resolve, and a stray CR ends up inside the directory name.
+          projects=$(dotnet sln AerFlow.slnx list | tr -d '\r' | tr '\134' '/' | grep 'Tests\.csproj$')
+
+          for i in $(seq 1 "$passes"); do
+            pass_dir="flake-results/pass-$(printf '%02d' "$i")"
+            echo "::group::pass $i of $passes"
+            for project in $projects; do
+              name=$(basename "$project" .csproj)
+              # Never `set -e` here: a failing pass is DATA, and the whole measurement is thrown away
+              # if the first red aborts the loop before the other passes disagree with it.
+              dotnet test "$project" --no-build \
+                --logger "trx;LogFileName=pass.trx" \
+                --results-directory "$pass_dir/$name" \
+                || echo "$name had failures in pass $i (recorded, not fatal)"
+            done
+            echo "::endgroup::"
+          done
+
+      - name: Report non-deterministic tests
+        shell: bash
+        run: python tools/flake-watch/summarize.py flake-results
+
+      # Uploaded whatever the report said: on a red these are what name the failure, and on a green
+      # they are the evidence the passes really ran rather than the loop silently doing nothing.
+      - name: Upload the raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-results-${{ matrix.os }}
+          path: flake-results/
+          retention-days: 14
+
