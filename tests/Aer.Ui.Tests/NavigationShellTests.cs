@@ -444,6 +444,185 @@ public class NavigationShellTests
     }
 
     /// <summary>
+    /// #1216: the header's Workflow switch renders the room's durable fact, and a room whose workflow
+    /// is off is not offered a Shape toggle — there is no shape to show. Both polarities from the same
+    /// helper, one room with a <c>WorkflowSwitched</c> in its journal and one without, because the
+    /// claim that absence means ON is only worth anything beside a room where it is genuinely off.
+    /// </summary>
+    [AvaloniaTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_workflow_switch_and_the_shape_toggle_render_the_rooms_own_journal(bool switchItOff)
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            if (switchItOff)
+            {
+                await using var writer = new RoomEventLogWriter(Path.Combine(roomDirectory, "room.jsonl"));
+                await writer.AppendAsync(
+                    new RoomEvent.WorkflowSwitched(IsOn: false, "operator", DateTimeOffset.UtcNow),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            Assert.Equal(!switchItOff, window.ViewModel.Chat.IsWorkflowOn);
+            Assert.Equal(switchItOff ? "Workflow OFF" : "Workflow ON", window.ViewModel.Chat.WorkflowSwitchLabel);
+
+            // The switch itself is offered either way — it is how a room comes back.
+            Assert.True(window.ViewModel.Chat.IsWorkflowSwitchVisible);
+            var switchControl = window.ChatViewControl.FindControl<Avalonia.Controls.Primitives.ToggleButton>("WorkflowSwitch");
+            Assert.NotNull(switchControl);
+
+            // The Shape toggle is not: a room with no workflow has no shape to open.
+            Assert.Equal(!switchItOff, window.ViewModel.Chat.IsShapeToggleVisible);
+
+            // Nor is any workflow action — see ChatViewModel.IsWorkflowActive for why the offer has
+            // to go with the shape.
+            Assert.Equal(!switchItOff, window.ViewModel.Chat.IsWorkflowActive);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1216, found by driving the built app: another client switched a FINISHED room's workflow and
+    /// the open window went on showing the opposite indefinitely. Why the poller no longer stops at
+    /// <see cref="WorkflowStatus.Terminal"/> is on <c>MainWindow.UpdateLiveRefreshTimer</c>.
+    /// </summary>
+    /// <remarks>
+    /// Three arms, and the middle one is the control: the tick must NOT reload when the journal has
+    /// not moved (that cheapness is the whole reason the poller was stopped here in the first place,
+    /// since a re-projection re-reads every execution's artifact directory). Without it this test
+    /// would pass just as well against a poller that re-projects unconditionally forever.
+    /// </remarks>
+    [AvaloniaFact]
+    public async Task A_finished_room_still_observes_its_workflow_being_switched_by_someone_else()
+    {
+        var roomDirectory = await CreateRoomDirectoryAsync(
+            TwoStepSnapshot(),
+            [
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("a-1"), Architect)),
+                new FlowEvent.ExecutionSucceeded(new ExecutionId("a-1")),
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("c-1"), Critic)),
+                new FlowEvent.ExecutionSucceeded(new ExecutionId("c-1")),
+            ],
+            TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            Assert.True(window.ViewModel.Chat.IsWorkflowOn);
+
+            // The premise that changed: a settled room is still watched.
+            Assert.True(window.IsLiveRefreshTimerEnabled);
+
+            // Control — nothing has been appended, so a tick must not re-project.
+            var renderedBefore = window.RenderedProjectionCountForTests;
+            await window.OnLiveRefreshTickAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(renderedBefore, window.RenderedProjectionCountForTests);
+            Assert.True(window.ViewModel.Chat.IsWorkflowOn);
+
+            // Someone else — a phone, a second window, the daemon — switches it off.
+            await using (var writer = new RoomEventLogWriter(Path.Combine(roomDirectory, "room.jsonl")))
+            {
+                await writer.AppendAsync(
+                    new RoomEvent.WorkflowSwitched(IsOn: false, "operator", DateTimeOffset.UtcNow),
+                    TestContext.Current.CancellationToken);
+            }
+
+            await window.OnLiveRefreshTickAsync(TestContext.Current.CancellationToken);
+
+            Assert.False(window.ViewModel.Chat.IsWorkflowOn);
+            Assert.False(window.ViewModel.Chat.IsShapeToggleVisible);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// The arm no view-model-level assertion reaches: a shape panel that was already OPEN when the
+    /// switch was thrown. Retiring the toggle does not close the panel, so without this the person is
+    /// left looking at the shape of a workflow the header says is off.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Switching_the_workflow_off_closes_a_shape_panel_that_was_already_open()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            window.ViewModel.Chat.IsShapePanelOpen = true;
+            Assert.True(window.IsShapeRegionVisible);
+
+            window.ViewModel.Chat.IsWorkflowOn = false;
+
+            Assert.False(window.ViewModel.Chat.IsShapePanelOpen);
+            Assert.False(window.IsShapeRegionVisible);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Two claims about the click: which value it asks for (see
+    /// <see cref="MainWindowViewModel.ToggleWorkflowSwitchCommand"/> for why it is the room's opposite
+    /// and not the control's), and that a refusal is shown rather than swallowed — "stop the room
+    /// first" being the only way the person learns what to do next.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Throwing_the_switch_asks_for_the_opposite_of_the_room_and_surfaces_a_refusal()
+    {
+        var roomDirectory = await CreatePausedRoomDirectoryAsync("The plan holds up.", TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.OpenAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            bool? asked = null;
+            string? refusal = null;
+            window.ViewModel.WorkflowSwitchRequested += isOn =>
+            {
+                asked = isOn;
+                return Task.FromResult(refusal);
+            };
+
+            Assert.True(window.ViewModel.Chat.IsWorkflowOn);
+
+            refusal = "Step 'critic' is waiting on a decision.";
+            await window.ViewModel.RequestWorkflowSwitchAsync(!window.ViewModel.Chat.IsWorkflowOn);
+
+            Assert.False(asked);
+            Assert.Equal(refusal, window.ViewModel.WorkflowSwitchStatusText);
+            Assert.True(window.ViewModel.HasWorkflowSwitchStatusText);
+
+            // A refusal never moves the switch: it renders the journal, which did not change.
+            Assert.True(window.ViewModel.Chat.IsWorkflowOn);
+
+            // And the next attempt does not inherit the previous refusal's text.
+            refusal = null;
+            await window.ViewModel.RequestWorkflowSwitchAsync(false);
+            Assert.Null(window.ViewModel.WorkflowSwitchStatusText);
+            Assert.False(window.ViewModel.HasWorkflowSwitchStatusText);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
     /// The shell's three layout states (#1196 slice 3). Driving the built app is what verifies this
     /// looks right; what this pins is that each state still puts the width on the column whose
     /// content is actually visible, which is the part a later edit can silently invert.

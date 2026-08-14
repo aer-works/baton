@@ -218,6 +218,11 @@ class RoomProjection {
   /// History of turn host dormancy transitions (#1178).
   final List<DormancyTransition> dormancyTransitions;
 
+  /// Wire twin of the engine's `RoomState.IsWorkflowOff` (#1216) — see its doc comment for what the
+  /// flag means and why absence reads as ON. Parsed here so the twin stays complete; the phone's own
+  /// switch is #1196 slice 6.
+  final bool isWorkflowOff;
+
   RoomProjection({
     required this.directoryPath,
     required this.sessionId,
@@ -230,6 +235,7 @@ class RoomProjection {
     this.pendingPermission,
     this.permissionAnswers = const [],
     this.dormancyTransitions = const [],
+    this.isWorkflowOff = false,
   });
 
   bool get isDormant => dormancyTransitions.isNotEmpty && dormancyTransitions.last.isEntered;
@@ -277,6 +283,7 @@ class RoomProjection {
       dormancyTransitions: ((j['dormancytransitions'] as List<dynamic>?) ?? [])
           .map((t) => DormancyTransition.fromJson(t as Map<String, dynamic>))
           .toList(),
+      isWorkflowOff: j['isworkflowoff'] == true,
     );
   }
 }

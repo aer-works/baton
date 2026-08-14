@@ -674,6 +674,45 @@ disconnect, or enter an artificial "idle" state. They stay in the room as ordina
 workers — because a room without an active workflow is already free-form by 0001's own model.
 Turning off a workflow strips away the graph overlay; it does not touch who's present.
 
+**Amendment (2026-08-14, #1216 / umbrella #1196).** The drawings above settle what the switch *shows*
+and leave two things open that only appear once it is built: what happens when it is thrown while the
+room is busy, and what happens when it is turned back on. Both are ratified here.
+
+**Thrown while the room has work in flight: refused, with a reason.** The person stops the room first.
+This mirrors the DAG dependency check at `:616-621`, which refuses rather than silently repairing the
+graph, and it is what keeps "non-event" true in the strong sense — nothing is destroyed because
+nothing is touched. Note the escape hatch already drawn there, "Stop Workflow & Remove", is exactly
+this rule's other half rather than a counterexample: it *is* a toggle-off during live work, and it is
+available only as an explicitly destructive, confirmed action carrying no more visual weight than
+Cancel. The bare switch in the header is not that, so it refuses. Having the switch cancel in-flight
+work on its own was considered and rejected: it would make a toggle destructive, which is precisely
+what calling it a non-event says it is not.
+
+"Work in flight" deliberately does **not** mean a step whose recorded status is running. A workflow is
+`Running` when an attempt is live *or* when Flow crashed before recording the outcome (behavioural
+spec §6), so that test would leave a room whose process died days ago permanently unable to switch its
+workflow off. It means what #1219 established for the same reason: the room's §15 flow lock is held
+(only a live pump holds it, and the OS drops it the instant its holder exits), or a step is genuinely
+paused awaiting a person. A room parked on a vendor quota is therefore refused — its pump is alive —
+and a dead one is not.
+
+**Turned back on: nothing happens but the shape reappearing.** The switch governs whether the room has
+a workflow attached and whether its shape is shown, and the graph comes back in whatever state it was
+left. Running it again is a separate, deliberate act through the Resume / Run it again card (#1215).
+Resuming on a flick of the switch was rejected for the reason auto-resume-on-open was rejected in
+#1215: it spends the operator's subscription on a gesture nobody meant as a run.
+
+Two consequences worth stating, since the drawings do not. When the workflow is off, the `Shape`
+toggle goes with the panel rather than staying on screen to open an empty one, and a panel that was
+already open closes.
+
+And **a room with its workflow off offers no way to run it** — the Resume / Run it again card goes
+with the shape. Nothing in the engine yet refuses a dispatch because the switch is off (routing is
+later work in #1196), so leaving the offer up would let a room whose header reads `Workflow OFF` run
+the very graph the header says is not attached. Hiding it is honest about what the room has, rather
+than implying an enforcement that does not exist; when routing lands, the offer's absence and the
+engine's refusal will be saying the same thing.
+
 ### Resident-room addition (2026-08-04) — spend controls, dormancy, waiting on a lock
 
 Everything below this line is new: the screens for a room whose orchestrator is *resident* —

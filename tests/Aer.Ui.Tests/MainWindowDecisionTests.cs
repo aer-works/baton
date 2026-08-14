@@ -49,7 +49,8 @@ public class MainWindowDecisionTests
             Assert.Equal("Workflow status: Terminal", statusText.Text);
             Assert.Empty(window.ViewModel.PausedSteps);
             Assert.Equal(string.Empty, window.ViewModel.DecisionStatusText);
-            Assert.False(window.IsLiveRefreshTimerEnabled);
+            // The flow question, not the poller's — see MainWindow.IsRoomFlowStillChanging (#1216).
+            Assert.False(window.IsRoomFlowStillChanging);
 
             var stepsPanel = window.FindViewControl<StackPanel>("StepsPanel")!;
             Assert.Equal(

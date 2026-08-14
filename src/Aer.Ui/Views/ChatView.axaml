@@ -8,6 +8,27 @@
              xmlns:md="clr-namespace:Aer.Ui.Markdown"
              x:Class="Aer.Ui.Views.ChatView"
              x:DataType="vm:MainWindowViewModel">
+  <UserControl.Styles>
+    <!-- #1216: the Workflow switch renders a STATE, not an action, so it must not borrow the
+         default ToggleButton's checked accent — which in this theme is the same loud red the app
+         uses for failure. Driving the built app is what showed it: "Workflow ON", the ordinary
+         healthy state every room is in, arrived looking like an alarm, while OFF — the unusual
+         state actually worth noticing — sat quiet and grey. Neutral in both states; the words carry
+         the difference, the way the corpus's own drawing does ("Workflow [● ON ]" / "[○ OFF]"). -->
+    <Style Selector="ToggleButton#WorkflowSwitch:checked">
+      <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
+      <Setter Property="Foreground" Value="{DynamicResource Color.Text}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Color.BorderSubtle}" />
+    </Style>
+    <Style Selector="ToggleButton#WorkflowSwitch:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource Color.Text}" />
+    </Style>
+    <Style Selector="ToggleButton#WorkflowSwitch:checked /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource Color.Text}" />
+    </Style>
+  </UserControl.Styles>
   <DockPanel Margin="24">
     <!-- Daily-driver header (docs/design/02-screens.md): the room name, with the worker as a chip
          beside it ("aer-flow  claude") — not "vendor — turn N". "+ Add worker" and multi-worker
@@ -24,8 +45,23 @@
            no graph worth drawing (ChatViewModel's own remarks). What the panel holds and where it
            renders is on ChatViewModel.IsShapePanelOpen and MainWindow.ApplyShellLayout. -->
       <ToggleButton x:Name="ChatShapeToggle" VerticalAlignment="Center" Content="Shape"
-                    IsVisible="{Binding Chat.IsPipelineRoom}"
+                    IsVisible="{Binding Chat.IsShapeToggleVisible}"
                     IsChecked="{Binding Chat.IsShapePanelOpen}" />
+      <!-- #1216: the header's Workflow ON/OFF switch (02-screens.md's "the workflow-toggle-off
+           control"). One-way on purpose — it renders the room's durable state, and the click asks the
+           engine rather than setting it, so a refusal leaves the switch showing the truth instead of
+           a position nothing agreed to. What refusal means, and why it refuses rather than stopping
+           the room for you, is the dated amendment in 02-screens.md. -->
+      <ToggleButton x:Name="WorkflowSwitch" VerticalAlignment="Center"
+                    IsVisible="{Binding Chat.IsWorkflowSwitchVisible}"
+                    IsChecked="{Binding Chat.IsWorkflowOn, Mode=OneWay}"
+                    Content="{Binding Chat.WorkflowSwitchLabel}"
+                    Command="{Binding ToggleWorkflowSwitchCommand}"
+                    ToolTip.Tip="Switch this room's workflow off, or back on. Nothing is deleted — the shape, and every worker, stay exactly as they are." />
+      <TextBlock x:Name="WorkflowSwitchStatusText" Classes="caption secondary" VerticalAlignment="Center"
+                 TextWrapping="Wrap" MaxWidth="360"
+                 Text="{Binding WorkflowSwitchStatusText}"
+                 IsVisible="{Binding HasWorkflowSwitchStatusText}" />
       <!-- #1215: Stop's always-present rule is docs/design/03-interaction-depth.md's, and the
            amendment recording this move is 02-screens.md's. Slice 3 moved RoomView into the
            collapsible Shape panel and Stop went with it, so Stop existed only while a panel that is
@@ -233,8 +269,11 @@
              RoomStoppedCardViewModel for what it offers and why it sits here. Gated on a workflow
              room: a chat session is never "stopped mid-run", and a finished one is not re-run from a
              workflow file. RunStatusText rides beside it because this is where a failed Resume has to
-             be readable — its other home is RoomView, which is the Shape panel, closed by default. -->
-        <StackPanel Spacing="{DynamicResource Space.2}" IsVisible="{Binding Chat.IsPipelineRoom}">
+             be readable — its other home is RoomView, which is the Shape panel, closed by default.
+             #1216 narrowed the gate from IsPipelineRoom to IsWorkflowActive: Resume / Run it again is
+             a workflow action, and offering it beside a header reading "Workflow OFF" would have run
+             the graph the header says is not there — see ChatViewModel.IsWorkflowActive. -->
+        <StackPanel Spacing="{DynamicResource Space.2}" IsVisible="{Binding Chat.IsWorkflowActive}">
           <Border Classes="card" IsVisible="{Binding HasRoomStoppedCard}"
                   Background="{DynamicResource Color.SurfaceSubtle}" Margin="0,4,0,4">
             <StackPanel Spacing="8" DataContext="{Binding RoomStoppedCard}" x:DataType="vm:RoomStoppedCardViewModel">

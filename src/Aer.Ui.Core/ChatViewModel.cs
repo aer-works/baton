@@ -160,7 +160,62 @@ public sealed partial class ChatViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsComposerVisible))]
     [NotifyPropertyChangedFor(nameof(IsNewChatVisible))]
+    [NotifyPropertyChangedFor(nameof(IsWorkflowSwitchVisible))]
+    [NotifyPropertyChangedFor(nameof(IsWorkflowActive))]
+    [NotifyPropertyChangedFor(nameof(IsShapeToggleVisible))]
     private bool isPipelineRoom;
+
+    /// <summary>
+    /// Whether this room's workflow is switched on (#1216) — projected from <c>room.jsonl</c>, so it
+    /// survives a restart, and defaulting true because absence means on
+    /// (<see cref="Aer.Flow.Domain.RoomEvent.WorkflowSwitched"/>).
+    /// </summary>
+    /// <remarks>
+    /// Rendering only. Nothing here decides the value or refuses a change: the durable fact is the
+    /// journal's, and the refusal rule is <c>RoomMutationInterface.SetWorkflowSwitchAsync</c>'s, which
+    /// is what keeps a phone and a desktop from disagreeing about when the switch is available (0020).
+    /// </remarks>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsWorkflowActive))]
+    [NotifyPropertyChangedFor(nameof(IsShapeToggleVisible))]
+    [NotifyPropertyChangedFor(nameof(WorkflowSwitchLabel))]
+    private bool isWorkflowOn = true;
+
+    /// <summary>The switch's own text, spelled out rather than left to the toggle's pressed look — the corpus draws the state in words ("Workflow [● ON ]").</summary>
+    public string WorkflowSwitchLabel => IsWorkflowOn ? "Workflow ON" : "Workflow OFF";
+
+    /// <summary>The switch itself: a chat session has no workflow to switch, so it is offered only in a workflow room.</summary>
+    public bool IsWorkflowSwitchVisible => IsPipelineRoom;
+
+    /// <summary>
+    /// Whether this room currently has a workflow to act on at all — the one canonical answer every
+    /// workflow-shaped affordance keys on, so they cannot drift apart.
+    /// </summary>
+    /// <remarks>
+    /// Why a workflow-off room offers no run at all — including the enforcement that does not yet
+    /// exist behind it — is settled in <c>docs/design/02-screens.md</c>'s #1216 amendment. This is
+    /// the single flag that decision is spent through, so the header, the Shape toggle and the run
+    /// offer cannot disagree about it.
+    /// </remarks>
+    public bool IsWorkflowActive => IsPipelineRoom && IsWorkflowOn;
+
+    /// <summary>
+    /// Whether the Shape toggle is offered. A room whose workflow is off has no shape to show — the
+    /// corpus's "toggling a room's workflow off hides the shape panel" — so the toggle goes with it
+    /// rather than being left on screen opening an empty panel.
+    /// </summary>
+    public bool IsShapeToggleVisible => IsWorkflowActive;
+
+    partial void OnIsWorkflowOnChanged(bool value)
+    {
+        // Switching off closes the panel as well as retiring its toggle. Without this a panel that
+        // was already open stays open, showing the shape of a workflow the header now says is off —
+        // the toggle disappearing is not the same as the panel closing.
+        if (!value)
+        {
+            IsShapePanelOpen = false;
+        }
+    }
 
     /// <summary>
     /// Whether the composer is on screen at all — true in a workflow room, where it is disabled
@@ -409,6 +464,12 @@ public sealed partial class ChatViewModel : ObservableObject
     public void LoadFromMetadata(SessionMetadata metadata, string roomDirectoryPath)
     {
         _lastMetadata = metadata;
+        // A chat session has no workflow to switch, so it resets to the default rather than inheriting
+        // the last workflow room's OFF (#1216). Deliberately NOT in Clear(): the shell calls Clear()
+        // AFTER the projection has already rendered, so resetting there wiped the value the journal
+        // had just supplied — and the render's fingerprint then short-circuited every retry, leaving
+        // a switched-off room reading ON for as long as it stayed open.
+        IsWorkflowOn = true;
         SessionId = metadata.SessionId;
         RoomDirectoryPath = roomDirectoryPath;
         CurrentAdapter = metadata.CurrentAdapter;

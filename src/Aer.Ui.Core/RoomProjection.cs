@@ -30,13 +30,20 @@ namespace Aer.Ui.Core;
 /// mid-turn ask is journaled but never rendered (<see cref="RoomProjectionLoader.LoadAsync"/> reads
 /// only <c>flow.jsonl</c> otherwise).
 /// </param>
+/// <param name="IsWorkflowOff">
+/// The UI-side carrier of <see cref="Aer.Flow.Projection.RoomState.IsWorkflowOff"/> (#1216), which
+/// defines it — projected from <c>room.jsonl</c> alongside <paramref name="PendingPermission"/>. A
+/// plain bool rather than a transitions list (unlike <paramref name="DormancyTransitions"/>, whose
+/// history is shown to the person): the switch is a "non-event" and nothing reads its past.
+/// </param>
 public sealed record RoomProjection(
     WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage,
     PendingPermission? PendingPermission = null,
     IReadOnlyList<PermissionAnswer>? PermissionAnswers = null,
     IReadOnlyList<DormancyTransition>? DormancyTransitions = null,
     IReadOnlyList<StepPauseMoment>? StepPauseMoments = null,
-    IReadOnlyList<RecordedDecisionMoment>? RecordedDecisionMoments = null)
+    IReadOnlyList<RecordedDecisionMoment>? RecordedDecisionMoments = null,
+    bool IsWorkflowOff = false)
 {
     public IReadOnlyList<PermissionAnswer> PermissionAnswers { get; init; } = PermissionAnswers ?? [];
     public IReadOnlyList<DormancyTransition> DormancyTransitions { get; init; } = DormancyTransitions ?? [];

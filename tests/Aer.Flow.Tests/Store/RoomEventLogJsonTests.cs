@@ -37,6 +37,10 @@ public class RoomEventLogJsonTests
         new RoomEvent.RuntimePermissionAsked("req-1", new ExecutionId("ex-1"), new StepId("st-1"), "w-1", "claude", "corr-1", "ReadFiles", "{}", "ReadFiles", FixedInstant),
         new RoomEvent.RuntimePermissionAnswered("req-1", "AllowOnce", "{}", "ok", "op-1", FixedInstant),
         new RoomEvent.RuntimePermissionRevoked("req-1", "timeout", FixedInstant),
+        // Both polarities: the discriminator is shared, so a round trip that only ever carried one
+        // value of IsOn would pass with the bool dropped entirely.
+        new RoomEvent.WorkflowSwitched(false, "operator", FixedInstant),
+        new RoomEvent.WorkflowSwitched(true, "operator", FixedInstant),
     ];
 
 

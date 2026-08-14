@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using Aer.Flow.Concurrency;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 
 namespace Aer.Ui.Core;
 
@@ -255,6 +256,48 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     /// <summary>Invokes <see cref="RoomRunRequested"/>, or completes immediately if nothing is listening.</summary>
     internal Task RequestRoomRunAsync() => RoomRunRequested?.Invoke() ?? Task.CompletedTask;
+
+    /// <summary>
+    /// Raised when the header's Workflow switch is thrown (#1216). The bool is the state asked for,
+    /// not a toggle instruction, so a stale render cannot invert what the person meant.
+    /// </summary>
+    public event Func<bool, Task<string?>>? WorkflowSwitchRequested;
+
+    /// <summary>
+    /// Why the last switch attempt did not take — the engine's own reason
+    /// (<c>RoomMutationInterface.SetWorkflowSwitchAsync</c>), shown beside the switch rather than
+    /// swallowed. A refusal is an answer, and the person needs to know they must stop the room first;
+    /// silently springing the switch back is the "quiet failure" 0026 §5 rules out.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasWorkflowSwitchStatusText))]
+    private string? workflowSwitchStatusText;
+
+    public bool HasWorkflowSwitchStatusText => !string.IsNullOrEmpty(WorkflowSwitchStatusText);
+
+    /// <summary>
+    /// Asks for the room's workflow to be switched to <paramref name="isOn"/>. Never sets
+    /// <c>Chat.IsWorkflowOn</c> itself: the switch renders the journal, so the value comes back
+    /// through the projection and a refused switch simply never changes (0020 rule 1).
+    /// </summary>
+    /// <summary>
+    /// What the header switch is bound to. Asks for the opposite of what the room currently says
+    /// rather than for "the opposite of the control", because the control is one-way and has already
+    /// flipped its own visual by the time this runs — reading it back would invert the request.
+    /// </summary>
+    [RelayCommand]
+    private Task ToggleWorkflowSwitch() => RequestWorkflowSwitchAsync(!Chat.IsWorkflowOn);
+
+    public async Task RequestWorkflowSwitchAsync(bool isOn)
+    {
+        WorkflowSwitchStatusText = null;
+        if (WorkflowSwitchRequested is null)
+        {
+            return;
+        }
+
+        WorkflowSwitchStatusText = await WorkflowSwitchRequested.Invoke(isOn).ConfigureAwait(true);
+    }
 
     /// <summary>
     /// Routes "Ask <worker> to fix it" (#617) to the Chat section with the input drafted — a

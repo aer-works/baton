@@ -10,6 +10,11 @@ namespace Aer.Flow.Projection;
 /// non-empty list means the journal itself disagrees with its own history, and that is a state a
 /// reader must be able to see (the 798 review's medium finding).
 /// </param>
+/// <param name="IsWorkflowOff">
+/// Whether the room's workflow has been switched off (#1216). False unless the journal's last
+/// <see cref="RoomEvent.WorkflowSwitched"/> says otherwise, so absence structurally means "on" and
+/// every room predating the event keeps its workflow — see that event's remarks.
+/// </param>
 public sealed record RoomState(
     IReadOnlyDictionary<HeldWorkRef, HeldWorkState> HeldWork,
     IReadOnlyList<string> UnmatchedEntries,
@@ -18,7 +23,8 @@ public sealed record RoomState(
     bool IsDormant = false,
     PendingPermission? PendingPermission = null,
     IReadOnlyList<PermissionAnswer>? PermissionAnswers = null,
-    IReadOnlyList<DormancyTransition>? DormancyTransitions = null)
+    IReadOnlyList<DormancyTransition>? DormancyTransitions = null,
+    bool IsWorkflowOff = false)
 {
     public IReadOnlyDictionary<GrantId, GrantState> ActiveGrants { get; init; } = ActiveGrants ?? new Dictionary<GrantId, GrantState>();
 
@@ -57,6 +63,7 @@ public sealed record RoomState(
             ActiveGrants.Count != other.ActiveGrants.Count ||
             OpenEscalations.Count != other.OpenEscalations.Count ||
             IsDormant != other.IsDormant ||
+            IsWorkflowOff != other.IsWorkflowOff ||
             !Equals(PendingPermission, other.PendingPermission) ||
             !UnmatchedEntries.SequenceEqual(other.UnmatchedEntries) ||
             !OpenEscalations.SequenceEqual(other.OpenEscalations) ||
@@ -89,6 +96,7 @@ public sealed record RoomState(
     {
         var hash = new HashCode();
         hash.Add(IsDormant);
+        hash.Add(IsWorkflowOff);
         hash.Add(PendingPermission);
 
         foreach (var (key, value) in HeldWork.OrderBy(kv => kv.Key.Value))

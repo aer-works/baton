@@ -8,6 +8,41 @@ public sealed partial class RoomClient
 {
     private sealed record ClearDormancyRequest(string RoomDirectoryPath);
 
+    private sealed record SetWorkflowSwitchRequest(string RoomDirectoryPath, bool IsOn);
+
+    /// <summary>
+    /// Switches the room's workflow on or off (#1216). Returns <see langword="null"/> on success, or
+    /// the engine's own reason for refusing — which the header shows the person rather than reverting
+    /// the switch silently. A refusal is not a failure: it is the answer to "can I do this now", and
+    /// it is the whole reason the switch refuses rather than mutating a room something is still
+    /// driving (see <c>RoomMutationInterface.SetWorkflowSwitchAsync</c>).
+    /// </summary>
+    public async Task<string?> SetWorkflowSwitchAsync(string roomDirectoryPath, bool isOn, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(roomDirectoryPath)) return "No room is open.";
+        if (!await EnsureDaemonConnectedAsync(cancellationToken).ConfigureAwait(true)) return "Baton's background service is not reachable.";
+
+        try
+        {
+            var response = await _httpClient.PostAsJsonAsync(
+                $"{_activeDaemonUrl}/api/rooms/workflow-switch",
+                new SetWorkflowSwitchRequest(roomDirectoryPath, isOn),
+                cancellationToken).ConfigureAwait(true);
+
+            if (response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(true);
+            return string.IsNullOrWhiteSpace(body) ? "The workflow could not be switched." : body.Trim('"');
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
     /// <summary>
     /// Fetches turn host status for <paramref name="roomDirectoryPath"/>. Returns null on ANY non-200 status code
     /// (409 conflict when not the hosted room, connection failure, timeout, etc.) — absence, not error.
