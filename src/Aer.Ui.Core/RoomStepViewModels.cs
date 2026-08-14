@@ -261,10 +261,9 @@ public sealed partial class WaitingOnLockBannerViewModel : ObservableObject
 public enum RoomStoppedReason
 {
     /// <summary>
-    /// Non-terminal, nothing paused, and no live pump owns the directory — the room was running when
-    /// its process died. <c>WorkflowStatus.Running</c> cannot say this on its own: <c>FlowState</c>'s
-    /// own doc defines it as "still in flight <em>or</em> Flow crashed before recording its outcome",
-    /// so the journal records a live room and a crashed one identically. What separates them is
+    /// Non-terminal, nothing paused, and no live pump owns the directory — the process died mid-run.
+    /// <see cref="WorkflowStatus.Running"/> cannot say this on its own; read its own summary, which
+    /// covers a live attempt and a crashed one in one clause. What separates them is
     /// <see cref="Aer.Flow.Concurrency.ConcurrencyGuard.IsHeld"/> — a kernel-held lock the OS drops
     /// the instant its holder exits, crashed or not, held by <c>MutationInterface</c> across the
     /// whole of <c>PumpToFixedPointAsync</c> (a #1094 vendor-quota park included, which is why a
@@ -281,15 +280,12 @@ public enum RoomStoppedReason
 
 /// <summary>
 /// #1215: the offer a stopped room's own transcript carries. Replaces the header Run button, whose
-/// only unique job was resuming a room nothing else in the desktop resumes — every other
-/// <c>RunAsync</c> caller starts a fresh room, and nothing rehydrates a crashed one on startup
-/// (<c>RoomWakeBridge</c> wakes a room whose <em>delegated</em> workflow finished, the other
-/// direction). Placed on the turn rather than in chrome, the same move dormancy's Wake and #617's
-/// "Try again" already made.
-/// <para>
-/// Auto-resuming on open was rejected by the owner (2026-08-14): opening a room would then spend
-/// vendor budget nobody asked for, against cost-is-the-operator's-call.
-/// </para>
+/// only unique job was resuming a room no other desktop path resumes. (Worth knowing while reading
+/// this: <c>RoomWakeBridge</c> is not that path — #799 wakes a room whose <em>delegated</em> workflow
+/// reached terminal, which is the other direction entirely, and it starts dormant on restart.)
+/// It sits on the turn rather than in chrome. What this replaced, which precedents it follows, and
+/// what was rejected on the way — including why it is a click and not something that happens when a
+/// room is opened — is recorded in <c>docs/design/02-screens.md</c>'s 2026-08-14 amendment.
 /// </summary>
 public sealed partial class RoomStoppedCardViewModel : ObservableObject
 {

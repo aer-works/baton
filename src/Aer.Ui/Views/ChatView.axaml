@@ -26,11 +26,11 @@
       <ToggleButton x:Name="ChatShapeToggle" VerticalAlignment="Center" Content="Shape"
                     IsVisible="{Binding Chat.IsPipelineRoom}"
                     IsChecked="{Binding Chat.IsShapePanelOpen}" />
-      <!-- #1215: "Stop is always present and always distinct from a gate"
-           (docs/design/03-interaction-depth.md). Slice 3 moved RoomView into the collapsible Shape
-           panel and Stop went with it, so Stop existed only while a panel that is closed by default
-           was open. Present-and-disabled rather than hidden is what "always present" means here:
-           a person looking for the brake must find it in the same place whether or not anything is
+      <!-- #1215: Stop's always-present rule is docs/design/03-interaction-depth.md's, and the
+           amendment recording this move is 02-screens.md's. Slice 3 moved RoomView into the
+           collapsible Shape panel and Stop went with it, so Stop existed only while a panel that is
+           closed by default was open. Disabled rather than hidden is what that rule requires: a
+           person looking for the brake must find it in the same place whether or not anything is
            running. Enablement mirrors the binding it had in RoomView, unchanged. -->
       <Button x:Name="StopButton" VerticalAlignment="Center"
               IsEnabled="{Binding IsMutationInFlight}"
@@ -229,12 +229,11 @@
           </StackPanel>
         </Border>
 
-        <!-- #1215: the stopped-room offer, on the turn rather than in chrome — the same move
-             dormancy's Wake and #617's "Try again" already made, and what retires the header Run
-             button. Offered only for a workflow room: a chat session is never "stopped mid-run", and
-             a finished one is not re-run from a workflow file. RunStatusText rides beside it because
-             it is where a failed Resume has to be readable — its other home is RoomView, which is the
-             Shape panel, closed by default. -->
+        <!-- #1215: the stopped-room offer that retires the header Run button — see
+             RoomStoppedCardViewModel for what it offers and why it sits here. Gated on a workflow
+             room: a chat session is never "stopped mid-run", and a finished one is not re-run from a
+             workflow file. RunStatusText rides beside it because this is where a failed Resume has to
+             be readable — its other home is RoomView, which is the Shape panel, closed by default. -->
         <StackPanel Spacing="{DynamicResource Space.2}" IsVisible="{Binding Chat.IsPipelineRoom}">
           <Border Classes="card" IsVisible="{Binding HasRoomStoppedCard}"
                   Background="{DynamicResource Color.SurfaceSubtle}" Margin="0,4,0,4">

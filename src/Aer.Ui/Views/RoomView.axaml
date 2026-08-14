@@ -19,13 +19,10 @@
       <TextBlock Classes="secondary" IsVisible="{Binding !HasSelectedStep}" TextWrapping="Wrap"
                  Text="Open a room from Home, or create and run a workflow in Author — this view fills in as soon as a room is open." />
 
-      <!-- #1215 emptied this header. The workflow and bindings path boxes were the room's *state*,
-           not chrome, so they moved to MainWindowViewModel.WorkflowTemplateFilePath/BindingsFilePath
-           (see those properties for what still reads them) — a file path is engine plumbing, and the
-           room header is the room's. Stop moved to the room header in ChatView. Run is retired: its
-           start half is served by Author's Save & Run and the template picker, and its resume half is
-           now the stopped-room card on the transcript (RoomStoppedCardViewModel), where a person can
-           actually see it. What is left of this view is the room's shape. -->
+      <!-- #1215 emptied this header. The path boxes became view-model state — why, and what still
+           reads them, is on MainWindowViewModel.WorkflowTemplateFilePath. Stop moved to the room
+           header in ChatView; Run is retired in favour of RoomStoppedCardViewModel's offer on the
+           transcript. What is left of this view is the room's shape. -->
       <TextBlock x:Name="RunStatusText" Text="{Binding RunStatusText}"
                  IsVisible="{Binding RunStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 

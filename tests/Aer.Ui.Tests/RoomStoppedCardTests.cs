@@ -24,9 +24,8 @@ public class RoomStoppedCardTests
 
     /// <summary>
     /// The heart of it: <see cref="WorkflowStatus.Running"/> is the same journal state for a live room
-    /// and a crashed one — <c>FlowState</c>'s own doc says so ("still in flight <em>or</em> Flow
-    /// crashed before recording its outcome"). Nothing but the lock separates these two cases, which
-    /// is why the two arms below differ in exactly one argument and in nothing else.
+    /// and a crashed one, by that member's own definition. Nothing but the lock separates the two
+    /// cases, which is why the arms below differ in exactly one argument and in nothing else.
     /// </summary>
     [Fact]
     public void A_running_room_is_stopped_only_when_no_live_pump_holds_its_lock()
@@ -38,8 +37,8 @@ public class RoomStoppedCardTests
     }
 
     /// <summary>
-    /// A room waiting on a person is not stopped in this sense, lock or no lock: it already carries the
-    /// person's action on screen, and answering the decision re-pumps it. Both polarities, because
+    /// A room waiting on a person is not stopped in this sense, lock or no lock — see
+    /// <see cref="RoomClient.DeriveRoomStoppedReason"/> for why. Both polarities, because
     /// "non-terminal" alone would wrongly claim both.
     /// </summary>
     [Theory]

@@ -132,9 +132,10 @@ public class NavigationShellTests
     }
 
     /// <summary>
-    /// A room that was running when its process died (#1215): an accepted execution request with no
-    /// terminal event after it, which is exactly what a crash leaves behind — and, by §6, exactly what
-    /// a live run looks like too. No lock is held over this directory, which is the difference.
+    /// The journal a crash leaves behind (#1215): an accepted execution request with no terminal event
+    /// after it — which, by §6, is also exactly what a live run's journal looks like. No lock is held
+    /// over this directory, and that is the whole difference; see
+    /// <see cref="Aer.Ui.Core.RoomClient.DeriveRoomStoppedReason"/>.
     /// </summary>
     private static Task<string> CreateStalledRoomDirectoryAsync(CancellationToken cancellationToken) =>
         CreateRoomDirectoryAsync(
@@ -372,11 +373,11 @@ public class NavigationShellTests
     }
 
     /// <summary>
-    /// #1215: "Stop is always present and always distinct from a gate"
-    /// (docs/design/03-interaction-depth.md). Slice 3 put Stop inside the Shape panel, which is closed
-    /// by default, so the brake was unreachable on the surface a person actually sits on. This pins
-    /// both halves — Stop is in the room header, and it is <em>not</em> also in the shape panel, since
-    /// two Stops would be two surfaces for one action, which is the thing slice 3 exists to end.
+    /// #1215: slice 3 put Stop inside the Shape panel, which is closed by default, so the brake was
+    /// unreachable on the surface a person actually sits on — the design rule it broke, and why it is
+    /// present-and-disabled rather than hidden, is on the button in <c>ChatView.axaml</c>. This pins
+    /// both halves: Stop is in the room header, and it is <em>not</em> also in the shape panel, since
+    /// two of them would be two surfaces for one action.
     /// </summary>
     [AvaloniaFact]
     public async Task Stop_is_in_the_room_header_and_not_in_the_collapsible_shape_panel()
