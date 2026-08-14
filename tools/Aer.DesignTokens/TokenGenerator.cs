@@ -295,6 +295,11 @@ public static class TokenGenerator
         ("Status.Idle", "status", "idle"),
         ("Status.Unavailable", "status", "unavailable"),
         ("Status.OutOfPlan", "status", "outOfPlan"),
+        // #1219: its own key though it resolves to the same grey as Idle, following #1140's move to
+        // honest names — a brush called Status.Idle painting a room whose process died is the kind of
+        // near-miss that made this state necessary in the first place. Cancelled and Queued still
+        // borrow Status.Idle and are not changed here; that is their own question.
+        ("Status.Stopped", "status", "stopped"),
     };
 
     /// <summary>

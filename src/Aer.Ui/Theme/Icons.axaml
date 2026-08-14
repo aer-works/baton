@@ -57,6 +57,13 @@
        on purpose is not a failure and must not be dressed as one. -->
   <StreamGeometry x:Key="Icon.Dash">M 3.5,8 L 12.5,8</StreamGeometry>
 
+  <!-- Stopped (#1219): a square — the run halted without finishing and without anyone stopping it,
+       because its process died. The one hard-edged silhouette in the set, which is the point: every
+       other status mark is built from circles, arcs and strokes, so this one is separable at row size
+       and in a photocopy, per the token block's silhouette rule. Deliberately the universal stop
+       shape rather than something alarming — a stopped room is not a failed one, and it resumes. -->
+  <StreamGeometry x:Key="Icon.Square">M 3.5,3.5 L 12.5,3.5 L 12.5,12.5 L 3.5,12.5 Z</StreamGeometry>
+
   <!-- Queued: an ellipsis — waiting its turn, nothing has happened yet. Filled dots so it holds at
        row size, where stroked circles this small collapse into mush. -->
   <StreamGeometry x:Key="Icon.Ellipsis">M 5.55,8 A 1.35,1.35 0 1 1 2.85,8 A 1.35,1.35 0 1 1 5.55,8 Z M 9.35,8 A 1.35,1.35 0 1 1 6.65,8 A 1.35,1.35 0 1 1 9.35,8 Z M 13.15,8 A 1.35,1.35 0 1 1 10.45,8 A 1.35,1.35 0 1 1 13.15,8 Z</StreamGeometry>

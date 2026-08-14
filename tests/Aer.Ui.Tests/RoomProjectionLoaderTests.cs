@@ -1,4 +1,5 @@
 using Aer.Adapters;
+using Aer.Flow.Concurrency;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
@@ -554,6 +555,12 @@ public class RoomProjectionLoaderTests
                 await roomWriter.AppendAsync(askedEvent, TestContext.Current.CancellationToken);
             }
 
+            // #1219: a worker asking permission is a worker mid-turn, so the fixture has to hold the
+            // room's lock to be that room. Without it the fleet correctly reads "Stopped" — a room
+            // with an unanswerable ask and nothing left to answer it to — and this fact would be
+            // asserting a state the scenario does not describe.
+            using var liveRun = ConcurrencyGuard.Acquire(roomDirectory, "fleet ask fixture");
+
             var fleetItem = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory, TestContext.Current.CancellationToken);
 
             Assert.Equal(RoomCardStatus.NeedsYou, fleetItem.Status);
@@ -612,6 +619,9 @@ public class RoomProjectionLoaderTests
                 await roomWriter.AppendAsync(answeredEvent, TestContext.Current.CancellationToken);
             }
 
+            // A live run, for the same reason as the ask fixture above.
+            using var liveRun1 = ConcurrencyGuard.Acquire(roomDirectory1, "fleet answered-ask fixture");
+
             var fleetItem1 = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory1, TestContext.Current.CancellationToken);
             Assert.Equal(RoomCardStatus.Running, fleetItem1.Status);
         }
@@ -659,6 +669,8 @@ public class RoomProjectionLoaderTests
                 await roomWriter.AppendAsync(revokedEvent, TestContext.Current.CancellationToken);
             }
 
+            using var liveRun2 = ConcurrencyGuard.Acquire(roomDirectory2, "fleet revoked-ask fixture");
+
             var fleetItem2 = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory2, TestContext.Current.CancellationToken);
             Assert.Equal(RoomCardStatus.Running, fleetItem2.Status);
         }
@@ -689,10 +701,20 @@ public class RoomProjectionLoaderTests
             var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
             Assert.False(File.Exists(roomLogPath));
 
-            var fleetItem = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory, TestContext.Current.CancellationToken);
+            RoomFleetItem fleetItem;
+            using (ConcurrencyGuard.Acquire(roomDirectory, "fleet no-journal fixture"))
+            {
+                fleetItem = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory, TestContext.Current.CancellationToken);
+            }
 
             Assert.Equal("Working — architect", fleetItem.StatusText);
             Assert.Equal(RoomCardStatus.Running, fleetItem.Status);
+
+            // #1219's other polarity, free here: the same room with its pump gone is Stopped, not
+            // Working. "Still loads" is what this fact is about, and it still loads either way.
+            var stoppedItem = await RoomProjectionLoader.LoadFleetStatusAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.Equal("Stopped", stoppedItem.StatusText);
+            Assert.Equal(RoomCardStatus.Stopped, stoppedItem.Status);
         }
         finally
         {

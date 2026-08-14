@@ -80,6 +80,14 @@ internal static class StatusIconMap
         // 0026 (#1116): waiting on a plan reset, not stopped (Dash would claim Cancelled's "you
         // stopped it") and not broken — the ellipsis is the honest "more to come, later" mark.
         RoomCardStatus.OutOfPlan => "Icon.Ellipsis",
+        // #1219: a square outline, the one hard-edged silhouette in the set. Not Dash, which is
+        // Cancelled's "you stopped it" — nobody stopped this one, its process died.
+        RoomCardStatus.Stopped => "Icon.Square",
+        // #616 made this throw so a new member cannot silently render as some other state. Worth
+        // knowing what that actually buys: driving the app for #1219 showed a genuinely missing
+        // mapping as an *empty space* in the switcher rather than as a crash, because this runs
+        // inside a binding and Avalonia swallows what a converter throws. The throw still stops the
+        // wrong mark being drawn; it does not make a missing one loud. That is what the eye is for.
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped card status."),
     };
 
@@ -97,6 +105,9 @@ internal static class StatusIconMap
         // 0026 §5/0018 band 4: a quiet wait, muted like Cancelled — the status text carries the
         // reset instant (or "reset unknown"), so the color never has to shout (register now names it #1140).
         RoomCardStatus.OutOfPlan => "Status.OutOfPlan",
+        // #1219: quiet, for Cancelled's reason — a room whose process died is not an emergency, and
+        // the mark and the word carry which of the quiet outcomes it is.
+        RoomCardStatus.Stopped => "Status.Stopped",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped card status."), // #616
     };
 }

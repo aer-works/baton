@@ -1,4 +1,5 @@
 using Aer.Adapters;
+using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Flow.Projection;
 using Aer.Flow.Store;
@@ -256,7 +257,12 @@ public static class RoomProjectionLoader
             new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
             new ArtifactLineage([]),
             pendingPermission),
-            pendingPermission);
+            pendingPermission,
+            // #1219: the fleet reads the same lock every other surface does, so a row for a room whose
+            // process died says "Stopped" rather than "Working — …" beside a spinner. One probe per
+            // room per fleet load, and the fleet loads on startup, on section activation and on an
+            // explicit refresh — never on a timer.
+            ConcurrencyGuard.IsHeld(roomDirectoryPath));
 
         // Fallback for a room with no journal events/timestamps yet: prefer created timestamp
         // (scoped strictly to the pre-first-event window).

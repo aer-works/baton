@@ -29,6 +29,7 @@
       <Color x:Key="StatusFinishedColor">#2C6E4C</Color>
       <Color x:Key="StatusFailedColor">#9E382C</Color>
       <Color x:Key="StatusCancelledColor">#88969C</Color>
+      <Color x:Key="StatusStoppedColor">#88969C</Color>
       <Color x:Key="StatusQueuedColor">#88969C</Color>
       <Color x:Key="StatusOutOfPlanColor">#88969C</Color>
       <Color x:Key="StatusUnavailableColor">#88969C</Color>
@@ -47,6 +48,7 @@
       <SolidColorBrush x:Key="Status.Idle">#88969C</SolidColorBrush>
       <SolidColorBrush x:Key="Status.Unavailable">#88969C</SolidColorBrush>
       <SolidColorBrush x:Key="Status.OutOfPlan">#88969C</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Stopped">#88969C</SolidColorBrush>
     </ResourceDictionary>
     <ResourceDictionary x:Key="Dark">
       <Color x:Key="BrandAccentColor">#5FB3AD</Color>
@@ -67,6 +69,7 @@
       <Color x:Key="StatusFinishedColor">#6DBE94</Color>
       <Color x:Key="StatusFailedColor">#E08274</Color>
       <Color x:Key="StatusCancelledColor">#6C7A80</Color>
+      <Color x:Key="StatusStoppedColor">#6C7A80</Color>
       <Color x:Key="StatusQueuedColor">#6C7A80</Color>
       <Color x:Key="StatusOutOfPlanColor">#6C7A80</Color>
       <Color x:Key="StatusUnavailableColor">#6C7A80</Color>
@@ -85,6 +88,7 @@
       <SolidColorBrush x:Key="Status.Idle">#6C7A80</SolidColorBrush>
       <SolidColorBrush x:Key="Status.Unavailable">#6C7A80</SolidColorBrush>
       <SolidColorBrush x:Key="Status.OutOfPlan">#6C7A80</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.Stopped">#6C7A80</SolidColorBrush>
     </ResourceDictionary>
   </ResourceDictionary.ThemeDictionaries>
 
@@ -122,6 +126,8 @@
     <sys:String x:Key="StatusFailedLabel">Failed</sys:String>
     <sys:String x:Key="StatusCancelledMark">Icon.Dash</sys:String>
     <sys:String x:Key="StatusCancelledLabel">Cancelled</sys:String>
+    <sys:String x:Key="StatusStoppedMark">Icon.Square</sys:String>
+    <sys:String x:Key="StatusStoppedLabel">Stopped</sys:String>
     <sys:String x:Key="StatusQueuedMark">Icon.Ellipsis</sys:String>
     <sys:String x:Key="StatusQueuedLabel">Queued</sys:String>
     <sys:String x:Key="StatusOutOfPlanMark">Icon.Ellipsis</sys:String>

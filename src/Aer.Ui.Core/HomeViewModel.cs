@@ -143,9 +143,23 @@ public static class RoomCardViewModel
     /// while Running: an unresolved exhausted step keeps CanStillDeliver alive, so Terminal is
     /// unreachable for it — and a mixed room (exhausted + genuinely failed/rejected) says "Failed",
     /// because that sibling would otherwise hide behind an eternal "Working".
+    /// <para>
+    /// Extended (#1219) with <paramref name="isFlowLockHeld"/> — the room's §15 flow lock, from
+    /// <see cref="Aer.Flow.Concurrency.ConcurrencyGuard.IsHeld"/>. This is the one input here that is
+    /// not in the projection, and it has to be: <see cref="WorkflowStatus.Running"/> means, by its own
+    /// definition, either a live attempt <em>or</em> a crash before the outcome was recorded, so no
+    /// predicate over the journal can separate them. The lock can, because the OS drops it the instant
+    /// its holder exits. Callers pass it rather than this method reading it, so this stays pure and
+    /// testable in both polarities, and so the probe's cost sits where the caller can see it.
+    /// </para>
     /// </summary>
+    /// <param name="isFlowLockHeld">
+    /// Whether a live pump currently holds this room's flow lock. Callers that genuinely cannot
+    /// answer should pass <c>true</c>: that yields today's behaviour exactly (a `Running` room reads
+    /// as working), so an unknown never invents a Stopped room out of nothing.
+    /// </param>
     public static (string StatusText, RoomCardStatus Status) DeriveStatus(
-        RoomProjection projection, PendingPermission? pendingPermission)
+        RoomProjection projection, PendingPermission? pendingPermission, bool isFlowLockHeld)
     {
         var failedOrRejectedSteps = projection.State.Steps
             .Where(s => s.Status is StepStatus.Failed or StepStatus.Rejected)
@@ -165,6 +179,35 @@ public static class RoomCardViewModel
             // pass (#1113), so an orphaned ask CAN sit in room.jsonl beside a Paused/Terminal flow
             // state — and headlining "Permission requested" there would mask the room's true status
             // with a gate no worker is left to be released by.
+            // #1219, and deliberately the FIRST Running arm — every one below it assumes something is
+            // actually running, and for a room whose process died none of them is true:
+            //
+            //  - It beats the permission arm below, whose own comment already names this hazard for
+            //    the Paused/Terminal case: an orphaned ask must not "mask the room's true status with
+            //    a gate no worker is left to be released by". A dead room is exactly that, and until
+            //    the lock was consulted there was no way to know. A LIVE gate still wins, because the
+            //    lock is held while its turn executes, so this arm cannot fire.
+            //  - It beats the out-of-plan arms, which would otherwise promise "resumes 14:32" for a
+            //    room where nothing is left to do the resuming — the misleading-optimistic timestamp
+            //    0026 §5 is written against, arrived at from the other direction.
+            //
+            // The paused scan is a step scan, not `Status == Paused`: one step still Running forces
+            // the whole workflow Running, so a crashed room with a live gate on a sibling branch would
+            // slip past a status test and get a Stopped label beside a decision the person can answer.
+            //
+            // A genuine failure still outranks it, which is the third consequence of this ordering and
+            // the one a second reader had to find (the two above were reasoned about; this was not).
+            // The two above each replace an optimistic "still in progress" reading with an honest one.
+            // This one would replace an already-conclusive verdict: a room mixing an exhausted step
+            // with a separately, permanently failed one reaches WorkflowStatus.Running with nothing
+            // actually Running, so a crash mid-park frees the lock and "Stopped" would drop the
+            // sibling's recorded failure off the headline — and invite a Resume straight back into it.
+            // Exhaustion alone is not that: it is a wait, so a room blocked only on quota does fall
+            // through to Stopped once nothing is left to serve the wait.
+            WorkflowStatus.Running when !isFlowLockHeld
+                && !projection.State.Steps.Any(s => s.Status == StepStatus.Paused)
+                && (failedOrRejectedSteps.Count == 0 || isOnlyBlockerExhaustion)
+                => ("Stopped", RoomCardStatus.Stopped),
             WorkflowStatus.Running when pendingPermission != null => ("Permission requested", RoomCardStatus.NeedsYou),
             WorkflowStatus.Paused => (PausedCardStatusText(projection), RoomCardStatus.NeedsYou),
             WorkflowStatus.Running when projection.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Running) is { } runningStep
@@ -247,6 +290,14 @@ public enum RoomCardStatus
     /// list that renders them alike reads far more alarming than reality.
     /// </summary>
     Cancelled,
+
+    /// <summary>
+    /// The tenth canonical state (#1219). What it means, why it could not be read off the journal,
+    /// and why it is separate from <see cref="Cancelled"/> are all in 0020's 2026-08-14 amendment;
+    /// this member is the value that record defines, and <see cref="DeriveStatus"/> is where it is
+    /// produced.
+    /// </summary>
+    Stopped,
 
     /// <summary>§3's stale list state: recorded in Local UI Configuration but no longer loadable — greyed, never an error.</summary>
     Unavailable,

@@ -355,39 +355,38 @@ public sealed partial class RoomClient
     }
 
     /// <summary>
-    /// #1215: why the open room is stopped, or null if it is not stopped at all. Pure, so both
-    /// polarities are testable without holding a lock — the impure half is the single
-    /// <see cref="ConcurrencyGuard.IsHeld"/> probe its caller performs.
+    /// #1215: what the open room's transcript should offer, or null if it should offer nothing.
     /// <para>
-    /// The order is load-bearing. Terminal wins first because a finished room never has a live pump,
-    /// so asking about the lock there would only add a filesystem read that cannot change the answer.
-    /// The lock is next: while it is held, some process is genuinely pumping this directory, and that
-    /// is the <em>only</em> thing that distinguishes a live run from a crashed one —
-    /// <see cref="WorkflowStatus.Running"/> covers both by its own definition. Paused is last and is
-    /// not "stopped" at all: that room already has the person's action on screen, and answering the
-    /// decision re-pumps it, so offering Resume beside a gate would be two offers for one turn.
+    /// #1219 turned this from a second state machine into a <em>rendering</em> of the first, which is
+    /// 0020's rule 1 ("a surface may map a state to a mark, a word, a colour, or a layout; it may not
+    /// decide the state"). The first version asked its own questions of <see cref="FlowState"/> and
+    /// reached its own answer, and it disagreed with the switcher — which called a room this said had
+    /// stopped "Working — …", with a spinner. There is one derivation,
+    /// <see cref="RoomCardViewModel.DeriveStatus"/>, and this maps three of its states onto an offer. Every
+    /// other state offers nothing: a room that is working needs no button, and a room that needs you
+    /// already has your action on screen.
     /// </para>
     /// </summary>
-    internal static RoomStoppedReason? DeriveRoomStoppedReason(FlowState state, bool isFlowLockHeld)
+    internal static RoomStoppedReason? DeriveRoomStoppedReason(RoomProjection projection, bool isFlowLockHeld)
     {
-        ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(projection);
 
-        if (state.Status == WorkflowStatus.Terminal)
+        var (_, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld);
+
+        return status switch
         {
-            return RoomStoppedReason.Finished;
-        }
-
-        if (isFlowLockHeld)
-        {
-            return null;
-        }
-
-        if (state.Steps.Any(step => step.Status == StepStatus.Paused))
-        {
-            return null;
-        }
-
-        return RoomStoppedReason.StoppedMidRun;
+            RoomCardStatus.Stopped => RoomStoppedReason.StoppedMidRun,
+            RoomCardStatus.Finished => RoomStoppedReason.Finished,
+            // #1215 mapped every Terminal room to the "finished" offer, which is what the retired Run
+            // button did too. Reading the canonical status instead splits that apart, and two of the
+            // pieces need saying: a Failed room is left to #617's failed-step banner, which says what
+            // broke and offers the worker that broke it — strictly more than "run it again" — while a
+            // Cancelled room would otherwise be left with no way back at all, since it has no failed
+            // step for that banner to attach to. It gets its own offer rather than being told it
+            // "finished", which is precisely the sentence #461 existed to delete.
+            RoomCardStatus.Cancelled => RoomStoppedReason.Cancelled,
+            _ => null,
+        };
     }
 
     /// <summary>
@@ -408,7 +407,7 @@ public sealed partial class RoomClient
     /// </summary>
     private void RefreshRoomStoppedCard(RoomProjection projection, bool isFlowLockHeld)
     {
-        var reason = DeriveRoomStoppedReason(projection.State, isFlowLockHeld);
+        var reason = DeriveRoomStoppedReason(projection, isFlowLockHeld);
 
         ViewModel.RoomStoppedCard = reason is { } stoppedReason
             ? new RoomStoppedCardViewModel(stoppedReason, () => ViewModel.RequestRoomRunAsync())

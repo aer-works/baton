@@ -41,7 +41,9 @@ public class StatusDerivationTests
         // arm and its discard arm answered "Finished" — the exact 0020 worked example, live.
         var projection = ProjectionWith(WorkflowStatus.Terminal, StepStatus.Cancelled);
 
-        Assert.Equal("Cancelled", PlainLanguage.ForWorkflow(projection));
+        // Terminal, so the lock reading cannot change the answer — passed explicitly all the same,
+        // since #1219 removed the default that let a caller skip the question by accident.
+        Assert.Equal("Cancelled", PlainLanguage.ForWorkflow(projection, isFlowLockHeld: false));
     }
 
     [Fact]
@@ -81,9 +83,16 @@ public class StatusDerivationTests
         // and this arm is what keeps a second copy from ever growing back.
         var projection = ProjectionWith(status, stepStatuses);
 
-        Assert.Equal(
-            RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission).StatusText,
-            PlainLanguage.ForWorkflow(projection));
+        // #1219: both lock readings, not just the held one. A second reader found this fact could
+        // not have caught the defect it exists for — the headline took a *defaulted* `true` while
+        // every other surface probed, so the two derivations agreed here and disagreed on screen.
+        // Passing both polarities is what makes "one derivation" mean the whole derivation.
+        foreach (var isFlowLockHeld in new[] { true, false })
+        {
+            Assert.Equal(
+                RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld).StatusText,
+                PlainLanguage.ForWorkflow(projection, isFlowLockHeld));
+        }
     }
 
     [Fact]
@@ -100,10 +109,84 @@ public class StatusDerivationTests
 
         var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Running);
 
-        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, pendingPermission);
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, pendingPermission, isFlowLockHeld: true);
 
         Assert.Equal(RoomCardStatus.NeedsYou, status);
         Assert.Equal("Permission requested", statusText);
+    }
+
+    /// <summary>
+    /// #1219's tenth state, and the reason it exists: a room whose process died and a room genuinely
+    /// working have the same journal, so these two arms differ in the lock argument and in nothing
+    /// else. Before this, both said "Working — step-0" and the switcher turned a spinner over a room
+    /// where nothing was happening.
+    /// </summary>
+    [Fact]
+    public void DeriveStatus_RunningWithNoLivePump_IsStoppedNotWorking()
+    {
+        var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Running);
+
+        var (workingText, workingStatus) = RoomCardViewModel.DeriveStatus(projection, null, isFlowLockHeld: true);
+        Assert.Equal(RoomCardStatus.Running, workingStatus);
+        Assert.Equal("Working — step-0", workingText);
+
+        var (stoppedText, stoppedStatus) = RoomCardViewModel.DeriveStatus(projection, null, isFlowLockHeld: false);
+        Assert.Equal(RoomCardStatus.Stopped, stoppedStatus);
+        Assert.Equal("Stopped", stoppedText);
+    }
+
+    /// <summary>
+    /// The Stopped arm sits ahead of every other Running arm, and each of those orderings is a claim
+    /// about what a person is told. Without the lock these all read as something still in progress.
+    /// </summary>
+    [Fact]
+    public void DeriveStatus_StoppedBeatsTheOtherRunningArms()
+    {
+        // An orphaned permission ask on a dead room: no worker is left to be released by an answer,
+        // so the room's true state wins over the gate. A LIVE gate is the arm below and still wins.
+        var withOrphanedAsk = ProjectionWith(WorkflowStatus.Running, StepStatus.Running);
+        var orphanedAsk = new Aer.Flow.Projection.PendingPermission(
+            "req-dead", "worker-alpha", "claude", "Bash",
+            """{"command":"ls"}""", "Bash", DateTimeOffset.UtcNow);
+
+        Assert.Equal(RoomCardStatus.Stopped, RoomCardViewModel.DeriveStatus(withOrphanedAsk, orphanedAsk, isFlowLockHeld: false).Status);
+        Assert.Equal(RoomCardStatus.NeedsYou, RoomCardViewModel.DeriveStatus(withOrphanedAsk, orphanedAsk, isFlowLockHeld: true).Status);
+
+        // An out-of-plan room whose process then died must not keep promising a resume time nothing
+        // is left to honour — the misleading-optimistic instant 0026 §5 rules out.
+        var exhausted = ProjectionWith(WorkflowStatus.Running, StepStatus.Failed) with { };
+        var outOfPlan = new RoomProjection(
+            exhausted.Snapshot,
+            new FlowState(
+                exhausted.Snapshot.WorkflowDefinitionSnapshotId,
+                [new StepState(
+                    new StepId("step-0"), StepStatus.Failed, LatestExecutionId: new ExecutionId("e-1"),
+                    UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+                    LatestFailureClassification: FailureClassification.ExhaustedUntil,
+                    RetryNotBefore: DateTimeOffset.UtcNow.AddHours(3))],
+                WorkflowStatus.Running),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        Assert.Equal(RoomCardStatus.OutOfPlan, RoomCardViewModel.DeriveStatus(outOfPlan, null, isFlowLockHeld: true).Status);
+        Assert.Equal(RoomCardStatus.Stopped, RoomCardViewModel.DeriveStatus(outOfPlan, null, isFlowLockHeld: false).Status);
+    }
+
+    /// <summary>
+    /// A room waiting on a decision is never Stopped, lock or no lock — and the scan is a step scan,
+    /// so a crashed room with one branch still Running and another Paused keeps the person's action
+    /// rather than being labelled Stopped beside a gate they can answer.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void DeriveStatus_ARoomAwaitingADecisionIsNeverStopped(bool isFlowLockHeld)
+    {
+        var paused = ProjectionWith(WorkflowStatus.Paused, StepStatus.Succeeded, StepStatus.Paused);
+        Assert.Equal(RoomCardStatus.NeedsYou, RoomCardViewModel.DeriveStatus(paused, null, isFlowLockHeld).Status);
+
+        var mixed = ProjectionWith(WorkflowStatus.Running, StepStatus.Running, StepStatus.Paused);
+        Assert.NotEqual(RoomCardStatus.Stopped, RoomCardViewModel.DeriveStatus(mixed, null, isFlowLockHeld).Status);
     }
 
     [Fact]
@@ -111,7 +194,7 @@ public class StatusDerivationTests
     {
         var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Running);
 
-        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null, isFlowLockHeld: true);
 
         Assert.Equal(RoomCardStatus.Running, status);
         Assert.Equal("Working — step-0", statusText);
@@ -145,7 +228,7 @@ public class StatusDerivationTests
 
         var projection = ProjectionWith(status, stepStatus);
 
-        var (statusText, _) = RoomCardViewModel.DeriveStatus(projection, orphanedAsk);
+        var (statusText, _) = RoomCardViewModel.DeriveStatus(projection, orphanedAsk, isFlowLockHeld: true);
 
         Assert.Equal(expectedText, statusText);
     }
@@ -244,10 +327,49 @@ public class StatusDerivationTests
             new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
             new ArtifactLineage([]));
 
-        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null, isFlowLockHeld: true);
 
         Assert.Equal(RoomCardStatus.Failed, status);
         Assert.Equal("Failed", statusText);
+
+        // #1219, found by a second reader: this shape can reach the Stopped arm with a free lock, and
+        // that arm's own comment in DeriveStatus explains why a recorded verdict has to win. Pinned
+        // here because nothing else combines the two step kinds under a lock nobody holds.
+        var (deadText, deadStatus) = RoomCardViewModel.DeriveStatus(projection, null, isFlowLockHeld: false);
+
+        Assert.Equal(RoomCardStatus.Failed, deadStatus);
+        Assert.Equal("Failed", deadText);
+    }
+
+    /// <summary>
+    /// The other side of the arm above, and the reason its guard is not simply "no failed steps":
+    /// exhaustion alone is a <em>wait</em>, not a verdict, so a room blocked only on quota whose
+    /// process then died is Stopped rather than going on promising a reset instant nothing is left to
+    /// honour. Both polarities, since one alone would pass under a guard that always answered the same.
+    /// </summary>
+    [Fact]
+    public void DeriveStatus_ARoomBlockedOnlyOnQuotaIsStoppedOnceNothingIsServingTheWait()
+    {
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("status-derivation-quota"),
+            1,
+            [new WorkflowStepDefinition(new StepId("step-0"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+
+        var exhausted = new StepState(
+            new StepId("step-0"), StepStatus.Failed,
+            LatestExecutionId: new ExecutionId("exec-1"),
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryNotBefore: new DateTimeOffset(2026, 8, 12, 18, 0, 0, TimeSpan.Zero));
+
+        var projection = new RoomProjection(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, [exhausted], WorkflowStatus.Running),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+
+        Assert.Equal(RoomCardStatus.OutOfPlan, RoomCardViewModel.DeriveStatus(projection, null, isFlowLockHeld: true).Status);
+        Assert.Equal(RoomCardStatus.Stopped, RoomCardViewModel.DeriveStatus(projection, null, isFlowLockHeld: false).Status);
     }
 
     [Fact]
@@ -279,14 +401,14 @@ public class StatusDerivationTests
 
         // Earlier instant declared FIRST — declaration order must not win.
         var (bothKnownText, bothKnownStatus) = RoomCardViewModel.DeriveStatus(
-            ProjectionOf(Exhausted("step-0", "e-1", earlier), Exhausted("step-1", "e-2", later)), null);
+            ProjectionOf(Exhausted("step-0", "e-1", earlier), Exhausted("step-1", "e-2", later)), null, isFlowLockHeld: true);
         Assert.Equal(RoomCardStatus.OutOfPlan, bothKnownStatus);
         Assert.Equal($"Out of plan — resumes {expectedLocalTime}", bothKnownText);
 
         // One unknown instant makes the room's answer unknown — a known sibling must not
         // fabricate a full-resume time the vendor never gave for the other step.
         var (oneUnknownText, oneUnknownStatus) = RoomCardViewModel.DeriveStatus(
-            ProjectionOf(Exhausted("step-0", "e-1", earlier), Exhausted("step-1", "e-2", null)), null);
+            ProjectionOf(Exhausted("step-0", "e-1", earlier), Exhausted("step-1", "e-2", null)), null, isFlowLockHeld: true);
         Assert.Equal(RoomCardStatus.OutOfPlan, oneUnknownStatus);
         Assert.Equal("Out of plan — reset unknown", oneUnknownText);
     }
@@ -316,7 +438,7 @@ public class StatusDerivationTests
             new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
             new ArtifactLineage([]));
 
-        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null, isFlowLockHeld: true);
 
         Assert.NotEqual(RoomCardStatus.NeedsYou, status);
         Assert.NotEqual(RoomCardStatus.Failed, status);
@@ -346,7 +468,7 @@ public class StatusDerivationTests
             new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
             new ArtifactLineage([]));
 
-        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null);
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, null, isFlowLockHeld: true);
 
         Assert.NotEqual(RoomCardStatus.NeedsYou, status);
         Assert.NotEqual(RoomCardStatus.Failed, status);
@@ -384,7 +506,7 @@ public class StatusDerivationTests
             new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
             new ArtifactLineage([]));
 
-        var (permText, permStatus) = RoomCardViewModel.DeriveStatus(projectionExhaustedWithPermission, pendingPermission);
+        var (permText, permStatus) = RoomCardViewModel.DeriveStatus(projectionExhaustedWithPermission, pendingPermission, isFlowLockHeld: true);
         Assert.Equal(RoomCardStatus.NeedsYou, permStatus);
         Assert.Equal("Permission requested", permText);
 
@@ -401,7 +523,7 @@ public class StatusDerivationTests
             new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
             new ArtifactLineage([]));
 
-        var (failedText, failedStatus) = RoomCardViewModel.DeriveStatus(projectionOrdinaryFailed, null);
+        var (failedText, failedStatus) = RoomCardViewModel.DeriveStatus(projectionOrdinaryFailed, null, isFlowLockHeld: true);
         Assert.Equal(RoomCardStatus.Failed, failedStatus);
         Assert.Equal("Failed", failedText);
     }

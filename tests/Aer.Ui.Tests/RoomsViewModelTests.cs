@@ -452,6 +452,42 @@ public class RoomsViewModelTests
         Assert.Equal("/tasks/finished", ordered[1].RoomDirectoryPath);
     }
 
+    /// <summary>
+    /// #1219: the tenth state's band, named rather than inherited. A second reader found it falling
+    /// into <c>StateRank</c>'s discard beside Finished, which would have put a room whose process died
+    /// above genuinely quiet rooms and below nothing — a tier assigned by accident, with no test that
+    /// would notice it drifting. It belongs with Cancelled: quiet, not competing with a gate or a live
+    /// run, found when a person goes looking.
+    /// </summary>
+    [Fact]
+    public void A_stopped_room_sits_in_the_quiet_band_with_cancelled()
+    {
+        var newerStopped = NewItem("/tasks/newer-stopped") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(9),
+            Status = RoomCardStatus.Stopped,
+        };
+        var olderFinished = NewItem("/tasks/older-finished") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(1),
+            Status = RoomCardStatus.Finished,
+        };
+        var olderCancelled = NewItem("/tasks/older-cancelled") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(2),
+            Status = RoomCardStatus.Cancelled,
+        };
+
+        var ordered = RoomsViewModel.InFleetOrderForTests([newerStopped, olderFinished, olderCancelled]).ToList();
+
+        // Band beats recency: the finished room is older and still comes first, which is what pins
+        // Stopped to band 3 rather than to Finished's band 2 (where recency would have won).
+        Assert.Equal("/tasks/older-finished", ordered[0].RoomDirectoryPath);
+        // And within band 3, recency orders as usual.
+        Assert.Equal("/tasks/newer-stopped", ordered[1].RoomDirectoryPath);
+        Assert.Equal("/tasks/older-cancelled", ordered[2].RoomDirectoryPath);
+    }
+
     [Fact]
     public void Recency_still_orders_within_each_band()
     {

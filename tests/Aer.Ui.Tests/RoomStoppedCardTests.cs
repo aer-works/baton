@@ -1,5 +1,6 @@
 using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
+using Aer.Flow.Templates;
 using Aer.Ui.Core;
 
 namespace Aer.Ui.Tests;
@@ -12,15 +13,32 @@ namespace Aer.Ui.Tests;
 /// </summary>
 public class RoomStoppedCardTests
 {
-    private static FlowState StateWith(WorkflowStatus status, params StepStatus[] stepStatuses) =>
-        new(
-            new WorkflowDefinitionSnapshotId("snap-1"),
-            [.. stepStatuses.Select((stepStatus, index) => new StepState(
+    /// <summary>
+    /// The minimal projection the derivation reads — the same shape <c>StatusDerivationTests</c>
+    /// builds, since #1219 made both go through one derivation and these must not exercise a
+    /// differently-shaped input from the tests that pin it.
+    /// </summary>
+    private static RoomProjection StateWith(WorkflowStatus status, params StepStatus[] stepStatuses)
+    {
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(
+            new WorkflowTemplateId("room-stopped-card-fixture"),
+            WorkflowTemplateVersion: 1,
+            Steps: [new WorkflowStepDefinition(new StepId("only"), "worker", ["in"], ["out"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]));
+
+        var steps = stepStatuses
+            .Select((stepStatus, index) => new StepState(
                 new StepId($"step-{index}"),
                 stepStatus,
                 LatestExecutionId: null,
-                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>()))],
-            status);
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>()))
+            .ToList();
+
+        return new RoomProjection(
+            snapshot,
+            new FlowState(snapshot.WorkflowDefinitionSnapshotId, steps, status),
+            new ExecutionHistory(new Dictionary<StepId, IReadOnlyList<ExecutionAttempt>>(), [], []),
+            new ArtifactLineage([]));
+    }
 
     /// <summary>
     /// The heart of it: <see cref="WorkflowStatus.Running"/> is the same journal state for a live room

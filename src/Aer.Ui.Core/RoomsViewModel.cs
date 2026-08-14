@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using Aer.Adapters;
 using Aer.Flow;
+using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -297,7 +298,17 @@ public sealed partial class RoomsViewModel : ObservableObject
         RoomCardStatus.Cancelled => 3,
         RoomCardStatus.Unavailable => 3,
         RoomCardStatus.OutOfPlan => 3,
-        _ => 2,
+        // #1219: named rather than left to the discard, which a second reader caught silently filing
+        // it beside Finished. Band 3 with Cancelled, its nearest sibling: a room whose process died is
+        // quiet — it is not competing for attention with a gate or a live run — and the person finds
+        // it when they go looking, with Resume on its own transcript.
+        RoomCardStatus.Stopped => 3,
+        // A never-run room the fleet reports no state for (see the property's own remarks) genuinely
+        // has no band; it sits with the settled outcomes. Split from the discard so that a NEW status
+        // member cannot inherit a tier by accident — the #616 lesson every other status switch in this
+        // file's neighbourhood already applies, and which this one was quietly missing.
+        null => 2,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unranked card status."),
     };
 
     /// <summary>
@@ -609,7 +620,11 @@ public sealed partial class RoomFleetItemViewModel : ObservableObject
     /// </summary>
     internal void ApplyProjection(RoomProjection projection)
     {
-        var (statusText, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission);
+        // #1219: this row's own directory, so a push for a room nothing is pumping settles to
+        // "Stopped" instead of leaving the spinner turning. Pushes only arrive for rooms something is
+        // doing something to, so this is not a per-tick probe.
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(
+            projection, projection.PendingPermission, ConcurrencyGuard.IsHeld(RoomDirectoryPath));
         StatusText = statusText;
         Status = status;
         PausedStepCount = projection.State.Steps.Count(s => s.Status == StepStatus.Paused);
