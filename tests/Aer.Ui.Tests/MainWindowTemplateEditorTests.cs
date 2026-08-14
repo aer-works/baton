@@ -202,8 +202,7 @@ public class MainWindowTemplateEditorTests
     // Phase 3's routing decision — "OpenAsync on a template file renders the read-only DAG view and
     // never starts an editing session" — and the first half of that is the thing #1222 deleted:
     // there is no read-only template view, because a workflow file is not a room and Author is the
-    // one door to a shape (02-screens.md:236). The half that survives, that opening a file by path
-    // never silently starts an editing session, moved to
-    // NavigationShellTests.Opening_a_workflow_file_by_path_says_it_is_not_a_room_and_draws_no_graph
+    // one door to a shape — see 02-screens.md's #1222 amendment. The half that survives, that opening
+    // a file by path never silently starts an editing session, moved into NavigationShellTests
     // rather than being dropped.
 }

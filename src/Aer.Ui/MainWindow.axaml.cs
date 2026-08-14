@@ -750,12 +750,11 @@ public partial class MainWindow : Window
     {
         RoomDirectoryPathBox.Text = roomDirectoryPath;
 
-        // #1222: a file is not a room, and this no longer draws one as though it were. Opening a
-        // workflow file by path used to render its graph full width — a second door to a shape, which
-        // 02-screens.md:236 closes ("'Edit shape' is the only door to the editor"), and a use of the
-        // engine's own plumbing as a screen, which #1215's amendment closes. Author opens the same
-        // file, draws the same graph, and can edit it. Said rather than silently ignored: the box is
-        // labelled "Room directory", so a file in it is a mistake worth naming.
+        // #1222: a file is not a room, and this no longer draws one as though it were. The decision
+        // and its reasons are 02-screens.md's #1222 amendment — including that it IS a decision
+        // rather than a reading of the passages around it, which a second reader was right to press
+        // on. Said rather than silently ignored: the box is labelled "Room directory", so a file in
+        // it is a mistake worth a sentence.
         if (File.Exists(roomDirectoryPath) && !Directory.Exists(roomDirectoryPath))
         {
             StatusText.Text =

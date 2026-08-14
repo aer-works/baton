@@ -161,14 +161,14 @@ public class MainWindowDagTests
         Assert.Equal(window.FindResource("Color.Surface"), nodeC.Background);
     }
 
-    // #1222 retired Opening_a_template_does_not_start_the_live_refresh_timer. It opened a workflow
-    // *file* through OpenAsync and asserted the poller stayed off, which was a real claim while that
-    // call rendered a template: nothing about a file can change, so nothing should be polled. #1222
-    // deleted that route, and the second reader caught that the test went on passing for a wholly
-    // different and much weaker reason — the early return now fires before the timer is even
-    // considered. A test that passes for the wrong reason is worse than no test, so it goes; the
-    // route's actual behaviour is pinned by
-    // NavigationShellTests.Opening_a_workflow_file_by_path_says_it_is_not_a_room_and_draws_no_graph.
+    // #1222 retired this file's live-refresh-timer fact about opening a template. It opened a
+    // workflow *file* through OpenAsync and asserted the poller stayed off, which was a real claim
+    // while that call rendered a template: nothing about a file can change, so nothing should be
+    // polled. #1222 deleted that route, and the second reader caught that the test went on passing
+    // for a wholly different and much weaker reason — the early return now fires before the timer is
+    // even considered. A test that passes for the wrong reason is worse than no test, so it goes.
+    // NavigationShellTests carries both surviving halves: what the route does now, and what it
+    // leaves an already-open room's poller doing.
 
     /// <summary>
     /// Regression test for a real M19 Phase 5 defect found post-milestone (2026-07-18): the DAG
