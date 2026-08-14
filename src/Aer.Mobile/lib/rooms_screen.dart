@@ -261,8 +261,15 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
   /// start — pick a vendor, open a room, land in its chat. It was one of two such affordances, the
   /// other on the phone's old decision surface, and #337/J3 always intended them to collapse into
   /// one when the front door was unified; #1226 retired that surface, so this is now the one.
+  /// It offers the **shape** as well as the vendor. The second reader on #1226 caught that retiring
+  /// the phone's decision surface took its "Start from template" dialog with it, leaving
+  /// `DaemonClient.runTemplate` with no caller anywhere in the app and no way on the phone to start
+  /// a workflow room at all — a capability `docs/milestone-history.md` records the phone gaining, so
+  /// losing it silently to a refactor is not a trade this slice gets to make. One dialog now covers
+  /// both: pick what to run, pick who runs it, start.
   Future<void> _startNewRoom() async {
     var availableVendorNames = <String>[];
+    var templates = <_StartableTemplate>[];
     try {
       final data = await widget.client.listTemplates();
       final vendors = (data['availableVendors'] as List<dynamic>?) ?? [];
@@ -270,8 +277,16 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
           .where((v) => (v as Map<String, dynamic>)['isAvailable'] == true)
           .map((v) => v['adapterName'].toString())
           .toList();
+      templates = ((data['templates'] as List<dynamic>?) ?? [])
+          .map((t) => caseInsensitive(t as Map<String, dynamic>))
+          .map((t) => _StartableTemplate(
+                id: t['id'].toString(),
+                title: t['title']?.toString() ?? t['id'].toString(),
+                requiresSecondaryVendor: t['requiressecondaryvendor'] == true,
+              ))
+          .toList();
     } catch (_) {
-      // Best-effort probe -- the fallback list below still lets the dialog work.
+      // Best-effort probe -- the fallbacks below still let the dialog work.
     }
     if (availableVendorNames.isEmpty) {
       availableVendorNames = ['claude', 'agy']; // vocabulary-ok: vendor key
@@ -279,6 +294,9 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
     if (!mounted) return;
 
     var selectedAdapter = availableVendorNames.first;
+    // A plain chat is the default because it is the cheapest thing to want, and it is the one entry
+    // that needs no template at all — startSession, not runTemplate.
+    _StartableTemplate? selectedTemplate;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -288,7 +306,18 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Vendor'),
+              const Text('What to run'),
+              DropdownButton<_StartableTemplate?>(
+                value: selectedTemplate,
+                isExpanded: true,
+                items: [
+                  const DropdownMenuItem<_StartableTemplate?>(value: null, child: Text('Just talk')),
+                  ...templates.map((t) => DropdownMenuItem<_StartableTemplate?>(value: t, child: Text(t.title))),
+                ],
+                onChanged: (val) => setDialogState(() => selectedTemplate = val),
+              ),
+              const SizedBox(height: 12),
+              const Text('Who runs it'),
               DropdownButton<String>(
                 value: selectedAdapter,
                 isExpanded: true,
@@ -312,7 +341,27 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
 
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
+    final template = selectedTemplate;
     try {
+      if (template != null) {
+        // A template's room is a workflow room: it opens with no session id, which is exactly the
+        // state ChatScreen now renders. The daemon picks the second vendor for a two-vendor shape;
+        // the phone asks for one worker, which is all its dialog has room to ask for honestly.
+        final directoryPath = await widget.client.runTemplate(
+          templateId: template.id,
+          primaryAdapter: selectedAdapter,
+        );
+        if (directoryPath.isEmpty) {
+          messenger.showSnackBar(const SnackBar(content: Text('Room started.')));
+        } else {
+          await navigator.push(MaterialPageRoute(
+            builder: (_) => ChatScreen(client: widget.client, sessionId: null, directoryPath: directoryPath),
+          ));
+        }
+        if (mounted) await _refresh();
+        return;
+      }
+
       final meta = await widget.client.startSession(adapter: selectedAdapter);
       final metaCi = caseInsensitive(meta);
       final directoryPath = metaCi['roomdirectorypath']?.toString();
@@ -510,4 +559,21 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+/// One entry in the New-room dialog's "what to run" list — a built-in template the daemon offers
+/// (`GET /api/templates`). Identity is the id, so a rebuilt list still matches the dropdown's
+/// current value across a `setState`.
+class _StartableTemplate {
+  final String id;
+  final String title;
+  final bool requiresSecondaryVendor;
+
+  const _StartableTemplate({required this.id, required this.title, required this.requiresSecondaryVendor});
+
+  @override
+  bool operator ==(Object other) => other is _StartableTemplate && other.id == id;
+
+  @override
+  int get hashCode => id.hashCode;
 }

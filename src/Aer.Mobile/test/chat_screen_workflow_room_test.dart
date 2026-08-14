@@ -24,6 +24,13 @@ class _FakeDaemonClient extends DaemonClient {
   final List<Map<String, String>> decisions = [];
   int cancelRunCallCount = 0;
 
+  /// Directories this screen asked the daemon to open — the doorbell that makes the current
+  /// projection arrive over the socket.
+  final List<String> openedRooms = [];
+
+  @override
+  Future<void> openRoom(String directoryPath) async => openedRooms.add(directoryPath);
+
   /// Set to make [decide] hang, so a test can assert the card's rungs are disabled mid-flight.
   Completer<void>? decideGate;
 
@@ -124,6 +131,17 @@ void main() {
       expect(find.text('Approve'), findsOneWidget);
     });
 
+    testWidgets('asks the daemon to push this room, so a paused room is not opened empty', (tester) async {
+      // Found by driving the built app on a device: without this the screen subscribes to a socket
+      // and then waits for a push that will never come, because the change that would produce one is
+      // the decision the person opened the room to make. Every other test here hands the projection
+      // in directly, so none of them could see it — this is the one that asks where a projection
+      // comes from in the first place.
+      final client = await pumpWorkflowRoom(tester);
+
+      expect(client.openedRooms, ['/tasks/foo']);
+    });
+
     testWidgets('answering the card sends the decision for that step', (tester) async {
       final client = await pumpWorkflowRoom(tester);
       client.push(workflowProjection());
@@ -166,13 +184,26 @@ void main() {
       client.decideGate!.complete();
       await tester.pumpAndSettle();
       expect(client.decisions.length, 1);
+
+      // And the rungs come back. The second reader caught that stopping at the line above would
+      // pass just as happily against a card that never re-enables — drop the `finally`'s
+      // `_pendingStepIds.remove`, or remove the wrong id, and a person would be left looking at a
+      // dead card with no way to answer it.
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Approve')).onPressed,
+        isNotNull,
+      );
+      expect(
+        tester.widget<TextButton>(find.widgetWithText(TextButton, 'Reject')).onPressed,
+        isNotNull,
+      );
     });
 
     testWidgets('the composer is present but disabled, and says why', (tester) async {
       await pumpWorkflowRoom(tester);
 
-      // Present, not absent — 02-screens.md:57-63. A composer that vanishes reads as a capability
-      // taken away; a disabled one reads as one that has not arrived.
+      // Present, not absent — the fork and why it went this way are on the composer itself in
+      // chat_screen.dart.
       final field = tester.widget<TextField>(find.byType(TextField));
       expect(field.enabled, isFalse);
       expect(find.textContaining("aren't conversational yet"), findsOneWidget);

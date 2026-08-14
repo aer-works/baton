@@ -182,12 +182,36 @@ class _ChatScreenState extends State<ChatScreen> {
     _refresh();
     _refreshMode();
     _subscribeProjection();
+    _requestFirstProjection();
     _progressSubscription = widget.client.watchProgress().listen((event) {
       if (!mounted) return;
       if (event.directoryPath == widget.directoryPath && _isSending) {
         setState(() => _liveProgressText += event.text);
       }
     });
+  }
+
+  /// Rings the daemon's doorbell so this room's CURRENT projection is pushed over the socket
+  /// [_subscribeProjection] just opened. Without it a workflow room opens **empty** and stays empty
+  /// until something else in the world happens to change — which for a paused room waiting on a
+  /// person is never, since the thing that would change it is the answer they came here to give.
+  ///
+  /// Found by driving the built app, not by a test: the widget tests push a projection in by hand,
+  /// so every one of them passed against a screen that could never obtain one. `InboxScreen._init`
+  /// did exactly this before #1226 deleted it, and this is that call restored to the screen that
+  /// inherited its job — the WS broadcast path #390 established, never an out-of-band read.
+  ///
+  /// Only for a workflow room: a session room's content comes from `getSession`, and `openRoom`
+  /// reassigns the daemon's own notion of the current room (see its remarks), so it is not called
+  /// where it is not needed. Opening a room from the switcher is the explicit user action that call
+  /// requires.
+  Future<void> _requestFirstProjection() async {
+    if (_isSessionRoom) return;
+    try {
+      await widget.client.openRoom(widget.directoryPath);
+    } on DaemonException catch (e) {
+      if (mounted) setState(() => _connectionError = e.message);
+    }
   }
 
   /// (Re)subscribes to the daemon's filtered projection stream.
