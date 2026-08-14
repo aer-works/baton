@@ -85,24 +85,53 @@ public partial class App : Application
     /// of its job. <see cref="UnobservedTaskExceptionEventArgs.SetObserved"/> is called for the
     /// same reason the dispatcher's <c>Handled</c> is: to say the report is now someone's
     /// responsibility.
+    ///
+    /// <para>
+    /// One shape it does not cover, so nobody reads "every discarded task" into it: the event is
+    /// raised for a <b>faulted</b> Task only. A discard that ends <c>Canceled</c> instead — a real
+    /// possibility at the sites that pass a cancellation token — stays as silent as it was before
+    /// this hook existed.
+    /// </para>
     /// </summary>
     private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
         e.SetObserved();
 
-        // Off the UI thread by construction (a finalizer thread), and the surface below is bound to
-        // UI properties — so the report is posted rather than written here.
-        var exception = (Exception?)e.Exception?.InnerException ?? e.Exception;
-        if (exception is not null)
+        if (e.Exception is not { } aggregate)
         {
-            Dispatcher.UIThread.Post(() => Report(exception));
+            return;
+        }
+
+        // The whole aggregate goes to the sink, not its first inner exception: a discarded
+        // Task.WhenAll can carry several faults, and AggregateException.InnerException is only
+        // InnerExceptions[0] — writing that alone would under-report a multi-fault failure while
+        // looking complete. The sentence on screen has room for one, so it takes the first.
+        AppUnhandledExceptionSink.LogException(aggregate);
+
+        var headline = aggregate.InnerExceptions.Count > 0 ? aggregate.InnerExceptions[0] : aggregate;
+
+        // This runs on a finalizer thread, where an escaping exception ends the process — the one
+        // outcome this whole change exists to prevent. So the durable write happens above,
+        // unconditionally, and only the screen half is posted, inside a catch: a dispatcher that is
+        // already shutting down has nowhere to put the message, and that is not worth dying over.
+        try
+        {
+            Dispatcher.UIThread.Post(() => Surface(headline));
+        }
+        catch (Exception postFailure)
+        {
+            AppUnhandledExceptionSink.LogException(postFailure);
         }
     }
 
     private void Report(Exception exception)
     {
         AppUnhandledExceptionSink.LogException(exception);
+        Surface(exception);
+    }
 
+    private void Surface(Exception exception)
+    {
         if (ErrorSurface is { } surface)
         {
             // The log path rides in the sentence deliberately: this text shares its two properties
