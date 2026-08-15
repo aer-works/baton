@@ -66,8 +66,13 @@ public static class SnapshotBinder
     /// reader without <c>FileShare.Delete</c> open at that instant makes
     /// <see cref="File.Move(string, string, bool)"/> throw <see cref="UnauthorizedAccessException"/>
     /// -- a transient sharing violation, not a real failure, so it is retried with a short backoff
-    /// rather than surfaced. Since #842 <see cref="LoadFromFileAsync"/> opens delete-tolerant, so
-    /// the repo's own readers are no longer that contention; the retry stays for foreign handles.
+    /// rather than surfaced.
+    /// <b>#842's delete-tolerant reader does not remove that contention</b>, though this comment
+    /// claimed it did until #1267: the replace fails against a delete-sharing handle exactly as it
+    /// does against a default-share one, measured, because the rename `File.Move` performs uses
+    /// legacy semantics. 0057's "Rests on" table holds the measurement. So the retry is not a
+    /// fallback for foreign handles — it is what carries this method against every reader, ours
+    /// included.
     /// </para>
     /// </remarks>
     public static Task PersistAsync(
@@ -151,11 +156,11 @@ public static class SnapshotBinder
     public static async Task<WorkflowDefinitionSnapshot> LoadFromFileAsync(
         string snapshotFilePath, CancellationToken cancellationToken = default)
     {
-        // #842: ReadWrite|Delete share rather than File.ReadAllTextAsync's default Read -- a
-        // default-share handle is exactly what blocks PersistAsync's overwrite-rename on Windows,
-        // so the repo's own readers were the contention the writer's retry guarded against. A read
-        // in flight during the rename keeps the old file object; atomicity is the rename's, either
-        // way.
+        // #842: ReadWrite|Delete share rather than File.ReadAllTextAsync's default Read. A read in
+        // flight during the rename keeps the old file object; atomicity is the rename's, either way.
+        // #1267: this share does NOT unblock PersistAsync's rename -- that was the reason recorded
+        // here and it is measured false (0057's "Rests on"). Any open handle blocks it. Kept for
+        // what it does do, which is the sentence above.
         string json;
         try
         {

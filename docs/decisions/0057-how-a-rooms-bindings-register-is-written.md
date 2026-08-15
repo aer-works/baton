@@ -105,6 +105,7 @@ revocation that silently un-revokes is the case this rule exists for.
 | A crash mid-write leaves a truncated register while the guard is held | a lock is released by process exit; the bytes are not restored | the guard already covers durability and rule 1 buys only concurrency |
 | Stage-and-move is atomic on the platforms we ship | argued and accepted for `MaterializeRoomBindings` when it shipped; `File.Move(overwrite: true)` maps to `MoveFileEx`/`rename` | rule 1 relocates the window rather than closing it, and the register needs a different durability story |
 | An atomic replace can lose to a reader on Windows, and a truncate-write cannot even start | **measured** — #1264's own test: with a reader looping `File.ReadAllText`, the replace raises `UnauthorizedAccessException` and the truncate-write raises `IOException` on its open. Neither happens on POSIX, where the reader instead observes a torn file | the bounded retry in `ReplaceWithRetryAsync` is unnecessary ceremony, and rule 1 costs writers nothing |
+| On Windows that loss happens whatever share mode the reader used | **measured, and the measurement is committed** — `A_replace_loses_to_an_open_handle_whatever_share_mode_it_used` asserts `File.Move(overwrite: true)` fails against a `ReadWrite \| Delete` holder and a `Read` holder alike, with the no-holder arm as the control that keeps the other two from being about the harness. `MoveFileEx` renames with legacy semantics; only a POSIX-semantics rename honours `FILE_SHARE_DELETE`, and that is not reachable from `File.Move`. Scoped to Windows deliberately: POSIX renames over an open handle regardless, so there is nothing there to discriminate | the contention could be removed by opening our own readers delete-tolerant, and the retry would be a workaround rather than the fix (the conclusion #1267 records being drawn wrongly) |
 | A room with bindings ignores a supplied path | [0056](0056-a-room-carries-its-own-worker-bindings.md) rule 4, and `/api/rooms/decide` gates on `!File.Exists` | rule 3's loser is silently wrong rather than correctly ignored, and first-wins needs to report |
 | The decide path dispatches against the room's own copy | `/api/rooms/decide` resolves the room's file inside the turn lock | the race decides which bindings *run*, not only which are recorded, and rule 3 is urgent rather than corrective |
 | Room directories can live anywhere | `DirectoryPath` is free text on every room endpoint | rule 4's detection could be a path prefix, which would be simpler |
@@ -134,6 +135,28 @@ without `FILE_SHARE_DELETE`, so a replace landing while anyone is mid-read fails
 for the contention: a failed write is reported to someone who can act on it, and a torn read is not.
 The daemon's own readers take the room-events lock and never reach that path; it exists for the ones
 that cannot, like `aer run` on the command line.
+
+**And the retry cannot be designed away by changing how our own readers open the file — measured
+(#1266).** `FILE_SHARE_DELETE` governs whether a target can be *opened* for delete; the superseding
+rename `MoveFileEx` performs uses legacy semantics and fails against **any** open handle whatever its
+share mode. Measured directly: `File.Move(overwrite: true)` fails `UnauthorizedAccessException`
+against a `ReadWrite | Delete` holder exactly as it does against a `Read`-only one, and succeeds with
+no holder. Only a POSIX-semantics rename honours the share — `SetFileInformationByHandle` with
+`FileRenameInfoEx`, not reachable through `File.Move` — which does succeed, with the old handle still
+reading the old content. This is recorded because the opposite conclusion was already drawn once
+elsewhere in the tree and shipped as fact (#1267), and because "make every reader delete-tolerant"
+was a live option here until it was measured. Foreign handles — a scanner, an indexer — are
+default-share regardless, so the retry would be owed even if that trick had worked.
+
+**The budget is wall-clock, not an attempt count, and this writer learned it the expensive way.** It
+first shipped 20 attempts 10ms apart, which is ~200ms only when the attempts get *scheduled*: under
+a saturated machine they do not, and the writer exhausted all twenty and threw while a reader looped
+against it (#1266, and #931 before it for the same failure in `SnapshotBinder`). The shape that
+survives is `AtomicLaunchConfigWriter`'s — a wall-clock deadline with exponential backoff, and the
+budget injectable so a test can force exhaustion without waiting out the production one. What is
+still true, and is the trade this accepts: the filter cannot tell a contended replace from a
+permanently broken target, so a broken write pays the whole budget before surfacing the exception it
+would otherwise have raised at once.
 
 **Harder, once rule 4 ships (#1257).** The bindings editor loses a capability it was never meant to
 have but did have. Someone who has been hand-editing a live room's register — to fix a model name,

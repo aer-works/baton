@@ -161,9 +161,10 @@ public class SnapshotBinderTests
 
                         // A brief gap between reads, rather than reopening the destination
                         // back-to-back: a real reader (one LoadFromFileAsync per CLI invocation)
-                        // never holds it open continuously. Since #842's delete-tolerant share
-                        // the rename no longer needs the gap; keeping it keeps the reader shaped
-                        // like the real poll loops.
+                        // never holds it open continuously. #1267: the gap is load-bearing, not
+                        // cosmetic -- this comment used to say #842's delete-tolerant share meant
+                        // the rename no longer needed it, and that is measured false (0057's
+                        // "Rests on"). Without the gap this reader starves the writer's retry.
                         try
                         {
                             await Task.Delay(3, cts.Token);
