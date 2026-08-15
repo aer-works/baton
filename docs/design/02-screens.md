@@ -148,11 +148,18 @@ One room, one worker. This is the screen you look at most, so it has to be borin
 > a step has failed for a reason other than exhaustion.
 >
 > The clause governing what crosses is the one above, applied to a banner rather than a card, and it
-> subtracts more here: the desktop's *Try again* and *Ask the worker to fix it* are the whole second
-> half of that banner, and both need a run the phone cannot start. What crosses is the naming — which
-> step, which worker, why — and the stderr excerpt, kept as its own block rather than folded into the
-> sentence, because the separator between them is a format the engine writes and a reader who saw one
-> run-on string could not tell which half was the engine's account and which the worker's output.
+> subtracts more here. The desktop banner offers **three** things, and they do not all fall for the
+> same reason. *Try again* and *Ask the worker to fix it* both need a run the phone cannot start, so
+> the clause above disposes of them. ***Show full output* does not** — it previews an artifact already
+> written, and the phone has the very mechanism it would need, since the paused-step card already
+> fetches an output file the same way. It is left out because this amendment is about saying what
+> broke, not about reading the wreckage, and one is worth shipping without the other; it is filed as
+> **#1254** rather than justified away.
+>
+> What crosses is the naming — which step, which worker, why — and the stderr excerpt, kept as its own
+> block rather than folded into the sentence, because the separator between them is a format the
+> engine writes and a reader who saw one run-on string could not tell which half was the engine's
+> account and which the worker's output.
 >
 > **An out-of-plan step is not drawn as failed**, on this surface for the same reason as on the
 > desktop (0026, and #1116's must-fix): it is waiting on quota, not broken, and the calm word is the

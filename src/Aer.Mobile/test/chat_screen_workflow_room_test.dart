@@ -523,6 +523,12 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(find.byType(PermissionGateCard), findsOneWidget);
       expect(find.byType(RoomStoppedCard), findsOneWidget);
+      // Since #1245 the untouched fixture also carries a non-exhausted failed step, so this push is
+      // now the only place all four kinds of trailing item appear at once — the hardest case for the
+      // hand-rolled index arithmetic, and worth asserting rather than leaving to takeException.
+      // The daemon cannot actually emit this pairing (the amendment says why); a test that renders
+      // it anyway is the cheapest place to notice if that ever stops being true.
+      expect(find.byType(FailedStepCard), findsOneWidget);
     });
 
     test('the sent-back row names its target, and only it does', () {

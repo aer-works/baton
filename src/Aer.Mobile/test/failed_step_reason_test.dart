@@ -21,6 +21,18 @@ void main() {
       );
     });
 
+    test('a cut tail keeps the truncation mark that says it was cut', () {
+      // The one input class the C# original singles out as must-survive, and the reason it does:
+      // strip the mark and a cut tail reads as the whole capture. `trim()` takes whitespace, and
+      // U+2026 is not whitespace — so this passes today, and the point of the arm is that a later
+      // "tidy up the excerpt" edit cannot quietly break it. Twin of
+      // OutcomeClassifierTests.SplitReasonAndStderr_keeps_the_truncation_ellipsis_on_a_cut_tail.
+      expect(
+        splitReasonAndStderr('Worker exited with non-zero code 1. stderr: …cc: no such file'),
+        ('Worker exited with non-zero code 1.', '…cc: no such file'),
+      );
+    });
+
     test('empty excerpt after trim returns null excerpt', () {
       expect(
         splitReasonAndStderr(' Step failed. stderr:   '),
