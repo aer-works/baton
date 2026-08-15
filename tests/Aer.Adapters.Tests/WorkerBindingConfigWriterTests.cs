@@ -47,6 +47,35 @@ public class WorkerBindingConfigWriterTests
             TimeSpan.FromMinutes(1)),
     };
 
+    /// <summary>
+    /// A register wide enough that writing it is not instantaneous — the tear window the atomicity
+    /// test hunts is proportional to how long the write takes, and <see cref="TwoWorkerConfig"/> is
+    /// small enough to land inside one scheduling slice. Only that test needs this; every other one
+    /// is about content, where two entries say as much as two hundred.
+    /// </summary>
+    private static Dictionary<string, WorkerBindingConfigEntry> WideConfig()
+    {
+        var config = new Dictionary<string, WorkerBindingConfigEntry>();
+        for (var i = 0; i < 400; i++)
+        {
+            config[$"worker-{i:D4}"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract(
+                    $"worker-{i:D4}",
+                    RequiredInputs: ["plan", "review"],
+                    ProducedOutputs:
+                    [
+                        new ProducedOutput("plan", new OutputCondition("/status", new JsonScalar.String("done"))),
+                    ],
+                    OptionalMetadata: ["priority"]),
+                // Long enough to make the payload hundreds of KB rather than a few, which is the point.
+                new string('x', 500),
+                TimeSpan.FromMinutes(5));
+        }
+
+        return config;
+    }
+
     [Fact]
     public async Task A_saved_config_round_trips_through_the_engines_own_parser()
     {
@@ -152,6 +181,146 @@ public class WorkerBindingConfigWriterTests
     }
 
     /// <summary>
+    /// #1266 / #1267: the replace loses to <b>any</b> open handle on the target, whatever share mode
+    /// it was opened with. This is the measurement 0057's "Rests on" row cites, committed rather than
+    /// left as an ad-hoc run — a decision record's evidence has to be re-runnable by whoever doubts it.
+    /// </summary>
+    /// <remarks>
+    /// The `Delete`-sharing arm is the one that matters, and 0057's "Rests on" row holds why the
+    /// intuition about it is wrong. Believing otherwise is what #1267 records being shipped as fact,
+    /// and it made "open every reader delete-tolerant" look like a fix for rename contention.
+    /// <para>
+    /// The no-holder arm is the control, and it is not decoration: without it, a harness that could
+    /// never move a file would report both share modes failing and read as a confirmation.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_replace_loses_to_an_open_handle_whatever_share_mode_it_used()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("POSIX renames over an open handle regardless of share mode; there is nothing to discriminate.");
+        }
+
+        var directory = Path.Combine(Path.GetTempPath(), $"bindings-share-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            Assert.False(TryReplaceWhileHeld(directory, FileShare.ReadWrite | FileShare.Delete));
+            Assert.False(TryReplaceWhileHeld(directory, FileShare.Read));
+            Assert.True(
+                TryReplaceWhileHeld(directory, share: null),
+                "the replace failed with no holder at all, so this measures the harness rather than sharing");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>Stages a file and replaces <paramref name="share"/>-held target; true when the move landed.</summary>
+    private static bool TryReplaceWhileHeld(string directory, FileShare? share)
+    {
+        var target = Path.Combine(directory, $"bindings-{Guid.NewGuid():N}.json");
+        File.WriteAllText(target, "{}");
+        var staging = target + ".tmp";
+        File.WriteAllText(staging, "{}");
+
+        var holder = share is { } s ? new FileStream(target, FileMode.Open, FileAccess.Read, s) : null;
+        try
+        {
+            File.Move(staging, target, overwrite: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+        finally
+        {
+            holder?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// #1266: the wall-clock budget survives a holder that the attempt-count budget it replaced could
+    /// not. The mirror of <c>SnapshotBinderTests</c>'s arm for the same switch — without it this
+    /// writer's fix rests on a sibling's measurement rather than its own, which is the analogy the
+    /// second reader declined to accept.
+    /// </summary>
+    [Fact]
+    public async Task A_transient_holder_outlasting_the_old_attempt_count_budget_no_longer_fails_the_write()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Only on Windows does a default-share reader block the replace at all.");
+        }
+
+        var directory = Path.Combine(Path.GetTempPath(), $"bindings-hold-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "bindings.json");
+        await WorkerBindingConfigWriter.SaveToFileAsync(TwoWorkerConfig(), path, TestContext.Current.CancellationToken);
+
+        var holder = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            // 30s injected rather than the production default: the claim is that the retry is still
+            // running when the holder releases, and the wide margin keeps the test deterministic even
+            // if its own 400ms pause is starved under load. The old budget was ~200ms of backoff.
+            var save = WorkerBindingConfigWriter.SaveToFileAsync(
+                TwoWorkerConfig(), path, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            // wait-ok: holding past the retired budget, not waiting for a result.
+            await Task.Delay(400, TestContext.Current.CancellationToken);
+            holder.Dispose();
+
+            await save; // must NOT throw — the attempt-count budget would have given up by now.
+
+            Assert.Equal(2, WorkerBindingConfigParser.Parse(await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken)).Count);
+        }
+        finally
+        {
+            holder.Dispose();
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
+    /// #1266: a replace that can never succeed surfaces rather than retrying forever, and takes its
+    /// staging file with it. The budget is injected tiny so the exhaustion path runs immediately
+    /// instead of burning the production five seconds on a failure that will never clear.
+    /// </summary>
+    /// <remarks>
+    /// A directory at the destination is a permanent failure that needs no second process to
+    /// manufacture. It surfaces as <see cref="IOException"/> on some platforms and
+    /// <see cref="UnauthorizedAccessException"/> on others — the same pair the retry filter catches,
+    /// which is exactly why this arm exists: those two types must not become unfailable just because
+    /// the writer retries them.
+    /// </remarks>
+    [Fact]
+    public async Task A_replace_that_can_never_succeed_surfaces_and_leaves_no_staging_file()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"bindings-exhaust-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "bindings.json");
+        Directory.CreateDirectory(path);
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<Exception>(
+                () => WorkerBindingConfigWriter.SaveToFileAsync(
+                    TwoWorkerConfig(), path, TimeSpan.FromMilliseconds(50), TestContext.Current.CancellationToken));
+
+            Assert.Empty(Directory.GetFiles(directory, "*.tmp"));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
     /// 0057 rule 1 (#1264): a reader racing a write sees one whole register or another, never a
     /// half. What this pins is the atomicity property; the crash case that makes it matter — a
     /// process killed mid-write, which no lock covers — is not reproducible in-process, so this
@@ -173,11 +342,40 @@ public class WorkerBindingConfigWriterTests
     /// more than was measured.
     /// </para>
     /// <para>
-    /// <b>It can false-negative, and that is inherent rather than fixable here.</b> Swap the move for
-    /// a <c>File.Copy</c> — not atomic — and on a fast machine the reader may never be scheduled
-    /// inside the copy window for a payload this small, so it would pass. So: treat a red here as
-    /// real, do not read a green as proof of atomicity on its own, and do not wave off a CI failure
-    /// as "just timing" without first checking whether it is this scenario in reverse.
+    /// <b>Scoped to what was actually re-measured:</b> the Windows red above was re-run against
+    /// *this* construction (#1266). The POSIX red was measured against the previous one, before the
+    /// reader gained its gap — and the gap is precisely what could cost that arm its observability,
+    /// which is why the payload grew in the same change. Treat the POSIX arm as inherited rather than
+    /// re-proven until someone runs it there.
+    /// </para>
+    /// <para>
+    /// <b>The overlap is established, not hoped for (#1266).</b> The write loop does not start until
+    /// the reader has completed one read-and-parse, because <c>Task.Run</c> having been called is not
+    /// evidence the reader has been scheduled: on a loaded macOS runner all 60 writes finished inside
+    /// 116ms before the reader got a slot, and the premise assertion below correctly failed the run
+    /// rather than reporting a vacuous zero. The premise assertion stays anyway — a handshake proves
+    /// the reader started, not that it kept going.
+    /// </para>
+    /// <para>
+    /// <b>The reader pauses between reads, and the payload is large, and both are load-bearing.</b>
+    /// A zero-gap reopen loop is not a consumer this product has — a read is one
+    /// <c>LoadFromFileAsync</c> per operation — and on Windows it manufactures the one failure this
+    /// test explicitly disclaims two paragraphs down: an open handle blocks the replace, so a reader
+    /// that never lets go starves the writer's retry budget instead of measuring anything (#1266
+    /// again, this time on Windows under full-gates load). The gap costs observability of the tear it
+    /// hunts, which is what the large payload buys back: <see cref="TwoWorkerConfig"/> is written in
+    /// so few bytes that a torn read is nearly unobservable through a 3ms gap. Shrink the payload and
+    /// this test stops being able to fail. <c>SnapshotBinderTests</c> learned the same thing and
+    /// widened its own window the same way.
+    /// </para>
+    /// <para>
+    /// <b>Its green is not the evidence; the recorded red is.</b> Racy observation is inherent to the
+    /// claim — lockstep the two and every read sees a completed write, so a truncate-writer would pass
+    /// and the test would discriminate nothing; race them freely and the scheduler is in play both
+    /// ways. So a passing run here means "no regression observed", never "atomicity proven", and the
+    /// proof is the red run above, taken against this construction rather than the one it replaced.
+    /// Treat a red as real: do not wave off a CI failure here as "just timing" without first checking
+    /// whether it is this scenario in reverse.
     /// </para>
     /// </remarks>
     [Fact]
@@ -189,18 +387,19 @@ public class WorkerBindingConfigWriterTests
 
         try
         {
-            await WorkerBindingConfigWriter.SaveToFileAsync(TwoWorkerConfig(), path, TestContext.Current.CancellationToken);
+            await WorkerBindingConfigWriter.SaveToFileAsync(WideConfig(), path, TestContext.Current.CancellationToken);
 
             var torn = 0;
             var reads = 0;
+            var readerIsLive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using var stop = new CancellationTokenSource();
 
             var reader = Task.Run(
-                () =>
+                async () =>
             {
                 while (!stop.IsCancellationRequested)
                 {
-                    string json;
+                    string? json = null;
                     try
                     {
                         json = File.ReadAllText(path);
@@ -211,25 +410,47 @@ public class WorkerBindingConfigWriterTests
                         // Not being able to open the file at all during a replace is the sharing
                         // behaviour the daemon's read guard exists for (0057's Consequences) — a
                         // different fact, and not this one's to fail on.
-                        continue;
+                        //
+                        // Deliberately NOT a `continue`: these failures cluster around the writer's
+                        // replace attempts, so skipping the pause here would busy-loop the reader at
+                        // exactly the moment the writer needs a gap to land in — reinstating the
+                        // starvation this construction exists to remove, on the one path where it
+                        // does the most damage.
                     }
 
-                    reads++;
+                    if (json != null)
+                    {
+                        reads++;
+                        try
+                        {
+                            WorkerBindingConfigParser.Parse(json);
+                        }
+                        catch (WorkerBindingConfigException)
+                        {
+                            Interlocked.Increment(ref torn);
+                        }
+
+                        readerIsLive.TrySetResult();
+                    }
+
                     try
                     {
-                        WorkerBindingConfigParser.Parse(json);
+                        // wait-ok: shapes the reader, times out nothing — see the remarks.
+                        await Task.Delay(3, stop.Token);
                     }
-                    catch (WorkerBindingConfigException)
+                    catch (OperationCanceledException)
                     {
-                        Interlocked.Increment(ref torn);
+                        return;
                     }
                 }
             },
                 TestContext.Current.CancellationToken);
 
+            await readerIsLive.Task;
+
             for (var i = 0; i < 60; i++)
             {
-                await WorkerBindingConfigWriter.SaveToFileAsync(TwoWorkerConfig(), path, TestContext.Current.CancellationToken);
+                await WorkerBindingConfigWriter.SaveToFileAsync(WideConfig(), path, TestContext.Current.CancellationToken);
             }
 
             await stop.CancelAsync();

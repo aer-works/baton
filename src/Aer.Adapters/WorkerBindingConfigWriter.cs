@@ -35,6 +35,16 @@ public static class WorkerBindingConfigWriter
 {
     private static readonly JsonSerializerOptions IndentedOptions = new() { WriteIndented = true };
 
+    /// <summary>
+    /// How long the replace keeps retrying. Wall-clock rather than an attempt count, and the same five
+    /// seconds its two siblings use — <c>AtomicLaunchConfigWriter</c> documents why, and #931 is the
+    /// measurement; #1266 is this writer paying the same tuition a second time.
+    /// </summary>
+    private static readonly TimeSpan DefaultReplaceRetryBudget = TimeSpan.FromSeconds(5);
+
+    /// <summary>Backoff ceiling, so even a long budget keeps retrying often.</summary>
+    private const double MaxReplaceBackoffMs = 250;
+
     /// <summary>Serializes <paramref name="config"/> as indented bindings JSON, validating it by parsing it back first.</summary>
     /// <exception cref="WorkerBindingConfigException">
     /// <paramref name="config"/> fails to round-trip through <see cref="WorkerBindingConfigParser.Parse"/>
@@ -68,9 +78,22 @@ public static class WorkerBindingConfigWriter
     /// <exception cref="WorkerBindingConfigException">
     /// <paramref name="config"/> fails to round-trip through the parser; nothing is written.
     /// </exception>
-    public static async Task SaveToFileAsync(
+    public static Task SaveToFileAsync(
         IReadOnlyDictionary<string, WorkerBindingConfigEntry> config,
         string bindingsFilePath,
+        CancellationToken cancellationToken = default)
+        => SaveToFileAsync(config, bindingsFilePath, DefaultReplaceRetryBudget, cancellationToken);
+
+    /// <summary>
+    /// The budget-injecting form of <see cref="SaveToFileAsync(IReadOnlyDictionary{string, WorkerBindingConfigEntry}, string, CancellationToken)"/>.
+    /// Internal so a test can force the exhaustion path with a tiny budget rather than waiting out the
+    /// production one — the same seam <c>SnapshotBinder.PersistAsync</c> exposes, for the same reason.
+    /// Production always calls the public overload.
+    /// </summary>
+    internal static async Task SaveToFileAsync(
+        IReadOnlyDictionary<string, WorkerBindingConfigEntry> config,
+        string bindingsFilePath,
+        TimeSpan replaceRetryBudget,
         CancellationToken cancellationToken = default)
     {
         var json = Serialize(config);
@@ -85,7 +108,7 @@ public static class WorkerBindingConfigWriter
         try
         {
             await File.WriteAllTextAsync(staging, json, cancellationToken).ConfigureAwait(false);
-            await ReplaceWithRetryAsync(staging, bindingsFilePath, cancellationToken).ConfigureAwait(false);
+            await ReplaceWithRetryAsync(staging, bindingsFilePath, replaceRetryBudget, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -110,9 +133,17 @@ public static class WorkerBindingConfigWriter
     /// end of the trade are all in 0057's Consequences, measured. This absorbs it.
     /// </para>
     /// <para>
-    /// Bounded, not indefinite, for the same reason <c>ConcurrencyGuard.AcquireWithin</c> is: a
-    /// contending reader opens, reads a few kilobytes and closes, so a budget this size covers a
-    /// routine overlap without hiding a holder that is genuinely stuck.
+    /// <b>Bounded by elapsed time, not attempt count</b> (#1266) — the anti-starvation reason
+    /// <c>AtomicLaunchConfigWriter</c> documents, which <c>SnapshotBinder.PersistAsync</c> already
+    /// applies for the same rename. This method shipped with the pre-#931 shape and reproduced the
+    /// failure that one was measured to have: 20 attempts 10ms apart is ~200ms only when the attempts
+    /// get scheduled, and under full-suite load they do not.
+    /// </para>
+    /// <para>
+    /// The retry is not an artifact of how the repo's own readers open the file, and cannot be
+    /// removed by changing them — see 0057's Consequences for the measurement, and #1267 for the
+    /// place that lesson was drawn wrongly the first time. Foreign handles (a virus scanner, an
+    /// indexer) are default-share by definition and are what it exists for.
     /// </para>
     /// <para>
     /// <b>It retries any I/O failure, not only the contended one</b>, and that is a deliberate
@@ -120,24 +151,34 @@ public static class WorkerBindingConfigWriter
     /// same two exception types as a sharing violation, and telling them apart means matching
     /// platform error codes — brittle, and wrong in the direction that matters if the match ever
     /// drifts. The cost of the broad filter is that a permanently-failing write takes the full budget
-    /// before surfacing the same exception it would have raised immediately. Paying ~200ms to report
-    /// a broken path is a better bargain than silently not retrying a real one.
+    /// before surfacing the same exception it would have raised immediately. Paying the budget to
+    /// report a broken path is a better bargain than silently not retrying a real one.
     /// </para>
     /// </remarks>
-    private static async Task ReplaceWithRetryAsync(string staging, string target, CancellationToken cancellationToken)
+    private static async Task ReplaceWithRetryAsync(
+        string staging, string target, TimeSpan replaceRetryBudget, CancellationToken cancellationToken)
     {
-        const int attempts = 20;
-        for (var attempt = 1; ; attempt++)
+        // The first attempt always runs before the deadline is consulted, so a zero budget still tries
+        // exactly once — which is what the exhaustion test injects.
+        var deadlineTicks = Environment.TickCount64 + (long)replaceRetryBudget.TotalMilliseconds;
+        var backoffMs = 15.0;
+        while (true)
         {
             try
             {
                 File.Move(staging, target, overwrite: true);
                 return;
             }
-            catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < attempts)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // wait-ok: yielding to a reader that closes in microseconds; the ceiling is the loop's
-                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+                if (Environment.TickCount64 >= deadlineTicks)
+                {
+                    throw;
+                }
+
+                // wait-ok: yielding to a reader that closes in microseconds; the ceiling is the budget
+                await Task.Delay(TimeSpan.FromMilliseconds(backoffMs), cancellationToken).ConfigureAwait(false);
+                backoffMs = Math.Min(backoffMs * 2, MaxReplaceBackoffMs);
             }
         }
     }
