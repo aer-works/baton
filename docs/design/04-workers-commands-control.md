@@ -143,7 +143,7 @@ The model still isn't a detail — that claim stands. Where it lives is the room
 showing a bare worker's vendor alone, or `claude · 2 skills` if any are attached (see
 [02-screens.md](02-screens.md#the-calls-made-here)), with the model one tap away in the same
 picker shown above. Painting it onto the compact label at all times is what made a worker's chip
-unreadable once skills and a permission grant were added to the same axes; the picker — not the
+unreadable once skills and a standing permission were added to the same axes; the picker — not the
 label — is where the model lives now.
 
 Two workers may share a vendor. "claude on opus" and "claude on haiku" are two distinct participants in the room. This falls out of separating vendor from model, and it is what makes cheap-reviewer / expensive-author patterns possible on one subscription.
@@ -321,7 +321,7 @@ Denial is an answer A refused worker is told and continues. It does not silently
 
 Model on the chip Vendor and model are separate choices, both always visible. Two workers can share a vendor on different models — that is a normal room, not an edge case.
 
-Model in the picker, not the label Amends the call above: the compact chip shows a bare worker's vendor, or `vendor · N skills` if any are attached — the model itself moved into the picker one tap away, for the same reason model/effort/grant all live in a worker's popover rather than its chip label. See 02-screens.md.
+Model in the picker, not the label Amends the call above: the compact chip shows a bare worker's vendor, or `vendor · N skills` if any are attached — the model itself moved into the picker one tap away, for the same reason model/effort/permission all live in a worker's popover rather than its chip label. See 02-screens.md.
 
 Effort is the third axis Vendor, model, and how hard it should think — all three on the chip, all three per room, all three in a template. Named by behaviour (quick / standard / careful / exhaustive), never a token budget or a vendor's flag.
 

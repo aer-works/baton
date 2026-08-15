@@ -25,7 +25,7 @@ committed inside the project's own directory.**
   person chooses each time, not something AER assumes.
 - **Reachable afterward from a global Settings surface** — a "Projects" list naming every folder AER
   has a stored ceiling for, so a person can find and revise a ceiling they set once and forgot about,
-  the same way 0022 already requires a permission grant to be "found and revoked in settings."
+  the same way 0022 already requires a standing permission to be "found and revoked in settings."
 - **Not a repo dotfile.** AER already commits to never placing anything into a project's own directory
   unprompted (Credential Isolation, `CLAUDE.md` Architecture Rules) — a permission ceiling stored
   inside the repo would violate that same instinct, and would silently become a *shared, committed*

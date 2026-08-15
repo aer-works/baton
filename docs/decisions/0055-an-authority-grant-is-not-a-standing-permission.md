@@ -43,11 +43,23 @@ phrase, so this names what the design already said rather than coining a word. P
 messages, issue titles and commit subjects say "permission" or "standing permission" — never bare
 "grant" — for anything about tool reach.
 
-**3. The type name `PermissionGrant` stays.** It reads as "grant *of a permission*", which is
-accurate, and renaming a shipped record persisted in every room's `bindings.json` would cost a
-migration to fix a word that is not actually wrong in context. The rule binds the *language*, which is
-where the confusion happened; a compound identifier that carries its own disambiguator is not the
-failure mode.
+**3. The type name `PermissionGrant` stays, and this is a cost decision, not a principle.**
+[0002](0002-one-vocabulary.md)'s *decision* text is broader than the line drawn here — "code and UI
+use the same words… rename the code to the plain word wherever a good one exists" — and only its
+*enforcement* (the #315 lint) is scoped to user-facing strings. So this record is leaning on the
+narrower reading, deliberately and with that stated: the identifier already carries its own
+disambiguator ("grant *of a permission*"), and renaming a record persisted in every room's
+`bindings.json` buys a migration to fix a word that is not wrong in context. If that trade is ever
+judged wrong, the rename is the remedy and nothing here argues against it.
+
+**3a. The rule binds new and edited text, and existing records are corrected where both objects can be
+in view.** 0022 and 0052 are corrected here: both are about the ladder that now sits in a register
+beside an authority model, so a bare "grant" there is genuinely ambiguous.
+[0004](0004-permission-scopes.md) is deliberately **not** rewritten — it predates the distinction and
+is wholly about the permission object, so its own formulations ("effective grant = project ∩ room ∩
+step", "grants fail closed") are unambiguous inside it, and rewriting a ratified record's core
+formulation costs more than the ambiguity it would remove. That it was considered and left is recorded
+here so the next reader neither "fixes" it nor reads it as an oversight.
 
 **4. Neither family migrates onto the other, and neither is deleted.** They are different concepts;
 one is shipped and one is owed. No work on the authority family until M26/#778 picks it up.
@@ -59,7 +71,7 @@ one is shipped and one is owed. No work on the authority family until M26/#778 p
 | The two families carry genuinely different content | `GrantLevel.cs` is authority levels L0–L3 with origination scope and spend bounds; `PermissionGrant.cs` is tool reach (read/write/shell/network) | they are one concept after all, and one implementation should be retired |
 | The authority family is owed, not dead | 0049 term 4 ("owed, not yet held at HEAD"); room spec §5/§8; `OrchestratorTurnPrompt.RenderEvent:137-139` already renders the three events | it is dead code and 0049's authority model needs re-deciding, not this record |
 | "Standing permission" is not a new coinage | 0022 §2 uses it | the naming half of this record is inventing vocabulary rather than recovering it |
-| Renaming `PermissionGrant` is not required to fix the confusion | the confusion was in prose and issue titles, and the type name carries its own qualifier | a rename plus a `bindings.json` migration is owed |
+| Renaming `PermissionGrant` is not worth its migration (**assumed**, not measured — a cost judgement against 0002's broader decision text; see decision 3) | the confusion observed was in prose and issue titles, and the identifier carries its own qualifier | a rename plus a `bindings.json` migration is owed |
 
 ## Consequences
 
@@ -67,12 +79,19 @@ one is shipped and one is owed. No work on the authority family until M26/#778 p
 prejudge the authority model's future. A reader of either register can tell which object a sentence is
 about from the sentence.
 
-**Harder.** Nothing structurally, but the rule has to be applied to text that already exists. 0022's
-own obligations list said "standing grant" twice; it is corrected with this record, and #1238's title
-with it. One occurrence in 0022 is deliberately **left alone**: it sits inside a verbatim quotation of
-the corpus stress test, and a quotation is not ours to edit — the word there is a record of what was
-said, not a claim we are making. Any later drift is a `record-once` failure in the register that
-defines the words, which is the same shape as the drift this fixes.
+**Harder.** The rule has to be applied to text that already exists, and **this record does not claim
+the register is now consistent — only that the words are now defined.** What is corrected here: 0022's
+obligations list, 0052 throughout (the cross-room rung is the same permission object), 0034's one
+reference, and #1238's title. What is deliberately left: the occurrence inside 0022's verbatim
+quotation of the corpus stress test — a quotation records what was said and is not ours to edit — and
+0004 in full, per decision 3a.
+
+**What has not been swept.** `grep -rniE '\bgrant(s|ed|ing)?\b' docs/` matches ~41 files. Only the
+records most directly about the 0022 object were classified and corrected; the rest mix three
+populations — the authority family (correct), ordinary English ("granted visibility"), and genuine
+drift — and were not read closely enough to tell them apart. The hit rate in the files that *were*
+checked was high, so more drift should be expected there rather than less. Anyone relying on "the
+register uses these words consistently" is relying on something this record did not establish.
 
 **Not covered.** How a standing permission is revoked (#1238), and whether the authority grant's
 events need any change when the orchestrator arrives (M26/#778) — this record settles the nouns, not
