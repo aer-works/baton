@@ -1917,4 +1917,142 @@ public class DaemonIntegrationTests : IAsyncLifetime
     // So the guard for #1260 is DesktopVersionLockstepTests, which is what the issue's enforcement
     // clause asked for and the only instrument that can actually fail on the defect. It lives in its
     // own file because it needs no daemon, and every test in this class starts one.
+
+    // #1258: an unparseable bindings.json fails legibly on the four daemon routes whose work it
+    // blocks, and does NOT fail the fifth — permissions/answer, whose work is already done by then.
+    [Fact]
+    public async Task UnparseableBindings_AcrossAllFiveRoutes_FailsLegiblyAndNoneSucceeds()
+    {
+        var (sessionId, roomDirectoryPath) = await StartASessionAsync();
+        var bindingsFilePath = Path.Combine(roomDirectoryPath, "bindings.json");
+
+        // Setup pending gate entries and room event log so /api/rooms/permissions/answer resolves askedEvent and calls AmendAsync
+        var outputDir = Path.Combine(roomDirectoryPath, ".aer", "artifacts", "exec-1");
+        Directory.CreateDirectory(outputDir);
+        var askFileCtrl = Path.Combine(outputDir, "ask-req-ctrl-1.json");
+        await File.WriteAllTextAsync(askFileCtrl, "{}", TestContext.Current.CancellationToken);
+        PendingGateRegistry.Register("req-ctrl-1", new PendingGateEntry(roomDirectoryPath, outputDir, "exec-1", askFileCtrl));
+
+        var askFileBad = Path.Combine(outputDir, "ask-req-bad-1.json");
+        await File.WriteAllTextAsync(askFileBad, "{}", TestContext.Current.CancellationToken);
+        PendingGateRegistry.Register("req-bad-1", new PendingGateEntry(roomDirectoryPath, outputDir, "exec-1", askFileBad));
+
+        var roomLogPath = Path.Combine(roomDirectoryPath, "room.jsonl");
+        await using (var writer = new RoomEventLogWriter(roomLogPath))
+        {
+            await writer.AppendAsync(new RoomEvent.RuntimePermissionAsked(
+                "req-ctrl-1",
+                new ExecutionId("exec-1"),
+                new StepId("step-1"),
+                "worker-1",
+                "vendor",
+                "corr-1",
+                "Bash",
+                "{\"command\":\"echo test\"}",
+                "shell",
+                DateTimeOffset.UtcNow), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new RoomEvent.RuntimePermissionAsked(
+                "req-bad-1",
+                new ExecutionId("exec-1"),
+                new StepId("step-1"),
+                "worker-1",
+                "vendor",
+                "corr-1",
+                "Bash",
+                "{\"command\":\"echo test\"}",
+                "shell",
+                DateTimeOffset.UtcNow), TestContext.Current.CancellationToken);
+        }
+
+        // Arm 3 (Control): A parseable file works on all five routes.
+        var controlGetPerms = await _client.GetAsync(
+            $"{_baseUrl}/api/rooms/permissions?directoryPath={Uri.EscapeDataString(roomDirectoryPath)}&workerName=architect",
+            TestContext.Current.CancellationToken);
+        Assert.True(controlGetPerms.IsSuccessStatusCode);
+
+        var controlAnsPerms = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/permissions/answer",
+            new AnswerPermissionRequest(roomDirectoryPath, "req-ctrl-1", "AllowRoom"),
+            TestContext.Current.CancellationToken);
+        Assert.True(controlAnsPerms.IsSuccessStatusCode);
+
+        var controlRevPerms = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/permissions/revoke",
+            new RevokePermissionRequest(roomDirectoryPath, "RoomShell"),
+            TestContext.Current.CancellationToken);
+        Assert.True(controlRevPerms.IsSuccessStatusCode);
+
+        var controlSetMode = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/sessions/{sessionId}/mode",
+            new SetSessionModeRequest("auto"),
+            TestContext.Current.CancellationToken);
+        Assert.True(controlSetMode.IsSuccessStatusCode);
+
+        var controlGetMode = await _client.GetAsync(
+            $"{_baseUrl}/api/sessions/{sessionId}/mode",
+            TestContext.Current.CancellationToken);
+        Assert.True(controlGetMode.IsSuccessStatusCode);
+
+        // Arm 1 (each blocked route answers legibly, naming the file) & Arm 2 (the discriminating arm:
+        // none of them answers 200 with an empty grant, which is the serious version of this defect).
+
+        async Task MakeBindingsUnparseableAsync()
+        {
+            await File.WriteAllTextAsync(bindingsFilePath, "{ malformed json", TestContext.Current.CancellationToken);
+        }
+
+        // Route 1: GET /api/rooms/permissions
+        await MakeBindingsUnparseableAsync();
+        var r1 = await _client.GetAsync(
+            $"{_baseUrl}/api/rooms/permissions?directoryPath={Uri.EscapeDataString(roomDirectoryPath)}&workerName=architect",
+            TestContext.Current.CancellationToken);
+        Assert.False(r1.IsSuccessStatusCode);
+        Assert.Equal(HttpStatusCode.InternalServerError, r1.StatusCode);
+        var body1 = await r1.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("bindings.json", body1);
+
+        // Route 2: POST /api/rooms/permissions/answer — deliberately the opposite polarity. The
+        // reasoning lives on its catch block in Program.cs; this asserts the outcome it argues for.
+        await MakeBindingsUnparseableAsync();
+        var r2 = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/permissions/answer",
+            new AnswerPermissionRequest(roomDirectoryPath, "req-bad-1", "AllowRoom"),
+            TestContext.Current.CancellationToken);
+        Assert.True(
+            r2.IsSuccessStatusCode,
+            $"the answer was already applied before the register was read, so it must not be reported as failed: "
+            + await r2.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+        // Route 3: POST /api/rooms/permissions/revoke
+        await MakeBindingsUnparseableAsync();
+        var r3 = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/permissions/revoke",
+            new RevokePermissionRequest(roomDirectoryPath, "RoomShell"),
+            TestContext.Current.CancellationToken);
+        Assert.False(r3.IsSuccessStatusCode);
+        Assert.Equal(HttpStatusCode.InternalServerError, r3.StatusCode);
+        var body3 = await r3.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("bindings.json", body3);
+
+        // Route 4: POST /api/sessions/{sessionId}/mode
+        await MakeBindingsUnparseableAsync();
+        var r4 = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/sessions/{sessionId}/mode",
+            new SetSessionModeRequest("auto"),
+            TestContext.Current.CancellationToken);
+        Assert.False(r4.IsSuccessStatusCode);
+        Assert.Equal(HttpStatusCode.InternalServerError, r4.StatusCode);
+        var body4 = await r4.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("bindings.json", body4);
+
+        // Route 5: GET /api/sessions/{sessionId}/mode
+        await MakeBindingsUnparseableAsync();
+        var r5 = await _client.GetAsync(
+            $"{_baseUrl}/api/sessions/{sessionId}/mode",
+            TestContext.Current.CancellationToken);
+        Assert.False(r5.IsSuccessStatusCode);
+        Assert.Equal(HttpStatusCode.InternalServerError, r5.StatusCode);
+        var body5 = await r5.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("bindings.json", body5);
+    }
 }
