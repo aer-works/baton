@@ -186,6 +186,39 @@ class DormancyTransition {
   }
 }
 
+/// Wire twin of the engine's RecordedDecisionMoment (`src/Aer.Flow/Projection/RecordedDecisionMoment.cs`
+/// is canonical). Only the fields the transcript row needs are parsed: the verb comes from
+/// [decisionType], `Sent back` is the one verb that names a [targetStepId], and [recordedAt] is what
+/// merges it into the transcript in order.
+class RecordedDecisionMoment {
+  final String decisionId;
+  final String decisionType;
+  final String? targetStepId;
+  final DateTime recordedAt;
+
+  RecordedDecisionMoment({
+    required this.decisionId,
+    required this.decisionType,
+    this.targetStepId,
+    required this.recordedAt,
+  });
+
+  factory RecordedDecisionMoment.fromJson(Map<String, dynamic> json) {
+    final j = caseInsensitive(json);
+    final target = j['targetstepid'];
+    return RecordedDecisionMoment(
+      decisionId: j['decisionid']?.toString() ?? '',
+      decisionType: j['decisiontype']?.toString() ?? '',
+      // StepId serializes as a bare string here, the same shape `steps[].stepId` arrives in.
+      targetStepId: (target == null || target.toString().isEmpty) ? null : target.toString(),
+      // The engine's RecordedAt is nullable — a moment recorded before timestamps were carried has
+      // none. It sorts to the start of the transcript rather than to "now", which would float an old
+      // decision to the bottom every time the screen rebuilt.
+      recordedAt: DateTime.tryParse(j['recordedat']?.toString() ?? '') ?? DateTime.utc(1),
+    );
+  }
+}
+
 /// A projection Aer.Daemon pushes for one room directory. Aer.Daemon still has only one
 /// "current" task server-side (RoomClient.CurrentRoomDirectoryPath) and broadcasts every
 /// change to every connected WS client regardless of which directory it's for — but this app
@@ -218,6 +251,23 @@ class RoomProjection {
   /// History of turn host dormancy transitions (#1178).
   final List<DormancyTransition> dormancyTransitions;
 
+  /// Decisions already answered in this room (#1240) — the durable history rows the desktop's
+  /// transcript has carried since #1199. On the wire since then; nothing on the phone read it.
+  final List<RecordedDecisionMoment> recordedDecisionMoments;
+
+  /// The derived room-card status (#1240), a sibling the daemon bolts on exactly like
+  /// [directoryPath] — **not** part of RoomProjection, and not the same question as [status] above,
+  /// which is the raw engine `WorkflowStatus`. `DaemonBroadcast.DeriveRoomCardStatus` (the daemon) is
+  /// where it comes from and why it is sent at all.
+  ///
+  /// Null means the daemon could not say. Never read absence as a state.
+  final String? roomCardStatus;
+
+  /// The prose half of the pair above, the same register `RoomFleetItem.statusText` carries — e.g.
+  /// `Out of plan — resumes 2026-08-15 14:32`, wording no client can rebuild without copying the
+  /// derivation into its own language.
+  final String? roomCardStatusText;
+
   /// Wire twin of the engine's `RoomState.IsWorkflowOff` (#1216) — see its doc comment for what the
   /// flag means and why absence reads as ON. Parsed here so the twin stays complete; the phone's own
   /// switch is #1196 slice 6.
@@ -235,6 +285,9 @@ class RoomProjection {
     this.pendingPermission,
     this.permissionAnswers = const [],
     this.dormancyTransitions = const [],
+    this.recordedDecisionMoments = const [],
+    this.roomCardStatus,
+    this.roomCardStatusText,
     this.isWorkflowOff = false,
   });
 
@@ -283,6 +336,12 @@ class RoomProjection {
       dormancyTransitions: ((j['dormancytransitions'] as List<dynamic>?) ?? [])
           .map((t) => DormancyTransition.fromJson(t as Map<String, dynamic>))
           .toList(),
+      recordedDecisionMoments: ((j['recordeddecisionmoments'] as List<dynamic>?) ?? [])
+          .map((d) => RecordedDecisionMoment.fromJson(d as Map<String, dynamic>))
+          .toList(),
+      roomCardStatus: (j['roomcardstatus']?.toString().isEmpty ?? true) ? null : j['roomcardstatus'].toString(),
+      roomCardStatusText:
+          (j['roomcardstatustext']?.toString().isEmpty ?? true) ? null : j['roomcardstatustext'].toString(),
       isWorkflowOff: j['isworkflowoff'] == true,
     );
   }

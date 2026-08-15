@@ -16,12 +16,23 @@ public static class WireFixtureGenerator
 
         var projection = BuildRepresentativeProjection();
 
+        // #1240's derived-status siblings. The lock reading is passed as `true` rather than probed:
+        // a fixture must not depend on the filesystem of whatever machine regenerates it, and `true`
+        // is the reading DeriveStatus' own parameter doc calls the conservative one — it never
+        // invents a Stopped room. What the fixture pins is the wire NAMES and casing of the pair;
+        // the terminal-card wording each value produces is pinned phone-side, in
+        // src/Aer.Mobile/test/chat_screen_workflow_room_test.dart.
+        var (roomCardStatusText, roomCardStatus) =
+            RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld: true);
+
         // 1. RoomProjection REST (camelCase)
         var restNode = JsonSerializer.SerializeToNode(projection, DaemonSerializerOptions.Rest)!.AsObject();
         restNode["directoryPath"] = "C:/tasks/foo";
         restNode["sessionId"] = "session-123";
         var workerAdaptersRest = new JsonObject { ["critic"] = "agy" };
         restNode["workerAdapters"] = workerAdaptersRest;
+        restNode["roomCardStatus"] = roomCardStatus.ToString();
+        restNode["roomCardStatusText"] = roomCardStatusText;
         fixtures[Path.Combine(RelativeFixturesPath, "room_projection.rest.json")] = FormatJson(restNode, DaemonSerializerOptions.Rest);
 
         // 2. RoomProjection WS (PascalCase envelope)
@@ -30,6 +41,8 @@ public static class WireFixtureGenerator
         wsNode["SessionId"] = "session-123";
         var workerAdaptersWs = new JsonObject { ["critic"] = "agy" };
         wsNode["WorkerAdapters"] = workerAdaptersWs;
+        wsNode["RoomCardStatus"] = roomCardStatus.ToString();
+        wsNode["RoomCardStatusText"] = roomCardStatusText;
         fixtures[Path.Combine(RelativeFixturesPath, "room_projection.ws.json")] = FormatJson(wsNode, DaemonSerializerOptions.WebSocket);
 
         // 3. RoomFleetItem REST (camelCase). A needs-you row: Status pins the RoomCardStatus enum's

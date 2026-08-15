@@ -623,6 +623,41 @@ public class DaemonIntegrationTests : IAsyncLifetime
         await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", TestContext.Current.CancellationToken);
     }
 
+    /// <summary>
+    /// #1240: the WS payload carries the DERIVED room-card status, both halves — see
+    /// <c>DaemonBroadcast.DeriveRoomCardStatus</c> for why a remote client cannot compute it.
+    /// </summary>
+    /// <remarks>
+    /// The discriminator is that the two disagree here: this room's raw <c>State.Status</c> is
+    /// Paused while the derived pair says NeedsYou / "Waiting for your review". A payload echoing
+    /// the raw status under the new name would pass an assertion on either field alone.
+    /// </remarks>
+    [Fact]
+    public async Task WebSocketSnapshot_IncludesTheDerivedRoomCardStatus_WhichNoRemoteClientCanCompute()
+    {
+        const string executionId = "exec-card-status-1";
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, TestContext.Current.CancellationToken);
+        var openResponse = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/open", new OpenRoomRequest(roomDirectory), TestContext.Current.CancellationToken);
+        Assert.True(openResponse.IsSuccessStatusCode);
+
+        var token = _client.DefaultRequestHeaders.Authorization!.Parameter!;
+
+        using var socket = new ClientWebSocket();
+        await socket.ConnectAsync(new Uri($"{WsBaseUrl}/api/ws?token={token}"), TestContext.Current.CancellationToken);
+
+        var buffer = new byte[1024 * 64];
+        var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), TestContext.Current.CancellationToken);
+        var json = System.Text.Encoding.UTF8.GetString(buffer, 0, result.Count);
+        var payload = JsonDocument.Parse(json).RootElement;
+
+        Assert.Equal("Paused", payload.GetProperty("State").GetProperty("Status").GetString());
+        Assert.Equal("NeedsYou", payload.GetProperty("RoomCardStatus").GetString());
+        Assert.Equal("Waiting for your review", payload.GetProperty("RoomCardStatusText").GetString());
+
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", TestContext.Current.CancellationToken);
+    }
+
     [Fact]
     public async Task GetTemplates_ReturnsCatalogAndVendorPresence()
     {

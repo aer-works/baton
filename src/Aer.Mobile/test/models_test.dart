@@ -68,6 +68,51 @@ void main() {
       // #1216: the fixture's room has its workflow on, which is also what the field's absence means —
       // so the polarity that discriminates is the one below.
       expect(projection.isWorkflowOff, isFalse);
+
+      // #1240: the field has been in these fixtures since #1199 with no Dart consumer at all. The
+      // parse is pinned here, and the wording it renders in the transcript is pinned in
+      // chat_screen_workflow_room_test.dart against this same moment.
+      expect(projection.recordedDecisionMoments, hasLength(1));
+      expect(projection.recordedDecisionMoments.single.decisionId, 'dec-1');
+      expect(projection.recordedDecisionMoments.single.decisionType, 'Resume');
+      expect(projection.recordedDecisionMoments.single.targetStepId, isNull);
+      expect(
+        projection.recordedDecisionMoments.single.recordedAt.toUtc(),
+        DateTime.utc(2026, 8, 3, 15, 45),
+      );
+    });
+
+    // #1240: the derived pair the daemon bolts on, both halves. It is what the phone cannot compute
+    // for itself — `status` above is 'Paused', the raw engine WorkflowStatus, and says nothing about
+    // whether anything is still running the room.
+    test('parses the derived room-card status siblings from the ${entry.key} fixture', () {
+      final projection = RoomProjection.fromJson(entry.value);
+
+      expect(projection.roomCardStatus, 'NeedsYou');
+      expect(projection.roomCardStatusText, 'Waiting for your review');
+      expect(projection.status, 'Paused');
+    });
+
+    // Absence is "the daemon could not say", never a state — the parse half of what
+    // chat_screen_workflow_room_test.dart pins at the rendering end.
+    test('parses an absent room-card status as unknown, not as a state', () {
+      final projection = RoomProjection.fromJson({
+        'snapshot': {'workflowTemplateId': 'wf', 'steps': <dynamic>[]},
+        'state': {'status': 'Running', 'steps': <dynamic>[]},
+      });
+
+      expect(projection.roomCardStatus, isNull);
+      expect(projection.roomCardStatusText, isNull);
+    });
+
+    // A moment with no recorded time reads as older than everything rather than as "now" — the
+    // reading `ChatViewModel.RebuildMessages` states and the merge depends on. Parsed to `now`
+    // instead (the idiom every sibling here uses, since their timestamps are non-nullable), an old
+    // decision would float to the bottom of the transcript on every rebuild.
+    test('a decision moment with no recordedAt sorts to the start, not to now', () {
+      final moment = RecordedDecisionMoment.fromJson({'decisionId': 'dec-0', 'decisionType': 'Reject'});
+
+      expect(moment.recordedAt.isBefore(DateTime.utc(1900)), isTrue);
     });
 
     test('parses absent dormancyTransitions as empty list', () {

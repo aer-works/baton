@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -6,7 +8,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:aer_mobile/chat_screen.dart';
 import 'package:aer_mobile/daemon/daemon_client.dart';
 import 'package:aer_mobile/daemon/models.dart';
+import 'package:aer_mobile/daemon/recorded_decision_wording.dart';
 import 'package:aer_mobile/paused_step_card.dart';
+import 'package:aer_mobile/room_stopped_card.dart';
 
 /// #1226 (#1196 slice 6a): a workflow room renders in the phone's room screen — the one rendering a
 /// room has — and its paused step is answered there rather than on a decision surface of its own.
@@ -318,4 +322,178 @@ void main() {
       expect(find.text('foo'), findsOneWidget);
     });
   });
+
+  /// #1240: a room that has stopped says so, and the decisions already answered in it stay readable
+  /// as history. Both are ports of shipped desktop behaviour, so what these tests are really pinning
+  /// is that the phone says the same words about the same state — the disagreement #461/#976/#1219
+  /// each cost a fix.
+  ///
+  /// The projection is built by parsing the real WS wire fixture rather than by hand, so a rename of
+  /// either sibling on the daemon side reddens here instead of silently rendering nothing.
+  group('A room that has stopped, and the decisions it already answered (#1240)', () {
+    final wireFixture =
+        jsonDecode(File('test/fixtures/wire/room_projection.ws.json').readAsStringSync()) as Map<String, dynamic>;
+
+    RoomProjection fixtureProjection({Object? roomCardStatus = _unset}) {
+      final json = Map<String, dynamic>.from(wireFixture);
+      json['DirectoryPath'] = '/tasks/foo';
+      json['SessionId'] = null;
+      if (roomCardStatus != _unset) {
+        if (roomCardStatus == null) {
+          json.remove('RoomCardStatus');
+        } else {
+          json['RoomCardStatus'] = roomCardStatus;
+        }
+      }
+      return RoomProjection.fromJson(json);
+    }
+
+    testWidgets('a finished room says it finished, with no offer it cannot honor', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection(roomCardStatus: 'Finished'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('This room has finished'), findsOneWidget);
+      // Headline-only: the desktop's body sentence is a caption for its Run-it-again button, and
+      // this surface has no run flow. Asserting its absence is what keeps the subset deliberate —
+      // paste the desktop body in "for parity" and this reddens.
+      expect(find.textContaining('Run it again'), findsNothing);
+      // Buttonless — scoped to this card, since the fixture's paused step legitimately renders its
+      // own rungs elsewhere in the same transcript.
+      expect(
+        find.descendant(of: find.byType(RoomStoppedCard), matching: find.byType(ButtonStyleButton)),
+        findsNothing,
+      );
+    });
+
+    testWidgets('a cancelled room is not told it finished', (tester) async {
+      // The #461 sentence, one platform over: "finished" over a room you just stopped.
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection(roomCardStatus: 'Cancelled'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('You stopped this room'), findsOneWidget);
+      expect(find.text('This room has finished'), findsNothing);
+    });
+
+    testWidgets('a room whose process died says nothing is running it', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection(roomCardStatus: 'Stopped'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('This room stopped mid-run'), findsOneWidget);
+      expect(find.text('Nothing is running it and it is not waiting on you.'), findsOneWidget);
+      // The desktop's third sentence describes Resume, a control this card does not have.
+      expect(find.textContaining('Resume picks it up'), findsNothing);
+    });
+
+    testWidgets('a failed room is left to the failed-step banner, not given a terminal card', (tester) async {
+      // `DeriveRoomStoppedReason` returns null for Failed on the desktop for the same reason. The
+      // phone's own blank-Failed-room defect is #1245 and is not this card's to fix.
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection(roomCardStatus: 'Failed'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(RoomStoppedCard), findsNothing);
+    });
+
+    testWidgets('a push with no derived status announces no ending', (tester) async {
+      // The discriminating case for the whole feature: a daemon older than this app sends no
+      // sibling, and unknown must render as nothing rather than as Finished. Also the shape of the
+      // one frame this app already receives without siblings — the REST body of /api/rooms/open.
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection(roomCardStatus: null));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(RoomStoppedCard), findsNothing);
+    });
+
+    testWidgets('a decision already answered stays in the transcript as history', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection());
+      await tester.pumpAndSettle();
+
+      // The fixture carries one Resume decision. "Approved" is `PlainLanguage.ForDecision`'s word
+      // for it — not "Resumed", and not the raw wire value.
+      expect(find.text('Approved'), findsOneWidget);
+    });
+
+    testWidgets('the decision rows land in time order among the other history', (tester) async {
+      // #1240's second reader: the test above carries a single decision, so it would pass against a
+      // broken sort, a reversed tie precedence or a wrong clear watermark — it proves only that the
+      // pipe is wired. This is the ordering half. Two decisions, deliberately pushed in the WRONG
+      // order, straddling the fixture's two permission answers (13:00 and 14:00).
+      final client = await pumpWorkflowRoom(tester);
+      final json = Map<String, dynamic>.from(wireFixture);
+      json['DirectoryPath'] = '/tasks/foo';
+      json['RecordedDecisionMoments'] = [
+        {'decisionId': 'dec-late', 'decisionType': 'Reject', 'recordedAt': '2026-08-03T15:45:00+00:00'},
+        {'decisionId': 'dec-early', 'decisionType': 'Resume', 'recordedAt': '2026-08-03T13:30:00+00:00'},
+      ];
+      client.push(RoomProjection.fromJson(json));
+      await tester.pumpAndSettle();
+
+      List<String> transcript() => tester
+          .widgetList<Text>(find.descendant(of: find.byType(ListView), matching: find.byType(Text)))
+          .map((t) => t.data ?? '')
+          .toList();
+
+      final rows = transcript();
+      // Approved (13:30) sits between the 13:00 answer and the 14:00 one; Rejected (15:45) after both.
+      expect(rows.indexOf('Allowed once — Bash'), lessThan(rows.indexOf('Approved')));
+      expect(rows.indexOf('Approved'), lessThan(rows.indexOf('Expired unanswered — turn ended')));
+      expect(rows.indexOf('Expired unanswered — turn ended'), lessThan(rows.indexOf('Rejected')));
+    });
+
+    testWidgets('a room that stopped with a gate still live shows both, gate first', (tester) async {
+      // #1240's second reader: the index arithmetic has to hold when the gate and the card are BOTH
+      // present, and no test covered that pair. It is a real state, not a hypothetical —
+      // `RoomCardViewModel.DeriveStatus`' own remarks describe an orphaned ask sitting in the journal
+      // beside a terminal flow state.
+      final client = await pumpWorkflowRoom(tester);
+      final json = Map<String, dynamic>.from(wireFixture);
+      json['DirectoryPath'] = '/tasks/foo';
+      json['RoomCardStatus'] = 'Finished';
+      json['PendingPermission'] = {
+        'permissionRequestId': 'perm-live',
+        'workerId': 'critic',
+        'vendorTag': 'claude',
+        'toolName': 'Bash',
+        'toolInputJson': '{"command":"ls"}',
+        'category': 'run_command',
+        'askedAt': '2026-08-03T16:00:00+00:00',
+      };
+      client.push(RoomProjection.fromJson(json));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.byType(PermissionGateCard), findsOneWidget);
+      expect(find.byType(RoomStoppedCard), findsOneWidget);
+    });
+
+    test('the sent-back row names its target, and only it does', () {
+      // The grammar rule from `PlainLanguage.ForRecordedDecision`: only Supersede takes a target,
+      // or another verb would one day read "Approved to review".
+      String wording(String type, {String? target}) =>
+          formatRecordedDecisionWording(RecordedDecisionMoment(
+            decisionId: 'dec-1',
+            decisionType: type,
+            targetStepId: target,
+            recordedAt: DateTime.utc(2026, 8, 3),
+          ));
+
+      expect(wording('Resume'), 'Approved');
+      expect(wording('Reject'), 'Rejected');
+      expect(wording('RetryWithRevision'), 'Retry requested');
+      expect(wording('Supersede', target: 'draft'), 'Sent back to draft');
+      expect(wording('Resume', target: 'draft'), 'Approved');
+      // A daemon newer than this app renders its raw value rather than throwing, which would blank
+      // the whole transcript over one row.
+      expect(wording('SomethingNewerThanThisApp'), 'SomethingNewerThanThisApp');
+    });
+  });
 }
+
+/// Sentinel for "the caller said nothing", so a test can distinguish leaving the fixture's own value
+/// alone from deliberately removing the field.
+const Object _unset = Object();
