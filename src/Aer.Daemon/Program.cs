@@ -940,7 +940,7 @@ namespace Aer.Daemon
                         request.SecondaryCustomPrompt).ConfigureAwait(true);
 
                     var workflowFilePath = Path.Combine(roomDirectoryPath, "workflow.json");
-                    var bindingsFilePath = Path.Combine(roomDirectoryPath, "bindings.json");
+                    var bindingsFilePath = AerPaths.RoomBindingsFile(roomDirectoryPath);
 
                     pathHolder.BindingsFilePath = bindingsFilePath;
                     session.SetCurrentRoomDirectory(roomDirectoryPath);
@@ -1020,6 +1020,25 @@ namespace Aer.Daemon
                 if (string.IsNullOrEmpty(request.DirectoryPath)) return Results.BadRequest("DirectoryPath is required.");
                 if (string.IsNullOrEmpty(request.BindingsFilePath)) return Results.BadRequest("BindingsFilePath is required.");
 
+                // #1230 / decision 0056: the room keeps its own copy of the bindings it was run with.
+                // Run still asks — this records the answer rather than inferring one, which is what the
+                // M14 Phase 2 note was actually about. Overwritten every run, so re-binding stays an
+                // explicit per-run choice. /api/templates/run and `aer dispatch` already did this; this
+                // endpoint was the one that did not, which is why deciding such a room had nothing of
+                // its own to resolve and fell back to whichever room was run last.
+                try
+                {
+                    MaterializeRoomBindings(request.DirectoryPath, request.BindingsFilePath);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Told, not swallowed: without its own copy this room is exactly the one #1230 is
+                    // about, so failing quietly here would re-create the defect one release later.
+                    return Results.BadRequest(
+                        "Baton could not give this room its own copy of the worker setup, so the run was "
+                        + $"not started: {ex.Message}");
+                }
+
                 pathHolder.BindingsFilePath = request.BindingsFilePath;
 
                 // #330: unlike /api/rooms/open and /api/templates/run, this endpoint -- the one the
@@ -1084,11 +1103,10 @@ namespace Aer.Daemon
                 if (string.IsNullOrEmpty(request.DirectoryPath)) return Results.BadRequest("DirectoryPath is required.");
 
                 // #1227: answered, accepted, and silently lost. Deciding a step resumes the room, which
-                // needs the worker bindings — and bindings are deliberately never persisted in a room
-                // directory (M14 Phase 2's decision of record), so the daemon only has a path if one was
-                // handed to it by a run, a session start, or /api/rooms/open's remembered-last lookup. For
-                // a room it did not start there may be none, and the empty path reached
-                // File.ReadAllTextAsync as an ArgumentException — which is not in DecideAsync's
+                // needs the worker bindings — and the daemon used to learn them only from the one
+                // user-global slot decision 0056 describes (docs/decisions/0056-a-room-carries-its-own-worker-bindings.md).
+                // For a room it did not start there was none, and the empty path reached File.ReadAllTextAsync
+                // as an ArgumentException — not in DecideAsync's
                 // `when (ex is AerFlowException or FileNotFoundException)` filter, so it escaped into the
                 // fire-and-forget below, after this endpoint had already answered 200. The phone showed
                 // "Approved review" over a room that never moved.
@@ -1098,9 +1116,8 @@ namespace Aer.Daemon
                 // restores — "a client, especially a phone, must always get a sentence it can show the
                 // user."
                 //
-                // Not fixed here, and worth its own decision: *which* bindings a decision should use.
-                // pathHolder.BindingsFilePath is one user-global slot, so the file it names belongs to
-                // whichever room was run or opened last, not necessarily to this one.
+                // #1230 then settled *which* bindings a decision uses: the room's own, per decision 0056.
+                // The global slot is off this path entirely.
                 //
                 // The check itself sits AFTER the artifact-reference validation below, deliberately.
                 // Put first, it answers 400 before that validation runs — which would leave the
@@ -1151,12 +1168,41 @@ namespace Aer.Daemon
                 // daemon never received cannot be decided here, and the honest thing is to say what is
                 // wrong and why rather than send someone hunting for a button that is not there.
                 // Giving it a real remedy means giving a room its own worker setup — #1230.
-                if (string.IsNullOrEmpty(pathHolder.BindingsFilePath) || !File.Exists(pathHolder.BindingsFilePath))
+                // #1230 / decision 0056: the room's OWN bindings, never the global slot. What the slot
+                // cost before this, and why the precedence runs this way round, is recorded there.
+                var roomBindingsPath = AerPaths.RoomBindingsFile(request.DirectoryPath);
+                if (!File.Exists(roomBindingsPath) && !string.IsNullOrEmpty(request.BindingsFilePath))
                 {
+                    // The unstick path 0056 allows, and the only case a caller's file is consulted at
+                    // all: an older room gets its copy the first time a client that knows the file
+                    // decides in it.
+                    if (!File.Exists(request.BindingsFilePath))
+                    {
+                        return Results.BadRequest("The BindingsFilePath given does not name a file that exists.");
+                    }
+
+                    try
+                    {
+                        MaterializeRoomBindings(request.DirectoryPath, request.BindingsFilePath);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        return Results.BadRequest(
+                            $"Baton could not give this room its own copy of the worker setup: {ex.Message}");
+                    }
+                }
+
+                if (!File.Exists(roomBindingsPath))
+                {
+                    // Now names a remedy, because #1230 built one. The two earlier wordings named
+                    // actions that did not exist — "open the room on the desktop" (open refills a
+                    // last-used slot and teaches the daemon nothing about this room) and "start or
+                    // resume it" (a paused room is NeedsYou; those buttons are not in that state).
                     return Results.BadRequest(
                         "Baton doesn't know which workers this room runs, so it can't carry out the decision. "
-                        + "That happens for a room Baton didn't start itself — a room doesn't yet carry its own "
-                        + "worker setup.");
+                        + "That happens for a room made before rooms kept their own worker setup. Run the room "
+                        + "once from the desktop, choosing its workers, and Baton will remember them with the "
+                        + "room from then on.");
                 }
 
                 // #590: see the matching lock in /api/rooms/run above -- same persisted-SessionId
@@ -1167,6 +1213,14 @@ namespace Aer.Daemon
                     await turnLock.WaitAsync().ConfigureAwait(false);
                     try
                     {
+                        // #1230: point the resolver at THIS room's bindings, inside the lock. The
+                        // holder is one user-global slot, so setting it before the lock would leave a
+                        // window where a concurrent run or send replaces it between the assignment and
+                        // the dispatch below — the same wrong-workers outcome by a narrower route.
+                        // /api/sessions/send does the per-room assignment too (see its own line), but
+                        // outside its lock; this is the shape that one should converge on.
+                        pathHolder.BindingsFilePath = roomBindingsPath;
+
                         // #828: same gap as /api/rooms/run above -- RoomClient.DecideAsync's
                         // in-process fallback also catches AerFlowException/FileNotFoundException
                         // itself and returns a MutationOutcome rather than throwing, so its
@@ -1356,9 +1410,22 @@ namespace Aer.Daemon
                 return Results.Ok();
             });
 
-            app.MapPost("/api/rooms/cancel", async ([FromBody] CancelRoomRequest request, RoomClient session) =>
+            app.MapPost("/api/rooms/cancel", async ([FromBody] CancelRoomRequest request, RoomClient session, BindingsPathHolder pathHolder) =>
             {
                 if (string.IsNullOrEmpty(request.DirectoryPath)) return Results.BadRequest("DirectoryPath is required.");
+
+                // #1230's second reader: cancel had the same defect decide did, on a path 0056 did not
+                // touch. CancelExecutionAsync short-circuits while THIS daemon is hosting the room's
+                // pump, but otherwise falls through to CancelCommand, which loads whatever the global
+                // slot happens to name — the last room anything ran, opened or sent to. So a cancel for
+                // a room this daemon is not currently driving (it restarted mid-run, the pump already
+                // deregistered, another process started the execution) resolved a different room's
+                // workers, silently. Point it at this room's own bindings, per decision 0056.
+                var cancelBindingsPath = AerPaths.RoomBindingsFile(request.DirectoryPath);
+                if (File.Exists(cancelBindingsPath))
+                {
+                    pathHolder.BindingsFilePath = cancelBindingsPath;
+                }
 
                 if (!string.IsNullOrEmpty(request.ExecutionId))
                 {
@@ -1559,7 +1626,7 @@ namespace Aer.Daemon
                     return Results.BadRequest(ex.Message);
                 }
 
-                var bindingsFilePath = Path.Combine(roomDirectoryPath, "bindings.json");
+                var bindingsFilePath = AerPaths.RoomBindingsFile(roomDirectoryPath);
 
                 pathHolder.BindingsFilePath = bindingsFilePath;
                 session.SetCurrentRoomDirectory(roomDirectoryPath);
@@ -1684,7 +1751,7 @@ namespace Aer.Daemon
                     return Results.Ok(new { SessionId = metadata.SessionId, RoomDirectoryPath = directoryPath });
                 }
 
-                pathHolder.BindingsFilePath = Path.Combine(directoryPath, "bindings.json");
+                pathHolder.BindingsFilePath = AerPaths.RoomBindingsFile(directoryPath);
 
                 _ = Task.Run(async () =>
                 {
@@ -1828,7 +1895,7 @@ namespace Aer.Daemon
                 try
                 {
                     using var guard = ConcurrencyGuard.AcquireRoomEventsWithin(directoryPath, TimeSpan.FromSeconds(2), "session mode update");
-                    var bindingsFilePath = Path.Combine(directoryPath, "bindings.json");
+                    var bindingsFilePath = AerPaths.RoomBindingsFile(directoryPath);
                     var existingBindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsFilePath).ConfigureAwait(true);
                     if (!existingBindings.TryGetValue(InteractiveSessionMaterializer.DefaultWorkerName, out var existingEntry))
                     {
@@ -1865,7 +1932,7 @@ namespace Aer.Daemon
                     return Results.NotFound();
                 }
 
-                var bindingsFilePath = Path.Combine(resolved.Value.DirectoryPath, "bindings.json");
+                var bindingsFilePath = AerPaths.RoomBindingsFile(resolved.Value.DirectoryPath);
                 var existingBindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsFilePath).ConfigureAwait(true);
                 if (!existingBindings.TryGetValue(InteractiveSessionMaterializer.DefaultWorkerName, out var existingEntry))
                 {
@@ -1938,7 +2005,7 @@ namespace Aer.Daemon
                 }
 
                 var (directoryPath, metadata) = resolved.Value;
-                pathHolder.BindingsFilePath = Path.Combine(directoryPath, "bindings.json");
+                pathHolder.BindingsFilePath = AerPaths.RoomBindingsFile(directoryPath);
 
                 _ = Task.Run(async () =>
                 {
@@ -2049,6 +2116,53 @@ namespace Aer.Daemon
             var fullA = Path.TrimEndingDirectorySeparator(Path.GetFullPath(a));
             var fullB = Path.TrimEndingDirectorySeparator(Path.GetFullPath(b));
             return string.Equals(fullA, fullB, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Gives <paramref name="roomDirectoryPath"/> its own copy of <paramref name="sourceBindingsFilePath"/>
+        /// — decision 0056's register — replacing any previous copy, since re-binding is a per-run choice.
+        /// </summary>
+        /// <remarks>
+        /// Written to a sibling temp file and moved into place rather than copied over the live one.
+        /// #1230's second reader named the exposure this closes: once the room's copy IS the register, a
+        /// process killed mid-copy leaves a truncated `bindings.json` where a previously good one was —
+        /// strictly worse than the old behaviour, which could only orphan a disposable global slot.
+        /// `File.Move(overwrite: true)` replaces atomically on both NTFS and POSIX, so a reader sees the
+        /// old file or the new one and never a half-written one.
+        /// <para>
+        /// The same-file check is by full path, case-insensitively: a caller may legitimately pass the
+        /// room's own copy back (it is the Run dialog's pre-fill after the first run), and copying a file
+        /// onto itself is at best wasted work. It does not resolve symlinks — a source reaching this same
+        /// file through a link would be copied rather than skipped, which is harmless here because the
+        /// temp-and-move keeps that self-copy atomic too.
+        /// </para>
+        /// </remarks>
+        private static void MaterializeRoomBindings(string roomDirectoryPath, string sourceBindingsFilePath)
+        {
+            var roomBindings = AerPaths.RoomBindingsFile(roomDirectoryPath);
+            if (string.Equals(
+                    Path.GetFullPath(roomBindings), Path.GetFullPath(sourceBindingsFilePath),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(roomDirectoryPath);
+
+            // Unique per call, so two runs racing the same room cannot write each other's temp file.
+            var staging = roomBindings + $".{Guid.NewGuid():N}.tmp";
+            try
+            {
+                File.Copy(sourceBindingsFilePath, staging, overwrite: true);
+                File.Move(staging, roomBindings, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(staging))
+                {
+                    try { File.Delete(staging); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                }
+            }
         }
 
         private static async Task<(string DirectoryPath, SessionMetadata Metadata)?> ResolveSessionAsync(string sessionId)
@@ -2339,7 +2453,7 @@ namespace Aer.Daemon
                 ? Path.Combine(directoryPath, ".aer", "agy-log.txt")
                 : null;
 
-            var bindingsFilePath = Path.Combine(directoryPath, "bindings.json");
+            var bindingsFilePath = AerPaths.RoomBindingsFile(directoryPath);
 
             WorkerBindingConfigEntry updatedEntry;
             {

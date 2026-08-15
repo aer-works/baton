@@ -465,6 +465,11 @@ public class DaemonIntegrationTests : IAsyncLifetime
         // that behind on whatever machine runs it.
         var bindingsFilePath = await WriteRejectableBindingsAsync(TestContext.Current.CancellationToken);
         DaemonHost.App!.Services.GetRequiredService<BindingsPathHolder>().BindingsFilePath = bindingsFilePath;
+        // #1230 / decision 0056: the room carries its own bindings, and a decision resolves those
+        // rather than the slot above. Production puts this copy here at run time; this test builds its
+        // room directly, so it does the same. The slot assignment stays: without it this test would
+        // pass whether or not the endpoint still reads the slot, and the point is that it does not.
+        File.Copy(bindingsFilePath, AerPaths.RoomBindingsFile(roomDirectory));
 
         var token = _client.DefaultRequestHeaders.Authorization!.Parameter!;
         using var socket = new ClientWebSocket();
@@ -737,6 +742,97 @@ public class DaemonIntegrationTests : IAsyncLifetime
 
         var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         Assert.Contains("doesn't know which workers this room runs", body);
+    }
+
+    /// <summary>
+    /// #1230 / decision 0056: a decision resolves the room's OWN bindings, never the user-global slot
+    /// holding whichever file was run or opened last.
+    /// </summary>
+    /// <remarks>
+    /// The discriminator is that the two rooms' bindings differ in a way the dispatch cannot hide:
+    /// room A's adapter resolves, room B's does not. The slot is pointed at A and the decision is made
+    /// in B. If B's own file is used, the unresolvable adapter fails loudly and lands in B's
+    /// turn-errors log; if the slot wins — the bug — A's bindings resolve fine and no such error is
+    /// ever written. Before this fix that silent success was the whole defect: the wrong workers, no
+    /// refusal, no signal.
+    /// </remarks>
+    [Fact]
+    public async Task DecideResolvesTheRoomsOwnWorkers_NotWhicheverRoomRanLast()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string executionId = "exec-own-bindings-1";
+
+        var otherRoomBindings = await WriteRejectableBindingsAsync(cancellationToken);
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, cancellationToken);
+        File.Copy(
+            await WriteUnresolvableBindingsAsync(cancellationToken),
+            AerPaths.RoomBindingsFile(roomDirectory));
+
+        // "Another room ran last, and its bindings are what the daemon remembers."
+        DaemonHost.App!.Services.GetRequiredService<BindingsPathHolder>().BindingsFilePath = otherRoomBindings;
+
+        var response = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/decide",
+            new DecideRoomRequest(roomDirectory, WorkerStep.Value, executionId, DecisionType.Resume),
+            cancellationToken);
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+
+        // The dispatch is fire-and-forget behind that 200, so the evidence lands in the room's own
+        // error log (#341) rather than in the response.
+        var errorLog = Path.Combine(roomDirectory, ".aer", "turn-errors.log");
+        string log = "";
+        for (var i = 0; i < 600 && !log.Contains("not-a-registered-adapter", StringComparison.Ordinal); i++)
+        {
+            if (File.Exists(errorLog))
+            {
+                using var stream = new FileStream(
+                    errorLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+                log = await reader.ReadToEndAsync(cancellationToken);
+            }
+            if (!log.Contains("not-a-registered-adapter", StringComparison.Ordinal))
+            {
+                // wait-ok: the ceiling is the loop bound, 600 iterations x 100ms = 60s, and the poll exits the moment the log carries the adapter name
+                await Task.Delay(100, cancellationToken);
+            }
+        }
+
+        Assert.Contains("not-a-registered-adapter", log);
+    }
+
+    /// <summary>
+    /// #1230's second reader: cancel carried the same defect decide did. The mechanism is written
+    /// out at the <c>/api/rooms/cancel</c> handler in <c>Program.cs</c>; what this pins is the
+    /// outcome — the named room's own bindings win, per decision 0056.
+    /// </summary>
+    /// <remarks>
+    /// The discriminator is the slot's value after the call. It is seeded with a DIFFERENT room's
+    /// file, so an endpoint that leaves it alone — the defect — leaves that foreign path in place;
+    /// only the guard moves it to this room's own. Asserting on the cancel's own outcome cannot
+    /// discriminate: cancelling a paused room succeeds either way, which is exactly why the bug was
+    /// silent.
+    /// </remarks>
+    [Fact]
+    public async Task CancelPointsAtTheRoomsOwnWorkers_NotWhicheverRoomRanLast()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string executionId = "exec-cancel-own-bindings-1";
+
+        var otherRoomBindings = await WriteRejectableBindingsAsync(cancellationToken);
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, cancellationToken);
+        var roomBindings = AerPaths.RoomBindingsFile(roomDirectory);
+        File.Copy(await WriteUnresolvableBindingsAsync(cancellationToken), roomBindings);
+
+        var pathHolder = DaemonHost.App!.Services.GetRequiredService<BindingsPathHolder>();
+        pathHolder.BindingsFilePath = otherRoomBindings;
+
+        var response = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/cancel",
+            new CancelRoomRequest(roomDirectory, executionId),
+            cancellationToken);
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+
+        Assert.Equal(roomBindings, pathHolder.BindingsFilePath);
     }
 
     /// <summary>

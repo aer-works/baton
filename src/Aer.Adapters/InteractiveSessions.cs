@@ -456,7 +456,7 @@ public static class InteractiveSessionMaterializer
         var (definition, bindings, metadata) = Materialize(
             sessionId, roomDirectoryPath, adapter, model, workingDirectory, initialMessage, safetyCeiling, grant);
 
-        var bindingsFilePath = Path.Combine(roomDirectoryPath, "bindings.json");
+        var bindingsFilePath = AerPaths.RoomBindingsFile(roomDirectoryPath);
         var metadataFilePath = Path.Combine(roomDirectoryPath, ".aer", AerPaths.RoomMetadataFileName);
 
         await WorkflowDefinitionWriter.SaveToFileAsync(definition, workflowFilePath, cancellationToken).ConfigureAwait(false);

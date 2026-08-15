@@ -107,7 +107,7 @@ internal sealed class DaemonBroadcast
                 catch { }
             }
 
-            var bindingsPath = Path.Combine(directoryPath, "bindings.json");
+            var bindingsPath = AerPaths.RoomBindingsFile(directoryPath);
             if (!File.Exists(bindingsPath))
             {
                 var metaPath = Path.Combine(directoryPath, ".aer", "bindings-path");

@@ -155,5 +155,6 @@ copy of every record, retired by #952: the record is the only place a decision i
 | [0053](0053-room-event-appends-take-their-own-lock.md) | Room-event appends take their own lock, not the flow engine's | accepted |
 | [0054](0054-participants-turns-and-addressing.md) | Participants, turns, and addressing: the multi-worker room's nouns | accepted |
 | [0055](0055-an-authority-grant-is-not-a-standing-permission.md) | An authority grant is not a standing permission | accepted |
+| [0056](0056-a-room-carries-its-own-worker-bindings.md) | A room carries its own worker bindings | accepted |
 
 <!-- /generated: decisions-index -->

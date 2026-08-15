@@ -316,7 +316,7 @@ public static class BuiltInWorkflowTemplates
         Directory.CreateDirectory(roomDirectoryPath);
         var (definition, bindings) = Materialize(templateId, primaryAdapter, secondaryAdapter, customPrompt, secondaryCustomPrompt, roomDirectoryPath);
 
-        var bindingsFilePath = Path.Combine(roomDirectoryPath, "bindings.json");
+        var bindingsFilePath = AerPaths.RoomBindingsFile(roomDirectoryPath);
 
         await WorkflowDefinitionWriter.SaveToFileAsync(definition, workflowFilePath, cancellationToken).ConfigureAwait(false);
         await WorkerBindingConfigWriter.SaveToFileAsync(bindings, bindingsFilePath, cancellationToken).ConfigureAwait(false);
