@@ -18,6 +18,36 @@ namespace Aer.Adapters;
 public static class RuntimePermissionGrantAmender
 {
     /// <summary>
+    /// Reads the standing <see cref="PermissionGrant"/> for <paramref name="workerName"/> in
+    /// <paramref name="roomDirectoryPath"/>'s <c>bindings.json</c>, using the same
+    /// <see cref="WorkerBindingConfigParser"/> that <see cref="AmendAsync"/> and <see cref="RevokeAsync"/> use.
+    /// </summary>
+    public static async Task<StandingPermissionReadResult> GetStandingPermissionsAsync(
+        string roomDirectoryPath,
+        string workerName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentException.ThrowIfNullOrEmpty(workerName);
+
+        var bindingsFilePath = AerPaths.RoomBindingsFile(roomDirectoryPath);
+        if (!File.Exists(bindingsFilePath))
+        {
+            return StandingPermissionReadResult.NoWorkerSetup();
+        }
+
+        var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsFilePath, cancellationToken)
+            .ConfigureAwait(false);
+        if (!bindings.TryGetValue(workerName, out var entry))
+        {
+            return StandingPermissionReadResult.WorkerNotConfigured();
+        }
+
+        var grant = entry.PermissionGrant ?? new PermissionGrant();
+        return StandingPermissionReadResult.Configured(grant);
+    }
+
+    /// <summary>
     /// Amends the named worker's <see cref="PermissionGrant"/> in <paramref name="roomDirectoryPath"/>'s
     /// <c>bindings.json</c> for <paramref name="decisionKind"/>, per 0022's rung mapping. The
     /// <see cref="PermissionAmendOutcome"/> distinguishes a real persist from a benign no-op and from a
@@ -204,10 +234,19 @@ public static class RuntimePermissionGrantAmender
         // Ordinal, matching how AmendAsync added it. A pattern is a stored token, not prose, and a
         // case-insensitive removal here would take back a family the operator did not name on any
         // filesystem where two spellings can both be in the list.
-        revokedGrant = existingGrant with
-        {
-            ShellCommandPatterns = [.. patterns.Where(p => !string.Equals(p, shellCommandPattern, StringComparison.Ordinal))],
-        };
+        var remaining = patterns
+            .Where(p => !string.Equals(p, shellCommandPattern, StringComparison.Ordinal))
+            .ToArray();
+
+        // #1256: taking the LAST pattern out has to take the shell with it. An empty pattern list is
+        // not "nothing is allowed" — PermissionGrant.ShellCommandPatterns' own contract says an empty
+        // list beside RunShellCommands means ANY command, and ClaudeWorkerAdapter.BuildAllowedTools
+        // implements exactly that, emitting a bare `Bash` instead of the scoped `Bash(pattern)` forms.
+        // So filtering the list alone would turn "you may run rm" into "you may run anything" — a
+        // revoke that widens, which is the one thing 0004 says this surface must never do.
+        revokedGrant = remaining.Length == 0
+            ? existingGrant with { RunShellCommands = false, ShellCommandPatterns = [] }
+            : existingGrant with { ShellCommandPatterns = remaining };
         return PermissionRevokeOutcome.Revoked;
     }
 

@@ -1241,4 +1241,337 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
             await app.StopAsync(TestContext.Current.CancellationToken);
         }
     }
+
+    /// <summary>
+    /// #1249: verifies GET /api/rooms/permissions reads back standing permissions amended through
+    /// the real ladder path, returning all three kinds (room shell boolean, allowed command pattern,
+    /// and standing refusals list).
+    /// </summary>
+    [Fact]
+    public async Task GetPermissions_ReadsBackLadderGrants_AssertingAllThreeKindsAndDiscriminatingRefusals()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var roomDir = Path.Combine(Path.GetTempPath(), $"daemon-getperm-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(roomDir);
+            try
+            {
+                var bindingsPath = Path.Combine(roomDir, "bindings.json");
+                var defaultWorker = InteractiveSessionMaterializer.DefaultWorkerName;
+
+                // Initial binding setup with worker configured
+                await WorkerBindingConfigWriter.SaveToFileAsync(
+                    new Dictionary<string, WorkerBindingConfigEntry>
+                    {
+                        [defaultWorker] = new(
+                            "claude",
+                            new WorkerContract(defaultWorker, [], [], []),
+                            "Chat.",
+                            TimeSpan.FromMinutes(5),
+                            PermissionGrant: new PermissionGrant()),
+                    },
+                    bindingsPath,
+                    TestContext.Current.CancellationToken);
+
+                // Amend through the real ladder path (as answering the ladder produces)
+                var allowOutcome = await RuntimePermissionGrantAmender.AmendAsync(
+                    roomDir, defaultWorker, PermissionDecisionKind.AllowCommandInRoom, "Bash", "{\"command\":\"git status\"}", TestContext.Current.CancellationToken);
+                Assert.Equal(PermissionAmendOutcome.Persisted, allowOutcome);
+
+                var denyOutcome = await RuntimePermissionGrantAmender.AmendAsync(
+                    roomDir, defaultWorker, PermissionDecisionKind.DenyAlways, "Bash", "{\"command\":\"rm -rf .\"}", TestContext.Current.CancellationToken);
+                Assert.Equal(PermissionAmendOutcome.Persisted, denyOutcome);
+
+                // Read back via GET /api/rooms/permissions
+                var response = await client.GetAsync(
+                    $"{baseUrl}/api/rooms/permissions?directoryPath={Uri.EscapeDataString(roomDir)}",
+                    TestContext.Current.CancellationToken);
+
+                Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+
+                var json = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+
+                Assert.Equal(nameof(StandingPermissionReadOutcome.Configured), root.GetProperty("outcome").GetString());
+                Assert.True(root.GetProperty("runShellCommands").GetBoolean());
+
+                var allowedPatterns = root.GetProperty("shellCommandPatterns").EnumerateArray().Select(e => e.GetString()).ToList();
+                var deniedPatterns = root.GetProperty("deniedShellCommandPatterns").EnumerateArray().Select(e => e.GetString()).ToList();
+
+                // Discriminator assertion: assert BOTH allow and refusal are present in the same response
+                Assert.Contains("git *", allowedPatterns);
+                Assert.Contains("rm *", deniedPatterns);
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// #1249: verifies GET /api/rooms/permissions distinguishes a room with no bindings file from
+    /// a room whose bindings file lacks the requested worker, and neither is an error.
+    /// </summary>
+    [Fact]
+    public async Task GetPermissions_NoBindingsFileAndMissingWorker_AnswerDistinguishably()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var roomDir = Path.Combine(Path.GetTempPath(), $"daemon-getperm-dist-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(roomDir);
+            try
+            {
+                // 1. Room with NO bindings file at all
+                var responseNoBindings = await client.GetAsync(
+                    $"{baseUrl}/api/rooms/permissions?directoryPath={Uri.EscapeDataString(roomDir)}",
+                    TestContext.Current.CancellationToken);
+
+                Assert.Equal(System.Net.HttpStatusCode.OK, responseNoBindings.StatusCode);
+                var jsonNoBindings = await responseNoBindings.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+                using var docNoBindings = JsonDocument.Parse(jsonNoBindings);
+                Assert.Equal(nameof(StandingPermissionReadOutcome.NoWorkerSetup), docNoBindings.RootElement.GetProperty("outcome").GetString());
+                Assert.False(docNoBindings.RootElement.GetProperty("runShellCommands").GetBoolean());
+                Assert.Empty(docNoBindings.RootElement.GetProperty("shellCommandPatterns").EnumerateArray());
+                Assert.Empty(docNoBindings.RootElement.GetProperty("deniedShellCommandPatterns").EnumerateArray());
+
+                // 2. Room with bindings file, but missing the requested worker
+                var bindingsPath = Path.Combine(roomDir, "bindings.json");
+                await WorkerBindingConfigWriter.SaveToFileAsync(
+                    new Dictionary<string, WorkerBindingConfigEntry>
+                    {
+                        ["other-worker"] = new(
+                            "claude",
+                            new WorkerContract("other-worker", [], [], []),
+                            "Chat.",
+                            TimeSpan.FromMinutes(5),
+                            PermissionGrant: new PermissionGrant()),
+                    },
+                    bindingsPath,
+                    TestContext.Current.CancellationToken);
+
+                var responseWorkerMissing = await client.GetAsync(
+                    $"{baseUrl}/api/rooms/permissions?directoryPath={Uri.EscapeDataString(roomDir)}&workerName=chat-worker",
+                    TestContext.Current.CancellationToken);
+
+                Assert.Equal(System.Net.HttpStatusCode.OK, responseWorkerMissing.StatusCode);
+                var jsonWorkerMissing = await responseWorkerMissing.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+                using var docWorkerMissing = JsonDocument.Parse(jsonWorkerMissing);
+                Assert.Equal(nameof(StandingPermissionReadOutcome.WorkerNotConfigured), docWorkerMissing.RootElement.GetProperty("outcome").GetString());
+                Assert.False(docWorkerMissing.RootElement.GetProperty("runShellCommands").GetBoolean());
+                Assert.Empty(docWorkerMissing.RootElement.GetProperty("shellCommandPatterns").EnumerateArray());
+                Assert.Empty(docWorkerMissing.RootElement.GetProperty("deniedShellCommandPatterns").EnumerateArray());
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// #1249: the read takes the room-events guard, because the write it races truncates before it
+    /// writes. Without the guard this route can answer "grants nothing" out of a half-written file.
+    /// Second half of the test is the control arm: released, the identical call succeeds.
+    /// </summary>
+    [Fact]
+    public async Task GetPermissions_WhileRoomEventsLockHeld_Returns503_RatherThanReadingATornFile()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var roomDir = Path.Combine(Path.GetTempPath(), $"daemon-getperm-lock-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(roomDir);
+            try
+            {
+                var bindingsPath = Path.Combine(roomDir, "bindings.json");
+                await WorkerBindingConfigWriter.SaveToFileAsync(
+                    new Dictionary<string, WorkerBindingConfigEntry>
+                    {
+                        [InteractiveSessionMaterializer.DefaultWorkerName] = new(
+                            "claude",
+                            new WorkerContract(InteractiveSessionMaterializer.DefaultWorkerName, [], [], []),
+                            "Chat.",
+                            TimeSpan.FromMinutes(5),
+                            PermissionGrant: new PermissionGrant(RunShellCommands: true)),
+                    },
+                    bindingsPath,
+                    TestContext.Current.CancellationToken);
+
+                var url = $"{baseUrl}/api/rooms/permissions?directoryPath={Uri.EscapeDataString(roomDir)}";
+
+                using (Aer.Flow.Concurrency.ConcurrencyGuard.AcquireRoomEvents(roomDir, "test read lock hold"))
+                {
+                    var held = await client.GetAsync(url, TestContext.Current.CancellationToken);
+                    Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, held.StatusCode);
+                }
+
+                var afterRelease = await client.GetAsync(url, TestContext.Current.CancellationToken);
+                Assert.Equal(System.Net.HttpStatusCode.OK, afterRelease.StatusCode);
+
+                // Asserted, not assumed: the control arm has to prove the read reached the real grant,
+                // or a route that always answered "grants nothing" would satisfy it too.
+                using var doc = JsonDocument.Parse(await afterRelease.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+                Assert.True(doc.RootElement.GetProperty("runShellCommands").GetBoolean());
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// #1249: a room that does not exist is answered without being created. Acquiring a room-events
+    /// lock calls Directory.CreateDirectory, so a guard taken before the bindings-file check would
+    /// make this GET materialise the very room it was asked about.
+    /// </summary>
+    [Fact]
+    public async Task GetPermissions_ForARoomThatDoesNotExist_DoesNotCreateIt()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var absentRoomDir = Path.Combine(Path.GetTempPath(), $"daemon-getperm-absent-{Guid.NewGuid():N}");
+            Assert.False(Directory.Exists(absentRoomDir));
+
+            try
+            {
+                var response = await client.GetAsync(
+                    $"{baseUrl}/api/rooms/permissions?directoryPath={Uri.EscapeDataString(absentRoomDir)}",
+                    TestContext.Current.CancellationToken);
+
+                Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+                Assert.Equal(
+                    nameof(StandingPermissionReadOutcome.NoWorkerSetup),
+                    doc.RootElement.GetProperty("outcome").GetString());
+
+                Assert.False(Directory.Exists(absentRoomDir));
+            }
+            finally
+            {
+                if (Directory.Exists(absentRoomDir))
+                {
+                    DirectoryCleanup.DeleteRecursively(absentRoomDir);
+                }
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
 }
+
