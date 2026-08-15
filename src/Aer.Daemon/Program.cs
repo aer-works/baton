@@ -1079,10 +1079,34 @@ namespace Aer.Daemon
                 return Results.Ok();
             });
 
-            app.MapPost("/api/rooms/decide", async ([FromBody] DecideRoomRequest request, RoomClient session) =>
+            app.MapPost("/api/rooms/decide", async ([FromBody] DecideRoomRequest request, RoomClient session, BindingsPathHolder pathHolder) =>
             {
                 if (string.IsNullOrEmpty(request.DirectoryPath)) return Results.BadRequest("DirectoryPath is required.");
 
+                // #1227: answered, accepted, and silently lost. Deciding a step resumes the room, which
+                // needs the worker bindings — and bindings are deliberately never persisted in a room
+                // directory (M14 Phase 2's decision of record), so the daemon only has a path if one was
+                // handed to it by a run, a session start, or /api/rooms/open's remembered-last lookup. For
+                // a room it did not start there may be none, and the empty path reached
+                // File.ReadAllTextAsync as an ArgumentException — which is not in DecideAsync's
+                // `when (ex is AerFlowException or FileNotFoundException)` filter, so it escaped into the
+                // fire-and-forget below, after this endpoint had already answered 200. The phone showed
+                // "Approved review" over a room that never moved.
+                //
+                // Refused here, before that task exists, because this is the last point at which the
+                // person can be told: two lines up, /api/rooms/open's own comment states the rule this
+                // restores — "a client, especially a phone, must always get a sentence it can show the
+                // user."
+                //
+                // Not fixed here, and worth its own decision: *which* bindings a decision should use.
+                // pathHolder.BindingsFilePath is one user-global slot, so the file it names belongs to
+                // whichever room was run or opened last, not necessarily to this one.
+                //
+                // The check itself sits AFTER the artifact-reference validation below, deliberately.
+                // Put first, it answers 400 before that validation runs — which would leave the
+                // traversal-refusal test passing for the wrong reason (a bindings 400 rather than the
+                // reference 400 it exists to pin), the precise failure mode a second reader caught in
+                // this milestone a day earlier.
                 var revisionFilePath = request.RevisionFilePath;
                 if (string.IsNullOrEmpty(revisionFilePath) && request.ArtifactReference != null)
                 {
@@ -1110,6 +1134,29 @@ namespace Aer.Daemon
                     {
                         revisionFilePath = candidatePath;
                     }
+                }
+
+                // #1227's refusal — see the reasoning above the artifact-reference block. Last point
+                // at which the person can be told anything, since everything below this line is
+                // fire-and-forget.
+                // The wording promises nothing that was not traced, which took three attempts and a
+                // second reader to get right. "Open the room on the desktop first" was wrong:
+                // /api/rooms/open fills this slot from the config store's last-used bindings, so it
+                // teaches the daemon nothing about *this* room and may teach it nothing at all. "Start
+                // or resume it from the desktop" was also wrong, and worse — a paused room is
+                // NeedsYou, and DeriveRoomStoppedReason only offers Run/Resume for Stopped, Finished
+                // and Cancelled, so those buttons do not exist in the state this message is shown in.
+                //
+                // So it names no remedy. There is not reliably one today: a room whose bindings this
+                // daemon never received cannot be decided here, and the honest thing is to say what is
+                // wrong and why rather than send someone hunting for a button that is not there.
+                // Giving it a real remedy means giving a room its own worker setup — #1230.
+                if (string.IsNullOrEmpty(pathHolder.BindingsFilePath) || !File.Exists(pathHolder.BindingsFilePath))
+                {
+                    return Results.BadRequest(
+                        "Baton doesn't know which workers this room runs, so it can't carry out the decision. "
+                        + "That happens for a room Baton didn't start itself — a room doesn't yet carry its own "
+                        + "worker setup.");
                 }
 
                 // #590: see the matching lock in /api/rooms/run above -- same persisted-SessionId
