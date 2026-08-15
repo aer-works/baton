@@ -1396,17 +1396,36 @@ namespace Aer.Daemon
                     // journaling either would record a withdrawal that never happened.
                     if (revokeOutcome == PermissionRevokeOutcome.Revoked)
                     {
-                        var revokeRoomLogFile = Path.Combine(request.DirectoryPath, "room.jsonl");
-                        var revokeRoomReader = new RoomEventLogReader(revokeRoomLogFile);
-                        await using var revokeRoomWriter = new RoomEventLogWriter(revokeRoomLogFile);
-                        await RoomMutationInterface.RecordStandingPermissionRevokedAsync(
-                            request.DirectoryPath,
-                            revokeRoomReader,
-                            revokeRoomWriter,
-                            revokeWorkerName,
-                            request.RevokeKind,
-                            request.ShellCommandPattern,
-                            "human").ConfigureAwait(false);
+                        // Second-reader finding on #1251: bindings.json has already been durably
+                        // rewritten above, so a failure here (disk full, a transient sharing
+                        // violation on room.jsonl) must not read back to the caller as the revoke
+                        // having failed — it did not. And it must not throw uncaught either: an
+                        // unhandled exception here would 500 a withdrawal that already took effect,
+                        // and a caller who retries would see RevokeAsync resolve to NothingToRevoke
+                        // next time, so the journal entry for THIS withdrawal would never get written
+                        // on any retry. Log and carry on; the withdrawal itself is the fact that
+                        // matters and it already happened.
+                        try
+                        {
+                            var revokeRoomLogFile = Path.Combine(request.DirectoryPath, "room.jsonl");
+                            var revokeRoomReader = new RoomEventLogReader(revokeRoomLogFile);
+                            await using var revokeRoomWriter = new RoomEventLogWriter(revokeRoomLogFile);
+                            await RoomMutationInterface.RecordStandingPermissionRevokedAsync(
+                                request.DirectoryPath,
+                                revokeRoomReader,
+                                revokeRoomWriter,
+                                revokeWorkerName,
+                                request.RevokeKind,
+                                request.ShellCommandPattern,
+                                "human").ConfigureAwait(false);
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            Console.Error.WriteLine(
+                                $"Permission revoke for '{revokeWorkerName}' in '{request.DirectoryPath}' " +
+                                $"succeeded, but journaling it failed ({ex.Message}); the room's record of " +
+                                "this withdrawal is now incomplete.");
+                        }
                     }
                 }
                 catch (WorkflowLockedException ex)
