@@ -295,6 +295,11 @@ class RoomProjection {
 
   List<WorkflowStepState> get pausedSteps => steps.where((s) => s.isPaused).toList();
 
+  /// Steps that have failed and are not waiting on quota (`ExhaustedUntil`) (#1245).
+  List<WorkflowStepState> get failedSteps => steps
+      .where((s) => s.status == 'Failed' && s.latestFailureClassification != 'ExhaustedUntil')
+      .toList();
+
   StepDefinition? definitionFor(String stepId) =>
       stepDefinitions.where((d) => d.stepId == stepId).cast<StepDefinition?>().firstWhere((_) => true, orElse: () => null);
 

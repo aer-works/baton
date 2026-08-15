@@ -12,6 +12,7 @@ import 'daemon/permission_decision_kind.dart';
 import 'daemon/permission_grant_wording.dart';
 import 'daemon/recorded_decision_wording.dart';
 import 'daemon/shell_command_pattern_matcher.dart';
+import 'failed_step_card.dart';
 import 'paused_step_card.dart';
 import 'room_stopped_card.dart';
 import 'theme/tokens.dart';
@@ -1076,12 +1077,14 @@ class _ChatScreenState extends State<ChatScreen> {
     // permission gate renders, because they are the same act: a decision answered where it was
     // raised rather than on a screen of its own.
     final pausedSteps = _isSessionRoom ? const <WorkflowStepState>[] : (_projection?.pausedSteps ?? const []);
+    final failedSteps = _isSessionRoom ? const <WorkflowStepState>[] : (_projection?.failedSteps ?? const []);
     // #1240: last of all, and only for a room the daemon has actually told us has stopped. An absent
     // status is unknown, not finished — a daemon older than this app, or a push with no directory to
     // probe, must leave the transcript exactly as it was rather than announce an ending.
     final stoppedStatus = _projection?.roomCardStatus;
     final hasStoppedCard = RoomStoppedCard.speaksFor(stoppedStatus);
-    final itemCount = messages.length + (hasGate ? 1 : 0) + pausedSteps.length + (hasStoppedCard ? 1 : 0);
+    final itemCount =
+        messages.length + (hasGate ? 1 : 0) + pausedSteps.length + failedSteps.length + (hasStoppedCard ? 1 : 0);
 
     return ListView.builder(
       controller: _scrollController,
@@ -1101,20 +1104,31 @@ class _ChatScreenState extends State<ChatScreen> {
         if (hasStoppedCard && index == itemCount - 1) {
           return RoomStoppedCard(roomCardStatus: stoppedStatus!);
         }
-        final step = pausedSteps[index - messages.length - (hasGate ? 1 : 0)];
-        final projection = _projection!;
-        return PausedStepCard(
-          client: widget.client,
-          directoryPath: projection.directoryPath,
+        final baseIndex = index - messages.length - (hasGate ? 1 : 0);
+        if (baseIndex < pausedSteps.length) {
+          final step = pausedSteps[baseIndex];
+          final projection = _projection!;
+          return PausedStepCard(
+            client: widget.client,
+            directoryPath: projection.directoryPath,
+            step: step,
+            definition: projection.definitionFor(step.stepId),
+            execution: projection.executionFor(step.latestExecutionId),
+            workerAdapters: projection.workerAdapters,
+            isPending: _pendingStepIds.contains(step.stepId),
+            onApprove: () => _decideStep(step, 'Resume'),
+            onReject: () => _decideStep(step, 'Reject'),
+            onSendBack: (targetStepId, fileName) =>
+                _decideStepWithReference(step, 'Supersede', targetStepId, fileName), // vocabulary-ok: decision type label
+          );
+        }
+        final step = failedSteps[baseIndex - pausedSteps.length];
+        // No definition means the shape does not name a worker for this step. The card drops the
+        // worker clause rather than substituting the step id, which would read as a worker called
+        // "review" that nobody can find.
+        return FailedStepCard(
           step: step,
-          definition: projection.definitionFor(step.stepId),
-          execution: projection.executionFor(step.latestExecutionId),
-          workerAdapters: projection.workerAdapters,
-          isPending: _pendingStepIds.contains(step.stepId),
-          onApprove: () => _decideStep(step, 'Resume'),
-          onReject: () => _decideStep(step, 'Reject'),
-          onSendBack: (targetStepId, fileName) =>
-              _decideStepWithReference(step, 'Supersede', targetStepId, fileName), // vocabulary-ok: decision type label
+          worker: _projection!.definitionFor(step.stepId)?.worker,
         );
       },
     );
