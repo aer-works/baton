@@ -558,6 +558,12 @@ public partial class MainWindow : Window
             }
         };
         ApplyShellLayout();
+        // #1279: the switcher is the surface a keyboard-only user returns to (docs cited on #268),
+        // so it needs SOME entry point that isn't a mouse click. Opened rather than the constructor:
+        // a window cannot hold focus before it exists on screen, and Opened is Avalonia's signal
+        // that it now does. Only on first open — a later re-open (room switching, dialog close)
+        // must not steal focus back from wherever the person already is.
+        Opened += (_, _) => SwitcherList.Focus();
         Closed += (_, _) =>
         {
             _liveRefreshTimer.Stop();
