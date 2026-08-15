@@ -1329,9 +1329,11 @@ public partial class MainWindow : Window
     /// from, <see cref="TemplateEditorViewModel"/> or <see cref="OpenTemplateInEditorAsync"/>.
     /// </para>
     /// <para>
-    /// Advisory display only, never a save gate (§9): bindings are deliberately not template data
-    /// and never persisted in a room directory, so <see cref="SaveBindingsAsync"/> never consults
-    /// this. Called explicitly — after New/Open/Save bindings and after adding a row — rather than
+    /// Advisory display only, never a save gate (§9): bindings are deliberately not template data,
+    /// so <see cref="SaveBindingsAsync"/> never consults this. The clause that used to carry that
+    /// reasoning — "and never persisted in a room directory" — was made false by 0056, which gives a
+    /// room its own copy as its register; the conclusion survives the correction, which is why the
+    /// gate below is unchanged. Called explicitly — after New/Open/Save bindings and after adding a row — rather than
     /// wired to any template-editor change notification, since this phase does not touch that
     /// surface's events either.
     /// </para>

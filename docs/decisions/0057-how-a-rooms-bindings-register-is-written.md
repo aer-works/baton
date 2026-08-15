@@ -44,9 +44,8 @@ classification. This record discharges that obligation.
 **Four rules, and they answer different questions — conflating them is how the guard came to be
 credited with work it cannot do.**
 
-**Stated plainly, because a record that reads as settled fact is how a reader gets misled: rules 1, 2
-and 3 are built; rule 4 is not.** Rule 4 is #1257, open, ruled here and unshipped — check it before
-relying on that rule being in force. Rule 3 shipped with #1262, and **its mechanism is not the one
+**Stated plainly, because a record that reads as settled fact is how a reader gets misled: rules 1, 2,
+3 and 4 are built.** Rule 4 shipped with #1257. Rule 3 shipped with #1262, and **its mechanism is not the one
 this record first described**: the paragraph below carries what was measured and what replaced it,
 because the original was true on Windows and false on POSIX.
 
@@ -143,8 +142,7 @@ revocation that silently un-revokes is the case this rule exists for.
 
 **Easier, from rule 1 alone.** Every reader of the register — including `aer run` on the command
 line, a future second client, and anything reading after an unclean shutdown — sees one whole file or
-another, with no coordination required and nothing to enlist in. Rule 4 is what #1257 closes **when it
-ships**; it is not closed by this record.
+another, with no coordination required and nothing to enlist in. Rule 4 shipped with #1257.
 
 #1249's read guard survives rule 1 but shrinks, and shrinks further than first written. Its
 justification is no longer "the write truncates". What is left is the Windows-specific one — that
@@ -186,14 +184,14 @@ still true, and is the trade this accepts: the filter cannot tell a contended re
 permanently broken target, so a broken write pays the whole budget before surfacing the exception it
 would otherwise have raised at once.
 
-**Harder, once rule 4 ships (#1257).** The bindings editor loses a capability it was never meant to
+**Harder, now that rule 4 has shipped (#1257).** The bindings editor loses a capability it was never meant to
 have but did have. Someone who has been hand-editing a live room's register — to fix a model name,
 say — will get a refusal and have to Run the room again. The refusal names that path, and 0056's "the
 copy records the answer" property is what makes it the correct one, but it is a real loss for whoever
 was doing it.
 
 **A litter rule 3 adds.** `/api/rooms/decide` does not check that `DirectoryPath` names a room before
-binding — rule 4's room-evidence test is the right instrument and is unshipped — so a decide naming an
+binding — rule 4's room-evidence test is the right instrument — so a decide naming an
 arbitrary path with no artifact reference reaches the bind. That path already got a directory and a
 `bindings.json` before rule 3; what rule 3 adds is a `room-events.lock` and its holder file, which
 would not previously have been written for a non-room. Small, and the same shape as the litter below,

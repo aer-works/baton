@@ -679,6 +679,141 @@ public class MainWindowBindingsEditorTests
             FileCleanup.Delete(path);
         }
     }
+
+    [AvaloniaFact]
+    public async Task Saving_over_a_live_room_bindings_register_is_refused_and_file_is_unchanged_on_disk()
+    {
+        var roomDir = Path.Combine(Path.GetTempPath(), $"ui-live-room-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDir);
+        var bindingsPath = Path.Combine(roomDir, "bindings.json");
+        try
+        {
+            var initialContent = """{"architect":{"Adapter":"claude","Contract":{"WorkerName":"architect","RequiredInputs":[],"ProducedOutputs":[],"OptionalMetadata":[]},"PromptTemplate":"Draft a plan.","Timeout":"00:05:00"}}""";
+            await File.WriteAllTextAsync(bindingsPath, initialContent, TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(Path.Combine(roomDir, "room.jsonl"), "", TestContext.Current.CancellationToken);
+
+            var window = NewWindow();
+            await window.OpenBindingsInEditorAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            var entry = window.ViewModel.BindingsEditor.Entries[0];
+            entry.Model = "claude-haiku-4-5";
+            Assert.True(window.ViewModel.BindingsEditor.IsDirty);
+
+            await window.SaveBindingsAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            // Asserts the refusal names a remedy, not its exact phrasing — a refusal that says only
+            // "no" is the failure `documentation-lessons` is about, and pinning the wording would
+            // make improving it a test change.
+            Assert.Contains("won't save", window.ViewModel.BindingsEditor.StatusText);
+            Assert.Contains("Run the room", window.ViewModel.BindingsEditor.StatusText);
+
+            var contentOnDisk = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+            Assert.Equal(initialContent, contentOnDisk);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Saving_to_a_bindings_json_with_no_room_evidence_is_permitted()
+    {
+        var nonRoomDir = Path.Combine(Path.GetTempPath(), $"ui-non-room-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(nonRoomDir);
+        var bindingsPath = Path.Combine(nonRoomDir, "bindings.json");
+        try
+        {
+            var initialContent = """{"architect":{"Adapter":"claude","Contract":{"WorkerName":"architect","RequiredInputs":[],"ProducedOutputs":[],"OptionalMetadata":[]},"PromptTemplate":"Draft a plan.","Timeout":"00:05:00"}}""";
+            await File.WriteAllTextAsync(bindingsPath, initialContent, TestContext.Current.CancellationToken);
+
+            var window = NewWindow();
+            await window.OpenBindingsInEditorAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            var entry = window.ViewModel.BindingsEditor.Entries[0];
+            entry.Model = "claude-haiku-4-5";
+            Assert.True(window.ViewModel.BindingsEditor.IsDirty);
+
+            await window.SaveBindingsAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            Assert.Contains("Saved", window.ViewModel.BindingsEditor.StatusText);
+            Assert.False(window.ViewModel.BindingsEditor.IsDirty);
+
+            var parsed = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsPath, TestContext.Current.CancellationToken);
+            Assert.Equal("claude-haiku-4-5", parsed["architect"].Model);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(nonRoomDir);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Opening_a_live_room_bindings_register_read_only_succeeds()
+    {
+        var roomDir = Path.Combine(Path.GetTempPath(), $"ui-live-room-read-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDir);
+        var bindingsPath = Path.Combine(roomDir, "bindings.json");
+        try
+        {
+            var initialContent = """{"architect":{"Adapter":"claude","Contract":{"WorkerName":"architect","RequiredInputs":[],"ProducedOutputs":[],"OptionalMetadata":[]},"PromptTemplate":"Draft a plan.","Timeout":"00:05:00"}}""";
+            await File.WriteAllTextAsync(bindingsPath, initialContent, TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(Path.Combine(roomDir, "snapshot.json"), "{}", TestContext.Current.CancellationToken);
+
+            var window = NewWindow();
+            await window.OpenBindingsInEditorAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            Assert.True(window.ViewModel.BindingsEditor.IsOpen);
+            Assert.False(window.ViewModel.BindingsEditor.IsDirty);
+            Assert.Single(window.ViewModel.BindingsEditor.Entries);
+            Assert.Equal("architect", window.ViewModel.BindingsEditor.Entries[0].WorkerName);
+            Assert.Equal(string.Empty, window.ViewModel.BindingsEditor.StatusText);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData("room.jsonl")]
+    [InlineData("flow.jsonl")]
+    [InlineData("snapshot.json")]
+    [InlineData("flow.lock")]
+    public async Task Each_room_evidence_file_discriminates_on_its_own_to_refuse_save(string evidenceFileName)
+    {
+        var roomDir = Path.Combine(Path.GetTempPath(), $"ui-evidence-{evidenceFileName}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDir);
+        var bindingsPath = Path.Combine(roomDir, "bindings.json");
+        try
+        {
+            var initialContent = """{"architect":{"Adapter":"claude","Contract":{"WorkerName":"architect","RequiredInputs":[],"ProducedOutputs":[],"OptionalMetadata":[]},"PromptTemplate":"Draft a plan.","Timeout":"00:05:00"}}""";
+            await File.WriteAllTextAsync(bindingsPath, initialContent, TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(Path.Combine(roomDir, evidenceFileName), "", TestContext.Current.CancellationToken);
+
+            var window = NewWindow();
+            await window.OpenBindingsInEditorAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            var entry = window.ViewModel.BindingsEditor.Entries[0];
+            entry.Model = "claude-haiku-4-5";
+            Assert.True(window.ViewModel.BindingsEditor.IsDirty);
+
+            await window.SaveBindingsAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+            // Asserts the refusal names a remedy, not its exact phrasing — a refusal that says only
+            // "no" is the failure `documentation-lessons` is about, and pinning the wording would
+            // make improving it a test change.
+            Assert.Contains("won't save", window.ViewModel.BindingsEditor.StatusText);
+            Assert.Contains("Run the room", window.ViewModel.BindingsEditor.StatusText);
+
+            var contentOnDisk = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+            Assert.Equal(initialContent, contentOnDisk);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
 }
 
 /// <summary>A minimal <see cref="IWorkerAdapter"/> stub — these tests never dispatch a worker, they only need adapter *names* for the registry-reflection assertions.</summary>
