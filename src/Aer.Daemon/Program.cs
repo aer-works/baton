@@ -1732,8 +1732,22 @@ namespace Aer.Daemon
                     var metadataPath = Path.Combine(dir, ".aer", AerPaths.RoomMetadataFileName);
                     if (File.Exists(metadataPath))
                     {
-                        var meta = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath);
-                        if (meta != null) list.Add(meta);
+                        try
+                        {
+                            var meta = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath);
+                            if (meta != null) list.Add(meta);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // See the by-id scan's note on this carve-out.
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            // #1229, same rule as the by-id scan above and /api/rooms: one unreadable
+                            // room is skipped rather than emptying the whole list.
+                            Console.Error.WriteLine($"Error reading session metadata for '{dir}': {ex}");
+                        }
                     }
                 }
 
@@ -2053,7 +2067,32 @@ namespace Aer.Daemon
                     continue;
                 }
 
-                var metadata = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath).ConfigureAwait(true);
+                SessionMetadata? metadata;
+                try
+                {
+                    metadata = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath).ConfigureAwait(true);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Inert today — this call passes no token — but stated rather than left to a future
+                    // change that plumbs a request-abort token through and silently turns a cancellation
+                    // into "skip this room and keep scanning". Same carve-out RoomRetentionSweep makes.
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // #1229: this scan reads EVERY room to find ONE session, so without this a single
+                    // unreadable room — corrupt json, or a directory deleted between the File.Exists
+                    // above and the open — threw out of the whole lookup and answered 500 for a
+                    // session that was perfectly healthy. LoadMetadataAsync already retries the
+                    // transient shapes (see its RetryOnSharingViolationAsync); what reaches here has
+                    // outlasted that, so it is that room's problem and not this session's.
+                    // Same rule /api/rooms already applies to the fleet: one bad item must not hide
+                    // every other room.
+                    Console.Error.WriteLine($"Error reading session metadata for '{dir}': {ex}");
+                    continue;
+                }
+
                 if (metadata != null && metadata.SessionId == sessionId)
                 {
                     return (dir, metadata);
@@ -2927,7 +2966,26 @@ namespace Aer.Daemon
 
             foreach (var roomDir in roomDirs)
             {
-                await ReconcileRoomPermissionsAsync(roomDir, broadcastStateAsync, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await ReconcileRoomPermissionsAsync(roomDir, broadcastStateAsync, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Shutdown unwinds the whole sweep rather than being logged as one room's problem
+                    // — RoomRetentionSweep.ExecuteSingleSweepAsync makes the same distinction.
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // #1241: RoomEventLogReader is deliberately loud on a malformed line, which is right
+                    // for a replay and wrong for one item of a sweep. Without this, one corrupt
+                    // room.jsonl threw out of the whole loop, and every room the enumeration had not
+                    // reached yet silently lost its post-restart reconciliation — a stuck permission ask
+                    // never re-presented, reported only as one unnamed line at startup. Which rooms lost
+                    // it depended on directory order. Same rule as the session scans and /api/rooms.
+                    Console.Error.WriteLine($"Permission reconciliation failed for '{roomDir}': {ex}");
+                }
             }
         }
 

@@ -162,4 +162,67 @@ public sealed class RestartGateRepresentationTests : IDisposable
         Assert.Equal("req-multi-live", pushed.Projection.PendingPermission?.PermissionRequestId);
         Assert.Equal("req-multi-dead", Assert.Single(pushed.Projection.PermissionAnswers).PermissionRequestId);
     }
+
+    /// <summary>
+    /// #1241: one room whose journal cannot be replayed must not cost every other room its
+    /// post-restart reconciliation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="RoomEventLogReader"/> is deliberately loud on a malformed line — right for a replay,
+    /// wrong for one item of a sweep. Without the per-room guard this throws out of the whole
+    /// <c>foreach</c>, and the only trace is one unnamed line at daemon startup, so a live gate in a
+    /// healthy room stays un-re-presented with nothing pointing at it.
+    /// </para>
+    /// <para>
+    /// Two corrupt rooms, named to sort either side of <c>room-a</c>: directory enumeration order is
+    /// not contractually stable, and with only one corrupt room this test would pass without the fix
+    /// whenever the healthy room happened to be reached first. Bracketing it means a broken room
+    /// precedes the healthy one under any ordering.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task A_room_whose_journal_cannot_be_replayed_does_not_stop_the_other_rooms_reconciling()
+    {
+        await PersistMinimalSnapshotAsync();
+        await WriteAskFileAsync("req-survives", DateTimeOffset.UtcNow, timeoutSeconds: 300);
+
+        foreach (var name in new[] { "room-0-corrupt", "room-z-corrupt" })
+        {
+            var corruptRoom = Path.Combine(_roomsDir, name);
+            var corruptArtifacts = Path.Combine(corruptRoom, ArtifactManager.ArtifactsDirectoryName, "execution_ex-corrupt");
+            Directory.CreateDirectory(corruptArtifacts);
+            // An ask file is what carries this room past the early returns and into the journal read.
+            await File.WriteAllTextAsync(
+                Path.Combine(corruptArtifacts, "ask-req-corrupt.json"),
+                JsonSerializer.Serialize(new
+                {
+                    permissionRequestId = "req-corrupt",
+                    toolName = "Bash",
+                    inputJson = "{}",
+                    askedAt = DateTimeOffset.UtcNow,
+                    timeoutSeconds = 300
+                }),
+                TestContext.Current.CancellationToken);
+            // Newline-terminated on purpose. RoomEventLogReader deliberately ignores an unterminated
+            // final line — that is its torn-write tolerance — so without the "\n" this room replays
+            // as empty and the test passes whether or not the guard exists. Caught by running the
+            // control: the first version of this test was green against the unfixed loop.
+            await File.WriteAllTextAsync(
+                Path.Combine(corruptRoom, "room.jsonl"), "{ not a room event at all }\n",
+                TestContext.Current.CancellationToken);
+        }
+
+        var broadcasts = new List<(RoomProjection Projection, string RoomDir)>();
+        await DaemonHost.ReconcilePendingPermissionsAsync(
+            _roomsDir,
+            broadcastStateAsync: (proj, dir) => { broadcasts.Add((proj, dir)); return Task.CompletedTask; },
+            TestContext.Current.CancellationToken);
+
+        // The healthy room reconciled and pushed, despite being bracketed by two unreplayable ones.
+        var pushed = Assert.Single(broadcasts);
+        Assert.Equal(_roomDir, pushed.RoomDir);
+        Assert.Equal("req-survives", pushed.Projection.PendingPermission?.PermissionRequestId);
+        Assert.True(PendingGateRegistry.TryGet("req-survives", out _));
+    }
 }
