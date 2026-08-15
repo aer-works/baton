@@ -38,7 +38,11 @@ void main() {
       await tester.pumpWidget(MaterialApp(home: RoomsScreen(client: client)));
       await tester.pumpAndSettle();
 
-      expect(find.text('Rooms'), findsOneWidget);
+      // "Not in selection mode", said directly. It used to be asserted as `find.text('Rooms')`
+      // finding exactly one widget — the ordinary AppBar title rather than "N selected" — which
+      // #1232 broke by adding a nav destination that is also called Rooms. The word was never the
+      // claim; the absence of the selection AppBar is.
+      expect(find.byTooltip('Cancel selection'), findsNothing);
       expect(find.byType(Checkbox), findsNothing);
 
       await tester.longPress(find.text('a'));
@@ -73,7 +77,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(archiveRequests, ['/tasks/a']);
-      expect(find.text('Rooms'), findsOneWidget);
+      // Selection mode exited — see the note on the same assertion above.
+      expect(find.byTooltip('Cancel selection'), findsNothing);
       expect(find.byType(Checkbox), findsNothing);
     });
 
@@ -112,7 +117,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(deleteRequests, unorderedEquals(['/tasks/a', '/tasks/b']));
-      expect(find.text('Rooms'), findsOneWidget);
+      // Selection mode exited — see the note on the same assertion above.
+      expect(find.byTooltip('Cancel selection'), findsNothing);
     });
 
     testWidgets('Cancelling the bulk delete confirm deletes nothing', (tester) async {
@@ -153,6 +159,33 @@ void main() {
       expect(attentionBand('Cancelled'), 3);
       expect(attentionBand('Unavailable'), 3);
       expect(attentionBand('OutOfPlan'), 3);
+    });
+
+    // #1233: 'Stopped' reached attentionBand's catch-all and sorted among Finished/Failed, while
+    // roomStatus twelve lines below already special-cased it (#1219). Pinned as a pair so a status
+    // the phone renders cannot silently keep the default band: every string roomStatus maps
+    // deliberately (a non-idle AerStatus) must also reach a deliberate band arm.
+    test('a status the phone renders never falls to the default band', () {
+      const knownStatusToBand = {
+        'NeedsYou': 0,
+        'Running': 1,
+        'Finished': 2,
+        'Failed': 2,
+        'Cancelled': 3,
+        'Stopped': 3,
+        'Unavailable': 3,
+        'OutOfPlan': 3,
+      };
+
+      for (final entry in knownStatusToBand.entries) {
+        expect(roomStatus(entry.key), isNot(AerStatus.idle),
+            reason: '${entry.key} is in this table, so roomStatus must map it deliberately');
+        expect(attentionBand(entry.key), entry.value, reason: entry.key);
+      }
+
+      // The default arms stay — a phone can talk to a daemon that knows a status it doesn't.
+      expect(roomStatus('SomeFutureStatus'), AerStatus.idle);
+      expect(attentionBand('SomeFutureStatus'), 2);
     });
 
     test('roomStatus maps status strings to AerStatus', () {
@@ -245,6 +278,141 @@ void main() {
       expect(find.bySemanticsLabel(RegExp(r'Idle')), findsOneWidget);
 
       handle.dispose();
+    });
+  });
+
+  /// #1232: the phone's nav, and the one rule that makes "Needs you" implementable without a design
+  /// fork. That rule is stated on `RoomsScreen._visibleItems`, which is the code it governs; these
+  /// tests are what stop it drifting.
+  group('The phone nav and the Needs you filter (#1232)', () {
+    Map<String, dynamic> item(String path, String status) => {
+          'roomDirectoryPath': path,
+          'friendlyName': path.split('/').last,
+          'typeLabel': 'solo-run-template',
+          'statusText': status,
+          'status': status,
+          'pausedStepCount': 0,
+          'isArchived': false,
+        };
+
+    Future<int> pumpAndCountFetches(WidgetTester tester, Future<void> Function(WidgetTester) drive) async {
+      var roomFetches = 0;
+      final mockClient = MockClient((request) async {
+        if (request.method == 'GET' && request.url.path == '/api/rooms') {
+          roomFetches++;
+          return http.Response(
+            jsonEncode([item('/tasks/needy', 'NeedsYou'), item('/tasks/busy', 'Running'), item('/tasks/done', 'Finished')]),
+            200,
+          );
+        }
+        return http.Response('unexpected request: ${request.method} ${request.url}', 500);
+      });
+      final client = DaemonClient(host: 'localhost:5000', token: 'fake-token', httpClient: mockClient);
+
+      await tester.pumpWidget(MaterialApp(home: RoomsScreen(client: client)));
+      await tester.pumpAndSettle();
+      await drive(tester);
+      return roomFetches;
+    }
+
+    testWidgets('Needs you shows only the rooms that need you, and Rooms shows them all', (tester) async {
+      await pumpAndCountFetches(tester, (t) async {
+        expect(find.text('needy'), findsOneWidget);
+        expect(find.text('busy'), findsOneWidget);
+        expect(find.text('done'), findsOneWidget);
+
+        await t.tap(find.text('Needs you'));
+        await t.pumpAndSettle();
+
+        expect(find.text('needy'), findsOneWidget);
+        expect(find.text('busy'), findsNothing);
+        expect(find.text('done'), findsNothing);
+      });
+    });
+
+    testWidgets('switching to Needs you fetches nothing — it is a filter, not a second surface', (tester) async {
+      // The load-bearing assertion of this slice. A "Needs you" that fetches has begun keeping its
+      // own copy of the world, which is exactly what the corpus forbids and what the phone's deleted
+      // inbox used to be.
+      final fetches = await pumpAndCountFetches(tester, (t) async {
+        await t.tap(find.text('Needs you'));
+        await t.pumpAndSettle();
+        await t.tap(find.text('Rooms').last);
+        await t.pumpAndSettle();
+      });
+
+      expect(fetches, 1);
+    });
+
+    testWidgets('an empty Needs you says your rooms are fine, and offers no new room', (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.method == 'GET' && request.url.path == '/api/rooms') {
+          return http.Response(jsonEncode([item('/tasks/done', 'Finished')]), 200);
+        }
+        return http.Response('unexpected', 500);
+      });
+      final client = DaemonClient(host: 'localhost:5000', token: 'fake-token', httpClient: mockClient);
+
+      await tester.pumpWidget(MaterialApp(home: RoomsScreen(client: client)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Needs you'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Nothing needs you.'), findsOneWidget);
+      // J8's "a real first action" answers "you have no rooms", not "nothing is waiting on you".
+      expect(find.text('New room'), findsNothing);
+    });
+
+    testWidgets('Settings carries what a paired phone should be able to answer about itself', (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.method == 'GET' && request.url.path == '/api/rooms') {
+          return http.Response(jsonEncode(<Map<String, dynamic>>[]), 200);
+        }
+        return http.Response('unexpected', 500);
+      });
+      final client = DaemonClient(host: 'desktop.local:5000', token: 'fake-token', httpClient: mockClient);
+
+      await tester.pumpWidget(MaterialApp(home: RoomsScreen(client: client)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('desktop.local:5000'), findsOneWidget);
+      expect(find.text('Sign out'), findsOneWidget);
+    });
+
+    // #1234, measured on-device before it was fixed — what it cost is recorded on
+    // `RoomsScreen`'s `onDestinationSelected`. Reachable only once this issue added a second
+    // destination to switch to, which is why it is pinned here.
+    testWidgets('leaving the destination leaves the selection behind', (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.method == 'GET' && request.url.path == '/api/rooms') {
+          return http.Response(jsonEncode([fleetItemJson('/tasks/a'), fleetItemJson('/tasks/b')]), 200);
+        }
+        return http.Response('unexpected', 500);
+      });
+      final client = DaemonClient(host: 'localhost:5000', token: 'fake-token', httpClient: mockClient);
+
+      await tester.pumpWidget(MaterialApp(home: RoomsScreen(client: client)));
+      await tester.pumpAndSettle();
+
+      await tester.longPress(find.text('a'));
+      await tester.pumpAndSettle();
+      expect(find.text('1 selected'), findsOneWidget);
+
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('1 selected'), findsNothing);
+      expect(find.byTooltip('Archive selected'), findsNothing);
+      expect(find.byTooltip('Delete selected'), findsNothing);
+      expect(find.text('Sign out'), findsOneWidget);
+
+      // And back on Rooms it is genuinely cleared, not merely hidden behind the Settings body.
+      await tester.tap(find.text('Rooms'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Cancel selection'), findsNothing);
+      expect(find.byType(Checkbox), findsNothing);
     });
   });
 

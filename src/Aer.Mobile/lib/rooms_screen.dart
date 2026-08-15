@@ -14,7 +14,11 @@ int attentionBand(String? status) => switch (status) {
       'NeedsYou' => 0,
       'Running' => 1,
       'Finished' || 'Failed' => 2,
-      'Cancelled' || 'Unavailable' || 'OutOfPlan' => 3,
+      // #1233: 'Stopped' ranks with the discarded, not the finished — the desktop's canonical
+      // RoomsViewModel.StateRank does the same, and without this arm a room whose process died
+      // sorted among Finished/Failed. The catch-all below stays for a daemon newer than this app;
+      // `every status the phone knows reaches a deliberate arm` is what keeps a known one out of it.
+      'Cancelled' || 'Stopped' || 'Unavailable' || 'OutOfPlan' => 3,
       _ => 2,
     };
 
@@ -64,6 +68,21 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
 
   bool _selectionMode = false;
   final Set<String> _selectedPaths = {};
+
+  /// Which of the three destinations `02-screens.md:366` draws is showing — Rooms, Needs you,
+  /// Settings (#1232).
+  int _tab = 0;
+
+  /// The rooms this tab shows. **Needs you is a filter over the same list, never a separate store of
+  /// state** (`03-interaction-depth.md:345`) — same `_items`, same `_refresh`, same rows, one
+  /// predicate. It deliberately has no fetch, no loading flag and no error string of its own: the
+  /// moment it grows any, it has become the second place your work lives, which is the thing the
+  /// phone just stopped having (#1226 deleted the inbox).
+  ///
+  /// The predicate is decision 0018's own band 0, via [attentionBand], rather than a second reading
+  /// of what "needs you" means.
+  List<RoomFleetItem> get _visibleItems =>
+      _tab == 1 ? _items.where((i) => attentionBand(i.status) == 0).toList() : _items;
 
   @override
   void initState() {
@@ -420,6 +439,30 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
     navigator.pushReplacement(MaterialPageRoute(builder: (_) => const PairingScreen()));
   }
 
+  /// The phone's Settings destination (#1232). It **collects** rather than invents: sign out already
+  /// existed as an AppBar icon, and which host this phone is paired to was previously nowhere at all,
+  /// which is the one thing a paired device should always be able to answer about itself. Everything
+  /// the desktop's Settings carries and this does not — workers, appearance, remote access — belongs
+  /// to whoever builds it deliberately, not to a nav slice.
+  Widget _buildSettings(BuildContext context) {
+    return ListView(
+      children: [
+        ListTile(
+          leading: const Icon(Icons.computer_outlined),
+          title: const Text('Paired with'),
+          subtitle: Text(widget.client.host),
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.logout),
+          title: const Text('Sign out'),
+          subtitle: const Text('Clears the pairing on this phone only.'),
+          onTap: _signOut,
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -433,14 +476,33 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
               ],
             )
           : AppBar(
-              title: const Text('Rooms'),
+              title: Text(switch (_tab) { 1 => 'Needs you', 2 => 'Settings', _ => 'Rooms' }),
               actions: [
-                IconButton(icon: const Icon(Icons.refresh), tooltip: 'Refresh', onPressed: _isLoading ? null : _refresh),
-                IconButton(icon: const Icon(Icons.logout), tooltip: 'Sign out', onPressed: _signOut),
+                if (_tab != 2)
+                  IconButton(icon: const Icon(Icons.refresh), tooltip: 'Refresh', onPressed: _isLoading ? null : _refresh),
               ],
             ),
-      body: Column(
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        // #1234: leaving the destination leaves the selection. Selection mode owns the AppBar, so a
+        // selection carried to Settings puts a live Archive and Delete over a list that shows neither
+        // the selected room nor a way to deselect it — measured on-device, and Delete is not reversible.
+        onDestinationSelected: (index) {
+          setState(() => _tab = index);
+          _exitSelectionMode();
+        },
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.meeting_room_outlined), label: 'Rooms'),
+          NavigationDestination(icon: Icon(Icons.flag_outlined), label: 'Needs you'),
+          NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
+        ],
+      ),
+      body: _tab == 2
+          ? _buildSettings(context)
+          : Column(
         children: [
+          // A list control, so it stays with the list rather than moving to Settings — and it
+          // applies to both list tabs, since Needs you is the same list.
           SwitchListTile(
             title: const Text('Show archived'),
             value: _includeArchived,
@@ -456,27 +518,33 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
             ),
           if (_isLoading) const LinearProgressIndicator(),
           Expanded(
-            child: _items.isEmpty && !_isLoading
+            child: _visibleItems.isEmpty && !_isLoading
                 ? Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Text('No rooms yet.'),
+                        // Empty means two different things. On Rooms it means you have no work here
+                        // yet, and J8's "a real first action, not a dead-end" applies. On Needs you it
+                        // means your rooms are fine — offering "New room" there would answer a
+                        // question nobody asked.
+                        Text(_tab == 1 ? 'Nothing needs you.' : 'No rooms yet.'),
+                        if (_tab != 1) ...[
                         const SizedBox(height: 16),
                         FilledButton.icon(
                           onPressed: _startNewRoom,
                           icon: const Icon(Icons.add),
                           label: const Text('New room'),
                         ),
+                        ],
                       ],
                     ),
                   )
                 : RefreshIndicator(
                     onRefresh: _refresh,
                     child: ListView.builder(
-                    itemCount: _items.length,
+                    itemCount: _visibleItems.length,
                     itemBuilder: (context, index) {
-                      final item = _items[index];
+                      final item = _visibleItems[index];
                       final isSelected = _selectedPaths.contains(item.roomDirectoryPath);
                       return Card(
                         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
