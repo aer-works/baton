@@ -703,8 +703,54 @@ public class DaemonIntegrationTests : IAsyncLifetime
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, decideResponse.StatusCode);
     }
 
+    /// <summary>
+    /// #1227: a decision the daemon cannot carry out is refused with a sentence, not accepted and
+    /// dropped.
+    /// <para>
+    /// Found by driving the phone: the room screen said "Approved review", the daemon answered 200,
+    /// and the room never moved. Why the daemon can end up without the bindings a decision needs, and
+    /// what swallowed the failure, is on the guard itself in <c>Aer.Daemon</c>'s decide endpoint.
+    /// </para>
+    /// <para>
+    /// Asserted on the status and the sentence, and deliberately NOT on "the journal did not grow".
+    /// A second reader checked that one and found it vacuous: <c>DecideCommand</c> loads bindings
+    /// before it ever constructs a <c>FlowEventLogWriter</c>, so the journal was untouched in the
+    /// buggy version too. The thing this fix changes is what the person is told, and that is the only
+    /// thing worth pinning — a fixture dressed up to look like it proves more would be worse than
+    /// this comment.
+    /// </para>
+    /// </summary>
     [Fact]
-    public async Task DecideWithArtifactReference_WithKnownExecutionAndFile_IsAccepted()
+    public async Task DecideOnARoomWhoseWorkersAreUnknown_IsRefusedRatherThanAcceptedAndDropped()
+    {
+        const string executionId = "exec-no-bindings-1";
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, TestContext.Current.CancellationToken);
+
+        var response = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/decide",
+            new DecideRoomRequest(roomDirectory, WorkerStep.Value, executionId, DecisionType.Resume),
+            TestContext.Current.CancellationToken);
+
+        // The polarity that matters: this was 200 before #1227, over a room that never moved.
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("doesn't know which workers this room runs", body);
+    }
+
+    /// <summary>
+    /// The other polarity of the traversal refusal above: a reference naming a REAL output of that
+    /// execution gets past the reference check.
+    /// <para>
+    /// It is asserted on the message rather than on the status code since #1227. This daemon has no
+    /// worker bindings — nothing here runs or opens a room — so the request is now refused a step
+    /// later, on the grounds that a decision it cannot carry out must not be accepted and dropped.
+    /// Asserting "not rejected for the reference reason" keeps this test discriminating on the thing
+    /// it exists for: swap "out" for the sibling's traversal path and the message changes.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task DecideWithArtifactReference_WithKnownExecutionAndFile_PassesTheReferenceCheck()
     {
         const string executionId = "exec-artifact-ref-2";
         var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, TestContext.Current.CancellationToken);
@@ -719,7 +765,8 @@ public class DaemonIntegrationTests : IAsyncLifetime
                 ArtifactReference: new ArtifactReference(executionId, "out")),
             TestContext.Current.CancellationToken);
 
-        Assert.True(decideResponse.IsSuccessStatusCode);
+        var body = await decideResponse.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.DoesNotContain("does not name a known output file", body);
     }
 
     // M24 Phase 1 (#262): Interactive Sessions endpoint coverage. These deliberately never send an
