@@ -416,6 +416,56 @@ public class RuntimePermissionGrantAmenderTests
     }
 
     /// <summary>
+    /// #1238's second reader: a worker bound with NO grant at all is a real, reachable state —
+    /// <c>WorkerBindingConfigEntry.PermissionGrant</c> defaults to null, and a worker that has never
+    /// answered a persisting rung sits in exactly it. Every other test here seeds a non-null grant
+    /// (<c>SeedEntry</c>'s own default), so this branch had no coverage: a refactor that threw on the
+    /// null, or that answered <c>Revoked</c> for it, would have passed the whole file.
+    /// </summary>
+    [Fact]
+    public async Task Revoking_from_a_worker_with_no_grant_at_all_is_a_no_op()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomDir = Path.Combine(Path.GetTempPath(), $"revoke-nogrant-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDir);
+        try
+        {
+            // Deliberately NOT through WriteSeedRoomAsync, whose seed coalesces null to a real grant.
+            var bindingsPath = Path.Combine(roomDir, "bindings.json");
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                new Dictionary<string, WorkerBindingConfigEntry>
+                {
+                    [Worker] = new(
+                        "claude",
+                        new WorkerContract(Worker, RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                        "Chat.",
+                        TimeSpan.FromMinutes(5)),
+                },
+                bindingsPath,
+                ct);
+
+            // The premise, asserted rather than assumed — the writer/parser round trip could have
+            // materialized a default grant, which would make the rest of this test vacuous.
+            Assert.Null(await ReloadGrantAsync(bindingsPath, ct));
+
+            Assert.Equal(
+                PermissionRevokeOutcome.NothingToRevoke,
+                await RuntimePermissionGrantAmender.RevokeAsync(roomDir, Worker, PermissionRevokeKind.RoomShell, cancellationToken: ct));
+            Assert.Equal(
+                PermissionRevokeOutcome.NothingToRevoke,
+                await RuntimePermissionGrantAmender.RevokeAsync(roomDir, Worker, PermissionRevokeKind.CommandInRoom, "rm *", ct));
+
+            // And nothing was written — a no-op that invented an empty grant would be a change to a
+            // binding the operator never touched.
+            Assert.Null(await ReloadGrantAsync(bindingsPath, ct));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
+
+    /// <summary>
     /// #1238: a room with no <c>bindings.json</c> reports <see cref="PermissionRevokeOutcome.CouldNotPersist"/>,
     /// NOT <see cref="PermissionRevokeOutcome.NothingToRevoke"/>. The two are a real distinction here:
     /// "you hold nothing" and "I cannot tell you what you hold" mean different things to someone who

@@ -1124,4 +1124,97 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
             await app.StopAsync(TestContext.Current.CancellationToken);
         }
     }
+
+    /// <summary>
+    /// #1238's second reader: the sibling writers of a live room's <c>bindings.json</c> each have a
+    /// test that holds the room-events lock and pins the refusal; this endpoint did not.
+    /// </summary>
+    /// <remarks>
+    /// The failure it exists to catch is the specific one the endpoint's own comment names: a change
+    /// that swallowed the lost guard and answered 200 would tell an operator a permission is withdrawn
+    /// while it is still in force — the one thing a revocation must never say. So both halves are
+    /// asserted: the status, and that the file is byte-identical afterwards.
+    /// </remarks>
+    [Fact]
+    public async Task RevokePermission_WhileRoomEventsLockHeld_Returns503_AndBindingsUnchanged()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var roomDir = Path.Combine(Path.GetTempPath(), $"daemon-revoke-lock-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(roomDir);
+            try
+            {
+                var bindingsPath = Path.Combine(roomDir, "bindings.json");
+                await WorkerBindingConfigWriter.SaveToFileAsync(
+                    new Dictionary<string, WorkerBindingConfigEntry>
+                    {
+                        [InteractiveSessionMaterializer.DefaultWorkerName] = new(
+                            "claude",
+                            new WorkerContract(InteractiveSessionMaterializer.DefaultWorkerName, [], [], []),
+                            "Chat.",
+                            TimeSpan.FromMinutes(5),
+                            PermissionGrant: new PermissionGrant(RunShellCommands: true)),
+                    },
+                    bindingsPath,
+                    TestContext.Current.CancellationToken);
+
+                var initialBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+
+                using (Aer.Flow.Concurrency.ConcurrencyGuard.AcquireRoomEvents(roomDir, "test revoke lock hold"))
+                {
+                    var response = await client.PostAsJsonAsync(
+                        $"{baseUrl}/api/rooms/permissions/revoke",
+                        new { directoryPath = roomDir, revokeKind = PermissionRevokeKind.RoomShell },
+                        TestContext.Current.CancellationToken);
+
+                    Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+                    var afterBindingsText = await File.ReadAllTextAsync(bindingsPath, TestContext.Current.CancellationToken);
+                    Assert.Equal(initialBindingsText, afterBindingsText);
+                }
+
+                // The control arm: with the lock released the identical call succeeds, so the 503
+                // above is the lock and not something else about this room refusing every attempt.
+                var afterRelease = await client.PostAsJsonAsync(
+                    $"{baseUrl}/api/rooms/permissions/revoke",
+                    new { directoryPath = roomDir, revokeKind = PermissionRevokeKind.RoomShell },
+                    TestContext.Current.CancellationToken);
+
+                Assert.True(afterRelease.IsSuccessStatusCode);
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
 }

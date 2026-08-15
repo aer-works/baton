@@ -100,6 +100,14 @@ public static class RuntimePermissionGrantAmender
     /// <see cref="PermissionRevokeKind"/> for why lifting a refusal is a different operation, and see
     /// the polarity test that pins it.
     /// </para>
+    /// <para>
+    /// <b>It takes effect on the next turn, not on the one already running.</b> A worker's grant is
+    /// translated into vendor flags when its process is spawned, so a turn in flight keeps what it was
+    /// given — the same property <c>/api/sessions/{id}/mode</c> already relies on in the other
+    /// direction. Withdrawing is the case where that matters, so it is said here rather than left to
+    /// be discovered: to stop something already running, cancel the turn. Reaching into a live worker
+    /// would need an interrupt, which is a different mechanism entirely.
+    /// </para>
     /// </remarks>
     /// <param name="revokeKind">One of the <see cref="PermissionRevokeKind"/> constants.</param>
     /// <param name="shellCommandPattern">
