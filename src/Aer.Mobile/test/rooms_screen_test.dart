@@ -282,8 +282,8 @@ void main() {
   });
 
   /// #1232: the phone's nav, and the one rule that makes "Needs you" implementable without a design
-  /// fork — `03-interaction-depth.md:345`, "a filter over the same list, never a separate store of
-  /// state".
+  /// fork. That rule is stated on `RoomsScreen._visibleItems`, which is the code it governs; these
+  /// tests are what stop it drifting.
   group('The phone nav and the Needs you filter (#1232)', () {
     Map<String, dynamic> item(String path, String status) => {
           'roomDirectoryPath': path,
@@ -381,6 +381,39 @@ void main() {
       expect(find.text('Sign out'), findsOneWidget);
     });
 
+    // #1234, measured on-device before it was fixed — what it cost is recorded on
+    // `RoomsScreen`'s `onDestinationSelected`. Reachable only once this issue added a second
+    // destination to switch to, which is why it is pinned here.
+    testWidgets('leaving the destination leaves the selection behind', (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.method == 'GET' && request.url.path == '/api/rooms') {
+          return http.Response(jsonEncode([fleetItemJson('/tasks/a'), fleetItemJson('/tasks/b')]), 200);
+        }
+        return http.Response('unexpected', 500);
+      });
+      final client = DaemonClient(host: 'localhost:5000', token: 'fake-token', httpClient: mockClient);
+
+      await tester.pumpWidget(MaterialApp(home: RoomsScreen(client: client)));
+      await tester.pumpAndSettle();
+
+      await tester.longPress(find.text('a'));
+      await tester.pumpAndSettle();
+      expect(find.text('1 selected'), findsOneWidget);
+
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('1 selected'), findsNothing);
+      expect(find.byTooltip('Archive selected'), findsNothing);
+      expect(find.byTooltip('Delete selected'), findsNothing);
+      expect(find.text('Sign out'), findsOneWidget);
+
+      // And back on Rooms it is genuinely cleared, not merely hidden behind the Settings body.
+      await tester.tap(find.text('Rooms'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Cancel selection'), findsNothing);
+      expect(find.byType(Checkbox), findsNothing);
+    });
   });
 
   /// The capability #1226's second reader caught going missing — see `RoomsScreen._startNewRoom` for

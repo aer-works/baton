@@ -484,7 +484,13 @@ class _RoomsScreenState extends State<RoomsScreen> with WidgetsBindingObserver {
             ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
-        onDestinationSelected: (index) => setState(() => _tab = index),
+        // #1234: leaving the destination leaves the selection. Selection mode owns the AppBar, so a
+        // selection carried to Settings puts a live Archive and Delete over a list that shows neither
+        // the selected room nor a way to deselect it — measured on-device, and Delete is not reversible.
+        onDestinationSelected: (index) {
+          setState(() => _tab = index);
+          _exitSelectionMode();
+        },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.meeting_room_outlined), label: 'Rooms'),
           NavigationDestination(icon: Icon(Icons.flag_outlined), label: 'Needs you'),
