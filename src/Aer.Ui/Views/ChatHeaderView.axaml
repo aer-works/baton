@@ -1,9 +1,8 @@
 <!-- #1224: the room header, lifted OUT of the transcript column and spanning the transcript and the
      shape panel together. It used to be the top row of ChatView's own DockPanel, which put it inside
-     the column the Shape panel takes 460px from — so opening Shape clipped it, and at the supported
-     900px floor (MainWindow's MinWidth) the nav rail, sidebar, panel and margins leave that column
-     roughly 130px, less than the controls alone need. Every arrangement that keeps the header in
-     that column fails at the floor, including simply ellipsizing the name; the column was the flaw.
+     the column the Shape panel takes its width from — so opening Shape clipped it. What is left of
+     that column at MainWindow's MinWidth, and why no rearrangement inside it could have worked, is
+     the 2026-08-15 amendment's arithmetic to carry.
 
      The header is the room's (#1215's amendment), and the shape panel is part of the room, so
      spanning both is what the header already claimed to be. -->

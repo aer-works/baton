@@ -12,7 +12,10 @@
        panel, one level up in MainWindow's shell grid (ChatHeaderView), because inside this column
        the Shape panel's 460px clipped it — losing `Stop` entirely at ordinary window widths. This
        view keeps everything below the header, unchanged. -->
-  <DockPanel Margin="24,4,24,24">
+  <!-- The top margin matches RoomView's own 24, deliberately: with one header spanning both columns
+       the two gaps beneath it are now compared side by side in a single glance, and 4 here against
+       24 there read as a misalignment. Found by #1224's second reader. -->
+  <DockPanel Margin="24">
     <!-- Persistent mode indicator (#286): mode buttons live in the collapsed Commands panel below,
          but the currently active mode was previously invisible until you reopened that panel and
          happened to remember which button you last clicked. -->

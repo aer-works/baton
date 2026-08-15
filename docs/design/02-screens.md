@@ -95,10 +95,15 @@ One room, one worker. This is the screen you look at most, so it has to be borin
 > **Amendment (2026-08-15, #1224 / umbrella #1196): the room header spans the transcript and the
 > shape panel.** It used to be the top row of the transcript column, so opening `Shape` took its
 > 460px out of the header's own width and clipped it — `Stop` was the control that vanished first.
-> The arrangement was not the flaw; the column was. At the supported 900px floor, the nav rail,
-> sidebar, shape panel and margins leave that column roughly 130px, which is less than the controls
-> alone need, so *every* fix that kept the header inside it failed at the floor — including simply
-> ellipsizing the name.
+> The arrangement was not the flaw; the column was. At the supported 900px floor the nav rail (62),
+> the switcher sidebar (260), the shape panel (460) and the transcript's own margins (48) leave that
+> column **70px** — far less than the controls alone need — so *every* fix that kept the header
+> inside it failed at the floor, including simply ellipsizing the name.
+>
+> *(The figure in the ruling this amendment records was ~130px; it does not reproduce from the
+> dimensions the code defines, and a second reader caught it. The arithmetic above is the measured
+> one. It changes nothing about the conclusion — 70px and 130px are both far short — but a number
+> nobody can re-derive is how a record goes quietly wrong.)*
 >
 > Opening `Shape` now takes its width from the transcript and can never take any from the header.
 > Inside the header **the room name is the only element that yields** — ellipsis, full name in the

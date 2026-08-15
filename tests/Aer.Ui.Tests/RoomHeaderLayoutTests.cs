@@ -46,9 +46,9 @@ public class RoomHeaderLayoutTests
         "a-room-whose-name-is-long-enough-that-nothing-else-in-the-header-could-possibly-fit-beside-it-ok";
 
     /// <param name="windowWidth">
-    /// 900 is <c>MainWindow.axaml</c>'s own <c>MinWidth</c> — the supported floor, and the width at
-    /// which the pre-#1224 arrangement left the header roughly 130px. 1215 is the width the defect
-    /// was actually found at while driving.
+    /// 900 is <c>MainWindow.axaml</c>'s own <c>MinWidth</c> — the supported floor, where the old
+    /// arrangement left the header a fraction of what its controls need (the 02-screens amendment
+    /// does that arithmetic). 1215 is the width the defect was actually found at while driving.
     /// </param>
     [AvaloniaTheory]
     [InlineData(900d)]
