@@ -885,6 +885,160 @@ public class DaemonIntegrationTests : IAsyncLifetime
         Assert.NotEqual(await File.ReadAllTextAsync(clientBindingsFilePath, cancellationToken), finalContent);
     }
 
+    /// <summary>
+    /// #1262 (0057 rule 3): two decides against the same un-bound room, overlapped, each supplying a
+    /// different bindings file. The room ends up holding exactly one of them whole, and neither call
+    /// is turned into an error by losing.
+    /// </summary>
+    /// <remarks>
+    /// <b>Said plainly: this does not discriminate the fix from the bug, and cannot.</b> Under the
+    /// unconditional overwrite this replaces, the second move also lands one whole file and both
+    /// decides also answer 200 — so every assertion here passes against the defect. What is lost to
+    /// the bug is *which* file the room kept, and the loser is by construction whichever call the
+    /// scheduler put second, so there is no stable expected value to assert against.
+    /// <para>
+    /// It is kept for what it does pin: the endpoint survives the overlap, the write is never a
+    /// mixture of the two, and losing the bind is not surfaced as a failure (0056 rule 4 — the loser
+    /// proceeds against the room's own copy). The change's discriminating control is
+    /// <see cref="RunRoom_WithExistingBindings_OverwritesRoomBindingsWithNewFile"/>: an
+    /// implementation that made *everything* first-bind-only would pass this test and fail that one,
+    /// which is the mistake this fix was most likely to make.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Decide_ConcurrentDecidesOnUnboundRoom_FirstBindWinsAndBothSucceed()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string executionId = "exec-race-1";
+
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, cancellationToken);
+        var roomBindingsFile = AerPaths.RoomBindingsFile(roomDirectory);
+        Assert.False(File.Exists(roomBindingsFile));
+
+        var bindingsFile1 = await WriteRejectableBindingsAsync(cancellationToken);
+        var bindingsFile2 = await WriteUnresolvableBindingsAsync(cancellationToken);
+        var content1 = await File.ReadAllTextAsync(bindingsFile1, cancellationToken);
+        var content2 = await File.ReadAllTextAsync(bindingsFile2, cancellationToken);
+
+        // The premise, asserted rather than assumed: two identical fixtures would make the
+        // "matches one of them" assertion below true no matter what the endpoint wrote.
+        Assert.NotEqual(content1, content2);
+
+        var task1 = _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/decide",
+            new DecideRoomRequest(roomDirectory, WorkerStep.Value, executionId, DecisionType.Reject, BindingsFilePath: bindingsFile1),
+            cancellationToken);
+
+        var task2 = _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/decide",
+            new DecideRoomRequest(roomDirectory, WorkerStep.Value, executionId, DecisionType.Reject, BindingsFilePath: bindingsFile2),
+            cancellationToken);
+
+        var responses = await Task.WhenAll(task1, task2);
+
+        // Losing the bind is not an error: both decides answer, neither is failed by the race.
+        Assert.True(responses[0].IsSuccessStatusCode, await responses[0].Content.ReadAsStringAsync(cancellationToken));
+        Assert.True(responses[1].IsSuccessStatusCode, await responses[1].Content.ReadAsStringAsync(cancellationToken));
+
+        // Whichever won, the room holds that file whole — never a splice of the two.
+        Assert.True(File.Exists(roomBindingsFile));
+        var actualContent = await File.ReadAllTextAsync(roomBindingsFile, cancellationToken);
+        Assert.True(
+            actualContent == content1 || actualContent == content2,
+            "the room's register is neither supplied file whole");
+    }
+
+    /// <summary>
+    /// #1262 (0057 rule 3): the first bind is serialized by the room-events lock. Holding that lock
+    /// makes the decide unstick path answer 503 rather than binding the room.
+    /// </summary>
+    /// <remarks>
+    /// Rule 3 was first built on the move checking itself, which 0057 records as measured false off
+    /// Windows. The lock is what closes it on every platform, and a lock's presence is observable
+    /// where a two-syscall race is not: hold it, and a path that takes it must say so. Red-proven by
+    /// removing the guard, against which this room binds and the call answers 200.
+    /// <para>
+    /// <b>Said plainly: this proves the path takes the guard, not that the guard spans the check and
+    /// the write</b> — and the second is the property rule 3 actually rests on. An implementation
+    /// that acquired the guard, released it, and only then checked and materialized would pass this
+    /// test unchanged, because with the lock held externally it never reaches the check at all; yet
+    /// that shape lets two decides take the guard in turn, both find the room unbound, and both
+    /// materialize. No end-to-end test in this suite separates the two, so the scope is held
+    /// structurally rather than by assertion: the check and the write are the whole body of
+    /// <c>BindRoomIfStillUnbound</c>, and its remarks say why they may not leave it.
+    /// </para>
+    /// <para>
+    /// It pins the answer as 503 specifically, not merely "not 200". Losing this lock means the room
+    /// is busy, which is the same fact the permissions read route reports the same way — a 400 would
+    /// blame the caller's request for a condition that has nothing to do with it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Decide_WhenTheRoomEventsLockIsHeld_AnswersBusyRatherThanBinding()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string executionId = "exec-bind-locked-1";
+
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, cancellationToken);
+        var roomBindingsFile = AerPaths.RoomBindingsFile(roomDirectory);
+        Assert.False(File.Exists(roomBindingsFile));
+
+        var bindingsFile = await WriteRejectableBindingsAsync(cancellationToken);
+
+        HttpResponseMessage response;
+        using (ConcurrencyGuard.AcquireRoomEventsWithin(
+            roomDirectory, TimeSpan.FromSeconds(2), "test holding the lock"))
+        {
+            response = await _client.PostAsJsonAsync(
+                $"{_baseUrl}/api/rooms/decide",
+                new DecideRoomRequest(roomDirectory, WorkerStep.Value, executionId, DecisionType.Reject, BindingsFilePath: bindingsFile),
+                cancellationToken);
+        }
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        // The room stayed un-bound: refusing is only the right answer if it also declined to write.
+        Assert.False(File.Exists(roomBindingsFile));
+    }
+
+    /// <summary>
+    /// #1262 (0057 rule 3): Run keeps overwriting. A room that already has bindings, run with a
+    /// different file, ends up holding the new one — 0056 rule 1's per-run re-binding choice.
+    /// </summary>
+    /// <remarks>
+    /// This is the change's discriminating arm. Making the move first-bind-only in *both* modes —
+    /// the over-application rule 3 invites — reddens it here (the room keeps its old register) while
+    /// <see cref="Decide_ConcurrentDecidesOnUnboundRoom_FirstBindWinsAndBothSucceed"/> stays green,
+    /// which is why that test is not the one relied on.
+    /// </remarks>
+    [Fact]
+    public async Task RunRoom_WithExistingBindings_OverwritesRoomBindingsWithNewFile()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string executionId = "exec-run-overwrite-1";
+
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, cancellationToken);
+        var initialBindingsFile = await WriteRejectableBindingsAsync(cancellationToken);
+        var roomBindingsFile = AerPaths.RoomBindingsFile(roomDirectory);
+
+        File.Copy(initialBindingsFile, roomBindingsFile, overwrite: true);
+        var initialContent = await File.ReadAllTextAsync(roomBindingsFile, cancellationToken);
+
+        var newBindingsFile = await WriteUnresolvableBindingsAsync(cancellationToken);
+        var newContent = await File.ReadAllTextAsync(newBindingsFile, cancellationToken);
+        Assert.NotEqual(initialContent, newContent);
+
+        var response = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/run",
+            new RunRoomRequest(roomDirectory, null, newBindingsFile),
+            cancellationToken);
+
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+
+        var finalContent = await File.ReadAllTextAsync(roomBindingsFile, cancellationToken);
+        Assert.Equal(newContent, finalContent);
+    }
+
 
     /// <summary>
     /// #1230 / decision 0056: a decision resolves the room's OWN bindings, never the user-global slot
