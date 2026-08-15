@@ -243,5 +243,7 @@
   "sessionId": "session-123",
   "workerAdapters": {
     "critic": "agy"
-  }
+  },
+  "roomCardStatus": "NeedsYou",
+  "roomCardStatusText": "Waiting for your review"
 }

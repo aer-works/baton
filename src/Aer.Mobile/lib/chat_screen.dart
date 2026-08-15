@@ -10,8 +10,10 @@ import 'daemon/daemon_client.dart';
 import 'daemon/models.dart';
 import 'daemon/permission_decision_kind.dart';
 import 'daemon/permission_grant_wording.dart';
+import 'daemon/recorded_decision_wording.dart';
 import 'daemon/shell_command_pattern_matcher.dart';
 import 'paused_step_card.dart';
+import 'room_stopped_card.dart';
 import 'theme/tokens.dart';
 
 /// One rendered row in the chat transcript — a human turn or an assistant response, never both.
@@ -748,6 +750,16 @@ class _ChatScreenState extends State<ChatScreen> {
     final transitions = _answersClearedThrough == null
         ? _dormancyTransitions
         : _dormancyTransitions.where((t) => t.timestamp.isAfter(_answersClearedThrough!)).toList();
+    // #1240: sorted here rather than assumed, and a decision with no recorded time treated as older
+    // than any clear — both rules, and why they are these rules, are `ChatViewModel.RebuildMessages`'
+    // (src/Aer.Ui.Core/ChatViewModel.cs) to state. This is that merge, one platform over.
+    final decisions = ((_answersClearedThrough == null
+                ? _projection?.recordedDecisionMoments
+                : _projection?.recordedDecisionMoments
+                    .where((d) => d.recordedAt.isAfter(_answersClearedThrough!))) ??
+            const <RecordedDecisionMoment>[])
+        .toList()
+      ..sort((a, b) => a.recordedAt.compareTo(b.recordedAt));
 
     final latestEntered = _isDormant && transitions.any((t) => t.isEntered)
         ? transitions.lastWhere((t) => t.isEntered)
@@ -756,24 +768,33 @@ class _ChatScreenState extends State<ChatScreen> {
     int turnIdx = 0;
     int ansIdx = 0;
     int transIdx = 0;
+    int decIdx = 0;
 
     final farFuture = DateTime(9999);
 
-    while (turnIdx < turns.length || ansIdx < answers.length || transIdx < transitions.length) {
+    while (turnIdx < turns.length ||
+        ansIdx < answers.length ||
+        transIdx < transitions.length ||
+        decIdx < decisions.length) {
       final turnTs = turnIdx < turns.length ? turns[turnIdx].executedAt : farFuture;
       final ansTs = ansIdx < answers.length ? answers[ansIdx].answeredAt : farFuture;
       final transTs = transIdx < transitions.length ? transitions[transIdx].timestamp : farFuture;
+      // The decision arm goes LAST and every arm above it also outranks decTs, so this repo's
+      // existing tie precedence — turn, then answer, then transition — is left exactly as it was.
+      final decTs = decIdx < decisions.length ? decisions[decIdx].recordedAt : farFuture;
 
       if ((turnTs.isBefore(ansTs) || turnTs.isAtSameMomentAs(ansTs)) &&
-          (turnTs.isBefore(transTs) || turnTs.isAtSameMomentAs(transTs))) {
+          (turnTs.isBefore(transTs) || turnTs.isAtSameMomentAs(transTs)) &&
+          (turnTs.isBefore(decTs) || turnTs.isAtSameMomentAs(decTs))) {
         _addTurnMessages(messages, turns[turnIdx]);
         turnIdx++;
-      } else if (ansTs.isBefore(transTs) || ansTs.isAtSameMomentAs(transTs)) {
+      } else if ((ansTs.isBefore(transTs) || ansTs.isAtSameMomentAs(transTs)) &&
+          (ansTs.isBefore(decTs) || ansTs.isAtSameMomentAs(decTs))) {
         final answer = answers[ansIdx];
         final text = formatPermissionAnswerWording(answer);
         messages.add(_ChatMessage(senderLabel: 'System', text: text, isFromUser: false, isSystem: true));
         ansIdx++;
-      } else {
+      } else if (transTs.isBefore(decTs) || transTs.isAtSameMomentAs(decTs)) {
         final transition = transitions[transIdx];
         if (transition.isEntered) {
           final isLatest = _isDormant && transition == latestEntered;
@@ -795,6 +816,14 @@ class _ChatScreenState extends State<ChatScreen> {
           messages.add(_ChatMessage(senderLabel: 'System', text: text, isFromUser: false, isSystem: true));
         }
         transIdx++;
+      } else {
+        messages.add(_ChatMessage(
+          senderLabel: 'System',
+          text: formatRecordedDecisionWording(decisions[decIdx]),
+          isFromUser: false,
+          isSystem: true,
+        ));
+        decIdx++;
       }
     }
 
@@ -1047,7 +1076,12 @@ class _ChatScreenState extends State<ChatScreen> {
     // permission gate renders, because they are the same act: a decision answered where it was
     // raised rather than on a screen of its own.
     final pausedSteps = _isSessionRoom ? const <WorkflowStepState>[] : (_projection?.pausedSteps ?? const []);
-    final itemCount = messages.length + (hasGate ? 1 : 0) + pausedSteps.length;
+    // #1240: last of all, and only for a room the daemon has actually told us has stopped. An absent
+    // status is unknown, not finished — a daemon older than this app, or a push with no directory to
+    // probe, must leave the transcript exactly as it was rather than announce an ending.
+    final stoppedStatus = _projection?.roomCardStatus;
+    final hasStoppedCard = RoomStoppedCard.speaksFor(stoppedStatus);
+    final itemCount = messages.length + (hasGate ? 1 : 0) + pausedSteps.length + (hasStoppedCard ? 1 : 0);
 
     return ListView.builder(
       controller: _scrollController,
@@ -1063,6 +1097,9 @@ class _ChatScreenState extends State<ChatScreen> {
             enabled: !_isAnsweringPermission,
             onAnswer: _answerPermission,
           );
+        }
+        if (hasStoppedCard && index == itemCount - 1) {
+          return RoomStoppedCard(roomCardStatus: stoppedStatus!);
         }
         final step = pausedSteps[index - messages.length - (hasGate ? 1 : 0)];
         final projection = _projection!;

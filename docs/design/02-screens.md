@@ -92,6 +92,24 @@ One room, one worker. This is the screen you look at most, so it has to be borin
 > collapsible Shape panel, where it was only findable if you had already opened a panel that is closed
 > by default.
 
+> **Amendment (2026-08-15, #1240 / umbrella #1196):** The phone carries this card too — before it, a
+> finished room on the phone rendered *nothing*, which under 0018 is not calm but silent. One clause
+> governs what crosses: **the headline always; a body sentence only where the action it describes
+> exists.** The Finished and Cancelled bodies above are captions for *Run it again*, and the phone has
+> no run flow to caption; the stopped-mid-run body keeps its first sentence, which states the room's
+> condition, and drops *"Resume picks it up where it left off."* Printing an offer this surface cannot
+> honor would be worse than saying less. This is a subset, not a second vocabulary (0002): no state is
+> given different *words* here, only fewer.
+>
+> The lock reading the paragraph above turns on is a local file, so the derived status is put on the
+> wire for a remote client rather than re-derived there — a client deciding a room's state for itself
+> is how the switcher and the room screen came to disagree (#976/#1219). An absent status means the
+> daemon could not say, and renders as no card: never as *finished*.
+>
+> A **failed** room still gets no terminal card, on either surface — #617's failed-step banner says
+> what broke and offers the worker that broke it, which is strictly more. The phone does not have that
+> banner yet (#1245), and a failed room there is blank until it does.
+
 Desktop · one worker
 
 Baton

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Aer.Adapters;
+using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Ui.Core;
 
@@ -78,7 +79,46 @@ internal sealed class DaemonBroadcast
     // to derive it from the projection itself, a client that only ever observes the WS
     // stream (never having called /api/rooms/open itself) would have no directory to send
     // decisions against.
-    public async Task SendStateAsync(WebSocket socket, RoomProjection projection, string? directoryPath)
+    /// <summary>
+    /// The room-card status for <paramref name="directoryPath"/>, or null when there is no directory
+    /// to probe (#1240).
+    /// </summary>
+    /// <remarks>
+    /// Why a remote client cannot answer this for itself, and why it is therefore sent rather than
+    /// re-derived there, is recorded in <c>docs/design/02-screens.md</c>'s 2026-08-15 amendment. What
+    /// this method adds is only that it goes through <see cref="RoomCardViewModel.DeriveStatus"/> —
+    /// the one derivation every surface reads (#616/#976), never a second copy.
+    /// <para>
+    /// Null when the directory is unknown, and the sibling is then omitted rather than defaulted.
+    /// <c>DeriveStatus</c>'s <c>isFlowLockHeld</c> is deliberately not defaultable for the same
+    /// reason: a caller that cannot answer must not invent one. An absent sibling means "unknown",
+    /// which a client renders as no card — never as Finished.
+    /// </para>
+    /// </remarks>
+    internal static (string StatusText, RoomCardStatus Status)? DeriveRoomCardStatus(
+        RoomProjection projection, string? directoryPath)
+    {
+        if (string.IsNullOrEmpty(directoryPath))
+        {
+            return null;
+        }
+
+        return RoomCardViewModel.DeriveStatus(
+            projection, projection.PendingPermission, ConcurrencyGuard.IsHeld(directoryPath));
+    }
+
+    /// <param name="derivedStatus">
+    /// #1240: taken ONCE per broadcast by <see cref="BroadcastStateAsync"/> and shared across its
+    /// sockets, so two clients in one fan-out cannot receive two different answers about the same
+    /// room — the "two probes a few statements apart" defect <c>RoomClient.RefreshRoomStoppedCard</c>
+    /// records fixing on the desktop. Null means "not taken yet"; this method then takes its own
+    /// single reading, which is what the one direct caller (the connect-time state send) wants.
+    /// </param>
+    public async Task SendStateAsync(
+        WebSocket socket,
+        RoomProjection projection,
+        string? directoryPath,
+        (string StatusText, RoomCardStatus Status)? derivedStatus = null)
     {
         var options = DaemonSerializerOptions.WebSocket;
         var node = JsonSerializer.SerializeToNode(projection, options)!.AsObject();
@@ -86,6 +126,17 @@ internal sealed class DaemonBroadcast
 
         if (!string.IsNullOrEmpty(directoryPath))
         {
+            // Both halves, mirroring RoomFleetItem's contract: the text register carries wording no
+            // client can reconstruct without copying FormatExhaustedRoomStatus ("Out of plan —
+            // resumes …") into its own language, and the enum is what a client switches on. Sending
+            // only the enum would guarantee the next status line on a client re-derives the words.
+            var derived = derivedStatus ?? DeriveRoomCardStatus(projection, directoryPath);
+            if (derived is { } status)
+            {
+                node["RoomCardStatus"] = status.Status.ToString();
+                node["RoomCardStatusText"] = status.StatusText;
+            }
+
             // M24 mobile chat UI follow-up (issue #262): lets a client that only observes
             // this push (never having called /api/sessions/start itself — e.g. a phone
             // whose _openDirectoryPath was seeded from another client's push, or picked
@@ -150,11 +201,13 @@ internal sealed class DaemonBroadcast
     public async Task BroadcastStateAsync(RoomProjection projection, string? directoryPath)
     {
         var activeSockets = _webSockets.Where(s => s.State == WebSocketState.Open).ToList();
+        // One reading, shared by every socket in this fan-out — see SendStateAsync's derivedStatus.
+        var derivedStatus = DeriveRoomCardStatus(projection, directoryPath);
         foreach (var socket in activeSockets)
         {
             try
             {
-                await SendStateAsync(socket, projection, directoryPath);
+                await SendStateAsync(socket, projection, directoryPath, derivedStatus);
             }
             catch
             {
