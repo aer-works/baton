@@ -10,6 +10,7 @@ using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;
+using Aer.Tests.Shared;
 using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Microsoft.Extensions.DependencyInjection;
@@ -1437,5 +1438,78 @@ public class DaemonIntegrationTests : IAsyncLifetime
         Assert.Equal(8, status.MachineTurnsPerHourCap);
         Assert.True(status.IsDormant);
         Assert.Equal("3 consecutive uncommitted turns tripped the breaker", status.DormancyEscalationDetail);
+    }
+
+    /// <summary>
+    /// #1229. Looking a session up by id scans EVERY room under the rooms root and parses each one's
+    /// room.json, so before this fix one unreadable room anywhere made that lookup answer 500 for a
+    /// session that was itself perfectly healthy — the caller was told its own session had failed.
+    /// </summary>
+    /// <remarks>
+    /// The flake this came from is the transient form of the same bug: on Windows CI a room being
+    /// written (or deleted) by a concurrently-running test outlasted LoadMetadataAsync's retry, and
+    /// the poll for an unrelated session got a bodyless 500 on its third iteration. A permanently
+    /// corrupt room.json is that same failure made deterministic — the retry cannot rescue it either
+    /// way, and the scan must not care.
+    /// </remarks>
+    [Fact]
+    public async Task LookingUpASessionSurvivesAnUnreadableRoomBesideIt()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var sessionId = "healthy-" + Guid.NewGuid().ToString("N");
+
+        var healthyRoom = Path.Combine(AerPaths.Rooms, "healthy-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(healthyRoom, ".aer"));
+        await InteractiveSessionMaterializer.SaveMetadataAsync(
+            new SessionMetadata(
+                SessionId: sessionId,
+                RoomDirectoryPath: healthyRoom,
+                CurrentAdapter: "claude",
+                CurrentVendorSessionId: null,
+                Model: null,
+                WorkingDirectory: null,
+                TurnCount: 0,
+                SafetyCeiling: 200,
+                CreatedAt: DateTimeOffset.UtcNow,
+                UpdatedAt: DateTimeOffset.UtcNow,
+                Turns: []),
+            Path.Combine(healthyRoom, ".aer", AerPaths.RoomMetadataFileName),
+            cancellationToken);
+
+        // Permanently unparseable, so LoadMetadataAsync's retry exhausts and throws rather than
+        // eventually succeeding — the same exception the transient case delivers, minus the timing.
+        var corruptRoom = Path.Combine(AerPaths.Rooms, "corrupt-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(corruptRoom, ".aer"));
+        await File.WriteAllTextAsync(
+            Path.Combine(corruptRoom, ".aer", AerPaths.RoomMetadataFileName), "{ this is not json",
+            cancellationToken);
+
+        try
+        {
+            var response = await _client.GetAsync($"{_baseUrl}/api/sessions/{sessionId}", cancellationToken);
+
+            Assert.True(response.IsSuccessStatusCode,
+                $"the healthy session answered {(int)response.StatusCode} — "
+                + await response.Content.ReadAsStringAsync(cancellationToken));
+            var metadata = await response.Content.ReadFromJsonAsync<SessionMetadata>(cancellationToken: cancellationToken);
+            Assert.NotNull(metadata);
+            Assert.Equal(sessionId, metadata.SessionId);
+
+            // And the list endpoint, which scans the same way: the corrupt room is skipped, not
+            // allowed to empty the whole list.
+            var listResponse = await _client.GetAsync($"{_baseUrl}/api/sessions", cancellationToken);
+            Assert.True(listResponse.IsSuccessStatusCode,
+                $"the session list answered {(int)listResponse.StatusCode}");
+            var list = await listResponse.Content.ReadFromJsonAsync<List<SessionMetadata>>(cancellationToken: cancellationToken);
+            Assert.NotNull(list);
+            Assert.Contains(list, s => s.SessionId == sessionId);
+        }
+        finally
+        {
+            // Both rooms sit under the shared rooms root, so they are cleaned up rather than left to
+            // widen the very scan this test is about for every later test in the assembly.
+            DirectoryCleanup.DeleteRecursively(healthyRoom);
+            DirectoryCleanup.DeleteRecursively(corruptRoom);
+        }
     }
 }

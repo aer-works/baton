@@ -1732,8 +1732,17 @@ namespace Aer.Daemon
                     var metadataPath = Path.Combine(dir, ".aer", AerPaths.RoomMetadataFileName);
                     if (File.Exists(metadataPath))
                     {
-                        var meta = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath);
-                        if (meta != null) list.Add(meta);
+                        try
+                        {
+                            var meta = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath);
+                            if (meta != null) list.Add(meta);
+                        }
+                        catch (Exception ex)
+                        {
+                            // #1229, same rule as the by-id scan above and /api/rooms: one unreadable
+                            // room is skipped rather than emptying the whole list.
+                            Console.Error.WriteLine($"Error reading session metadata for '{dir}': {ex}");
+                        }
                     }
                 }
 
@@ -2053,7 +2062,25 @@ namespace Aer.Daemon
                     continue;
                 }
 
-                var metadata = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath).ConfigureAwait(true);
+                SessionMetadata? metadata;
+                try
+                {
+                    metadata = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath).ConfigureAwait(true);
+                }
+                catch (Exception ex)
+                {
+                    // #1229: this scan reads EVERY room to find ONE session, so without this a single
+                    // unreadable room — corrupt json, or a directory deleted between the File.Exists
+                    // above and the open — threw out of the whole lookup and answered 500 for a
+                    // session that was perfectly healthy. LoadMetadataAsync already retries the
+                    // transient shapes (see its RetryOnSharingViolationAsync); what reaches here has
+                    // outlasted that, so it is that room's problem and not this session's.
+                    // Same rule /api/rooms already applies to the fleet: one bad item must not hide
+                    // every other room.
+                    Console.Error.WriteLine($"Error reading session metadata for '{dir}': {ex}");
+                    continue;
+                }
+
                 if (metadata != null && metadata.SessionId == sessionId)
                 {
                     return (dir, metadata);
