@@ -1150,6 +1150,98 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
     }
 
     /// <summary>
+    /// #1251: a revoke that actually withdrew a standing permission is journaled — the room's own
+    /// record can now answer "when did this worker stop being allowed to run shell commands, and
+    /// who took it away?", which #1251 measured that nothing previously could. A repeat revoke that
+    /// resolves to <c>NothingToRevoke</c> must NOT add a second entry: nothing was actually taken
+    /// back the second time, and journaling it would record a withdrawal that never happened.
+    /// </summary>
+    [Fact]
+    public async Task RevokePermission_ThatActuallyWithdraws_IsJournaled_AndARepeatRevokeIsNot()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var roomDir = Path.Combine(Path.GetTempPath(), $"daemon-revoke-journal-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(roomDir);
+            try
+            {
+                var bindingsPath = Path.Combine(roomDir, "bindings.json");
+                await WorkerBindingConfigWriter.SaveToFileAsync(
+                    new Dictionary<string, WorkerBindingConfigEntry>
+                    {
+                        [InteractiveSessionMaterializer.DefaultWorkerName] = new(
+                            "claude",
+                            new WorkerContract(InteractiveSessionMaterializer.DefaultWorkerName, [], [], []),
+                            "Chat.",
+                            TimeSpan.FromMinutes(5),
+                            PermissionGrant: new PermissionGrant(RunShellCommands: true)),
+                    },
+                    bindingsPath,
+                    TestContext.Current.CancellationToken);
+
+                var revoked = await client.PostAsJsonAsync(
+                    $"{baseUrl}/api/rooms/permissions/revoke",
+                    new { directoryPath = roomDir, revokeKind = PermissionRevokeKind.RoomShell },
+                    TestContext.Current.CancellationToken);
+                Assert.True(revoked.IsSuccessStatusCode, await revoked.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+                var again = await client.PostAsJsonAsync(
+                    $"{baseUrl}/api/rooms/permissions/revoke",
+                    new { directoryPath = roomDir, revokeKind = PermissionRevokeKind.RoomShell },
+                    TestContext.Current.CancellationToken);
+                Assert.True(again.IsSuccessStatusCode);
+                Assert.Contains(
+                    nameof(PermissionRevokeOutcome.NothingToRevoke),
+                    await again.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+                var roomLogPath = Path.Combine(roomDir, "room.jsonl");
+                var events = await new RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+                var revokedEvents = events.OfType<RoomEvent.StandingPermissionRevoked>().ToList();
+
+                var entry = Assert.Single(revokedEvents);
+                Assert.Equal(InteractiveSessionMaterializer.DefaultWorkerName, entry.WorkerName);
+                Assert.Equal(PermissionRevokeKind.RoomShell, entry.RevokeKind);
+                Assert.Null(entry.ShellCommandPattern);
+                Assert.Equal("human", entry.RevokedBy);
+                Assert.True(entry.RevokedAt > DateTimeOffset.UtcNow.AddMinutes(-1));
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    /// <summary>
     /// #1238's second reader: the sibling writers of a live room's <c>bindings.json</c> each have a
     /// test that holds the room-events lock and pins the refusal; this endpoint did not.
     /// </summary>

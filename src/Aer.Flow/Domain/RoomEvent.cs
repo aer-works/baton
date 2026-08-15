@@ -20,6 +20,7 @@ namespace Aer.Flow.Domain;
 [JsonDerivedType(typeof(RuntimePermissionAnswered), "runtimePermissionAnswered")]
 [JsonDerivedType(typeof(RuntimePermissionRevoked), "runtimePermissionRevoked")]
 [JsonDerivedType(typeof(WorkflowSwitched), "workflowSwitched")]
+[JsonDerivedType(typeof(StandingPermissionRevoked), "standingPermissionRevoked")]
 public abstract record RoomEvent
 {
     private RoomEvent()
@@ -124,6 +125,25 @@ public abstract record RoomEvent
     public sealed record RuntimePermissionRevoked(
         string PermissionRequestId,
         string Reason,
+        DateTimeOffset RevokedAt) : RoomEvent;
+
+    /// <summary>
+    /// Records that a worker's standing permission (0055's object — a durable grant living in
+    /// <c>bindings.json</c>, not an in-flight ask) was withdrawn (#1251). Deliberately a different
+    /// family from <see cref="RuntimePermissionRevoked"/> above, which fires when a *pending ask*
+    /// is revoked or times out — reusing that noun for a standing withdrawal would put two meanings
+    /// on one event, which 0002 forbids.
+    /// <para>
+    /// Revoke-only: granting a standing permission is already journaled indirectly, by the decision
+    /// that produced it (<see cref="RuntimePermissionAnswered"/>) — a second grant event here would
+    /// restate that fact rather than record a new one.
+    /// </para>
+    /// </summary>
+    public sealed record StandingPermissionRevoked(
+        string WorkerName,
+        string RevokeKind,
+        string? ShellCommandPattern,
+        string RevokedBy,
         DateTimeOffset RevokedAt) : RoomEvent;
 
     /// <summary>

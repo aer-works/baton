@@ -41,6 +41,10 @@ public class RoomEventLogJsonTests
         // value of IsOn would pass with the bool dropped entirely.
         new RoomEvent.WorkflowSwitched(false, "operator", FixedInstant),
         new RoomEvent.WorkflowSwitched(true, "operator", FixedInstant),
+        // Both polarities of the optional ShellCommandPattern: RoomShell carries none, CommandInRoom
+        // always carries one — a round trip that dropped it silently would still pass with only one.
+        new RoomEvent.StandingPermissionRevoked("w-1", "RoomShell", null, "human", FixedInstant),
+        new RoomEvent.StandingPermissionRevoked("w-1", "CommandInRoom", "git status", "human", FixedInstant),
     ];
 
 

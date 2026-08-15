@@ -1388,6 +1388,26 @@ namespace Aer.Daemon
                         revokeWorkerName,
                         request.RevokeKind,
                         request.ShellCommandPattern).ConfigureAwait(false);
+
+                    // #1251: journaled under the SAME lock hold as the bindings write above, not a
+                    // fresh acquire — see RoomMutationInterface.RecordStandingPermissionRevokedAsync's
+                    // remarks for why nesting a second acquire here would fail rather than wait. Only
+                    // on an actual withdrawal: NothingToRevoke and CouldNotPersist changed nothing, and
+                    // journaling either would record a withdrawal that never happened.
+                    if (revokeOutcome == PermissionRevokeOutcome.Revoked)
+                    {
+                        var revokeRoomLogFile = Path.Combine(request.DirectoryPath, "room.jsonl");
+                        var revokeRoomReader = new RoomEventLogReader(revokeRoomLogFile);
+                        await using var revokeRoomWriter = new RoomEventLogWriter(revokeRoomLogFile);
+                        await RoomMutationInterface.RecordStandingPermissionRevokedAsync(
+                            request.DirectoryPath,
+                            revokeRoomReader,
+                            revokeRoomWriter,
+                            revokeWorkerName,
+                            request.RevokeKind,
+                            request.ShellCommandPattern,
+                            "human").ConfigureAwait(false);
+                    }
                 }
                 catch (WorkflowLockedException ex)
                 {
