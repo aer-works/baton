@@ -52,6 +52,19 @@ public static class WorkerBindingConfigWriter
     /// creating parent directories as needed — the same shape as
     /// <c>Aer.Flow.Templates.WorkflowDefinitionWriter.SaveToFileAsync</c>.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Atomic, per 0057 rule 1</b>, and not merely for tidiness — that record's Context is where
+    /// the failure a truncate-then-write leaves behind is set out, and why the room-events lock the
+    /// daemon's writers take does not cover it.
+    /// </para>
+    /// <para>
+    /// The staging name is unique per call, so two writers racing the same target cannot land in each
+    /// other's temp file — the same reasoning <c>MaterializeRoomBindings</c> states for its own copy.
+    /// The lock is still what stops those two writers losing each other's <em>updates</em>; that is a
+    /// different question from this one, and 0057 keeps them apart deliberately.
+    /// </para>
+    /// </remarks>
     /// <exception cref="WorkerBindingConfigException">
     /// <paramref name="config"/> fails to round-trip through the parser; nothing is written.
     /// </exception>
@@ -68,6 +81,55 @@ public static class WorkerBindingConfigWriter
             Directory.CreateDirectory(directory);
         }
 
-        await File.WriteAllTextAsync(bindingsFilePath, json, cancellationToken).ConfigureAwait(false);
+        var staging = bindingsFilePath + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await File.WriteAllTextAsync(staging, json, cancellationToken).ConfigureAwait(false);
+            await ReplaceWithRetryAsync(staging, bindingsFilePath, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // A staging file that survives means the move never happened, so the target is whatever
+            // it already was — which is the outcome this method promises on failure. Swallowed
+            // narrowly: failing to clean up a temp file must not turn a successful write into an
+            // exception, and must not mask the real one on the failure path.
+            if (File.Exists(staging))
+            {
+                try { File.Delete(staging); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Replaces <paramref name="target"/> with <paramref name="staging"/>, retrying briefly while a
+    /// reader holds the target open.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What is being retried, why it only bites on Windows, and why absorbing it here is the right
+    /// end of the trade are all in 0057's Consequences, measured. This absorbs it.
+    /// </para>
+    /// <para>
+    /// Bounded, not indefinite, for the same reason <c>ConcurrencyGuard.AcquireWithin</c> is: a
+    /// contending reader opens, reads a few kilobytes and closes, so a budget this size covers a
+    /// routine overlap without hiding a holder that is genuinely stuck.
+    /// </para>
+    /// </remarks>
+    private static async Task ReplaceWithRetryAsync(string staging, string target, CancellationToken cancellationToken)
+    {
+        const int attempts = 20;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(staging, target, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < attempts)
+            {
+                // wait-ok: yielding to a reader that closes in microseconds; the ceiling is the loop's
+                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 }

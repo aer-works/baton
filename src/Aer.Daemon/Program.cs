@@ -1276,19 +1276,17 @@ namespace Aer.Daemon
                 StandingPermissionReadResult readResult;
                 try
                 {
-                    // A read still takes the guard, because the write it races is not atomic:
-                    // WorkerBindingConfigWriter.SaveToFileAsync goes through File.WriteAllTextAsync,
-                    // which truncates before it writes. Unguarded, this route can observe a half-written
-                    // bindings.json and answer "grants nothing" about a room that grants the shell —
-                    // the one wrong answer a permission inspector must never give. Not being a mutation
-                    // is what makes a lock look unnecessary; not being a mutation is not what makes a
-                    // read consistent.
+                    // A read still takes the guard, but NOT for the reason this comment first gave.
+                    // It said the write it races truncates; since 0057 rule 1 (#1264) every write
+                    // stages and File.Moves, so no reader can see a partial file and the torn-read
+                    // argument is gone.
                     //
-                    // The guard is needed against the writers that TRUNCATE, and those all take it.
-                    // MaterializeRoomBindings does not, and does not need to: it stages to a temp file
-                    // and File.Moves it over, so a reader sees the old file or the new one and never a
-                    // half of either. What the guard cannot cover is a writer that neither takes it nor
-                    // writes atomically — #1257 records the one of those, outside this process.
+                    // What survives is narrower and platform-specific: File.ReadAllText opens without
+                    // FILE_SHARE_DELETE, so on Windows an atomic replace landing while this route holds
+                    // a read handle fails the replace with a sharing violation. Taking the guard keeps
+                    // the daemon's reads and its writes from ever overlapping, so the replace never
+                    // meets a reading handle. A read that failed a writer would be a worse bargain than
+                    // a read that waits.
                     using var readGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
                         directoryPath, TimeSpan.FromSeconds(2), "standing permission read");
                     readResult = await RuntimePermissionGrantAmender.GetStandingPermissionsAsync(

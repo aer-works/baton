@@ -150,4 +150,92 @@ public class WorkerBindingConfigWriterTests
         Assert.Contains("\n", json);
         Assert.Equal(2, WorkerBindingConfigParser.Parse(json).Count);
     }
+
+    /// <summary>
+    /// 0057 rule 1 (#1264): a reader racing a write sees one whole register or another, never a
+    /// half. What this pins is the atomicity property; the crash case that makes it matter — a
+    /// process killed mid-write, which no lock covers — is not reproducible in-process, so this
+    /// stands in for it rather than covering it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Parses what it reads rather than measuring bytes: the claim is about what a *consumer* sees,
+    /// and a truncated file is only a defect because it fails to parse. A length assertion would pass
+    /// against a write that landed valid JSON in two visible steps.
+    /// </para>
+    /// <para>
+    /// <b>It goes red against a truncate-write on both platforms, for two different reasons</b>, and
+    /// the difference is the reason 0057's retry exists. On POSIX a reader does not block a writer, so
+    /// the reader genuinely observes a truncated file and the parse fails — the defect, directly. On
+    /// Windows the reader's handle makes the writer's own open fail with a sharing violation, so the
+    /// truncate-write never gets far enough to tear anything and the test reddens on the write
+    /// instead. Same verdict, different mechanism; claiming one red proof for both would be claiming
+    /// more than was measured.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task A_reader_racing_a_write_never_catches_a_half_written_register()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"bindings-atomic-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "bindings.json");
+
+        try
+        {
+            await WorkerBindingConfigWriter.SaveToFileAsync(TwoWorkerConfig(), path, TestContext.Current.CancellationToken);
+
+            var torn = 0;
+            var reads = 0;
+            using var stop = new CancellationTokenSource();
+
+            var reader = Task.Run(
+                () =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    string json;
+                    try
+                    {
+                        json = File.ReadAllText(path);
+                    }
+                    catch (IOException)
+                    {
+                        // The window this test exists to measure is a reader seeing WRONG CONTENT.
+                        // Not being able to open the file at all during a replace is the sharing
+                        // behaviour the daemon's read guard exists for (0057's Consequences) — a
+                        // different fact, and not this one's to fail on.
+                        continue;
+                    }
+
+                    reads++;
+                    try
+                    {
+                        WorkerBindingConfigParser.Parse(json);
+                    }
+                    catch (WorkerBindingConfigException)
+                    {
+                        Interlocked.Increment(ref torn);
+                    }
+                }
+            },
+                TestContext.Current.CancellationToken);
+
+            for (var i = 0; i < 60; i++)
+            {
+                await WorkerBindingConfigWriter.SaveToFileAsync(TwoWorkerConfig(), path, TestContext.Current.CancellationToken);
+            }
+
+            await stop.CancelAsync();
+            await reader;
+
+            // The premise, asserted rather than assumed: a reader that never got a look at the file
+            // would report zero torn reads whatever the writer did.
+            Assert.True(reads > 0, "the reader never observed the file, so it discriminates nothing");
+            Assert.Equal(0, torn);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
 }
