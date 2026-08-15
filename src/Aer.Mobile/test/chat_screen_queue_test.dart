@@ -299,4 +299,20 @@ void main() {
       expect(client.sentMessages.contains('Queued message 1'), isTrue);
     });
   });
+
+  /// #1236: the header of a session room — the arm that regressed. What it used to read and why that
+  /// was wrong is recorded on `ChatScreen`'s AppBar title.
+  group('The phone room header, for a session room (#1236)', () {
+    testWidgets('names the room rather than the engine\'s turn count', (tester) async {
+      final client = await pumpChatScreen(tester);
+      client.turnCount = 4;
+      client.push(projection());
+      await tester.pumpAndSettle();
+
+      expect(find.descendant(of: find.byType(AppBar), matching: find.text('foo')), findsOneWidget);
+      expect(find.textContaining('turn 4'), findsNothing);
+      // The adapter did not disappear — it moved out of the room's name and beside it.
+      expect(find.descendant(of: find.byType(AppBar), matching: find.text('claude')), findsOneWidget);
+    });
+  });
 }

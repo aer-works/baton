@@ -226,4 +226,96 @@ void main() {
       expect(client.cancelRunCallCount, 1);
     });
   });
+
+  /// #1236: `02-screens.md:370` draws the phone room header as `‹ aer-flow    claude + agy` — the
+  /// room's name and its workers, and neither a Shape control nor a Workflow switch.
+  group('The phone room header (#1236)', () {
+    testWidgets('names the room, and its workers beside it', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+
+      // The name is there before any projection arrives: it comes from the room you tapped, not from
+      // something that has to be fetched first.
+      expect(find.text('foo'), findsOneWidget);
+
+      client.push(workflowProjection());
+      await tester.pumpAndSettle();
+
+      expect(find.text('foo'), findsOneWidget);
+      expect(find.descendant(of: find.byType(AppBar), matching: find.text('claude')), findsOneWidget);
+    });
+
+    testWidgets('two workers read as the corpus writes them', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+
+      client.push(RoomProjection(
+        directoryPath: '/tasks/foo',
+        sessionId: null,
+        workflowTemplateId: 'draft-review',
+        status: 'Paused',
+        stepDefinitions: [StepDefinition(stepId: 'review', worker: 'critic', supersedeTargets: const ['draft'])],
+        steps: [WorkflowStepState(stepId: 'review', status: 'Paused', latestExecutionId: 'exec-1')],
+        executions: [ExecutionArtifacts(executionId: 'exec-1', worker: 'critic', outputFiles: const ['review.md'])],
+        // Three workers, two adapters, one of them twice — the label is the distinct adapters, in
+        // first-appearance order, so it neither repeats nor reshuffles between refreshes.
+        workerAdapters: const {'drafter': 'claude', 'critic': 'agy', 'editor': 'claude'},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.descendant(of: find.byType(AppBar), matching: find.text('claude + agy')), findsOneWidget);
+    });
+
+    testWidgets('a long name and a long worker label degrade rather than overflow', (tester) async {
+      // Found by the second reader: only the name was Flexible, so with `actions` taking part of the
+      // row the worker label had nothing to shrink into and Flutter painted overflow stripes. A
+      // narrow screen with a long name is the same squeeze a third vendor or a large system font
+      // would produce. An overflow makes the test fail on its own — Flutter reports it as an error.
+      tester.view.physicalSize = const Size(320, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final client = _FakeDaemonClient();
+      await tester.pumpWidget(MaterialApp(
+        home: ChatScreen(client: client, sessionId: null, directoryPath: '/tasks/a-room-with-a-genuinely-long-name'),
+      ));
+      await tester.pumpAndSettle();
+
+      client.push(RoomProjection(
+        directoryPath: '/tasks/a-room-with-a-genuinely-long-name',
+        sessionId: null,
+        workflowTemplateId: 'draft-review',
+        status: 'Paused',
+        stepDefinitions: const [],
+        steps: const [],
+        executions: const [],
+        workerAdapters: const {'a': 'claude', 'b': 'agy', 'c': 'some-third-vendor-with-a-long-name'},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a room whose workers are not known yet shows a name and no separator', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+
+      client.push(RoomProjection(
+        directoryPath: '/tasks/foo',
+        sessionId: null,
+        workflowTemplateId: 'draft-review',
+        status: 'Paused',
+        stepDefinitions: const [],
+        steps: const [],
+        executions: const [],
+        workerAdapters: const {},
+      ));
+      await tester.pumpAndSettle();
+
+      // Exactly one Text in the title itself: the name. A helper that joined an empty list would
+      // render a second, empty one beside it — which no assertion on the visible characters can see.
+      // Scoped to the title Row rather than the whole AppBar, so the mode indicator in `bottom:`
+      // cannot make this pass or fail for a reason that has nothing to do with the header's workers.
+      final titleRow = find.descendant(of: find.byType(AppBar), matching: find.byType(Row));
+      expect(find.descendant(of: titleRow, matching: find.byType(Text)), findsOneWidget);
+      expect(find.text('foo'), findsOneWidget);
+    });
+  });
 }

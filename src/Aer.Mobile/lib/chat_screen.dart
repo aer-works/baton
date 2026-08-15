@@ -804,16 +804,64 @@ class _ChatScreenState extends State<ChatScreen> {
     return messages;
   }
 
+  /// The room's own name — the last segment of its directory, the same friendly name the rooms list
+  /// shows, so the room you tapped is the room the header names.
+  String get _roomName => widget.directoryPath.split(RegExp(r'[\\/]')).last;
+
+  /// The workers this room runs, as `02-screens.md:370` writes them — `claude + agy`. Distinct
+  /// adapters in first-appearance order, so the label is stable across refreshes rather than
+  /// reordering under the reader.
+  ///
+  /// A workflow room reads them from the projection's worker-to-adapter map; a session room has the
+  /// one adapter it is talking to. Null when neither is known yet — an empty separator is worse than
+  /// no chips.
+  String? _workerChipLabel(SessionMetadata? metadata) {
+    if (_isSessionRoom) {
+      final adapter = metadata?.currentAdapter;
+      return (adapter == null || adapter.isEmpty) ? null : adapter;
+    }
+
+    final adapters = <String>[];
+    for (final adapter in _projection?.workerAdapters.values ?? const <String>[]) {
+      if (adapter.isNotEmpty && !adapters.contains(adapter)) adapters.add(adapter);
+    }
+    return adapters.isEmpty ? null : adapters.join(' + ');
+  }
+
   @override
   Widget build(BuildContext context) {
     final metadata = _metadata;
-    final title = metadata == null
-        ? widget.directoryPath.split(RegExp(r'[\\/]')).last
-        : '${metadata.currentAdapter} — turn ${metadata.turnCount}';
+    final workers = _workerChipLabel(metadata);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(title),
+        // #1236: the room's name, in both kinds of room, with its workers beside it —
+        // `02-screens.md:370` draws `‹ aer-flow    claude + agy`. A session room used to read
+        // "claude — turn 4": the adapter and a turn counter, which is the engine's business, so you
+        // could not tell which room you were in from inside it. Same defect slice 4 fixed on the
+        // desktop, one platform over.
+        title: Row(
+          children: [
+            Flexible(child: Text(_roomName, overflow: TextOverflow.ellipsis)),
+            if (workers != null) ...[
+              const SizedBox(width: 12),
+              // Flexible too, not just the name: `actions` eats into this row's width, so with the
+              // name already squeezed to nothing a non-flexible label has no room left to shrink
+              // into and Flutter renders overflow stripes rather than clipping. Short today because
+              // there are two vendors, but a third one or a large system font size is all it takes.
+              Flexible(
+                child: Text(
+                  workers,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
+            ],
+          ],
+        ),
         // Persistent mode indicator (#286): mode buttons live in the Commands & mode bottom sheet,
         // but the currently active mode was previously invisible until you reopened that sheet.
         bottom: _currentMode == null
