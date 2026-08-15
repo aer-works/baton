@@ -18,6 +18,36 @@ namespace Aer.Adapters;
 public static class RuntimePermissionGrantAmender
 {
     /// <summary>
+    /// Reads the standing <see cref="PermissionGrant"/> for <paramref name="workerName"/> in
+    /// <paramref name="roomDirectoryPath"/>'s <c>bindings.json</c>, using the same
+    /// <see cref="WorkerBindingConfigParser"/> that <see cref="AmendAsync"/> and <see cref="RevokeAsync"/> use.
+    /// </summary>
+    public static async Task<StandingPermissionReadResult> GetStandingPermissionsAsync(
+        string roomDirectoryPath,
+        string workerName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentException.ThrowIfNullOrEmpty(workerName);
+
+        var bindingsFilePath = AerPaths.RoomBindingsFile(roomDirectoryPath);
+        if (!File.Exists(bindingsFilePath))
+        {
+            return StandingPermissionReadResult.NoWorkerSetup();
+        }
+
+        var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsFilePath, cancellationToken)
+            .ConfigureAwait(false);
+        if (!bindings.TryGetValue(workerName, out var entry))
+        {
+            return StandingPermissionReadResult.WorkerNotConfigured();
+        }
+
+        var grant = entry.PermissionGrant ?? new PermissionGrant();
+        return StandingPermissionReadResult.Configured(grant);
+    }
+
+    /// <summary>
     /// Amends the named worker's <see cref="PermissionGrant"/> in <paramref name="roomDirectoryPath"/>'s
     /// <c>bindings.json</c> for <paramref name="decisionKind"/>, per 0022's rung mapping. The
     /// <see cref="PermissionAmendOutcome"/> distinguishes a real persist from a benign no-op and from a

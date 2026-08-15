@@ -1254,6 +1254,53 @@ namespace Aer.Daemon
                 return Results.Ok();
             });
 
+            // #1249: the other half of 0022's obligation 2, and the half the revoke route above cannot
+            // be offered without — a surface cannot let someone withdraw a pattern it has no way to
+            // name back to them.
+            app.MapGet("/api/rooms/permissions", async (string directoryPath, string? workerName, RoomClient session) =>
+            {
+                if (string.IsNullOrEmpty(directoryPath)) return Results.BadRequest("DirectoryPath is required.");
+
+                var targetWorkerName = string.IsNullOrEmpty(workerName)
+                    ? InteractiveSessionMaterializer.DefaultWorkerName
+                    : workerName;
+
+                // A room with no bindings file is answered without touching the disk, deliberately and
+                // before the guard: acquiring a room-events lock CREATES the room directory and a lock
+                // file, and a GET that materialises the room it was asked about is not a read.
+                if (!File.Exists(AerPaths.RoomBindingsFile(directoryPath)))
+                {
+                    return Results.Ok(RoomPermissionsResponse.From(StandingPermissionReadResult.NoWorkerSetup()));
+                }
+
+                StandingPermissionReadResult readResult;
+                try
+                {
+                    // A read still takes the guard, because the write it races is not atomic:
+                    // WorkerBindingConfigWriter.SaveToFileAsync goes through File.WriteAllTextAsync,
+                    // which truncates before it writes. Unguarded, this route can observe a half-written
+                    // bindings.json and answer "grants nothing" about a room that grants the shell —
+                    // the one wrong answer a permission inspector must never give. Not being a mutation
+                    // is what makes a lock look unnecessary; not being a mutation is not what makes a
+                    // read consistent.
+                    using var readGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
+                        directoryPath, TimeSpan.FromSeconds(2), "standing permission read");
+                    readResult = await RuntimePermissionGrantAmender.GetStandingPermissionsAsync(
+                        directoryPath, targetWorkerName).ConfigureAwait(false);
+                }
+                catch (WorkflowLockedException ex)
+                {
+                    // The budget covers a routine overlap — every holder of this lock releases in
+                    // milliseconds — so reaching here means something is genuinely stuck. Saying so
+                    // beats answering with a list that may be a torn file's contents.
+                    return Results.Problem(
+                        $"Could not read this room's standing permissions: the room was busy ({ex.Message}). Try again.",
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+
+                return Results.Ok(RoomPermissionsResponse.From(readResult));
+            });
+
             // #1238: the way back, and what it costs a person not to have one is stated on
             // RuntimePermissionGrantAmender.RevokeAsync, which this reaches.
             //
@@ -3611,5 +3658,48 @@ namespace Aer.Daemon
         string RevokeKind,
         string? ShellCommandPattern = null,
         string? WorkerName = null);
+
+    /// <summary>
+    /// #1249: response shape for <c>GET /api/rooms/permissions</c> — what the room's ladder answers have
+    /// left standing for one worker, which is a different fact from <c>RoomProjection.PermissionAnswers</c>
+    /// (what was decided once, not what is in force now).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Standing refusals are here on purpose.</b> #1238 deliberately gives them no revoke kind, and it
+    /// would be easy to read that as a reason to leave them out. It is not: <i>"you cannot take this back
+    /// here"</i> and <i>"this does not exist"</i> are different sentences, and a list that quietly omitted
+    /// the refusals would let someone conclude the second about a room where the first is true.
+    /// </para>
+    /// <para>
+    /// <b>The grant's other three categories are absent on purpose too</b>, and not because they are
+    /// uninteresting. Reporting them beside a granted shell would be a false statement rather than a
+    /// partial one — <see cref="PermissionGrant.IncoherentWithholdings"/> is the record of why a
+    /// withheld category is not actually withheld once the shell is granted. Adding them here needs that
+    /// coherence expressed alongside them, not the bare booleans.
+    /// </para>
+    /// <para>
+    /// <see cref="Outcome"/> is the read's own result, never a room status: a room with no worker set up
+    /// is not a room that grants nothing, and the three-way answer is what keeps a caller from collapsing
+    /// them.
+    /// </para>
+    /// </remarks>
+    public record RoomPermissionsResponse(
+        string Outcome,
+        bool RunShellCommands,
+        IReadOnlyList<string> ShellCommandPatterns,
+        IReadOnlyList<string> DeniedShellCommandPatterns)
+    {
+        /// <summary>Projects a read result onto the wire, treating an absent grant as one that holds nothing.</summary>
+        public static RoomPermissionsResponse From(StandingPermissionReadResult result)
+        {
+            var grant = result.Grant ?? new PermissionGrant();
+            return new RoomPermissionsResponse(
+                result.Outcome.ToString(),
+                grant.RunShellCommands,
+                grant.ShellCommandPatterns ?? [],
+                grant.DeniedShellCommandPatterns ?? []);
+        }
+    }
 }
 
