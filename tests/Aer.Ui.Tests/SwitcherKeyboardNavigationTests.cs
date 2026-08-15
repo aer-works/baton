@@ -1,6 +1,7 @@
 using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
@@ -68,5 +69,35 @@ public class SwitcherKeyboardNavigationTests
 
         Assert.Equal(b.RoomDirectoryPath, (list.SelectedItem as RoomFleetItemViewModel)?.RoomDirectoryPath);
         Assert.Equal(b.RoomDirectoryPath, window.ViewModel.Rooms.CurrentItem?.RoomDirectoryPath);
+    }
+
+    /// <summary>
+    /// Second-reader finding on #1279 (PR #1280) — see
+    /// <see cref="MainWindow"/>'s <c>_hasFocusedSwitcherOnOpen</c> field for why this guard exists.
+    /// </summary>
+    [AvaloniaFact]
+    public void RestoringFromTray_DoesNotStealFocusBackToTheSwitcher()
+    {
+        var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+
+        // The "needs you" toggle rather than ChatInputBox: it's always in the visual tree with no
+        // IsVisible gating (unlike the composer, which lives inside ChatView and needs a room open
+        // to render at all), so it isolates the claim under test — does Opened re-steal focus —
+        // from an unrelated visibility precondition.
+        var toggle = window.FindControl<ToggleButton>("SwitcherNeedsYouToggle");
+        Assert.NotNull(toggle);
+        toggle!.Focus();
+        Dispatcher.UIThread.RunJobs();
+        Assert.True(toggle.IsFocused); // control arm: the move itself worked before the cycle
+
+        window.Hide();
+        Dispatcher.UIThread.RunJobs();
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+
+        var list = window.FindControl<ListBox>("SwitcherList");
+        Assert.False(list!.IsFocused); // the regression this test exists to catch: must not be true
     }
 }

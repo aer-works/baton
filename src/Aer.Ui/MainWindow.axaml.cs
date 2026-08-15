@@ -103,6 +103,17 @@ public partial class MainWindow : Window
     /// <summary>Set once <see cref="OnClosing"/> has already stopped an in-flight pump and is closing the window for real — prevents re-entering the stop sequence from the follow-up programmatic <see cref="Window.Close()"/>.</summary>
     private bool _closeConfirmed;
 
+    /// <summary>
+    /// Set the first time <see cref="Window.Opened"/> gives the switcher its initial focus (#1279).
+    /// Second-reader finding: <see cref="Window.Opened"/> is NOT a one-time construction signal on
+    /// this window — <see cref="OnClosing"/>'s close-to-tray path (<c>Hide()</c>, when a daemon is
+    /// configured) is undone by the "Show Baton" tray menu item calling <c>Show()</c> on this SAME
+    /// instance, and Avalonia refires <see cref="Window.Opened"/> on that Show, not only on the
+    /// very first one. Without this guard, minimizing to tray mid-conversation and restoring would
+    /// silently steal keyboard focus back to the switcher from wherever the person actually was.
+    /// </summary>
+    private bool _hasFocusedSwitcherOnOpen;
+
     /// <summary>Test-only observation of the live-refresh polling state (see <see cref="UpdateLiveRefreshTimer"/>) — never consulted by production code.</summary>
     internal bool IsLiveRefreshTimerEnabled => _liveRefreshTimer.IsEnabled;
 
@@ -561,9 +572,15 @@ public partial class MainWindow : Window
         // #1279: the switcher is the surface a keyboard-only user returns to (docs cited on #268),
         // so it needs SOME entry point that isn't a mouse click. Opened rather than the constructor:
         // a window cannot hold focus before it exists on screen, and Opened is Avalonia's signal
-        // that it now does. Only on first open — a later re-open (room switching, dialog close)
-        // must not steal focus back from wherever the person already is.
-        Opened += (_, _) => SwitcherList.Focus();
+        // that it now does. Guarded to fire only the first time: Opened refires on the close-to-tray
+        // Hide()/Show() cycle (see _hasFocusedSwitcherOnOpen's remarks) — measured, not assumed,
+        // after a second reader flagged it as unverified.
+        Opened += (_, _) =>
+        {
+            if (_hasFocusedSwitcherOnOpen) return;
+            _hasFocusedSwitcherOnOpen = true;
+            SwitcherList.Focus();
+        };
         Closed += (_, _) =>
         {
             _liveRefreshTimer.Stop();

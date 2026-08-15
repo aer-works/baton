@@ -171,11 +171,6 @@
              this app's theme, so neither Tab nor the Opened-time focus below would otherwise reach
              it. Once focused, arrow-key selection and Enter both already work (ListBox's own
              behavior; SelectedItem's binding is what makes selecting a row open it). -->
-        <!-- #1279: Focusable is explicit rather than assumed — measured (headless, with and
-             without a forced extra layout pass) that this ListBox is NOT focusable by default in
-             this app's theme, so neither Tab nor the Opened-time focus below would otherwise reach
-             it. Once focused, arrow-key selection and Enter both already work (ListBox's own
-             behavior; SelectedItem's binding is what makes selecting a row open it). -->
         <ListBox x:Name="SwitcherList" ItemsSource="{Binding Rooms.Items}"
                  SelectedItem="{Binding Rooms.CurrentItem}"
                  Focusable="True"
