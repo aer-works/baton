@@ -114,6 +114,15 @@ public static class WorkerBindingConfigWriter
     /// contending reader opens, reads a few kilobytes and closes, so a budget this size covers a
     /// routine overlap without hiding a holder that is genuinely stuck.
     /// </para>
+    /// <para>
+    /// <b>It retries any I/O failure, not only the contended one</b>, and that is a deliberate
+    /// trade rather than an oversight: a read-only target and a target that is a directory raise the
+    /// same two exception types as a sharing violation, and telling them apart means matching
+    /// platform error codes — brittle, and wrong in the direction that matters if the match ever
+    /// drifts. The cost of the broad filter is that a permanently-failing write takes the full budget
+    /// before surfacing the same exception it would have raised immediately. Paying ~200ms to report
+    /// a broken path is a better bargain than silently not retrying a real one.
+    /// </para>
     /// </remarks>
     private static async Task ReplaceWithRetryAsync(string staging, string target, CancellationToken cancellationToken)
     {

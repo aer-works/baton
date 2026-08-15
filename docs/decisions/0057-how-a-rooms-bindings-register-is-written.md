@@ -44,6 +44,11 @@ classification. This record discharges that obligation.
 **Four rules, and they answer different questions — conflating them is how the guard came to be
 credited with work it cannot do.**
 
+**Stated plainly, because a record that reads as settled fact is how a reader gets misled: only rules
+1 and 2 are built as of this record's date.** Rule 3 is #1262 and rule 4 is #1257, both open, both
+ruled here and neither shipped. Everything below describes what the rules require, not what the tree
+does — check the issues before relying on rule 3 or rule 4 being in force.
+
 **1. The register is written atomically.** `WorkerBindingConfigWriter.SaveToFileAsync` serializes,
 stages to a uniquely-named sibling, and `File.Move`s over the target — the mechanics
 `MaterializeRoomBindings` already carries. This is the floor every reader stands on, including
@@ -107,13 +112,20 @@ revocation that silently un-revokes is the case this rule exists for.
 
 ## Consequences
 
-**Easier.** #1257 and #1262 both close. Every reader of the register — including `aer run` on the
-command line, a future second client, and anything reading after an unclean shutdown — sees one whole
-file or another, with no coordination required and nothing to enlist in. #1249's read guard survives
-but shrinks: its justification is no longer "the write truncates" but the narrower, Windows-specific
-one that `File.ReadAllText` opens without `FILE_SHARE_DELETE`, so an atomic replace overlapping an
-unguarded read raises a sharing violation. **That comment must be rewritten in the change that lands
-rule 1**, or it spends an interval stating a reason that is no longer true.
+**Easier, from rule 1 alone.** Every reader of the register — including `aer run` on the command
+line, a future second client, and anything reading after an unclean shutdown — sees one whole file or
+another, with no coordination required and nothing to enlist in. #1257 and #1262 are what rules 4 and
+3 close **when they ship**; neither is closed by this record.
+
+#1249's read guard survives rule 1 but shrinks, and shrinks further than first written. Its
+justification is no longer "the write truncates". What is left is the Windows-specific one — that
+`File.ReadAllText` opens without `FILE_SHARE_DELETE`, so an atomic replace overlapping an unguarded
+read raises a sharing violation — and that guard is **necessary but not sufficient**: rule 3 leaves
+`MaterializeRoomBindings` deliberately unguarded, so a `/api/rooms/run` or a first bind can still
+land a replace while that route holds a read handle. The route therefore has to treat a sharing
+violation as the transient contention it is, rather than promising an overlap that cannot happen.
+**That comment must be rewritten in the change that lands rule 1**, or it spends an interval stating
+a reason that is no longer true.
 
 **Harder, and measured rather than predicted.** Atomicity does not remove the contention a
 truncate-write had — it moves it from the reader to the writer. On Windows `File.ReadAllText` opens
@@ -123,10 +135,16 @@ for the contention: a failed write is reported to someone who can act on it, and
 The daemon's own readers take the room-events lock and never reach that path; it exists for the ones
 that cannot, like `aer run` on the command line.
 
-**Harder.** The bindings editor loses a capability it was never meant to have but did have. Someone
-who has been hand-editing a live room's register — to fix a model name, say — now gets a refusal and
-has to Run the room again. The refusal names that path, and 0056's "the copy records the answer"
-property is what makes it the correct one, but it is a real loss for whoever was doing it.
+**Harder, once rule 4 ships (#1257).** The bindings editor loses a capability it was never meant to
+have but did have. Someone who has been hand-editing a live room's register — to fix a model name,
+say — will get a refusal and have to Run the room again. The refusal names that path, and 0056's "the
+copy records the answer" property is what makes it the correct one, but it is a real loss for whoever
+was doing it.
+
+**A litter rule 1 accepts.** A process killed between the staging write and the move leaves a
+`bindings.json.<guid>.tmp` behind, and nothing sweeps them. The promise is about the target file,
+which is untouched — but the staging files accumulate silently across crashes, and no component owns
+removing them.
 
 **A cost rule 3 accepts deliberately.** The losing decide gets a 200 and no signal that its supplied
 file was ignored. That is consistent — it is the same silence a decide one second later would get

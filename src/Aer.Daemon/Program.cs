@@ -1283,10 +1283,12 @@ namespace Aer.Daemon
                     //
                     // What survives is narrower and platform-specific: File.ReadAllText opens without
                     // FILE_SHARE_DELETE, so on Windows an atomic replace landing while this route holds
-                    // a read handle fails the replace with a sharing violation. Taking the guard keeps
-                    // the daemon's reads and its writes from ever overlapping, so the replace never
-                    // meets a reading handle. A read that failed a writer would be a worse bargain than
-                    // a read that waits.
+                    // a read handle fails the replace with a sharing violation.
+                    //
+                    // The guard is NECESSARY BUT NOT SUFFICIENT for that, and an earlier draft of this
+                    // comment claimed otherwise — 0057's Consequences names the writer it does not
+                    // cover and why that one is deliberate. The catch below is what makes the
+                    // uncovered case a legible answer rather than an unhandled 500.
                     using var readGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
                         directoryPath, TimeSpan.FromSeconds(2), "standing permission read");
                     readResult = await RuntimePermissionGrantAmender.GetStandingPermissionsAsync(
@@ -1297,6 +1299,16 @@ namespace Aer.Daemon
                     // The budget covers a routine overlap — every holder of this lock releases in
                     // milliseconds — so reaching here means something is genuinely stuck. Saying so
                     // beats answering with a list that may be a torn file's contents.
+                    return Results.Problem(
+                        $"Could not read this room's standing permissions: the room was busy ({ex.Message}). Try again.",
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // The unguarded-writer case above. Same answer as losing the lock, because it is
+                    // the same fact from the other side — something else is touching this room's
+                    // register right now — and the same thing to do about it. A 500 would say the
+                    // daemon is broken; it is not, it is contended.
                     return Results.Problem(
                         $"Could not read this room's standing permissions: the room was busy ({ex.Message}). Try again.",
                         statusCode: StatusCodes.Status503ServiceUnavailable);

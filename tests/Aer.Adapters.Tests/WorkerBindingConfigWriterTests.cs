@@ -172,6 +172,13 @@ public class WorkerBindingConfigWriterTests
     /// instead. Same verdict, different mechanism; claiming one red proof for both would be claiming
     /// more than was measured.
     /// </para>
+    /// <para>
+    /// <b>It can false-negative, and that is inherent rather than fixable here.</b> Swap the move for
+    /// a <c>File.Copy</c> — not atomic — and on a fast machine the reader may never be scheduled
+    /// inside the copy window for a payload this small, so it would pass. So: treat a red here as
+    /// real, do not read a green as proof of atomicity on its own, and do not wave off a CI failure
+    /// as "just timing" without first checking whether it is this scenario in reverse.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task A_reader_racing_a_write_never_catches_a_half_written_register()
