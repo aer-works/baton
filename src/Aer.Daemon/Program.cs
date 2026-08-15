@@ -1276,19 +1276,19 @@ namespace Aer.Daemon
                 StandingPermissionReadResult readResult;
                 try
                 {
-                    // A read still takes the guard, because the write it races is not atomic:
-                    // WorkerBindingConfigWriter.SaveToFileAsync goes through File.WriteAllTextAsync,
-                    // which truncates before it writes. Unguarded, this route can observe a half-written
-                    // bindings.json and answer "grants nothing" about a room that grants the shell —
-                    // the one wrong answer a permission inspector must never give. Not being a mutation
-                    // is what makes a lock look unnecessary; not being a mutation is not what makes a
-                    // read consistent.
+                    // A read still takes the guard, but NOT for the reason this comment first gave.
+                    // It said the write it races truncates; since 0057 rule 1 (#1264) every write
+                    // stages and File.Moves, so no reader can see a partial file and the torn-read
+                    // argument is gone.
                     //
-                    // The guard is needed against the writers that TRUNCATE, and those all take it.
-                    // MaterializeRoomBindings does not, and does not need to: it stages to a temp file
-                    // and File.Moves it over, so a reader sees the old file or the new one and never a
-                    // half of either. What the guard cannot cover is a writer that neither takes it nor
-                    // writes atomically — #1257 records the one of those, outside this process.
+                    // What survives is narrower and platform-specific: File.ReadAllText opens without
+                    // FILE_SHARE_DELETE, so on Windows an atomic replace landing while this route holds
+                    // a read handle fails the replace with a sharing violation.
+                    //
+                    // The guard is NECESSARY BUT NOT SUFFICIENT for that, and an earlier draft of this
+                    // comment claimed otherwise — 0057's Consequences names the writer it does not
+                    // cover and why that one is deliberate. The catch below is what makes the
+                    // uncovered case a legible answer rather than an unhandled 500.
                     using var readGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
                         directoryPath, TimeSpan.FromSeconds(2), "standing permission read");
                     readResult = await RuntimePermissionGrantAmender.GetStandingPermissionsAsync(
@@ -1299,6 +1299,16 @@ namespace Aer.Daemon
                     // The budget covers a routine overlap — every holder of this lock releases in
                     // milliseconds — so reaching here means something is genuinely stuck. Saying so
                     // beats answering with a list that may be a torn file's contents.
+                    return Results.Problem(
+                        $"Could not read this room's standing permissions: the room was busy ({ex.Message}). Try again.",
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // The unguarded-writer case above. Same answer as losing the lock, because it is
+                    // the same fact from the other side — something else is touching this room's
+                    // register right now — and the same thing to do about it. A 500 would say the
+                    // daemon is broken; it is not, it is contended.
                     return Results.Problem(
                         $"Could not read this room's standing permissions: the room was busy ({ex.Message}). Try again.",
                         statusCode: StatusCodes.Status503ServiceUnavailable);

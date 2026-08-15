@@ -156,5 +156,6 @@ copy of every record, retired by #952: the record is the only place a decision i
 | [0054](0054-participants-turns-and-addressing.md) | Participants, turns, and addressing: the multi-worker room's nouns | accepted |
 | [0055](0055-an-authority-grant-is-not-a-standing-permission.md) | An authority grant is not a standing permission | accepted |
 | [0056](0056-a-room-carries-its-own-worker-bindings.md) | A room carries its own worker bindings | accepted |
+| [0057](0057-how-a-rooms-bindings-register-is-written.md) | How a room's bindings register is written | accepted |
 
 <!-- /generated: decisions-index -->
