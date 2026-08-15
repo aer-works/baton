@@ -237,15 +237,19 @@
          code-behind — a GridLength is an Avalonia type and MainWindowViewModel is deliberately
          Avalonia-free, so the layout switch cannot be a binding. RoomView keeps its x:Name here, so
          every accessor the shell already reaches through it is untouched by the move. -->
-    <Grid x:Name="ShellGrid" ColumnDefinitions="*,Auto">
-      <Panel x:Name="MainRegion" Grid.Column="0">
+    <Grid x:Name="ShellGrid" ColumnDefinitions="*,Auto" RowDefinitions="Auto,*">
+      <!-- #1224: the room header spans BOTH columns. Why, and what it cost when it did not, is the
+           2026-08-15 amendment in docs/design/02-screens.md. -->
+      <views:ChatHeaderView x:Name="ChatHeaderControl" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                            Margin="24,24,24,0" IsVisible="{Binding IsChatVisible}" />
+      <Panel x:Name="MainRegion" Grid.Row="1" Grid.Column="0">
         <views:HomeView x:Name="HomeViewControl" IsVisible="{Binding IsHomeVisible}" />
         <views:AuthorView x:Name="AuthorViewControl" IsVisible="{Binding IsAuthorVisible}" />
         <views:SettingsView x:Name="SettingsViewControl" IsVisible="{Binding IsSettingsVisible}" />
         <views:ChatView x:Name="ChatViewControl" IsVisible="{Binding IsChatVisible}" />
         <views:RoomsView x:Name="RoomsViewControl" IsVisible="{Binding IsRoomsVisible}" />
       </Panel>
-      <Border x:Name="ShapeRegion" Grid.Column="1" IsVisible="False"
+      <Border x:Name="ShapeRegion" Grid.Row="1" Grid.Column="1" IsVisible="False"
               BorderBrush="{DynamicResource Color.BorderSubtle}" BorderThickness="1,0,0,0">
         <views:RoomView x:Name="RoomViewControl" />
       </Border>

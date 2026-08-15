@@ -139,7 +139,9 @@ public partial class MainWindow : Window
     internal Button OpenButton => HomeViewControl.OpenButton;
     internal Button RefreshButton => HomeViewControl.RefreshButton;
 
-    internal Button StopButton => ChatViewControl.StopButton;
+    // #1224: on ChatHeaderView now (see its own summary for where that sits and why). Same button,
+    // same wiring.
+    internal Button StopButton => ChatHeaderControl.StopButton;
     internal TextBlock RunStatusText => RoomViewControl.RunStatusText;
     internal TextBlock StatusText => RoomViewControl.StatusText;
     internal StackPanel StepsPanel => RoomViewControl.StepsPanel;
@@ -232,13 +234,23 @@ public partial class MainWindow : Window
     /// <summary>
     /// The re-homed counterpart of <c>Window.FindControl</c> for the headless round trips: controls
     /// now live in the views' name scopes, so the window's own scope no longer resolves them — this
-    /// searches Home, Task, Author, then Chat, preserving every test's by-name lookup unchanged.
+    /// searches Home, Task, Author, Chat, then the room header, preserving every test's by-name
+    /// lookup unchanged.
     /// </summary>
+    /// <remarks>
+    /// #1224's second reader: the header scope was the finding. Five named controls moved into
+    /// <see cref="ChatHeaderView"/>'s name scope, and a chain that does not include it returns
+    /// <see langword="null"/> for every one of them — silently, since the signature is nullable. No
+    /// test names a header control through this helper today, so nothing was broken; the next one
+    /// written would have been, and a helper whose doc claims a coverage it does not have is the
+    /// drift this repo has a gate for.
+    /// </remarks>
     internal T? FindViewControl<T>(string name) where T : Control
         => HomeViewControl.FindControl<T>(name)
            ?? RoomViewControl.FindControl<T>(name)
            ?? AuthorViewControl.FindControl<T>(name)
-           ?? ChatViewControl.FindControl<T>(name);
+           ?? ChatViewControl.FindControl<T>(name)
+           ?? ChatHeaderControl.FindControl<T>(name);
 
     private static readonly bool IsUnderTest = AppDomain.CurrentDomain.GetAssemblies()
         .Any(a => a.FullName != null && (a.FullName.Contains("xunit") || a.FullName.Contains("Test") || a.FullName.Contains("test")));
