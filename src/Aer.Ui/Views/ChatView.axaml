@@ -8,80 +8,11 @@
              xmlns:md="clr-namespace:Aer.Ui.Markdown"
              x:Class="Aer.Ui.Views.ChatView"
              x:DataType="vm:MainWindowViewModel">
-  <UserControl.Styles>
-    <!-- #1216: a header toggle renders a STATE, not an action, so it must not borrow the default
-         ToggleButton's checked accent — which in this theme is the same loud red the app uses for
-         failure. Driving the built app is what showed it: "Workflow ON", the ordinary healthy state
-         every room is in, arrived looking like an alarm, while OFF — the unusual state actually
-         worth noticing — sat quiet and grey. Neutral in both states; the words carry the difference,
-         the way the corpus's own drawing does ("Workflow [● ON ]" / "[○ OFF]").
-
-         #1223 widened it from the Workflow switch to both header toggles. #1216 fixed the instance
-         it was found on and left `Shape` — two elements away, same header, same checked accent — to
-         shout that an open panel was a failure. The finding was always about what a checked toggle
-         MEANS here, so the selector says that. Deliberately still scoped to this header rather than
-         restyling ToggleButton app-wide: a toggle that genuinely toggles an action keeps the accent,
-         and nothing here changes the accent itself. -->
-    <Style Selector="ToggleButton#WorkflowSwitch:checked, ToggleButton#ChatShapeToggle:checked">
-      <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
-      <Setter Property="Foreground" Value="{DynamicResource Color.Text}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource Color.BorderSubtle}" />
-    </Style>
-    <Style Selector="ToggleButton#WorkflowSwitch:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter, ToggleButton#ChatShapeToggle:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
-      <Setter Property="TextElement.Foreground" Value="{DynamicResource Color.Text}" />
-    </Style>
-    <Style Selector="ToggleButton#WorkflowSwitch:checked /template/ ContentPresenter#PART_ContentPresenter, ToggleButton#ChatShapeToggle:checked /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
-      <Setter Property="TextElement.Foreground" Value="{DynamicResource Color.Text}" />
-    </Style>
-  </UserControl.Styles>
-  <DockPanel Margin="24">
-    <!-- Daily-driver header (docs/design/02-screens.md): the room name, with the worker as a chip
-         beside it ("aer-flow  claude") — not "vendor — turn N". "+ Add worker" and multi-worker
-         chips are M27. -->
-    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="{DynamicResource Space.3}">
-      <TextBlock Classes="display" Text="{Binding Chat.HeadlineText}" VerticalAlignment="Center" />
-      <Border IsVisible="{Binding Chat.HasWorker}" VerticalAlignment="Center"
-              Background="{DynamicResource Color.SurfaceSubtle}"
-              BorderBrush="{DynamicResource Color.BorderSubtle}" BorderThickness="1"
-              CornerRadius="20" Padding="10,2">
-        <TextBlock Classes="caption" Text="{Binding Chat.WorkerChipText}" VerticalAlignment="Center" />
-      </Border>
-      <!-- Offered only for a workflow room: a chat session's single repeatedly-superseded step has
-           no graph worth drawing (ChatViewModel's own remarks). What the panel holds and where it
-           renders is on ChatViewModel.IsShapePanelOpen and MainWindow.ApplyShellLayout. -->
-      <ToggleButton x:Name="ChatShapeToggle" VerticalAlignment="Center" Content="Shape"
-                    IsVisible="{Binding Chat.IsShapeToggleVisible}"
-                    IsChecked="{Binding Chat.IsShapePanelOpen}" />
-      <!-- #1216: the header's Workflow ON/OFF switch (02-screens.md's "the workflow-toggle-off
-           control"). One-way on purpose — it renders the room's durable state, and the click asks the
-           engine rather than setting it, so a refusal leaves the switch showing the truth instead of
-           a position nothing agreed to. What refusal means, and why it refuses rather than stopping
-           the room for you, is the dated amendment in 02-screens.md. -->
-      <ToggleButton x:Name="WorkflowSwitch" VerticalAlignment="Center"
-                    IsVisible="{Binding Chat.IsWorkflowSwitchVisible}"
-                    IsChecked="{Binding Chat.IsWorkflowOn, Mode=OneWay}"
-                    Content="{Binding Chat.WorkflowSwitchLabel}"
-                    Command="{Binding ToggleWorkflowSwitchCommand}"
-                    ToolTip.Tip="Switch this room's workflow off, or back on. Nothing is deleted — the shape, and every worker, stay exactly as they are." />
-      <TextBlock x:Name="WorkflowSwitchStatusText" Classes="caption secondary" VerticalAlignment="Center"
-                 TextWrapping="Wrap" MaxWidth="360"
-                 Text="{Binding WorkflowSwitchStatusText}"
-                 IsVisible="{Binding HasWorkflowSwitchStatusText}" />
-      <!-- #1215: Stop's always-present rule is docs/design/03-interaction-depth.md's, and the
-           amendment recording this move is 02-screens.md's. Slice 3 moved RoomView into the
-           collapsible Shape panel and Stop went with it, so Stop existed only while a panel that is
-           closed by default was open. Disabled rather than hidden is what that rule requires: a
-           person looking for the brake must find it in the same place whether or not anything is
-           running. Enablement mirrors the binding it had in RoomView, unchanged. -->
-      <Button x:Name="StopButton" VerticalAlignment="Center"
-              IsEnabled="{Binding IsMutationInFlight}"
-              ToolTip.Tip="Cancel every execution this window currently has in flight.">
-        <AccessText Text="_Stop" />
-      </Button>
-    </StackPanel>
-
+  <!-- #1224: the room header is no longer the first row here. It spans the transcript AND the shape
+       panel, one level up in MainWindow's shell grid (ChatHeaderView), because inside this column
+       the Shape panel's 460px clipped it — losing `Stop` entirely at ordinary window widths. This
+       view keeps everything below the header, unchanged. -->
+  <DockPanel Margin="24,4,24,24">
     <!-- Persistent mode indicator (#286): mode buttons live in the collapsed Commands panel below,
          but the currently active mode was previously invisible until you reopened that panel and
          happened to remember which button you last clicked. -->

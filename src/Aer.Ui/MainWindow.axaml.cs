@@ -139,7 +139,9 @@ public partial class MainWindow : Window
     internal Button OpenButton => HomeViewControl.OpenButton;
     internal Button RefreshButton => HomeViewControl.RefreshButton;
 
-    internal Button StopButton => ChatViewControl.StopButton;
+    // #1224: on ChatHeaderView now (see its own summary for where that sits and why). Same button,
+    // same wiring.
+    internal Button StopButton => ChatHeaderControl.StopButton;
     internal TextBlock RunStatusText => RoomViewControl.RunStatusText;
     internal TextBlock StatusText => RoomViewControl.StatusText;
     internal StackPanel StepsPanel => RoomViewControl.StepsPanel;

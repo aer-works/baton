@@ -428,7 +428,9 @@ public class NavigationShellTests
             Assert.True(window.IsMainRegionVisible);
             Assert.False(window.IsShapeRegionVisible);
 
-            Assert.NotNull(window.ChatViewControl.FindControl<Button>("StopButton"));
+            // #1224 moved the header out of ChatView and above the transcript/shape split; the rule
+            // this pins is unchanged — Stop is in the header, and not in the collapsible panel.
+            Assert.NotNull(window.ChatHeaderControl.FindControl<Button>("StopButton"));
             Assert.Null(window.RoomViewControl.FindControl<Button>("StopButton"));
 
             // Present, not merely reachable: disabled with nothing in flight, enabled the moment
@@ -473,7 +475,7 @@ public class NavigationShellTests
 
             // The switch itself is offered either way — it is how a room comes back.
             Assert.True(window.ViewModel.Chat.IsWorkflowSwitchVisible);
-            var switchControl = window.ChatViewControl.FindControl<Avalonia.Controls.Primitives.ToggleButton>("WorkflowSwitch");
+            var switchControl = window.ChatHeaderControl.FindControl<Avalonia.Controls.Primitives.ToggleButton>("WorkflowSwitch");
             Assert.NotNull(switchControl);
 
             // The Shape toggle is not: a room with no workflow has no shape to open.

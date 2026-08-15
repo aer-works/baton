@@ -92,6 +92,31 @@ One room, one worker. This is the screen you look at most, so it has to be borin
 > collapsible Shape panel, where it was only findable if you had already opened a panel that is closed
 > by default.
 
+> **Amendment (2026-08-15, #1224 / umbrella #1196): the room header spans the transcript and the
+> shape panel.** It used to be the top row of the transcript column, so opening `Shape` took its
+> 460px out of the header's own width and clipped it — `Stop` was the control that vanished first.
+> The arrangement was not the flaw; the column was. At the supported 900px floor, the nav rail,
+> sidebar, shape panel and margins leave that column roughly 130px, which is less than the controls
+> alone need, so *every* fix that kept the header inside it failed at the floor — including simply
+> ellipsizing the name.
+>
+> Opening `Shape` now takes its width from the transcript and can never take any from the header.
+> Inside the header **the room name is the only element that yields** — ellipsis, full name in the
+> tooltip — and the controls never shrink, drop, scroll or wrap. One line, one glance, at every
+> supported width. The switch's refusal sentence moves to its own caption line beneath the row: it is
+> prose of unbounded length, and the only way it fitted inline was a 360px cap the controls beside it
+> cannot spare at the floor.
+>
+> Four alternatives are rejected, not deferred. Wrapping spends the glance permanently. A scroller
+> re-adds what #1204 removed *and* puts `Stop` behind a hunt. Dropping controls by priority makes one
+> of them absent, and all three candidates are ones that must not be. Narrowing the panel defeats the
+> only reason its width is fixed.
+>
+> **`Stop` is inviolable, and that is not new** — `03-interaction-depth.md` already says it is always
+> present and never a hunt. What this records is the clarification: **present means rendered and
+> hittable at every supported width; clipped is absent.** That binds every surface carrying `Stop`,
+> the phone's room header included.
+
 > **Amendment (2026-08-15, #1240 / umbrella #1196):** The phone carries this card too — before it, a
 > finished room on the phone rendered *nothing*, which under 0018 is not calm but silent. One clause
 > governs what crosses: **the headline always; a body sentence only where the action it describes

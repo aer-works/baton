@@ -1,0 +1,103 @@
+<!-- #1224: the room header, lifted OUT of the transcript column and spanning the transcript and the
+     shape panel together. It used to be the top row of ChatView's own DockPanel, which put it inside
+     the column the Shape panel takes 460px from — so opening Shape clipped it, and at the supported
+     900px floor (MainWindow's MinWidth) the nav rail, sidebar, panel and margins leave that column
+     roughly 130px, less than the controls alone need. Every arrangement that keeps the header in
+     that column fails at the floor, including simply ellipsizing the name; the column was the flaw.
+
+     The header is the room's (#1215's amendment), and the shape panel is part of the room, so
+     spanning both is what the header already claimed to be. -->
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Aer.Ui.Core;assembly=Aer.Ui.Core"
+             x:Class="Aer.Ui.Views.ChatHeaderView"
+             x:DataType="vm:MainWindowViewModel">
+  <UserControl.Styles>
+    <!-- #1216: a header toggle renders a STATE, not an action, so it must not borrow the default
+         ToggleButton's checked accent — which in this theme is the same loud red the app uses for
+         failure. Driving the built app is what showed it: "Workflow ON", the ordinary healthy state
+         every room is in, arrived looking like an alarm, while OFF — the unusual state actually
+         worth noticing — sat quiet and grey. Neutral in both states; the words carry the difference,
+         the way the corpus's own drawing does ("Workflow [● ON ]" / "[○ OFF]").
+
+         #1223 widened it from the Workflow switch to both header toggles. #1216 fixed the instance
+         it was found on and left `Shape` — two elements away, same header, same checked accent — to
+         shout that an open panel was a failure. The finding was always about what a checked toggle
+         MEANS here, so the selector says that. Deliberately still scoped to this header rather than
+         restyling ToggleButton app-wide: a toggle that genuinely toggles an action keeps the accent,
+         and nothing here changes the accent itself. -->
+    <Style Selector="ToggleButton#WorkflowSwitch:checked, ToggleButton#ChatShapeToggle:checked">
+      <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
+      <Setter Property="Foreground" Value="{DynamicResource Color.Text}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Color.BorderSubtle}" />
+    </Style>
+    <Style Selector="ToggleButton#WorkflowSwitch:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter, ToggleButton#ChatShapeToggle:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource Color.Text}" />
+    </Style>
+    <Style Selector="ToggleButton#WorkflowSwitch:checked /template/ ContentPresenter#PART_ContentPresenter, ToggleButton#ChatShapeToggle:checked /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource Color.SurfaceSubtle}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource Color.Text}" />
+    </Style>
+  </UserControl.Styles>
+  <StackPanel>
+    <!-- Daily-driver header (docs/design/02-screens.md): the room name, with the worker as a chip
+         beside it ("aer-flow  claude") — not "vendor — turn N". "+ Add worker" and multi-worker
+         chips are M27.
+
+         A Grid, not the StackPanel it was: the name takes the single star column and is the ONLY
+         element that yields, by ellipsis with the full name in a tooltip. The controls sit in Auto
+         columns, so they never shrink, drop, scroll or wrap — a room name is user-chosen and can be
+         any length, and the brake must not be what a long one costs. -->
+    <!-- The gap between elements comes from the grid's own ColumnSpacing rather than a Margin per
+         control: Space.3 is a Double token and a Thickness cannot be composed from one in markup,
+         so per-control margins would mean transcribing the token's value five times. -->
+    <Grid x:Name="HeaderRow" ColumnDefinitions="*,Auto,Auto,Auto,Auto"
+          ColumnSpacing="{DynamicResource Space.3}">
+      <TextBlock x:Name="RoomNameText" Grid.Column="0" Classes="display" VerticalAlignment="Center"
+                 Text="{Binding Chat.HeadlineText}"
+                 TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"
+                 ToolTip.Tip="{Binding Chat.HeadlineText}" />
+      <Border Grid.Column="1" IsVisible="{Binding Chat.HasWorker}" VerticalAlignment="Center"
+              Background="{DynamicResource Color.SurfaceSubtle}"
+              BorderBrush="{DynamicResource Color.BorderSubtle}" BorderThickness="1"
+              CornerRadius="20" Padding="10,2">
+        <TextBlock Classes="caption" Text="{Binding Chat.WorkerChipText}" VerticalAlignment="Center" />
+      </Border>
+      <!-- Offered only for a workflow room: a chat session's single repeatedly-superseded step has
+           no graph worth drawing (ChatViewModel's own remarks). What the panel holds and where it
+           renders is on ChatViewModel.IsShapePanelOpen and MainWindow.ApplyShellLayout. -->
+      <ToggleButton x:Name="ChatShapeToggle" Grid.Column="2" VerticalAlignment="Center" Content="Shape"
+                          IsVisible="{Binding Chat.IsShapeToggleVisible}"
+                    IsChecked="{Binding Chat.IsShapePanelOpen}" />
+      <!-- #1216: the header's Workflow ON/OFF switch (02-screens.md's "the workflow-toggle-off
+           control"). One-way on purpose — it renders the room's durable state, and the click asks the
+           engine rather than setting it, so a refusal leaves the switch showing the truth instead of
+           a position nothing agreed to. What refusal means, and why it refuses rather than stopping
+           the room for you, is the dated amendment in 02-screens.md. -->
+      <ToggleButton x:Name="WorkflowSwitch" Grid.Column="3" VerticalAlignment="Center"
+                          IsVisible="{Binding Chat.IsWorkflowSwitchVisible}"
+                    IsChecked="{Binding Chat.IsWorkflowOn, Mode=OneWay}"
+                    Content="{Binding Chat.WorkflowSwitchLabel}"
+                    Command="{Binding ToggleWorkflowSwitchCommand}"
+                    ToolTip.Tip="Switch this room's workflow off, or back on. Nothing is deleted — the shape, and every worker, stay exactly as they are." />
+      <!-- #1215: Stop's always-present rule is docs/design/03-interaction-depth.md's, and the
+           amendment recording this move is 02-screens.md's. Slice 3 moved RoomView into the
+           collapsible Shape panel and Stop went with it, so Stop existed only while a panel that is
+           closed by default was open. Disabled rather than hidden is what that rule requires: a
+           person looking for the brake must find it in the same place whether or not anything is
+           running. Enablement mirrors the binding it had in RoomView, unchanged. -->
+      <Button x:Name="StopButton" Grid.Column="4" VerticalAlignment="Center"
+              IsEnabled="{Binding IsMutationInFlight}"
+              ToolTip.Tip="Cancel every execution this window currently has in flight.">
+        <AccessText Text="_Stop" />
+      </Button>
+    </Grid>
+    <!-- #1224: the switch's refusal sentence gets its own line rather than a seat in the row above.
+         The reason is the 2026-08-15 amendment's; what it buys here is that it can simply wrap. -->
+    <TextBlock x:Name="WorkflowSwitchStatusText" Classes="caption secondary" Margin="0,4,0,0"
+               TextWrapping="Wrap"
+               Text="{Binding WorkflowSwitchStatusText}"
+               IsVisible="{Binding HasWorkflowSwitchStatusText}" />
+  </StackPanel>
+</UserControl>
