@@ -29,17 +29,20 @@ public sealed partial class RoomClient
 
         var token = File.ReadAllText(tokenFile).Trim();
 
+        // #1259: falls back to the URL this client was constructed with, not a hardcoded 5000. A
+        // caller that named a daemon meant it; overriding that with a guess is how a client pointed
+        // at one daemon ends up probing another, and the guess was only ever right by coincidence
+        // with the default port.
         var portFile = Path.Combine(aerDir, "daemon.port");
-        var activePort = 5000;
+        var url = _daemonUrl;
         if (File.Exists(portFile))
         {
             if (int.TryParse(File.ReadAllText(portFile).Trim(), out var p))
             {
-                activePort = p;
+                url = $"http://localhost:{p}";
             }
         }
 
-        var url = $"http://localhost:{activePort}";
         return (url, token);
     }
 
@@ -68,6 +71,10 @@ public sealed partial class RoomClient
             if (response.IsSuccessStatusCode)
             {
                 var meta = await response.Content.ReadFromJsonAsync<DaemonVersionInfo>(cancellationToken: cancellationToken).ConfigureAwait(true);
+                // #1260: this reads Aer.Ui.Core's assembly version, which is pinned static while the
+                // daemon's moves with release-please — so the comparison below can never succeed and
+                // the skew branch is taken on every connect. Left as measured rather than fixed here;
+                // which assembly the client should name is that issue's question.
                 var clientVersion = typeof(RoomClient).Assembly.GetName().Version?.ToString() ?? "1.0.0";
 
                 if (meta != null && meta.Version == clientVersion)
@@ -76,7 +83,7 @@ public sealed partial class RoomClient
                     await StartWebSocketListenerAsync(_activeDaemonUrl, token, cancellationToken).ConfigureAwait(true);
                     return true;
                 }
-                else if (meta != null && !meta.HasRunningRooms)
+                else if (_spawnDaemonOnDemand && meta != null && !meta.HasRunningRooms)
                 {
                     // Version skew! Force shutdown running daemon to respawn updated one (safe since no rooms are running)
                     await _httpClient.PostAsync($"{_activeDaemonUrl}/api/daemon/shutdown", null, cancellationToken).ConfigureAwait(true);
@@ -84,8 +91,9 @@ public sealed partial class RoomClient
                 }
                 else
                 {
-                    // Version skew, but daemon has running rooms in flight. We must not terminate it;
-                    // continue using the running daemon to preserve room integrity.
+                    // Version skew, but we must not terminate this daemon — either it has rooms in
+                    // flight, or (#1259) we are a client that cannot spawn a replacement, so shutting
+                    // it down would leave nothing to talk to. Continue using the running daemon.
                     _isClientMode = true;
                     await StartWebSocketListenerAsync(_activeDaemonUrl, token, cancellationToken).ConfigureAwait(true);
                     return true;
