@@ -691,6 +691,8 @@ public sealed partial class RoomClient
                 ViewModel.IsMutationInFlight = true;
                 _mutationStarted();
 
+                // Decision 0056 (#1246): send _bindingsFilePathProvider() unconditionally so the daemon can heal un-bound rooms.
+                // 0056 rules that the field is never consulted for a room that knows its workers, so the condition lives on the daemon side, once.
                 var request = new DecideRoomRequest(
                     roomDirectoryPath,
                     stepId.Value,
@@ -699,7 +701,8 @@ public sealed partial class RoomClient
                     targetStepId?.Value,
                     revisionFilePath,
                     supplementaryWorker,
-                    supplementaryOutputName);
+                    supplementaryOutputName,
+                    BindingsFilePath: _bindingsFilePathProvider());
 
                 var response = await _httpClient.PostAsJsonAsync($"{_activeDaemonUrl}/api/rooms/decide", request, cancellationToken).ConfigureAwait(true);
                 if (response.IsSuccessStatusCode)

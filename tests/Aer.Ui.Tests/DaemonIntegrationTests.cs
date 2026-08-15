@@ -780,6 +780,104 @@ public class DaemonIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// #1246: decide in a room with no bindings.json through the desktop's own decide path
+    /// (RoomClient.DecideAsync), and assert the room's bindings.json exists afterwards and contains
+    /// the bindings from the desktop's provider.
+    /// </summary>
+    [Fact]
+    public async Task DecideAsync_InRoomWithNoBindings_MaterializesRoomBindingsFromClientProvider()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string executionId = "exec-unstick-1";
+
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, cancellationToken);
+        var clientBindingsFilePath = await WriteRejectableBindingsAsync(cancellationToken);
+        var roomBindingsFile = AerPaths.RoomBindingsFile(roomDirectory);
+
+        // Ensure room starts without its own bindings.json
+        Assert.False(File.Exists(roomBindingsFile));
+
+        var configStore = new LocalUiConfigurationStore(Path.Combine(_tempRoomDirectory!, $"config-{Guid.NewGuid():N}.json"));
+        var viewModel = new MainWindowViewModel();
+        var roomClient = new RoomClient(
+            configStore,
+            new Dictionary<string, IWorkerAdapter> { ["claude"] = new ClaudeWorkerAdapter() },
+            viewModel,
+            bindingsFilePathProvider: () => clientBindingsFilePath,
+            mutationStarted: () => { },
+            mutationFailed: () => { },
+            reopenRoomAsync: (_, _) => Task.CompletedTask,
+            daemonUrl: _baseUrl,
+            spawnDaemonOnDemand: false);
+
+        var outcome = await roomClient.DecideAsync(
+            roomDirectory,
+            WorkerStep,
+            new ExecutionId(executionId),
+            DecisionType.Reject,
+            targetStepId: null,
+            revisionFilePath: null,
+            supplementaryWorker: null,
+            supplementaryOutputName: null,
+            cancellationToken: cancellationToken);
+
+        Assert.Null(outcome.ErrorMessage);
+        Assert.True(File.Exists(roomBindingsFile));
+        var clientContent = await File.ReadAllTextAsync(clientBindingsFilePath, cancellationToken);
+        var roomContent = await File.ReadAllTextAsync(roomBindingsFile, cancellationToken);
+        Assert.Equal(clientContent, roomContent);
+    }
+
+    /// <summary>
+    /// #1246 discriminating control: the same decide in a room that ALREADY has bindings.json must
+    /// leave that file's contents unchanged even if the client's provider supplies a different path.
+    /// </summary>
+    [Fact]
+    public async Task DecideAsync_InRoomWithExistingBindings_LeavesRoomBindingsUnchanged()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string executionId = "exec-unstick-control-1";
+
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, cancellationToken);
+        var existingBindingsFilePath = await WriteUnresolvableBindingsAsync(cancellationToken);
+        var roomBindingsFile = AerPaths.RoomBindingsFile(roomDirectory);
+        File.Copy(existingBindingsFilePath, roomBindingsFile);
+        var existingContent = await File.ReadAllTextAsync(roomBindingsFile, cancellationToken);
+
+        var clientBindingsFilePath = await WriteRejectableBindingsAsync(cancellationToken);
+
+        var configStore = new LocalUiConfigurationStore(Path.Combine(_tempRoomDirectory!, $"config-{Guid.NewGuid():N}.json"));
+        var viewModel = new MainWindowViewModel();
+        var roomClient = new RoomClient(
+            configStore,
+            new Dictionary<string, IWorkerAdapter> { ["claude"] = new ClaudeWorkerAdapter() },
+            viewModel,
+            bindingsFilePathProvider: () => clientBindingsFilePath,
+            mutationStarted: () => { },
+            mutationFailed: () => { },
+            reopenRoomAsync: (_, _) => Task.CompletedTask,
+            daemonUrl: _baseUrl,
+            spawnDaemonOnDemand: false);
+
+        var outcome = await roomClient.DecideAsync(
+            roomDirectory,
+            WorkerStep,
+            new ExecutionId(executionId),
+            DecisionType.Reject,
+            targetStepId: null,
+            revisionFilePath: null,
+            supplementaryWorker: null,
+            supplementaryOutputName: null,
+            cancellationToken: cancellationToken);
+
+        Assert.Null(outcome.ErrorMessage);
+        var finalContent = await File.ReadAllTextAsync(roomBindingsFile, cancellationToken);
+        Assert.Equal(existingContent, finalContent);
+        Assert.NotEqual(await File.ReadAllTextAsync(clientBindingsFilePath, cancellationToken), finalContent);
+    }
+
+
+    /// <summary>
     /// #1230 / decision 0056: a decision resolves the room's OWN bindings, never the user-global slot
     /// holding whichever file was run or opened last.
     /// </summary>
