@@ -1254,6 +1254,80 @@ namespace Aer.Daemon
                 return Results.Ok();
             });
 
+            // #1238: the way back, and what it costs a person not to have one is stated on
+            // RuntimePermissionGrantAmender.RevokeAsync, which this reaches.
+            //
+            // It is a POST rather than a DELETE deliberately: the thing being withdrawn has no URL of
+            // its own, and the kinds are two different withdrawals (a room-wide shell permission, and
+            // one named command family) rather than one resource removed twice.
+            app.MapPost("/api/rooms/permissions/revoke", async ([FromBody] RevokePermissionRequest request, RoomClient session) =>
+            {
+                if (string.IsNullOrEmpty(request.DirectoryPath)) return Results.BadRequest("DirectoryPath is required.");
+                if (string.IsNullOrEmpty(request.RevokeKind)) return Results.BadRequest("RevokeKind is required.");
+
+                if (request.RevokeKind is not (PermissionRevokeKind.RoomShell or PermissionRevokeKind.CommandInRoom))
+                {
+                    // Named rather than echoed back as a shrug: an unknown kind here is a caller bug,
+                    // and the two that exist are a short list worth saying out loud.
+                    return Results.BadRequest(
+                        $"Unknown RevokeKind '{request.RevokeKind}'. Expected " +
+                        $"'{PermissionRevokeKind.RoomShell}' or '{PermissionRevokeKind.CommandInRoom}'.");
+                }
+
+                if (request.RevokeKind == PermissionRevokeKind.CommandInRoom
+                    && string.IsNullOrEmpty(request.ShellCommandPattern))
+                {
+                    return Results.BadRequest(
+                        "ShellCommandPattern is required when revoking one command's standing permission.");
+                }
+
+                var revokeWorkerName = string.IsNullOrEmpty(request.WorkerName)
+                    ? InteractiveSessionMaterializer.DefaultWorkerName
+                    : request.WorkerName;
+
+                PermissionRevokeOutcome revokeOutcome;
+                try
+                {
+                    // The same room-events guard the answer path's amend takes, for the same reason:
+                    // this is a read-modify-write of bindings.json, and a turn's own per-turn write can
+                    // race it. AcquireWithin, not Acquire — that holder releases in milliseconds.
+                    using var revokeGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
+                        request.DirectoryPath, TimeSpan.FromSeconds(2), "permission revoke");
+                    revokeOutcome = await RuntimePermissionGrantAmender.RevokeAsync(
+                        request.DirectoryPath,
+                        revokeWorkerName,
+                        request.RevokeKind,
+                        request.ShellCommandPattern).ConfigureAwait(false);
+                }
+                catch (WorkflowLockedException ex)
+                {
+                    // Refused, not reported as done. The asymmetry with the answer path is deliberate:
+                    // there, losing the lock narrows an answer that was already recorded, and the honest
+                    // thing is to say so and carry on. Here, nothing has been recorded at all, and a 200
+                    // would tell the person a permission is gone while it is still in force.
+                    return Results.Problem(
+                        $"Could not take back that permission: the room was busy ({ex.Message}). Try again.",
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+
+                if (revokeOutcome == PermissionRevokeOutcome.CouldNotPersist)
+                {
+                    // The outcome covers two situations and they need different sentences: a room with
+                    // no worker setup at all is not the same problem as a room whose setup lacks THIS
+                    // worker, and naming the wrong one sends the person looking in the wrong place.
+                    return Results.BadRequest(
+                        File.Exists(AerPaths.RoomBindingsFile(request.DirectoryPath))
+                            ? $"This room doesn't have worker '{revokeWorkerName}' to take a permission back from."
+                            : "This room has no worker setup, so it holds no permissions to take back.");
+                }
+
+                // The projection does not carry standing permissions, so nothing to broadcast — the
+                // change lands on the next turn's grant build. Saying which of the two happened is the
+                // whole caller-facing value: "there was nothing to take back" and "it is taken back"
+                // are different sentences for a person who just asked for one.
+                return Results.Ok(new { Outcome = revokeOutcome.ToString() });
+            });
+
             app.MapPost("/api/rooms/permissions/answer", async ([FromBody] AnswerPermissionRequest request, RoomClient session) =>
             {
                 if (string.IsNullOrEmpty(request.DirectoryPath)) return Results.BadRequest("DirectoryPath is required.");
@@ -3526,5 +3600,16 @@ namespace Aer.Daemon
         string DecisionKind,
         JsonElement? UpdatedInput = null,
         string? Reason = null);
+
+    /// <summary>
+    /// #1238's request shape. <c>WorkerName</c> is optional and defaults to the chat worker, matching
+    /// the answer path's own assumption — the ladder is only ever answered for that worker today, and
+    /// requiring callers to name it would invite them to guess.
+    /// </summary>
+    public record RevokePermissionRequest(
+        string DirectoryPath,
+        string RevokeKind,
+        string? ShellCommandPattern = null,
+        string? WorkerName = null);
 }
 
