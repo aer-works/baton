@@ -34,7 +34,15 @@ public record DecideRoomRequest(
     string? RevisionFilePath = null,
     string? SupplementaryWorker = null,
     string? SupplementaryOutputName = null,
-    ArtifactReference? ArtifactReference = null);
+    ArtifactReference? ArtifactReference = null,
+    /// <summary>
+    /// Optional, and only consulted for a room that has no bindings of its own yet (#1230, decision
+    /// 0056) — a room made before rooms carried their worker setup. Supplying it materializes the
+    /// room's copy and then decides; a room that already has one ignores this entirely, so a stale or
+    /// wrong path can never redirect a room that knows its own workers. Same contract `aer decide`
+    /// has always had, where <c>DecideOptions.BindingsFilePath</c> is required.
+    /// </summary>
+    string? BindingsFilePath = null);
 
 public record RunTemplateRequest(
     string TemplateId,

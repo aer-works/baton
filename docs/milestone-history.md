@@ -619,7 +619,10 @@ The durable decisions each milestone left behind, newest first — each entry ci
   actually starting fresh. A fresh start with no template given is a `CliArgumentException`, not a
   silent no-op (Phase 1).
 - **Bindings and template file paths are asked for on every Run, never inferred** — bindings are
-  never persisted in a task directory (M14 Phase 2's decision of record) and a template is only
+  never persisted in a task directory (M14 Phase 2's decision of record; **superseded 2026-08-14 by
+  [decision 0056](decisions/0056-a-room-carries-its-own-worker-bindings.md) — a room now keeps its own
+  copy, and the "asked for on every Run, never inferred" half of this line stands unchanged: Run still
+  asks, and the copy records the answer**) and a template is only
   ever relevant on a fresh start. `LocalUiConfigurationStore` gained `LastBindingsFilePath`/
   `LastWorkflowTemplateFilePath` purely to pre-fill that ask, the same non-authoritative,
   rebuildable-convenience treatment as the existing recents list (Phase 1).
@@ -811,7 +814,9 @@ The durable decisions each milestone left behind, newest first — each entry ci
   (Phase 2).
 - **A non-process/human execution is identified by `ExecutionRequest.Timeout is null`** — the only
   signal already durable on disk once the read side has nothing but the event log and snapshot
-  (bindings are never persisted to the task directory) (Phase 2).
+  (bindings were, at the time, never persisted to the task directory — superseded by
+  [decision 0056](decisions/0056-a-room-carries-its-own-worker-bindings.md); the `Timeout is null`
+  signal it justifies is unaffected) (Phase 2).
 - **Task-directory discovery is "ask the user, or pick a remembered one" — never a scanned root**
   (UI spec §3.1's implementation choice). `LocalUiConfigurationStore` is a small explicit JSON
   file store, deliberately non-authoritative per §3.1: missing/corrupt loads as empty, vanished

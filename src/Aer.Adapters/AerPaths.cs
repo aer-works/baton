@@ -76,6 +76,27 @@ public static class AerPaths
     public const string RoomMetadataFileName = "room.json";
 
     /// <summary>
+    /// Filename, directly in a room's directory, of the worker bindings that room runs — which
+    /// workers, on which adapter, with which model and standing permissions. **The room's own copy is
+    /// the register** (decision 0056): every path that needs to know a room's workers resolves this
+    /// file under that room, never a remembered last-used path from somewhere else.
+    /// </summary>
+    /// <remarks>
+    /// The literal was written out at eight sites before #1230, which is how a ninth — the decide
+    /// endpoint — came to resolve a *different* room's file instead and dispatch to the wrong workers
+    /// with no signal. Naming it once is not cosmetic here: it is what makes "the room's own bindings"
+    /// a single expression rather than a convention each caller re-implements.
+    /// </remarks>
+    public const string RoomBindingsFileName = "bindings.json";
+
+    /// <summary>The bindings file belonging to <paramref name="roomDirectoryPath"/>.</summary>
+    public static string RoomBindingsFile(string roomDirectoryPath)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        return Path.Combine(roomDirectoryPath, RoomBindingsFileName);
+    }
+
+    /// <summary>
     /// <c>{Root}/worker-launch</c> — files AER writes to pass per-spawn configuration to a vendor
     /// CLI via an explicit flag rather than the CLI's own directory-based discovery (#533). Unlike
     /// <see cref="Rooms"/> this directory holds no operator-authored content: everything under it

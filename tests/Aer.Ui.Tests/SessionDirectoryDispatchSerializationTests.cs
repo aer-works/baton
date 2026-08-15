@@ -230,8 +230,17 @@ public class SessionDirectoryDispatchSerializationTests : IAsyncLifetime
         // RunAsync swallows the failure internally or lets one escape. That makes this HTTP-level test
         // representative of both cases -- see the commit body for why a second, lock-internal unit
         // test would be redundant rather than additive here.
-        var (roomDirectory, goodBindingsFilePath) = await CreateReadyRoomDirectoryAsync();
+        var (roomDirectory, roomBindingsFilePath) = await CreateReadyRoomDirectoryAsync();
         var badBindingsFilePath = await WriteUnresolvableBindingsAsync(roomDirectory);
+
+        // #1230 / decision 0056: a run copies the chosen bindings into the room, so the bad run below
+        // replaces the room's copy — that is re-binding working, not a defect. This test needs a good
+        // file that survives it, which means one living outside the room, exactly where a real
+        // operator's bindings file lives. Keeping the good handle pointing inside the room made the
+        // second run re-supply the bad content and complete nothing.
+        var goodBindingsFilePath = Path.Combine(
+            Path.GetTempPath(), $"aer_590_good_bindings_{Guid.NewGuid():N}.json");
+        File.Copy(roomBindingsFilePath, goodBindingsFilePath);
 
         var badRunResponse = await _client.PostAsJsonAsync(
             $"{_baseUrl}/api/rooms/run",
