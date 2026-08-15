@@ -42,7 +42,14 @@ public class LaunchConfigRewriteTests
     /// seeding resolve runs before any reader, so the first-write window (#682) is excluded on
     /// purpose. Control run, not assumed: against the pre-#667 rewrite-always behaviour this fails on
     /// <c>settingsFailures</c>, 4239 reads of 424091 lost with the control clean.
-    /// </remarks>
+    /// <para>
+    /// <b>The overlap is established rather than assumed (#1274).</b> The writers do not start until
+    /// all four reader loops have announced themselves. Before that, two of them could sit unstarted
+    /// for the whole run while the writers finished and cancelled them — measured on a loaded macOS
+    /// runner, where the read counts came back 1451/0 and the assertion below refused the vacuous
+    /// pass. `Task.Run` having been called is not evidence a loop is running, and with eight tight
+    /// synchronous loops competing for the pool it frequently is not.
+    /// </para>
     [Fact]
     public async Task Concurrent_resolves_leave_a_settled_settings_file_readable_to_unretried_readers()
     {
@@ -54,7 +61,18 @@ public class LaunchConfigRewriteTests
         var settingsReads = 0;
         var controlReads = 0;
 
-        var readers = Enumerable.Range(0, 4).Select(reader => Task.Run(() =>
+        // Each reader announces that it is actually running, and the writers wait for all four
+        // (#1274). Eight tight synchronous loops do not fit the thread pool's initial slots, and a
+        // reader that never got one reports zero — which the control assertion below correctly fails
+        // on, having caught exactly that on a loaded macOS runner. LongRunning takes the loops off
+        // the pool entirely, since a spin loop is what that flag is for; the handshake is what makes
+        // the overlap a fact rather than a hope.
+        var readerIsLive = Enumerable.Range(0, 4)
+            .Select(_ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
+            .ToArray();
+
+        var readers = Enumerable.Range(0, 4).Select(reader => Task.Factory.StartNew(
+            () =>
         {
             var settings = reader % 2 == 0;
             var path = settings ? SettingsPath : McpConfigPath;
@@ -77,8 +95,17 @@ public class LaunchConfigRewriteTests
                 {
                     (settings ? settingsFailures : controlFailures).Add(ex);
                 }
+
+                // Signalled after the first attempt whether it read or failed: the point is that
+                // this loop is running, and a reader whose every read fails is still contending.
+                readerIsLive[reader].TrySetResult();
             }
-        })).ToArray();
+        },
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default)).ToArray();
+
+        await Task.WhenAll(readerIsLive.Select(live => live.Task));
 
         var writerFailures = new ConcurrentBag<Exception>();
         var writers = Enumerable.Range(0, 4)
