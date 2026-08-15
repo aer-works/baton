@@ -299,7 +299,8 @@ public partial class MainWindow : Window
             mutationFailed: _liveRefreshTimer.Stop,
             reopenRoomAsync: (roomDirectoryPath, cancellationToken) => OpenAsync(roomDirectoryPath, cancellationToken),
             onProjectionUpdated: (projection, roomDirectoryPath) => RenderProjection(projection, roomDirectoryPath),
-            daemonUrl: daemonUrl);
+            daemonUrl: daemonUrl,
+            clientVersion: typeof(MainWindow).Assembly.GetName().Version?.ToString());
 
         // M16 Phase 4 (issue #153): adapter names are offered from the registry this window was
         // constructed with — reflect, don't invent — carried per-row on WorkerBindingEntryViewModel

@@ -1750,4 +1750,17 @@ public class DaemonIntegrationTests : IAsyncLifetime
             DirectoryCleanup.DeleteRecursively(corruptRoom);
         }
     }
+
+    // Two arms asserting "a matching (or null) clientVersion connects and leaves the daemon alive"
+    // were written here and deliberately removed rather than kept: they passed with the #1260 bug
+    // restored, so they discriminated nothing. The reason is structural, not fixable by a better
+    // assertion. Under #998 every RoomClient in a test must pass spawnDaemonOnDemand: false, and
+    // with that false the skew branch does not shut anything down — it falls through to "keep using
+    // this daemon" and connects, exactly as the matching branch does. The two outcomes are
+    // indistinguishable from outside the client. Making them distinguishable means enabling the
+    // spawn path #998 forbids in a test, which is a worse trade than an untested branch.
+    //
+    // So the guard for #1260 is DesktopVersionLockstepTests, which is what the issue's enforcement
+    // clause asked for and the only instrument that can actually fail on the defect. It lives in its
+    // own file because it needs no daemon, and every test in this class starts one.
 }

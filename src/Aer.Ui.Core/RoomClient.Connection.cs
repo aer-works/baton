@@ -71,13 +71,7 @@ public sealed partial class RoomClient
             if (response.IsSuccessStatusCode)
             {
                 var meta = await response.Content.ReadFromJsonAsync<DaemonVersionInfo>(cancellationToken: cancellationToken).ConfigureAwait(true);
-                // #1260: this reads Aer.Ui.Core's assembly version, which is pinned static while the
-                // daemon's moves with release-please — so the comparison below can never succeed and
-                // the skew branch is taken on every connect. Left as measured rather than fixed here;
-                // which assembly the client should name is that issue's question.
-                var clientVersion = typeof(RoomClient).Assembly.GetName().Version?.ToString() ?? "1.0.0";
-
-                if (meta != null && meta.Version == clientVersion)
+                if (meta != null && (_clientVersion == null || meta.Version == _clientVersion))
                 {
                     _isClientMode = true;
                     await StartWebSocketListenerAsync(_activeDaemonUrl, token, cancellationToken).ConfigureAwait(true);
