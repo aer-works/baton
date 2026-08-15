@@ -1028,7 +1028,7 @@ namespace Aer.Daemon
                 // its own to resolve and fell back to whichever room was run last.
                 try
                 {
-                    MaterializeRoomBindings(request.DirectoryPath, request.BindingsFilePath);
+                    MaterializeRoomBindings(request.DirectoryPath, request.BindingsFilePath, overwrite: true);
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -1183,7 +1183,16 @@ namespace Aer.Daemon
 
                     try
                     {
-                        MaterializeRoomBindings(request.DirectoryPath, request.BindingsFilePath);
+                        BindRoomIfStillUnbound(request.DirectoryPath, request.BindingsFilePath);
+                    }
+                    catch (WorkflowLockedException ex)
+                    {
+                        // Every holder of this lock releases in milliseconds, so reaching here means
+                        // something is genuinely stuck. Same answer the permissions read route gives,
+                        // for the same reason: contended is not broken.
+                        return Results.Problem(
+                            $"Baton could not give this room its own copy of the worker setup: the room was busy ({ex.Message}). Try again.",
+                            statusCode: StatusCodes.Status503ServiceUnavailable);
                     }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
@@ -2256,16 +2265,57 @@ namespace Aer.Daemon
         }
 
         /// <summary>
-        /// Gives <paramref name="roomDirectoryPath"/> its own copy of <paramref name="sourceBindingsFilePath"/>
-        /// — decision 0056's register — replacing any previous copy, since re-binding is a per-run choice.
+        /// 0057 rule 3's first bind: gives a room its own worker setup if — and only if — it still has
+        /// none when the room-events lock is held. That record holds the measurement of why the lock
+        /// is what makes first-bind true rather than the move, and why Run stays outside it.
         /// </summary>
+        /// <remarks>
+        /// <b>The whole body is the critical section, and that is the point of it being a method.</b>
+        /// The guard has to span the check <em>and</em> the write: released between them, two decides
+        /// each take it in turn, each find the room unbound, and both materialize — the exact
+        /// check-then-write window rule 3 closes, reopened while still looking guarded. No test in the
+        /// suite can tell that shape apart from this one (the lock-held arm answers 503 either way,
+        /// since it never reaches the check), so the scope is defended structurally instead: narrowing
+        /// it now means moving code out of this method, which is a visible act rather than a tidy-up.
+        /// </remarks>
+        private static void BindRoomIfStillUnbound(string roomDirectoryPath, string sourceBindingsFilePath)
+        {
+            using var bindGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
+                roomDirectoryPath, TimeSpan.FromSeconds(2), "first bind");
+
+            // Re-read under the guard. The caller's check is an optimisation; this is the one that
+            // decides, and a decide that loses here proceeds against the room's own copy exactly as
+            // 0056 rule 4 says it should.
+            if (File.Exists(AerPaths.RoomBindingsFile(roomDirectoryPath)))
+            {
+                return;
+            }
+
+            MaterializeRoomBindings(roomDirectoryPath, sourceBindingsFilePath, overwrite: false);
+        }
+
+        /// <summary>
+        /// Gives <paramref name="roomDirectoryPath"/> its own copy of <paramref name="sourceBindingsFilePath"/>
+        /// — decision 0056's register.
+        /// </summary>
+        /// <param name="overwrite">
+        /// <c>true</c> replaces any previous copy, which is Run's semantic: 0056 rule 1 makes re-binding a
+        /// per-run choice. <c>false</c> is 0057 rule 3's first-bind-only mode for the decide unstick path,
+        /// where losing to a register that appeared mid-call is not a failure — see that record for why
+        /// the loser is then correct to carry on.
+        /// <para>
+        /// Deliberately not defaulted. Both callers name it, because "which of these two rooms-worth of
+        /// worker setup wins" is not a question a call site should be able to answer by omission.
+        /// </para>
+        /// </param>
         /// <remarks>
         /// Written to a sibling temp file and moved into place rather than copied over the live one.
         /// #1230's second reader named the exposure this closes: once the room's copy IS the register, a
         /// process killed mid-copy leaves a truncated `bindings.json` where a previously good one was —
         /// strictly worse than the old behaviour, which could only orphan a disposable global slot.
-        /// `File.Move(overwrite: true)` replaces atomically on both NTFS and POSIX, so a reader sees the
-        /// old file or the new one and never a half-written one.
+        /// `File.Move` puts the file in place atomically on both NTFS and POSIX, so a reader sees the
+        /// old file or the new one and never a half-written one — in either <paramref name="overwrite"/>
+        /// mode.
         /// <para>
         /// The same-file check is by full path, case-insensitively: a caller may legitimately pass the
         /// room's own copy back (it is the Run dialog's pre-fill after the first run), and copying a file
@@ -2274,7 +2324,7 @@ namespace Aer.Daemon
         /// temp-and-move keeps that self-copy atomic too.
         /// </para>
         /// </remarks>
-        private static void MaterializeRoomBindings(string roomDirectoryPath, string sourceBindingsFilePath)
+        private static void MaterializeRoomBindings(string roomDirectoryPath, string sourceBindingsFilePath, bool overwrite)
         {
             var roomBindings = AerPaths.RoomBindingsFile(roomDirectoryPath);
             if (string.Equals(
@@ -2290,8 +2340,22 @@ namespace Aer.Daemon
             var staging = roomBindings + $".{Guid.NewGuid():N}.tmp";
             try
             {
+                // Deliberately outside the swallow below: a staging copy that fails because the source
+                // vanished or the disk is full is a real failure with a real answer, and the guard
+                // "did the destination appear?" cannot tell it apart from losing the race. Scoping
+                // the catch to the move alone leaves only one thing that condition can mean.
                 File.Copy(sourceBindingsFilePath, staging, overwrite: true);
-                File.Move(staging, roomBindings, overwrite: true);
+
+                try
+                {
+                    File.Move(staging, roomBindings, overwrite);
+                }
+                catch (IOException) when (!overwrite && File.Exists(roomBindings))
+                {
+                    // #1262 / 0057 rule 3: first bind wins. The room now has bindings, so the losing
+                    // caller proceeds against the room's copy. Reachable even under rule 3's lock,
+                    // because Run stays outside it and can land a register mid-flight.
+                }
             }
             finally
             {

@@ -44,10 +44,11 @@ classification. This record discharges that obligation.
 **Four rules, and they answer different questions — conflating them is how the guard came to be
 credited with work it cannot do.**
 
-**Stated plainly, because a record that reads as settled fact is how a reader gets misled: only rules
-1 and 2 are built as of this record's date.** Rule 3 is #1262 and rule 4 is #1257, both open, both
-ruled here and neither shipped. Everything below describes what the rules require, not what the tree
-does — check the issues before relying on rule 3 or rule 4 being in force.
+**Stated plainly, because a record that reads as settled fact is how a reader gets misled: rules 1, 2
+and 3 are built; rule 4 is not.** Rule 4 is #1257, open, ruled here and unshipped — check it before
+relying on that rule being in force. Rule 3 shipped with #1262, and **its mechanism is not the one
+this record first described**: the paragraph below carries what was measured and what replaced it,
+because the original was true on Windows and false on POSIX.
 
 **1. The register is written atomically.** `WorkerBindingConfigWriter.SaveToFileAsync` serializes,
 stages to a uniquely-named sibling, and `File.Move`s over the target — the mechanics
@@ -63,11 +64,36 @@ update. `bindings.json` writes neither log, and it goes on `room-events.lock` ra
 because what they must not interleave with is each other and the room's own event appends, not the
 executing engine.
 
-**3. The first bind wins, and no lock is involved.** `MaterializeRoomBindings` gains a mode: overwrite
-for Run, which 0056 rule 1 makes an explicit per-run choice, and first-bind-only for the decide
-unstick path, expressed as `File.Move(overwrite: false)`. The move *is* the check, so the
-check-then-write window stops existing rather than being guarded. A loser proceeds against the room's
-copy, which is exactly what 0056 rule 4 already prescribes for a room that has bindings.
+**3. The first bind wins, and the room-events lock is what makes it true.** `MaterializeRoomBindings`
+gains a mode: overwrite for Run, which 0056 rule 1 makes an explicit per-run choice, and
+first-bind-only for the decide unstick path. The unstick path checks and materialises **inside**
+`ConcurrencyGuard.AcquireRoomEventsWithin`, re-reading the destination under the guard, because rule 2
+already classifies check-then-write writers onto that lock and this is one. A loser proceeds against
+the room's copy, which is exactly what 0056 rule 4 already prescribes for a room that has bindings.
+Losing the lock itself is answered 503 — the room is busy, the same fact the read route reports the
+same way.
+
+`File.Move(overwrite: false)` stays as the inner move, but it is **not** what enforces first-bind, and
+this record originally said it was. Measured: that mode is self-checking on Windows, where `MoveFileEx`
+without `MOVEFILE_REPLACE_EXISTING` is one kernel-mediated rename; on POSIX the BCL implements it as
+`LStat` on the destination followed by a plain `rename(2)` — the runtime's own comment concedes *"these
+checks are not atomic"* — so two callers can both find the destination absent and the second silently
+replaces the first. Last write wins, no exception raised, which is precisely the defect this rule
+exists to close. What POSIX did get from the move alone was a narrowing rather than nothing: a winner
+landing before the loser's `LStat` sends it down `LinkOrCopyFile`, where `link()` fails `EEXIST` and
+throws. Only the two-syscall window leaked, and the lock closes that.
+
+**Two writers deliberately stay outside the lock**, and the residual is accepted rather than
+overlooked. `/api/rooms/run` is the first: a Run racing a first bind is order-ambiguous by
+construction, and if Run lands second it overwrites by design. The inner swallow therefore remains
+reachable, which is why it is still there.
+
+The second is **`aer dispatch`**, which writes a room's register through
+`WorkerBindingConfigWriter.SaveToFileAsync` directly rather than through `MaterializeRoomBindings`,
+takes no guard, and — unlike the two `MaterializeToDirectoryAsync` paths — has no
+already-a-room refusal, so nothing stops it targeting a directory a client is deciding in. It is the
+same class of residual as Run and no worse, but this record named only Run until #1262's second reader
+found it, and a residual that is not enumerated is not actually bounded.
 
 **4. A live room's register is rewritten only through the room's own surfaces.** The bindings editor
 refuses to save over one, and says what to do instead: edit the source file and Run the room, or use
@@ -103,7 +129,9 @@ revocation that silently un-revokes is the case this rule exists for.
 |---|---|---|
 | `SaveToFileAsync` truncates before writing | `File.WriteAllTextAsync`'s documented behaviour, and the reason #1249's read takes the guard at all | rule 1 is unnecessary and the guard was always sufficient |
 | A crash mid-write leaves a truncated register while the guard is held | a lock is released by process exit; the bytes are not restored | the guard already covers durability and rule 1 buys only concurrency |
-| Stage-and-move is atomic on the platforms we ship | argued and accepted for `MaterializeRoomBindings` when it shipped; `File.Move(overwrite: true)` maps to `MoveFileEx`/`rename` | rule 1 relocates the window rather than closing it, and the register needs a different durability story |
+| Stage-and-move is atomic on the platforms we ship | argued and accepted for `MaterializeRoomBindings` when it shipped; `File.Move(overwrite: true)` maps to `MoveFileEx`/`rename`. Atomic **because the staging file is a same-directory sibling** — POSIX falls back to non-atomic copy-then-delete on `EXDEV`, which a staging path on another filesystem would reach | rule 1 relocates the window rather than closing it, and the register needs a different durability story |
+| `File.Move(overwrite: false)` is not a portable atomic check | **read from the runtime's own source**, at `src/libraries/System.Private.CoreLib/src/System/IO/FileSystem.Unix.cs` in `dotnet/runtime` — open `MoveFile`'s `overwrite == false` branch and re-check it rather than taking this row's word. It `LStat`s the destination and, finding it absent, calls plain `rename(2)`, which replaces unconditionally; the method carries its own comment that *"these checks are not atomic"*. Only when that fast path fails does it reach `LinkOrCopyFile`, whose `link()` fails `EEXIST` and throws. So the wide window — a winner landing before the loser's `LStat` — does raise, and only the two-syscall window between `LStat` and `rename` leaks. Windows' `MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` is kernel-mediated and fails properly | rule 3's original mechanism was sound and the lock it now takes is ceremony |
+| The decide unstick path holds no other lock when it binds | `/api/rooms/decide` acquires the turn lock later, inside its `Task.Run`, after materialize has returned | rule 3's guard nests inside another lock and can deadlock |
 | An atomic replace can lose to a reader on Windows, and a truncate-write cannot even start | **measured** — #1264's own test: with a reader looping `File.ReadAllText`, the replace raises `UnauthorizedAccessException` and the truncate-write raises `IOException` on its open. Neither happens on POSIX, where the reader instead observes a torn file | the bounded retry in `ReplaceWithRetryAsync` is unnecessary ceremony, and rule 1 costs writers nothing |
 | On Windows that loss happens whatever share mode the reader used | **measured, and the measurement is committed** — `A_replace_loses_to_an_open_handle_whatever_share_mode_it_used` asserts `File.Move(overwrite: true)` fails against a `ReadWrite \| Delete` holder and a `Read` holder alike, with the no-holder arm as the control that keeps the other two from being about the harness. `MoveFileEx` renames with legacy semantics; only a POSIX-semantics rename honours `FILE_SHARE_DELETE`, and that is not reachable from `File.Move`. Scoped to Windows deliberately: POSIX renames over an open handle regardless, so there is nothing there to discriminate | the contention could be removed by opening our own readers delete-tolerant, and the retry would be a workaround rather than the fix (the conclusion #1267 records being drawn wrongly) |
 | A room with bindings ignores a supplied path | [0056](0056-a-room-carries-its-own-worker-bindings.md) rule 4, and `/api/rooms/decide` gates on `!File.Exists` | rule 3's loser is silently wrong rather than correctly ignored, and first-wins needs to report |
@@ -115,8 +143,8 @@ revocation that silently un-revokes is the case this rule exists for.
 
 **Easier, from rule 1 alone.** Every reader of the register — including `aer run` on the command
 line, a future second client, and anything reading after an unclean shutdown — sees one whole file or
-another, with no coordination required and nothing to enlist in. #1257 and #1262 are what rules 4 and
-3 close **when they ship**; neither is closed by this record.
+another, with no coordination required and nothing to enlist in. Rule 4 is what #1257 closes **when it
+ships**; it is not closed by this record.
 
 #1249's read guard survives rule 1 but shrinks, and shrinks further than first written. Its
 justification is no longer "the write truncates". What is left is the Windows-specific one — that
@@ -164,6 +192,13 @@ say — will get a refusal and have to Run the room again. The refusal names tha
 copy records the answer" property is what makes it the correct one, but it is a real loss for whoever
 was doing it.
 
+**A litter rule 3 adds.** `/api/rooms/decide` does not check that `DirectoryPath` names a room before
+binding — rule 4's room-evidence test is the right instrument and is unshipped — so a decide naming an
+arbitrary path with no artifact reference reaches the bind. That path already got a directory and a
+`bindings.json` before rule 3; what rule 3 adds is a `room-events.lock` and its holder file, which
+would not previously have been written for a non-room. Small, and the same shape as the litter below,
+but new and caused by this rule.
+
 **A litter rule 1 accepts.** A process killed between the staging write and the move leaves a
 `bindings.json.<guid>.tmp` behind, and nothing sweeps them. The promise is about the target file,
 which is untouched — but the staging files accumulate silently across crashes, and no component owns
@@ -173,6 +208,13 @@ removing them.
 file was ignored. That is consistent — it is the same silence a decide one second later would get
 under 0056 rule 4 — but it means "I supplied bindings and the room bound to something else" is
 unobservable. Making it observable needs a response field, which is a wider change than this record.
+
+**A cost rule 3 gained when its mechanism changed.** The first bind now takes a lock, so a decide
+against an un-bound room can be refused with a 503 where before it could only succeed. The window is
+one short guarded stretch on a path that exists solely for rooms made before rooms carried their own
+worker setup, and every holder of that lock releases in milliseconds — the same budget the read route
+already spends. What is bought is that the room's worker setup is decided, rather than being whichever
+of two callers the scheduler happened to put second.
 
 **Not covered.** Whether a room's register should be versioned rather than overwritten per run
 (0056's own "Harder" raised it and left it), and whether an unparseable register should fail with a
