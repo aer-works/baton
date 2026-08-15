@@ -227,7 +227,7 @@
       </StackPanel>
 
       <!-- vocabulary-ok: technical worker-bindings editor heading -->
-      <TextBlock Classes="heading" Text="Worker-bindings editor (create or edit a bindings file — never persisted in a room directory):" />
+      <TextBlock Classes="heading" Text="Worker-bindings editor (create or edit a standalone bindings file):" />
       <StackPanel Orientation="Horizontal" Spacing="8">
         <TextBlock Text="Bindings file:" VerticalAlignment="Center" /> <!-- vocabulary-ok: technical file label -->
         <TextBox x:Name="BindingsEditorPathBox" Width="360" />

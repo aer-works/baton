@@ -13,8 +13,8 @@ namespace Aer.Ui.Core;
 /// in-memory editing against an explicit baseline with dirty tracking; <c>MainWindow</c>'s
 /// New/Open-in-editor/Save bindings actions own all file I/O (the same state-in-VM/IO-in-window
 /// split). This editor only ever touches bindings *files* (UI spec §4, §9) — bindings are
-/// deliberately not template data and are never persisted in a room directory (M14 Phase 2's
-/// decision of record), so nothing here reaches a bound room either.
+/// deliberately not template data; a room carries its own copy as its register (0056), and saving
+/// here refuses to save over a live room's register (0057 rule 4).
 /// <para>
 /// <b>Dirty-tracking decision of record:</b> unlike <see cref="TemplateEditorViewModel"/>, this
 /// cannot compare baseline-vs-candidate by record <c>==</c>, because a template save's candidate is
