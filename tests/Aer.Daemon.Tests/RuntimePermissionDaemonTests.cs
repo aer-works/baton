@@ -1013,4 +1013,115 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
             await app.StopAsync(TestContext.Current.CancellationToken);
         }
     }
+
+    /// <summary>
+    /// #1238: the endpoint that gives a standing permission back — see <c>RevokeAsync</c> for what
+    /// answering a persisting rung used to leave a person stuck with.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately drives the round trip through HTTP rather than calling the primitive: what the
+    /// primitive's own tests cannot see is whether the endpoint reaches it at all, with the right
+    /// worker, under the room-events guard — the same seam #1240's reviewer found unwired on a
+    /// sibling endpoint. The three arms are one call each: the withdrawal, the second withdrawal that
+    /// must not read as an error, and the refusal of a kind that does not exist.
+    /// </remarks>
+    [Fact]
+    public async Task RevokePermission_TakesTheStandingShellPermissionBack_AndSaysWhichHappened()
+    {
+        var appBuilt = new TaskCompletionSource<Microsoft.AspNetCore.Builder.WebApplication>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var daemonTask = DaemonHost.RunDaemonAsync(["--port", "0", "--no-mutex"], null, onBuilt: app => appBuilt.TrySetResult(app));
+        var app = await appBuilt.Task;
+        try
+        {
+            string baseUrl = "";
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var server = app.Services.GetService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+                var addresses = server?.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+                if (addresses is { Count: > 0 })
+                {
+                    baseUrl = addresses.First().TrimEnd('/');
+                    break;
+                }
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon server binding
+            }
+
+            using var client = new HttpClient();
+            var tokenFile = Path.Combine(AerPaths.Root, "daemon.token");
+            if (File.Exists(tokenFile))
+            {
+                var token = (await File.ReadAllTextAsync(tokenFile, TestContext.Current.CancellationToken)).Trim();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var roomDir = Path.Combine(Path.GetTempPath(), $"daemon-revoke-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(roomDir);
+            try
+            {
+                var bindingsPath = Path.Combine(roomDir, "bindings.json");
+                await WorkerBindingConfigWriter.SaveToFileAsync(
+                    new Dictionary<string, WorkerBindingConfigEntry>
+                    {
+                        [InteractiveSessionMaterializer.DefaultWorkerName] = new(
+                            "claude",
+                            new WorkerContract(InteractiveSessionMaterializer.DefaultWorkerName, [], [], []),
+                            "Chat.",
+                            TimeSpan.FromMinutes(5),
+                            PermissionGrant: new PermissionGrant(RunShellCommands: true)),
+                    },
+                    bindingsPath,
+                    TestContext.Current.CancellationToken);
+
+                var revoked = await client.PostAsJsonAsync(
+                    $"{baseUrl}/api/rooms/permissions/revoke",
+                    new { directoryPath = roomDir, revokeKind = PermissionRevokeKind.RoomShell },
+                    TestContext.Current.CancellationToken);
+
+                Assert.True(revoked.IsSuccessStatusCode, await revoked.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+                Assert.Contains(
+                    nameof(PermissionRevokeOutcome.Revoked),
+                    await revoked.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+                // The file, not just the response: the shell is genuinely gone from the binding the
+                // next turn reads.
+                var afterGrant = (await WorkerBindingConfigParser.LoadFromFileAsync(bindingsPath, TestContext.Current.CancellationToken))
+                    [InteractiveSessionMaterializer.DefaultWorkerName].PermissionGrant;
+                Assert.False(afterGrant!.RunShellCommands);
+
+                // Again — still 200, and it says nothing was left to take back rather than reporting a
+                // withdrawal that did not happen.
+                var again = await client.PostAsJsonAsync(
+                    $"{baseUrl}/api/rooms/permissions/revoke",
+                    new { directoryPath = roomDir, revokeKind = PermissionRevokeKind.RoomShell },
+                    TestContext.Current.CancellationToken);
+
+                Assert.True(again.IsSuccessStatusCode);
+                Assert.Contains(
+                    nameof(PermissionRevokeOutcome.NothingToRevoke),
+                    await again.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+                // And a kind that does not exist is refused by name, not quietly treated as a nearby
+                // one — DenyAlways in particular, since lifting a standing refusal is exactly what
+                // revocation must never become.
+                var unknown = await client.PostAsJsonAsync(
+                    $"{baseUrl}/api/rooms/permissions/revoke",
+                    new { directoryPath = roomDir, revokeKind = PermissionDecisionKind.DenyAlways },
+                    TestContext.Current.CancellationToken);
+
+                Assert.Equal(System.Net.HttpStatusCode.BadRequest, unknown.StatusCode);
+                Assert.Contains(
+                    PermissionRevokeKind.RoomShell,
+                    await unknown.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+            }
+            finally
+            {
+                DirectoryCleanup.DeleteRecursively(roomDir);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
 }

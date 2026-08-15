@@ -248,4 +248,200 @@ public class RuntimePermissionGrantAmenderTests
             DirectoryCleanup.DeleteRecursively(roomDir);
         }
     }
+
+    /// <summary>
+    /// #1238: revoking the room-wide shell permission actually narrows what the NEXT turn is given.
+    /// Cross-instrument for the same reason the amend tests are — the claim is not "a boolean flipped
+    /// in a file" but "the adapter stops pre-approving the shell", and only the round trip through the
+    /// real writer, parser and translator can say that.
+    /// </summary>
+    [Fact]
+    public async Task Revoking_the_room_shell_narrows_what_the_adapter_pre_approves()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomDir = Path.Combine(Path.GetTempPath(), $"revoke-room-{Guid.NewGuid():N}");
+        try
+        {
+            // Granted the widest rung first, through the real amend path rather than a hand-built
+            // grant: what is revoked has to be what answering the ladder actually produces.
+            var bindingsPath = await WriteSeedRoomAsync(roomDir, grant: null, ct);
+            await RuntimePermissionGrantAmender.AmendAsync(
+                roomDir, Worker, PermissionDecisionKind.AllowRoom, "Bash", """{"command":"ls"}""", ct);
+
+            var granted = await ReloadGrantAsync(bindingsPath, ct);
+            Assert.True(granted!.RunShellCommands);
+            Assert.Contains("Bash", PreApprovedTools(granted));
+
+            var outcome = await RuntimePermissionGrantAmender.RevokeAsync(
+                roomDir, Worker, PermissionRevokeKind.RoomShell, cancellationToken: ct);
+
+            Assert.Equal(PermissionRevokeOutcome.Revoked, outcome);
+
+            var revoked = await ReloadGrantAsync(bindingsPath, ct);
+            Assert.False(revoked!.RunShellCommands);
+            Assert.Empty(revoked.ShellCommandPatterns ?? []);
+            Assert.DoesNotContain("Bash", PreApprovedTools(revoked));
+
+            // Everything else the worker was given is untouched — a revocation that quietly reset the
+            // whole grant would pass every assertion above.
+            Assert.True(revoked.ReadFiles);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
+
+    /// <summary>
+    /// #1238: revoking ONE command family takes that one back and leaves its siblings alone. The
+    /// sibling is the discriminator — a revocation that cleared the list would pass an assertion that
+    /// only checked the named family was gone.
+    /// </summary>
+    [Fact]
+    public async Task Revoking_one_command_leaves_the_others_standing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomDir = Path.Combine(Path.GetTempPath(), $"revoke-cmd-{Guid.NewGuid():N}");
+        try
+        {
+            var bindingsPath = await WriteSeedRoomAsync(roomDir, grant: null, ct);
+            await RuntimePermissionGrantAmender.AmendAsync(
+                roomDir, Worker, PermissionDecisionKind.AllowCommandInRoom, "Bash", """{"command":"rm -rf build/"}""", ct);
+            await RuntimePermissionGrantAmender.AmendAsync(
+                roomDir, Worker, PermissionDecisionKind.AllowCommandInRoom, "Bash", """{"command":"git status"}""", ct);
+
+            var outcome = await RuntimePermissionGrantAmender.RevokeAsync(
+                roomDir, Worker, PermissionRevokeKind.CommandInRoom, "rm *", ct);
+
+            Assert.Equal(PermissionRevokeOutcome.Revoked, outcome);
+
+            var revoked = await ReloadGrantAsync(bindingsPath, ct);
+            Assert.Equal(["git *"], revoked!.ShellCommandPatterns);
+
+            // Both directions at the enforcing matcher, which is what a worker actually meets.
+            Assert.False(ShellCommandPatternMatcher.IsAllowed("rm -rf build/", revoked.ShellCommandPatterns));
+            Assert.True(ShellCommandPatternMatcher.IsAllowed("git status", revoked.ShellCommandPatterns));
+
+            // The shell itself stays granted: taking back one family is not taking back the shell.
+            Assert.True(revoked.RunShellCommands);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
+
+    /// <summary>
+    /// #1238's polarity pair, and the one this feature could most easily get wrong: revocation is not
+    /// a route back into a standing refusal. <see cref="PermissionRevokeKind"/> states why; this pins
+    /// that the code obeys it.
+    /// </summary>
+    [Fact]
+    public async Task Revoking_an_allow_never_lifts_a_standing_refusal()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomDir = Path.Combine(Path.GetTempPath(), $"revoke-deny-{Guid.NewGuid():N}");
+        try
+        {
+            var bindingsPath = await WriteSeedRoomAsync(roomDir, grant: null, ct);
+            await RuntimePermissionGrantAmender.AmendAsync(
+                roomDir, Worker, PermissionDecisionKind.AllowRoom, "Bash", """{"command":"ls"}""", ct);
+            await RuntimePermissionGrantAmender.AmendAsync(
+                roomDir, Worker, PermissionDecisionKind.DenyAlways, "Bash", """{"command":"curl https://evil.example"}""", ct);
+
+            // Both revocations, since either could be the one that reaches too far.
+            Assert.Equal(
+                PermissionRevokeOutcome.Revoked,
+                await RuntimePermissionGrantAmender.RevokeAsync(roomDir, Worker, PermissionRevokeKind.RoomShell, cancellationToken: ct));
+
+            var afterRoomRevoke = await ReloadGrantAsync(bindingsPath, ct);
+            Assert.Equal(["curl *"], afterRoomRevoke!.DeniedShellCommandPatterns);
+
+            // And it is still ENFORCED, not merely still written down: the deny reaches the claude
+            // adapter's --disallowedTools on the interactive path even with the shell withdrawn.
+            Assert.Contains("Bash(curl *)", ClaudeDisallowedToolsFor(afterRoomRevoke));
+
+            // There is no revoke kind that names the deny list at all — asking for one is a caller bug,
+            // refused loudly rather than quietly interpreted as some nearby operation.
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+                RuntimePermissionGrantAmender.RevokeAsync(roomDir, Worker, PermissionDecisionKind.DenyAlways, "curl *", ct));
+
+            var afterAttempt = await ReloadGrantAsync(bindingsPath, ct);
+            Assert.Equal(["curl *"], afterAttempt!.DeniedShellCommandPatterns);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
+
+    /// <summary>
+    /// #1238: revoking what was never held is not a failure. A surface that offered revocation would
+    /// otherwise have to prove first what is held, and revoking twice would report an error the second
+    /// time for a state that is exactly what the operator asked for.
+    /// </summary>
+    [Fact]
+    public async Task Revoking_what_was_never_held_is_a_no_op_not_a_failure()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomDir = Path.Combine(Path.GetTempPath(), $"revoke-noop-{Guid.NewGuid():N}");
+        try
+        {
+            var bindingsPath = await WriteSeedRoomAsync(roomDir, grant: null, ct);
+
+            Assert.Equal(
+                PermissionRevokeOutcome.NothingToRevoke,
+                await RuntimePermissionGrantAmender.RevokeAsync(roomDir, Worker, PermissionRevokeKind.RoomShell, cancellationToken: ct));
+            Assert.Equal(
+                PermissionRevokeOutcome.NothingToRevoke,
+                await RuntimePermissionGrantAmender.RevokeAsync(roomDir, Worker, PermissionRevokeKind.CommandInRoom, "rm *", ct));
+
+            // Idempotence, on the arm that DID something: granting, revoking, revoking again.
+            await RuntimePermissionGrantAmender.AmendAsync(
+                roomDir, Worker, PermissionDecisionKind.AllowRoom, "Bash", """{"command":"ls"}""", ct);
+            Assert.Equal(
+                PermissionRevokeOutcome.Revoked,
+                await RuntimePermissionGrantAmender.RevokeAsync(roomDir, Worker, PermissionRevokeKind.RoomShell, cancellationToken: ct));
+            Assert.Equal(
+                PermissionRevokeOutcome.NothingToRevoke,
+                await RuntimePermissionGrantAmender.RevokeAsync(roomDir, Worker, PermissionRevokeKind.RoomShell, cancellationToken: ct));
+
+            var grant = await ReloadGrantAsync(bindingsPath, ct);
+            Assert.False(grant!.RunShellCommands);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
+
+    /// <summary>
+    /// #1238: a room with no <c>bindings.json</c> reports <see cref="PermissionRevokeOutcome.CouldNotPersist"/>,
+    /// NOT <see cref="PermissionRevokeOutcome.NothingToRevoke"/>. The two are a real distinction here:
+    /// "you hold nothing" and "I cannot tell you what you hold" mean different things to someone who
+    /// just asked for a permission to be withdrawn.
+    /// </summary>
+    [Fact]
+    public async Task Revoking_in_a_room_with_no_bindings_is_reported_as_a_failure_not_a_no_op()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomDir = Path.Combine(Path.GetTempPath(), $"revoke-nofile-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDir);
+        try
+        {
+            Assert.Equal(
+                PermissionRevokeOutcome.CouldNotPersist,
+                await RuntimePermissionGrantAmender.RevokeAsync(roomDir, Worker, PermissionRevokeKind.RoomShell, cancellationToken: ct));
+
+            // And the same for a bindings file that exists but has no such worker.
+            await WriteSeedRoomAsync(roomDir, grant: null, ct);
+            Assert.Equal(
+                PermissionRevokeOutcome.CouldNotPersist,
+                await RuntimePermissionGrantAmender.RevokeAsync(roomDir, "not-a-worker-in-this-room", PermissionRevokeKind.RoomShell, cancellationToken: ct));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
 }
