@@ -9,6 +9,7 @@ using Aer.Flow.Templates;
 using Aer.Ui.Core;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Shapes;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -142,6 +143,9 @@ public partial class MainWindow : Window
     // #1224: on ChatHeaderView now (see its own summary for where that sits and why). Same button,
     // same wiring.
     internal Button StopButton => ChatHeaderControl.StopButton;
+    // #1272: same forwarding pattern as StopButton above — both live on ChatHeaderView.
+    internal ToggleButton PermissionsButton => ChatHeaderControl.PermissionsButton;
+    internal Button ClosePermissionsButton => ChatHeaderControl.ClosePermissionsButton;
     internal TextBlock RunStatusText => RoomViewControl.RunStatusText;
     internal TextBlock StatusText => RoomViewControl.StatusText;
     internal StackPanel StepsPanel => RoomViewControl.StepsPanel;
@@ -302,6 +306,15 @@ public partial class MainWindow : Window
             daemonUrl: daemonUrl,
             clientVersion: typeof(MainWindow).Assembly.GetName().Version?.ToString());
 
+        // #1272: the room's standing-permissions surface is constructed here, not by
+        // MainWindowViewModel, because its two delegates need _session — see
+        // MainWindowViewModel.StandingPermissions for why this replacement is safe.
+        ViewModel.StandingPermissions = new StandingPermissionsViewModel(
+            (roomDirectoryPath, workerName, cancellationToken) =>
+                _session.GetStandingPermissionsAsync(roomDirectoryPath, workerName, cancellationToken),
+            (roomDirectoryPath, revokeKind, shellCommandPattern, workerName, cancellationToken) =>
+                _session.RevokePermissionAsync(roomDirectoryPath, revokeKind, shellCommandPattern, workerName, cancellationToken));
+
         // M16 Phase 4 (issue #153): adapter names are offered from the registry this window was
         // constructed with — reflect, don't invent — carried per-row on WorkerBindingEntryViewModel
         // rather than bound from a shared ancestor, since ItemsControl.ItemTemplate's DataContext is
@@ -321,6 +334,10 @@ public partial class MainWindow : Window
         ViewModel.RoomRunRequested += OnRoomRunRequestedAsync;
         ViewModel.WorkflowSwitchRequested += OnWorkflowSwitchRequestedAsync;
         StopButton.Click += (_, _) => _ = StopAsync();
+        // #1272: only this codebehind knows which room is open (_session.CurrentRoomDirectoryPath),
+        // so the toggle has to originate here rather than as a bound ViewModel command.
+        PermissionsButton.Click += (_, _) => ViewModel.StandingPermissions.ToggleOpen(_session.CurrentRoomDirectoryPath);
+        ClosePermissionsButton.Click += (_, _) => ViewModel.StandingPermissions.ToggleOpen(_session.CurrentRoomDirectoryPath);
         NewTemplateButton.Click += (_, _) => NewTemplate();
         EditTemplateButton.Click += (_, _) => _ = OpenTemplateInEditorAsync(TemplateEditorPathBox.Text ?? string.Empty);
         SaveTemplateButton.Click += (_, _) => _ = SaveTemplateAsync(TemplateEditorPathBox.Text ?? string.Empty);

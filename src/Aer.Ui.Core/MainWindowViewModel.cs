@@ -219,6 +219,18 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     public bool HasRoomTurnHostBanner => RoomTurnHostBanner is not null;
 
+    /// <summary>
+    /// Standing permissions viewing and revocation state for the open room (issue #1272).
+    /// Constructed here with no delegates, so an unwired binding fails safe (LoadAsync no-ops)
+    /// rather than throwing; <c>MainWindow</c>'s constructor replaces this with a wired instance
+    /// before the window's first render — the same state-in-VM/I-O-in-window split
+    /// <see cref="BindingsEditorViewModel"/>'s class comment describes. An <see cref="ObservableProperty"/>
+    /// because that replacement has to be visible to XAML bindings already resolved against the
+    /// original instance; a plain setter would leave them looking at the unwired one.
+    /// </summary>
+    [ObservableProperty]
+    private StandingPermissionsViewModel standingPermissions = new();
+
     /// <summary>The open room's steps as the drill-in surface (M19 Phase 3, #188) — rebuilt wholesale on every load/refresh by <see cref="RebuildRoomSteps"/>.</summary>
     public ObservableCollection<StepItemViewModel> RoomSteps { get; } = [];
 
