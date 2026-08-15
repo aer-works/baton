@@ -137,8 +137,36 @@ One room, one worker. This is the screen you look at most, so it has to be borin
 > daemon could not say, and renders as no card: never as *finished*.
 >
 > A **failed** room still gets no terminal card, on either surface — #617's failed-step banner says
-> what broke and offers the worker that broke it, which is strictly more. The phone does not have that
-> banner yet (#1245), and a failed room there is blank until it does.
+> what broke and offers the worker that broke it, which is strictly more. The phone did not have that
+> banner on the day of this amendment (#1245), and a failed room there was blank; the amendment below
+> is where that half lands.
+
+> **Amendment (2026-08-15, #1245 / umbrella #1196):** The phone's half of #617's failed-step banner.
+> It is filed and amended separately from the card above because it answers a different question —
+> that one says a room ended, this one says a step broke — and the two can never appear together:
+> `HomeViewModel.DeriveStatus` reaches Failed before any status the terminal card speaks for whenever
+> a step has failed for a reason other than exhaustion.
+>
+> The clause governing what crosses is the one above, applied to a banner rather than a card, and it
+> subtracts more here. The desktop banner offers **three** things, and they do not all fall for the
+> same reason. *Try again* and *Ask the worker to fix it* both need a run the phone cannot start, so
+> the clause above disposes of them. ***Show full output* does not** — it previews an artifact already
+> written, and the phone has the very mechanism it would need, since the paused-step card already
+> fetches an output file the same way. It is left out because this amendment is about saying what
+> broke, not about reading the wreckage, and one is worth shipping without the other; it is filed as
+> **#1254** rather than justified away.
+>
+> What crosses is the naming — which step, which worker, why — and the stderr excerpt, kept as its own
+> block rather than folded into the sentence, because the separator between them is a format the
+> engine writes and a reader who saw one run-on string could not tell which half was the engine's
+> account and which the worker's output.
+>
+> **An out-of-plan step is not drawn as failed**, on this surface for the same reason as on the
+> desktop (0026, and #1116's must-fix): it is waiting on quota, not broken, and the calm word is the
+> entire point of saying "Out of plan" at all.
+>
+> Where the shape names no worker for a failed step the clause is dropped rather than filled with the
+> step id — a name the person would go looking for and not find is worse than one fact fewer.
 
 Desktop · one worker
 

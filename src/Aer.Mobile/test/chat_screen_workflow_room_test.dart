@@ -9,6 +9,7 @@ import 'package:aer_mobile/chat_screen.dart';
 import 'package:aer_mobile/daemon/daemon_client.dart';
 import 'package:aer_mobile/daemon/models.dart';
 import 'package:aer_mobile/daemon/recorded_decision_wording.dart';
+import 'package:aer_mobile/failed_step_card.dart';
 import 'package:aer_mobile/paused_step_card.dart';
 import 'package:aer_mobile/room_stopped_card.dart';
 
@@ -38,15 +39,19 @@ class _FakeDaemonClient extends DaemonClient {
   /// Set to make [decide] hang, so a test can assert the card's rungs are disabled mid-flight.
   Completer<void>? decideGate;
 
-  /// Fails the test loudly rather than silently returning empty: a workflow room must never ask for
-  /// a session, and a fake that quietly answered would hide exactly the defect this pins.
+  /// Left null for every workflow-room test, which is what makes the two throws below load-bearing:
+  /// a workflow room must never ask for a session, and a fake that quietly answered would hide
+  /// exactly the defect #1226 pins. Set only where a test needs the *session* rendering to compare
+  /// against — an opt-in, so no existing test loses the guard.
+  SessionMetadata? sessionMetadata;
+
   @override
   Future<SessionMetadata> getSession(String sessionId) async =>
-      throw StateError('getSession must not be called for a room with no session');
+      sessionMetadata ?? (throw StateError('getSession must not be called for a room with no session'));
 
   @override
   Future<String> getSessionMode(String sessionId) async =>
-      throw StateError('getSessionMode must not be called for a room with no session');
+      sessionMetadata != null ? 'default' : throw StateError('getSessionMode must not be called for a room with no session');
 
   void push(RoomProjection projection) => _projectionController.add(projection);
 
@@ -107,6 +112,70 @@ void main() {
         ],
         workerAdapters: const {'critic': 'claude'},
       );
+
+  /// The real WS wire fixture, parsed rather than hand-built, so a rename of any sibling on the
+  /// daemon side reddens here instead of silently rendering nothing. It carries a Running step, a
+  /// Paused one, and a `Permanent`-classification Failed one — the last is what #1245's card draws.
+  final wireFixture =
+      jsonDecode(File('test/fixtures/wire/room_projection.ws.json').readAsStringSync()) as Map<String, dynamic>;
+
+  /// [failedClassification] and [failedReason] rewrite the fixture's failed step in place;
+  /// [withFailedStep] `false` drops it, and [withFailedStepDefinition] `false` leaves the step but
+  /// removes the shape entry that names its worker.
+  ///
+  /// Dropping the step is what the terminal-card tests want: `HomeViewModel.DeriveStatus` reaches
+  /// Failed before Finished, Cancelled, or Stopped whenever a step has failed for any reason but
+  /// exhaustion, so a room carrying both is a state the daemon cannot emit — pushing one would ask
+  /// those tests to assert against a projection that never arrives.
+  RoomProjection fixtureProjection({
+    Object? roomCardStatus = _unset,
+    bool withFailedStep = true,
+    bool withFailedStepDefinition = true,
+    String? failedClassification,
+    String? failedReason,
+  }) {
+    bool isFailed(Map<String, dynamic> step) => step['Status'] == 'Failed';
+
+    final json = Map<String, dynamic>.from(wireFixture);
+    json['DirectoryPath'] = '/tasks/foo';
+    json['SessionId'] = null;
+    if (roomCardStatus != _unset) {
+      if (roomCardStatus == null) {
+        json.remove('RoomCardStatus');
+      } else {
+        json['RoomCardStatus'] = roomCardStatus;
+      }
+    }
+
+    final state = Map<String, dynamic>.from(json['State'] as Map<String, dynamic>);
+    final steps =
+        (state['Steps'] as List<dynamic>).map((s) => Map<String, dynamic>.from(s as Map<String, dynamic>)).toList();
+    final failedIds = steps.where(isFailed).map((s) => s['StepId']).toSet();
+
+    state['Steps'] = withFailedStep
+        ? [
+            for (final step in steps)
+              if (!isFailed(step))
+                step
+              else
+                {
+                  ...step,
+                  'LatestFailureClassification': ?failedClassification,
+                  'LatestFailureReason': ?failedReason,
+                },
+          ]
+        : steps.where((s) => !isFailed(s)).toList();
+    json['State'] = state;
+
+    if (!withFailedStepDefinition) {
+      final snapshot = Map<String, dynamic>.from(json['Snapshot'] as Map<String, dynamic>);
+      snapshot['Steps'] =
+          (snapshot['Steps'] as List<dynamic>).where((s) => !failedIds.contains((s as Map)['StepId'])).toList();
+      json['Snapshot'] = snapshot;
+    }
+
+    return RoomProjection.fromJson(json);
+  }
 
   Future<_FakeDaemonClient> pumpWorkflowRoom(WidgetTester tester) async {
     final client = _FakeDaemonClient();
@@ -331,26 +400,9 @@ void main() {
   /// The projection is built by parsing the real WS wire fixture rather than by hand, so a rename of
   /// either sibling on the daemon side reddens here instead of silently rendering nothing.
   group('A room that has stopped, and the decisions it already answered (#1240)', () {
-    final wireFixture =
-        jsonDecode(File('test/fixtures/wire/room_projection.ws.json').readAsStringSync()) as Map<String, dynamic>;
-
-    RoomProjection fixtureProjection({Object? roomCardStatus = _unset}) {
-      final json = Map<String, dynamic>.from(wireFixture);
-      json['DirectoryPath'] = '/tasks/foo';
-      json['SessionId'] = null;
-      if (roomCardStatus != _unset) {
-        if (roomCardStatus == null) {
-          json.remove('RoomCardStatus');
-        } else {
-          json['RoomCardStatus'] = roomCardStatus;
-        }
-      }
-      return RoomProjection.fromJson(json);
-    }
-
     testWidgets('a finished room says it finished, with no offer it cannot honor', (tester) async {
       final client = await pumpWorkflowRoom(tester);
-      client.push(fixtureProjection(roomCardStatus: 'Finished'));
+      client.push(fixtureProjection(roomCardStatus: 'Finished', withFailedStep: false));
       await tester.pumpAndSettle();
 
       expect(find.text('This room has finished'), findsOneWidget);
@@ -369,7 +421,7 @@ void main() {
     testWidgets('a cancelled room is not told it finished', (tester) async {
       // The #461 sentence, one platform over: "finished" over a room you just stopped.
       final client = await pumpWorkflowRoom(tester);
-      client.push(fixtureProjection(roomCardStatus: 'Cancelled'));
+      client.push(fixtureProjection(roomCardStatus: 'Cancelled', withFailedStep: false));
       await tester.pumpAndSettle();
 
       expect(find.text('You stopped this room'), findsOneWidget);
@@ -378,7 +430,7 @@ void main() {
 
     testWidgets('a room whose process died says nothing is running it', (tester) async {
       final client = await pumpWorkflowRoom(tester);
-      client.push(fixtureProjection(roomCardStatus: 'Stopped'));
+      client.push(fixtureProjection(roomCardStatus: 'Stopped', withFailedStep: false));
       await tester.pumpAndSettle();
 
       expect(find.text('This room stopped mid-run'), findsOneWidget);
@@ -387,14 +439,16 @@ void main() {
       expect(find.textContaining('Resume picks it up'), findsNothing);
     });
 
-    testWidgets('a failed room is left to the failed-step banner, not given a terminal card', (tester) async {
-      // `DeriveRoomStoppedReason` returns null for Failed on the desktop for the same reason. The
-      // phone's own blank-Failed-room defect is #1245 and is not this card's to fix.
+    testWidgets('a failed room is left to the failed-step card, not given a terminal one', (tester) async {
+      // `DeriveRoomStoppedReason` returns null for Failed on the desktop for the same reason. Since
+      // #1245 the phone has the other half, so this asserts the handover rather than a hole: the
+      // failed step draws, and this card stays out of its way.
       final client = await pumpWorkflowRoom(tester);
       client.push(fixtureProjection(roomCardStatus: 'Failed'));
       await tester.pumpAndSettle();
 
       expect(find.byType(RoomStoppedCard), findsNothing);
+      expect(find.byType(FailedStepCard), findsOneWidget);
     });
 
     testWidgets('a push with no derived status announces no ending', (tester) async {
@@ -469,6 +523,12 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(find.byType(PermissionGateCard), findsOneWidget);
       expect(find.byType(RoomStoppedCard), findsOneWidget);
+      // Since #1245 the untouched fixture also carries a non-exhausted failed step, so this push is
+      // now the only place all four kinds of trailing item appear at once — the hardest case for the
+      // hand-rolled index arithmetic, and worth asserting rather than leaving to takeException.
+      // The daemon cannot actually emit this pairing (the amendment says why); a test that renders
+      // it anyway is the cheapest place to notice if that ever stops being true.
+      expect(find.byType(FailedStepCard), findsOneWidget);
     });
 
     test('the sent-back row names its target, and only it does', () {
@@ -490,6 +550,101 @@ void main() {
       // A daemon newer than this app renders its raw value rather than throwing, which would blank
       // the whole transcript over one row.
       expect(wording('SomethingNewerThanThisApp'), 'SomethingNewerThanThisApp');
+    });
+  });
+
+  /// #1245: a Failed workflow room used to render nothing at all. The phone's failure rendering was
+  /// reachable only from the interactive-turn arm of the merge loop, and a workflow room has no
+  /// turns — so the desktop's #617 banner had no counterpart here for the case that most needed one.
+  ///
+  /// Same wire fixture as the group above, and for the same reason: it already carries a Failed
+  /// step, so these tests read the field names the daemon actually sends rather than ones written
+  /// twice.
+  group('A failed step in a workflow room (#1245)', () {
+    testWidgets('says which step failed, which worker, and why', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection());
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FailedStepCard), findsOneWidget);
+      expect(find.text('coder (agy) failed — Syntax error on line 42'), findsOneWidget);
+    });
+
+    testWidgets('an out-of-plan step is not called failed', (tester) async {
+      // #1116's must-fix, one platform over: an ExhaustedUntil step is waiting on quota, not broken,
+      // and 0026's whole point is that the wait reads as calm. A red "failed" card would un-say it.
+      // This is the discriminating arm — a test that only checked "Failed renders" would stay green
+      // against a version that dropped the carve-out.
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection(failedClassification: 'ExhaustedUntil'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FailedStepCard), findsNothing);
+    });
+
+    testWidgets('the stderr tail is shown as an excerpt, not folded into the sentence', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection(failedReason: 'Worker exited with non-zero code 1. stderr: cc: no such file'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('coder (agy) failed — Worker exited with non-zero code 1.'), findsOneWidget);
+      expect(find.text('cc: no such file'), findsOneWidget);
+    });
+
+    testWidgets('a step the shape does not name a worker for drops the clause rather than inventing one', (tester) async {
+      // The fallback that reads as a worker called "coder" is the one this rules out — a name the
+      // person would then go looking for in a room that has none.
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection(withFailedStepDefinition: false));
+      await tester.pumpAndSettle();
+
+      expect(find.text('coder failed — Syntax error on line 42'), findsOneWidget);
+    });
+
+    testWidgets('carries no offer it cannot honor', (tester) async {
+      // Which of the desktop banner's parts cross to a surface with no run flow is the 2026-08-15
+      // amendment's clause; this pins the half it subtracts. Scoped to this card, since the
+      // fixture's paused step legitimately renders its own rungs in the same transcript.
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection());
+      await tester.pumpAndSettle();
+
+      expect(
+        find.descendant(of: find.byType(FailedStepCard), matching: find.byType(ButtonStyleButton)),
+        findsNothing,
+      );
+    });
+
+    testWidgets('sits alongside the paused step rather than replacing it', (tester) async {
+      // The index arithmetic in _buildBody is hand-rolled across five kinds of item, so a room
+      // holding both is what catches an off-by-one that a single-card fixture cannot.
+      final client = await pumpWorkflowRoom(tester);
+      client.push(fixtureProjection());
+      await tester.pumpAndSettle();
+
+      expect(find.byType(PausedStepCard), findsOneWidget);
+      expect(find.byType(FailedStepCard), findsOneWidget);
+    });
+
+    testWidgets('a session room never draws one, however its steps read', (tester) async {
+      // Session rooms take the turn arm that already had a failure rendering; drawing here too would
+      // put two failure cards on one screen.
+      final client = _FakeDaemonClient()
+        ..sessionMetadata = SessionMetadata(
+          sessionId: 'sess-1',
+          roomDirectoryPath: '/tasks/foo',
+          currentAdapter: 'claude',
+          turnCount: 0,
+          turns: const [],
+        );
+      await tester.pumpWidget(MaterialApp(
+        home: ChatScreen(client: client, sessionId: 'sess-1', directoryPath: '/tasks/foo'),
+      ));
+      await tester.pumpAndSettle();
+      client.push(fixtureProjection());
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FailedStepCard), findsNothing);
     });
   });
 }

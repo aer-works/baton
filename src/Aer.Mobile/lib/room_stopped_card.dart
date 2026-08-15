@@ -20,8 +20,9 @@ class RoomStoppedCard extends StatelessWidget {
   const RoomStoppedCard({super.key, required this.roomCardStatus});
 
   /// Whether [roomCardStatus] is one this card speaks for. Failed is deliberately absent — it belongs
-  /// to #617's failed-step banner (the amendment above says why), which the phone does not have yet:
-  /// #1245.
+  /// to #617's failed-step banner (the amendment above says why), whose phone half is `FailedStepCard`
+  /// (#1245). The two can never both speak for one room — the 2026-08-15 amendment says why, and
+  /// `HomeViewModel.DeriveStatus`'s arm ordering is what makes it true.
   static bool speaksFor(String? roomCardStatus) =>
       roomCardStatus == 'Finished' || roomCardStatus == 'Cancelled' || roomCardStatus == 'Stopped';
 
