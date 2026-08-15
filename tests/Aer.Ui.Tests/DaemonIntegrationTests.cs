@@ -11,7 +11,6 @@ using Aer.Flow.Mutation;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;
 using Aer.Tests.Shared;
-using Aer.Ui;
 using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Microsoft.Extensions.DependencyInjection;
@@ -1752,23 +1751,6 @@ public class DaemonIntegrationTests : IAsyncLifetime
         }
     }
 
-    /// <summary>
-    /// #1260 enforcement clause: Aer.Ui (MainWindow) and Aer.Daemon (DaemonHost) are in one
-    /// release-please linked group ("desktop"). Their assembly versions must match so that version
-    /// comparison does not cause unnecessary daemon restarts on launch.
-    /// </summary>
-    [Fact]
-    public void MainWindow_And_DaemonHost_AssemblyVersions_AreEqual()
-    {
-        var desktopVersion = typeof(MainWindow).Assembly.GetName().Version;
-        var daemonVersion = typeof(DaemonHost).Assembly.GetName().Version;
-
-        Assert.True(
-            desktopVersion == daemonVersion,
-            $"Desktop assembly version ({desktopVersion}) does not match daemon host assembly version ({daemonVersion}). " +
-            "Aer.Ui and Aer.Daemon are in one release-please linked group ('desktop'). A divergence means the group was split, not that the test is wrong.");
-    }
-
     // Two arms asserting "a matching (or null) clientVersion connects and leaves the daemon alive"
     // were written here and deliberately removed rather than kept: they passed with the #1260 bug
     // restored, so they discriminated nothing. The reason is structural, not fixable by a better
@@ -1778,6 +1760,7 @@ public class DaemonIntegrationTests : IAsyncLifetime
     // indistinguishable from outside the client. Making them distinguishable means enabling the
     // spawn path #998 forbids in a test, which is a worse trade than an untested branch.
     //
-    // So the guard for #1260 is the version-equality test above, which is what the issue's
-    // enforcement clause asked for and the only instrument that can actually fail on the defect.
+    // So the guard for #1260 is DesktopVersionLockstepTests, which is what the issue's enforcement
+    // clause asked for and the only instrument that can actually fail on the defect. It lives in its
+    // own file because it needs no daemon, and every test in this class starts one.
 }
