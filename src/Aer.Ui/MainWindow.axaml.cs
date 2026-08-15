@@ -815,9 +815,8 @@ public partial class MainWindow : Window
     /// fresh room from <paramref name="workflowTemplateFilePath"/> + <paramref name="bindingsFilePath"/>,
     /// or resumes an already-bound <paramref name="roomDirectoryPath"/> after a pause or stop — the
     /// same <c>RunCommand.ExecuteAsync</c> call <c>aer run</c> makes, reused in-process rather than
-    /// spawning the installed binary (the seam decision this phase resolves). Bindings are never
-    /// record-once-ok: #443 src/Aer.Ui.Core/BindingsEditorViewModel.cs
-    /// persisted in a room directory (M14 Phase 2's decision of record) and the template is only
+    /// spawning the installed binary (the seam decision this phase resolves). Run copies the
+    /// chosen bindings file into the room directory as its register (0056), and the template is only
     /// ever <em>bound from</em> on a fresh start (<see cref="RunOptions.WorkflowFilePath"/>'s own
     /// remarks, which also cover what a resume now reads it for), so both are asked for here rather
     /// than inferred — "ask, don't infer," the same discipline the recents list already follows for
@@ -1290,8 +1289,8 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Opens <paramref name="bindingsFilePath"/> into the bindings editor (M16 Phase 4, issue #153)
-    /// via <see cref="BindingsProjectionLoader"/> — never a second parser. Bindings are a UI/CLI
-    /// input, never durable room state (UI spec §4, §9; M14 Phase 2's decision of record), so unlike
+    /// via <see cref="BindingsProjectionLoader"/> — never a second parser. An un-bound template uses
+    /// bindings as a UI/CLI input; once bound, a room carries its own copy (0056). Unlike
     /// <see cref="OpenAsync"/> there is no read-only counterpart this editor has to stay separate
     /// from: authoring is the only surface a bindings file has in this UI.
     /// </summary>
@@ -1330,9 +1329,11 @@ public partial class MainWindow : Window
     /// from, <see cref="TemplateEditorViewModel"/> or <see cref="OpenTemplateInEditorAsync"/>.
     /// </para>
     /// <para>
-    /// Advisory display only, never a save gate (§9): bindings are deliberately not template data
-    /// and never persisted in a room directory, so <see cref="SaveBindingsAsync"/> never consults
-    /// this. Called explicitly — after New/Open/Save bindings and after adding a row — rather than
+    /// Advisory display only, never a save gate (§9): bindings are deliberately not template data,
+    /// so <see cref="SaveBindingsAsync"/> never consults this. The clause that used to carry that
+    /// reasoning — "and never persisted in a room directory" — was made false by 0056, which gives a
+    /// room its own copy as its register; the conclusion survives the correction, which is why the
+    /// gate below is unchanged. Called explicitly — after New/Open/Save bindings and after adding a row — rather than
     /// wired to any template-editor change notification, since this phase does not touch that
     /// surface's events either.
     /// </para>

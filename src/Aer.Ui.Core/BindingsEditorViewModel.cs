@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Text.Json;
 using Aer.Adapters;
+using Aer.Flow.Concurrency;
 using Aer.Workers.Dialogue;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -13,8 +14,8 @@ namespace Aer.Ui.Core;
 /// in-memory editing against an explicit baseline with dirty tracking; <c>MainWindow</c>'s
 /// New/Open-in-editor/Save bindings actions own all file I/O (the same state-in-VM/IO-in-window
 /// split). This editor only ever touches bindings *files* (UI spec §4, §9) — bindings are
-/// deliberately not template data and are never persisted in a room directory (M14 Phase 2's
-/// decision of record), so nothing here reaches a bound room either.
+/// deliberately not template data; a room carries its own copy as its register (0056), and saving
+/// here refuses to save over a live room's register (0057 rule 4).
 /// <para>
 /// <b>Dirty-tracking decision of record:</b> unlike <see cref="TemplateEditorViewModel"/>, this
 /// cannot compare baseline-vs-candidate by record <c>==</c>, because a template save's candidate is
@@ -216,6 +217,18 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(bindingsFilePath))
         {
             StatusText = "Enter a bindings file path to save to."; // vocabulary-ok: technical file concept
+            return;
+        }
+
+        if (IsLiveRoomRegister(bindingsFilePath))
+        {
+            // Every remedy named here was checked to exist. An earlier draft offered "withdraw a
+            // permission ... in the room's chat", and no client calls the revoke route at all
+            // (#1272) — the daemon's own unbound-room message was corrected twice for exactly that,
+            // and this message reached review carrying the same defect.
+            StatusText = "Baton won't save over the worker setup of a room that is already using it. "
+                + "To change this room's workers, edit your own copy of the file and Run the room again. "
+                + "To grant a permission, answer the request where the room asks for it.";
             return;
         }
 
@@ -567,5 +580,52 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
             && a.RunShellCommands == b.RunShellCommands
             && a.NetworkAccess == b.NetworkAccess
             && (a.ShellCommandPatterns ?? []).SequenceEqual(b.ShellCommandPatterns ?? []);
+    }
+
+    /// <summary>
+    /// 0057 Rule 4: detection of a live room's register is local evidence in its directory
+    /// (<c>room.jsonl</c>, <c>flow.jsonl</c>, <c>snapshot.json</c>, <c>flow.lock</c>), never a path
+    /// prefix like under AerPaths.Rooms.
+    /// </summary>
+    internal static bool IsLiveRoomRegister(string bindingsFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(bindingsFilePath))
+        {
+            return false;
+        }
+
+        var fileName = Path.GetFileName(bindingsFilePath);
+        if (!string.Equals(fileName, AerPaths.RoomBindingsFileName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string? directoryPath;
+        try
+        {
+            directoryPath = Path.GetDirectoryName(Path.GetFullPath(bindingsFilePath));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(directoryPath) || !Directory.Exists(directoryPath))
+        {
+            return false;
+        }
+
+        // `flow.lock` comes from the constant that owns it; the other three have no canonical home
+        // anywhere in the repo yet and are literals until #1271 gives them one.
+        string[] roomEvidenceFiles = ["room.jsonl", "flow.jsonl", "snapshot.json", ConcurrencyGuard.FlowLockFileName];
+        foreach (var evidenceFile in roomEvidenceFiles)
+        {
+            if (File.Exists(Path.Combine(directoryPath, evidenceFile)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
