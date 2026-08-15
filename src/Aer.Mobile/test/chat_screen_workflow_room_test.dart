@@ -418,6 +418,59 @@ void main() {
       expect(find.text('Approved'), findsOneWidget);
     });
 
+    testWidgets('the decision rows land in time order among the other history', (tester) async {
+      // #1240's second reader: the test above carries a single decision, so it would pass against a
+      // broken sort, a reversed tie precedence or a wrong clear watermark — it proves only that the
+      // pipe is wired. This is the ordering half. Two decisions, deliberately pushed in the WRONG
+      // order, straddling the fixture's two permission answers (13:00 and 14:00).
+      final client = await pumpWorkflowRoom(tester);
+      final json = Map<String, dynamic>.from(wireFixture);
+      json['DirectoryPath'] = '/tasks/foo';
+      json['RecordedDecisionMoments'] = [
+        {'decisionId': 'dec-late', 'decisionType': 'Reject', 'recordedAt': '2026-08-03T15:45:00+00:00'},
+        {'decisionId': 'dec-early', 'decisionType': 'Resume', 'recordedAt': '2026-08-03T13:30:00+00:00'},
+      ];
+      client.push(RoomProjection.fromJson(json));
+      await tester.pumpAndSettle();
+
+      List<String> transcript() => tester
+          .widgetList<Text>(find.descendant(of: find.byType(ListView), matching: find.byType(Text)))
+          .map((t) => t.data ?? '')
+          .toList();
+
+      final rows = transcript();
+      // Approved (13:30) sits between the 13:00 answer and the 14:00 one; Rejected (15:45) after both.
+      expect(rows.indexOf('Allowed once — Bash'), lessThan(rows.indexOf('Approved')));
+      expect(rows.indexOf('Approved'), lessThan(rows.indexOf('Expired unanswered — turn ended')));
+      expect(rows.indexOf('Expired unanswered — turn ended'), lessThan(rows.indexOf('Rejected')));
+    });
+
+    testWidgets('a room that stopped with a gate still live shows both, gate first', (tester) async {
+      // #1240's second reader: the index arithmetic has to hold when the gate and the card are BOTH
+      // present, and no test covered that pair. It is a real state, not a hypothetical —
+      // `RoomCardViewModel.DeriveStatus`' own remarks describe an orphaned ask sitting in the journal
+      // beside a terminal flow state.
+      final client = await pumpWorkflowRoom(tester);
+      final json = Map<String, dynamic>.from(wireFixture);
+      json['DirectoryPath'] = '/tasks/foo';
+      json['RoomCardStatus'] = 'Finished';
+      json['PendingPermission'] = {
+        'permissionRequestId': 'perm-live',
+        'workerId': 'critic',
+        'vendorTag': 'claude',
+        'toolName': 'Bash',
+        'toolInputJson': '{"command":"ls"}',
+        'category': 'run_command',
+        'askedAt': '2026-08-03T16:00:00+00:00',
+      };
+      client.push(RoomProjection.fromJson(json));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.byType(PermissionGateCard), findsOneWidget);
+      expect(find.byType(RoomStoppedCard), findsOneWidget);
+    });
+
     test('the sent-back row names its target, and only it does', () {
       // The grammar rule from `PlainLanguage.ForRecordedDecision`: only Supersede takes a target,
       // or another verb would one day read "Approved to review".

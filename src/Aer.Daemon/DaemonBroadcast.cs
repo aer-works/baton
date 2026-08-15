@@ -201,6 +201,16 @@ internal sealed class DaemonBroadcast
     public async Task BroadcastStateAsync(RoomProjection projection, string? directoryPath)
     {
         var activeSockets = _webSockets.Where(s => s.State == WebSocketState.Open).ToList();
+        // #1240's second reader: return before the probe below, not after it. DeriveRoomCardStatus
+        // opens and closes the room's lock file — a blocking syscall on an async path — and an
+        // unattended `aer run` broadcasts on every step transition with nobody connected, so without
+        // this the probe is paid per transition for a reading no one receives. The sibling method
+        // above already short-circuits the same way for the same reason.
+        if (activeSockets.Count == 0)
+        {
+            return;
+        }
+
         // One reading, shared by every socket in this fan-out — see SendStateAsync's derivedStatus.
         var derivedStatus = DeriveRoomCardStatus(projection, directoryPath);
         foreach (var socket in activeSockets)
