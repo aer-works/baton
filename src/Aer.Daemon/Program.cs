@@ -368,6 +368,24 @@ namespace Aer.Daemon
             // Aer.Mobile (M21 Phase 2, #232), whose decision inbox depends entirely on this stream.
             app.UseWebSockets();
 
+            // #1258: single exception-handling seam for unparseable or invalid worker-binding config.
+            // Scope is strictly WorkerBindingConfigException, mapping it to a legible 500 response that
+            // names the file and condition.
+            app.Use(async (context, next) =>
+            {
+                try
+                {
+                    await next(context);
+                }
+                catch (WorkerBindingConfigException ex)
+                {
+                    var problem = Results.Problem(
+                        $"Baton could not read worker bindings config ({ex.Message}). Fix the file or run the room again.",
+                        statusCode: StatusCodes.Status500InternalServerError);
+                    await problem.ExecuteAsync(context);
+                }
+            });
+
             // Authentication Middleware verifying the Bearer token
             app.Use(async (context, next) =>
             {
@@ -1542,6 +1560,16 @@ namespace Aer.Daemon
                         Console.Error.WriteLine(
                             $"Permission answer '{request.DecisionKind}' recorded, but persisting the standing " +
                             $"grant lost the room lock ({ex.Message}); it applies once only.");
+                    }
+                    catch (WorkerBindingConfigException ex)
+                    {
+                        // #1258: same treatment as losing the lock, for the same reason. The answer was
+                        // journaled and its file written above, so the worker is already released — 500ing
+                        // here would tell the operator their decision failed when it succeeded, and would
+                        // skip the registry removal and broadcast below. Only the standing permission is lost.
+                        Console.Error.WriteLine(
+                            $"Permission answer '{request.DecisionKind}' recorded, but persisting the standing " +
+                            $"permission could not read the room's worker setup ({ex.Message}); it applies once only.");
                     }
                 }
 

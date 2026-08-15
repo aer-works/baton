@@ -23,6 +23,7 @@ public static class WorkerBindingConfigParser
     /// <exception cref="WorkerBindingConfigException">The JSON is malformed or empty.</exception>
     public static IReadOnlyDictionary<string, WorkerBindingConfigEntry> Parse(string json, string? sourcePath = null)
     {
+        var location = sourcePath is null ? string.Empty : $" in '{sourcePath}'";
         Dictionary<string, WorkerBindingConfigEntry>? entries;
         try
         {
@@ -30,7 +31,6 @@ public static class WorkerBindingConfigParser
         }
         catch (Exception ex) when (ex is JsonException or ArgumentException)
         {
-            var location = sourcePath is null ? string.Empty : $" in '{sourcePath}'";
             const string shape =
                 "A valid worker-binding config looks like: "
                 + "{ \"<workerName>\": { \"Adapter\": \"<string>\", \"Contract\": { ... }, "
@@ -40,25 +40,25 @@ public static class WorkerBindingConfigParser
 
         if (entries is null)
         {
-            var location = sourcePath is null ? string.Empty : $" '{sourcePath}'";
-            throw new WorkerBindingConfigException($"Worker-binding config file{location} did not contain a JSON object.");
+            var fileLocation = sourcePath is null ? string.Empty : $" '{sourcePath}'";
+            throw new WorkerBindingConfigException($"Worker-binding config file{fileLocation} did not contain a JSON object.");
         }
 
         foreach (var (workerName, entry) in entries)
         {
             if (entry is null)
             {
-                throw new WorkerBindingConfigException($"Worker-binding config entry for '{workerName}' is null.");
+                throw new WorkerBindingConfigException($"Worker-binding config entry for '{workerName}'{location} is null.");
             }
 
             if (string.IsNullOrWhiteSpace(entry.Adapter))
             {
-                throw new WorkerBindingConfigException($"Worker-binding config entry for '{workerName}' is missing 'Adapter'.");
+                throw new WorkerBindingConfigException($"Worker-binding config entry for '{workerName}'{location} is missing 'Adapter'.");
             }
 
             if (entry.Contract is null)
             {
-                throw new WorkerBindingConfigException($"Worker-binding config entry for '{workerName}' is missing 'Contract'.");
+                throw new WorkerBindingConfigException($"Worker-binding config entry for '{workerName}'{location} is missing 'Contract'.");
             }
 
             if (entry.Contract.ProducedOutputs is not null)
@@ -68,7 +68,7 @@ public static class WorkerBindingConfigParser
                     if (output.Name is not null && output.Name.StartsWith('.'))
                     {
                         throw new WorkerBindingConfigException(
-                            $"Worker-binding config entry for '{workerName}' declares ProducedOutput '{output.Name}' — "
+                            $"Worker-binding config entry for '{workerName}'{location} declares ProducedOutput '{output.Name}' — "
                             + "names starting with '.' are reserved for engine stream logs.");
                     }
                 }
@@ -76,13 +76,13 @@ public static class WorkerBindingConfigParser
 
             if (string.IsNullOrWhiteSpace(entry.PromptTemplate))
             {
-                throw new WorkerBindingConfigException($"Worker-binding config entry for '{workerName}' is missing 'PromptTemplate'.");
+                throw new WorkerBindingConfigException($"Worker-binding config entry for '{workerName}'{location} is missing 'PromptTemplate'.");
             }
 
             if (entry.WorkingDirectory is not null && string.IsNullOrWhiteSpace(entry.WorkingDirectory))
             {
                 throw new WorkerBindingConfigException(
-                    $"Worker-binding config entry for '{workerName}' has a blank 'WorkingDirectory' — omit the field entirely instead.");
+                    $"Worker-binding config entry for '{workerName}'{location} has a blank 'WorkingDirectory' — omit the field entirely instead.");
             }
 
             // A non-positive Timeout is not a slow worker, it is an unrunnable one, and nothing
@@ -96,7 +96,7 @@ public static class WorkerBindingConfigParser
             if (entry.Timeout <= TimeSpan.Zero)
             {
                 throw new WorkerBindingConfigException(
-                    $"Worker-binding config entry for '{workerName}' has a 'Timeout' of "
+                    $"Worker-binding config entry for '{workerName}'{location} has a 'Timeout' of "
                     + $"'{entry.Timeout}' — it must be positive. Omitting the field leaves it zero, "
                     + "which would kill the worker the moment it starts.");
             }
