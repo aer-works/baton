@@ -566,5 +566,58 @@ public static class RoomMutationInterface
         await writer.AppendAsync(roomEvent, cancellationToken).ConfigureAwait(false);
         return RoomProjector.Project([.. existingEvents, roomEvent]);
     }
+
+    /// <summary>
+    /// Journals that a worker's standing permission was withdrawn (#1251). Call only after
+    /// <c>bindings.json</c> has actually been rewritten to reflect the withdrawal — this records
+    /// the fact, it does not perform it.
+    /// <para>
+    /// Deliberately does NOT acquire the room-events lock itself, unlike every sibling method
+    /// above. The bindings write and this journal append must land under one continuous hold of
+    /// that lock (Fable's ruling on #1251: "journal and register can't tell different stories"),
+    /// and the lock is a kernel-held <see cref="FileShare.None"/> file handle — not reentrant, so a
+    /// second acquire from the same holder fails immediately rather than nesting. The daemon's
+    /// revoke route already holds the room-events lock for the whole bindings write; call this
+    /// while still inside that same <c>using</c> scope, never standalone.
+    /// </para>
+    /// <para>
+    /// No dedup check against prior events: unlike the ask/answer pair above, a standing permission
+    /// has no single id to key one against, and the caller only reaches here on
+    /// <c>PermissionRevokeOutcome.Revoked</c>, which is itself idempotent-at-the-register — a
+    /// repeat revoke of an already-gone permission resolves to <c>NothingToRevoke</c> before this
+    /// is ever called.
+    /// </para>
+    /// </summary>
+    public static async Task<RoomState> RecordStandingPermissionRevokedAsync(
+        string roomDirectoryPath,
+        IRoomEventLogReader reader,
+        IRoomEventLogWriter writer,
+        string workerName,
+        string revokeKind,
+        string? shellCommandPattern,
+        string revokedBy,
+        DateTimeOffset? timestamp = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentException.ThrowIfNullOrEmpty(workerName);
+        ArgumentException.ThrowIfNullOrEmpty(revokeKind);
+        ArgumentException.ThrowIfNullOrEmpty(revokedBy);
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(writer);
+
+        var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+
+        var ts = timestamp ?? DateTimeOffset.UtcNow;
+        var roomEvent = new RoomEvent.StandingPermissionRevoked(
+            workerName,
+            revokeKind,
+            shellCommandPattern,
+            revokedBy,
+            ts);
+
+        await writer.AppendAsync(roomEvent, cancellationToken).ConfigureAwait(false);
+        return RoomProjector.Project([.. existingEvents, roomEvent]);
+    }
 }
 
