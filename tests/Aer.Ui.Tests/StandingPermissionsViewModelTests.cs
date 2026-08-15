@@ -189,4 +189,60 @@ public class StandingPermissionsViewModelTests
         Assert.True(vm.IsStandingPermissionsOpen);
         Assert.Equal(0, calls);
     }
+
+    /// <summary>
+    /// Second-reader finding on #1272: switching rooms while the panel is open must not leave it
+    /// showing the previous room's entries — a stale entry's Revoke would otherwise act on the room
+    /// the person is no longer looking at. <c>CloseForRoomSwitch</c> is <c>MainWindow.OpenAsync</c>'s
+    /// fix; this pins the ViewModel-side contract it depends on.
+    /// </summary>
+    [Fact]
+    public async Task CloseForRoomSwitch_ClosesThePanel_AndDropsThePreviousRoomsEntries()
+    {
+        var (vm, _) = Build((_, _, _) => Task.FromResult(Configured(allowed: ["git status"])));
+        await vm.LoadAsync("/rooms/r1", cancellationToken: TestContext.Current.CancellationToken);
+        Assert.False(vm.Entries.Count == 0);
+        vm.ToggleOpen("/rooms/r1"); // open the panel, as MainWindow's toggle would
+
+        vm.CloseForRoomSwitch();
+
+        Assert.False(vm.IsStandingPermissionsOpen);
+        Assert.Empty(vm.Entries);
+        Assert.Null(vm.OutcomeMessage);
+    }
+
+    /// <summary>
+    /// Second-reader finding on #1272 — see the guard in <c>StandingPermissionsViewModel.ExecuteRevokeAsync</c>
+    /// for why. Uses a controllable delegate to hold the first revoke in flight while a second is
+    /// attempted, proving the second is a no-op rather than racing the first's re-fetch.
+    /// </summary>
+    [Fact]
+    public async Task ADoubleClickOnRevoke_OnlyCallsTheRouteOnce()
+    {
+        var callCount = 0;
+        var release = new TaskCompletionSource();
+        var revokes = new List<string>();
+        var vm = new StandingPermissionsViewModel(
+            (_, _, _) => Task.FromResult(Configured(allowed: ["git status"])),
+            async (roomDirectoryPath, revokeKind, shellCommandPattern, workerName, cancellationToken) =>
+            {
+                callCount++;
+                revokes.Add(revokeKind);
+                await release.Task;
+                return new RoomClient.MutationOutcome(null);
+            });
+
+        await vm.LoadAsync("/rooms/r1", cancellationToken: TestContext.Current.CancellationToken);
+        var entry = Assert.Single(vm.Entries);
+
+        var firstRevoke = entry.RevokeCommand.ExecuteAsync(null);
+        var secondRevoke = entry.RevokeCommand.ExecuteAsync(null); // fired while the first is still held open
+
+        release.SetResult();
+        await firstRevoke;
+        await secondRevoke;
+
+        Assert.Equal(1, callCount);
+        Assert.Single(revokes);
+    }
 }

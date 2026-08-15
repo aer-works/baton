@@ -795,7 +795,15 @@ public partial class MainWindow : Window
         ViewModel.BindingsFilePath = await _session.LoadLastBindingsFilePathAsync(cancellationToken);
         ViewModel.WorkflowTemplateFilePath = await _session.LoadLastWorkflowTemplateFilePathAsync(cancellationToken);
 
+        // #1272 (second-reader finding): a settle-time reopen of the SAME room (reopenRoomAsync
+        // above) must leave the Permissions panel alone, but switching to a DIFFERENT room through
+        // this same method must not — see StandingPermissionsViewModel.CloseForRoomSwitch for why.
+        var previousRoomDirectoryPath = _session.CurrentRoomDirectoryPath;
         _session.SetCurrentRoomDirectory(roomDirectoryPath);
+        if (previousRoomDirectoryPath != null && previousRoomDirectoryPath != roomDirectoryPath)
+        {
+            ViewModel.StandingPermissions.CloseForRoomSwitch();
+        }
 
         await LoadAsync(roomDirectoryPath, cancellationToken);
 

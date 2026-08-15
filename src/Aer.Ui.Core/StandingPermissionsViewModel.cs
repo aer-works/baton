@@ -67,6 +67,7 @@ public sealed partial class StandingPermissionsViewModel : ObservableObject
 
     private string? _currentRoomDirectoryPath;
     private string? _currentWorkerName;
+    private bool _isRevokeInFlight;
 
     public ObservableCollection<StandingPermissionItemViewModel> Entries { get; } = [];
 
@@ -126,6 +127,25 @@ public sealed partial class StandingPermissionsViewModel : ObservableObject
         {
             _ = LoadAsync(roomDirectoryPath, workerName);
         }
+    }
+
+    /// <summary>
+    /// Closes the panel and drops its state — called when the open room changes (issue #1272,
+    /// second-reader finding). Without this, switching rooms while the panel was open left it
+    /// showing the previous room's entries under the new room's header, and Revoke would silently
+    /// act against the room the user had left rather than the one on screen.
+    /// </summary>
+    public void CloseForRoomSwitch()
+    {
+        IsStandingPermissionsOpen = false;
+        IsConfirmingRevokeRoomShell = false;
+        PendingConfirmItem = null;
+        ErrorMessage = null;
+        Outcome = null;
+        OutcomeMessage = null;
+        Entries.Clear();
+        _currentRoomDirectoryPath = null;
+        _currentWorkerName = null;
     }
 
     public async Task LoadAsync(string roomDirectoryPath, string? workerName = null, CancellationToken cancellationToken = default)
@@ -262,16 +282,30 @@ public sealed partial class StandingPermissionsViewModel : ObservableObject
     {
         if (string.IsNullOrEmpty(_currentRoomDirectoryPath) || _revokePermission == null) return;
 
-        ErrorMessage = null;
-        var outcome = await _revokePermission(_currentRoomDirectoryPath, revokeKind, shellCommandPattern, _currentWorkerName, CancellationToken.None).ConfigureAwait(true);
+        // #1272 (second-reader finding): AsyncRelayCommand defaults to concurrent execution, so a
+        // double-click (or a second entry's Revoke while the first is still in flight) could fire
+        // two overlapping calls, each clearing and repopulating Entries on its own re-fetch — racing
+        // to leave the list duplicated or out of order. One in flight at a time.
+        if (_isRevokeInFlight) return;
+        _isRevokeInFlight = true;
 
-        if (!string.IsNullOrEmpty(outcome.ErrorMessage))
+        try
         {
-            ErrorMessage = outcome.ErrorMessage;
-            return;
-        }
+            ErrorMessage = null;
+            var outcome = await _revokePermission(_currentRoomDirectoryPath, revokeKind, shellCommandPattern, _currentWorkerName, CancellationToken.None).ConfigureAwait(true);
 
-        // Re-fetch after successful revoke
-        await LoadAsync(_currentRoomDirectoryPath, _currentWorkerName).ConfigureAwait(true);
+            if (!string.IsNullOrEmpty(outcome.ErrorMessage))
+            {
+                ErrorMessage = outcome.ErrorMessage;
+                return;
+            }
+
+            // Re-fetch after successful revoke
+            await LoadAsync(_currentRoomDirectoryPath, _currentWorkerName).ConfigureAwait(true);
+        }
+        finally
+        {
+            _isRevokeInFlight = false;
+        }
     }
 }
