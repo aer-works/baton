@@ -117,9 +117,9 @@ project-local override, so "this room only" is a fiction AER maintains above a v
 express it. That gap is real and has to be visible rather than papered over.
 
 **Obliges us to** show the ladder at the point of asking and never only in settings; offer the
-standing grant first on a repeat; record a denial as a turn the worker continues from; keep `y`/`n`
-off `Enter`; kill a pending permission with its turn on every surface at once; list standing grants
-per room with revocation; and state plainly where a rung is advisory rather than enforced on the
+standing permission first on a repeat; record a denial as a turn the worker continues from; keep
+`y`/`n` off `Enter`; kill a pending permission with its turn on every surface at once; list standing
+permissions per room with revocation; and state plainly where a rung is advisory rather than enforced on the
 chosen vendor.
 
 **Relates to** [0004](0004-permission-scopes.md), which this amends — 0004 owns the scope model, this
