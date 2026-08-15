@@ -108,6 +108,7 @@ public sealed partial class RoomClient
     /// desktop app wants true; a test constructing a real <see cref="RoomClient"/> must pass
     /// false or a probe failure spawns a daemon that rewrites the REAL ~/.aer registration.</summary>
     private readonly bool _spawnDaemonOnDemand;
+    private readonly string? _clientVersion;
 
     private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(5) };
     private readonly SynchronizationContext? _syncContext = SynchronizationContext.Current;
@@ -271,6 +272,18 @@ public sealed partial class RoomClient
     /// <summary>Whether the poller should keep observing: a successfully opened room that has not reached §12's terminal fixed point.</summary>
     public bool ShouldLiveRefresh => LastLoadSucceeded && LastWorkflowStatus != WorkflowStatus.Terminal;
 
+    /// <param name="clientVersion">
+    /// The version this client compares against the daemon's, passed in rather than read from an
+    /// assembly here — the same "production wiring is the caller's decision" seam
+    /// <paramref name="configurationStore"/> and <paramref name="adapters"/> already use, and the
+    /// only shape that can name <c>Aer.Ui</c>'s version without <c>Aer.Ui.Core</c> reaching upward
+    /// into the layer above it. Reading it here is what #1260 was.
+    /// <para>
+    /// <c>null</c> skips the skew check and connects. A caller that does not say who it is has no
+    /// basis on which to claim skew, and shutting a daemon down over an unanswerable question is
+    /// worse than talking to a possibly-older one.
+    /// </para>
+    /// </param>
     public RoomClient(
         LocalUiConfigurationStore configurationStore,
         IReadOnlyDictionary<string, IWorkerAdapter> adapters,
@@ -281,7 +294,8 @@ public sealed partial class RoomClient
         Func<string, CancellationToken, Task> reopenRoomAsync,
         Action<RoomProjection, string>? onProjectionUpdated = null,
         string? daemonUrl = null,
-        bool spawnDaemonOnDemand = true)
+        bool spawnDaemonOnDemand = true,
+        string? clientVersion = null)
     {
         _configurationStore = configurationStore;
         _adapters = adapters;
@@ -293,6 +307,7 @@ public sealed partial class RoomClient
         _onProjectionUpdated = onProjectionUpdated;
         _daemonUrl = daemonUrl;
         _spawnDaemonOnDemand = spawnDaemonOnDemand;
+        _clientVersion = clientVersion;
     }
 
     /// <summary>Points the session at <paramref name="roomDirectoryPath"/> without loading — <c>OpenAsync</c>'s bookkeeping half; the load itself goes through <see cref="LoadAsync"/>.</summary>
