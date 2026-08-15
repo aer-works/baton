@@ -282,6 +282,13 @@ audit-staleness-ext-selftest = { cmd = "python -u tools/audit-completeness/stale
 audit-waitceiling = { cmd = "python -u tools/audit-completeness/waitceiling.py" }
 audit-waitceiling-selftest = { cmd = "python -u tools/audit-completeness/waitceiling.py --selftest" }
 
+# #1242 / decision 0055: phrases a decision record has RETIRED — the previous name of a renamed
+# object, stale by definition, so the check has no false positives to triage. Not a vocabulary lint:
+# telling authority-"grant" from permission-"grant" needs the sentence's meaning, which is why 0055
+# bans only the phrase that has no legitimate remaining use.
+audit-retiredphrases = { cmd = "python -u tools/audit-completeness/retiredphrases.py" }
+audit-retiredphrases-selftest = { cmd = "python -u tools/audit-completeness/retiredphrases.py --selftest" }
+
 # #1206: the flake-watch reporter's control arm. The reporter itself only ever runs in the scheduled
 # flake-watch workflow, which is exactly why its selftest belongs in the local gates — a reporter that
 # has quietly stopped being able to report is indistinguishable, from the outside, from a quiet suite.

@@ -1334,7 +1334,7 @@ namespace Aer.Daemon
                             // closed). It applies once only -- surface the narrowing, don't swallow it.
                             Console.Error.WriteLine(
                                 $"Permission answer '{request.DecisionKind}' for '{askedEvent.ToolName}' could not " +
-                                "persist a standing grant; it applies once only.");
+                                "persist a standing permission; it applies once only.");
                         }
                     }
                     catch (WorkflowLockedException ex)

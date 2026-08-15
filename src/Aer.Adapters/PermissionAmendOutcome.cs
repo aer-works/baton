@@ -7,7 +7,7 @@ namespace Aer.Adapters;
 /// </summary>
 public enum PermissionAmendOutcome
 {
-    /// <summary>A standing grant was written to the room's chat-worker binding.</summary>
+    /// <summary>A standing permission was written to the room's chat-worker binding.</summary>
     Persisted,
 
     /// <summary>

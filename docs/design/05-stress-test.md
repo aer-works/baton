@@ -194,7 +194,7 @@ Long output | A 5000-line log inside a turn destroys the conversation. | Already
 
 Complex shapes | A 12-step template is a long list, and the preview graph stops fitting. | The list is fine — it is a list. The preview needs collapsing of completed stages, which is what a stage strip does naturally. |
 
-Many permissions | Fifty prompts a day trains the click-through reflex the design exists to prevent. | This is what scoping is for, and it means the scope ladder must be the prominent path, not the fallback. If a person is answering the same permission twice, the second time should offer the standing grant first. |
+Many permissions | Fifty prompts a day trains the click-through reflex the design exists to prevent. | This is what scoping is for, and it means the scope ladder must be the prominent path, not the fallback. If a person is answering the same permission twice, the second time should offer the standing permission first. |
 
 The list grouping is the biggest change scale forces , and it contradicts something I wrote earlier. The screens pass said rooms are ordered by recency, full stop. At a hundred rooms that is wrong: state has to be the primary sort and recency the secondary. That change belongs back in the screens document.
 

@@ -392,14 +392,14 @@ what you agreed to.
 
 - **Spans** — desktop · Settings · *decision 0022, over decision 0004's scopes*
 - **Passes when** — granting **"allow in this room"** means the same request is not asked again, and
-  the grant can be **found and revoked in settings**.
+  the standing permission can be **found and revoked in settings**.
 - **Path** *(illustrative)* — a permission is raised · choose a room-scoped rung from the ladder shown
   at the moment of asking · the same request proceeds silently afterwards · open Settings, find the
-  standing grant listed under that room, revoke it · it is asked again.
-- **Verify** — this is the **grant** path and is distinct from **J6**, which is deny-enforcement. Where
+  standing permission listed under that room, revoke it · it is asked again.
+- **Verify** — this is the **allow** path and is distinct from **J6**, which is deny-enforcement. Where
   a rung is advisory rather than enforceable on the chosen vendor, that is stated at the moment of
-  granting — `agy` matches command rules literally, so a family-shaped grant is not expressible there
-  (`docs/vendor-capabilities.md`). The standing-grants list is reachable from the phone as well —
+  granting — `agy` matches command rules literally, so a family-shaped rule is not expressible there
+  (`docs/vendor-capabilities.md`). The standing-permissions list is reachable from the phone as well —
   three weeks later you are as likely to be holding it as sitting at the desk (#806).
 - **Today** — permissions are advisory and unenforced (#331), there is no ladder, and there is no
   Settings surface to list or revoke anything (#338).

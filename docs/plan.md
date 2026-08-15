@@ -185,9 +185,9 @@ for, and which nothing above actually tested until now); a desk-started run that
 either side — [J1's own "Passes when," in `spec/journeys.md`](../spec/journeys.md), not restated in
 full here; at a live gate a
 person asks a worker not previously in the room, gets a contradicting answer, and **the gate is still
-open** ([0019](decisions/0019-consulting-is-not-deciding.md)); granting "allow in this room" means not
-being asked again, and the grant can be found and revoked in settings
-([0022](decisions/0022-permission-ladder-and-denial-is-an-answer.md)); quitting the desktop app
+open** ([0019](decisions/0019-consulting-is-not-deciding.md)); the scope ladder holds and what you
+agreed to is still findable weeks later — [J16's own "Passes when"](../spec/journeys.md), not restated
+here ([0022](decisions/0022-permission-ladder-and-denial-is-an-answer.md)); quitting the desktop app
 mid-run, answering the permission on the phone, and reopening finds it continued; and with a
 permission, a decision, and an action all pending at once, the needs-you list groups them by kind —
 only the action offers "Later" ([0040](decisions/0040-needs-you-groups-by-kind-and-actions-alone-defer.md)).

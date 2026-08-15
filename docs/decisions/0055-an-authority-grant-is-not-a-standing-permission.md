@@ -43,6 +43,20 @@ phrase, so this names what the design already said rather than coining a word. P
 messages, issue titles and commit subjects say "permission" or "standing permission" — never bare
 "grant" — for anything about tool reach.
 
+**2a. The rule forbids the *bare* noun, not the word.** A qualified compound whose own words fix the
+referent is compliant: "permission grant", "read-files grant", "grant translation" all name the
+0022 object unambiguously and need no change. So does the verb ("granting a permission"), and so does
+ordinary English ("granted visibility"). What the rule catches is a bare "grant" in a sentence where
+nothing else says which of the two objects is meant. This matters for reading the register: most
+surviving occurrences are compliant, and treating every one as drift would replace a naming problem
+with a churn problem.
+
+**2b. The phrase "standing grant" is retired outright.** <!-- retired-ok: the record that retires a phrase has to name it -->
+Not ambiguous drift — it is the previous name of the object this record renames, so any occurrence is
+stale rather than merely unclear. `pixi run audit-retiredphrases` enforces it across `docs/`, `spec/`,
+`src/`, `tests/` and `tools/`; prose alone would not, and a rule that must not regress needs a check
+that runs and fails.
+
 **3. The type name `PermissionGrant` stays, and this is a cost decision, not a principle.**
 [0002](0002-one-vocabulary.md)'s *decision* text is broader than the line drawn here — "code and UI
 use the same words… rename the code to the plain word wherever a good one exists" — and only its
@@ -55,11 +69,15 @@ judged wrong, the rename is the remedy and nothing here argues against it.
 **3a. The rule binds new and edited text, and existing records are corrected where both objects can be
 in view.** 0022 and 0052 are corrected here: both are about the ladder that now sits in a register
 beside an authority model, so a bare "grant" there is genuinely ambiguous.
-[0004](0004-permission-scopes.md) is deliberately **not** rewritten — it predates the distinction and
-is wholly about the permission object, so its own formulations ("effective grant = project ∩ room ∩
-step", "grants fail closed") are unambiguous inside it, and rewriting a ratified record's core
-formulation costs more than the ambiguity it would remove. That it was considered and left is recorded
-here so the next reader neither "fixes" it nor reads it as an oversight.
+[0004](0004-permission-scopes.md) is deliberately **not** rewritten. It predates the distinction and
+is wholly about the permission object, so its formulations are unambiguous inside it — and they are
+cited by their exact words elsewhere: `docs/runbooks/live-claude-smoke.md`,
+`tests/Aer.Journeys.Tests/J6_DeniedToolEnforcementTests.cs`,
+`src/Aer.Adapters/InteractiveSessions.cs`, `RuntimePermissionGrantAmender.cs`, and 0052's own evidence
+table. A rename there orphans a runbook, a journey test's stated premise, two src comments and another
+record's evidence, which is a src-and-tests sweep smuggled into a vocabulary change. 0004 carries a
+dated vocabulary note pointing here instead, in the channel `CLAUDE.md`'s own Credential Isolation
+correction already uses. Recorded so the next reader neither "fixes" it nor reads it as an oversight.
 
 **4. Neither family migrates onto the other, and neither is deleted.** They are different concepts;
 one is shipped and one is owed. No work on the authority family until M26/#778 picks it up.
@@ -79,19 +97,31 @@ one is shipped and one is owed. No work on the authority family until M26/#778 p
 prejudge the authority model's future. A reader of either register can tell which object a sentence is
 about from the sentence.
 
-**Harder.** The rule has to be applied to text that already exists, and **this record does not claim
-the register is now consistent — only that the words are now defined.** What is corrected here: 0022's
-obligations list, 0052 throughout (the cross-room rung is the same permission object), 0034's one
-reference, and #1238's title. What is deliberately left: the occurrence inside 0022's verbatim
-quotation of the corpus stress test — a quotation records what was said and is not ours to edit — and
-0004 in full, per decision 3a.
+**Harder.** The rule has to be applied to text that already exists.
 
-**What has not been swept.** `grep -rniE '\bgrant(s|ed|ing)?\b' docs/` matches ~41 files. Only the
-records most directly about the 0022 object were classified and corrected; the rest mix three
-populations — the authority family (correct), ordinary English ("granted visibility"), and genuine
-drift — and were not read closely enough to tell them apart. The hit rate in the files that *were*
-checked was high, so more drift should be expected there rather than less. Anyone relying on "the
-register uses these words consistently" is relying on something this record did not establish.
+*The retired phrase is gone from the live tree*, and `audit-retiredphrases` keeps it gone: 0022, the
+corpus stress test (`05-stress-test.md` and its mockup), `spec/journeys.md`, `docs/plan.md`, the
+daemon's own stderr copy, two adapter comments and a test comment. The corpus was corrected at source,
+so 0022's quotation of it was updated to match rather than left to diverge — a quotation tracks its
+living source; what must never happen is words changing *inside* quote marks while the source still
+says something else.
+
+*Bare "grant" for the permission object* is corrected in 0052 throughout, 0034, `02-screens.md`
+(including a literal UI label, which decision 2 forbids by name), and `04-workers-commands-control.md`.
+0004 is annotated rather than rewritten, per 3a.
+
+**Deliberately left as correct:** `02-screens.md`'s resident-orchestrator passages — "Push to
+origin/main is beyond this room's grant", "runs at the room's grant floor", "reaching past the room's
+grant floor". These read as the permission object at a glance and are not: they map to `GrantLevel`'s
+own "L3 Ship routine — green + clean-second-read work on branches; **merge/main and beyond escalate**",
+which is the authority family, where bare "grant" is right. Recorded because the surface reading is
+the wrong one and someone will want to "fix" them.
+
+**What this record still does not claim.** That the register is *consistent* — only that the words are
+defined, the retired phrase is enforced gone, and the places where both objects can be in view are
+corrected. Qualified compounds (2a) are compliant and untouched by design. What remains unclassified is
+the long tail of ordinary English and authority-family uses, plus `docs/archive/` (excluded by
+convention — a superseded document is a record of what was believed).
 
 **Not covered.** How a standing permission is revoked (#1238), and whether the authority grant's
 events need any change when the orchestrator arrives (M26/#778) — this record settles the nouns, not

@@ -5,6 +5,12 @@ Date: 2026-07-22
 
 ## Context
 
+> *Vocabulary note (2026-08-15): every "grant" in this record is the **permission** object.
+> [0055](0055-an-authority-grant-is-not-a-standing-permission.md) later reserves bare "grant" for the
+> authority grant of [0049](0049-the-wake-loop-is-in-contract-and-the-orchestrator-decides.md). This
+> record predates that distinction and is deliberately not rewritten — 0055 §3a holds the reasoning
+> and the list of places that cite this record's formulations verbatim.*
+
 Permissions today are a single flat `PermissionGrant` per worker binding, and they are **not
 enforced**.
 

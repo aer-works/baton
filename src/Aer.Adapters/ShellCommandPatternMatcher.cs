@@ -208,7 +208,7 @@ public static class ShellCommandPatternMatcher
     /// / <c>DenyAlways</c> rungs, M-Phase-6 #390). Returns <see langword="null"/> — never a guess — when
     /// <paramref name="commandLine"/> is empty or its first token opens with a shell metacharacter this
     /// matcher already treats as unsafe to reason about (<see cref="IsAllowed"/>'s own set): persisting
-    /// a pattern derived from an unparseable head would scope a standing grant to something this same
+    /// a pattern derived from an unparseable head would scope a standing permission to something this same
     /// matcher could not evaluate consistently later.
     /// </summary>
     public static string? ExtractCommandFamily(string? commandLine)

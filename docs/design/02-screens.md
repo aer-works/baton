@@ -406,7 +406,7 @@ deliberately does **not** repeat model tier and effort in the chip's visible lab
 worker's vendor identity as the primary label: **`claude · 2 skills`, never a skill's name standing
 in for the worker.** "Worker" stays the one noun a person has to track in the room header — attached
 skills qualify what that worker can do without becoming a second identity competing with it. The
-raw axes (model tier, effort, grant) live in the popover below, one tap away, not duplicated in the
+raw axes (model tier, effort, permissions) live in the popover below, one tap away, not duplicated in the
 label.
 
 ### Skill attachment on the worker chip
@@ -436,7 +436,7 @@ Rooms + New            aer-flow  [👑 claude · 2 skills ▼]  [+ Add worker]
                       │ Vendor     [ claude                                  ▼]│
                       │ Model tier [ balanced                                ▼]│
                       │ Effort     [ careful                                 ▼]│
-                      │ Grant      [ Project ∩ Session ∩ Step (Read, Write)  ▼]│
+                      │ Permissions[ Project ∩ Session ∩ Step (Read, Write)  ▼]│
                       └────────────────────────────────────────────────────────┘
 ```
 
@@ -523,9 +523,9 @@ personality are just more instructions, so an author who wants a particular voic
 effort step either — a skill doesn't bind to either; vendor, model tier and effort stay independent
 worker-chip axes a person sets separately, on any worker, regardless of which skills it carries.
 
-Step 3's declared tool requirements are a request, not a grant. Attaching a skill that wants `Bash`
-to a worker in a read-only room fails to attach, with a clear reason — the room's actual permission
-grant ([0004](../decisions/0004-permission-scopes.md)) is never silently widened by what a skill
+Step 3's declared tool requirements are a request, not a permission. Attaching a skill that wants `Bash`
+to a worker in a read-only room fails to attach, with a clear reason — the room's actual effective
+permission ([0004](../decisions/0004-permission-scopes.md)) is never silently widened by what a skill
 asks for.
 
 "Save Skill" and "Cancel" are a plain create/discard pair, not a safeguard 0028 governs — nothing
