@@ -154,5 +154,6 @@ copy of every record, retired by #952: the record is the only place a decision i
 | [0052](0052-the-ladder-ships-without-the-cross-room-rung.md) | The ladder ships without the cross-room rung; its home is project scope, not account scope | accepted |
 | [0053](0053-room-event-appends-take-their-own-lock.md) | Room-event appends take their own lock, not the flow engine's | accepted |
 | [0054](0054-participants-turns-and-addressing.md) | Participants, turns, and addressing: the multi-worker room's nouns | accepted |
+| [0055](0055-an-authority-grant-is-not-a-standing-permission.md) | An authority grant is not a standing permission | accepted |
 
 <!-- /generated: decisions-index -->

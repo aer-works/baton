@@ -62,8 +62,9 @@ in order:
 These are 0004's scopes surfaced as choices, not a new model. The rule is that they are **visible at
 the point of asking and not buried in settings** — the corpus: *"the middle rungs are what make it
 survivable, and they must be visible at the moment of asking."* The stress test adds the repeat case:
-*"if a person is answering the same permission twice, the second time should offer the standing grant
-first."*
+<!-- record-once-ok: #1242 docs/design/05-stress-test.md -->
+*"if a person is answering the same permission twice, the second time should offer the standing
+permission first."*
 
 **2. Standing permissions are visible and revocable, listed per room**, because *"a permission you
 granted three weeks ago and cannot find is indistinguishable from no permission system at all."*
@@ -111,15 +112,15 @@ killing the work, which is the only way "no" gets used at all.
 
 **Harder.** A denied turn now has to *continue*, which means the adapter must feed the refusal back
 into the worker's context in that vendor's own shape and the transcript must record it as an outcome
-rather than an error. Scope grants become persistent state that has to be listed, attributed to a
-room, and revoked — and on `agy` every grant is an edit to a **global** settings file with no
+rather than an error. Standing permissions become persistent state that has to be listed, attributed
+to a room, and revoked — and on `agy` every standing permission is an edit to a **global** settings file with no
 project-local override, so "this room only" is a fiction AER maintains above a vendor that cannot
 express it. That gap is real and has to be visible rather than papered over.
 
 **Obliges us to** show the ladder at the point of asking and never only in settings; offer the
-standing grant first on a repeat; record a denial as a turn the worker continues from; keep `y`/`n`
-off `Enter`; kill a pending permission with its turn on every surface at once; list standing grants
-per room with revocation; and state plainly where a rung is advisory rather than enforced on the
+standing permission first on a repeat; record a denial as a turn the worker continues from; keep
+`y`/`n` off `Enter`; kill a pending permission with its turn on every surface at once; list standing
+permissions per room with revocation; and state plainly where a rung is advisory rather than enforced on the
 chosen vendor.
 
 **Relates to** [0004](0004-permission-scopes.md), which this amends — 0004 owns the scope model, this

@@ -230,7 +230,7 @@ public class RuntimePermissionGrantAmenderTests
     [Fact]
     public async Task A_persisting_rung_with_no_bindings_file_reports_CouldNotPersist()
     {
-        // No bindings.json (a room that never bound a chat worker): the standing grant cannot be
+        // No bindings.json (a room that never bound a chat worker): the standing permission cannot be
         // written, and the caller is told so rather than the answer silently applying once.
         var ct = TestContext.Current.CancellationToken;
         var roomDir = Path.Combine(Path.GetTempPath(), $"amender-nofile-{Guid.NewGuid():N}");
