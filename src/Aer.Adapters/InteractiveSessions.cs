@@ -525,9 +525,15 @@ public static class InteractiveSessionMaterializer
 
     /// <summary>
     /// Reads an interactive room's <c>room.json</c> without denying a concurrent writer -- see
-    /// <see cref="SaveMetadataAsync"/> for why that matters. Opening with
-    /// <c>FileShare.ReadWrite | FileShare.Delete</c> also permits the replace this file's writer
-    /// performs.
+    /// <see cref="SaveMetadataAsync"/> for why that matters. What permits that writer's open is the
+    /// <c>Write</c> bit; it writes the live path directly rather than renaming onto it.
+    /// <para>
+    /// #1267: this said <c>FileShare.Delete</c> "permits the replace this file's writer performs",
+    /// which credited the wrong flag for a rename that does not happen here -- and would tell whoever
+    /// next converts this writer to stage-and-move that the reader already tolerates it. It does not:
+    /// a delete-sharing handle blocks a rename exactly as a default-share one does (0057's
+    /// "Rests on"). The flag is kept because it costs nothing and is correct for a reader to offer.
+    /// </para>
     /// </summary>
     public static async Task<SessionMetadata?> LoadMetadataAsync(string filePath, CancellationToken cancellationToken = default)
     {
