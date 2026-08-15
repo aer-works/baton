@@ -36,11 +36,8 @@ public record DecideRoomRequest(
     string? SupplementaryOutputName = null,
     ArtifactReference? ArtifactReference = null,
     /// <summary>
-    /// Optional, and only consulted for a room that has no bindings of its own yet (#1230, decision
-    /// 0056) — a room made before rooms carried their worker setup. Supplying it materializes the
-    /// room's copy and then decides; a room that already has one ignores this entirely, so a stale or
-    /// wrong path can never redirect a room that knows its own workers. Same contract `aer decide`
-    /// has always had, where <c>DecideOptions.BindingsFilePath</c> is required.
+    /// Optional. Decision 0056 (#1230) is the record: it governs when this is consulted at all, which
+    /// is never for a room that already knows its workers.
     /// </summary>
     string? BindingsFilePath = null);
 
@@ -747,6 +744,13 @@ public sealed partial class RoomClient
         {
             ExecutionId? supplementaryExecutionId = null;
 
+            // #1230's second reader: read the provider ONCE. It is one process-wide mutable slot, and
+            // the supply step below awaits — so reading it again afterwards could pick up a different
+            // room's path written in that window by an unrelated open, session start or chat turn,
+            // none of which hold this room's turn lock. One read means the supply and the decision
+            // cannot disagree about whose workers they are, whatever else moves meanwhile.
+            var bindingsFilePath = _bindingsFilePathProvider() ?? string.Empty;
+
             if (revisionFilePath is not null)
             {
                 var supplyOptions = new SupplyOptions(
@@ -754,7 +758,7 @@ public sealed partial class RoomClient
                     supplementaryWorker ?? string.Empty,
                     supplementaryOutputName ?? string.Empty,
                     revisionFilePath,
-                    _bindingsFilePathProvider() ?? string.Empty);
+                    bindingsFilePath);
 
                 var supplyResult = await Task.Run(() => SupplyCommand.ExecuteAsync(supplyOptions, _adapters, hostStopSource.Token), hostStopSource.Token)
                     .ConfigureAwait(true);
@@ -768,7 +772,7 @@ public sealed partial class RoomClient
                 decisionType,
                 targetStepId,
                 supplementaryExecutionId?.Value,
-                _bindingsFilePathProvider() ?? string.Empty,
+                bindingsFilePath,
                 SettleOnVendorExhaustion: settleOnVendorExhaustion);
 
             var pumpTask = Task.Run(

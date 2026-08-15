@@ -55,7 +55,7 @@ public static class RuntimePermissionGrantAmender
             return PermissionAmendOutcome.NoChangeNeeded;
         }
 
-        var bindingsFilePath = Path.Combine(roomDirectoryPath, "bindings.json");
+        var bindingsFilePath = AerPaths.RoomBindingsFile(roomDirectoryPath);
         if (!File.Exists(bindingsFilePath))
         {
             return PermissionAmendOutcome.CouldNotPersist;

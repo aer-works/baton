@@ -801,6 +801,41 @@ public class DaemonIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// #1230's second reader: cancel carried the same defect decide did. The mechanism is written
+    /// out at the <c>/api/rooms/cancel</c> handler in <c>Program.cs</c>; what this pins is the
+    /// outcome — the named room's own bindings win, per decision 0056.
+    /// </summary>
+    /// <remarks>
+    /// The discriminator is the slot's value after the call. It is seeded with a DIFFERENT room's
+    /// file, so an endpoint that leaves it alone — the defect — leaves that foreign path in place;
+    /// only the guard moves it to this room's own. Asserting on the cancel's own outcome cannot
+    /// discriminate: cancelling a paused room succeeds either way, which is exactly why the bug was
+    /// silent.
+    /// </remarks>
+    [Fact]
+    public async Task CancelPointsAtTheRoomsOwnWorkers_NotWhicheverRoomRanLast()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string executionId = "exec-cancel-own-bindings-1";
+
+        var otherRoomBindings = await WriteRejectableBindingsAsync(cancellationToken);
+        var roomDirectory = await CreatePausedRoomDirectoryAsync(executionId, cancellationToken);
+        var roomBindings = AerPaths.RoomBindingsFile(roomDirectory);
+        File.Copy(await WriteUnresolvableBindingsAsync(cancellationToken), roomBindings);
+
+        var pathHolder = DaemonHost.App!.Services.GetRequiredService<BindingsPathHolder>();
+        pathHolder.BindingsFilePath = otherRoomBindings;
+
+        var response = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/cancel",
+            new CancelRoomRequest(roomDirectory, executionId),
+            cancellationToken);
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+
+        Assert.Equal(roomBindings, pathHolder.BindingsFilePath);
+    }
+
+    /// <summary>
     /// The other polarity of the traversal refusal above: a reference naming a REAL output of that
     /// execution gets past the reference check.
     /// <para>

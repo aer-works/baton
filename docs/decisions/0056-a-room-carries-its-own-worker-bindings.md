@@ -61,6 +61,13 @@ so a stale or wrong path can never redirect a room that knows its own workers. T
 `aer decide` has always had, where `DecideOptions.BindingsFilePath` is required — so the CLI was never
 subject to the defect this record fixes.
 
+*Stated plainly: **no HTTP client populates that field today.*** `RoomClient.DecideAsync`'s daemon
+branch constructs the request without it, and desktop and phone both route through that method. The
+field is the mechanism, not yet a path anyone walks — so for a daemon-mediated client the working
+remedy is the refusal message's, decision 3's. Teaching `DecideAsync` to populate it (from the same
+last-used store `/api/rooms/open` already reads) is a separate, small piece of work, and saying so
+here is what keeps this decision from reading as more shipped than it is.
+
 **5. Rooms made before this heal on first use** rather than needing a migration: the first decision
 from a client that knows the file gives the room its copy.
 
@@ -76,11 +83,17 @@ from a client that knows the file gives the room its copy.
 ## Consequences
 
 **Easier.** #1230 closes. A room becomes self-describing: what it is, what happened in it, and now who
-runs it, all in one directory. Rooms started through `/api/rooms/run` gain the ability to persist a
-0022 ladder answer at all — before this they had no in-room `bindings.json`, so `AmendAsync` returned
-`CouldNotPersist` and a standing permission answered there could not be kept. That gap closes with the
-same stroke, unasked. A phone "Run it again" becomes possible later for the same reason: the room
-knows its own workers, so a client that cannot supply a bindings file no longer needs to.
+runs it, all in one directory. A phone "Run it again" becomes possible later for the same reason: the
+room knows its own workers, so a client that cannot supply a bindings file no longer needs to.
+
+**One gating condition removed, not two.** An earlier draft of this record claimed rooms started
+through `/api/rooms/run` "gain the ability to persist a 0022 ladder answer at all". That was wrong,
+and #1230's second reader caught it. Two conditions gate `RuntimePermissionGrantAmender.AmendAsync`:
+the room's `bindings.json` must exist — which this record fixes — **and** it must contain an entry
+under the worker name the amender looks up. That name is hardcoded to
+`InteractiveSessionMaterializer.DefaultWorkerName` (`"chat-worker"`), never the worker that actually
+asked, so a workflow room whose bindings key their own step workers still returns `CouldNotPersist`.
+This record removes the first condition and does not touch the second.
 
 **Harder.** A room directory now contains an operator-authored file that AER copies, so the room is no
 longer purely AER-owned output — deleting a room deletes a copy of something the operator wrote, which
