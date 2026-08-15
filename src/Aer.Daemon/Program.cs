@@ -1312,8 +1312,13 @@ namespace Aer.Daemon
 
                 if (revokeOutcome == PermissionRevokeOutcome.CouldNotPersist)
                 {
+                    // The outcome covers two situations and they need different sentences: a room with
+                    // no worker setup at all is not the same problem as a room whose setup lacks THIS
+                    // worker, and naming the wrong one sends the person looking in the wrong place.
                     return Results.BadRequest(
-                        $"This room doesn't have worker '{revokeWorkerName}' to take a permission back from.");
+                        File.Exists(AerPaths.RoomBindingsFile(request.DirectoryPath))
+                            ? $"This room doesn't have worker '{revokeWorkerName}' to take a permission back from."
+                            : "This room has no worker setup, so it holds no permissions to take back.");
                 }
 
                 // The projection does not carry standing permissions, so nothing to broadcast — the

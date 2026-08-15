@@ -1113,6 +1113,30 @@ public sealed class RuntimePermissionDaemonTests : IDisposable
                 Assert.Contains(
                     PermissionRevokeKind.RoomShell,
                     await unknown.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+                // The two CouldNotPersist situations get different sentences. A room with bindings but
+                // no such worker names the worker; a room with no bindings at all must not, or it sends
+                // the person hunting for a worker in a room that has no worker setup to look in.
+                var unknownWorker = await client.PostAsJsonAsync(
+                    $"{baseUrl}/api/rooms/permissions/revoke",
+                    new { directoryPath = roomDir, revokeKind = PermissionRevokeKind.RoomShell, workerName = "not-in-this-room" },
+                    TestContext.Current.CancellationToken);
+
+                Assert.Equal(System.Net.HttpStatusCode.BadRequest, unknownWorker.StatusCode);
+                Assert.Contains(
+                    "not-in-this-room",
+                    await unknownWorker.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+                FileCleanup.EnsureDeleted(bindingsPath);
+                var noBindings = await client.PostAsJsonAsync(
+                    $"{baseUrl}/api/rooms/permissions/revoke",
+                    new { directoryPath = roomDir, revokeKind = PermissionRevokeKind.RoomShell },
+                    TestContext.Current.CancellationToken);
+
+                Assert.Equal(System.Net.HttpStatusCode.BadRequest, noBindings.StatusCode);
+                var noBindingsText = await noBindings.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+                Assert.Contains("no worker setup", noBindingsText);
+                Assert.DoesNotContain(InteractiveSessionMaterializer.DefaultWorkerName, noBindingsText);
             }
             finally
             {
