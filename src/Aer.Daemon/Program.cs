@@ -1284,9 +1284,11 @@ namespace Aer.Daemon
                     // is what makes a lock look unnecessary; not being a mutation is not what makes a
                     // read consistent.
                     //
-                    // What this buys is agreement among the daemon's own writers, all of which take the
-                    // same lock. It is not a guarantee against every writer of the file: #1257 records
-                    // the one that does not take it.
+                    // The guard is needed against the writers that TRUNCATE, and those all take it.
+                    // MaterializeRoomBindings does not, and does not need to: it stages to a temp file
+                    // and File.Moves it over, so a reader sees the old file or the new one and never a
+                    // half of either. What the guard cannot cover is a writer that neither takes it nor
+                    // writes atomically — #1257 records the one of those, outside this process.
                     using var readGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
                         directoryPath, TimeSpan.FromSeconds(2), "standing permission read");
                     readResult = await RuntimePermissionGrantAmender.GetStandingPermissionsAsync(

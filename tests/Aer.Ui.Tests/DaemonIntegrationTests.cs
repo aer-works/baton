@@ -821,6 +821,10 @@ public class DaemonIntegrationTests : IAsyncLifetime
             supplementaryOutputName: null,
             cancellationToken: cancellationToken);
 
+        // The request was accepted, and that is ALL this asserts: /api/rooms/decide dispatches the
+        // decision itself fire-and-forget, so ErrorMessage can only ever reflect the synchronous half
+        // of the handler — which is the materialise-or-skip step this test is about. Read as "the
+        // decision succeeded" it would be wrong.
         Assert.Null(outcome.ErrorMessage);
         Assert.True(File.Exists(roomBindingsFile));
         var clientContent = await File.ReadAllTextAsync(clientBindingsFilePath, cancellationToken);
@@ -870,6 +874,11 @@ public class DaemonIntegrationTests : IAsyncLifetime
             supplementaryOutputName: null,
             cancellationToken: cancellationToken);
 
+        // Accepted, not "succeeded" — same caveat as the arm above, and it matters more here: this
+        // room's bindings deliberately name an adapter nothing resolves, so the fire-and-forget
+        // decide behind this 200 would fail if it ever ran. That is fine for what is being pinned.
+        // The claim is only that the room's own file is untouched, and the gate that decides it is
+        // pure file existence, checked synchronously before the response.
         Assert.Null(outcome.ErrorMessage);
         var finalContent = await File.ReadAllTextAsync(roomBindingsFile, cancellationToken);
         Assert.Equal(existingContent, finalContent);
