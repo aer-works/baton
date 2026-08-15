@@ -77,10 +77,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(archiveRequests, ['/tasks/a']);
-      // "Not in selection mode", said directly. It used to be asserted as `find.text('Rooms')`
-      // finding exactly one widget — the ordinary AppBar title rather than "N selected" — which
-      // #1232 broke by adding a nav destination that is also called Rooms. The word was never the
-      // claim; the absence of the selection AppBar is.
+      // Selection mode exited — see the note on the same assertion above.
       expect(find.byTooltip('Cancel selection'), findsNothing);
       expect(find.byType(Checkbox), findsNothing);
     });
@@ -162,6 +159,33 @@ void main() {
       expect(attentionBand('Cancelled'), 3);
       expect(attentionBand('Unavailable'), 3);
       expect(attentionBand('OutOfPlan'), 3);
+    });
+
+    // #1233: 'Stopped' reached attentionBand's catch-all and sorted among Finished/Failed, while
+    // roomStatus twelve lines below already special-cased it (#1219). Pinned as a pair so a status
+    // the phone renders cannot silently keep the default band: every string roomStatus maps
+    // deliberately (a non-idle AerStatus) must also reach a deliberate band arm.
+    test('a status the phone renders never falls to the default band', () {
+      const knownStatusToBand = {
+        'NeedsYou': 0,
+        'Running': 1,
+        'Finished': 2,
+        'Failed': 2,
+        'Cancelled': 3,
+        'Stopped': 3,
+        'Unavailable': 3,
+        'OutOfPlan': 3,
+      };
+
+      for (final entry in knownStatusToBand.entries) {
+        expect(roomStatus(entry.key), isNot(AerStatus.idle),
+            reason: '${entry.key} is in this table, so roomStatus must map it deliberately');
+        expect(attentionBand(entry.key), entry.value, reason: entry.key);
+      }
+
+      // The default arms stay — a phone can talk to a daemon that knows a status it doesn't.
+      expect(roomStatus('SomeFutureStatus'), AerStatus.idle);
+      expect(attentionBand('SomeFutureStatus'), 2);
     });
 
     test('roomStatus maps status strings to AerStatus', () {
@@ -356,6 +380,7 @@ void main() {
       expect(find.text('desktop.local:5000'), findsOneWidget);
       expect(find.text('Sign out'), findsOneWidget);
     });
+
   });
 
   /// The capability #1226's second reader caught going missing — see `RoomsScreen._startNewRoom` for

@@ -14,7 +14,11 @@ int attentionBand(String? status) => switch (status) {
       'NeedsYou' => 0,
       'Running' => 1,
       'Finished' || 'Failed' => 2,
-      'Cancelled' || 'Unavailable' || 'OutOfPlan' => 3,
+      // #1233: 'Stopped' ranks with the discarded, not the finished — the desktop's canonical
+      // RoomsViewModel.StateRank does the same, and without this arm a room whose process died
+      // sorted among Finished/Failed. The catch-all below stays for a daemon newer than this app;
+      // `every status the phone knows reaches a deliberate arm` is what keeps a known one out of it.
+      'Cancelled' || 'Stopped' || 'Unavailable' || 'OutOfPlan' => 3,
       _ => 2,
     };
 
