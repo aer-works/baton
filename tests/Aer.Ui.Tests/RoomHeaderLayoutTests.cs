@@ -151,6 +151,26 @@ public class RoomHeaderLayoutTests
     }
 
     /// <summary>
+    /// #1224's second reader: <c>FindViewControl</c> is the general-purpose by-name lookup the
+    /// headless tests share, and it searches an explicit chain of view scopes. The header became a
+    /// new scope, so a chain that had not learned about it returned <see langword="null"/> for every
+    /// control in it — silently, because the signature is nullable, which is why no existing test
+    /// went red.
+    /// </summary>
+    [AvaloniaFact]
+    public void The_shared_by_name_lookup_reaches_the_header_scope()
+    {
+        var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+        window.ViewModel.CurrentSection = ShellSection.Chat;
+        window.Show();
+
+        // One from the header and one from the transcript: a chain that lost the header scope fails
+        // the first, and a chain that somehow replaced rather than extended it fails the second.
+        Assert.NotNull(window.FindViewControl<Button>("StopButton"));
+        Assert.NotNull(window.FindViewControl<ScrollViewer>("ChatMessagesScroll"));
+    }
+
+    /// <summary>
     /// The width <paramref name="source"/>'s text would take if nothing constrained it. Measured on a
     /// throwaway twin rather than by re-measuring the live control, which would corrupt the layout
     /// pass the assertions above are reading. <c>DesiredSize</c> cannot answer this: it is the result
