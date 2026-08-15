@@ -234,10 +234,19 @@ public static class RuntimePermissionGrantAmender
         // Ordinal, matching how AmendAsync added it. A pattern is a stored token, not prose, and a
         // case-insensitive removal here would take back a family the operator did not name on any
         // filesystem where two spellings can both be in the list.
-        revokedGrant = existingGrant with
-        {
-            ShellCommandPatterns = [.. patterns.Where(p => !string.Equals(p, shellCommandPattern, StringComparison.Ordinal))],
-        };
+        var remaining = patterns
+            .Where(p => !string.Equals(p, shellCommandPattern, StringComparison.Ordinal))
+            .ToArray();
+
+        // #1256: taking the LAST pattern out has to take the shell with it. An empty pattern list is
+        // not "nothing is allowed" — PermissionGrant.ShellCommandPatterns' own contract says an empty
+        // list beside RunShellCommands means ANY command, and ClaudeWorkerAdapter.BuildAllowedTools
+        // implements exactly that, emitting a bare `Bash` instead of the scoped `Bash(pattern)` forms.
+        // So filtering the list alone would turn "you may run rm" into "you may run anything" — a
+        // revoke that widens, which is the one thing 0004 says this surface must never do.
+        revokedGrant = remaining.Length == 0
+            ? existingGrant with { RunShellCommands = false, ShellCommandPatterns = [] }
+            : existingGrant with { ShellCommandPatterns = remaining };
         return PermissionRevokeOutcome.Revoked;
     }
 

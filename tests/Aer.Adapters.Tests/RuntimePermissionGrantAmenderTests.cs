@@ -332,6 +332,53 @@ public class RuntimePermissionGrantAmenderTests
     }
 
     /// <summary>
+    /// #1256, whose mechanism is stated where the fix is (<c>TryRevoke</c>'s last-pattern branch).
+    /// What this pins is the polarity: the sibling above leaves a pattern behind, and that surviving
+    /// sibling is exactly what hid this case for a whole PR cycle.
+    /// </summary>
+    /// <remarks>
+    /// Asserted at the translator, not only on the fields: the fields are where the bug looks
+    /// harmless, and <c>--allowedTools</c> is where it becomes authority. A version that only cleared
+    /// the list would satisfy every field assertion here and still emit a bare <c>Bash</c>.
+    /// </remarks>
+    [Fact]
+    public async Task Revoking_the_last_command_takes_the_shell_with_it_rather_than_widening_to_any_command()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomDir = Path.Combine(Path.GetTempPath(), $"revoke-last-{Guid.NewGuid():N}");
+        try
+        {
+            var bindingsPath = await WriteSeedRoomAsync(roomDir, grant: null, ct);
+            await RuntimePermissionGrantAmender.AmendAsync(
+                roomDir, Worker, PermissionDecisionKind.AllowCommandInRoom, "Bash", """{"command":"rm -rf build/"}""", ct);
+
+            // The premise, asserted rather than assumed: one family stands, and the shell is granted
+            // in the scoped form. Without this the test could pass against a room that never granted.
+            var granted = await ReloadGrantAsync(bindingsPath, ct);
+            Assert.Equal(["rm *"], granted!.ShellCommandPatterns);
+            Assert.True(granted.RunShellCommands);
+
+            var outcome = await RuntimePermissionGrantAmender.RevokeAsync(
+                roomDir, Worker, PermissionRevokeKind.CommandInRoom, "rm *", ct);
+
+            Assert.Equal(PermissionRevokeOutcome.Revoked, outcome);
+
+            var revoked = await ReloadGrantAsync(bindingsPath, ct);
+            Assert.Empty(revoked!.ShellCommandPatterns!);
+            Assert.False(revoked.RunShellCommands);
+
+            // What the worker actually meets. An unscoped "Bash" here is the widening this exists to
+            // catch, and it is invisible from the fields alone.
+            Assert.True(new ClaudeWorkerAdapter().TryTranslatePermissionGrant(revoked, out var allowedTools, out _));
+            Assert.DoesNotContain("Bash", allowedTools ?? string.Empty, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
+
+    /// <summary>
     /// #1238's polarity pair, and the one this feature could most easily get wrong: revocation is not
     /// a route back into a standing refusal. <see cref="PermissionRevokeKind"/> states why; this pins
     /// that the code obeys it.
