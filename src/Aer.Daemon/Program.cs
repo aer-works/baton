@@ -1283,6 +1283,10 @@ namespace Aer.Daemon
                     // the one wrong answer a permission inspector must never give. Not being a mutation
                     // is what makes a lock look unnecessary; not being a mutation is not what makes a
                     // read consistent.
+                    //
+                    // What this buys is agreement among the daemon's own writers, all of which take the
+                    // same lock. It is not a guarantee against every writer of the file: #1257 records
+                    // the one that does not take it.
                     using var readGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
                         directoryPath, TimeSpan.FromSeconds(2), "standing permission read");
                     readResult = await RuntimePermissionGrantAmender.GetStandingPermissionsAsync(
@@ -3674,7 +3678,7 @@ namespace Aer.Daemon
     /// <para>
     /// <b>The grant's other three categories are absent on purpose too</b>, and not because they are
     /// uninteresting. Reporting them beside a granted shell would be a false statement rather than a
-    /// partial one — <see cref="PermissionGrant.IncoherentWithholdings"/> is the record of why a
+    /// partial one — <see cref="PermissionGrant.CategoriesDefeatedByTheShell"/> is the record of why a
     /// withheld category is not actually withheld once the shell is granted. Adding them here needs that
     /// coherence expressed alongside them, not the bare booleans.
     /// </para>
