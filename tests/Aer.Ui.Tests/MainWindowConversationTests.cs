@@ -212,6 +212,36 @@ public class MainWindowConversationTests
         }
     }
 
+    /// <summary>
+    /// #468: see <see cref="MainWindow.ShowSelectedStepFirstOutputAsync"/>'s remarks for the two
+    /// read models that disagreed and why the fix compares step ids rather than clearing on every
+    /// <c>SelectedStep</c>-changed event.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task SelectingAStepWithNoConversation_ClearsAPriorStepsRenderedPanel()
+    {
+        var roomDirectory = await CreatePumpedRoomDirectoryAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var (window, transcriptDirectory) = await LoadWithTranscriptOnStepAsync(
+                roomDirectory, Architect,
+                TurnLine(1, "initiator", "claude", "seed", "opening") + "\n",
+                TestContext.Current.CancellationToken);
+
+            window.ShowConversation(transcriptDirectory, "architect — conversation");
+            var conversationPanel = window.FindViewControl<StackPanel>("ConversationPanel")!;
+            Assert.Single(conversationPanel.Children.OfType<Border>()); // control arm: it did render
+
+            window.ViewModel.SelectStepById(Critic.Value); // critic's execution has no transcript
+
+            Assert.Empty(conversationPanel.Children); // the regression this test exists to catch
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     [AvaloniaFact]
     public async Task An_execution_without_a_transcript_gets_no_conversation_row_at_all()
     {
