@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Aer.Adapters;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
@@ -159,6 +161,60 @@ public class MainWindowDagTests
 
         // M19 Phase 5 (#190): a template node is a plain surface — no status tint to carry.
         Assert.Equal(window.FindResource("Color.Surface"), nodeC.Background);
+    }
+
+    /// <summary>
+    /// #511 (found tracing #206's status-icon path) — see the DAG node construction's own remarks in
+    /// <c>MainWindow.axaml.cs</c> for why this call site alone drew a filled mark hollow.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task A_filled_status_marks_dag_icon_is_filled_not_only_stroked()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"ui-dag-fill-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["shell"] = new ShellCommandWorkerAdapter() };
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            var definition = new WorkflowDefinition(
+                new WorkflowTemplateId("dag-fill-gate"),
+                1,
+                [
+                    new WorkflowStepDefinition(
+                        new StepId("a"), "a", [], ["out_a"], [], new RetryPolicy(1), new PausePoint([])),
+                ]);
+            var workflowFilePath = Path.Combine(testRoot, "workflow.json");
+            await File.WriteAllTextAsync(workflowFilePath, JsonSerializer.Serialize(definition), TestContext.Current.CancellationToken);
+
+            var writeCommand = OperatingSystem.IsWindows()
+                ? "echo a-out>%AER_OUTPUT_DIR%\\out_a"
+                : "echo a-out > \"$AER_OUTPUT_DIR/out_a\"";
+            var config = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["a"] = new WorkerBindingConfigEntry(
+                    "shell", new WorkerContract("a", [], [new ProducedOutput("out_a")], []),
+                    writeCommand, TimeSpan.FromSeconds(30)),
+            };
+            var bindingsFilePath = Path.Combine(testRoot, "bindings.json");
+            await File.WriteAllTextAsync(bindingsFilePath, JsonSerializer.Serialize(config), TestContext.Current.CancellationToken);
+
+            var window = new MainWindow(
+                new LocalUiConfigurationStore(Path.Combine(testRoot, "recent-room-directories.json")), adapters);
+
+            await window.RunAsync(roomDirectory, workflowFilePath, bindingsFilePath, TestContext.Current.CancellationToken);
+
+            var dagCanvas = window.FindViewControl<Canvas>("DagCanvas")!;
+            var node = Assert.Single(dagCanvas.Children.OfType<Border>());
+            var icon = Assert.Single(((StackPanel)node.Child!).Children.OfType<ShapePath>());
+
+            Assert.Equal(window.FindResource("Icon.Bubble"), icon.Data);
+            Assert.NotNull(icon.Fill);
+            Assert.Equal(icon.Stroke, icon.Fill);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
     }
 
     // #1222 retired this file's live-refresh-timer fact about opening a template. It opened a

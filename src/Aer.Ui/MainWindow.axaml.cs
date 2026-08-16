@@ -1917,10 +1917,17 @@ public partial class MainWindow : Window
             };
             if (status is { } iconStatus)
             {
+                var geometryKey = Converters.StatusIconMap.GeometryKeyFor(iconStatus);
                 content.Children.Add(new ShapePath
                 {
-                    Data = this.FindResource(Converters.StatusIconMap.GeometryKeyFor(iconStatus)) as Geometry,
+                    Data = this.FindResource(geometryKey) as Geometry,
                     Stroke = borderBrush,
+                    // #511: this hand-built Path is the one status-mark call site the #461 fix missed
+                    // — every XAML binding goes through StatusToIconFillConverter, but this node
+                    // constructs its own Path in C# and set only Stroke, so every mark authored solid
+                    // (Icon.Bubble for Paused/NeedsYou, needsInput's loudest state; Icon.Dot for
+                    // Pending/idle, #489) drew solid in every list and hollow here, in the same window.
+                    Fill = Converters.StatusIconMap.IsFilled(geometryKey) ? borderBrush : null,
                     StrokeThickness = 1.6,
                     StrokeLineCap = PenLineCap.Round,
                     StrokeJoin = PenLineJoin.Round,
