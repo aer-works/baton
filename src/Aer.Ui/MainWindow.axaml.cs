@@ -1058,7 +1058,7 @@ public partial class MainWindow : Window
         }
 
         chat.BeginSend(message, chat.LastKnownTurnsCount);
-        await PostChatTurnAsync(roomDirectoryPath, message).ConfigureAwait(true);
+        await PostChatTurnAsync(roomDirectoryPath, message, chat.SelectedTagParticipantId).ConfigureAwait(true);
     }
 
     /// <summary>
@@ -1068,10 +1068,15 @@ public partial class MainWindow : Window
     /// the turn dispatched, false if it failed — the drain uses that to decide whether to remove the
     /// queued message. Completion itself is observed later by the live-refresh poll.
     /// </summary>
-    private async Task<bool> PostChatTurnAsync(string roomDirectoryPath, string message)
+    /// <param name="targetParticipantId">
+    /// 0054 §4/#1307: the sticky tag to send with — a typed send's current
+    /// <see cref="ChatViewModel.SelectedTagParticipantId"/>, or a queued item's own captured tag
+    /// (<see cref="QueuedChatMessageViewModel.TargetParticipantId"/>, per its own remarks).
+    /// </param>
+    private async Task<bool> PostChatTurnAsync(string roomDirectoryPath, string message, WorkerId? targetParticipantId)
     {
         var outcome = await _session.SendSessionMessageAsync(
-            new SendSessionMessageRequest(DirectoryPath: roomDirectoryPath, Message: message)).ConfigureAwait(true);
+            new SendSessionMessageRequest(DirectoryPath: roomDirectoryPath, Message: message, TargetParticipantId: targetParticipantId)).ConfigureAwait(true);
 
         if (outcome.ErrorMessage is { } error)
         {
@@ -1550,7 +1555,7 @@ public partial class MainWindow : Window
                 if (chat.CanDrainQueue && chat.TryPeekQueuedMessage(out var queued) && queued is not null)
                 {
                     chat.BeginDrainedSend(queued.Text, sessionMetadata.Turns.Count);
-                    if (await PostChatTurnAsync(currentRoomDirectoryPath, queued.Text).ConfigureAwait(true))
+                    if (await PostChatTurnAsync(currentRoomDirectoryPath, queued.Text, queued.TargetParticipantId).ConfigureAwait(true))
                     {
                         // Remove the exact item dispatched, by identity — the head stayed live during
                         // the post, so a positional dequeue could drop a different message the operator

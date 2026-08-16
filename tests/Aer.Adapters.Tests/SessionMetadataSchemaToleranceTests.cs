@@ -1,4 +1,5 @@
 using Aer.Adapters;
+using Aer.Flow.Domain;
 using Xunit;
 
 namespace Aer.Adapters.Tests;
@@ -82,6 +83,63 @@ public class SessionMetadataSchemaToleranceTests
             // #1305: this fixture predates Participants -- it must load as null, never as a
             // synthesized single-entry list. Why: SessionMetadata.Participants' own remarks.
             Assert.Null(metadata.Participants);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(dir);
+        }
+    }
+
+    /// <summary>
+    /// 0054 §4/#1307: <c>SessionTurn.TargetParticipantId</c> is trailing-optional the same way
+    /// <c>ExhaustedUntil</c> is — this pins both directions of its round trip through the same
+    /// <c>SaveMetadataAsync</c>/<c>LoadMetadataAsync</c> pair every other trailing-optional field
+    /// above is proven against, rather than a fixture, since the field is new enough that no
+    /// pre-existing file could carry it either way.
+    /// </summary>
+    [Fact]
+    public async Task A_turn_round_trips_both_a_null_and_a_non_null_target_participant_id()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "aer-turn-addressing-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "room.json");
+
+        try
+        {
+            var untaggedTurn = new SessionTurn(
+                TurnIndex: 1,
+                Vendor: "claude",
+                HumanMessage: "hello",
+                AssistantResponse: "hi",
+                ExecutedAt: DateTimeOffset.UnixEpoch,
+                NativeSessionResumed: false,
+                VendorHandoffSynthesized: false);
+            Assert.Null(untaggedTurn.TargetParticipantId);
+
+            var taggedTurn = untaggedTurn with { TurnIndex = 2, TargetParticipantId = new WorkerId("claude-2") };
+
+            var metadata = new SessionMetadata(
+                SessionId: "sess-addr-001",
+                RoomDirectoryPath: dir,
+                CurrentAdapter: "claude",
+                CurrentVendorSessionId: null,
+                Model: null,
+                WorkingDirectory: null,
+                TurnCount: 2,
+                SafetyCeiling: 100,
+                CreatedAt: DateTimeOffset.UnixEpoch,
+                UpdatedAt: DateTimeOffset.UnixEpoch,
+                Turns: [untaggedTurn, taggedTurn]);
+
+            await InteractiveSessionMaterializer.SaveMetadataAsync(metadata, path, TestContext.Current.CancellationToken);
+            var reloaded = await InteractiveSessionMaterializer.LoadMetadataAsync(path, TestContext.Current.CancellationToken);
+
+            Assert.NotNull(reloaded);
+            Assert.Equal(2, reloaded.Turns.Count);
+            // Ruling 3: an untagged turn's field stays null through the round trip -- it is never
+            // synthesized into a resolved orchestrator on save or load.
+            Assert.Null(reloaded.Turns[0].TargetParticipantId);
+            Assert.Equal(new WorkerId("claude-2"), reloaded.Turns[1].TargetParticipantId);
         }
         finally
         {

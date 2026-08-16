@@ -82,6 +82,33 @@
       <TextBlock Classes="caption secondary" TextWrapping="Wrap" Margin="0,0,0,4"
                  IsVisible="{Binding Chat.IsPipelineRoom}"
                  Text="This room's workers aren't conversational yet — you can answer its decisions here, but not talk to it." />
+      <!-- 0054 §4/#1307 ruling 2: the sticky-tag chip row — one chip per participant, tapping
+           selects the addressee, Untag returns to the room default. Client-local ViewModel state —
+           see ChatViewModel.SelectedTagParticipantId's remarks for what that means and what an
+           untagged send resolves to. Collapses for 0-1 participants, mirroring ChatHeaderView's
+           reassign-control precedent (ruling 3): a control with no addressing choice is clutter, not
+           a disabled affordance. -->
+      <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.1}"
+                  IsVisible="{Binding Chat.ShowTagChipRow}">
+        <TextBlock Classes="caption secondary" Text="{Binding Chat.SelectedTagLabel}" VerticalAlignment="Center" />
+        <ItemsControl ItemsSource="{Binding Chat.Participants}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.1}" />
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="domain:Participant">
+              <Button Content="{Binding Name}"
+                      Command="{Binding ((vm:MainWindowViewModel)DataContext).Chat.SelectTagParticipantCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                      CommandParameter="{Binding Id}" />
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <Button Content="Untag" IsVisible="{Binding Chat.HasSelectedTag}"
+                Command="{Binding Chat.ClearTagParticipantCommand}"
+                ToolTip.Tip="Clear the tag — the next send goes to the room, not a specific participant." />
+      </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}"
                   IsVisible="{Binding Chat.IsComposerVisible}">
         <!-- AcceptsReturn stays true so Shift+Enter inserts a newline; a bare Enter is intercepted by

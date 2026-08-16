@@ -362,11 +362,16 @@ class DaemonClient {
   }
 
   /// Sends a typed message to an active interactive session (M24).
+  ///
+  /// [targetParticipantId] is 0054 §4/#1307's addressing tag, wired for parity with the desktop's
+  /// wire contract (ruling 6) — there is no phone UI to set it yet, so every call today passes null,
+  /// which the daemon reads as "posted to the room."
   Future<void> sendSessionMessage({
     required String sessionId,
     required String message,
     String? adapter,
     String? model,
+    String? targetParticipantId,
   }) async {
     final response = await _post(
       Uri.http(host, '/api/sessions/send'),
@@ -376,6 +381,7 @@ class DaemonClient {
         'message': message,
         'adapter': adapter, // vocabulary-ok: payload field key
         'model': model,
+        'targetParticipantId': targetParticipantId,
       }),
     );
     _throwIfFailed(response);

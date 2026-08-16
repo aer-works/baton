@@ -154,6 +154,16 @@ internal sealed class DaemonBroadcast
                     if (sessionMetadata != null)
                     {
                         node["SessionId"] = sessionMetadata.SessionId;
+
+                        // 0054 §7/#1307 ruling 7: the same additive-sibling pattern as SessionId
+                        // above -- RoomProjection.Participants is the wire twin of this same
+                        // SessionMetadata field, so a live push carries it without a second read
+                        // model. Null on a pre-#1305 room stays absent rather than an empty array,
+                        // matching every other omitted-vs-empty distinction this method already draws.
+                        if (sessionMetadata.Participants != null)
+                        {
+                            node["Participants"] = JsonSerializer.SerializeToNode(sessionMetadata.Participants, options);
+                        }
                     }
                 }
                 catch { }

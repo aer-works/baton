@@ -42,6 +42,7 @@ class _ThinkingTimeFakeDaemonClient extends DaemonClient {
     required String message,
     String? adapter,
     String? model,
+    String? targetParticipantId,
   }) async {
     sentMessages.add(message);
     final error = sendError;

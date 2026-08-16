@@ -197,6 +197,40 @@ public sealed partial class ChatViewModel : ObservableObject
     /// </summary>
     public bool IsOrchestratorReassignVisible => Participants.Count > 1;
 
+    /// <summary>
+    /// The composer's sticky-tag chip (0054 §4/#1307, ruling 2): CLIENT-LOCAL draft state, the same
+    /// category as <see cref="InputText"/> — never persisted, never read back from a room, reset by
+    /// <see cref="Clear"/>. Stays selected across sends (that is the "sticky" in the name) until the
+    /// operator picks a different chip or the clear/untag affordance returns it to the room default
+    /// (an untagged send, which the daemon resolves to the current orchestrator — see
+    /// <c>Aer.Daemon.Program.ResolveOrchestrator</c>, the one place that resolution lives).
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSelectedTag))]
+    [NotifyPropertyChangedFor(nameof(SelectedTagParticipant))]
+    [NotifyPropertyChangedFor(nameof(SelectedTagLabel))]
+    private WorkerId? selectedTagParticipantId;
+
+    public bool HasSelectedTag => SelectedTagParticipantId is not null;
+
+    public Participant? SelectedTagParticipant => Participants.FirstOrDefault(p => p.Id == SelectedTagParticipantId);
+
+    /// <summary>What the composer shows for the current tag — "who receives a message is never a surprise" (0054 §4).</summary>
+    public string SelectedTagLabel => SelectedTagParticipant is { } tagged ? $"To: {tagged.Name}" : "To: room";
+
+    /// <summary>
+    /// The tag-chip row's own visibility, mirroring <see cref="IsOrchestratorReassignVisible"/>'s
+    /// ruling-3 precedent: a room with 0-1 participants has no addressing choice to offer, so the row
+    /// collapses entirely rather than rendering one disabled chip.
+    /// </summary>
+    public bool ShowTagChipRow => Participants.Count > 1;
+
+    [RelayCommand]
+    private void SelectTagParticipant(WorkerId workerId) => SelectedTagParticipantId = workerId;
+
+    [RelayCommand]
+    private void ClearTagParticipant() => SelectedTagParticipantId = null;
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasStatusText))]
     private string statusText = string.Empty;
@@ -559,6 +593,9 @@ public sealed partial class ChatViewModel : ObservableObject
         Participants = metadata.Participants ?? [];
         OnPropertyChanged(nameof(Participants));
         OnPropertyChanged(nameof(IsOrchestratorReassignVisible));
+        OnPropertyChanged(nameof(ShowTagChipRow));
+        OnPropertyChanged(nameof(SelectedTagParticipant));
+        OnPropertyChanged(nameof(SelectedTagLabel));
         RaiseOpenStateChanged();
 
         RebuildMessages();
@@ -885,9 +922,15 @@ public sealed partial class ChatViewModel : ObservableObject
     /// drain resumes draining (otherwise, with the queue non-empty every send enqueues, and nothing
     /// would ever clear the pause).
     /// </summary>
+    /// <remarks>
+    /// 0054 §4/#1307 ruling 4: each queued item captures <see cref="SelectedTagParticipantId"/> at
+    /// enqueue time, not drain time — the operator may re-tag the sticky chip (or clear it) while an
+    /// earlier message still waits, and that later choice must not silently retarget an item already
+    /// queued under a different addressee.
+    /// </remarks>
     public void EnqueueMessage(string message)
     {
-        QueuedMessages.Add(new QueuedChatMessageViewModel(message, RemoveQueuedMessage));
+        QueuedMessages.Add(new QueuedChatMessageViewModel(message, SelectedTagParticipantId, RemoveQueuedMessage));
         InputText = string.Empty;
         LastSendFailed = false;
         OnPropertyChanged(nameof(HasQueuedMessages));
@@ -1042,6 +1085,10 @@ public sealed partial class ChatViewModel : ObservableObject
         Participants = [];
         OnPropertyChanged(nameof(Participants));
         OnPropertyChanged(nameof(IsOrchestratorReassignVisible));
+        OnPropertyChanged(nameof(ShowTagChipRow));
+        // Ruling 2: the sticky tag is composer draft state, the same category as InputText below —
+        // it resets here rather than surviving to the next room.
+        SelectedTagParticipantId = null;
         StatusText = string.Empty;
         LiveProgressText = string.Empty;
         _lastProgressWasPartialText = false;
@@ -1110,9 +1157,15 @@ public sealed partial class ChatViewModel : ObservableObject
 /// it from <see cref="ChatViewModel.QueuedMessages"/> before it sends. The queue is a projection the
 /// operator can edit, never a second send authority: removing an entry only stops it queuing.
 /// </summary>
-public sealed partial class QueuedChatMessageViewModel(string text, Action<QueuedChatMessageViewModel> remove)
+/// <param name="targetParticipantId">
+/// 0054 §4/#1307: the sticky tag captured at enqueue time — see
+/// <see cref="ChatViewModel.EnqueueMessage"/>'s remarks for why the drain must not re-read a tag
+/// that may have since changed.
+/// </param>
+public sealed partial class QueuedChatMessageViewModel(string text, WorkerId? targetParticipantId, Action<QueuedChatMessageViewModel> remove)
 {
     public string Text { get; } = text;
+    public WorkerId? TargetParticipantId { get; } = targetParticipantId;
 
     [RelayCommand]
     private void Remove() => remove(this);

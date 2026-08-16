@@ -46,7 +46,15 @@ public sealed record SessionTurn(
     // that distinction is IsExhausted's job. ErrorMessage is deliberately left populated (the raw
     // vendor text) even when IsExhausted is true: it still feeds Copy and the disclosure path, just
     // never the fix-ask affordance an exhausted quota can't answer.
-    DateTimeOffset? ExhaustedUntil = null);
+    DateTimeOffset? ExhaustedUntil = null,
+    // 0054 §4/#1307 ruling 3: the tag the sender actually chose, durable as the turn's own fact.
+    // Null means "posted to the room" and STAYS null even though the daemon resolves an untagged
+    // send to the current orchestrator to answer it (Aer.Daemon.Program's ResolveOrchestrator) --
+    // that resolution is deliberately never stamped back here, because "untagged, answered by
+    // whoever held the role" is the truthful transcript fact and stamping the resolution would
+    // erase the distinction 0054 §4 draws between a tagged turn and a room turn. Trailing optional,
+    // same idiom as ExhaustedUntil above, so metadata written before this field existed still loads.
+    WorkerId? TargetParticipantId = null);
 
 public sealed record SessionMetadata(
     string SessionId,
@@ -95,7 +103,13 @@ public sealed record SendSessionMessageRequest(
     string? DirectoryPath = null,
     string Message = "",
     string? Adapter = null,
-    string? Model = null);
+    string? Model = null,
+    // 0054 §4/#1307: the sticky-tag chip's addressee. Null (the default, and every caller before
+    // this field existed) is an untagged send -- "posted to the room" -- which /api/sessions/send
+    // resolves daemon-side to the current orchestrator (never stamped back onto the recorded turn;
+    // see SessionTurn.TargetParticipantId's own remarks). A non-null value must name an existing
+    // participant or the endpoint refuses with 400.
+    WorkerId? TargetParticipantId = null);
 
 public static class InteractiveSessionMaterializer
 {
