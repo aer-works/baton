@@ -49,7 +49,7 @@ public class OrchestratorReassignEndpointTests : IAsyncLifetime
             }
             catch
             {
-                await Task.Delay(100, TestContext.Current.CancellationToken);
+                await Task.Delay(100, TestContext.Current.CancellationToken); // wait-ok: fast polling for local daemon /api/version readiness check
             }
         }
 
