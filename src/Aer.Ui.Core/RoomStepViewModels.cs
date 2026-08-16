@@ -238,22 +238,45 @@ public sealed partial class StepItemViewModel : ObservableObject
 }
 
 /// <summary>
-/// M25 / issue #618 (#480 rider): the waiting-on-lock banner.
-/// Surfaces when a room directory is held by another process. Reads as a WAIT, never an error.
+/// M25 / issue #618, promoted into the canonical machine by #1299 (#480, Fable's ruling): the
+/// waiting-on-lock banner. Renders <see cref="RoomCardStatus.WaitingOnLock"/> — a live process the
+/// journal cannot account for holds this room's flow lock. Room identity is directory-keyed, so the
+/// holder is always a process (a bare <c>aer run</c> pump, the sweep, a second Baton instance), never
+/// another room — there is nothing to link to. Reads as a WAIT, never an error (0006/quiet).
 /// </summary>
 public sealed partial class WaitingOnLockBannerViewModel : ObservableObject
 {
     private readonly Func<Task>? _tryAgainAsyncAction;
 
-    public string Title => "Waiting on another room's lock";
+    public string Title => "Waiting on another process's lock";
     public string HolderText { get; }
 
-    public WaitingOnLockBannerViewModel(string? holderDescription, Func<Task>? tryAgainAsyncAction = null)
+    public WaitingOnLockBannerViewModel(string? holderDescription, DateTime? acquiredAtUtc, Func<Task>? tryAgainAsyncAction = null)
     {
-        HolderText = string.IsNullOrWhiteSpace(holderDescription)
+        var holder = string.IsNullOrWhiteSpace(holderDescription)
             ? "another process — it did not say which"
             : holderDescription;
+
+        HolderText = acquiredAtUtc is { } acquired
+            ? $"Held by {holder} for {FormatDuration(DateTime.UtcNow - acquired)}"
+            : $"Held by {holder}";
+
         _tryAgainAsyncAction = tryAgainAsyncAction;
+    }
+
+    /// <summary>Whole seconds/minutes/hours — this is a wait indicator, not a stopwatch (#483's own reasoning for coarse units applies here too).</summary>
+    private static string FormatDuration(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.Zero)
+        {
+            elapsed = TimeSpan.Zero;
+        }
+
+        return elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours}h {elapsed.Minutes}m"
+            : elapsed.TotalMinutes >= 1
+                ? $"{(int)elapsed.TotalMinutes}m {elapsed.Seconds}s"
+                : $"{(int)elapsed.TotalSeconds}s";
     }
 
     [RelayCommand]

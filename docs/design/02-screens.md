@@ -909,33 +909,33 @@ the drawing is the load-bearing behaviour: your message did not wake the loop. T
 answered with the state. A room that stopped because its last three turns went nowhere would
 otherwise resume burning turns the moment you asked after it.
 
-#### Waiting on another room's lock
+#### Waiting on another process's lock
 
-Desktop · two rooms, one folder
+Desktop · a foreign process holds this room's directory
 
 ```
 Rooms + New
 
-◔ payments-api Working · claude
-
-⧗ aer-flow Waiting · payments-api holds this folder
+⧗ aer-flow Waiting · locked by another process
 
 aer-flow  [👑 claude]                                          ⧗ Waiting
 
-⧗ Waiting on payments-api — both rooms point at this folder, and
-turns take strict turns. [ Go to payments-api ]
+⧗ Waiting on another process's lock — held by aer run (pid 4212)
+for 40s.
 
-Reply… ⏎   (queues, sends when the folder frees)
+Reply… ⏎   (queues, sends when the lock frees)
 ```
 
-A blocked room previously looked identical to a slow one, which is the worst presentation: your
-model of what the product is doing goes wrong, and the fix is undiscoverable. The wait names its
-holder and links to it. It is information, not an error (0006). Typing still queues — the founding
-rule that a busy anything is never a reason you cannot act. Opening a *second* room on a folder
-that already has one warns at creation: legal, occasionally right, and a choice to make knowingly.
-Naming the holder as a *room* rather than a folder path rests on the lock growing a room-name
-field — the rider accepted with the thirteen-state ratification on #495, riding with #480's build
-(grouped under #752); until it ships, the engine knows only the path.
+**Corrected 2026-08-16 (#1299, Fable's ruling).** This section originally staged the scenario as
+two *rooms* sharing a folder, with the wait naming the other room and a "Go to <room>" link. That
+premise cannot occur: room identity is directory-keyed (#495/#1296), so opening a folder twice
+reopens the same room rather than creating a second, distinct one. The real, remaining collision is
+process-vs-room — a bare `aer run` pump, the memory-proposal sweep, or a second Baton instance
+holding the directory's lock while this room's own machinery has nothing to say about it. There is
+no other room to link to, so the mockup above names the holder process and how long it has held the
+lock instead. The "opening a second room warns at creation" sentence this section previously carried
+is also retired, not deferred: once the wait itself renders the instant it bites, that IS the
+knowing choice #480 asked for — no separate confirmation dialog exists or is needed.
 
 #### Escalation is a gate
 

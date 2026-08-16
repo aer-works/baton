@@ -224,6 +224,19 @@ public static class RoomCardViewModel
             WorkflowStatus.Paused => (PausedCardStatusText(projection), RoomCardStatus.NeedsYou),
             WorkflowStatus.Running when projection.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Running) is { } runningStep
                 => ($"Working — {runningStep.StepId.Value}", RoomCardStatus.Running),
+            // #1299 (Fable's ruling on #480): the flow lock (isFlowLockHeld) is held by SOME live
+            // process, but nothing in the journal explains it — no step of ours is Running, and
+            // nothing has failed or been rejected (a room with real failure/exhaustion information
+            // keeps showing that; it is more actionable than a lock note). Room identity is
+            // directory-keyed (#495/#1296), so this can never be "another room" — it is a foreign
+            // process (a bare `aer run` pump, the memory-proposal sweep, a second Baton instance)
+            // holding this directory's lock. Scoped to Running only: a Paused/Terminal room already
+            // has a well-defined, more urgent status (NeedsYou, Failed, Finished, Cancelled) that a
+            // transient external lock hold must not preempt.
+            WorkflowStatus.Running when isFlowLockHeld
+                && !projection.State.Steps.Any(s => s.Status == StepStatus.Running)
+                && failedOrRejectedSteps.Count == 0
+                => ("Waiting on another process's lock", RoomCardStatus.WaitingOnLock),
             _ when isOnlyBlockerExhaustion => FormatExhaustedRoomStatus(exhaustedSteps),
             // #1116 review must-fix: an unresolved ExhaustedUntil step keeps CanStillDeliver — and
             // so WorkflowStatus.Running — alive FOREVER (RetryEngine.MayRetry bypasses attempts for
@@ -331,6 +344,16 @@ public enum RoomCardStatus
     /// amendment for why this cannot be read off the journal and must be an explicit caller input.
     /// </summary>
     WaitingToStart,
+
+    /// <summary>
+    /// #1299 (#480, Fable's ruling): this room's flow lock is held by a live process the journal
+    /// cannot account for — no step of ours is Running, nothing has failed. Room identity is
+    /// directory-keyed (#495/#1296), so this is never another room; it is a foreign process (a bare
+    /// <c>aer run</c> pump, the memory-proposal sweep, a second Baton instance) holding the
+    /// directory's lock. Reads as a wait, never an error (0006/quiet). See 0020's 2026-08-16
+    /// amendment for why <c>isFlowLockHeld</c> cannot be read off the journal alone.
+    /// </summary>
+    WaitingOnLock,
 }
 
 /// <summary>

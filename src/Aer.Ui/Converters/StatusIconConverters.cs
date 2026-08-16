@@ -86,6 +86,9 @@ internal static class StatusIconMap
         // #1296: distinct from Icon.Ellipsis (Queued), which is a step-level mark -- see design/
         // tokens.json's status prose for why the two coexist.
         RoomCardStatus.WaitingToStart => "Icon.Clock",
+        // #1299: a padlock, distinct from Icon.Ellipsis (OutOfPlan) -- see design/tokens.json's
+        // status prose for why the two must not share a mark (StatusMarkMappingTests pins this).
+        RoomCardStatus.WaitingOnLock => "Icon.Lock",
         // #616 made this throw so a new member cannot silently render as some other state. Worth
         // knowing what that actually buys: driving the app for #1219 showed a genuinely missing
         // mapping as an *empty space* in the switcher rather than as a crash, because this runs
@@ -114,6 +117,7 @@ internal static class StatusIconMap
         // #1296: same muted family as Cancelled/Stopped -- a full concurrency house is normal
         // operation, not a warning.
         RoomCardStatus.WaitingToStart => "Status.WaitingToStart",
+        RoomCardStatus.WaitingOnLock => "Status.WaitingOnLock",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped card status."), // #616
     };
 }

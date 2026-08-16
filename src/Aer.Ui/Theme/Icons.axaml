@@ -79,6 +79,13 @@
        tokens deliberately keep the two visually separate. -->
   <StreamGeometry x:Key="Icon.Clock">M 13,8 A 5,5 0 1 1 3,8 A 5,5 0 1 1 13,8 Z M 8,8 L 8,4.5 M 8,8 L 11,9.5</StreamGeometry>
 
+  <!-- WaitingOnLock (#1299/#480): a padlock — a live process the journal cannot account for holds
+       this room's directory lock (a bare aer run pump, the memory-proposal sweep, a second Baton
+       instance; room identity is directory-keyed, so it is never another room). Distinct from
+       Icon.Clock (WaitingToStart's queued-for-a-slot mark) and Icon.Ellipsis (Queued/OutOfPlan) —
+       this is specifically about a lock, not a queue. -->
+  <StreamGeometry x:Key="Icon.Lock">M 5,7 L 5,5 A 3,3 0 1 1 11,5 L 11,7 M 4,7 L 12,7 L 12,13 L 4,13 Z</StreamGeometry>
+
   <!-- Unavailable: a slashed circle — recorded in the list but no longer readable. The international
        "not available" mark, and unmistakable against Icon.Cross (two diagonals, no circle) and
        Icon.Ring (an open arc, no slash). -->

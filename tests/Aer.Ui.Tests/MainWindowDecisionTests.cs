@@ -240,8 +240,10 @@ public class MainWindowDecisionTests
 
             Assert.True(window.ViewModel.HasWaitingOnLockBanner);
             Assert.NotNull(window.ViewModel.WaitingOnLockBanner);
-            Assert.Equal("Waiting on another room's lock", window.ViewModel.WaitingOnLockBanner.Title);
-            Assert.Equal("Other Room (pid 777)", window.ViewModel.WaitingOnLockBanner.HolderText);
+            Assert.Equal("Waiting on another process's lock", window.ViewModel.WaitingOnLockBanner.Title);
+            // #1299: HolderText now carries a duration ("Held by X for Ns") the fixture cannot pin
+            // to an exact second — StartsWith is the honest assertion for a live-computed elapsed time.
+            Assert.StartsWith("Held by Other Room (pid 777) for", window.ViewModel.WaitingOnLockBanner.HolderText);
         }
         finally
         {

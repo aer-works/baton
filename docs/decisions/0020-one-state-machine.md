@@ -114,6 +114,31 @@ wrong answer.
 > journal or projection facts yet for any other arm to misread, the same reasoning `stopped`'s own
 > amendment gives for its position relative to the permission arm.
 
+> **Amendment, 2026-08-16 (#1299).** A twelfth state, `waitingOnLock`: the state this record's own
+> #616 amendment already named — "Waiting on another room's lock", ratified on #495 — arrives with a
+> correction. Room identity is directory-keyed (#495/#1296), so two *rooms* cannot share a folder as
+> distinct rooms; opening a folder twice reopens the same room. The name and the design corpus's
+> original "names the room that holds this folder, linked" language both presuppose a room-vs-room
+> collision that the architecture cannot produce. Fable's ruling on #480: the real, remaining
+> collision is process-vs-room — a bare `aer run` pump, the memory-proposal sweep, or a second Baton
+> instance holding the directory's `flow.lock` while this room's own daemon-tracked machinery has
+> nothing to say about it. There is no other room to link to, so "linked" is retired; the state names
+> the holder process (description + how long it has held the lock) and offers nothing to navigate to.
+>
+> Mechanism, same shape as `stopped`: `isFlowLockHeld` (rule 1's existing extension,
+> `ConcurrencyGuard.IsHeld`) already carries the needed signal — no new caller-supplied argument.
+> `DeriveStatus` reads `waitingOnLock` off `WorkflowStatus.Running` when the lock is held, no step of
+> this room is itself `Running`, and nothing has failed or been rejected: a room with real
+> failure/exhaustion information keeps showing that, since it is more actionable than a lock note.
+> Scoped to `Running` only — a `Paused`/`Terminal` room already has a well-defined, more urgent status
+> (`NeedsYou`, `Failed`, `Finished`, `Cancelled`) that a transient external lock hold must not preempt.
+>
+> **The originally-scoped "warn before creating a duplicate room" half of #480 is ruled out entirely**,
+> not deferred: once `waitingOnLock` is canonical, opening a folder whose lock is externally held
+> shows the wait immediately, named, before any action — that IS the "knowing choice" #480 asked for,
+> delivered by the state machine rather than a confirmation dialog. No duplicate-room registry exists
+> or is needed.
+
 Three rules govern how the states are consumed:
 
 **1. Rendering is a projection, never a computation.** A surface may map a state to a mark, a word, a

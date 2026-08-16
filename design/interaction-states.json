@@ -85,10 +85,10 @@
       "coverage": { "pending": "0029 — the verification exists at worker start; its surface state is unbuilt" }
     },
     "waitingOnLock": {
-      "name": "Waiting on another room's lock",
-      "behaviour": "Reads as a wait, never as an error and never as generic working: names the room that holds this folder, linked, so the choice — wait, or go there — is discoverable. Opening a second room on a folder that already has one warns first; legal, but a choice made knowingly.",
-      "provenance": "#480 (grouped under #752), ratified 2026-08-04 on #495",
-      "coverage": { "pending": "#752 — #618 shipped the wait banner with a real holder (probe + locked-mutation paths); the linked go-there navigation and the pre-open warn are what remain" }
+      "name": "Waiting on another process's lock",
+      "behaviour": "Reads as a wait, never as an error and never as generic working: names the holder process and how long it has held the lock. Corrected 2026-08-16 (#1299, Fable's ruling): room identity is directory-keyed, so two rooms cannot share a folder as distinct rooms — the collision is always a foreign process (a bare aer run pump, the sweep, a second Baton instance), never another room, so there is nothing to link to and no duplicate-room warning to show; the wait itself, shown the instant it bites, is the knowing choice.",
+      "provenance": "#480 (grouped under #752), ratified 2026-08-04 on #495, corrected 2026-08-16 on #1299",
+      "coverage": { "pending": "#1300 — mobile render, blocked on #1299 landing the status in the projection" }
     },
     "dormant": {
       "name": "Dormant",
