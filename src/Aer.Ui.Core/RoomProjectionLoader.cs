@@ -264,7 +264,11 @@ public static class RoomProjectionLoader
             // process died says "Stopped" rather than "Working — …" beside a spinner. One probe per
             // room per fleet load, and the fleet loads on startup, on section activation and on an
             // explicit refresh — never on a timer.
-            ConcurrencyGuard.IsHeld(roomDirectoryPath));
+            ConcurrencyGuard.IsHeld(roomDirectoryPath),
+            // #1296: same reasoning, for the concurrency cap's in-memory wait queue -- this loader
+            // runs in-daemon-process (mobile and desktop both reach it via /api/rooms), so it can see
+            // ConcurrencySlotGate's live state directly, same as the lock probe above it.
+            ConcurrencySlotGate.IsWaiting(roomDirectoryPath));
 
         // Fallback for a room with no journal events/timestamps yet: prefer created timestamp
         // (scoped strictly to the pre-first-event window).

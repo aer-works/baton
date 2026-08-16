@@ -345,7 +345,9 @@ public sealed partial class RoomClient
             // A fresh reading here, not the one LoadAsync took: this path is also the WS push, which
             // can land long after a load. A stopped room emits no pushes at all, so this probe runs
             // only for a room something is actually doing something to.
-            RefreshRoomStoppedCard(projection, ConcurrencyGuard.IsHeld(CurrentRoomDirectoryPath));
+            RefreshRoomStoppedCard(
+                projection, ConcurrencyGuard.IsHeld(CurrentRoomDirectoryPath),
+                ConcurrencySlotGate.IsWaiting(CurrentRoomDirectoryPath));
             LastLoadSucceeded = true;
             LastWorkflowStatus = projection.State.Status;
             LastSnapshot = projection.Snapshot;
@@ -384,11 +386,18 @@ public sealed partial class RoomClient
     /// already has your action on screen.
     /// </para>
     /// </summary>
-    internal static RoomStoppedReason? DeriveRoomStoppedReason(RoomProjection projection, bool isFlowLockHeld)
+    internal static RoomStoppedReason? DeriveRoomStoppedReason(
+        RoomProjection projection, bool isFlowLockHeld, bool isWaitingToStart)
     {
         ArgumentNullException.ThrowIfNull(projection);
 
-        var (_, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld);
+        // #1296 (second-reader finding): a fresh room's first turn, queued behind the concurrency
+        // cap, is WorkflowStatus.Running with no lock held and no paused/failed steps -- exactly the
+        // shape DeriveStatus's Stopped arm otherwise matches. Without threading the real signal here
+        // that room rendered "This room stopped mid-run" with a Resume offer while it was actually
+        // about to auto-dispatch on its own.
+        var (_, status) = RoomCardViewModel.DeriveStatus(
+            projection, projection.PendingPermission, isFlowLockHeld, isWaitingToStart);
 
         return status switch
         {
@@ -422,9 +431,9 @@ public sealed partial class RoomClient
     /// from the same instant rather than from two probes a few statements apart.
     /// </para>
     /// </summary>
-    private void RefreshRoomStoppedCard(RoomProjection projection, bool isFlowLockHeld)
+    private void RefreshRoomStoppedCard(RoomProjection projection, bool isFlowLockHeld, bool isWaitingToStart)
     {
-        var reason = DeriveRoomStoppedReason(projection, isFlowLockHeld);
+        var reason = DeriveRoomStoppedReason(projection, isFlowLockHeld, isWaitingToStart);
 
         ViewModel.RoomStoppedCard = reason is { } stoppedReason
             ? new RoomStoppedCardViewModel(stoppedReason, () => ViewModel.RequestRoomRunAsync())
@@ -483,7 +492,7 @@ public sealed partial class RoomClient
 
             RebuildPausedSteps(projection, roomDirectoryPath);
             RebuildRunningExecutions(projection, roomDirectoryPath);
-            RefreshRoomStoppedCard(projection, isFlowLockHeld);
+            RefreshRoomStoppedCard(projection, isFlowLockHeld, ConcurrencySlotGate.IsWaiting(roomDirectoryPath));
 
             LastLoadSucceeded = true;
             LastWorkflowStatus = projection.State.Status;

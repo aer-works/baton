@@ -1640,6 +1640,12 @@ namespace Aer.Daemon
                     pathHolder.BindingsFilePath = cancelBindingsPath;
                 }
 
+                // #1296: a room the concurrency cap has FIFO-queued (never dispatched, so
+                // CancelExecutionAsync/RequestHostStop below have nothing hosted to touch) must be
+                // pulled out of the wait queue here, or it would eventually auto-dispatch into a turn
+                // nobody wants running anymore. No-op if it already started or was never queued.
+                ConcurrencySlotGate.CancelWaiting(request.DirectoryPath);
+
                 if (!string.IsNullOrEmpty(request.ExecutionId))
                 {
                     await session.CancelExecutionAsync(request.DirectoryPath, new ExecutionId(request.ExecutionId));
@@ -2607,6 +2613,14 @@ namespace Aer.Daemon
             Func<string, string, WorkerProgressEvent, Task> broadcastSessionProgressAsync,
             bool forceHandoff = false)
         {
+            // #1296: the global/per-vendor concurrency cap sits BEFORE the turn lock -- it gates how
+            // many turns dispatch to a vendor CLI at once across the whole daemon, not (like the turn
+            // lock) how many run concurrently within one session. Held for the turn's full duration,
+            // released in the `finally` below alongside the turn lock, so a queued room shows
+            // RoomCardStatus.WaitingToStart for exactly as long as it is genuinely waiting.
+            var vendor = requestAdapter ?? metadata.CurrentAdapter ?? "unknown";
+            using var slot = await ConcurrencySlotGate.AcquireAsync(directoryPath, vendor).ConfigureAwait(false);
+
             var turnLock = SessionTurnLockFor(directoryPath);
             await turnLock.WaitAsync().ConfigureAwait(false);
             try

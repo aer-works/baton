@@ -158,9 +158,21 @@ public static class RoomCardViewModel
     /// answer should pass <c>true</c>: that yields today's behaviour exactly (a `Running` room reads
     /// as working), so an unknown never invents a Stopped room out of nothing.
     /// </param>
+    /// <param name="isWaitingToStart">
+    /// Whether <see cref="Aer.Flow.Concurrency.ConcurrencySlotGate"/> currently holds this room's
+    /// turn dispatch queued. Not defaulted, same reasoning as <paramref name="isFlowLockHeld"/>'s own
+    /// doc note. See decisions/0020's 2026-08-16 amendment for the full rationale, including why this
+    /// arm runs first.
+    /// </param>
     public static (string StatusText, RoomCardStatus Status) DeriveStatus(
-        RoomProjection projection, PendingPermission? pendingPermission, bool isFlowLockHeld)
+        RoomProjection projection, PendingPermission? pendingPermission, bool isFlowLockHeld,
+        bool isWaitingToStart)
     {
+        if (isWaitingToStart)
+        {
+            return ("Waiting to start", RoomCardStatus.WaitingToStart);
+        }
+
         var failedOrRejectedSteps = projection.State.Steps
             .Where(s => s.Status is StepStatus.Failed or StepStatus.Rejected)
             .ToList();
@@ -310,6 +322,15 @@ public enum RoomCardStatus
     /// honest "reset unknown" (0026 §5).
     /// </summary>
     OutOfPlan,
+
+    /// <summary>
+    /// #1296: the daemon's global/per-vendor concurrency cap refused this room's turn a slot, and it
+    /// sits FIFO-queued in memory — not started, not failed, not stopped. Ephemeral by design: a
+    /// daemon restart drops the in-memory queue entirely and the room reverts to its true not-started
+    /// state, which is correct (nothing durable would ever have started it). See 0020's 2026-08-16
+    /// amendment for why this cannot be read off the journal and must be an explicit caller input.
+    /// </summary>
+    WaitingToStart,
 }
 
 /// <summary>

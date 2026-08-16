@@ -21,6 +21,7 @@ public enum AerStatus
     Queued,
     OutOfPlan,
     Unavailable,
+    WaitingToStart,
 }
 
 /// <summary>
@@ -50,6 +51,7 @@ public static class AerStatusPresentation
         AerStatus.Queued => "Icon.Ellipsis",
         AerStatus.OutOfPlan => "Icon.Ellipsis",
         AerStatus.Unavailable => "Icon.Slashed",
+        AerStatus.WaitingToStart => "Icon.Clock",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };
 
@@ -67,6 +69,7 @@ public static class AerStatusPresentation
         AerStatus.Queued => "Queued",
         AerStatus.OutOfPlan => "Out of plan",
         AerStatus.Unavailable => "Unavailable",
+        AerStatus.WaitingToStart => "Waiting to start",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };
 
@@ -89,6 +92,7 @@ public static class AerStatusPresentation
         AerStatus.Queued => "StatusQueuedColor",
         AerStatus.OutOfPlan => "StatusOutOfPlanColor",
         AerStatus.Unavailable => "StatusUnavailableColor",
+        AerStatus.WaitingToStart => "StatusWaitingToStartColor",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };
 
@@ -111,6 +115,7 @@ public static class AerStatusPresentation
         AerStatus.Queued => true,
         AerStatus.OutOfPlan => true,
         AerStatus.Unavailable => false,
+        AerStatus.WaitingToStart => false,
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };
 }

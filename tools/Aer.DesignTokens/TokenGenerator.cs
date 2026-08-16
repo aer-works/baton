@@ -357,6 +357,10 @@ public static class TokenGenerator
         // near-miss that made this state necessary in the first place. Cancelled and Queued still
         // borrow Status.Idle and are not changed here; that is their own question.
         ("Status.Stopped", "status", "stopped"),
+        // #1296: its own key for the same reason Stopped got one -- a brush named Status.Idle
+        // painting a room genuinely waiting on the concurrency cap would be exactly the kind of
+        // near-miss #1219's comment above already names.
+        ("Status.WaitingToStart", "status", "waitingToStart"),
     };
 
     /// <summary>

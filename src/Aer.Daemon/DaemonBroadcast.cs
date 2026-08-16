@@ -104,7 +104,8 @@ internal sealed class DaemonBroadcast
         }
 
         return RoomCardViewModel.DeriveStatus(
-            projection, projection.PendingPermission, ConcurrencyGuard.IsHeld(directoryPath));
+            projection, projection.PendingPermission, ConcurrencyGuard.IsHeld(directoryPath),
+            ConcurrencySlotGate.IsWaiting(directoryPath));
     }
 
     /// <param name="derivedStatus">

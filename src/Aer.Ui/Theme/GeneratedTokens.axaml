@@ -33,6 +33,7 @@
       <Color x:Key="StatusQueuedColor">#88969C</Color>
       <Color x:Key="StatusOutOfPlanColor">#88969C</Color>
       <Color x:Key="StatusUnavailableColor">#88969C</Color>
+      <Color x:Key="StatusWaitingToStartColor">#88969C</Color>
       <SolidColorBrush x:Key="Color.Accent">#3F8C87</SolidColorBrush>
       <SolidColorBrush x:Key="Color.OnAccent">#FFFFFF</SolidColorBrush>
       <SolidColorBrush x:Key="Color.Background">#F2F4F5</SolidColorBrush>
@@ -49,6 +50,7 @@
       <SolidColorBrush x:Key="Status.Unavailable">#88969C</SolidColorBrush>
       <SolidColorBrush x:Key="Status.OutOfPlan">#88969C</SolidColorBrush>
       <SolidColorBrush x:Key="Status.Stopped">#88969C</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.WaitingToStart">#88969C</SolidColorBrush>
     </ResourceDictionary>
     <ResourceDictionary x:Key="Dark">
       <Color x:Key="BrandAccentColor">#5FB3AD</Color>
@@ -73,6 +75,7 @@
       <Color x:Key="StatusQueuedColor">#6C7A80</Color>
       <Color x:Key="StatusOutOfPlanColor">#6C7A80</Color>
       <Color x:Key="StatusUnavailableColor">#6C7A80</Color>
+      <Color x:Key="StatusWaitingToStartColor">#6C7A80</Color>
       <SolidColorBrush x:Key="Color.Accent">#5FB3AD</SolidColorBrush>
       <SolidColorBrush x:Key="Color.OnAccent">#0B1112</SolidColorBrush>
       <SolidColorBrush x:Key="Color.Background">#14191B</SolidColorBrush>
@@ -89,6 +92,7 @@
       <SolidColorBrush x:Key="Status.Unavailable">#6C7A80</SolidColorBrush>
       <SolidColorBrush x:Key="Status.OutOfPlan">#6C7A80</SolidColorBrush>
       <SolidColorBrush x:Key="Status.Stopped">#6C7A80</SolidColorBrush>
+      <SolidColorBrush x:Key="Status.WaitingToStart">#6C7A80</SolidColorBrush>
     </ResourceDictionary>
   </ResourceDictionary.ThemeDictionaries>
 
@@ -134,6 +138,8 @@
     <sys:String x:Key="StatusOutOfPlanLabel">Out of plan</sys:String>
     <sys:String x:Key="StatusUnavailableMark">Icon.Slashed</sys:String>
     <sys:String x:Key="StatusUnavailableLabel">Unavailable</sys:String>
+    <sys:String x:Key="StatusWaitingToStartMark">Icon.Clock</sys:String>
+    <sys:String x:Key="StatusWaitingToStartLabel">Waiting to start</sys:String>
     <sys:Double x:Key="DensityRowPaddingX">9</sys:Double>
     <sys:Double x:Key="DensityRowPaddingY">7</sys:Double>
     <sys:Double x:Key="DensityRowGap">3</sys:Double>

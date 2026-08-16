@@ -18,7 +18,9 @@ int attentionBand(String? status) => switch (status) {
       // RoomsViewModel.StateRank does the same, and without this arm a room whose process died
       // sorted among Finished/Failed. The catch-all below stays for a daemon newer than this app;
       // `every status the phone knows reaches a deliberate arm` is what keeps a known one out of it.
-      'Cancelled' || 'Stopped' || 'Unavailable' || 'OutOfPlan' => 3,
+      // #1296: FIFO-queued behind the concurrency cap, starting on its own -- background, same band
+      // as the other quiet states, not something that needs your attention.
+      'Cancelled' || 'Stopped' || 'Unavailable' || 'OutOfPlan' || 'WaitingToStart' => 3,
       _ => 2,
     };
 
@@ -35,6 +37,9 @@ AerStatus roomStatus(String? status) => switch (status) {
       'Stopped' => AerStatus.stopped,
       'Unavailable' => AerStatus.unavailable,
       'OutOfPlan' => AerStatus.outOfPlan,
+      // #1296: same reasoning as Stopped's own row above -- without this arm a queued room would
+      // fall to `idle` and look identical to one that had never been asked to run at all.
+      'WaitingToStart' => AerStatus.waitingToStart,
       _ => AerStatus.idle,
     };
 
