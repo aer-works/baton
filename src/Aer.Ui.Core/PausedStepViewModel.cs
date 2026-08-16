@@ -30,9 +30,12 @@ public delegate Task DecideDelegate(
 /// <c>Reject</c> records <see cref="DecisionType.Reject"/>, <c>Retry</c> records
 /// <see cref="DecisionType.RetryWithRevision"/>, and each <see cref="SendBackTargets"/> entry records
 /// <see cref="DecisionType.Supersede"/> against its own declared <c>TargetStepId</c> — never a
-/// UI-invented decision type (UI spec §6). Rebuilt from <see cref="RoomProjection"/> on every load —
-/// a projected fact, not retained handler state, the same "re-derived, not remembered" discipline the
-/// rest of <see cref="MainWindow"/>'s rendering already follows.
+/// UI-invented decision type (UI spec §6). Constructed from <see cref="RoomProjection"/> when a
+/// (<see cref="StepId"/>, <see cref="ExecutionId"/>) pair first pauses; a later load whose pause set
+/// still includes that same key reuses this exact instance rather than reconstructing it (#350) —
+/// <see cref="RoomClient"/>'s <c>RebuildPausedSteps</c> reconciles by key instead of rebuilding
+/// wholesale, so an operator's in-progress <see cref="RevisionFilePath"/>/<see cref="SupplementaryWorker"/>/
+/// <see cref="SupplementaryOutputName"/> entry survives the next 2-second poll.
 /// </summary>
 public sealed partial class PausedStepViewModel : ObservableObject
 {

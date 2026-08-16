@@ -63,6 +63,39 @@ public class MainWindowDecisionTests
         }
     }
 
+    // #350: a live-refresh tick against an unchanged Paused workflow used to Clear()+re-add
+    // PausedSteps unconditionally, tearing down every item's Avalonia container (killing hover/focus)
+    // and silently wiping any operator-typed RevisionFilePath/SupplementaryWorker/SupplementaryOutputName
+    // mid-entry. RoomClient.RebuildPausedSteps now reconciles by (StepId, ExecutionId) instead — an
+    // unchanged pause point keeps its exact instance across the tick.
+    [AvaloniaFact]
+    public async Task A_live_refresh_tick_against_an_unchanged_pause_keeps_the_same_instance_and_its_typed_in_state()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"ui-decide-tick-reconcile-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteApprovalGateWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteApprovalGateBindingsAsync(testRoot);
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()), Adapters);
+
+            await window.RunAsync(roomDirectory, workflowFilePath, bindingsFilePath, TestContext.Current.CancellationToken);
+
+            var pausedStep = Assert.Single(window.ViewModel.PausedSteps);
+            pausedStep.RevisionFilePath = "operator-typed-mid-entry.txt";
+
+            await window.OnLiveRefreshTickAsync(TestContext.Current.CancellationToken);
+
+            var pausedStepAfterTick = Assert.Single(window.ViewModel.PausedSteps);
+            Assert.Same(pausedStep, pausedStepAfterTick);
+            Assert.Equal("operator-typed-mid-entry.txt", pausedStepAfterTick.RevisionFilePath);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [AvaloniaFact]
     public async Task Reject_projects_the_paused_step_terminally_failed_and_the_downstream_step_never_dispatches()
     {

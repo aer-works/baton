@@ -34,6 +34,43 @@ public class MainWindowCancelAndStopTests
     private static string NewConfigFilePath() =>
         Path.Combine(Path.GetTempPath(), $"aer-ui-cancel-config-{Guid.NewGuid():N}", "recent-room-directories.json");
 
+    // #350: same reconciliation as PausedSteps (see MainWindowDecisionTests' live-refresh-tick test) —
+    // RoomClient.RebuildRunningExecutions used to Clear()+re-add every tick, so a running execution's
+    // container (and the operator's hover/focus on its Cancel button) was torn down and rebuilt twice
+    // a second even though nothing about it had changed.
+    [AvaloniaFact]
+    public async Task A_second_refresh_against_an_unchanged_running_execution_keeps_the_same_instance()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"ui-cancel-tick-reconcile-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var workflowFilePath = await WriteSleepingWorkflowAsync(testRoot, "worker", maxAttempts: 5);
+            var bindingsFilePath = await WriteSleepingBindingsAsync(testRoot, "worker");
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()), Adapters);
+
+            var runTask = window.RunAsync(roomDirectory, workflowFilePath, bindingsFilePath, TestContext.Current.CancellationToken);
+
+            await WaitForCoreExecutionStartedAsync(logPath);
+            await window.RefreshAsync(TestContext.Current.CancellationToken);
+
+            var running = Assert.Single(window.ViewModel.RunningExecutions);
+
+            await window.RefreshAsync(TestContext.Current.CancellationToken);
+
+            var runningAfterSecondRefresh = Assert.Single(window.ViewModel.RunningExecutions);
+            Assert.Same(running, runningAfterSecondRefresh);
+
+            await running.CancelCommand.ExecuteAsync(null);
+            await AwaitWithTimeoutAsync(runTask, TestTimeout);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [AvaloniaFact]
     public async Task Targeted_cancel_of_a_locally_hosted_execution_is_delivered_via_the_retained_registry()
     {
