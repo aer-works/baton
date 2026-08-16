@@ -101,6 +101,13 @@ public partial class MainWindow : Window
     private string? _conversationOutputDirectory;
     private string? _conversationLabel;
 
+    /// <summary>
+    /// The step id <see cref="ShowSelectedStepFirstOutputAsync"/> last saw — see that method's #468
+    /// remarks for why comparing this, not <see cref="MainWindowViewModel.SelectedStep"/>'s object
+    /// identity, is what tells a genuine step change apart from a same-step refresh.
+    /// </summary>
+    private string? _lastConversationStepId;
+
     /// <summary>Set once <see cref="OnClosing"/> has already stopped an in-flight pump and is closing the window for real — prevents re-entering the stop sequence from the follow-up programmatic <see cref="Window.Close()"/>.</summary>
     private bool _closeConfirmed;
 
@@ -549,7 +556,11 @@ public partial class MainWindow : Window
         // or refreshed it when the drill-in moved to a different step, so it kept showing the
         // previously-selected step's last-previewed file. Clear on every change, then auto-load
         // the new step's first output (if it has one) so a freshly-opened step's Outputs tab isn't
-        // just an unexplained blank box either.
+        // just an unexplained blank box either. #468: ConversationPanel is the same imperative
+        // control state — the Conversation tab's own "No conversation recorded" text is bound to
+        // the NEW step's HasConversations, but nothing cleared the panel a PRIOR step's Show click
+        // had already rendered into it, so the empty-state text and the previous step's fully
+        // rendered exchange showed at once. Same fix, same reason: clear here too.
         ViewModel.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(MainWindowViewModel.SelectedStep))
@@ -639,6 +650,19 @@ public partial class MainWindow : Window
     private Task ShowSelectedStepFirstOutputAsync()
     {
         ClearArtifactPreview();
+        // #468: RebuildRoomSteps (every LoadAsync — a plain refresh, not just a navigation) always
+        // rebuilds RoomSteps wholesale and reassigns SelectedStep, so this handler fires on every
+        // refresh even when the step id is unchanged — StepItemViewModel has no Equals override, so
+        // the new instance is never reference-equal to the old one. ClearArtifactPreview above is
+        // fine either way (PreviewCommand reloads the same file from disk right after, so a refresh
+        // is invisible). ConversationPanel has no such reload: nothing re-calls ShowConversation on
+        // a refresh, so clearing unconditionally would blank a conversation the operator is actively
+        // watching update live the moment the next poll ticks. Clear only on a genuine step change.
+        if (ViewModel.SelectedStep?.StepId != _lastConversationStepId)
+        {
+            ClearConversation();
+        }
+        _lastConversationStepId = ViewModel.SelectedStep?.StepId;
         var firstOutput = ViewModel.SelectedStep?.OutputFiles.FirstOrDefault();
         return firstOutput is null ? Task.CompletedTask : firstOutput.PreviewCommand.ExecuteAsync(null);
     }
@@ -858,6 +882,15 @@ public partial class MainWindow : Window
         if (previousRoomDirectoryPath != null && previousRoomDirectoryPath != roomDirectoryPath)
         {
             ViewModel.StandingPermissions.CloseForRoomSwitch();
+            // #468's second reader: _lastConversationStepId is compared by step id alone, and step
+            // ids are commonly reused role names (architect/critic) across different templates — a
+            // step selected on room open here could coincidentally match whatever step id was last
+            // viewed in the PREVIOUS room, which would skip ClearConversation below and leave that
+            // room's rendered exchange on screen under this one's Conversation tab. Reset the
+            // tracked id on every genuine room switch so the next selection is always evaluated
+            // fresh, the same room-switch discipline CloseForRoomSwitch's own comment explains.
+            ClearConversation();
+            _lastConversationStepId = null;
         }
 
         await LoadAsync(roomDirectoryPath, cancellationToken);

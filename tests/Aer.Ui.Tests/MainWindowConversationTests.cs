@@ -212,6 +212,77 @@ public class MainWindowConversationTests
         }
     }
 
+    /// <summary>
+    /// #468: see <see cref="MainWindow.ShowSelectedStepFirstOutputAsync"/>'s remarks for the two
+    /// read models that disagreed and why the fix compares step ids rather than clearing on every
+    /// <c>SelectedStep</c>-changed event.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task SelectingAStepWithNoConversation_ClearsAPriorStepsRenderedPanel()
+    {
+        var roomDirectory = await CreatePumpedRoomDirectoryAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var (window, transcriptDirectory) = await LoadWithTranscriptOnStepAsync(
+                roomDirectory, Architect,
+                TurnLine(1, "initiator", "claude", "seed", "opening") + "\n",
+                TestContext.Current.CancellationToken);
+
+            window.ShowConversation(transcriptDirectory, "architect — conversation");
+            var conversationPanel = window.FindViewControl<StackPanel>("ConversationPanel")!;
+            Assert.Single(conversationPanel.Children.OfType<Border>()); // control arm: it did render
+
+            window.ViewModel.SelectStepById(Critic.Value); // critic's execution has no transcript
+
+            Assert.Empty(conversationPanel.Children); // the regression this test exists to catch
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// See <see cref="MainWindow.OpenAsync"/>'s room-switch remarks for why this is cleared there.
+    /// Both rooms here reuse the same "architect" step id (the same fixture, per
+    /// <see cref="CreatePumpedRoomDirectoryAsync"/>) — the collision that made the gap real.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task OpeningADifferentRoom_ClearsAPriorRoomsRenderedPanel_EvenOnAMatchingStepId()
+    {
+        var roomA = await CreatePumpedRoomDirectoryAsync(TestContext.Current.CancellationToken);
+        var roomB = await CreatePumpedRoomDirectoryAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var projectionA = await RoomProjectionLoader.LoadAsync(roomA, TestContext.Current.CancellationToken);
+            var executionIdA = projectionA.Lineage.Executions.Single(e => e.StepId == Architect).ExecutionId;
+            var transcriptDirectoryA = Path.Combine(roomA, "artifacts", $"execution_{executionIdA}");
+            await File.WriteAllTextAsync(
+                Path.Combine(transcriptDirectoryA, TranscriptProjectionLoader.TranscriptFileName),
+                TurnLine(1, "initiator", "claude", "seed", "opening") + "\n",
+                TestContext.Current.CancellationToken);
+
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            // OpenAsync, not LoadAsync directly — this reproduces the real path (_session
+            // bookkeeping the room-switch guard reads) rather than the plain-load shortcut every
+            // other test in this file uses for a single room.
+            await window.OpenAsync(roomA, TestContext.Current.CancellationToken);
+
+            window.ShowConversation(transcriptDirectoryA, "architect — conversation");
+            var conversationPanel = window.FindViewControl<StackPanel>("ConversationPanel")!;
+            Assert.Single(conversationPanel.Children.OfType<Border>()); // control arm: it did render
+
+            await window.OpenAsync(roomB, TestContext.Current.CancellationToken);
+
+            Assert.Empty(conversationPanel.Children); // the regression this test exists to catch
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomA);
+            DirectoryCleanup.DeleteRecursively(roomB);
+        }
+    }
+
     [AvaloniaFact]
     public async Task An_execution_without_a_transcript_gets_no_conversation_row_at_all()
     {
