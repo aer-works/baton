@@ -157,5 +157,6 @@ copy of every record, retired by #952: the record is the only place a decision i
 | [0055](0055-an-authority-grant-is-not-a-standing-permission.md) | An authority grant is not a standing permission | accepted |
 | [0056](0056-a-room-carries-its-own-worker-bindings.md) | A room carries its own worker bindings | accepted |
 | [0057](0057-how-a-rooms-bindings-register-is-written.md) | How a room's bindings register is written | accepted |
+| [0058](0058-model-and-effort-are-marks-not-words.md) | Depth and effort become marks on the workflow-room worker chip | accepted |
 
 <!-- /generated: decisions-index -->

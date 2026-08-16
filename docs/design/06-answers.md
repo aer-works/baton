@@ -168,8 +168,9 @@ Backlog · #385
 No — it is a Skill, a standing instruction a worker attaches directly
 ([01-definition.md](01-definition.md), [0033](../decisions/0033-skills-attach-directly-no-persona.md)).
 Adding "my advisor" to a room is attaching that skill to a worker already in it, or to one being
-added — the same gesture as adding any worker. There is no shipped default "advisor" skill; it is
-an example of one someone could author, not something that ships.
+added — the same gesture as adding any worker. There is no shipped default "advisor" skill today;
+it is an example of one someone could author. Whether a starter library ships at all is undecided
+([0033](../decisions/0033-skills-attach-directly-no-persona.md)).
 
 Resisting a new participant type matters: every new kind of thing in the room is another concept to explain, and everything an advisor needs is already expressible as a worker with an instruction.
 

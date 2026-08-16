@@ -47,7 +47,10 @@ claude · thought for 12s The ordering disagreement is in the view model, not th
 
 Reply… ⏎
 
-Effort belongs on the chip beside the model , because it changes what an answer costs and how long you will wait — the same reason the model is there. opus · careful and opus · quick are meaningfully different participants.
+Effort is encoded the same way model tier is: an achromatic mark, not text
+([0058](../decisions/0058-model-and-effort-are-marks-not-words.md)) — because it changes what an
+answer costs and how long you will wait just as much as the model does. opus · careful and opus ·
+quick are meaningfully different participants.
 
 Named by behaviour, not by mechanism. Quick / standard / careful / exhaustive, never a token budget or a vendor's flag name. Vendors express this completely differently and rename it often; the person's question is always "how hard should it think about this."
 

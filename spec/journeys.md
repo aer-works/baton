@@ -333,7 +333,10 @@ three separate choices.
 - **Spans** — desktop · phone · *decisions 0017 and 0023*
 - **Passes when** — two chips, **same vendor**, different model and effort, both answering in one
   room — and effort and model read in AER's own vocabulary (quick/standard/careful/exhaustive;
-  deep/balanced/fast), never a vendor's flag value.
+  deep/balanced/fast), never a vendor's flag value. "Read in AER's vocabulary" is satisfied by
+  achromatic marks whose full purpose-named values are one tap away
+  ([0058](../docs/decisions/0058-model-and-effort-are-marks-not-words.md)) — the words themselves
+  are not required on the chip.
 - **Path** *(illustrative)* — add a worker at a deep model and careful effort · add a second of the
   same vendor at a fast model and quick effort · both answer · the chips distinguish them.
 - **Verify** — a vendor's own effort string must not appear in any surface; the mapping happens in the
