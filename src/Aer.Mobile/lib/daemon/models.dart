@@ -404,9 +404,8 @@ class SessionTurn {
 /// — REST-only, camelCase; unlike RoomProjection this is never pushed over /api/ws, so there is no
 /// PascalCase/camelCase ambiguity to normalize, but this still reads through [caseInsensitive] for
 /// consistency with every other model here.
-/// A room's worker as an identity of its own (decision 0054 §1, #1305) — mirrors
-/// `Aer.Flow.Domain.Participant` on desktop. Auto-named on join; vendor/model/effort are its mutable
-/// properties, not the identity.
+/// Mirrors `Aer.Flow.Domain.Participant` (#1305) — see that record's doc comment for what a
+/// participant is and how it relates to its vendor/model/effort.
 class Participant {
   final String id;
   final String name;

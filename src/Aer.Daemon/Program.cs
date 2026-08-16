@@ -3186,11 +3186,10 @@ namespace Aer.Daemon
             var updatedTurns = new List<SessionTurn>(metadata.Turns) { turn };
             var updatedTurnCount = isCeilingReached ? 1 : newTurnIndex;
 
-            // 0054 §1 (#1305): a mid-room vendor/model swap mutates the participant's PROPERTIES,
-            // never its identity -- the name stays, because "swapping a participant's model does not
-            // change who the transcript says was talking". Without this the chip renders the
-            // participant's creation-time vendor/model forever, while CurrentAdapter tracks the
-            // swap (second-reader finding). Null Participants (a pre-#1305 room) stays null.
+            // #1305: a mid-room vendor/model swap updates the participant's properties while the
+            // name stays -- the property/identity split Participant's own doc comment defines.
+            // Without this the chip renders creation-time vendor/model forever while CurrentAdapter
+            // tracks the swap (second-reader finding). Null Participants (a pre-#1305 room) stays null.
             var updatedParticipants = metadata.Participants;
             if (updatedParticipants is { Count: > 0 })
             {

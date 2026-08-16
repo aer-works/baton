@@ -80,8 +80,7 @@ public class SessionMetadataSchemaToleranceTests
                 + "rather than skipping them");
 
             // #1305: this fixture predates Participants -- it must load as null, never as a
-            // synthesized single-entry list, since a synthesized participant would have no
-            // corresponding WorkerJoined journal entry (InteractiveSessionMaterializer's own remarks).
+            // synthesized single-entry list. Why: SessionMetadata.Participants' own remarks.
             Assert.Null(metadata.Participants);
         }
         finally

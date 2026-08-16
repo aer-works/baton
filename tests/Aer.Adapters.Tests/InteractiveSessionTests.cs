@@ -350,8 +350,7 @@ public sealed class InteractiveSessionTests
             Assert.Equal("sonnet", participant.Model);
             Assert.True(participant.IsOrchestrator);
 
-            // 0054 §1/§6: the join and the implicit orchestrator assignment are journaled to
-            // room.jsonl, the same durable event log grants and escalations use.
+            // Both lifecycle events must land in the journal (see MaterializeToDirectoryAsync).
             var roomLogPath = Path.Combine(testPath, "room.jsonl");
             var events = await new Aer.Flow.Store.RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
             var joined = Assert.Single(events.OfType<Aer.Flow.Domain.RoomEvent.WorkerJoined>());

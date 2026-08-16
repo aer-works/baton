@@ -158,10 +158,9 @@ public class SessionTurnBranchingTests : IAsyncLifetime
         Assert.True(handoffTurn.VendorHandoffSynthesized);
         Assert.False(handoffTurn.NativeSessionResumed);
 
-        // 0054 §1 (#1305): the swap mutates the participant's PROPERTIES, never its identity. The
-        // name stays "claude" -- who the transcript says was talking -- while the vendor property
-        // now tracks agy, so the chip's secondary facts follow the swap instead of freezing at
-        // creation time (second-reader finding on the first cut of #1305).
+        // #1305 second-reader regression: after the swap the participant's vendor must follow while
+        // its name holds (the split Participant's doc comment defines) -- the first cut froze both
+        // at creation time.
         Assert.NotNull(afterHandoff.Participants);
         var participant = Assert.Single(afterHandoff.Participants);
         Assert.Equal("claude", participant.Name);
