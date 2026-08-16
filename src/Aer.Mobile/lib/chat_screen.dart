@@ -907,10 +907,22 @@ class _ChatScreenState extends State<ChatScreen> {
     return adapters.isEmpty ? null : adapters.join(' + ');
   }
 
+  /// The session-room participant's model — #1311's mobile half of 0054 §1 (#1305), mirroring
+  /// desktop's `ChatViewModel.WorkerModelText`, where the name/model split's rationale lives.
+  /// Workflow rooms have no single participant to read a model from (#641, out of scope), so this
+  /// is null there. Null/empty renders nothing extra beside the name.
+  String? _workerModelLabel(SessionMetadata? metadata) {
+    if (!_isSessionRoom) return null;
+    final participants = metadata?.participants;
+    final model = (participants != null && participants.isNotEmpty) ? participants.first.model : null;
+    return (model == null || model.isEmpty) ? null : model;
+  }
+
   @override
   Widget build(BuildContext context) {
     final metadata = _metadata;
     final workers = _workerChipLabel(metadata);
+    final workerModel = _workerModelLabel(metadata);
 
     return Scaffold(
       appBar: AppBar(
@@ -938,6 +950,22 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                 ),
               ),
+              if (workerModel != null) ...[
+                const SizedBox(width: 6),
+                // #1311, 0054 §1: the participant's model as a second, more-muted Text beside its
+                // name — never concatenated into one string, mirroring desktop's name-primary/
+                // model-secondary split (ChatHeaderView.axaml).
+                Flexible(
+                  child: Text(
+                    workerModel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                        ),
+                  ),
+                ),
+              ],
             ],
           ],
         ),
