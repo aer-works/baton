@@ -110,6 +110,15 @@ public static class AerPaths
     public const string WorkerLaunchConfigDirectoryName = "worker-launch";
 
     /// <summary>
+    /// <c>{Root}/settings.json</c> — see <see cref="DaemonSettingsStore"/> for what this holds and how
+    /// an absent or malformed file is handled.
+    /// </summary>
+    public static string SettingsFile => Path.Combine(Root, SettingsFileName);
+
+    /// <summary>Filename of <see cref="SettingsFile"/> relative to a root.</summary>
+    public const string SettingsFileName = "settings.json";
+
+    /// <summary>
     /// The canonical key for a record directory: absolute, with any trailing separator removed, so
     /// <c>C:\x\run</c>, <c>C:\x\run\</c> and <c>C:\x\..\x\run</c> all resolve to one entry.
     /// </summary>

@@ -119,6 +119,43 @@ public class DaemonIntegrationTests : IAsyncLifetime
         Assert.NotNull(recent);
     }
 
+    /// <summary>#1298: GET/POST /api/settings/concurrency round trip. Resets ConcurrencySlotGate
+    /// afterward -- its caps are process-static, same caveat as any other static gate in this
+    /// codebase (see ConcurrencySlotGateTests), and this test process runs other suites in the same
+    /// process.</summary>
+    [Fact]
+    public async Task ConcurrencySettings_PostThenGet_RoundTripsTheNewCaps()
+    {
+        try
+        {
+            var postResponse = await _client.PostAsJsonAsync(
+                $"{_baseUrl}/api/settings/concurrency", new { GlobalCap = 5, PerVendorCap = 3 }, TestContext.Current.CancellationToken);
+            Assert.True(postResponse.IsSuccessStatusCode);
+
+            var getResponse = await _client.GetAsync($"{_baseUrl}/api/settings/concurrency", TestContext.Current.CancellationToken);
+            Assert.True(getResponse.IsSuccessStatusCode);
+            var settings = await getResponse.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: TestContext.Current.CancellationToken);
+            var hasGlobal = settings.TryGetProperty("globalCap", out var globalCap) || settings.TryGetProperty("GlobalCap", out globalCap);
+            var hasPerVendor = settings.TryGetProperty("perVendorCap", out var perVendorCap) || settings.TryGetProperty("PerVendorCap", out perVendorCap);
+            Assert.True(hasGlobal);
+            Assert.True(hasPerVendor);
+            Assert.Equal(5, globalCap.GetInt32());
+            Assert.Equal(3, perVendorCap.GetInt32());
+        }
+        finally
+        {
+            ConcurrencySlotGate.SetCaps(ConcurrencySlotGate.DefaultGlobalCap, ConcurrencySlotGate.DefaultPerVendorCap);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrencySettings_PostBelowOne_ReturnsBadRequest()
+    {
+        var response = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/settings/concurrency", new { GlobalCap = 0, PerVendorCap = 2 }, TestContext.Current.CancellationToken);
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     [Fact]
     public async Task OpenRoom_WithMissingDirectory_ReturnsBadRequest()
     {

@@ -26,6 +26,19 @@
         </ItemsControl>
         <TextBlock Classes="caption secondary" TextWrapping="Wrap"
                    Text="Baton runs whichever CLI is already signed in on this machine. It never stores keys." />
+
+        <!-- #1298: the concurrency caps ConcurrencySlotGate enforces (#1296 already shows the
+             WaitingToStart card when a room is queued behind them), adjustable here, applied
+             immediately and persisted to ~/.aer/settings.json. -->
+        <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}">
+          <TextBlock Classes="secondary" VerticalAlignment="Center" MinWidth="140" Text="Max at once, overall" />
+          <TextBox x:Name="ConcurrencyGlobalCapTextBox" Width="60" Text="{Binding Concurrency.GlobalCapText}" />
+          <TextBlock Classes="secondary" VerticalAlignment="Center" MinWidth="140" Margin="16,0,0,0" Text="Max at once, per worker" />
+          <TextBox x:Name="ConcurrencyPerVendorCapTextBox" Width="60" Text="{Binding Concurrency.PerVendorCapText}" />
+          <Button x:Name="ConcurrencySaveButton" Content="Save" IsEnabled="{Binding Concurrency.CanSave}" />
+        </StackPanel>
+        <TextBlock Classes="caption" Foreground="{DynamicResource Status.Failed}" TextWrapping="Wrap"
+                   IsVisible="{Binding Concurrency.HasError}" Text="{Binding Concurrency.ErrorText}" />
       </StackPanel>
 
       <!-- Your phone: the folded-in Remote surface (#338). RemoteView is now an embeddable content

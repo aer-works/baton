@@ -61,6 +61,47 @@ public sealed partial class RoomClient
         }
     }
 
+    /// <summary>The concurrency caps <c>ConcurrencySlotGate</c> enforces, mirroring <c>/api/settings/concurrency</c>'s response shape (#1298).</summary>
+    public sealed record ConcurrencySettings(int GlobalCap, int PerVendorCap);
+
+    /// <summary>Reads the daemon's current concurrency caps.</summary>
+    public async Task<ConcurrencySettings?> GetConcurrencySettingsAsync(CancellationToken cancellationToken = default)
+    {
+        if (_activeDaemonUrl == null) return null;
+
+        try
+        {
+            var response = await _httpClient.GetAsync($"{_activeDaemonUrl}/api/settings/concurrency", cancellationToken).ConfigureAwait(true);
+            if (!response.IsSuccessStatusCode) return null;
+
+            return await response.Content.ReadFromJsonAsync<ConcurrencySettings>(DefaultJsonOptions, cancellationToken: cancellationToken).ConfigureAwait(true);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Sets the daemon's concurrency caps, persisting them to <c>~/.aer/settings.json</c> so they survive a restart. Returns the error text on a rejected (e.g. below-1) cap, null on success.</summary>
+    public async Task<string?> SetConcurrencySettingsAsync(int globalCap, int perVendorCap, CancellationToken cancellationToken = default)
+    {
+        if (_activeDaemonUrl == null) return "Could not reach the Baton daemon.";
+
+        try
+        {
+            var response = await _httpClient.PostAsJsonAsync(
+                $"{_activeDaemonUrl}/api/settings/concurrency", new { GlobalCap = globalCap, PerVendorCap = perVendorCap }, cancellationToken).ConfigureAwait(true);
+            if (response.IsSuccessStatusCode) return null;
+
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: cancellationToken).ConfigureAwait(true);
+            return body.TryGetProperty("Error", out var error) ? error.GetString() : $"Request failed: {response.StatusCode}";
+        }
+        catch (Exception ex)
+        {
+            return $"Could not reach the Baton daemon: {ex.Message}";
+        }
+    }
+
     /// <summary>A paired device, mirroring <c>/api/pairing/clients</c>'s response shape (Phase 6, #243).</summary>
     public sealed record PairedClientInfo(string ClientId, string Name, DateTime PairedAt);
 

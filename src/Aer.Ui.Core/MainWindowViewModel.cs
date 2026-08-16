@@ -76,6 +76,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// <summary>The Enable Remote Access view's state (M21 Phase 3, issue #234) — see <see cref="RemoteViewModel"/>.</summary>
     public RemoteViewModel Remote { get; } = new();
 
+    /// <summary>Settings → Workers' adjustable concurrency caps (#1298) — see <see cref="ConcurrencySettingsViewModel"/>.</summary>
+    public ConcurrencySettingsViewModel Concurrency { get; } = new();
+
     /// <summary>An open chat/codebase session's state (M24 Phase 1 desktop wiring, issue #262) — see <see cref="ChatViewModel"/>.</summary>
     public ChatViewModel Chat { get; } = new();
 
