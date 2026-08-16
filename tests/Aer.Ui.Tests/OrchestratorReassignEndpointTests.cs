@@ -71,12 +71,20 @@ public class OrchestratorReassignEndpointTests : IAsyncLifetime
         _client.Dispose();
     }
 
+    /// <summary>
+    /// Deliberately no <c>InitialMessage</c>: with one, <c>/api/sessions/start</c> fires a
+    /// background turn (<c>Task.Run</c>) that re-reads and re-saves <c>SessionMetadata</c> on its
+    /// own schedule, last-writer-wins -- a race against <see cref="SeedSecondParticipantAsync"/>'s
+    /// direct write that silently dropped the seeded participant when the turn's own save landed
+    /// last (measured: <c>Single(p =&gt; p.Id == second.Id)</c> throwing "no matching element").
+    /// These tests only need materialization's synchronous first-participant/orchestrator setup,
+    /// not a turn, so leaving the message out removes the race instead of racing it out.
+    /// </summary>
     private async Task<SessionMetadata> StartStubSessionAsync()
     {
         var request = new StartSessionRequest(
             Adapter: "claude",
-            RoomName: "orch-reassign-test-" + Guid.NewGuid().ToString("N"),
-            InitialMessage: "hello");
+            RoomName: "orch-reassign-test-" + Guid.NewGuid().ToString("N"));
 
         var response = await _client.PostAsJsonAsync($"{_baseUrl}/api/sessions/start", request, TestContext.Current.CancellationToken);
         Assert.True(response.IsSuccessStatusCode);
