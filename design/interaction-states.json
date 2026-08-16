@@ -86,7 +86,7 @@
     },
     "waitingOnLock": {
       "name": "Waiting on another process's lock",
-      "behaviour": "Reads as a wait, never as an error and never as generic working: names the holder process and how long it has held the lock. Corrected 2026-08-16 (#1299, Fable's ruling): room identity is directory-keyed, so two rooms cannot share a folder as distinct rooms — the collision is always a foreign process (a bare aer run pump, the sweep, a second Baton instance), never another room, so there is nothing to link to and no duplicate-room warning to show; the wait itself, shown the instant it bites, is the knowing choice.",
+      "behaviour": "Reads as a wait, never as an error and never as generic working: names the holder process and how long it has held the lock, never a room to navigate to. Corrected 2026-08-16 (#1299) after the original room-vs-room framing turned out to be architecturally impossible; decision 0020's amendment has the full reasoning and the duplicate-warning ruling.",
       "provenance": "#480 (grouped under #752), ratified 2026-08-04 on #495, corrected 2026-08-16 on #1299",
       "coverage": { "pending": "#1300 — mobile render, blocked on #1299 landing the status in the projection" }
     },
