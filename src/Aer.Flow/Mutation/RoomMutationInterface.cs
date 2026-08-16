@@ -446,6 +446,7 @@ public static class RoomMutationInterface
         WorkerId workerId,
         IRoomEventLogReader reader,
         IRoomEventLogWriter writer,
+        string? assignedBy = null,
         DateTimeOffset? timestamp = null,
         CancellationToken cancellationToken = default)
     {
@@ -482,7 +483,7 @@ public static class RoomMutationInterface
         }
 
         var ts = timestamp ?? DateTimeOffset.UtcNow;
-        var roomEvent = new RoomEvent.OrchestratorAssigned(workerId, ts);
+        var roomEvent = new RoomEvent.OrchestratorAssigned(workerId, ts, assignedBy);
         await writer.AppendAsync(roomEvent, cancellationToken).ConfigureAwait(false);
 
         return RoomProjector.Project([.. existingEvents, roomEvent]);

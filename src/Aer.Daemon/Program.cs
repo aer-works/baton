@@ -947,10 +947,22 @@ namespace Aer.Daemon
                     return Results.Conflict("This room is running. Stop it before reassigning its orchestrator.");
                 }
 
+                // Second-reader finding on #592: the check above is a pre-flight only -- a pump can
+                // still acquire flow.lock in the gap between it and the turn lock below. Re-checking
+                // AFTER the turn lock is held, before the metadata save, closes that: nothing else
+                // can start a run while this holds SessionTurnLockFor (every chat-turn entry point
+                // takes the same lock), so a still-held guard at this point is authoritative, not a
+                // snapshot. Refusing here means the metadata half never writes on the race the
+                // pre-flight check alone could miss.
                 var reassignTurnLock = SessionTurnLockFor(request.RoomDirectoryPath);
                 await reassignTurnLock.WaitAsync().ConfigureAwait(false);
                 try
                 {
+                    if (ConcurrencyGuard.IsHeld(request.RoomDirectoryPath))
+                    {
+                        return Results.Conflict("This room is running. Stop it before reassigning its orchestrator.");
+                    }
+
                     var currentMetadata =
                         await InteractiveSessionMaterializer.LoadMetadataAsync(reassignMetadataPath).ConfigureAwait(false)
                         ?? reassignMetadata;
@@ -980,11 +992,26 @@ namespace Aer.Daemon
                         request.RoomDirectoryPath,
                         targetWorkerId,
                         reassignReader,
-                        reassignWriter).ConfigureAwait(false);
+                        reassignWriter,
+                        assignedBy: "operator").ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is IOException or InvalidRoomMutationException)
+                catch (IOException ex)
                 {
+                    // The stance InteractiveSessionMaterializer.MaterializeToDirectoryAsync already
+                    // takes for the first participant's join: by this point metadata already
+                    // committed the real fact, so a missed journal line is the recoverable half.
                     Console.Error.WriteLine($"Could not journal orchestrator reassignment for '{request.RoomDirectoryPath}': {ex.Message}");
+                }
+                catch (InvalidRoomMutationException ex)
+                {
+                    // Second-reader finding on #592: unlike IOException, this means the room genuinely
+                    // refused the reassignment (e.g. the re-check above still lost a race to a pump
+                    // that started between it and this append) -- metadata already changed, so
+                    // swallowing this would leave room.json and room.jsonl disagreeing while the
+                    // caller saw 200. Surface it as the same conflict the pre-flight check returns;
+                    // with the re-check above this line should be unreachable in practice, but the
+                    // distinction from IOException must hold regardless.
+                    return Results.Conflict(ex.Message);
                 }
 
                 return Results.Ok();

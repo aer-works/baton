@@ -50,7 +50,10 @@ public class RoomEventLogJsonTests
         new RoomEvent.WorkerJoined(new WorkerId("chat-worker"), "claude", "claude", "sonnet", "standard", FixedInstant),
         new RoomEvent.WorkerJoined(new WorkerId("chat-worker"), "claude", "claude", null, null, FixedInstant),
         new RoomEvent.WorkerRenamed(new WorkerId("chat-worker"), "claude-reviewer", FixedInstant),
+        // Both AssignedBy shapes (#592 ruling 4), same pairing as WorkerJoined's two rows above:
+        // null is the implicit first assignment, "operator" an explicit reassignment.
         new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant),
+        new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant, "operator"),
     ];
 
 

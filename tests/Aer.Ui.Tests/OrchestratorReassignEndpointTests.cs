@@ -6,6 +6,7 @@ using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Flow.Projection;
 using Aer.Flow.Store;
+using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Xunit;
 
@@ -223,5 +224,82 @@ public class OrchestratorReassignEndpointTests : IAsyncLifetime
             TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    }
+
+    /// <summary>
+    /// Second-reader finding on #592: seeds room.json's <c>Participants</c> with a target that has
+    /// no matching <c>WorkerJoined</c> in room.jsonl -- the metadata/journal mismatch the endpoint's
+    /// own re-check cannot see coming, since it only re-checks <see cref="ConcurrencyGuard.IsHeld"/>,
+    /// not journal/metadata agreement. This forces <c>RoomMutationInterface.ReassignOrchestratorAsync</c>
+    /// to throw <see cref="InvalidRoomMutationException"/> from its own journal-only target check,
+    /// pinning the fix's exception-type distinction: the endpoint's catch must surface this as a real
+    /// failure (409) rather than the log-and-continue an <see cref="IOException"/> gets, since by this
+    /// point metadata already committed the flip.
+    /// </summary>
+    [Fact]
+    public async Task A_journal_level_refusal_after_metadata_has_already_flipped_surfaces_as_conflict_not_ok()
+    {
+        var started = await StartStubSessionAsync();
+        var ghost = new Participant(new WorkerId("claude-ghost"), "claude-ghost", "claude", "sonnet", null, IsOrchestrator: false);
+
+        var metadataPath = Path.Combine(started.RoomDirectoryPath, ".aer", AerPaths.RoomMetadataFileName);
+        var metadata = await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath, TestContext.Current.CancellationToken);
+        Assert.NotNull(metadata);
+        // Deliberately no matching WorkerJoined appended to room.jsonl -- metadata claims a
+        // participant the journal has never heard of.
+        var updated = metadata with { Participants = [.. metadata.Participants ?? [], ghost] };
+        await InteractiveSessionMaterializer.SaveMetadataAsync(updated, metadataPath, TestContext.Current.CancellationToken);
+
+        var response = await _client.PostAsJsonAsync(
+            $"{_baseUrl}/api/rooms/orchestrator/reassign",
+            new ReassignOrchestratorRequest(started.RoomDirectoryPath, ghost.Id.Value),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    }
+
+    /// <summary>
+    /// Second-reader finding on #592: <c>MainWindow.OnOrchestratorReassignRequestedAsync</c> must
+    /// reload <c>SessionMetadata</c> into <see cref="ChatViewModel"/> after a successful reassign —
+    /// ruling 2 means <see cref="RoomClient.LoadAsync"/>'s <c>RoomProjection</c> fetch alone cannot
+    /// see the change, since <c>Participants</c> is metadata-only. This exercises the exact sequence
+    /// the codebehind handler performs — <see cref="RoomClient.ReassignOrchestratorAsync"/> then
+    /// <see cref="RoomClient.LoadSessionMetadataAsync"/>, fed straight into
+    /// <see cref="ChatViewModel.LoadFromMetadata"/> — through the real client/daemon pair rather than
+    /// the codebehind method itself, which has no headless-Avalonia seam in this suite. A poll or a
+    /// timer tick is never awaited: if the fix regressed to relying on the 2s live-refresh tick, this
+    /// asserts on the state before any tick could have fired.
+    /// </summary>
+    [Fact]
+    public async Task ReassignThenReloadMetadata_TheSameSequenceTheDesktopHandlerRuns_ReflectsTheNewOrchestratorImmediately()
+    {
+        var started = await StartStubSessionAsync();
+        var second = await SeedSecondParticipantAsync(started);
+
+        var configStore = new LocalUiConfigurationStore(Path.Combine(Path.GetTempPath(), $"orch-reassign-config-{Guid.NewGuid():N}.json"));
+        var viewModel = new MainWindowViewModel();
+        var roomClient = new RoomClient(
+            configStore,
+            new Dictionary<string, IWorkerAdapter> { ["claude"] = new ClaudeWorkerAdapter() },
+            viewModel,
+            bindingsFilePathProvider: () => "",
+            mutationStarted: () => { },
+            mutationFailed: () => { },
+            reopenRoomAsync: (_, _) => Task.CompletedTask,
+            daemonUrl: _baseUrl,
+            spawnDaemonOnDemand: false);
+
+        var refusal = await roomClient.ReassignOrchestratorAsync(started.RoomDirectoryPath, second.Id.Value, TestContext.Current.CancellationToken);
+        Assert.Null(refusal);
+
+        var reloaded = await roomClient.LoadSessionMetadataAsync(started.RoomDirectoryPath, TestContext.Current.CancellationToken);
+        Assert.NotNull(reloaded);
+        viewModel.Chat.LoadFromMetadata(reloaded, started.RoomDirectoryPath);
+
+        Assert.True(viewModel.Chat.Participants.Single(p => p.Id == second.Id).IsOrchestrator);
+        // The chip renders the FIRST participant's status (multi-chip is a later slice) -- the
+        // original holder must read false, not just the target true, or a bug that always sets
+        // every participant's IsOrchestrator true would pass the assertion above alone.
+        Assert.False(viewModel.Chat.WorkerIsOrchestrator);
     }
 }
