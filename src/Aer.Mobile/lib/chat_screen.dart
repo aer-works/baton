@@ -120,6 +120,9 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _pendingUserMessage;
   int _turnsCountAtSendTime = 0;
   String _liveProgressText = '';
+  // #323/#1290: mirrors ChatViewModel._lastProgressWasPartialText — see its doc comment on
+  // ChatViewModel.AppendProgress (src/Aer.Ui.Core/ChatViewModel.cs) for the reasoning.
+  bool _lastProgressWasPartialText = false;
 
   /// Client-local queue preventing concurrent turns per ChatViewModel.EnqueueMessage
   /// (src/Aer.Ui.Core/ChatViewModel.cs:246-260). Entries are identity-carrying objects, not bare
@@ -189,7 +192,15 @@ class _ChatScreenState extends State<ChatScreen> {
     _progressSubscription = widget.client.watchProgress().listen((event) {
       if (!mounted) return;
       if (event.directoryPath == widget.directoryPath && _isSending) {
-        setState(() => _liveProgressText += event.text);
+        setState(() {
+          final isContinuingPartialText =
+              _lastProgressWasPartialText && event.kind == 'text' && event.isPartial;
+          if (!isContinuingPartialText && _liveProgressText.isNotEmpty) {
+            _liveProgressText += ' · ';
+          }
+          _liveProgressText += event.text;
+          _lastProgressWasPartialText = event.kind == 'text' && event.isPartial;
+        });
       }
     });
   }
@@ -279,6 +290,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (_isSending && metadata.turnCount > _turnsCountAtSendTime) {
           _isSending = false;
           _liveProgressText = '';
+          _lastProgressWasPartialText = false;
           _pendingUserMessage = null;
           _sendTimeoutTimer?.cancel();
           turnCompleted = true;
@@ -395,6 +407,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _turnsCountAtSendTime = turnCount;
     _pendingUserMessage = message;
     _liveProgressText = '';
+    _lastProgressWasPartialText = false;
     _isSending = true;
     _sendError = null;
 
