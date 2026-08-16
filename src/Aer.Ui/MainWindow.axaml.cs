@@ -243,6 +243,7 @@ public partial class MainWindow : Window
     internal Button ThemeLightButton => SettingsViewControl.ThemeLightButton;
     internal Button ThemeDarkButton => SettingsViewControl.ThemeDarkButton;
     internal Button ThemeSystemButton => SettingsViewControl.ThemeSystemButton;
+    internal Button ConcurrencySaveButton => SettingsViewControl.ConcurrencySaveButton;
 
     internal TextBox ChatInputBox => ChatViewControl.ChatInputBox;
     internal Button ChatSendButton => ChatViewControl.ChatSendButton;
@@ -470,6 +471,7 @@ public partial class MainWindow : Window
         ThemeLightButton.Click += (_, _) => _ = ChooseThemeAsync(ThemeNames.Light);
         ThemeDarkButton.Click += (_, _) => _ = ChooseThemeAsync(ThemeNames.Dark);
         ThemeSystemButton.Click += (_, _) => _ = ChooseThemeAsync(ThemeNames.System);
+        ConcurrencySaveButton.Click += (_, _) => _ = ViewModel.Concurrency.SaveAsync(_session);
         // #1071: Home is the ▤ front door's first-run/empty surface now. Activating it refreshes the
         // "No rooms yet." empty-state (Home.HasNoRooms) and the vendor-readiness line — 02-screens'
         // first-run screen shows readiness (#478/#285, the same source Settings and Author use, a CLI
@@ -498,6 +500,7 @@ public partial class MainWindow : Window
             {
                 ViewModel.NewWorkflow.RefreshVendorReadiness();
                 _ = ViewModel.Remote.RefreshAsync(_session);
+                _ = ViewModel.Concurrency.RefreshAsync(_session);
                 _pairingCountdownTimer.Start();
             }
             else

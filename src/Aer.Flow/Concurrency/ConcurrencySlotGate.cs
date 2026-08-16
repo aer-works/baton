@@ -13,13 +13,45 @@ namespace Aer.Flow.Concurrency;
 /// </summary>
 public static class ConcurrencySlotGate
 {
-    public const int GlobalCap = 3;
-    public const int PerVendorCap = 2;
+    public const int DefaultGlobalCap = 3;
+    public const int DefaultPerVendorCap = 2;
 
     private static readonly object Lock = new();
+    private static int _globalCap = DefaultGlobalCap;
+    private static int _perVendorCap = DefaultPerVendorCap;
     private static int _globalActive;
     private static readonly Dictionary<string, int> VendorActive = new();
     private static readonly List<Waiter> Queue = [];
+
+    public static int GlobalCap
+    {
+        get { lock (Lock) { return _globalCap; } }
+    }
+
+    public static int PerVendorCap
+    {
+        get { lock (Lock) { return _perVendorCap; } }
+    }
+
+    /// <summary>
+    /// Sets the caps a fresh <c>AcquireAsync</c> reserves against (#1298, settings-driven). Takes
+    /// effect immediately for slots not yet reserved -- an in-flight active slot is never revoked, so
+    /// shrinking a cap below the current active count is accepted and simply stops new reservations
+    /// until enough slots release naturally. Raising a cap immediately dispatches any queued waiters
+    /// it now has room for.
+    /// </summary>
+    public static void SetCaps(int globalCap, int perVendorCap)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(globalCap, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(perVendorCap, 1);
+
+        lock (Lock)
+        {
+            _globalCap = globalCap;
+            _perVendorCap = perVendorCap;
+            DispatchWaiters();
+        }
+    }
 
     private sealed class Waiter
     {
@@ -85,13 +117,13 @@ public static class ConcurrencySlotGate
     /// <summary>Caller must hold <see cref="Lock"/>.</summary>
     private static bool TryReserve(string vendor)
     {
-        if (_globalActive >= GlobalCap)
+        if (_globalActive >= _globalCap)
         {
             return false;
         }
 
         var vendorCount = VendorActive.GetValueOrDefault(vendor);
-        if (vendorCount >= PerVendorCap)
+        if (vendorCount >= _perVendorCap)
         {
             return false;
         }
@@ -138,6 +170,8 @@ public static class ConcurrencySlotGate
     {
         lock (Lock)
         {
+            _globalCap = DefaultGlobalCap;
+            _perVendorCap = DefaultPerVendorCap;
             _globalActive = 0;
             VendorActive.Clear();
             foreach (var waiter in Queue)

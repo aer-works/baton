@@ -58,6 +58,13 @@ namespace Aer.Daemon
             var aerDir = AerPaths.Root;
             Directory.CreateDirectory(aerDir);
 
+            // #1298: daemon-wide settings (currently just the concurrency caps) apply from the moment
+            // the daemon comes up, before any room can dispatch a turn -- load and apply before the
+            // Kestrel pipeline below wires the /api/settings/concurrency endpoints that let a running
+            // daemon change them again.
+            var daemonSettings = await DaemonSettingsStore.LoadAsync(AerPaths.SettingsFile);
+            ConcurrencySlotGate.SetCaps(daemonSettings.GlobalConcurrencyCap, daemonSettings.PerVendorConcurrencyCap);
+
             // Generate token if not exists
             var tokenFile = Path.Combine(aerDir, "daemon.token");
             string token;
@@ -657,6 +664,44 @@ namespace Aer.Daemon
                 {
                     return Results.Json(new { Error = $"sidecar unreachable: {ex.Message}" }, statusCode: StatusCodes.Status502BadGateway);
                 }
+            });
+
+            // #1298: the concurrency caps ConcurrencySlotGate enforces, adjustable from desktop
+            // Settings. Covered by the global bearer-token middleware below like every other
+            // /api/rooms|settings route -- no per-route auth check needed (unlike the sidecar routes
+            // above, which are further restricted to the local desktop owner because they touch this
+            // machine's Tailscale identity; a concurrency cap carries no such restriction).
+            app.MapGet("/api/settings/concurrency", () => Results.Ok(new
+            {
+                GlobalCap = ConcurrencySlotGate.GlobalCap,
+                PerVendorCap = ConcurrencySlotGate.PerVendorCap,
+            }));
+
+            app.MapPost("/api/settings/concurrency", async ([FromBody] SetConcurrencySettingsRequest request) =>
+            {
+                if (request.GlobalCap < 1 || request.PerVendorCap < 1)
+                {
+                    return Results.Json(
+                        new { Error = "Both caps must be at least 1." }, statusCode: StatusCodes.Status400BadRequest);
+                }
+
+                // Persist before applying in-memory: a save failure (disk full, permissions) must
+                // never leave the live gate running a cap that silently reverts on the next restart
+                // because it was never written down. Found on review, before ship.
+                try
+                {
+                    await DaemonSettingsStore.SaveAsync(
+                        new DaemonSettings { GlobalConcurrencyCap = request.GlobalCap, PerVendorConcurrencyCap = request.PerVendorCap },
+                        AerPaths.SettingsFile);
+                }
+                catch (IOException ex)
+                {
+                    return Results.Json(
+                        new { Error = $"Could not save settings: {ex.Message}" }, statusCode: StatusCodes.Status500InternalServerError);
+                }
+
+                ConcurrencySlotGate.SetCaps(request.GlobalCap, request.PerVendorCap);
+                return Results.Ok(new { GlobalCap = ConcurrencySlotGate.GlobalCap, PerVendorCap = ConcurrencySlotGate.PerVendorCap });
             });
 
             // #799: room wake-bridge surface — J19's "event→notification pipeline" leg's first
@@ -3791,6 +3836,8 @@ namespace Aer.Daemon
     public record SetSessionModeRequest(string Mode);
 
     /// <summary>#799: points <see cref="RoomWakeBridge"/> at the room directory to watch.</summary>
+    public record SetConcurrencySettingsRequest(int GlobalCap, int PerVendorCap);
+
     public record WatchRoomRequest(string RoomDirectoryPath);
 
     /// <summary>#672: <paramref name="Outcome"/> is "approve" or "reject" (case-insensitive); <paramref name="Ref"/> is the <see cref="HeldWorkRef"/>'s own string value.</summary>

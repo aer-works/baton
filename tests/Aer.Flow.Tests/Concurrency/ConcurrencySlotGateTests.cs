@@ -124,4 +124,57 @@ public class ConcurrencySlotGateTests
     {
         Assert.False(ConcurrencySlotGate.CancelWaiting("/rooms/never-queued"));
     }
+
+    [Fact]
+    public async Task SetCaps_raising_the_global_cap_dispatches_a_queued_waiter_immediately()
+    {
+        var slots = new List<IDisposable>();
+        for (var i = 0; i < ConcurrencySlotGate.GlobalCap; i++)
+        {
+            slots.Add(await ConcurrencySlotGate.AcquireAsync($"/rooms/{i}", $"vendor-{i}"));
+        }
+
+        var acquireTask = ConcurrencySlotGate.AcquireAsync("/rooms/queued", "vendor-extra");
+        await Task.Delay(50, TestContext.Current.CancellationToken); // wait-ok: settle time for an in-process async continuation, not an external wait
+        Assert.True(ConcurrencySlotGate.IsWaiting("/rooms/queued"));
+
+        ConcurrencySlotGate.SetCaps(ConcurrencySlotGate.GlobalCap + 1, ConcurrencySlotGate.PerVendorCap);
+
+        var dispatched = await acquireTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken); // wait-ok: hang backstop, not an expected-duration wait -- SetCaps dispatches synchronously under Lock
+        Assert.False(ConcurrencySlotGate.IsWaiting("/rooms/queued"));
+
+        dispatched.Dispose();
+        foreach (var slot in slots)
+        {
+            slot.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task SetCaps_shrinking_below_active_count_does_not_revoke_active_slots_but_refuses_new_ones()
+    {
+        using var first = await ConcurrencySlotGate.AcquireAsync("/rooms/a", "vendor-a");
+        using var second = await ConcurrencySlotGate.AcquireAsync("/rooms/b", "vendor-b");
+
+        ConcurrencySlotGate.SetCaps(1, ConcurrencySlotGate.PerVendorCap);
+
+        // Both existing slots are untouched -- shrinking never revokes an active reservation.
+        Assert.False(ConcurrencySlotGate.IsWaiting("/rooms/a"));
+        Assert.False(ConcurrencySlotGate.IsWaiting("/rooms/b"));
+
+        // A fresh acquire now queues immediately: active count (2) already exceeds the new cap (1).
+        var acquireTask = ConcurrencySlotGate.AcquireAsync("/rooms/c", "vendor-c");
+        await Task.Delay(50, TestContext.Current.CancellationToken); // wait-ok: settle time for an in-process async continuation, not an external wait
+        Assert.True(ConcurrencySlotGate.IsWaiting("/rooms/c"));
+        Assert.False(acquireTask.IsCompleted);
+
+        ConcurrencySlotGate.CancelWaiting("/rooms/c");
+    }
+
+    [Fact]
+    public void SetCaps_rejects_a_cap_below_one()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => ConcurrencySlotGate.SetCaps(0, ConcurrencySlotGate.PerVendorCap));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ConcurrencySlotGate.SetCaps(ConcurrencySlotGate.GlobalCap, 0));
+    }
 }
