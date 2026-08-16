@@ -1,6 +1,6 @@
 # 0020 — One state machine: every surface renders the room's state, none derives its own
 
-Status: accepted; **amended 2026-08-14 (#1219) — tenth state `stopped`, derived with the room's §15 lock**
+Status: accepted; **amended 2026-08-14 (#1219) — tenth state `stopped`, derived with the room's §15 lock; amended 2026-08-16 (#1296) — eleventh state `waitingToStart`, derived from the concurrency cap's in-memory queue**
 Date: 2026-07-24
 
 ## Context
@@ -87,6 +87,32 @@ wrong answer.
 > uses "stopped" in the general sense of *halted without finishing* — it covers `cancelled`, `failed`
 > and now `stopped` alike. The state name matches what a person is shown, per
 > [0002](0002-one-vocabulary.md); the older sentence is unchanged and means what it always meant.
+
+> **Amendment, 2026-08-16 (#1296).** An eleventh state, `waitingToStart`: the daemon's global/per-
+> vendor concurrency cap (#448, ratified by Fable — 3 global / 2 per vendor, ephemeral by design) has
+> FIFO-queued this room's turn dispatch and it has not started yet. Not `queued` — `design/
+> tokens.json`'s own prose already records that `queued` is a step-level state (#1132), and this is a
+> room-level one; reusing the token would contradict a recorded, verified ruling.
+>
+> The mechanism follows `stopped`'s own precedent exactly, one level further: **no predicate over the
+> journal can produce this state, because an unstarted turn may have no journal entry at all yet.**
+> Where `stopped` reads a kernel-held file lock that outlives its own process, `waitingToStart` reads
+> an in-memory daemon fact — `ConcurrencySlotGate`'s wait queue — that does not outlive the daemon's
+> own process. `DeriveStatus` takes it as a second caller-supplied argument, the same extension of
+> rule 1 `isFlowLockHeld` already established: the fix for "a surface needs an answer the room does
+> not expose" is to expose it from the room, once, in the one derivation.
+>
+> Ephemeral is a deliberate choice, not a gap. A daemon restart drops every queued waiter, and a
+> previously-queued room correctly reverts to showing its true not-started state — nothing durable
+> would ever have started it, so a durable `SessionQueued`-style journal record would just be a lie in
+> the log the moment the daemon restarts, without a durable dispatcher behind it to make it true again.
+> Ruled explicitly so a future reader does not mistake "queue does not survive a restart" for a defect
+> to fix.
+>
+> Ordering: `waitingToStart` is checked FIRST, ahead of every other arm — including `stopped`'s own,
+> which itself already runs first among the `Running`-scoped ones. A room waiting on a slot has no
+> journal or projection facts yet for any other arm to misread, the same reasoning `stopped`'s own
+> amendment gives for its position relative to the permission arm.
 
 Three rules govern how the states are consumed:
 

@@ -624,7 +624,8 @@ public sealed partial class RoomFleetItemViewModel : ObservableObject
         // "Stopped" instead of leaving the spinner turning. Pushes only arrive for rooms something is
         // doing something to, so this is not a per-tick probe.
         var (statusText, status) = RoomCardViewModel.DeriveStatus(
-            projection, projection.PendingPermission, ConcurrencyGuard.IsHeld(RoomDirectoryPath));
+            projection, projection.PendingPermission, ConcurrencyGuard.IsHeld(RoomDirectoryPath),
+            ConcurrencySlotGate.IsWaiting(RoomDirectoryPath));
         StatusText = statusText;
         Status = status;
         PausedStepCount = projection.State.Steps.Count(s => s.Status == StepStatus.Paused);

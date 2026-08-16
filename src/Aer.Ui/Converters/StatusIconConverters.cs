@@ -83,6 +83,9 @@ internal static class StatusIconMap
         // #1219: a square outline, the one hard-edged silhouette in the set. Not Dash, which is
         // Cancelled's "you stopped it" — nobody stopped this one, its process died.
         RoomCardStatus.Stopped => "Icon.Square",
+        // #1296: distinct from Icon.Ellipsis (Queued), which is a step-level mark -- see design/
+        // tokens.json's status prose for why the two coexist.
+        RoomCardStatus.WaitingToStart => "Icon.Clock",
         // #616 made this throw so a new member cannot silently render as some other state. Worth
         // knowing what that actually buys: driving the app for #1219 showed a genuinely missing
         // mapping as an *empty space* in the switcher rather than as a crash, because this runs
@@ -108,6 +111,9 @@ internal static class StatusIconMap
         // #1219: quiet, for Cancelled's reason — a room whose process died is not an emergency, and
         // the mark and the word carry which of the quiet outcomes it is.
         RoomCardStatus.Stopped => "Status.Stopped",
+        // #1296: same muted family as Cancelled/Stopped -- a full concurrency house is normal
+        // operation, not a warning.
+        RoomCardStatus.WaitingToStart => "Status.WaitingToStart",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped card status."), // #616
     };
 }

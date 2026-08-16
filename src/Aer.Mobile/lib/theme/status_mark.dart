@@ -144,6 +144,12 @@ class _StatusMarkPainter extends CustomPainter {
         for (final cx in [4.2, 8.0, 11.8]) {
           canvas.drawCircle(at(cx, 8), 1.35 * scale, primary);
         }
+      // WaitingToStart (#1296): a clock — FIFO-queued behind the concurrency cap, starts on its own
+      // once a slot frees. Matches Icon.Clock: circle centred at (8,8) radius 5, plus two hands.
+      case 'clock':
+        canvas.drawCircle(at(8, 8), 5 * scale, stroke);
+        canvas.drawLine(at(8, 8), at(8, 4.5), stroke);
+        canvas.drawLine(at(8, 8), at(11, 9.5), stroke);
       // Unavailable: a slashed circle - recorded, no longer readable.
       case 'slashed':
         canvas.drawCircle(at(8, 8), 5 * scale, stroke);

@@ -50,8 +50,20 @@ public class RoomStoppedCardTests
     {
         var running = StateWith(WorkflowStatus.Running, StepStatus.Running);
 
-        Assert.Equal(RoomStoppedReason.StoppedMidRun, RoomClient.DeriveRoomStoppedReason(running, isFlowLockHeld: false));
-        Assert.Null(RoomClient.DeriveRoomStoppedReason(running, isFlowLockHeld: true));
+        Assert.Equal(RoomStoppedReason.StoppedMidRun, RoomClient.DeriveRoomStoppedReason(running, isFlowLockHeld: false, isWaitingToStart: false));
+        Assert.Null(RoomClient.DeriveRoomStoppedReason(running, isFlowLockHeld: true, isWaitingToStart: false));
+    }
+
+    /// <summary>
+    /// #1296: see RoomClient.DeriveRoomStoppedReason's comment for why this arm exists. Same
+    /// fixture as the test above; only isWaitingToStart differs.
+    /// </summary>
+    [Fact]
+    public void A_room_queued_behind_the_concurrency_cap_offers_nothing()
+    {
+        var running = StateWith(WorkflowStatus.Running, StepStatus.Running);
+
+        Assert.Null(RoomClient.DeriveRoomStoppedReason(running, isFlowLockHeld: false, isWaitingToStart: true));
     }
 
     /// <summary>
@@ -66,7 +78,7 @@ public class RoomStoppedCardTests
     {
         var paused = StateWith(WorkflowStatus.Paused, StepStatus.Succeeded, StepStatus.Paused);
 
-        Assert.Null(RoomClient.DeriveRoomStoppedReason(paused, isFlowLockHeld));
+        Assert.Null(RoomClient.DeriveRoomStoppedReason(paused, isFlowLockHeld, isWaitingToStart: false));
     }
 
     /// <summary>
@@ -79,7 +91,7 @@ public class RoomStoppedCardTests
     {
         var mixed = StateWith(WorkflowStatus.Running, StepStatus.Running, StepStatus.Paused);
 
-        Assert.Null(RoomClient.DeriveRoomStoppedReason(mixed, isFlowLockHeld: false));
+        Assert.Null(RoomClient.DeriveRoomStoppedReason(mixed, isFlowLockHeld: false, isWaitingToStart: false));
     }
 
     /// <summary>A finished room offers a re-run, and never consults the lock — nothing pumps a terminal room.</summary>
@@ -90,7 +102,7 @@ public class RoomStoppedCardTests
     {
         var terminal = StateWith(WorkflowStatus.Terminal, StepStatus.Succeeded);
 
-        Assert.Equal(RoomStoppedReason.Finished, RoomClient.DeriveRoomStoppedReason(terminal, isFlowLockHeld));
+        Assert.Equal(RoomStoppedReason.Finished, RoomClient.DeriveRoomStoppedReason(terminal, isFlowLockHeld, isWaitingToStart: false));
     }
 
     /// <summary>
@@ -114,7 +126,8 @@ public class RoomStoppedCardTests
                 Assert.True(ConcurrencyGuard.IsHeld(roomDirectory));
                 Assert.Null(RoomClient.DeriveRoomStoppedReason(
                     StateWith(WorkflowStatus.Running, StepStatus.Running),
-                    ConcurrencyGuard.IsHeld(roomDirectory)));
+                    ConcurrencyGuard.IsHeld(roomDirectory),
+                    isWaitingToStart: false));
             }
 
             Assert.False(ConcurrencyGuard.IsHeld(roomDirectory));
@@ -122,7 +135,8 @@ public class RoomStoppedCardTests
                 RoomStoppedReason.StoppedMidRun,
                 RoomClient.DeriveRoomStoppedReason(
                     StateWith(WorkflowStatus.Running, StepStatus.Running),
-                    ConcurrencyGuard.IsHeld(roomDirectory)));
+                    ConcurrencyGuard.IsHeld(roomDirectory),
+                    isWaitingToStart: false));
         }
         finally
         {

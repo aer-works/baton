@@ -119,7 +119,7 @@ copy of every record, retired by #952: the record is the only place a decision i
 | [0017](0017-vendor-model-effort-are-three-choices.md) | Vendor, model and effort are three separate choices | accepted |
 | [0018](0018-attention-is-the-primary-signal.md) | Attention is the primary signal: state orders the list, notifications never decide | accepted; **notification source supplied by [0030](0030-aer-is-its-own-notifier.md)** |
 | [0019](0019-consulting-is-not-deciding.md) | Consulting is not deciding: you can ask anyone, and the gate stays open | accepted |
-| [0020](0020-one-state-machine.md) | One state machine: every surface renders the room's state, none derives its own | accepted; **amended 2026-08-14 (#1219) — tenth state `stopped`, derived with the room's §15 lock** |
+| [0020](0020-one-state-machine.md) | One state machine: every surface renders the room's state, none derives its own | accepted; **amended 2026-08-14 (#1219) — tenth state `stopped`, derived with the room's §15 lock; amended 2026-08-16 (#1296) — eleventh state `waitingToStart`, derived from the concurrency cap's in-memory queue** |
 | [0021](0021-artifacts-are-files.md) | Artifacts are files: vendor-neutral, versioned, attributed, and never silently overwritten | accepted |
 | [0022](0022-permission-ladder-and-denial-is-an-answer.md) | The permission ladder is offered at the moment of asking, and a denial is a real answer | accepted; **cross-room rung held by [0052](0052-the-ladder-ships-without-the-cross-room-rung.md)** |
 | [0023](0023-effort-and-models-are-named-by-behaviour.md) | Effort is named by behaviour and models are offered by purpose, never by a vendor's own string | accepted |

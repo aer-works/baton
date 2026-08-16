@@ -23,7 +23,7 @@ public static class WireFixtureGenerator
         // the terminal-card wording each value produces is pinned phone-side, in
         // src/Aer.Mobile/test/chat_screen_workflow_room_test.dart.
         var (roomCardStatusText, roomCardStatus) =
-            RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld: true);
+            RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld: true, isWaitingToStart: false);
 
         // 1. RoomProjection REST (camelCase)
         var restNode = JsonSerializer.SerializeToNode(projection, DaemonSerializerOptions.Rest)!.AsObject();

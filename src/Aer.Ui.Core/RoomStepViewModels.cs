@@ -107,7 +107,11 @@ public static class PlainLanguage
     /// caller honest; it makes the dishonest case invisible.
     /// </param>
     public static string ForWorkflow(RoomProjection projection, bool isFlowLockHeld)
-        => RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld).StatusText;
+        // #1296: the legacy Task view this feeds is already slated for retirement (see
+        // RebuildRoomSteps's remarks) and has no directory path here to probe the concurrency
+        // gate with, so it never threads the real signal -- always false, same as any other
+        // surface that genuinely cannot answer.
+        => RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld, isWaitingToStart: false).StatusText;
 
     /// <summary>
     /// #215: real execution/decision ids are 32-char generated Guids — pure visual noise to a
