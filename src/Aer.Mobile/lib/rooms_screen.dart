@@ -20,7 +20,9 @@ int attentionBand(String? status) => switch (status) {
       // `every status the phone knows reaches a deliberate arm` is what keeps a known one out of it.
       // #1296: FIFO-queued behind the concurrency cap, starting on its own -- background, same band
       // as the other quiet states, not something that needs your attention.
-      'Cancelled' || 'Stopped' || 'Unavailable' || 'OutOfPlan' || 'WaitingToStart' => 3,
+      // #1299: a foreign process holds the lock, same quiet band as WaitingToStart -- see
+      // decisions/0020's 2026-08-16 amendment for why this can never mean another room.
+      'Cancelled' || 'Stopped' || 'Unavailable' || 'OutOfPlan' || 'WaitingToStart' || 'WaitingOnLock' => 3,
       _ => 2,
     };
 
@@ -40,6 +42,9 @@ AerStatus roomStatus(String? status) => switch (status) {
       // #1296: same reasoning as Stopped's own row above -- without this arm a queued room would
       // fall to `idle` and look identical to one that had never been asked to run at all.
       'WaitingToStart' => AerStatus.waitingToStart,
+      // #1299: without this arm a lock-blocked room would also fall to `idle` and look like one
+      // that had never been asked to run, rather than one something else is actively holding.
+      'WaitingOnLock' => AerStatus.waitingOnLock,
       _ => AerStatus.idle,
     };
 

@@ -160,6 +160,7 @@ void main() {
       expect(attentionBand('Unavailable'), 3);
       expect(attentionBand('OutOfPlan'), 3);
       expect(attentionBand('WaitingToStart'), 3);
+      expect(attentionBand('WaitingOnLock'), 3);
     });
 
     // #1233: 'Stopped' reached attentionBand's catch-all and sorted among Finished/Failed, while
@@ -177,6 +178,7 @@ void main() {
         'Unavailable': 3,
         'OutOfPlan': 3,
         'WaitingToStart': 3,
+        'WaitingOnLock': 3,
       };
 
       for (final entry in knownStatusToBand.entries) {
@@ -199,6 +201,7 @@ void main() {
       expect(roomStatus('Unavailable'), AerStatus.unavailable);
       expect(roomStatus('OutOfPlan'), AerStatus.outOfPlan);
       expect(roomStatus('WaitingToStart'), AerStatus.waitingToStart);
+      expect(roomStatus('WaitingOnLock'), AerStatus.waitingOnLock);
       expect(roomStatus('UnknownState'), AerStatus.idle);
       expect(roomStatus(null), AerStatus.idle);
     });
