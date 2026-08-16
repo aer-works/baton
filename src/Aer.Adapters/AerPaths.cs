@@ -110,9 +110,8 @@ public static class AerPaths
     public const string WorkerLaunchConfigDirectoryName = "worker-launch";
 
     /// <summary>
-    /// <c>{Root}/settings.json</c> — daemon-side settings that apply machine-wide rather than to any
-    /// one room, starting with the concurrency caps (#1298). Absent or malformed content is read as
-    /// defaults, never thrown (see the settings store that consumes this path).
+    /// <c>{Root}/settings.json</c> — see <see cref="DaemonSettingsStore"/> for what this holds and how
+    /// an absent or malformed file is handled.
     /// </summary>
     public static string SettingsFile => Path.Combine(Root, SettingsFileName);
 
