@@ -154,10 +154,8 @@ class _StatusMarkPainter extends CustomPainter {
       case 'slashed':
         canvas.drawCircle(at(8, 8), 5 * scale, stroke);
         canvas.drawLine(at(4.5, 11.5), at(11.5, 4.5), stroke);
-      // WaitingOnLock (#1299/#480): a padlock — a live process the journal cannot account for holds
-      // this room's directory lock. Matches Icon.Lock: a shackle arc from (5,5) to (11,5) radius 3,
-      // plus a body rectangle (4,7)-(12,13). Stroked, never filled, matching Icon.Clock's precedent
-      // for a state that is a wait, not an outcome.
+      // WaitingOnLock (#1299/#480): a padlock, matching Icon.Lock -- a shackle arc from (5,5) to
+      // (11,5) radius 3, plus a body rectangle (4,7)-(12,13). Stroked like Icon.Clock, not filled.
       case 'lock':
         final shackle = Path()
           ..moveTo(at(5, 7).dx, at(5, 7).dy)

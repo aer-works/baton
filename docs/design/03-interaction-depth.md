@@ -390,7 +390,7 @@ Blocks are doors on a phone Diffs and output get their own screens , and each st
 
 Stale, not blank Refreshing never empties a list. Previous content stays and is marked stale — blanking reads as data loss.
 
-A wait names its holder (added 2026-08-04, corrected 2026-08-16 on #1299) Waiting on another process's lock is its own state, never generic working: the holder process is named, with how long it has held the lock. Room identity is directory-keyed, so the holder is never another room and there is nothing to link to — naming it is the discoverable part, not a "go close the other room" navigation.
+A wait names its holder (added 2026-08-04, corrected 2026-08-16 on #1299) Waiting on another process's lock is its own state, never generic working — see [0020's 2026-08-16 amendment](../decisions/0020-one-state-machine.md) for what changed and why.
 
 Dormancy answers, it never resumes (added 2026-08-04) A message to a dormant room is answered by the product with the dormancy state and the wake control. Waking the room is your explicit action — a stuck loop can never resume spending because you asked how it's going.
 

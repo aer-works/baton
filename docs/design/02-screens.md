@@ -926,16 +926,11 @@ for 40s.
 Reply… ⏎   (queues, sends when the lock frees)
 ```
 
-**Corrected 2026-08-16 (#1299, Fable's ruling).** This section originally staged the scenario as
-two *rooms* sharing a folder, with the wait naming the other room and a "Go to <room>" link. That
-premise cannot occur: room identity is directory-keyed (#495/#1296), so opening a folder twice
-reopens the same room rather than creating a second, distinct one. The real, remaining collision is
-process-vs-room — a bare `aer run` pump, the memory-proposal sweep, or a second Baton instance
-holding the directory's lock while this room's own machinery has nothing to say about it. There is
-no other room to link to, so the mockup above names the holder process and how long it has held the
-lock instead. The "opening a second room warns at creation" sentence this section previously carried
-is also retired, not deferred: once the wait itself renders the instant it bites, that IS the
-knowing choice #480 asked for — no separate confirmation dialog exists or is needed.
+**Corrected 2026-08-16 (#1299).** This section originally staged the scenario as two *rooms*
+sharing a folder, with the wait naming the other room and a "Go to <room>" link; that premise
+cannot occur under directory-keyed room identity. See
+[0020's 2026-08-16 amendment](../decisions/0020-one-state-machine.md) for why, and for the ruling
+that retires "opening a second room warns at creation" entirely rather than deferring it.
 
 #### Escalation is a gate
 

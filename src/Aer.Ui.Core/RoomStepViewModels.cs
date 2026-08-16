@@ -238,11 +238,9 @@ public sealed partial class StepItemViewModel : ObservableObject
 }
 
 /// <summary>
-/// M25 / issue #618, promoted into the canonical machine by #1299 (#480, Fable's ruling): the
-/// waiting-on-lock banner. Renders <see cref="RoomCardStatus.WaitingOnLock"/> — a live process the
-/// journal cannot account for holds this room's flow lock. Room identity is directory-keyed, so the
-/// holder is always a process (a bare <c>aer run</c> pump, the sweep, a second Baton instance), never
-/// another room — there is nothing to link to. Reads as a WAIT, never an error (0006/quiet).
+/// M25 / issue #618, promoted into the canonical machine by #1299: the waiting-on-lock banner.
+/// Renders <see cref="RoomCardStatus.WaitingOnLock"/> — see decisions/0020's 2026-08-16 amendment
+/// for what that state means and why there is nothing to link to.
 /// </summary>
 public sealed partial class WaitingOnLockBannerViewModel : ObservableObject
 {
