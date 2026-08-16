@@ -330,6 +330,26 @@ public class ChatViewModelTests
     }
 
     [Fact]
+    public void AppendProgress_SeparatesDiscreteEventsButNotPartialTextDeltas()
+    {
+        // #323/#1290: "status"/"tool" events, and a fresh non-partial "text" event, are each their
+        // own label and must not run together into one unreadable word; only a continuing
+        // IsPartial:true "text" stream is one sentence arriving token by token.
+        var viewModel = new ChatViewModel();
+
+        viewModel.AppendProgress(new WorkerProgressEvent("status", "Session started"));
+        viewModel.AppendProgress(new WorkerProgressEvent("status", "requesting"));
+        viewModel.AppendProgress(new WorkerProgressEvent("tool", "PowerShell"));
+        viewModel.AppendProgress(new WorkerProgressEvent("text", "Thinking", IsPartial: true));
+        viewModel.AppendProgress(new WorkerProgressEvent("text", " some more...", IsPartial: true));
+        viewModel.AppendProgress(new WorkerProgressEvent("status", "requesting"));
+
+        Assert.Equal(
+            "Session started · requesting · PowerShell · Thinking some more... · requesting",
+            viewModel.LiveProgressText);
+    }
+
+    [Fact]
     public void Clear_ResetsEveryFieldToItsEmptyState()
     {
         var viewModel = new ChatViewModel();
