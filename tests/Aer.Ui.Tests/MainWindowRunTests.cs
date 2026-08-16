@@ -61,6 +61,38 @@ public class MainWindowRunTests
         }
     }
 
+    /// <summary>
+    /// #467 symptom 3 ("something else is running" refuses a mutation without naming what it
+    /// conflicted with): the real end-to-end proof that a Run refused by a genuinely held lock names
+    /// the holder, not just that <c>RoomClient</c>'s catch block compiles. #1299 gave the banner a
+    /// duration on top of the holder description this test already pinned.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task RunAsync_refused_by_a_held_lock_names_the_holder()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"ui-run-locked-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteThreeStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteThreeStepBindingsAsync(testRoot);
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()), Adapters);
+
+            using var lockGuard = Aer.Flow.Concurrency.ConcurrencyGuard.Acquire(roomDirectory, "Other Room (pid 909)");
+
+            await window.RunAsync(roomDirectory, workflowFilePath, bindingsFilePath, TestContext.Current.CancellationToken);
+
+            Assert.True(window.ViewModel.HasWaitingOnLockBanner);
+            Assert.NotNull(window.ViewModel.WaitingOnLockBanner);
+            Assert.Equal("Waiting on another process's lock", window.ViewModel.WaitingOnLockBanner.Title);
+            Assert.StartsWith("Held by Other Room (pid 909) for", window.ViewModel.WaitingOnLockBanner.HolderText);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [AvaloniaFact]
     public async Task RunAsync_records_the_room_directory_and_remembers_the_bindings_and_template_paths()
     {
