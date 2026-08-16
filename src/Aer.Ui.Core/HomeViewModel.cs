@@ -224,10 +224,10 @@ public static class RoomCardViewModel
             WorkflowStatus.Paused => (PausedCardStatusText(projection), RoomCardStatus.NeedsYou),
             WorkflowStatus.Running when projection.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Running) is { } runningStep
                 => ($"Working — {runningStep.StepId.Value}", RoomCardStatus.Running),
-            // #1299: see decisions/0020's 2026-08-16 amendment for what this state means and why
-            // it is scoped to Running only. Short version: isFlowLockHeld is true but nothing in the
-            // journal explains it (no step Running, nothing failed/rejected) — a foreign process
-            // holds the lock, never another room (identity is directory-keyed, #495/#1296).
+            // #1299: isFlowLockHeld is true but nothing in the journal explains it (no step
+            // Running, nothing failed/rejected) — a foreign process holds the lock, never another
+            // room (identity is directory-keyed, #495/#1296). Rationale for the Running-only scope
+            // is decision 0020's own amendment record.
             WorkflowStatus.Running when isFlowLockHeld
                 && !projection.State.Steps.Any(s => s.Status == StepStatus.Running)
                 && failedOrRejectedSteps.Count == 0

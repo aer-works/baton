@@ -239,8 +239,8 @@ public sealed partial class StepItemViewModel : ObservableObject
 
 /// <summary>
 /// M25 / issue #618, promoted into the canonical machine by #1299: the waiting-on-lock banner.
-/// Renders <see cref="RoomCardStatus.WaitingOnLock"/> — see decisions/0020's 2026-08-16 amendment
-/// for what that state means and why there is nothing to link to.
+/// Renders <see cref="RoomCardStatus.WaitingOnLock"/>; the ruling behind why it has nothing to link
+/// to lives on that member's own doc comment.
 /// </summary>
 public sealed partial class WaitingOnLockBannerViewModel : ObservableObject
 {
