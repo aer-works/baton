@@ -303,6 +303,13 @@ public sealed partial class RoomsViewModel : ObservableObject
         // quiet — it is not competing for attention with a gate or a live run — and the person finds
         // it when they go looking, with Resume on its own transcript.
         RoomCardStatus.Stopped => 3,
+        // #1299 second-reader finding: both of these were missing from this switch and threw the
+        // instant a real room reached either status — WaitingToStart since #1296 shipped, silently
+        // uncaught until now because no fleet-order test exercised either member. Same band as
+        // Stopped/Cancelled for the same reason: a queued-or-blocked room is quiet, not competing
+        // for attention with a live run or a gate.
+        RoomCardStatus.WaitingToStart => 3,
+        RoomCardStatus.WaitingOnLock => 3,
         // A never-run room the fleet reports no state for (see the property's own remarks) genuinely
         // has no band; it sits with the settled outcomes. Split from the discard so that a NEW status
         // member cannot inherit a tier by accident — the #616 lesson every other status switch in this

@@ -531,14 +531,16 @@ public sealed partial class RoomClient
             {
                 SetWaitingOnLockBannerFromActiveRefusal(roomDirectoryPath, wle.HolderDescription, wle.AcquiredAtUtc);
             }
-            else if (isFlowLockHeld)
+            else if (ConcurrencyGuard.IsHeld(roomDirectoryPath))
             {
                 // #1299: a directory that fails to load for a DIFFERENT reason (no snapshot.json
                 // yet — InvalidRoomDirectoryException, the common case for a room whose first turn
                 // never ran) can still be externally locked at the same time. There is no projection
                 // for DeriveStatus to read here, so this stays the direct probe RefreshWaitingOnLockBanner
                 // normally replaces — the one case where "no projection" does not mean "nothing to say
-                // about the lock".
+                // about the lock". Re-probed here rather than trusting isFlowLockHeld (captured before
+                // the load, which can take a while) — a lock released in between must not show a
+                // banner for a hold that is already gone (second-reader finding).
                 var (holderDescription, acquiredAtUtc) = ConcurrencyGuard.ReadHolderInfo(roomDirectoryPath);
                 SetWaitingOnLockBannerFromActiveRefusal(roomDirectoryPath, holderDescription, acquiredAtUtc);
             }
