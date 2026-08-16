@@ -131,10 +131,19 @@
              after which each re-assert pushed null and the combo rendered blank while the
              ViewModel looked healthy under headless assertions. Upward travel happens only
              through a real pick — ChatView's SelectionChanged handler. -->
+        <!-- #342: items are adapter contract keys ("claude"/"agy"), never shown raw — the same
+             leak class as an internal status key on screen. ItemTemplate only changes what's
+             painted; SelectedItem below still binds/writes the raw key. -->
         <ComboBox x:Name="ChatNewAdapterCombo" Width="140"
                   ItemsSource="{Binding Chat.AvailableAdapters}"
                   SelectedItem="{Binding Chat.NewChatAdapter, Mode=OneWay}"
-                  IsEnabled="{Binding !Chat.IsStartingNewChat}" />
+                  IsEnabled="{Binding !Chat.IsStartingNewChat}">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="x:String">
+              <TextBlock Text="{Binding Converter={StaticResource VendorDisplayNameConverter}}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
         <TextBox x:Name="ChatNewWorkingDirectoryBox" Width="360"
                  Text="{Binding Chat.NewChatWorkingDirectory}"
                  IsEnabled="{Binding !Chat.IsStartingNewChat}"

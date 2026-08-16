@@ -24,6 +24,7 @@
       <conv:StatusToIconFillConverter x:Key="StatusToIconFillConverter" />
       <conv:VendorIconGeometryConverter x:Key="VendorIconGeometryConverter" />
       <conv:VendorIconBrushConverter x:Key="VendorIconBrushConverter" />
+      <conv:VendorDisplayNameConverter x:Key="VendorDisplayNameConverter" />
       <conv:ByteArrayToBitmapConverter x:Key="ByteArrayToBitmapConverter" />
     </ResourceDictionary>
   </Application.Resources>

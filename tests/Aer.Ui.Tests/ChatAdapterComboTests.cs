@@ -1,8 +1,10 @@
 using Aer.Adapters;
+using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 
 namespace Aer.Ui.Tests;
 
@@ -62,5 +64,36 @@ public class ChatAdapterComboTests
         Dispatcher.UIThread.RunJobs();
 
         Assert.Equal("agy", chat.NewChatAdapter);
+    }
+
+    /// <summary>
+    /// #342's second defect: the combo's items are adapter contract keys ("claude"/"agy"), not
+    /// display text — the same internal-identifier-as-primary-text leak the vocabulary lint
+    /// polices elsewhere, just not reachable by that lint since it only covers string literals.
+    /// </summary>
+    [AvaloniaFact]
+    public void TheAdapterComboShowsDisplayNames_NotRawContractKeys()
+    {
+        var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()))
+        {
+            Width = 900,
+            Height = 700,
+        };
+        window.ViewModel.CurrentSection = ShellSection.Chat;
+        var chat = window.ViewModel.Chat;
+        chat.PopulateAvailableAdapters(BothVendors);
+        chat.NewChatAdapter = "agy";
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+        window.ApplyTemplate();
+        window.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
+        var combo = window.FindViewControl<ComboBox>("ChatNewAdapterCombo")!;
+        var texts = combo.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text).ToList();
+
+        Assert.Contains("Gemini", texts);
+        Assert.DoesNotContain("agy", texts);
+        Assert.DoesNotContain("claude", texts);
     }
 }
