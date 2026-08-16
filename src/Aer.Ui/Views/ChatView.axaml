@@ -35,6 +35,9 @@
           <TextBlock Classes="mono caption" TextWrapping="Wrap" Text="{Binding Chat.LiveProgressText}" />
         </ScrollViewer>
       </Border>
+      <!-- #483: see ChatViewModel.ThinkingTimeText's doc comment for why this is never a live count. -->
+      <TextBlock Classes="caption secondary" Text="{Binding Chat.ThinkingTimeText}"
+                 IsVisible="{Binding Chat.HasThinkingTimeText}" />
       <!-- Chat capability picker (M24 Phase 2 follow-up): recently-used skills/commands/agents
            first, an informational-only section for modes/plugins that aren't chat-invokable, plus
            session-level mode buttons applying to whichever vendor is currently active. -->

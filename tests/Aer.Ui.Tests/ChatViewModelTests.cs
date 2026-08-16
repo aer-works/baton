@@ -349,25 +349,134 @@ public class ChatViewModelTests
             viewModel.LiveProgressText);
     }
 
+    [Theory]
+    [InlineData(9, "")]
+    [InlineData(10, "Thought for 10s")]
+    [InlineData(34, "Thought for 34s")]
+    [InlineData(59, "Thought for 59s")]
+    [InlineData(60, "Thought for 1m 0s")]
+    [InlineData(125, "Thought for 2m 5s")]
+    public void FormatThinkingTime_GatesOnTheThresholdAndUsesWholeSecondsBelowAMinute(int seconds, string expected)
+    {
+        // #483: see ThinkingTimeReportThreshold's doc comment for why below-threshold is empty.
+        Assert.Equal(expected, ChatViewModel.FormatThinkingTime(TimeSpan.FromSeconds(seconds)));
+    }
+
+    [Fact]
+    public void BeginSend_ThenAFastCompletion_ReportsNoThinkingTime()
+    {
+        // The measured duration of this whole test is well under #483's 10-second threshold, so the
+        // real client-side stopwatch this exercises end-to-end must gate the caption off, not just
+        // FormatThinkingTime in isolation.
+        var viewModel = new ChatViewModel();
+        var initialMetadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false));
+        viewModel.LoadFromMetadata(initialMetadata, "/tmp/sess-1");
+
+        viewModel.BeginSend("What's next?", currentTurnsCount: initialMetadata.Turns.Count);
+        Assert.Equal(string.Empty, viewModel.ThinkingTimeText);
+
+        var completedMetadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false),
+            new SessionTurn(2, "claude", "What's next?", "Let's continue", DateTimeOffset.UtcNow, true, false));
+        viewModel.LoadFromMetadata(completedMetadata, "/tmp/sess-1");
+
+        Assert.Equal(string.Empty, viewModel.ThinkingTimeText);
+        Assert.False(viewModel.HasThinkingTimeText);
+    }
+
+    [Fact]
+    public void BeginSend_ThenA34SecondCompletion_ShowsTheFormattedCaption_NeverALiveCounter()
+    {
+        // xunit has no fake wall clock, so DebugThinkingTimeClock is the seam that drives elapsed
+        // time without a test literally sleeping 10+ seconds -- this is the discriminating
+        // end-to-end proof that LoadFromMetadata's completion branch actually surfaces the caption,
+        // not just that FormatThinkingTime is correct in isolation.
+        var start = DateTimeOffset.UtcNow;
+        ChatViewModel.DebugThinkingTimeClock = () => start;
+        try
+        {
+            var viewModel = new ChatViewModel();
+            var initialMetadata = MetadataWithTurns(
+                new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false));
+            viewModel.LoadFromMetadata(initialMetadata, "/tmp/sess-1");
+
+            viewModel.BeginSend("What's next?", currentTurnsCount: initialMetadata.Turns.Count);
+            // Nothing renders while the turn is still in flight -- this is never a live counter.
+            Assert.Equal(string.Empty, viewModel.ThinkingTimeText);
+
+            ChatViewModel.DebugThinkingTimeClock = () => start.AddSeconds(34);
+            var completedMetadata = MetadataWithTurns(
+                new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false),
+                new SessionTurn(2, "claude", "What's next?", "Let's continue", DateTimeOffset.UtcNow, true, false));
+            viewModel.LoadFromMetadata(completedMetadata, "/tmp/sess-1");
+
+            Assert.Equal("Thought for 34s", viewModel.ThinkingTimeText);
+            Assert.True(viewModel.HasThinkingTimeText);
+        }
+        finally
+        {
+            ChatViewModel.DebugThinkingTimeClock = () => DateTimeOffset.UtcNow;
+        }
+    }
+
+    [Fact]
+    public void FailSend_ReportsNoThinkingTime()
+    {
+        // A failed dispatch never reached a completed turn, so there is nothing to report.
+        var viewModel = new ChatViewModel();
+        var initialMetadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false));
+        viewModel.LoadFromMetadata(initialMetadata, "/tmp/sess-1");
+        viewModel.BeginSend("What's next?", currentTurnsCount: initialMetadata.Turns.Count);
+
+        viewModel.FailSend("network error");
+
+        Assert.Equal(string.Empty, viewModel.ThinkingTimeText);
+        Assert.False(viewModel.HasThinkingTimeText);
+    }
+
     [Fact]
     public void Clear_ResetsEveryFieldToItsEmptyState()
     {
-        var viewModel = new ChatViewModel();
-        viewModel.LoadFromMetadata(MetadataWithTurns(
-            new SessionTurn(1, "claude", "Hello", "Hi", DateTimeOffset.UtcNow, false, false)), "/tmp/sess-1");
-        viewModel.CurrentMode = "auto";
+        var start = DateTimeOffset.UtcNow;
+        ChatViewModel.DebugThinkingTimeClock = () => start;
+        try
+        {
+            var viewModel = new ChatViewModel();
+            var initialMetadata = MetadataWithTurns(
+                new SessionTurn(1, "claude", "Hello", "Hi", DateTimeOffset.UtcNow, false, false));
+            viewModel.LoadFromMetadata(initialMetadata, "/tmp/sess-1");
+            viewModel.CurrentMode = "auto";
 
-        viewModel.Clear();
+            // Drive ThinkingTimeText non-empty first, so the assertion below actually discriminates
+            // Clear() clearing it from a real value rather than trivially finding it already empty.
+            viewModel.BeginSend("What's next?", currentTurnsCount: initialMetadata.Turns.Count);
+            ChatViewModel.DebugThinkingTimeClock = () => start.AddSeconds(34);
+            viewModel.LoadFromMetadata(MetadataWithTurns(
+                new SessionTurn(1, "claude", "Hello", "Hi", DateTimeOffset.UtcNow, false, false),
+                new SessionTurn(2, "claude", "What's next?", "Let's continue", DateTimeOffset.UtcNow, true, false)),
+                "/tmp/sess-1");
+            Assert.Equal("Thought for 34s", viewModel.ThinkingTimeText);
 
-        Assert.Null(viewModel.SessionId);
-        Assert.Null(viewModel.RoomDirectoryPath);
-        Assert.Empty(viewModel.Messages);
-        Assert.Equal("No room open.", viewModel.HeadlineText);
-        Assert.Null(viewModel.WorkerChipText);
-        Assert.False(viewModel.HasWorker);
-        Assert.False(viewModel.IsSending);
-        Assert.Null(viewModel.CurrentMode);
-        Assert.False(viewModel.HasCurrentMode);
+            viewModel.Clear();
+
+            Assert.Null(viewModel.SessionId);
+            Assert.Null(viewModel.RoomDirectoryPath);
+            Assert.Empty(viewModel.Messages);
+            Assert.Equal("No room open.", viewModel.HeadlineText);
+            Assert.Null(viewModel.WorkerChipText);
+            Assert.False(viewModel.HasWorker);
+            Assert.False(viewModel.IsSending);
+            Assert.Null(viewModel.CurrentMode);
+            Assert.False(viewModel.HasCurrentMode);
+            Assert.Equal(string.Empty, viewModel.ThinkingTimeText);
+            Assert.False(viewModel.HasThinkingTimeText);
+        }
+        finally
+        {
+            ChatViewModel.DebugThinkingTimeClock = () => DateTimeOffset.UtcNow;
+        }
     }
 
     /// <summary>#286: the mode indicator only renders once a mode has actually been resolved from the daemon — a null default must not read as "mode: (blank)".</summary>
