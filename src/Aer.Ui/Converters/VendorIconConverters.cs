@@ -27,6 +27,16 @@ internal static class VendorIconMap
         "agy" => "Vendor.Gemini", // vocabulary-ok: vendor key
         _ => "Color.TextSecondary",
     };
+
+    // #342: the adapter contract key is an internal identifier — this is its one user-facing
+    // rendering, the same discipline GeometryKeyFor/ColorKeyFor already apply to the icon/brush
+    // halves of the same lookup, so a picker never shows "agy" as primary text.
+    public static string DisplayNameFor(string? vendorKey) => vendorKey?.ToLowerInvariant() switch
+    {
+        "claude" => "Claude",
+        "agy" => "Gemini", // vocabulary-ok: vendor key
+        _ => vendorKey ?? string.Empty,
+    };
 }
 
 /// <summary>Vendor key → glyph. Icon geometries live outside <c>ThemeDictionaries</c> (one shape,
@@ -39,6 +49,16 @@ public sealed class VendorIconGeometryConverter : IValueConverter
         var key = VendorIconMap.GeometryKeyFor(value as string);
         return key is null ? null : Application.Current?.FindResource(key);
     }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>Vendor key → its one user-facing display name (#342) — see <see cref="VendorIconMap.DisplayNameFor"/>.</summary>
+public sealed class VendorDisplayNameConverter : IValueConverter
+{
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => VendorIconMap.DisplayNameFor(value as string);
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
         => throw new NotSupportedException();

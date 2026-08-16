@@ -1,8 +1,10 @@
 using Aer.Adapters;
+using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 
 namespace Aer.Ui.Tests;
 
@@ -62,5 +64,48 @@ public class ChatAdapterComboTests
         Dispatcher.UIThread.RunJobs();
 
         Assert.Equal("agy", chat.NewChatAdapter);
+    }
+
+    /// <summary>
+    /// #342's second defect: the combo's items are adapter contract keys ("claude"/"agy"), not
+    /// display text — the same internal-identifier-as-primary-text leak the vocabulary lint
+    /// polices elsewhere, just not reachable by that lint since it only covers string literals.
+    /// </summary>
+    [AvaloniaFact]
+    public void TheAdapterComboShowsDisplayNames_NotRawContractKeys()
+    {
+        var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()))
+        {
+            Width = 900,
+            Height = 700,
+        };
+        window.ViewModel.CurrentSection = ShellSection.Chat;
+        var chat = window.ViewModel.Chat;
+        chat.PopulateAvailableAdapters(BothVendors);
+        chat.NewChatAdapter = "agy";
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+        window.ApplyTemplate();
+        window.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
+        var combo = window.FindViewControl<ComboBox>("ChatNewAdapterCombo")!;
+        var closedTexts = combo.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text).ToList();
+
+        Assert.Contains("Gemini", closedTexts); // the closed combo's own selection-box header
+
+        // The closed header alone can't tell "claude" is fixed too — it never renders that item
+        // regardless of the fix, since "agy" is selected. Open the dropdown so BOTH list items are
+        // realized and checked, not just the one the header happens to show.
+        combo.IsDropDownOpen = true;
+        Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
+        var openTexts = window.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text).ToList();
+        Assert.Contains("Claude", openTexts);
+        Assert.Contains("Gemini", openTexts);
+        Assert.DoesNotContain("agy", openTexts);
+        Assert.DoesNotContain("claude", openTexts);
     }
 }
