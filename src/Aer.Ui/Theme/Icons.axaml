@@ -47,8 +47,13 @@
   <StreamGeometry x:Key="Icon.Bubble">M 3,3.5 L 13,3.5 L 13,10.5 L 7,10.5 L 4.5,13.5 L 4.5,10.5 L 3,10.5 Z</StreamGeometry>
 
   <!-- Ready for review: an eye — there is a result here for your eyes to judge. (#461 replaced a
-       page-with-turned-corner, which reviewed as "a document" rather than "review this".) -->
-  <StreamGeometry x:Key="Icon.Eye">M 2.5,8 C 5,3.6 11,3.6 13.5,8 C 11,12.4 5,12.4 2.5,8 Z M 9.9,8 A 1.9,1.9 0 1 1 6.1,8 A 1.9,1.9 0 1 1 9.9,8 Z</StreamGeometry>
+       page-with-turned-corner, which reviewed as "a document" rather than "review this".) #511: the
+       set's first COMPOSITE mark — a stroked lid, Icon.Eye below, plus a filled pupil, Icon.EyePupil
+       — because one StreamGeometry with one Fill/Stroke pair cannot stroke one subpath and fill
+       another no matter what 'filled' is set to. design/tokens.json's status.readyForReview.mark
+       names both parts, in paint order; the drift gate requires each to exist here. -->
+  <StreamGeometry x:Key="Icon.Eye">M 2.5,8 C 5,3.6 11,3.6 13.5,8 C 11,12.4 5,12.4 2.5,8 Z</StreamGeometry>
+  <StreamGeometry x:Key="Icon.EyePupil">M 9.9,8 A 1.9,1.9 0 1 1 6.1,8 A 1.9,1.9 0 1 1 9.9,8 Z</StreamGeometry>
 
   <!-- Cancelled: a dash. Deliberately NOT the filled square that suggests itself — a square is
        universally a *stop control*, this app needs a real stop affordance for a running session,

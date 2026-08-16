@@ -128,6 +128,35 @@ public class DesignTokenDriftTests
     }
 
     /// <summary>
+    /// #511: a composite mark's every part must have its own Avalonia geometry, not just its primary.
+    /// <see cref="EveryStatusMarkIsDrawnByBothToolkits"/> only walks primaries — enough for the two
+    /// toolkits' switch dispatch, since Flutter composites a whole mark under one case — so it alone
+    /// would not have caught the eye shipping with a stroked lid and an undrawn pupil. Flutter needs
+    /// no equivalent check: a composite's detail paint lives inside its one switch case by hand, not
+    /// as a second named case, so there is no second name for a Flutter-side check to require.
+    /// </summary>
+    [Fact]
+    public void EveryCompositeMarkPartHasItsOwnAvaloniaGeometry()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var tokensJson = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.TokensPath));
+        var avaloniaIcons = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.AvaloniaIconsPath));
+
+        var parts = TokenGenerator.AllMarkParts(tokensJson).ToList();
+        Assert.NotEmpty(parts);
+
+        foreach (var (status, partName, geometryKey) in parts)
+        {
+            Assert.True(
+                avaloniaIcons.Contains($"""x:Key="{geometryKey}" """.TrimEnd(), StringComparison.Ordinal),
+                $"""
+                Status '{status}' names the mark part '{partName}', but {TokenGenerator.AvaloniaIconsPath} defines
+                no geometry with the key '{geometryKey}'. Desktop would render that part as missing.
+                """);
+        }
+    }
+
+    /// <summary>
     /// The inverse of <see cref="EveryStatusMarkIsDrawnByBothToolkits"/> (#489): no toolkit may define
     /// a status mark the token file does not name.
     /// </summary>
@@ -152,7 +181,10 @@ public class DesignTokenDriftTests
     {
         var repositoryRoot = FindRepositoryRoot();
         var tokensJson = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.TokensPath));
-        var declared = TokenGenerator.StatusMarks(tokensJson)
+        // AllMarkParts, not StatusMarks: a composite mark's non-primary part (#511's Icon.EyePupil) is
+        // genuinely declared, in the token file's own {geometry, filled} array, not an orphan the way
+        // an undeclared action glyph is — StatusMarks only sees primaries and would wrongly flag it.
+        var declared = TokenGenerator.AllMarkParts(tokensJson)
             .Select(m => m.GeometryKey)
             .ToHashSet(StringComparer.Ordinal);
         Assert.NotEmpty(declared);
@@ -181,6 +213,88 @@ public class DesignTokenDriftTests
             mark, add it to {nameof(NonStatusGlyphs)} in this test with a note saying why.
             """);
     }
+
+    /// <summary>
+    /// #511: a status can be defined, generated, and token-checked, and still never actually render —
+    /// <c>AerStatus.ReadyForReview</c> was exactly that until this test existed. The three checks above
+    /// all walk token → toolkit-artifact; none of them asks whether any LIVE binding path in the running
+    /// app ever produces a given status's geometry key at all. <c>StatusIconMap</c>
+    /// (<c>src/Aer.Ui/Converters/StatusIconConverters.cs</c>) is desktop's one status→mark mapping every
+    /// rendering surface goes through (issue #206's own intent) — if a status's geometry key appears in
+    /// neither of its two <c>GeometryKeyFor</c> switch expressions, nothing on desktop can ever draw it,
+    /// which is a silent gap the three checks above cannot see: they only ask "is a shape defined for
+    /// this name", never "can anything reach it". A status either is reachable, or is named in
+    /// <see cref="KnownUnreachableStatuses"/> with a reason — so the gap is at least an admitted, tracked
+    /// one rather than an invisible one.
+    /// </summary>
+    /// <remarks>
+    /// Checks GLYPH reachability, not status identity — deliberately, on a second-reader's finding. A
+    /// first version tried to require each <c>AerStatus</c> to be reached by its OWN colour key too, not
+    /// just its geometry, which broke on <c>cancelled</c>: <see cref="StepStatus.Cancelled"/> and
+    /// <c>RoomCardStatus.Cancelled</c> both render <c>Icon.Dash</c> in <c>Status.Idle</c>'s brush rather
+    /// than a <c>Status.Cancelled</c> of its own — design/tokens.json's own words are "idle and the last
+    /// three are quiet states and deliberately share one muted colour" — so requiring a status's own
+    /// literal colour-key name flagged a legitimate, documented sharing as a defect. The same reasoning
+    /// covers <c>queued</c>/<c>outOfPlan</c> sharing <c>Icon.Ellipsis</c> (#1132: "both are 'waiting, not
+    /// asked to act'... the two never render in the same list") — riding a sibling's reachable glyph is
+    /// the intended design there, not an accident to catch. What this test cannot see: whether a status
+    /// that ONLY ever reaches through a sibling's glyph is itself ever independently selected by any
+    /// code path — that is a claim about the ENGINE's state machine, not about mark rendering, and is
+    /// out of this drift gate's scope.
+    /// </remarks>
+    [Fact]
+    public void EveryStatusMarkIsReachableFromALiveDesktopSurfaceOrExplicitlyExempted()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var tokensJson = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.TokensPath));
+        var statusIconMapSource = File.ReadAllText(
+            Path.Combine(repositoryRoot, "src", "Aer.Ui", "Converters", "StatusIconConverters.cs"));
+
+        // Every "Icon.X" string LITERAL StatusIconMap's two GeometryKeyFor switch expressions can
+        // return — the complete set of geometry keys any live binding through it can ever produce.
+        var reachableGeometryKeys = Regex
+            .Matches(statusIconMapSource, "\"(Icon\\.[A-Za-z]+)\"")
+            .Select(m => m.Groups[1].Value)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert.NotEmpty(reachableGeometryKeys);
+
+        var marks = TokenGenerator.StatusMarks(tokensJson).ToList();
+        Assert.NotEmpty(marks);
+
+        var unreachable = marks
+            .Where(m => !reachableGeometryKeys.Contains(m.GeometryKey) && !KnownUnreachableStatuses.Contains(m.Status))
+            .ToList();
+
+        Assert.True(
+            unreachable.Count == 0,
+            $"""
+            These statuses name a mark no live desktop binding path can ever reach — StatusIconMap's
+            GeometryKeyFor switches never return their geometry key, so nothing renders them:
+              {string.Join("\n  ", unreachable.Select(m => $"{m.Status} -> {m.GeometryKey}"))}
+            Either wire a real StepStatus/RoomCardStatus case that reaches this AerStatus, or add it to
+            {nameof(KnownUnreachableStatuses)} in this test with a note saying why it has no desktop
+            surface yet.
+            """);
+    }
+
+    /// <summary>
+    /// AerStatus values with no live desktop rendering path yet, admitted rather than left for this
+    /// test to silently miss (#511).
+    /// </summary>
+    /// <remarks>
+    /// <c>readyForReview</c> is the five-state #334 simplification's own state; desktop instead renders
+    /// the richer <see cref="Aer.Flow.Domain.StepStatus"/>/<c>RoomCardStatus</c> vocabularies directly,
+    /// and neither has a member that means "ready for review" as its own concept — the nearest desktop
+    /// equivalent is folded into Paused/NeedsYou (<c>Icon.Bubble</c>), a deliberate, already-reachable
+    /// choice, not an oversight. Wiring <c>AerStatus</c> itself into a real desktop surface is
+    /// <c>StatusIconConverters.cs</c>'s own noted future: "#336 replaces this mapping wholesale with
+    /// <c>AerStatus</c>, which carries the distinction" — until that lands, this is the honest state of
+    /// the gap rather than a gate quietly not looking for it.
+    /// </remarks>
+    private static readonly HashSet<string> KnownUnreachableStatuses = new(StringComparer.Ordinal)
+    {
+        "readyForReview",
+    };
 
     /// <summary>
     /// Keys in <c>Icons.axaml</c> that are navigation or action glyphs rather than status marks, and so

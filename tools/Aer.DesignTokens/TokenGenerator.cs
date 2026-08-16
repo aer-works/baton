@@ -108,6 +108,33 @@ public static class TokenGenerator
             .ToList();
     }
 
+    /// <summary>
+    /// Every status's mark PARTS (#511), as (status name, part geometry name, Avalonia geometry key)
+    /// — one row per status for a plain mark, one row per <c>{geometry, filled}</c> entry for a
+    /// composite. <see cref="StatusMarks"/> only sees the primary part, which is enough for the two
+    /// toolkits' generated switch dispatch: Flutter's hand-written <c>status_mark.dart</c> composites a
+    /// whole mark under one switch case rather than reading per-part data (see its <c>'eye'</c> case),
+    /// so it needs no additional generated dispatch key — but that also means a composite part's own
+    /// <c>filled</c> value (<c>eyePupil</c>'s <c>true</c>) reaches Avalonia through this method and the
+    /// drift gate below, and reaches Flutter only by the hand-written case happening to agree, not
+    /// through anything generated. This is what the drift gate uses to require every non-primary
+    /// part's own Avalonia geometry to exist, so a composite mark cannot ship with its detail shape
+    /// undrawn the way the eye's pupil did before this — it does not, and cannot, verify the Flutter
+    /// side agrees on a per-part basis.
+    /// </summary>
+    public static IEnumerable<(string Status, string PartName, string GeometryKey)> AllMarkParts(string tokensJson)
+    {
+        using var document = JsonDocument.Parse(tokensJson, new JsonDocumentOptions
+        {
+            CommentHandling = JsonCommentHandling.Skip,
+        });
+
+        return Entries(document.RootElement.GetProperty("status"))
+            .SelectMany(entry => MarkParts(entry.Value)
+                .Select(part => (entry.Name, part.Name, "Icon." + Pascal(part.Name))))
+            .ToList();
+    }
+
     /// <summary>The regeneration command, quoted in both the banner and the CI gate's failure text.</summary>
     public const string RegenerateCommand = "pixi run tokens";
 
@@ -237,25 +264,55 @@ public static class TokenGenerator
 
     private static string Pascal(string camel) => char.ToUpperInvariant(camel[0]) + camel[1..];
 
-    /// <summary>The mark's shape name, as authored in the token file (#458) — <c>ring</c>, <c>check</c>, …</summary>
-    private static string MarkName(JsonElement statusToken) => statusToken.GetProperty("mark").GetString()!;
+    /// <summary>
+    /// A status mark's drawable parts, in paint order (#511). Every mark but one is a single part —
+    /// the whole shape, painted per the status's own top-level <c>filled</c> — but a composite mark
+    /// names an ORDERED ARRAY of <c>{geometry, filled}</c> objects instead of a plain string, because
+    /// one geometry with one Fill/Stroke pair cannot express "stroke this bit, fill that bit" no
+    /// matter what <c>filled</c> is set to (the eye's lid-and-pupil). A plain string is sugar for the
+    /// single-part case, reusing the top-level <c>filled</c> exactly as before.
+    /// </summary>
+    private static IReadOnlyList<(string Name, bool Filled)> MarkParts(JsonElement statusToken)
+    {
+        var mark = statusToken.GetProperty("mark");
+        if (mark.ValueKind == JsonValueKind.Array)
+        {
+            return mark.EnumerateArray()
+                .Select(part => (
+                    part.GetProperty("geometry").GetString()!,
+                    part.TryGetProperty("filled", out var partFilled) && partFilled.GetBoolean()))
+                .ToList();
+        }
+
+        var topLevelFilled = statusToken.TryGetProperty("filled", out var filled) && filled.GetBoolean();
+        return [(mark.GetString()!, topLevelFilled)];
+    }
 
     /// <summary>
-    /// The Avalonia resource key of the <c>StreamGeometry</c> that draws a status's mark. The naming
-    /// convention (<c>Icon.</c> + the Pascal-cased shape name) is what lets the drift gate check that
-    /// <c>Icons.axaml</c> actually defines a shape for every status, rather than discovering a missing
-    /// mark as a blank space in the running UI.
+    /// The mark's PRIMARY shape name, as authored in the token file (#458) — <c>ring</c>, <c>check</c>,
+    /// … or a composite mark's first part (#511), e.g. the eye's lid. This is what both toolkits'
+    /// generated switch dispatch keys on: Flutter composites a whole mark under one case (see
+    /// <c>status_mark.dart</c>'s <c>'eye'</c> case, which paints the pupil itself), so only the primary
+    /// name needs to reach the generated artifacts. <see cref="AllMarkParts"/> is what the drift gate
+    /// uses to also require every non-primary part's own Avalonia geometry.
+    /// </summary>
+    private static string MarkName(JsonElement statusToken) => MarkParts(statusToken)[0].Name;
+
+    /// <summary>
+    /// The Avalonia resource key of the <c>StreamGeometry</c> that draws a status's PRIMARY mark part.
+    /// The naming convention (<c>Icon.</c> + the Pascal-cased shape name) is what lets the drift gate
+    /// check that <c>Icons.axaml</c> actually defines a shape for every status, rather than discovering
+    /// a missing mark as a blank space in the running UI.
     /// </summary>
     private static string MarkGeometryKey(JsonElement statusToken) => "Icon." + Pascal(MarkName(statusToken));
 
     /// <summary>
-    /// Whether the mark is painted solid rather than stroked (#461). Declared in the token file so
-    /// both toolkits read one instruction: before this, Avalonia's call sites set only
+    /// Whether the PRIMARY mark part is painted solid rather than stroked (#461). Declared in the
+    /// token file so both toolkits read one instruction: before this, Avalonia's call sites set only
     /// <c>Stroke</c> while the Flutter painter filled the same closed path, and the same status drew
     /// as an outline on desktop and a solid on mobile.
     /// </summary>
-    private static bool MarkFilled(JsonElement statusToken) =>
-        statusToken.TryGetProperty("filled", out var filled) && filled.GetBoolean();
+    private static bool MarkFilled(JsonElement statusToken) => MarkParts(statusToken)[0].Filled;
 
     /// <summary>
     /// <c>#RRGGBB</c> as Dart's <c>0xFFRRGGBB</c>. Flutter has no hex-string colour literal, so the
