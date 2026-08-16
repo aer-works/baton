@@ -137,14 +137,11 @@ claude · opus 4.8 Two workers can share a vendor — a second claude on a cheap
 
 Reply… ⏎
 
-The model is shown on the chip, always. Which model answered is not a detail — it changes what an answer is worth, and a room where one worker is on a fast model and another on a deep one is the normal case, not an edge case.
-
-The model still isn't a detail — that claim stands. Where it lives is the room-header chip
-showing a bare worker's vendor alone, or `claude · 2 skills` if any are attached (see
-[02-screens.md](02-screens.md#the-calls-made-here)), with the model one tap away in the same
-picker shown above. Painting it onto the compact label at all times is what made a worker's chip
-unreadable once skills and a standing permission were added to the same axes; the picker — not the
-label — is where the model lives now.
+Which model answered is not a detail — it changes what an answer is worth, and a room where one
+worker is on a fast model and another on a deep one is the normal case, not an edge case. Where it
+lives is the room-header chip: vendor as the word, model tier rendered as a mark beside it
+([0058](../decisions/0058-model-and-effort-are-marks-not-words.md)), with the full purpose-named
+value one tap away in the same picker shown above.
 
 Two workers may share a vendor. "claude on opus" and "claude on haiku" are two distinct participants in the room. This falls out of separating vendor from model, and it is what makes cheap-reviewer / expensive-author patterns possible on one subscription.
 
@@ -319,11 +316,10 @@ Scoped permissions Allow once / this command here / anything here , visible at t
 
 Denial is an answer A refused worker is told and continues. It does not silently retry and does not die.
 
-Model on the chip Vendor and model are separate choices, both always visible. Two workers can share a vendor on different models — that is a normal room, not an edge case.
-
-Model in the picker, not the label Amends the call above: the compact chip shows a bare worker's vendor, or `vendor · N skills` if any are attached — the model itself moved into the picker one tap away, for the same reason model/effort/permission all live in a worker's popover rather than its chip label. See 02-screens.md.
-
-Effort is the third axis Vendor, model, and how hard it should think — all three on the chip, all three per room, all three in a template. Named by behaviour (quick / standard / careful / exhaustive), never a token budget or a vendor's flag.
+Vendor stays the word, depth and effort become marks Vendor is the chip's word; model tier and
+effort render beside it as achromatic marks, not text — resolved once, corpus-wide, in
+[0058](../decisions/0058-model-and-effort-are-marks-not-words.md). Full purpose-named values live
+in the picker, one tap away.
 
 No slash palette on a phone The same commands become an Actions sheet from the room header. Typing / to discover things is a keyboard idiom that does not survive a touch keyboard.
 

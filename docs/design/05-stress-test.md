@@ -47,7 +47,10 @@ claude · thought for 12s The ordering disagreement is in the view model, not th
 
 Reply… ⏎
 
-Effort belongs on the chip beside the model , because it changes what an answer costs and how long you will wait — the same reason the model is there. opus · careful and opus · quick are meaningfully different participants.
+Effort is encoded the same way model tier is: an achromatic mark, not text
+([0058](../decisions/0058-model-and-effort-are-marks-not-words.md)) — because it changes what an
+answer costs and how long you will wait just as much as the model does. opus · careful and opus ·
+quick are meaningfully different participants.
 
 Named by behaviour, not by mechanism. Quick / standard / careful / exhaustive, never a token budget or a vendor's flag name. Vendors express this completely differently and rename it often; the person's question is always "how hard should it think about this."
 
@@ -56,8 +59,9 @@ Effort is per worker per room, with an option to make it global — the deep-aut
 Thinking time is reported after the fact ("thought for 12s") rather than as a live counter. It sets expectations for the next turn without turning waiting into a spectacle.
 
 "opus · careful" and "opus · quick" are still meaningfully different. Where the distinction is
-shown: the compact chip carries a bare worker's vendor alone, or `vendor · N skills` if any are
-attached, with model and effort one tap away in the picker this section already draws. See
+shown: vendor stays the chip's word, and model tier and effort read as achromatic marks beside it
+([0058](../decisions/0058-model-and-effort-are-marks-not-words.md)), with the full purpose-named
+values one tap away in the picker this section already draws. See
 [04-workers-commands-control.md](04-workers-commands-control.md#the-calls-made-here).
 
 ### The fourth pass, on a phone
