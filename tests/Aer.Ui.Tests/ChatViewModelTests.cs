@@ -63,6 +63,77 @@ public class ChatViewModelTests
         Assert.True(viewModel.HasWorker);
     }
 
+    /// <summary>
+    /// #592 (0054 §6): the chip's orchestrator status surfaces from the first participant's own
+    /// <c>IsOrchestrator</c>, and the reassign control's visibility is ruling 3's own gate -- hidden
+    /// for the single-participant room every room is today, shown once <c>Participants</c> carries
+    /// more than one entry.
+    /// </summary>
+    [Fact]
+    public void LoadFromMetadata_SurfacesOrchestratorStatus_AndHidesReassignControlForOneParticipant()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        {
+            Participants = [new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true)],
+        };
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.True(viewModel.WorkerIsOrchestrator);
+        Assert.Single(viewModel.Participants);
+        Assert.False(viewModel.IsOrchestratorReassignVisible);
+    }
+
+    /// <summary>The other half of ruling 3: a second participant makes the reassign control visible, and the status still reads off the chip's own participant (the first), not whichever one holds the role.</summary>
+    [Fact]
+    public void LoadFromMetadata_TwoParticipants_ShowsReassignControl_ChipStatusReadsFirstParticipant()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        {
+            Participants =
+            [
+                new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: false),
+                new Participant(new WorkerId("claude-2"), "claude-2", "claude", "sonnet", null, IsOrchestrator: true),
+            ],
+        };
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.False(viewModel.WorkerIsOrchestrator);
+        Assert.Equal(2, viewModel.Participants.Count);
+        Assert.True(viewModel.IsOrchestratorReassignVisible);
+    }
+
+    /// <summary><see cref="ChatViewModel.Clear"/> resets the orchestrator surfacing the same way it resets every other chip field -- a stale "reassign visible" flag surviving a room close would let the next opened room borrow the previous room's participant count for a render tick.</summary>
+    [Fact]
+    public void Clear_ResetsOrchestratorStatusAndParticipants()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        {
+            Participants =
+            [
+                new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true),
+                new Participant(new WorkerId("claude-2"), "claude-2", "claude", "sonnet", null, IsOrchestrator: false),
+            ],
+        };
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        viewModel.Clear();
+
+        Assert.False(viewModel.WorkerIsOrchestrator);
+        Assert.Empty(viewModel.Participants);
+        Assert.False(viewModel.IsOrchestratorReassignVisible);
+    }
+
     [Fact]
     public void BeginSend_ShowsThePendingMessageUntilLoadFromMetadataObservesTheCompletedTurn()
     {

@@ -410,6 +410,84 @@ public static class RoomMutationInterface
         return RoomProjector.Project([.. existingEvents, roomEvent]);
     }
 
+    /// <summary>
+    /// Journals the room's orchestrator reassignment (0054 §6, #592) — the journal half only. The
+    /// <c>SessionMetadata.Participants</c> half (which participant's <c>IsOrchestrator</c> reads
+    /// true) is a room.json read-modify-write under a different lock entirely
+    /// (<c>SessionTurnLockFor</c>), so it is the caller's job — see
+    /// <c>Aer.Daemon.Program</c>'s <c>/api/rooms/orchestrator/reassign</c>, which does both halves in
+    /// the order the write-order ruling settled: validate, then metadata, then this journal append,
+    /// best-effort.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Refused while the room has work in flight</b>, the same shape and the same reason as
+    /// <see cref="SetWorkflowSwitchAsync"/> above — reassigning the room's addressee while a turn is
+    /// actually driving it is not a state change that can be reasoned about.
+    /// </para>
+    /// <para>
+    /// <b>The target is validated against this room's own journal</b>, not against room.json —
+    /// this method never opens it (the journal-half/metadata-half split above). A worker becomes
+    /// "known" the moment its <see cref="RoomEvent.WorkerJoined"/> lands, so scanning the existing
+    /// room events for that fact is honestly journal-only, unlike reading <c>Participants</c> would
+    /// be.
+    /// </para>
+    /// <para>
+    /// <b>Reassigning to the current holder is a no-op</b> (ruling 3): the current holder is the
+    /// most recent <see cref="RoomEvent.OrchestratorAssigned"/> in the journal — every room has one
+    /// the moment it exists, appended for the first participant at materialization — and when the
+    /// target already matches it, nothing is appended. No new fact occurred, and a no-op journal
+    /// line is exactly the noise a later slice would have to filter back out.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidRoomMutationException">The room has work in flight, or <paramref name="workerId"/> never joined this room.</exception>
+    public static async Task<RoomState> ReassignOrchestratorAsync(
+        string roomDirectoryPath,
+        WorkerId workerId,
+        IRoomEventLogReader reader,
+        IRoomEventLogWriter writer,
+        DateTimeOffset? timestamp = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(writer);
+
+        using var guard = ConcurrencyGuard.AcquireRoomEvents(roomDirectoryPath);
+
+        if (ConcurrencyGuard.IsHeld(roomDirectoryPath))
+        {
+            throw new InvalidRoomMutationException(
+                "This room is running. Stop it before reassigning its orchestrator.");
+        }
+
+        var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+
+        var knownWorkerIds = existingEvents
+            .OfType<RoomEvent.WorkerJoined>()
+            .Select(e => e.WorkerId)
+            .ToHashSet();
+        if (!knownWorkerIds.Contains(workerId))
+        {
+            throw new InvalidRoomMutationException($"'{workerId.Value}' is not a participant in this room.");
+        }
+
+        var currentHolder = existingEvents
+            .OfType<RoomEvent.OrchestratorAssigned>()
+            .Select(e => (WorkerId?)e.WorkerId)
+            .LastOrDefault();
+        if (currentHolder == workerId)
+        {
+            return RoomProjector.Project(existingEvents);
+        }
+
+        var ts = timestamp ?? DateTimeOffset.UtcNow;
+        var roomEvent = new RoomEvent.OrchestratorAssigned(workerId, ts);
+        await writer.AppendAsync(roomEvent, cancellationToken).ConfigureAwait(false);
+
+        return RoomProjector.Project([.. existingEvents, roomEvent]);
+    }
+
     public static async Task<RoomState> RaisePermissionAsync(
         string roomDirectoryPath,
         IRoomEventLogReader reader,

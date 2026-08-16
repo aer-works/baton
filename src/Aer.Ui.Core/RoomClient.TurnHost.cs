@@ -10,6 +10,8 @@ public sealed partial class RoomClient
 
     private sealed record SetWorkflowSwitchRequest(string RoomDirectoryPath, bool IsOn);
 
+    private sealed record ReassignOrchestratorRequest(string RoomDirectoryPath, string WorkerId);
+
     /// <summary>
     /// Switches the room's workflow on or off (#1216). Returns <see langword="null"/> on success, or
     /// the engine's own reason for refusing — which the header shows the person rather than reverting
@@ -36,6 +38,38 @@ public sealed partial class RoomClient
 
             var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(true);
             return string.IsNullOrWhiteSpace(body) ? "The workflow could not be switched." : body.Trim('"');
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// Reassigns the room's orchestrator to <paramref name="workerId"/> (#592, 0054 §6). Returns
+    /// <see langword="null"/> on success, or the engine's own reason for refusing — the same shape as
+    /// <see cref="SetWorkflowSwitchAsync"/>, for the same reason: a refusal is the answer to "can I do
+    /// this now", not a failure to be swallowed.
+    /// </summary>
+    public async Task<string?> ReassignOrchestratorAsync(string roomDirectoryPath, string workerId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(roomDirectoryPath)) return "No room is open.";
+        if (!await EnsureDaemonConnectedAsync(cancellationToken).ConfigureAwait(true)) return "Baton's background service is not reachable.";
+
+        try
+        {
+            var response = await _httpClient.PostAsJsonAsync(
+                $"{_activeDaemonUrl}/api/rooms/orchestrator/reassign",
+                new ReassignOrchestratorRequest(roomDirectoryPath, workerId),
+                cancellationToken).ConfigureAwait(true);
+
+            if (response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(true);
+            return string.IsNullOrWhiteSpace(body) ? "The orchestrator could not be reassigned." : body.Trim('"');
         }
         catch (Exception ex)
         {

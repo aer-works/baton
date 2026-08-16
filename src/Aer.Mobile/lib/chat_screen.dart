@@ -381,6 +381,21 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// Reassigns the room's orchestrator to [workerId] (#592, 0054 §6) — same shape as
+  /// [_clearDormancy]: fire the request, let [_refresh] pick up the new `Participants` on its next
+  /// poll rather than mutating local state, and surface a refusal as a snackbar rather than
+  /// swallowing it.
+  Future<void> _reassignOrchestrator(String workerId) async {
+    try {
+      await widget.client.reassignOrchestrator(widget.directoryPath, workerId);
+      await _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not reassign orchestrator: $e')));
+      }
+    }
+  }
+
   /// Answers the open gate with one of [PermissionDecisionKind]'s rungs — the same shape as
   /// [_decideStep]: disable-during-flight, then let the next projection push (via
   /// [_surfacePendingPermission]) clear the gate on success rather than clearing it locally, since
@@ -907,10 +922,24 @@ class _ChatScreenState extends State<ChatScreen> {
     return adapters.isEmpty ? null : adapters.join(' + ');
   }
 
+  /// Whether the chip's participant currently holds the room's orchestrator role (0054 §6, #592).
+  /// The status renders regardless of participant count (ruling 3) — mirrors desktop's
+  /// `ChatViewModel.WorkerIsOrchestrator`. False, not just absent, on a pre-#1305 room.
+  bool _workerIsOrchestrator(SessionMetadata? metadata) {
+    final participants = metadata?.participants;
+    if (participants == null || participants.isEmpty) return false;
+    return participants.first.isOrchestrator;
+  }
+
   @override
   Widget build(BuildContext context) {
     final metadata = _metadata;
     final workers = _workerChipLabel(metadata);
+    final isOrchestrator = _workerIsOrchestrator(metadata);
+    // Ruling 3: the reassign control hides entirely for a single-participant room — every room
+    // today — rather than showing disabled. A control with no possible target is clutter.
+    final reassignCandidates = (metadata?.participants ?? const <Participant>[]);
+    final canReassignOrchestrator = _isSessionRoom && reassignCandidates.length > 1;
 
     return Scaffold(
       appBar: AppBar(
@@ -938,6 +967,13 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                 ),
               ),
+              // Orchestrator status (0054 §6, #592) — a quiet dot beside the chip, same shape and
+              // same "status renders regardless of participant count" rule as desktop's
+              // ChatHeaderView marker.
+              if (isOrchestrator) ...[
+                const SizedBox(width: 4),
+                Text('●', style: TextStyle(fontSize: 8, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+              ],
             ],
           ],
         ),
@@ -953,6 +989,24 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
         actions: [
+          // #592 (0054 §6): reassigns the orchestrator. Wired but invisible on every room today
+          // (canReassignOrchestrator's own ruling-3 gate) — kept minimal on purpose: a menu of
+          // candidate participants rather than a bespoke picker screen, since there is nothing yet
+          // to justify more.
+          if (canReassignOrchestrator)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.swap_horiz),
+              tooltip: 'Reassign orchestrator',
+              onSelected: _reassignOrchestrator,
+              itemBuilder: (context) => [
+                for (final participant in reassignCandidates)
+                  PopupMenuItem(
+                    value: participant.id,
+                    enabled: !participant.isOrchestrator,
+                    child: Text('Make ${participant.name} orchestrator'),
+                  ),
+              ],
+            ),
           // Stop, for a workflow room. It came with the room rather than being left behind (#1226):
           // this was InboxScreen's only home, and routing workflow rooms here would otherwise have
           // taken the phone's ability to stop a run away until slice 6b builds the room header.

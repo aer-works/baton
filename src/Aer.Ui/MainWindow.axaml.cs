@@ -353,6 +353,7 @@ public partial class MainWindow : Window
         CompareButton.Click += (_, _) => _ = CompareToTemplateAsync(TemplateComparePathBox.Text ?? string.Empty);
         ViewModel.RoomRunRequested += OnRoomRunRequestedAsync;
         ViewModel.WorkflowSwitchRequested += OnWorkflowSwitchRequestedAsync;
+        ViewModel.OrchestratorReassignRequested += OnOrchestratorReassignRequestedAsync;
         StopButton.Click += (_, _) => _ = StopAsync();
         // #1272: only this codebehind knows which room is open (_session.CurrentRoomDirectoryPath),
         // so the toggle has to originate here rather than as a bound ViewModel command.
@@ -1347,6 +1348,25 @@ public partial class MainWindow : Window
         var refusal = await _session.SetWorkflowSwitchAsync(roomDirectoryPath, isOn).ConfigureAwait(true);
 
         // The fingerprint's isWorkflowOff term is what makes this re-render rather than short-circuit.
+        if (!string.IsNullOrWhiteSpace(roomDirectoryPath))
+        {
+            await LoadAsync(roomDirectoryPath).ConfigureAwait(true);
+        }
+
+        return refusal;
+    }
+
+    /// <summary>
+    /// Handles a request to reassign the room's orchestrator (#592, 0054 §6). Returns the engine's
+    /// refusal reason, or null on success, and re-loads either way — same shape as
+    /// <see cref="OnWorkflowSwitchRequestedAsync"/>, for the same reason: the control renders the
+    /// journal/metadata it just changed, and a refusal needs the room's actual state reflected back.
+    /// </summary>
+    private async Task<string?> OnOrchestratorReassignRequestedAsync(WorkerId workerId)
+    {
+        var roomDirectoryPath = RoomDirectoryPathBox.Text ?? string.Empty;
+        var refusal = await _session.ReassignOrchestratorAsync(roomDirectoryPath, workerId.Value).ConfigureAwait(true);
+
         if (!string.IsNullOrWhiteSpace(roomDirectoryPath))
         {
             await LoadAsync(roomDirectoryPath).ConfigureAwait(true);

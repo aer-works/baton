@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using Aer.Flow.Concurrency;
+using Aer.Flow.Domain;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -308,6 +309,41 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
         WorkflowSwitchStatusText = await WorkflowSwitchRequested.Invoke(isOn).ConfigureAwait(true);
     }
+
+    /// <summary>
+    /// Raised when something in the room asks to reassign the orchestrator (#592, 0054 §6) — the
+    /// chat header's control, once a room has more than one participant, or the dormancy card's
+    /// "Swap orchestrator…" affordance. The <see cref="WorkerId"/> is the target,
+    /// mirroring <see cref="WorkflowSwitchRequested"/>'s "the state asked for, not a toggle
+    /// instruction" shape.
+    /// </summary>
+    public event Func<WorkerId, Task<string?>>? OrchestratorReassignRequested;
+
+    /// <summary>
+    /// Why the last reassignment attempt did not take — the engine's own reason
+    /// (<c>RoomMutationInterface.ReassignOrchestratorAsync</c>), shown beside the control rather than
+    /// swallowed, the same as <see cref="WorkflowSwitchStatusText"/>.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasOrchestratorReassignStatusText))]
+    private string? orchestratorReassignStatusText;
+
+    public bool HasOrchestratorReassignStatusText => !string.IsNullOrEmpty(OrchestratorReassignStatusText);
+
+    /// <summary>Asks for the room's orchestrator to be reassigned to <paramref name="workerId"/>.</summary>
+    public async Task RequestOrchestratorReassignAsync(WorkerId workerId)
+    {
+        OrchestratorReassignStatusText = null;
+        if (OrchestratorReassignRequested is null)
+        {
+            return;
+        }
+
+        OrchestratorReassignStatusText = await OrchestratorReassignRequested.Invoke(workerId).ConfigureAwait(true);
+    }
+
+    [RelayCommand]
+    private Task ReassignOrchestrator(WorkerId workerId) => RequestOrchestratorReassignAsync(workerId);
 
     /// <summary>
     /// Routes "Ask <worker> to fix it" (#617) to the Chat section with the input drafted — a
