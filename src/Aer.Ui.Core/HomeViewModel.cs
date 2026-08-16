@@ -224,6 +224,14 @@ public static class RoomCardViewModel
             WorkflowStatus.Paused => (PausedCardStatusText(projection), RoomCardStatus.NeedsYou),
             WorkflowStatus.Running when projection.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Running) is { } runningStep
                 => ($"Working — {runningStep.StepId.Value}", RoomCardStatus.Running),
+            // #1299: isFlowLockHeld is true but nothing in the journal explains it (no step
+            // Running, nothing failed/rejected) — a foreign process holds the lock, never another
+            // room (identity is directory-keyed, #495/#1296). Rationale for the Running-only scope
+            // is decision 0020's own amendment record.
+            WorkflowStatus.Running when isFlowLockHeld
+                && !projection.State.Steps.Any(s => s.Status == StepStatus.Running)
+                && failedOrRejectedSteps.Count == 0
+                => ("Waiting on another process's lock", RoomCardStatus.WaitingOnLock),
             _ when isOnlyBlockerExhaustion => FormatExhaustedRoomStatus(exhaustedSteps),
             // #1116 review must-fix: an unresolved ExhaustedUntil step keeps CanStillDeliver — and
             // so WorkflowStatus.Running — alive FOREVER (RetryEngine.MayRetry bypasses attempts for
@@ -331,6 +339,13 @@ public enum RoomCardStatus
     /// amendment for why this cannot be read off the journal and must be an explicit caller input.
     /// </summary>
     WaitingToStart,
+
+    /// <summary>
+    /// #1299: a foreign process holds this room's flow lock, unaccounted for in the journal. See
+    /// <see href="../../docs/decisions/0020-one-state-machine.md">0020's 2026-08-16 amendment</see>
+    /// for the full rationale, including why this can never mean another room.
+    /// </summary>
+    WaitingOnLock,
 }
 
 /// <summary>

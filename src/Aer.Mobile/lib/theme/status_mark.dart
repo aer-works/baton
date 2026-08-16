@@ -154,6 +154,16 @@ class _StatusMarkPainter extends CustomPainter {
       case 'slashed':
         canvas.drawCircle(at(8, 8), 5 * scale, stroke);
         canvas.drawLine(at(4.5, 11.5), at(11.5, 4.5), stroke);
+      // WaitingOnLock (#1299/#480): a padlock, matching Icon.Lock -- a shackle arc from (5,5) to
+      // (11,5) radius 3, plus a body rectangle (4,7)-(12,13). Stroked like Icon.Clock, not filled.
+      case 'lock':
+        final shackle = Path()
+          ..moveTo(at(5, 7).dx, at(5, 7).dy)
+          ..lineTo(at(5, 5).dx, at(5, 5).dy)
+          ..arcToPoint(at(11, 5), radius: Radius.circular(3 * scale), largeArc: true, clockwise: true)
+          ..lineTo(at(11, 7).dx, at(11, 7).dy);
+        canvas.drawPath(shackle, stroke);
+        canvas.drawRect(Rect.fromPoints(at(4, 7), at(12, 13)), stroke);
       case 'check':
         canvas.drawPath(
           Path()

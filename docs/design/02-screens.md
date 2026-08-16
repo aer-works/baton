@@ -909,33 +909,28 @@ the drawing is the load-bearing behaviour: your message did not wake the loop. T
 answered with the state. A room that stopped because its last three turns went nowhere would
 otherwise resume burning turns the moment you asked after it.
 
-#### Waiting on another room's lock
+#### Waiting on another process's lock
 
-Desktop · two rooms, one folder
+Desktop · a foreign process holds this room's directory
 
 ```
 Rooms + New
 
-◔ payments-api Working · claude
-
-⧗ aer-flow Waiting · payments-api holds this folder
+⧗ aer-flow Waiting · locked by another process
 
 aer-flow  [👑 claude]                                          ⧗ Waiting
 
-⧗ Waiting on payments-api — both rooms point at this folder, and
-turns take strict turns. [ Go to payments-api ]
+⧗ Waiting on another process's lock — held by aer run (pid 4212)
+for 40s.
 
-Reply… ⏎   (queues, sends when the folder frees)
+Reply… ⏎   (queues, sends when the lock frees)
 ```
 
-A blocked room previously looked identical to a slow one, which is the worst presentation: your
-model of what the product is doing goes wrong, and the fix is undiscoverable. The wait names its
-holder and links to it. It is information, not an error (0006). Typing still queues — the founding
-rule that a busy anything is never a reason you cannot act. Opening a *second* room on a folder
-that already has one warns at creation: legal, occasionally right, and a choice to make knowingly.
-Naming the holder as a *room* rather than a folder path rests on the lock growing a room-name
-field — the rider accepted with the thirteen-state ratification on #495, riding with #480's build
-(grouped under #752); until it ships, the engine knows only the path.
+**Corrected 2026-08-16 (#1299).** This section originally staged the scenario as two *rooms*
+sharing a folder, with the wait naming the other room and a "Go to <room>" link; that premise
+cannot occur under directory-keyed room identity. See
+[0020's 2026-08-16 amendment](../decisions/0020-one-state-machine.md) for why, and for the ruling
+that retires "opening a second room warns at creation" entirely rather than deferring it.
 
 #### Escalation is a gate
 

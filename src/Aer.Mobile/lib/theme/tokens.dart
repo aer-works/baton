@@ -54,6 +54,8 @@ class AerTokens {
   static const Color statusUnavailableDark = Color(0xFF6C7A80);
   static const Color statusWaitingToStartLight = Color(0xFF88969C);
   static const Color statusWaitingToStartDark = Color(0xFF6C7A80);
+  static const Color statusWaitingOnLockLight = Color(0xFF88969C);
+  static const Color statusWaitingOnLockDark = Color(0xFF6C7A80);
 
   static const double radiusSm = 3;
   static const double radiusMd = 5;
@@ -102,6 +104,7 @@ enum AerStatus {
   outOfPlan,
   unavailable,
   waitingToStart,
+  waitingOnLock,
 }
 
 /// Decision 0006: a status must never be conveyed by hue alone, so every state carries a
@@ -126,6 +129,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.outOfPlan => 'ellipsis',
         AerStatus.unavailable => 'slashed',
         AerStatus.waitingToStart => 'clock',
+        AerStatus.waitingOnLock => 'lock',
       };
 
   /// Whether [mark]'s shape is painted solid rather than stroked. Stated in the token file so
@@ -144,6 +148,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.outOfPlan => true,
         AerStatus.unavailable => false,
         AerStatus.waitingToStart => false,
+        AerStatus.waitingOnLock => false,
       };
 
   String get label => switch (this) {
@@ -159,6 +164,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.outOfPlan => 'Out of plan',
         AerStatus.unavailable => 'Unavailable',
         AerStatus.waitingToStart => 'Waiting to start',
+        AerStatus.waitingOnLock => 'Waiting on lock',
       };
 
   Color color(Brightness brightness) => brightness == Brightness.dark
@@ -175,6 +181,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.outOfPlan => AerTokens.statusOutOfPlanDark,
         AerStatus.unavailable => AerTokens.statusUnavailableDark,
         AerStatus.waitingToStart => AerTokens.statusWaitingToStartDark,
+        AerStatus.waitingOnLock => AerTokens.statusWaitingOnLockDark,
         }
       : switch (this) {
         AerStatus.idle => AerTokens.statusIdleLight,
@@ -189,6 +196,7 @@ extension AerStatusPresentation on AerStatus {
         AerStatus.outOfPlan => AerTokens.statusOutOfPlanLight,
         AerStatus.unavailable => AerTokens.statusUnavailableLight,
         AerStatus.waitingToStart => AerTokens.statusWaitingToStartLight,
+        AerStatus.waitingOnLock => AerTokens.statusWaitingOnLockLight,
         };
 }
 

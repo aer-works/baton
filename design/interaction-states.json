@@ -85,10 +85,10 @@
       "coverage": { "pending": "0029 — the verification exists at worker start; its surface state is unbuilt" }
     },
     "waitingOnLock": {
-      "name": "Waiting on another room's lock",
-      "behaviour": "Reads as a wait, never as an error and never as generic working: names the room that holds this folder, linked, so the choice — wait, or go there — is discoverable. Opening a second room on a folder that already has one warns first; legal, but a choice made knowingly.",
-      "provenance": "#480 (grouped under #752), ratified 2026-08-04 on #495",
-      "coverage": { "pending": "#752 — #618 shipped the wait banner with a real holder (probe + locked-mutation paths); the linked go-there navigation and the pre-open warn are what remain" }
+      "name": "Waiting on another process's lock",
+      "behaviour": "Reads as a wait, never as an error and never as generic working: names the holder process and how long it has held the lock, never a room to navigate to. Corrected 2026-08-16 (#1299) after the original room-vs-room framing turned out to be architecturally impossible; decision 0020's amendment has the full reasoning and the duplicate-warning ruling.",
+      "provenance": "#480 (grouped under #752), ratified 2026-08-04 on #495, corrected 2026-08-16 on #1299",
+      "coverage": { "pending": "#1300 — mobile render, blocked on #1299 landing the status in the projection" }
     },
     "dormant": {
       "name": "Dormant",

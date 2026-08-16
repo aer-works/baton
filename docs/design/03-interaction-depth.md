@@ -300,7 +300,7 @@ Reduced motion | Every animated state degrades to a correct still frame — the 
 
 Gate unverified | A worker whose permission mechanism could not be confirmed working at start says so before any tool runs, rather than silently rendering a gate that might never fire — a broken hook or a disabled callback both look exactly like a working one otherwise. *(0029, added 2026-07-25)* |
 
-Waiting on another room's lock | Reads as a wait, never as an error and never as generic working: names the room that holds this folder, linked, so the choice — wait, or go there — is discoverable. Opening a second room on a folder that already has one warns first; legal, but a choice made knowingly. *(#480 (grouped under #752), ratified 2026-08-04 on #495)* |
+Waiting on another process's lock | Reads as a wait, never as an error and never as generic working: names the holder process and how long it has held the lock, never a room to navigate to. Corrected 2026-08-16 (#1299) after the original room-vs-room framing turned out to be architecturally impossible; decision 0020's amendment has the full reasoning and the duplicate-warning ruling. *(#480 (grouped under #752), ratified 2026-08-04 on #495, corrected 2026-08-16 on #1299)* |
 
 Dormant | The room stopped machine turns after repeated turns that committed nothing, and says so in the transcript with the reason and the wake control. A message to a dormant room is answered with this state — waking is your explicit action, never a side effect of asking how it's going. *(#778 turn-throttle addendum, ratified 2026-08-04 on #495)* |
 
@@ -390,7 +390,7 @@ Blocks are doors on a phone Diffs and output get their own screens , and each st
 
 Stale, not blank Refreshing never empties a list. Previous content stays and is marked stale — blanking reads as data loss.
 
-A wait names its holder (added 2026-08-04) Waiting on another room's turn lock is its own state, never generic working: the holder is named and linked, so "go close the other room" is discoverable rather than folklore.
+A wait names its holder (added 2026-08-04, corrected 2026-08-16 on #1299) Waiting on another process's lock is its own state, never generic working — the fix and the reasoning behind it are recorded in [decision 0020](../decisions/0020-one-state-machine.md).
 
 Dormancy answers, it never resumes (added 2026-08-04) A message to a dormant room is answered by the product with the dormancy state and the wake control. Waking the room is your explicit action — a stuck loop can never resume spending because you asked how it's going.
 

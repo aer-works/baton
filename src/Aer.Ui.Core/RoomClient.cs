@@ -347,7 +347,7 @@ public sealed partial class RoomClient
             // only for a room something is actually doing something to.
             RefreshRoomStoppedCard(
                 projection, ConcurrencyGuard.IsHeld(CurrentRoomDirectoryPath),
-                ConcurrencySlotGate.IsWaiting(CurrentRoomDirectoryPath));
+                ConcurrencySlotGate.IsWaiting(CurrentRoomDirectoryPath), CurrentRoomDirectoryPath);
             LastLoadSucceeded = true;
             LastWorkflowStatus = projection.State.Status;
             LastSnapshot = projection.Snapshot;
@@ -355,22 +355,35 @@ public sealed partial class RoomClient
     }
 
     /// <summary>
-    /// #618: sets or clears the waiting-on-lock banner from a local probe. Mode-independent by
-    /// design — <see cref="ConcurrencyGuard.IsHeld"/> and the holder sidecar are filesystem facts
-    /// the desktop can read whether the daemon or this process answers the load, and clearing on
-    /// the not-held arm is what stops a released lock leaving a stale banner behind.
+    /// #1299 (#480, Fable's ruling): sets or clears the waiting-on-lock banner from the SAME
+    /// canonical derivation every other surface reads — never a second probe-driven state machine.
+    /// The holder description + acquired-at are still a local filesystem read
+    /// (<see cref="ConcurrencyGuard.ReadHolderInfo"/>), taken only when <paramref name="status"/> is
+    /// already <see cref="RoomCardStatus.WaitingOnLock"/>, so a released lock clears the banner on
+    /// the next refresh the same way <see cref="RefreshRoomStoppedCard"/>'s sibling probe does.
     /// </summary>
-    private void RefreshWaitingOnLockBanner(string roomDirectoryPath, bool isFlowLockHeld)
+    private void RefreshWaitingOnLockBanner(string roomDirectoryPath, RoomCardStatus status)
     {
-        if (isFlowLockHeld)
+        if (status == RoomCardStatus.WaitingOnLock)
         {
-            var (holderDescription, _) = ConcurrencyGuard.ReadHolderInfo(roomDirectoryPath);
-            ViewModel.WaitingOnLockBanner = new WaitingOnLockBannerViewModel(holderDescription, () => LoadAsync(roomDirectoryPath));
+            var (holderDescription, acquiredAtUtc) = ConcurrencyGuard.ReadHolderInfo(roomDirectoryPath);
+            ViewModel.WaitingOnLockBanner = new WaitingOnLockBannerViewModel(holderDescription, acquiredAtUtc, () => LoadAsync(roomDirectoryPath));
         }
         else
         {
             ViewModel.WaitingOnLockBanner = null;
         }
+    }
+
+    /// <summary>
+    /// The active-attempt path: a mutation (Run, Decide, Cancel) was just refused because another
+    /// process holds the lock right now. This is real-time feedback on the attempt just made, not a
+    /// re-derivation of the room's steady-state status — the projection reflecting that status may
+    /// not even have been reloaded yet. Kept as a direct probe for that reason.
+    /// </summary>
+    private void SetWaitingOnLockBannerFromActiveRefusal(string roomDirectoryPath, string? holderDescription, DateTime? acquiredAtUtc)
+    {
+        ViewModel.WaitingOnLockBanner = new WaitingOnLockBannerViewModel(holderDescription, acquiredAtUtc, () => LoadAsync(roomDirectoryPath));
     }
 
     /// <summary>
@@ -431,13 +444,20 @@ public sealed partial class RoomClient
     /// from the same instant rather than from two probes a few statements apart.
     /// </para>
     /// </summary>
-    private void RefreshRoomStoppedCard(RoomProjection projection, bool isFlowLockHeld, bool isWaitingToStart)
+    private void RefreshRoomStoppedCard(RoomProjection projection, bool isFlowLockHeld, bool isWaitingToStart, string roomDirectoryPath)
     {
         var reason = DeriveRoomStoppedReason(projection, isFlowLockHeld, isWaitingToStart);
 
         ViewModel.RoomStoppedCard = reason is { } stoppedReason
             ? new RoomStoppedCardViewModel(stoppedReason, () => ViewModel.RequestRoomRunAsync())
             : null;
+
+        // #1299: same reading DeriveRoomStoppedReason already took, called again rather than
+        // threaded through it — DeriveRoomStoppedReason stays a small, directly-tested pure
+        // function (RoomStoppedCardTests), and deriving twice over already-in-memory data costs
+        // nothing next to the I/O RefreshWaitingOnLockBanner does only when it actually applies.
+        var (_, status) = RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld, isWaitingToStart);
+        RefreshWaitingOnLockBanner(roomDirectoryPath, status);
     }
 
     /// <summary>
@@ -447,16 +467,14 @@ public sealed partial class RoomClient
     /// </summary>
     public async Task<LoadOutcome> LoadAsync(string roomDirectoryPath, CancellationToken cancellationToken = default)
     {
-        // Before the mode branch, deliberately: the second reader found the first draft probed
-        // only in the in-process fallback, so the primary (daemon-connected) desktop never showed
-        // the waiting-on-lock state at all — and the daemon's own locked answer is a plain string
-        // this method's caller drops. The lock is a local filesystem fact the desktop can read in
-        // either mode; which process answers the load does not change who holds the directory.
-        // One reading, shared by everything below that asks the same question — see
-        // RefreshRoomStoppedCard's remarks for what this costs and how often it actually runs.
+        // #1299: the waiting-on-lock banner used to be set here, speculatively, from a raw lock
+        // probe alone — before any projection existed. That predates the state's promotion into
+        // RoomCardViewModel.DeriveStatus, which needs the projection to tell a genuinely-running
+        // room's own turn apart from a foreign holder. Both branches below reach a projection and
+        // call RefreshRoomStoppedCard, which now derives and renders this banner from that one
+        // canonical status — so nothing here needs to probe ahead of it.
         var isFlowLockHeld = ConcurrencyGuard.IsHeld(roomDirectoryPath);
 
-        RefreshWaitingOnLockBanner(roomDirectoryPath, isFlowLockHeld);
         await RefreshRoomTurnHostBannerAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(true);
 
         if (await EnsureDaemonConnectedAsync(cancellationToken).ConfigureAwait(true))
@@ -492,7 +510,7 @@ public sealed partial class RoomClient
 
             RebuildPausedSteps(projection, roomDirectoryPath);
             RebuildRunningExecutions(projection, roomDirectoryPath);
-            RefreshRoomStoppedCard(projection, isFlowLockHeld, ConcurrencySlotGate.IsWaiting(roomDirectoryPath));
+            RefreshRoomStoppedCard(projection, isFlowLockHeld, ConcurrencySlotGate.IsWaiting(roomDirectoryPath), roomDirectoryPath);
 
             LastLoadSucceeded = true;
             LastWorkflowStatus = projection.State.Status;
@@ -511,7 +529,24 @@ public sealed partial class RoomClient
 
             if (ex is WorkflowLockedException wle)
             {
-                ViewModel.WaitingOnLockBanner = new WaitingOnLockBannerViewModel(wle.HolderDescription, () => LoadAsync(roomDirectoryPath));
+                SetWaitingOnLockBannerFromActiveRefusal(roomDirectoryPath, wle.HolderDescription, wle.AcquiredAtUtc);
+            }
+            else if (ConcurrencyGuard.IsHeld(roomDirectoryPath))
+            {
+                // #1299: a directory that fails to load for a DIFFERENT reason (no snapshot.json
+                // yet — InvalidRoomDirectoryException, the common case for a room whose first turn
+                // never ran) can still be externally locked at the same time. There is no projection
+                // for DeriveStatus to read here, so this stays the direct probe RefreshWaitingOnLockBanner
+                // normally replaces — the one case where "no projection" does not mean "nothing to say
+                // about the lock". Re-probed here rather than trusting isFlowLockHeld (captured before
+                // the load, which can take a while) — a lock released in between must not show a
+                // banner for a hold that is already gone (second-reader finding).
+                var (holderDescription, acquiredAtUtc) = ConcurrencyGuard.ReadHolderInfo(roomDirectoryPath);
+                SetWaitingOnLockBannerFromActiveRefusal(roomDirectoryPath, holderDescription, acquiredAtUtc);
+            }
+            else
+            {
+                ViewModel.WaitingOnLockBanner = null;
             }
 
             LastLoadSucceeded = false;
@@ -587,7 +622,8 @@ public sealed partial class RoomClient
                     _mutationFailed();
                     // The daemon's locked refusal is a plain string with no holder in it — the
                     // local probe is what turns it into the waiting-on-lock state (#618).
-                    RefreshWaitingOnLockBanner(roomDirectoryPath, ConcurrencyGuard.IsHeld(roomDirectoryPath));
+                    var (activeRefusalHolder, activeRefusalAcquiredAt) = ConcurrencyGuard.ReadHolderInfo(roomDirectoryPath);
+                    SetWaitingOnLockBannerFromActiveRefusal(roomDirectoryPath, activeRefusalHolder, activeRefusalAcquiredAt);
                     ViewModel.RunStatusText = err;
                     ViewModel.IsMutationInFlight = false;
                     return new MutationOutcome(err);
@@ -640,7 +676,7 @@ public sealed partial class RoomClient
             if (ex is WorkflowLockedException wle)
             {
                 ViewModel.RunStatusText = string.Empty;
-                ViewModel.WaitingOnLockBanner = new WaitingOnLockBannerViewModel(wle.HolderDescription, () => LoadAsync(roomDirectoryPath));
+                SetWaitingOnLockBannerFromActiveRefusal(roomDirectoryPath, wle.HolderDescription, wle.AcquiredAtUtc);
             }
             else
             {
@@ -743,7 +779,8 @@ public sealed partial class RoomClient
                     _mutationFailed();
                     // Same reason as RunAsync's daemon-refusal arm: the string carries no holder;
                     // the local probe renders the state (#618).
-                    RefreshWaitingOnLockBanner(roomDirectoryPath, ConcurrencyGuard.IsHeld(roomDirectoryPath));
+                    var (activeRefusalHolder, activeRefusalAcquiredAt) = ConcurrencyGuard.ReadHolderInfo(roomDirectoryPath);
+                    SetWaitingOnLockBannerFromActiveRefusal(roomDirectoryPath, activeRefusalHolder, activeRefusalAcquiredAt);
                     ViewModel.DecisionStatusText = err;
                     ViewModel.IsMutationInFlight = false;
                     return new MutationOutcome(err);
@@ -815,7 +852,7 @@ public sealed partial class RoomClient
             if (ex is WorkflowLockedException wle)
             {
                 ViewModel.DecisionStatusText = string.Empty;
-                ViewModel.WaitingOnLockBanner = new WaitingOnLockBannerViewModel(wle.HolderDescription, () => LoadAsync(roomDirectoryPath));
+                SetWaitingOnLockBannerFromActiveRefusal(roomDirectoryPath, wle.HolderDescription, wle.AcquiredAtUtc);
             }
             else
             {

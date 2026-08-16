@@ -488,6 +488,39 @@ public class RoomsViewModelTests
         Assert.Equal("/tasks/older-cancelled", ordered[2].RoomDirectoryPath);
     }
 
+    /// <summary>
+    /// #1299 second-reader finding: <c>StateRank</c> threw <see cref="ArgumentOutOfRangeException"/>
+    /// for both <see cref="RoomCardStatus.WaitingToStart"/> (unreachable since #1296 shipped, no
+    /// test caught it) and the new <see cref="RoomCardStatus.WaitingOnLock"/> — a live fleet reaching
+    /// either status would have crashed its own sort. Same quiet band as Stopped/Cancelled, for the
+    /// same reason: neither competes with a gate or a live run for attention.
+    /// </summary>
+    [Fact]
+    public void A_waiting_room_sits_in_the_quiet_band_without_throwing()
+    {
+        var waitingToStart = NewItem("/tasks/waiting-to-start") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(3),
+            Status = RoomCardStatus.WaitingToStart,
+        };
+        var waitingOnLock = NewItem("/tasks/waiting-on-lock") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(4),
+            Status = RoomCardStatus.WaitingOnLock,
+        };
+        var olderFinished = NewItem("/tasks/older-finished") with
+        {
+            LastActivityAt = DateTimeOffset.UnixEpoch.AddHours(1),
+            Status = RoomCardStatus.Finished,
+        };
+
+        var ordered = RoomsViewModel.InFleetOrderForTests([waitingToStart, waitingOnLock, olderFinished]).ToList();
+
+        Assert.Equal("/tasks/older-finished", ordered[0].RoomDirectoryPath);
+        Assert.Equal("/tasks/waiting-on-lock", ordered[1].RoomDirectoryPath);
+        Assert.Equal("/tasks/waiting-to-start", ordered[2].RoomDirectoryPath);
+    }
+
     [Fact]
     public void Recency_still_orders_within_each_band()
     {

@@ -361,6 +361,7 @@ public static class TokenGenerator
         // painting a room genuinely waiting on the concurrency cap would be exactly the kind of
         // near-miss #1219's comment above already names.
         ("Status.WaitingToStart", "status", "waitingToStart"),
+        ("Status.WaitingOnLock", "status", "waitingOnLock"),
     };
 
     /// <summary>

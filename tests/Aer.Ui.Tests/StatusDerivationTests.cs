@@ -150,6 +150,76 @@ public class StatusDerivationTests
     }
 
     /// <summary>
+    /// #1299 (#480, Fable's ruling): a live process holds the lock, no step of this room is
+    /// Running, and nothing has failed. The room identity is directory-keyed, so this is always a
+    /// foreign process, never another room.
+    /// </summary>
+    [Fact]
+    public void DeriveStatus_LockHeldWithNoRunningStepAndNoFailures_IsWaitingOnLock()
+    {
+        var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Pending);
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(
+            projection, null, isFlowLockHeld: true, isWaitingToStart: false);
+
+        Assert.Equal(RoomCardStatus.WaitingOnLock, status);
+        Assert.Equal("Waiting on another process's lock", statusText);
+    }
+
+    /// <summary>
+    /// The false polarity: with the lock free, the same fixture reaches the pre-existing Stopped
+    /// arm instead (a Running-status room with no live pump and nothing paused/failed) — never
+    /// WaitingOnLock, which requires the lock to actually be held.
+    /// </summary>
+    [Fact]
+    public void DeriveStatus_LockFree_NeverReportsWaitingOnLock()
+    {
+        var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Pending);
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(
+            projection, null, isFlowLockHeld: false, isWaitingToStart: false);
+
+        Assert.Equal(RoomCardStatus.Stopped, status);
+        Assert.NotEqual(RoomCardStatus.WaitingOnLock, status);
+        Assert.NotEqual("Waiting on another process's lock", statusText);
+    }
+
+    /// <summary>
+    /// A genuinely running step beats WaitingOnLock — the lock is this room's own turn, not a
+    /// foreign holder, and #1219's "Working — step" arm already answers it correctly.
+    /// </summary>
+    [Fact]
+    public void DeriveStatus_LockHeldWithARunningStep_IsWorkingNotWaitingOnLock()
+    {
+        var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Running);
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(
+            projection, null, isFlowLockHeld: true, isWaitingToStart: false);
+
+        Assert.Equal(RoomCardStatus.Running, status);
+        Assert.Equal("Working — step-0", statusText);
+    }
+
+    /// <summary>
+    /// A failed/rejected step excludes the new arm — proven by NOT reaching WaitingOnLock, rather
+    /// than by asserting what it falls through to instead: a <see cref="WorkflowStatus.Running"/>
+    /// room with no running step and no exhaustion reaches the plain "Working" catch-all regardless
+    /// of a sibling's failure (arm 248's own pre-existing behaviour, unrelated to this change) —
+    /// that only becomes "Failed" once the workflow itself reaches Terminal.
+    /// </summary>
+    [Fact]
+    public void DeriveStatus_LockHeldWithAFailedStep_NeverReportsWaitingOnLock()
+    {
+        var projection = ProjectionWith(WorkflowStatus.Running, StepStatus.Failed);
+
+        var (statusText, status) = RoomCardViewModel.DeriveStatus(
+            projection, null, isFlowLockHeld: true, isWaitingToStart: false);
+
+        Assert.NotEqual(RoomCardStatus.WaitingOnLock, status);
+        Assert.NotEqual("Waiting on another process's lock", statusText);
+    }
+
+    /// <summary>
     /// #1219's tenth state, and the reason it exists: a room whose process died and a room genuinely
     /// working have the same journal, so these two arms differ in the lock argument and in nothing
     /// else. Before this, both said "Working — step-0" and the switcher turned a spinner over a room
