@@ -595,20 +595,6 @@ public partial class MainWindow : Window
         // ChatViewModel.IsComposerEnabled's remarks). Focus() on a disabled control silently
         // no-ops, so unconditionally marking Enter Handled would swallow the keystroke with no
         // effect and no way for the person to tell. Only claim Handled when a real handoff happened.
-        // Second reader on this same PR: a pipeline room idles between/mid-steps with nothing
-        // paused far more often than a chat session sits with the composer enabled and nothing to
-        // reply to — ChatInputBox.IsEnabled is Chat.IsComposerEnabled, which a pipeline room never
-        // sets (only IsComposerVisible, so it shows disabled rather than hiding — see
-        // ChatViewModel.IsComposerEnabled's remarks). Focus() on a disabled control silently
-        // no-ops, so unconditionally marking Enter Handled would swallow the keystroke with no
-        // effect and no way for the person to tell. Only claim Handled when a real handoff happened.
-        // Second reader on this same PR: a pipeline room idles between/mid-steps with nothing
-        // paused far more often than a chat session sits with the composer enabled and nothing to
-        // reply to — ChatInputBox.IsEnabled is Chat.IsComposerEnabled, which a pipeline room never
-        // sets (only IsComposerVisible, so it shows disabled rather than hiding — see
-        // ChatViewModel.IsComposerEnabled's remarks). Focus() on a disabled control silently
-        // no-ops, so unconditionally marking Enter Handled would swallow the keystroke with no
-        // effect and no way for the person to tell. Only claim Handled when a real handoff happened.
         SwitcherList.KeyDown += (_, e) =>
         {
             if (e.Key != Key.Enter) return;
