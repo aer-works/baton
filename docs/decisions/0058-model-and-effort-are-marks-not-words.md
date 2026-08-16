@@ -1,7 +1,6 @@
 # 0058 — Depth and effort become marks on the workflow-room worker chip
 
 Status: accepted
-
 Date: 2026-07-27
 
 ## Context
@@ -27,9 +26,11 @@ The marks must satisfy four constraints, each pulled from an existing decision t
 carries — this record does not invent new rules, it applies the ones that exist to a case that was
 previously unresolved:
 
-1. **Achromatic.** [0006](0006-visual-direction-quiet.md) rule 1 reserves colour for status alone.
-   Depth and effort must read from shape, fill or weight, never colour — a coloured depth meter
-   would compete with the one thing colour is reserved for.
+1. **Achromatic.** [0006](0006-visual-direction-quiet.md)'s Ink-stance paragraph reserves colour for
+   status alone — "the only colour on screen is status," carried into Quiet because it "costs
+   nothing and sharpens exactly the information this product exists to convey." Depth and effort
+   must read from shape, fill or weight, never colour — a coloured depth meter would compete with
+   the one thing colour is reserved for.
 2. **Silhouette, not count-of-things.** 0006 rule 2's reasoning — marks must differ in silhouette,
    not merely be distinguishable by colour once you can see it — applies verbatim here. Three depth
    steps and four effort steps must be told apart in greyscale, at chip size.
@@ -54,16 +55,25 @@ then.
 
 ### Scope split from 0054 — this is a new ruling
 
-[0054](0054-participants-turns-and-addressing.md) governs the single-participant session-room
-chip, where model already ships as secondary **text** next to the participant name (PRs #1310,
-#1312) — with one worker in view there is no multi-axis width pressure forcing a mark.
+[0054](0054-participants-turns-and-addressing.md) states its chip rule generally — "chips and
+transcript cards show the participant name; model is secondary text" — without drawing a
+session-room/workflow-room boundary itself. Its shipped implementation (PRs #1310, #1312) scoped
+that rule to single-participant session rooms, where model reads as secondary **text** next to the
+participant name because one worker in view carries no multi-axis width pressure.
 
-**This record governs the multi-worker workflow-room chip**, where several workers are visible at
-once and width pressure is the actual reason marks exist — the same pressure `04:324` named. The
-split is intentional: a workflow-room chip carrying vendor, depth, effort, skills and a permission
-grant at once cannot afford text for all of it, where a session-room chip with one worker can.
-Convergence of the two chip styles, if ever wanted, is a future decision — not implied by either
-record.
+**This record is what draws the boundary explicitly.** Text-secondary stays the encoding for the
+single-participant session-room chip; **marks** are for the multi-worker workflow-room chip, where
+several workers are visible at once and width pressure is the actual reason marks exist — the same
+pressure `04:324` named. A workflow-room chip carrying vendor, depth, effort, skills and a
+permission grant at once cannot afford text for all of it, where a session-room chip with one
+worker can. Convergence of the two encodings, if ever wanted, is a future decision — not implied
+by either record.
+
+The split is presentation, not noun: per [02-screens.md](../design/02-screens.md) ("adding a
+worker never creates a new object; the header chip changes, the room is the same room"), the room
+stays one object regardless of participant count. What changes with count is only how the chip
+encodes model and effort — text in the single-participant case, marks in the multi-worker case —
+never the room's identity.
 
 ### What is blocked, and what is not
 

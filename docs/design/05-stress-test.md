@@ -59,8 +59,9 @@ Effort is per worker per room, with an option to make it global — the deep-aut
 Thinking time is reported after the fact ("thought for 12s") rather than as a live counter. It sets expectations for the next turn without turning waiting into a spectacle.
 
 "opus · careful" and "opus · quick" are still meaningfully different. Where the distinction is
-shown: the compact chip carries a bare worker's vendor alone, or `vendor · N skills` if any are
-attached, with model and effort one tap away in the picker this section already draws. See
+shown: vendor stays the chip's word, and model tier and effort read as achromatic marks beside it
+([0058](../decisions/0058-model-and-effort-are-marks-not-words.md)), with the full purpose-named
+values one tap away in the picker this section already draws. See
 [04-workers-commands-control.md](04-workers-commands-control.md#the-calls-made-here).
 
 ### The fourth pass, on a phone
