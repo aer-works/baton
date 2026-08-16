@@ -2047,6 +2047,12 @@ namespace Aer.Daemon
                 return Results.Ok(metadata);
             });
 
+            // Its response's ResolvedParticipantId (see resolvedParticipantId below) has no production
+            // reader today -- only SessionSendAddressingEndpointTests does. It stays on the response
+            // because it is the observable proof that untagged->orchestrator resolution actually
+            // happened: per-participant *execution* of that resolved id is #1306's job, not this
+            // endpoint's, so today the value cannot yet change who actually answers -- without the
+            // field on the wire there would be nothing for a test to assert the resolution against.
             app.MapPost("/api/sessions/send", async ([FromBody] SendSessionMessageRequest request, RoomClient session, BindingsPathHolder pathHolder, IReadOnlyDictionary<string, IWorkerAdapter> adapters) =>
             {
                 if (string.IsNullOrWhiteSpace(request.Message))

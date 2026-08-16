@@ -594,6 +594,32 @@ public sealed partial class ChatViewModel : ObservableObject
         OnPropertyChanged(nameof(Participants));
         OnPropertyChanged(nameof(IsOrchestratorReassignVisible));
         OnPropertyChanged(nameof(ShowTagChipRow));
+        // #1307 fix, second-reader finding: a room's participant list can change under an already-
+        // selected tag -- most routinely #1308's leave, but any LoadFromMetadata call describing a
+        // roster the tagged id is no longer in has the same shape. Left alone, SelectedTagParticipant
+        // resolves null (SelectedTagLabel renders "To: room") while SelectedTagParticipantId stays
+        // set and HasSelectedTag stays true -- two properties describing one fact disagreeing -- and
+        // the next send still carries an id the daemon rejects with a 400 naming someone the operator
+        // cannot see. The property setter (not the backing field) raises SelectedTagParticipantId's
+        // own NotifyPropertyChangedFor set, so this single guarded assignment is enough.
+        if (SelectedTagParticipantId is { } taggedParticipantId && Participants.All(p => p.Id != taggedParticipantId))
+        {
+            SelectedTagParticipantId = null;
+        }
+
+        // Same staleness, applied to messages already queued under a tag captured at enqueue time
+        // (EnqueueMessage's remarks): a queued send that outlives its target leaving hits the exact
+        // same daemon 400 on drain. Unlike a re-tag by the operator (which EnqueueMessage's freeze is
+        // designed to ignore), this is not a choice being overridden -- it is the captured id becoming
+        // meaningless, so it clears rather than staying frozen toward a participant that is gone.
+        foreach (var queued in QueuedMessages)
+        {
+            if (queued.TargetParticipantId is { } targetId && Participants.All(p => p.Id != targetId))
+            {
+                queued.ClearTargetParticipantId();
+            }
+        }
+
         OnPropertyChanged(nameof(SelectedTagParticipant));
         OnPropertyChanged(nameof(SelectedTagLabel));
         RaiseOpenStateChanged();
@@ -1086,9 +1112,12 @@ public sealed partial class ChatViewModel : ObservableObject
         OnPropertyChanged(nameof(Participants));
         OnPropertyChanged(nameof(IsOrchestratorReassignVisible));
         OnPropertyChanged(nameof(ShowTagChipRow));
-        // Ruling 2: the sticky tag is composer draft state, the same category as InputText below —
-        // it resets here rather than surviving to the next room.
+        // Ruling 2: the sticky tag is composer draft state, the same category as InputText — both
+        // reset here rather than surviving to the next room. (Corrected #1307 second-reader finding:
+        // this comment used to say "the same category as InputText below" while InputText was never
+        // actually reset in this method — a symmetry the code didn't have. It does now.)
         SelectedTagParticipantId = null;
+        InputText = string.Empty;
         StatusText = string.Empty;
         LiveProgressText = string.Empty;
         _lastProgressWasPartialText = false;
@@ -1160,12 +1189,22 @@ public sealed partial class ChatViewModel : ObservableObject
 /// <param name="targetParticipantId">
 /// 0054 §4/#1307: the sticky tag captured at enqueue time — see
 /// <see cref="ChatViewModel.EnqueueMessage"/>'s remarks for why the drain must not re-read a tag
-/// that may have since changed.
+/// that may have since changed. The one exception is <see cref="ClearTargetParticipantId"/>: frozen
+/// against a re-tag, not against the captured participant leaving the room before this item drains.
 /// </param>
 public sealed partial class QueuedChatMessageViewModel(string text, WorkerId? targetParticipantId, Action<QueuedChatMessageViewModel> remove)
 {
     public string Text { get; } = text;
-    public WorkerId? TargetParticipantId { get; } = targetParticipantId;
+    public WorkerId? TargetParticipantId { get; private set; } = targetParticipantId;
+
+    /// <summary>
+    /// #1307 fix: called by <see cref="ChatViewModel.LoadFromMetadata"/> when this item's captured
+    /// target no longer names a member of the room's current <see cref="ChatViewModel.Participants"/>
+    /// — draining it as captured would hit the same daemon 400 the sticky-tag guard exists to avoid.
+    /// Mutates in place rather than replacing the item so identity-based removal
+    /// (<see cref="ChatViewModel.RemoveQueuedMessage"/>) keeps working against the same instance.
+    /// </summary>
+    internal void ClearTargetParticipantId() => TargetParticipantId = null;
 
     [RelayCommand]
     private void Remove() => remove(this);
