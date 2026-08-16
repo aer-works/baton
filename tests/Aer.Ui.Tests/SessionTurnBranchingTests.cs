@@ -157,6 +157,15 @@ public class SessionTurnBranchingTests : IAsyncLifetime
         Assert.Equal("agy", handoffTurn.Vendor);
         Assert.True(handoffTurn.VendorHandoffSynthesized);
         Assert.False(handoffTurn.NativeSessionResumed);
+
+        // #1305 second-reader regression: after the swap the participant's vendor must follow while
+        // its name holds (the split Participant's doc comment defines) -- the first cut froze both
+        // at creation time.
+        Assert.NotNull(afterHandoff.Participants);
+        var participant = Assert.Single(afterHandoff.Participants);
+        Assert.Equal("claude", participant.Name);
+        Assert.Equal("agy", participant.Vendor);
+        Assert.True(participant.IsOrchestrator);
     }
 
     [Fact]

@@ -61,7 +61,14 @@
               Background="{DynamicResource Color.SurfaceSubtle}"
               BorderBrush="{DynamicResource Color.BorderSubtle}" BorderThickness="1"
               CornerRadius="20" Padding="10,2">
-        <TextBlock Classes="caption" Text="{Binding Chat.WorkerChipText}" VerticalAlignment="Center" />
+        <!-- 0054 §1 (#1305): the participant's name is the chip; its model is secondary text beside
+             it, never the identity itself. Two claude-sonnets in one room are two distinctly named
+             participants, not one chip trying to carry both. -->
+        <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.1}">
+          <TextBlock Classes="caption" Text="{Binding Chat.WorkerChipText}" VerticalAlignment="Center" />
+          <TextBlock Classes="caption secondary" Text="{Binding Chat.WorkerModelText}"
+                     IsVisible="{Binding Chat.HasWorkerModel}" VerticalAlignment="Center" />
+        </StackPanel>
       </Border>
       <!-- Offered only for a workflow room: a chat session's single repeatedly-superseded step has
            no graph worth drawing (ChatViewModel's own remarks). What the panel holds and where it

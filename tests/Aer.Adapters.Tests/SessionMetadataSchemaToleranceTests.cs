@@ -78,6 +78,10 @@ public class SessionMetadataSchemaToleranceTests
             Assert.True(metadata.VendorSessionEstablished,
                 "a field declared AFTER the unknown keys was dropped, so the reader stopped early "
                 + "rather than skipping them");
+
+            // #1305: this fixture predates Participants -- it must load as null, never as a
+            // synthesized single-entry list. Why: SessionMetadata.Participants' own remarks.
+            Assert.Null(metadata.Participants);
         }
         finally
         {

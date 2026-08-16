@@ -334,6 +334,41 @@ public sealed class InteractiveSessionTests
     }
 
     [Fact]
+    public async Task MaterializeToDirectoryAsync_CreatesTheFirstParticipantAsAutoNamedOrchestrator()
+    {
+        var testPath = Path.Combine(Path.GetTempPath(), "test-aer-session-participant-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var metadata = await InteractiveSessionMaterializer.MaterializeToDirectoryAsync(
+                "sess-participant", testPath, "claude", model: "sonnet",
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.NotNull(metadata.Participants);
+            var participant = Assert.Single(metadata.Participants);
+            Assert.Equal("claude", participant.Name);
+            Assert.Equal("claude", participant.Vendor);
+            Assert.Equal("sonnet", participant.Model);
+            Assert.True(participant.IsOrchestrator);
+
+            // Both lifecycle events must land in the journal (see MaterializeToDirectoryAsync).
+            var roomLogPath = Path.Combine(testPath, "room.jsonl");
+            var events = await new Aer.Flow.Store.RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            var joined = Assert.Single(events.OfType<Aer.Flow.Domain.RoomEvent.WorkerJoined>());
+            Assert.Equal(participant.Id, joined.WorkerId);
+            Assert.Equal("claude", joined.Name);
+            var assigned = Assert.Single(events.OfType<Aer.Flow.Domain.RoomEvent.OrchestratorAssigned>());
+            Assert.Equal(participant.Id, assigned.WorkerId);
+        }
+        finally
+        {
+            if (Directory.Exists(testPath))
+            {
+                DirectoryCleanup.DeleteRecursively(testPath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Archiving_MarksTheDirectoryButStillBlocksNameReuse_OnlyDeleteFreesTheName()
     {
         var testPath = Path.Combine(Path.GetTempPath(), "test-aer-session-archive-" + Guid.NewGuid().ToString("N"));

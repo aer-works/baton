@@ -404,12 +404,47 @@ class SessionTurn {
 /// — REST-only, camelCase; unlike RoomProjection this is never pushed over /api/ws, so there is no
 /// PascalCase/camelCase ambiguity to normalize, but this still reads through [caseInsensitive] for
 /// consistency with every other model here.
+/// Mirrors `Aer.Flow.Domain.Participant` (#1305) — see that record's doc comment for what a
+/// participant is and how it relates to its vendor/model/effort.
+class Participant {
+  final String id;
+  final String name;
+  final String vendor;
+  final String? model;
+  final String? effort;
+  final bool isOrchestrator;
+
+  Participant({
+    required this.id,
+    required this.name,
+    required this.vendor,
+    this.model,
+    this.effort,
+    required this.isOrchestrator,
+  });
+
+  factory Participant.fromJson(Map<String, dynamic> json) {
+    final j = caseInsensitive(json);
+    return Participant(
+      id: j['id']?.toString() ?? '',
+      name: j['name']?.toString() ?? '',
+      vendor: j['vendor']?.toString() ?? '',
+      model: j['model']?.toString(),
+      effort: j['effort']?.toString(),
+      isOrchestrator: j['isorchestrator'] == true,
+    );
+  }
+}
+
 class SessionMetadata {
   final String sessionId;
   final String roomDirectoryPath;
   final String currentAdapter;
   final int turnCount;
   final List<SessionTurn> turns;
+  // Null on a room whose room.json predates #1305 -- callers fall back to currentAdapter, the same
+  // way ChatViewModel.LoadFromMetadata does on desktop.
+  final List<Participant>? participants;
 
   SessionMetadata({
     required this.sessionId,
@@ -417,6 +452,7 @@ class SessionMetadata {
     required this.currentAdapter,
     required this.turnCount,
     required this.turns,
+    this.participants,
   });
 
   factory SessionMetadata.fromJson(Map<String, dynamic> json) {
@@ -427,6 +463,9 @@ class SessionMetadata {
       currentAdapter: j['currentadapter']?.toString() ?? '',
       turnCount: (j['turncount'] as num?)?.toInt() ?? 0,
       turns: ((j['turns'] as List<dynamic>?) ?? []).map((t) => SessionTurn.fromJson(t as Map<String, dynamic>)).toList(),
+      participants: (j['participants'] as List<dynamic>?)
+          ?.map((p) => Participant.fromJson(p as Map<String, dynamic>))
+          .toList(),
     );
   }
 }

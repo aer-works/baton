@@ -891,6 +891,11 @@ class _ChatScreenState extends State<ChatScreen> {
   /// no chips.
   String? _workerChipLabel(SessionMetadata? metadata) {
     if (_isSessionRoom) {
+      // #1305: prefers the participant's name; falls back to currentAdapter on a pre-participant
+      // room. Same rendering rule as desktop's ChatViewModel.WorkerChipText, where the why lives.
+      final participants = metadata?.participants;
+      final name = (participants != null && participants.isNotEmpty) ? participants.first.name : null;
+      if (name != null && name.isNotEmpty) return name;
       final adapter = metadata?.currentAdapter;
       return (adapter == null || adapter.isEmpty) ? null : adapter;
     }

@@ -3186,6 +3186,23 @@ namespace Aer.Daemon
             var updatedTurns = new List<SessionTurn>(metadata.Turns) { turn };
             var updatedTurnCount = isCeilingReached ? 1 : newTurnIndex;
 
+            // #1305: a mid-room vendor/model swap updates the participant's properties while the
+            // name stays -- the property/identity split Participant's own doc comment defines.
+            // Without this the chip renders creation-time vendor/model forever while CurrentAdapter
+            // tracks the swap (second-reader finding). Null Participants (a pre-#1305 room) stays null.
+            var updatedParticipants = metadata.Participants;
+            if (updatedParticipants is { Count: > 0 })
+            {
+                updatedParticipants = new List<Participant>(updatedParticipants)
+                {
+                    [0] = updatedParticipants[0] with
+                    {
+                        Vendor = targetAdapter,
+                        Model = requestModel ?? metadata.Model,
+                    },
+                };
+            }
+
             var updatedMetadata = metadata with
             {
                 CurrentAdapter = targetAdapter,
@@ -3194,6 +3211,7 @@ namespace Aer.Daemon
                 TurnCount = updatedTurnCount,
                 UpdatedAt = DateTimeOffset.UtcNow,
                 Turns = updatedTurns,
+                Participants = updatedParticipants,
                 // #285: a handoff mints a brand-new vendorSessionId, so prior establishment doesn't
                 // carry over -- only this turn's own outcome counts for it. Otherwise, once
                 // established stays established even if a later turn fails for an unrelated reason
