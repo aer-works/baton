@@ -17,6 +17,13 @@ import 'paused_step_card.dart';
 import 'room_stopped_card.dart';
 import 'theme/tokens.dart';
 
+/// #483: the only seam for driving the thinking-time stopwatch's elapsed duration in a widget test
+/// -- flutter_test's clock does not fast-forward wall time, so proving the >=10s caption format
+/// requires overriding this rather than waiting for real seconds to pass. Tests must restore the
+/// default in `tearDown` so the override never leaks into another test.
+@visibleForTesting
+DateTime Function() debugThinkingTimeClock = DateTime.now;
+
 /// One rendered row in the chat transcript — a human turn or an assistant response, never both.
 /// Mirrors Aer.Ui.Core's ChatMessageViewModel (see ChatViewModel.cs).
 class _ChatMessage {
@@ -123,6 +130,13 @@ class _ChatScreenState extends State<ChatScreen> {
   // #323/#1290: mirrors ChatViewModel._lastProgressWasPartialText — see its doc comment on
   // ChatViewModel.AppendProgress (src/Aer.Ui.Core/ChatViewModel.cs) for the reasoning.
   bool _lastProgressWasPartialText = false;
+
+  // #483: mirrors ChatViewModel.ThinkingTimeText/ThinkingTimeReportThreshold — see
+  // ChatViewModel.FormatThinkingTime (src/Aer.Ui.Core/ChatViewModel.cs) for the reasoning. Reported
+  // once, after the turn completes; never a live-updating count.
+  String _thinkingTimeText = '';
+  static const _thinkingTimeReportThreshold = Duration(seconds: 10);
+  DateTime? _turnStartedAt;
 
   /// Client-local queue preventing concurrent turns per ChatViewModel.EnqueueMessage
   /// (src/Aer.Ui.Core/ChatViewModel.cs:246-260). Entries are identity-carrying objects, not bare
@@ -293,6 +307,11 @@ class _ChatScreenState extends State<ChatScreen> {
           _lastProgressWasPartialText = false;
           _pendingUserMessage = null;
           _sendTimeoutTimer?.cancel();
+          final startedAt = _turnStartedAt;
+          _thinkingTimeText = startedAt == null
+              ? ''
+              : _formatThinkingTime(debugThinkingTimeClock().difference(startedAt));
+          _turnStartedAt = null;
           turnCompleted = true;
         }
       });
@@ -408,6 +427,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _pendingUserMessage = message;
     _liveProgressText = '';
     _lastProgressWasPartialText = false;
+    _thinkingTimeText = '';
+    _turnStartedAt = debugThinkingTimeClock();
     _isSending = true;
     _sendError = null;
 
@@ -431,6 +452,14 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       }
     });
+  }
+
+  String _formatThinkingTime(Duration elapsed) {
+    if (elapsed < _thinkingTimeReportThreshold) return '';
+    final totalSeconds = elapsed.inSeconds;
+    return totalSeconds < 60
+        ? 'Thought for ${totalSeconds}s'
+        : 'Thought for ${totalSeconds ~/ 60}m ${totalSeconds % 60}s';
   }
 
   Future<void> _send() async {
@@ -466,6 +495,7 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _isSending = false;
           _pendingUserMessage = null;
+          _turnStartedAt = null;
           _sendError = e is DaemonException ? e.message : e.toString();
         });
       }
@@ -500,6 +530,7 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _isSending = false;
           _pendingUserMessage = null;
+          _turnStartedAt = null;
           _drainPaused = true;
           _sendError = e is DaemonException ? e.message : e.toString();
         });
@@ -946,6 +977,18 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.all(12),
               color: Theme.of(context).colorScheme.surfaceContainerHighest,
               child: Text(_liveProgressText, style: Theme.of(context).textTheme.bodySmall),
+            ),
+          // #483: see the field doc comment above for why this is never a live count.
+          if (!_isSending && _thinkingTimeText.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Text(
+                _thinkingTimeText,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
             ),
           if (_sendError != null)
             Container(

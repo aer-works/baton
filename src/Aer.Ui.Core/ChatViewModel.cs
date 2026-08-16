@@ -112,6 +112,32 @@ public sealed partial class ChatViewModel : ObservableObject
     [ObservableProperty]
     private string liveProgressText = string.Empty;
 
+    /// <summary>
+    /// #483: "Thought for 34s", set once when a turn completes — never a live-updating count, which
+    /// is the whole point (0018: a ticking number spends attention continuously for nothing; 0006
+    /// Quiet applied to time). Empty below <see cref="ThinkingTimeReportThreshold"/>: the spinner
+    /// already did its job for a short wait, and a caption on every reply would be noise, not a
+    /// delight. Cleared at the same three sites <see cref="LiveProgressText"/> is.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasThinkingTimeText))]
+    private string thinkingTimeText = string.Empty;
+
+    public bool HasThinkingTimeText => !string.IsNullOrEmpty(ThinkingTimeText);
+
+    /// <summary>Below this measured duration, #483's caption renders nothing at all — never "Thought for 0s".</summary>
+    private static readonly TimeSpan ThinkingTimeReportThreshold = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The only seam for driving <see cref="_turnStartedAt"/>'s elapsed duration in a test -- xunit
+    /// has no fake wall clock, so proving the >=10s caption end-to-end requires overriding this
+    /// rather than a test literally sleeping 10+ seconds. Tests must restore
+    /// <c>() => DateTimeOffset.UtcNow</c> afterward so the override never leaks into another test.
+    /// </summary>
+    internal static Func<DateTimeOffset> DebugThinkingTimeClock = () => DateTimeOffset.UtcNow;
+
+    private DateTimeOffset? _turnStartedAt;
+
     [ObservableProperty]
     private string headlineText = "No room open.";
 
@@ -617,6 +643,10 @@ public sealed partial class ChatViewModel : ObservableObject
             LiveProgressText = string.Empty;
             _lastProgressWasPartialText = false;
             _pendingUserMessage = null;
+            ThinkingTimeText = _turnStartedAt is { } startedAt
+                ? FormatThinkingTime(DebugThinkingTimeClock() - startedAt)
+                : string.Empty;
+            _turnStartedAt = null;
         }
         else if (IsSending && _pendingUserMessage is { } pending)
         {
@@ -781,6 +811,8 @@ public sealed partial class ChatViewModel : ObservableObject
         _pendingUserMessage = message;
         LiveProgressText = string.Empty;
         _lastProgressWasPartialText = false;
+        ThinkingTimeText = string.Empty;
+        _turnStartedAt = DebugThinkingTimeClock();
         StatusText = string.Empty;
         // A fresh send attempt clears the drain-pause flag (#1074): a queued send that failed pauses
         // the drain, and the operator acting again — a new send, or a new enqueue — is what resumes it.
@@ -844,6 +876,8 @@ public sealed partial class ChatViewModel : ObservableObject
     {
         IsSending = false;
         _pendingUserMessage = null;
+        // #483: no turn to report a thinking time for — a failed dispatch never reached the vendor.
+        _turnStartedAt = null;
         StatusText = errorMessage;
         // Pauses the poll's queue drain (#1074) until the operator's next send or enqueue — a failed
         // queued send stays queued (the drain peeks, only removes the item on success), so this stops
@@ -869,6 +903,24 @@ public sealed partial class ChatViewModel : ObservableObject
 
         LiveProgressText += progressEvent.Text;
         _lastProgressWasPartialText = progressEvent is { Kind: "text", IsPartial: true };
+    }
+
+    /// <summary>
+    /// #483's "Thought for 34s" — empty below <see cref="ThinkingTimeReportThreshold"/>, whole seconds
+    /// under a minute, "Nm Ss" above. No decimals: the measurement already includes poll-interval
+    /// slop, so false precision would just be a second kind of noise on top of the first.
+    /// </summary>
+    internal static string FormatThinkingTime(TimeSpan elapsed)
+    {
+        if (elapsed < ThinkingTimeReportThreshold)
+        {
+            return string.Empty;
+        }
+
+        var totalSeconds = (int)elapsed.TotalSeconds;
+        return totalSeconds < 60
+            ? $"Thought for {totalSeconds}s"
+            : $"Thought for {totalSeconds / 60}m {totalSeconds % 60}s";
     }
 
     /// <summary>
@@ -935,6 +987,8 @@ public sealed partial class ChatViewModel : ObservableObject
         StatusText = string.Empty;
         LiveProgressText = string.Empty;
         _lastProgressWasPartialText = false;
+        ThinkingTimeText = string.Empty;
+        _turnStartedAt = null;
         IsSending = false;
         _pendingUserMessage = null;
         LastSendFailed = false;
