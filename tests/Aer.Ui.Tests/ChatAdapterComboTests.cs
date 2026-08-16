@@ -90,10 +90,22 @@ public class ChatAdapterComboTests
         Dispatcher.UIThread.RunJobs();
 
         var combo = window.FindViewControl<ComboBox>("ChatNewAdapterCombo")!;
-        var texts = combo.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text).ToList();
+        var closedTexts = combo.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text).ToList();
 
-        Assert.Contains("Gemini", texts);
-        Assert.DoesNotContain("agy", texts);
-        Assert.DoesNotContain("claude", texts);
+        Assert.Contains("Gemini", closedTexts); // the closed combo's own selection-box header
+
+        // The closed header alone can't tell "claude" is fixed too — it never renders that item
+        // regardless of the fix, since "agy" is selected. Open the dropdown so BOTH list items are
+        // realized and checked, not just the one the header happens to show.
+        combo.IsDropDownOpen = true;
+        Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
+        var openTexts = window.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text).ToList();
+        Assert.Contains("Claude", openTexts);
+        Assert.Contains("Gemini", openTexts);
+        Assert.DoesNotContain("agy", openTexts);
+        Assert.DoesNotContain("claude", openTexts);
     }
 }

@@ -8,13 +8,16 @@
   <Window.Resources>
     <!-- M22 review follow-up (issue #250): vendor CLI dropdown items get the same icon+brand-color
          treatment as the room view's step chips, via the shared VendorIcon*Converter pair — one
-         mapping, every surface, per design-language.md. Items are plain adapter-name strings. -->
+         mapping, every surface, per design-language.md. Items are plain adapter-name strings, so
+         the label goes through VendorDisplayNameConverter too (found-while-fixing #342's second
+         reader — this template was the "second one nearby" that fix's own DisplayNameFor mapping
+         didn't yet reach). -->
     <DataTemplate x:Key="VendorComboItemTemplate" x:DataType="x:String">
       <StackPanel Orientation="Horizontal" Spacing="8">
         <Path Data="{Binding Converter={StaticResource VendorIconGeometryConverter}}"
               Fill="{Binding Converter={StaticResource VendorIconBrushConverter}}"
               Width="13" Height="13" Stretch="Uniform" VerticalAlignment="Center" />
-        <TextBlock Text="{Binding}" VerticalAlignment="Center" />
+        <TextBlock Text="{Binding Converter={StaticResource VendorDisplayNameConverter}}" VerticalAlignment="Center" />
       </StackPanel>
     </DataTemplate>
   </Window.Resources>
