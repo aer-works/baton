@@ -950,12 +950,24 @@ public sealed partial class RoomClient
         return true;
     }
 
+    /// <summary>
+    /// #350: was an unconditional <c>Clear()</c> + re-add every 2-second live-refresh tick, whether
+    /// or not anything changed. <c>ObservableCollection.Clear()</c> raises <c>Reset</c>, so Avalonia
+    /// tore down and rebuilt every item container twice a tick — killing hover, keyboard focus, text
+    /// selection, and occasionally swallowing a click. Worse for this collection specifically:
+    /// <see cref="PausedStepViewModel.RevisionFilePath"/>/<c>SupplementaryWorker</c>/
+    /// <c>SupplementaryOutputName</c> are operator-typed text fields a rebuild silently wiped
+    /// mid-entry. Reconciled by (<see cref="StepId"/>, <see cref="ExecutionId"/>) instead: an
+    /// unchanged pause point keeps its existing instance (and whatever the operator has typed into
+    /// it) untouched; only genuinely new/departed pause points touch the collection at all.
+    /// <see cref="PausedStepViewModel.IsEnabled"/> is not re-synced here — <c>OnIsMutationInFlightChanged</c>
+    /// already keeps every live instance's <c>IsEnabled</c> current independent of this rebuild.
+    /// </summary>
     private void RebuildPausedSteps(RoomProjection projection, string roomDirectoryPath)
     {
-        ViewModel.PausedSteps.Clear();
-
         var stepDefinitionByStepId = projection.Snapshot.Steps.ToDictionary(step => step.StepId);
 
+        var desiredKeys = new HashSet<(StepId StepId, ExecutionId ExecutionId)>();
         foreach (var stepState in projection.State.Steps)
         {
             if (stepState.Status != StepStatus.Paused || stepState.LatestExecutionId is not { } executionId)
@@ -963,15 +975,31 @@ public sealed partial class RoomClient
                 continue;
             }
 
-            var supersedeTargets = stepDefinitionByStepId[stepState.StepId].PausePoint!.SupersedeTargets;
+            desiredKeys.Add((stepState.StepId, executionId));
+        }
+
+        foreach (var stale in ViewModel.PausedSteps.Where(step => !desiredKeys.Contains((step.StepId, step.ExecutionId))).ToList())
+        {
+            ViewModel.PausedSteps.Remove(stale);
+        }
+
+        var existingKeys = ViewModel.PausedSteps.Select(step => (step.StepId, step.ExecutionId)).ToHashSet();
+        foreach (var (stepId, executionId) in desiredKeys)
+        {
+            if (existingKeys.Contains((stepId, executionId)))
+            {
+                continue;
+            }
+
+            var supersedeTargets = stepDefinitionByStepId[stepId].PausePoint!.SupersedeTargets;
 
             ViewModel.PausedSteps.Add(new PausedStepViewModel(
-                stepState.StepId,
+                stepId,
                 executionId,
                 supersedeTargets,
-                (stepId, decidedExecutionId, decisionType, targetStepId, revisionFilePath, supplementaryWorker, supplementaryOutputName) =>
+                (decidedStepId, decidedExecutionId, decisionType, targetStepId, revisionFilePath, supplementaryWorker, supplementaryOutputName) =>
                     DecideAsync(
-                        roomDirectoryPath, stepId, decidedExecutionId, decisionType, targetStepId,
+                        roomDirectoryPath, decidedStepId, decidedExecutionId, decisionType, targetStepId,
                         revisionFilePath, supplementaryWorker, supplementaryOutputName))
             {
                 IsEnabled = !ViewModel.IsMutationInFlight,
@@ -981,12 +1009,12 @@ public sealed partial class RoomClient
         ViewModel.Chat.SyncPendingDecisions(ViewModel.PausedSteps);
     }
 
+    /// <summary>#350: same reconciliation as <see cref="RebuildPausedSteps"/>, and for the same reason — see its remarks.</summary>
     private void RebuildRunningExecutions(RoomProjection projection, string roomDirectoryPath)
     {
-        ViewModel.RunningExecutions.Clear();
-
         var isLocallyHostedRoom = HostedRunFor(roomDirectoryPath) is not null;
 
+        var desired = new List<(StepId? StepId, ExecutionId ExecutionId, bool IsLocallyHosted)>();
         foreach (var stepState in projection.State.Steps)
         {
             if (stepState.Status != StepStatus.Running || stepState.LatestExecutionId is not { } executionId)
@@ -994,12 +1022,30 @@ public sealed partial class RoomClient
                 continue;
             }
 
-            AddRunningExecution(stepState.StepId, executionId, isLocallyHostedRoom || _isClientMode, projection.State, roomDirectoryPath);
+            desired.Add((stepState.StepId, executionId, isLocallyHostedRoom || _isClientMode));
         }
 
         foreach (var stepLessExecution in projection.State.StepLessExecutions)
         {
-            AddRunningExecution(stepId: null, stepLessExecution.ExecutionId, isLocallyHosted: false, projection.State, roomDirectoryPath);
+            desired.Add((null, stepLessExecution.ExecutionId, false));
+        }
+
+        var desiredKeys = desired.Select(d => (d.StepId, d.ExecutionId)).ToHashSet();
+        foreach (var stale in ViewModel.RunningExecutions.Where(e => !desiredKeys.Contains((e.StepId, e.ExecutionId))).ToList())
+        {
+            ViewModel.RunningExecutions.Remove(stale);
+        }
+
+        var existingByKey = ViewModel.RunningExecutions.ToDictionary(e => (e.StepId, e.ExecutionId));
+        foreach (var (stepId, executionId, isLocallyHosted) in desired)
+        {
+            if (existingByKey.TryGetValue((stepId, executionId), out var existing))
+            {
+                existing.CancellationRequested = projection.State.CancellationRequestedExecutionIds.Contains(executionId);
+                continue;
+            }
+
+            AddRunningExecution(stepId, executionId, isLocallyHosted, projection.State, roomDirectoryPath);
         }
     }
 

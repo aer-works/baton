@@ -366,8 +366,8 @@ public sealed partial class ChatViewModel : ObservableObject
     /// </summary>
     /// <summary>
     /// Re-points the transcript's cards at the room's current paused steps. Called whenever the room
-    /// rebuilds them, because that rebuild replaces every view model and the transcript would
-    /// otherwise keep rendering the previous generation.
+    /// rebuilds them — since #350, an unchanged pause reuses its existing instance, so most calls are
+    /// now a no-op replace; a genuinely new or departed pause point is what still needs syncing.
     /// </summary>
     public void SyncPendingDecisions(IReadOnlyList<PausedStepViewModel> pausedSteps)
     {
