@@ -1093,6 +1093,35 @@ public sealed partial class ChatViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Resets the composer's per-room draft state — the queue, the draft text, the sticky tag — on a
+    /// genuine room switch (#1321, pre-existing on <c>main</c>, fixed alongside #1307). <c>MainWindow</c>'s
+    /// room-switch block calls this alongside <c>StandingPermissionsViewModel.CloseForRoomSwitch</c>
+    /// and its own <c>ClearConversation</c>, so there is ONE room-switch discipline instead of a second
+    /// one bolted onto the interactive branch of <c>OpenAsync</c>.
+    /// <para>
+    /// Deliberately narrower than <see cref="Clear"/>: the interactive branch calls
+    /// <see cref="LoadFromMetadata"/> right after this, which repopulates <c>_lastMetadata</c>,
+    /// <see cref="Messages"/>, <see cref="SessionId"/> and the rest of what <see cref="Clear"/> tears
+    /// down — calling <see cref="Clear"/> there would just have this method's work redone a moment
+    /// later by <see cref="LoadFromMetadata"/>, for the fields that matter, while wiping fields
+    /// <see cref="LoadFromMetadata"/> does NOT reset (like <see cref="IsPipelineRoom"/>) that the
+    /// caller does not want touched mid-switch either.
+    /// </para>
+    /// <para>
+    /// Also why the caller guards this on <c>previousRoomDirectoryPath != roomDirectoryPath</c>: #1272's
+    /// settle-time SAME-room reopen must leave a queue the operator is watching alone, and that guard
+    /// is what makes this a switch-only reset rather than one that also fires on a reopen.
+    /// </para>
+    /// </summary>
+    public void ResetComposerForRoomSwitch()
+    {
+        QueuedMessages.Clear();
+        OnPropertyChanged(nameof(HasQueuedMessages));
+        InputText = string.Empty;
+        SelectedTagParticipantId = null;
+    }
+
     public void Clear()
     {
         _lastMetadata = null;

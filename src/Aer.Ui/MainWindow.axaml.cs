@@ -895,6 +895,16 @@ public partial class MainWindow : Window
             // fresh, the same room-switch discipline CloseForRoomSwitch's own comment explains.
             ClearConversation();
             _lastConversationStepId = null;
+            // #1321 (pre-existing, fixed alongside #1307): the composer carries per-room draft state
+            // — a queued backlog, an in-progress draft, the sticky tag — that belongs to the room
+            // being left, not the one about to open. Without this, an interactive→interactive switch
+            // let room A's queued messages drain into room B on the next live-refresh tick
+            // (ChatViewModel.CanDrainQueue only checks no-send-in-flight/no-failed-send/no-open-gate,
+            // none of which a room switch changes), alongside a surviving draft and sticky tag. See
+            // ChatViewModel.ResetComposerForRoomSwitch's remarks for why this belongs in the same
+            // room-switch block as CloseForRoomSwitch/ClearConversation rather than a second discipline
+            // bolted onto the interactive branch below.
+            ViewModel.Chat.ResetComposerForRoomSwitch();
         }
 
         await LoadAsync(roomDirectoryPath, cancellationToken);
