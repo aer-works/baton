@@ -19,6 +19,15 @@ public sealed record ChatMessageViewModel(
     Action? PrepareFixPrompt = null,
     bool IsDormancy = false,
     Action? Wake = null,
+    // 0032/0054 §6, #592: the dormancy card's "Swap orchestrator…" affordance -- 0032's
+    // consequences named this card as the mechanism's home before the reassignment control
+    // existed. One button per candidate rather than a bespoke Action, the same generic-by-
+    // construction shape as the header's control (ChatHeaderView's ItemsControl over
+    // Chat.Participants) -- both bind straight to MainWindowViewModel.ReassignOrchestratorCommand.
+    // Empty except on the latest-entered dormancy card, and only ever rendered when it holds more
+    // than one entry (ruling 3): a control with no possible target is clutter, not a disabled
+    // affordance.
+    IReadOnlyList<Participant>? SwapOrchestratorCandidates = null,
     // 0026 §4/#1180: the out-of-plan card -- same pattern as IsFailure, but never carries
     // PrepareFixPrompt (an offer to spend against the very quota that is out is the confusion 0026
     // exists to remove) and never reads Status.Failed.
@@ -32,6 +41,9 @@ public sealed record ChatMessageViewModel(
 {
     public IRelayCommand? PrepareFixPromptCommand { get; } = PrepareFixPrompt != null ? new RelayCommand(PrepareFixPrompt) : null;
     public IRelayCommand? WakeCommand { get; } = Wake != null ? new RelayCommand(Wake) : null;
+
+    /// <summary>Ruling 3's own gate, restated per card: even a latest-entered dormancy card shows nothing for a single-participant room.</summary>
+    public bool HasSwapOrchestratorCandidates => SwapOrchestratorCandidates is { Count: > 1 };
 }
 
 /// <summary>
@@ -161,6 +173,29 @@ public sealed partial class ChatViewModel : ObservableObject
     private string? workerModelText;
 
     public bool HasWorkerModel => !string.IsNullOrEmpty(WorkerModelText);
+
+    /// <summary>
+    /// Whether the chip's participant currently holds the room's orchestrator role (0054 §6, #592).
+    /// The STATUS renders regardless of how many participants the room has — the scoping pass's
+    /// ruling 3 — only the reassign CONTROL (<see cref="IsOrchestratorReassignVisible"/>) hides for a
+    /// single-participant room. False on a pre-#1305 room (null <c>Participants</c>): there is no
+    /// orchestrator fact to show, not a false one.
+    /// </summary>
+    [ObservableProperty]
+    private bool workerIsOrchestrator;
+
+    /// <summary>
+    /// This room's participants, generically — 0054 §6's reassignment target list. Empty until a
+    /// room is open, or on a pre-#1305 room.
+    /// </summary>
+    public IReadOnlyList<Participant> Participants { get; private set; } = [];
+
+    /// <summary>
+    /// The reassign control's own visibility (ruling 3): a control with no possible target is
+    /// clutter, not a disabled affordance, so it hides entirely rather than showing disabled for the
+    /// single-participant room every room is today.
+    /// </summary>
+    public bool IsOrchestratorReassignVisible => Participants.Count > 1;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasStatusText))]
@@ -520,6 +555,10 @@ public sealed partial class ChatViewModel : ObservableObject
         var firstParticipant = metadata.Participants?.FirstOrDefault();
         WorkerChipText = firstParticipant?.Name ?? metadata.CurrentAdapter;
         WorkerModelText = firstParticipant?.Model ?? metadata.Model;
+        WorkerIsOrchestrator = firstParticipant?.IsOrchestrator ?? false;
+        Participants = metadata.Participants ?? [];
+        OnPropertyChanged(nameof(Participants));
+        OnPropertyChanged(nameof(IsOrchestratorReassignVisible));
         RaiseOpenStateChanged();
 
         RebuildMessages();
@@ -755,6 +794,7 @@ public sealed partial class ChatViewModel : ObservableObject
             }
 
             Action? wake = isLatestEntered ? _wakeAction : null;
+            var swapCandidates = isLatestEntered ? Participants : [];
             Messages.Add(new ChatMessageViewModel(
                 "System",
                 text,
@@ -762,7 +802,8 @@ public sealed partial class ChatViewModel : ObservableObject
                 IsFromUser: false,
                 IsSystem: false,
                 IsDormancy: true,
-                Wake: wake));
+                Wake: wake,
+                SwapOrchestratorCandidates: swapCandidates));
         }
         else
         {
@@ -997,6 +1038,10 @@ public sealed partial class ChatViewModel : ObservableObject
         HeadlineText = "No room open.";
         WorkerChipText = null;
         WorkerModelText = null;
+        WorkerIsOrchestrator = false;
+        Participants = [];
+        OnPropertyChanged(nameof(Participants));
+        OnPropertyChanged(nameof(IsOrchestratorReassignVisible));
         StatusText = string.Empty;
         LiveProgressText = string.Empty;
         _lastProgressWasPartialText = false;

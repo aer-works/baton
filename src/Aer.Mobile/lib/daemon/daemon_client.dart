@@ -271,6 +271,19 @@ class DaemonClient {
     _throwIfFailed(response);
   }
 
+  /// Reassigns the room's orchestrator to [workerId] (#592, 0054 §6) — see
+  /// Aer.Daemon/Program.cs's `/api/rooms/orchestrator/reassign` for the refusal rules (a turn in
+  /// flight, an unknown WorkerId). Throws [DaemonException] on refusal, same as every other
+  /// mutation here — the screen catches it and shows the message, `clearTurnHostDormancy`'s shape.
+  Future<void> reassignOrchestrator(String roomDirectoryPath, String workerId) async {
+    final response = await _post(
+      Uri.http(host, '/api/rooms/orchestrator/reassign'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'roomDirectoryPath': roomDirectoryPath, 'workerId': workerId}),
+    );
+    _throwIfFailed(response);
+  }
+
   /// Text content of one execution's output file, or null if the daemon has no such file (already
   /// deleted, or the execution/fileName pair doesn't match its recorded OutputFiles). See
   /// src/Aer.Daemon/Program.cs's /api/rooms/artifact handler (M21 Phase 2, #232).

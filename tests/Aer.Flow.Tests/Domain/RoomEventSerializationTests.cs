@@ -36,7 +36,12 @@ public class RoomEventSerializationTests
         new RoomEvent.WorkerJoined(new WorkerId("chat-worker"), "claude", "claude", "sonnet", "standard", FixedInstant),
         new RoomEvent.WorkerJoined(new WorkerId("chat-worker"), "claude", "claude", null, null, FixedInstant),
         new RoomEvent.WorkerRenamed(new WorkerId("chat-worker"), "claude-reviewer", FixedInstant),
+        // Both AssignedBy shapes (#592 ruling 4): null is the implicit first assignment
+        // (InteractiveSessions.cs's materialization, and every pre-#592 journal line); "operator" is
+        // an explicit reassignment through the endpoint. Same null/non-null pairing WorkerJoined's
+        // two rows above cover for Model/Effort.
         new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant),
+        new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant, "operator"),
     ];
 
     [Theory]

@@ -6,6 +6,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="clr-namespace:Aer.Ui.Core;assembly=Aer.Ui.Core"
              xmlns:md="clr-namespace:Aer.Ui.Markdown"
+             xmlns:domain="clr-namespace:Aer.Flow.Domain;assembly=Aer.Flow"
              x:Class="Aer.Ui.Views.ChatView"
              x:DataType="vm:MainWindowViewModel">
   <!-- #1224: the room header is no longer the first row here. It spans the transcript AND the shape
@@ -181,6 +182,24 @@
                   </StackPanel>
                   <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}" IsVisible="{Binding IsDormancy}">
                     <Button Content="Wake" Command="{Binding WakeCommand}" IsVisible="{Binding WakeCommand, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                    <!-- 0032/0054 §6, #592: "Swap orchestrator…", one button per candidate, hidden
+                         entirely for a single-participant room (ruling 3, every room today). -->
+                    <ItemsControl ItemsSource="{Binding SwapOrchestratorCandidates}"
+                                  IsVisible="{Binding HasSwapOrchestratorCandidates}">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                          <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.2}" />
+                        </ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="domain:Participant">
+                          <Button Content="{Binding Name, StringFormat='Swap orchestrator to {0}'}"
+                                  Command="{Binding ((vm:MainWindowViewModel)DataContext).ReassignOrchestratorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                  CommandParameter="{Binding Id}"
+                                  IsEnabled="{Binding !IsOrchestrator}" />
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
                   </StackPanel>
                 </StackPanel>
               </Border>

@@ -892,6 +892,131 @@ namespace Aer.Daemon
                 return Results.Ok();
             });
 
+            // #592 (0054 §6): reassigns the room's orchestrator. Two halves, in the write order the
+            // scoping pass's ruling 1 settled -- validate, then the SessionMetadata half (which
+            // participant's IsOrchestrator reads true, under SessionTurnLockFor -- the lock every
+            // chat-turn endpoint takes, since Participants is a room.json field), then the journal
+            // half (RoomMutationInterface.ReassignOrchestratorAsync, under its own
+            // ConcurrencyGuard.AcquireRoomEvents), best-effort: a journal failure here logs rather
+            // than throws, the same stance InteractiveSessionMaterializer.MaterializeToDirectoryAsync
+            // already takes for the first participant's join, because by that point the metadata
+            // half already committed the real fact and an unwritten history line is the recoverable
+            // half of the two.
+            //
+            // Ruling 3: reassigning to the current holder is an idempotent accept -- no metadata
+            // write, no journal append, since nothing about who holds the role changed. Unknown
+            // WorkerId is a 400, not a 409 -- it is a bad request, not a room refusing a legal one.
+            app.MapPost("/api/rooms/orchestrator/reassign", async ([FromBody] ReassignOrchestratorRequest request) =>
+            {
+                if (string.IsNullOrWhiteSpace(request.RoomDirectoryPath))
+                {
+                    return Results.BadRequest("RoomDirectoryPath is required.");
+                }
+
+                if (string.IsNullOrWhiteSpace(request.WorkerId))
+                {
+                    return Results.BadRequest("WorkerId is required.");
+                }
+
+                if (!Directory.Exists(request.RoomDirectoryPath))
+                {
+                    return Results.BadRequest($"RoomDirectoryPath '{request.RoomDirectoryPath}' does not exist.");
+                }
+
+                var reassignMetadataPath = Path.Combine(request.RoomDirectoryPath, ".aer", AerPaths.RoomMetadataFileName);
+                var reassignMetadata = await InteractiveSessionMaterializer.LoadMetadataAsync(reassignMetadataPath).ConfigureAwait(false);
+                if (reassignMetadata == null)
+                {
+                    return Results.BadRequest($"'{request.RoomDirectoryPath}' is not a room directory (no room.json).");
+                }
+
+                var targetWorkerId = new WorkerId(request.WorkerId);
+                var targetParticipant = reassignMetadata.Participants?.FirstOrDefault(p => p.Id == targetWorkerId);
+                if (targetParticipant == null)
+                {
+                    return Results.BadRequest($"WorkerId '{request.WorkerId}' is not a participant in this room.");
+                }
+
+                if (targetParticipant.IsOrchestrator)
+                {
+                    return Results.Ok();
+                }
+
+                if (ConcurrencyGuard.IsHeld(request.RoomDirectoryPath))
+                {
+                    return Results.Conflict("This room is running. Stop it before reassigning its orchestrator.");
+                }
+
+                // Second-reader finding on #592: the check above is a pre-flight only -- a pump can
+                // still acquire flow.lock in the gap between it and the turn lock below. Re-checking
+                // AFTER the turn lock is held, before the metadata save, closes that: nothing else
+                // can start a run while this holds SessionTurnLockFor (every chat-turn entry point
+                // takes the same lock), so a still-held guard at this point is authoritative, not a
+                // snapshot. Refusing here means the metadata half never writes on the race the
+                // pre-flight check alone could miss.
+                var reassignTurnLock = SessionTurnLockFor(request.RoomDirectoryPath);
+                await reassignTurnLock.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (ConcurrencyGuard.IsHeld(request.RoomDirectoryPath))
+                    {
+                        return Results.Conflict("This room is running. Stop it before reassigning its orchestrator.");
+                    }
+
+                    var currentMetadata =
+                        await InteractiveSessionMaterializer.LoadMetadataAsync(reassignMetadataPath).ConfigureAwait(false)
+                        ?? reassignMetadata;
+
+                    var updatedParticipants = currentMetadata.Participants?
+                        .Select(p => p with { IsOrchestrator = p.Id == targetWorkerId })
+                        .ToList();
+
+                    if (updatedParticipants != null)
+                    {
+                        var updatedMetadata = currentMetadata with { Participants = updatedParticipants };
+                        await InteractiveSessionMaterializer.SaveMetadataAsync(updatedMetadata, reassignMetadataPath).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    reassignTurnLock.Release();
+                }
+
+                var reassignRoomLogPath = Path.Combine(request.RoomDirectoryPath, "room.jsonl");
+                var reassignReader = new RoomEventLogReader(reassignRoomLogPath);
+                await using var reassignWriter = new RoomEventLogWriter(reassignRoomLogPath);
+
+                try
+                {
+                    await RoomMutationInterface.ReassignOrchestratorAsync(
+                        request.RoomDirectoryPath,
+                        targetWorkerId,
+                        reassignReader,
+                        reassignWriter,
+                        assignedBy: "operator").ConfigureAwait(false);
+                }
+                catch (IOException ex)
+                {
+                    // The stance InteractiveSessionMaterializer.MaterializeToDirectoryAsync already
+                    // takes for the first participant's join: by this point metadata already
+                    // committed the real fact, so a missed journal line is the recoverable half.
+                    Console.Error.WriteLine($"Could not journal orchestrator reassignment for '{request.RoomDirectoryPath}': {ex.Message}");
+                }
+                catch (InvalidRoomMutationException ex)
+                {
+                    // Second-reader finding on #592: unlike IOException, this means the room genuinely
+                    // refused the reassignment (e.g. the re-check above still lost a race to a pump
+                    // that started between it and this append) -- metadata already changed, so
+                    // swallowing this would leave room.json and room.jsonl disagreeing while the
+                    // caller saw 200. Surface it as the same conflict the pre-flight check returns;
+                    // with the re-check above this line should be unreachable in practice, but the
+                    // distinction from IOException must hold regardless.
+                    return Results.Conflict(ex.Message);
+                }
+
+                return Results.Ok();
+            });
+
             // #672: the operator's decision surface for held work escalated into a room, and the
             // seam where approving a memory-proposal-shaped item actually applies it (decision
             // 0044 point 3). One endpoint with an Outcome field, mirroring /api/rooms/decide's own
@@ -3866,6 +3991,9 @@ namespace Aer.Daemon
 
     /// <summary>#1216: switches a room's workflow on or off — see <see cref="RoomMutationInterface.SetWorkflowSwitchAsync"/>.</summary>
     public record SetWorkflowSwitchRequest(string RoomDirectoryPath, bool IsOn);
+
+    /// <summary>#592 (0054 §6): reassigns a room's orchestrator to the participant named by <paramref name="WorkerId"/> — see <see cref="RoomMutationInterface.ReassignOrchestratorAsync"/>.</summary>
+    public record ReassignOrchestratorRequest(string RoomDirectoryPath, string WorkerId);
 
     public record AnswerPermissionRequest(
         string DirectoryPath,

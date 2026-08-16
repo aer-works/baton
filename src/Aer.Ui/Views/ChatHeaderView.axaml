@@ -9,6 +9,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="clr-namespace:Aer.Ui.Core;assembly=Aer.Ui.Core"
+             xmlns:domain="clr-namespace:Aer.Flow.Domain;assembly=Aer.Flow"
              x:Class="Aer.Ui.Views.ChatHeaderView"
              x:DataType="vm:MainWindowViewModel">
   <UserControl.Styles>
@@ -51,7 +52,7 @@
     <!-- The gap between elements comes from the grid's own ColumnSpacing rather than a Margin per
          control: Space.3 is a Double token and a Thickness cannot be composed from one in markup,
          so per-control margins would mean transcribing the token's value five times. -->
-    <Grid x:Name="HeaderRow" ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto"
+    <Grid x:Name="HeaderRow" ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto,Auto"
           ColumnSpacing="{DynamicResource Space.3}">
       <TextBlock x:Name="RoomNameText" Grid.Column="0" Classes="display" VerticalAlignment="Center"
                  Text="{Binding Chat.HeadlineText}"
@@ -63,17 +64,42 @@
               CornerRadius="20" Padding="10,2">
         <!-- 0054 §1 (#1305): the participant's name is the chip; its model is secondary text beside
              it, never the identity itself. Two claude-sonnets in one room are two distinctly named
-             participants, not one chip trying to carry both. -->
+             participants, not one chip trying to carry both. The small dot (0054 §6, #592) is the
+             orchestrator status — quiet on purpose, the header stays a status line. -->
         <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.1}">
           <TextBlock Classes="caption" Text="{Binding Chat.WorkerChipText}" VerticalAlignment="Center" />
           <TextBlock Classes="caption secondary" Text="{Binding Chat.WorkerModelText}"
                      IsVisible="{Binding Chat.HasWorkerModel}" VerticalAlignment="Center" />
+          <TextBlock Classes="caption secondary" Text="&#9679;" FontSize="8" VerticalAlignment="Center"
+                     IsVisible="{Binding Chat.WorkerIsOrchestrator}"
+                     ToolTip.Tip="Orchestrator" />
         </StackPanel>
       </Border>
+      <!-- #592 (0054 §6): reassigns the orchestrator to a different participant. Generic by
+           construction (one button per Chat.Participants entry, each carrying its own WorkerId), but
+           hidden entirely for a single-participant room — the scoping pass's ruling 3, which is every
+           room today, so this ships wired but invisible. -->
+      <ItemsControl Grid.Column="2" VerticalAlignment="Center"
+                    ItemsSource="{Binding Chat.Participants}"
+                    IsVisible="{Binding Chat.IsOrchestratorReassignVisible}">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.1}" />
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="domain:Participant">
+            <Button Content="{Binding Name, StringFormat='Make {0} orchestrator'}"
+                    Command="{Binding ((vm:MainWindowViewModel)DataContext).ReassignOrchestratorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                    CommandParameter="{Binding Id}"
+                    IsEnabled="{Binding !IsOrchestrator}" />
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
       <!-- Offered only for a workflow room: a chat session's single repeatedly-superseded step has
            no graph worth drawing (ChatViewModel's own remarks). What the panel holds and where it
            renders is on ChatViewModel.IsShapePanelOpen and MainWindow.ApplyShellLayout. -->
-      <ToggleButton x:Name="ChatShapeToggle" Grid.Column="2" VerticalAlignment="Center" Content="Shape"
+      <ToggleButton x:Name="ChatShapeToggle" Grid.Column="3" VerticalAlignment="Center" Content="Shape"
                           IsVisible="{Binding Chat.IsShapeToggleVisible}"
                     IsChecked="{Binding Chat.IsShapePanelOpen}" />
       <!-- #1216: the header's Workflow ON/OFF switch (02-screens.md's "the workflow-toggle-off
@@ -81,7 +107,7 @@
            engine rather than setting it, so a refusal leaves the switch showing the truth instead of
            a position nothing agreed to. What refusal means, and why it refuses rather than stopping
            the room for you, is the dated amendment in 02-screens.md. -->
-      <ToggleButton x:Name="WorkflowSwitch" Grid.Column="3" VerticalAlignment="Center"
+      <ToggleButton x:Name="WorkflowSwitch" Grid.Column="4" VerticalAlignment="Center"
                           IsVisible="{Binding Chat.IsWorkflowSwitchVisible}"
                     IsChecked="{Binding Chat.IsWorkflowOn, Mode=OneWay}"
                     Content="{Binding Chat.WorkflowSwitchLabel}"
@@ -90,7 +116,7 @@
       <!-- #1272: opening this needs the room's own directory path, which only MainWindow's
            codebehind knows (RoomClient.CurrentRoomDirectoryPath) — wired via Click there, matching
            EditBindingsButton/SaveBindingsButton's own pattern, rather than a bound Command. -->
-      <ToggleButton x:Name="PermissionsButton" Grid.Column="4" VerticalAlignment="Center"
+      <ToggleButton x:Name="PermissionsButton" Grid.Column="5" VerticalAlignment="Center"
                     IsChecked="{Binding StandingPermissions.IsStandingPermissionsOpen}"
                     Content="Permissions"
                     ToolTip.Tip="View and revoke standing permissions for this room." />
@@ -100,7 +126,7 @@
            closed by default was open. Disabled rather than hidden is what that rule requires: a
            person looking for the brake must find it in the same place whether or not anything is
            running. Enablement mirrors the binding it had in RoomView, unchanged. -->
-      <Button x:Name="StopButton" Grid.Column="5" VerticalAlignment="Center"
+      <Button x:Name="StopButton" Grid.Column="6" VerticalAlignment="Center"
               IsEnabled="{Binding IsMutationInFlight}"
               ToolTip.Tip="Cancel every execution this window currently has in flight.">
         <AccessText Text="_Stop" />

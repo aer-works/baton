@@ -186,9 +186,20 @@ public abstract record RoomEvent
         string NewName,
         DateTimeOffset Timestamp) : RoomEvent;
 
-    /// <summary>Records the room's orchestrator assignment — implicit at first join, or explicit reassignment thereafter (0054 §6, the control built in #592).</summary>
+    /// <summary>
+    /// Records the room's orchestrator assignment — implicit at first join, or explicit reassignment
+    /// thereafter (0054 §6, the control built in #592).
+    /// </summary>
+    /// <param name="AssignedBy">
+    /// Ruling 4 (the #592 scoping pass): follows <see cref="WorkflowSwitched"/>'s <c>SwitchedBy</c>
+    /// convention, hardcoded <c>"operator"</c> at the reassignment endpoint's call site. Trailing
+    /// optional and null on the implicit first assignment (<c>InteractiveSessions.cs</c>'s
+    /// materialization) — that assignment has no actor to name, and null doubles as the value every
+    /// pre-#592 journal line deserializes to.
+    /// </param>
     public sealed record OrchestratorAssigned(
         WorkerId WorkerId,
-        DateTimeOffset Timestamp) : RoomEvent;
+        DateTimeOffset Timestamp,
+        string? AssignedBy = null) : RoomEvent;
 }
 
