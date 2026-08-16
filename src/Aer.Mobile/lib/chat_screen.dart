@@ -381,10 +381,10 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Reassigns the room's orchestrator to [workerId] (#592, 0054 §6) — same shape as
-  /// [_clearDormancy]: fire the request, let [_refresh] pick up the new `Participants` on its next
-  /// poll rather than mutating local state, and surface a refusal as a snackbar rather than
-  /// swallowing it.
+  /// Calls [DaemonClient.reassignOrchestrator] (see that method's doc comment for what the
+  /// endpoint does) — same shape as [_clearDormancy]: fire the request, let [_refresh] pick up the
+  /// new `Participants` on its next poll rather than mutating local state, and surface a refusal
+  /// as a snackbar rather than swallowing it.
   Future<void> _reassignOrchestrator(String workerId) async {
     try {
       await widget.client.reassignOrchestrator(widget.directoryPath, workerId);
@@ -922,9 +922,9 @@ class _ChatScreenState extends State<ChatScreen> {
     return adapters.isEmpty ? null : adapters.join(' + ');
   }
 
-  /// Whether the chip's participant currently holds the room's orchestrator role (0054 §6, #592).
-  /// The status renders regardless of participant count (ruling 3) — mirrors desktop's
-  /// `ChatViewModel.WorkerIsOrchestrator`. False, not just absent, on a pre-#1305 room.
+  /// Mirrors desktop's `ChatViewModel.WorkerIsOrchestrator` — see that property's doc comment for
+  /// what it means and why it renders regardless of participant count. False, not just absent, on
+  /// a pre-#1305 room.
   bool _workerIsOrchestrator(SessionMetadata? metadata) {
     final participants = metadata?.participants;
     if (participants == null || participants.isEmpty) return false;

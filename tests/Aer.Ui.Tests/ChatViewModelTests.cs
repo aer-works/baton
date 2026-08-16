@@ -64,10 +64,9 @@ public class ChatViewModelTests
     }
 
     /// <summary>
-    /// #592 (0054 §6): the chip's orchestrator status surfaces from the first participant's own
-    /// <c>IsOrchestrator</c>, and the reassign control's visibility is ruling 3's own gate -- hidden
-    /// for the single-participant room every room is today, shown once <c>Participants</c> carries
-    /// more than one entry.
+    /// #592: guards <see cref="ChatViewModel.WorkerIsOrchestrator"/> and
+    /// <see cref="ChatViewModel.IsOrchestratorReassignVisible"/> — see those properties' doc
+    /// comments for the rule (ruling 3) each renders.
     /// </summary>
     [Fact]
     public void LoadFromMetadata_SurfacesOrchestratorStatus_AndHidesReassignControlForOneParticipant()

@@ -161,7 +161,7 @@ public class OrchestratorReassignEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
-    /// <summary>Ruling 3's no-op half: reassigning to the current holder succeeds, without touching metadata or journal.</summary>
+    /// <summary>The endpoint's half of <c>OrchestratorReassignmentMutationTests</c>' no-op case: the HTTP call itself succeeds without touching metadata or journal.</summary>
     [Fact]
     public async Task Reassigning_to_the_current_holder_succeeds_without_a_new_journal_event()
     {
@@ -178,7 +178,7 @@ public class OrchestratorReassignEndpointTests : IAsyncLifetime
         Assert.Equal(beforeCount, await OrchestratorAssignedCountAsync(started.RoomDirectoryPath));
     }
 
-    /// <summary>Ruling 3's other half, beside the no-op above: a real reassignment updates metadata and appends exactly one event -- the polarity pair that catches a regression to always-append or never-append.</summary>
+    /// <summary>The endpoint's half of the same polarity pair (see <c>OrchestratorReassignmentMutationTests</c>): a real reassignment flips metadata too, which only the HTTP path can prove.</summary>
     [Fact]
     public async Task Reassigning_to_a_different_participant_flips_metadata_and_appends_one_event()
     {
