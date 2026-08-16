@@ -134,6 +134,38 @@ public class ChatViewModelTests
     }
 
     [Fact]
+    public void LoadFromMetadata_ParticipantWithModel_SetsWorkerModelText()
+    {
+        // Test debt from #1310 (0054 §1, #1305): WorkerModelText/HasWorkerModel were wired in
+        // LoadFromMetadata but never pinned against a metadata that actually carries a Participant.
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        { Participants = [new Participant(new WorkerId("claude"), "claude", "claude", "claude-sonnet-4.5", null, true)] };
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.Equal("claude-sonnet-4.5", viewModel.WorkerModelText);
+        Assert.True(viewModel.HasWorkerModel);
+    }
+
+    [Fact]
+    public void LoadFromMetadata_ParticipantWithNoModel_HasWorkerModelIsFalse()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        { Participants = [new Participant(new WorkerId("claude"), "claude", "claude", null, null, true)] };
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.Null(viewModel.WorkerModelText);
+        Assert.False(viewModel.HasWorkerModel);
+    }
+
+    [Fact]
     public void BeginSend_ShowsThePendingMessageUntilLoadFromMetadataObservesTheCompletedTurn()
     {
         var viewModel = new ChatViewModel();
