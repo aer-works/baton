@@ -882,6 +882,15 @@ public partial class MainWindow : Window
         if (previousRoomDirectoryPath != null && previousRoomDirectoryPath != roomDirectoryPath)
         {
             ViewModel.StandingPermissions.CloseForRoomSwitch();
+            // #468's second reader: _lastConversationStepId is compared by step id alone, and step
+            // ids are commonly reused role names (architect/critic) across different templates — a
+            // step selected on room open here could coincidentally match whatever step id was last
+            // viewed in the PREVIOUS room, which would skip ClearConversation below and leave that
+            // room's rendered exchange on screen under this one's Conversation tab. Reset the
+            // tracked id on every genuine room switch so the next selection is always evaluated
+            // fresh, the same room-switch discipline CloseForRoomSwitch's own comment explains.
+            ClearConversation();
+            _lastConversationStepId = null;
         }
 
         await LoadAsync(roomDirectoryPath, cancellationToken);
