@@ -219,8 +219,19 @@
                               Margin="19,3,0,2">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:InboxItemViewModel">
+                      <!-- #1279: Fable's ruling — ReviewCommand opens the room, which arrow-key row
+                           selection already does (SelectedItem binds to Rooms.CurrentItem, the same
+                           "open this room" MainWindow.axaml.cs treats it as). Once #1196 moved the
+                           decision itself into the room's own transcript, this button stopped being
+                           a distinct destination and became a second copy of the selection a keyboard
+                           user already made to see it. So it stays as DISPLAY (the step name/preview
+                           a plain row can't show) but is deliberately not a keyboard target — the Tab
+                           skip this used to be by accident is now on purpose, and Enter (see
+                           SwitcherList's KeyDown handler) is what actually gets a keyboard user into
+                           the room's own decision controls. -->
                       <Button Command="{Binding ReviewCommand}" Classes="quiet" Padding="6,3"
-                              HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Margin="0,1">
+                              HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Margin="0,1"
+                              Focusable="False">
                         <StackPanel Spacing="1">
                           <TextBlock Classes="caption" Text="{Binding StatusText}"
                                      TextTrimming="CharacterEllipsis" />
