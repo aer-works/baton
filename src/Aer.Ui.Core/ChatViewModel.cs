@@ -251,6 +251,10 @@ public sealed partial class ChatViewModel : ObservableObject
 
     private int _turnsCountAtSendTime;
     private string? _pendingUserMessage;
+    // #323/#1290: tracks whether the last append was a streaming text delta, so a same-stream
+    // continuation concatenates raw (it's one sentence arriving token by token) while a genuinely
+    // new event (a new "status"/"tool" label, or "text" starting over) gets a separator first.
+    private bool _lastProgressWasPartialText;
 
     /// <summary>
     /// The runtime permission gate rendered inline in the conversation (0022, #390), or null when the
@@ -611,6 +615,7 @@ public sealed partial class ChatViewModel : ObservableObject
         {
             IsSending = false;
             LiveProgressText = string.Empty;
+            _lastProgressWasPartialText = false;
             _pendingUserMessage = null;
         }
         else if (IsSending && _pendingUserMessage is { } pending)
@@ -775,6 +780,7 @@ public sealed partial class ChatViewModel : ObservableObject
         _turnsCountAtSendTime = currentTurnsCount;
         _pendingUserMessage = message;
         LiveProgressText = string.Empty;
+        _lastProgressWasPartialText = false;
         StatusText = string.Empty;
         // A fresh send attempt clears the drain-pause flag (#1074): a queued send that failed pauses
         // the drain, and the operator acting again — a new send, or a new enqueue — is what resumes it.
@@ -845,10 +851,24 @@ public sealed partial class ChatViewModel : ObservableObject
         LastSendFailed = true;
     }
 
-    /// <summary>Appends one live in-turn stream fragment (<c>/api/ws/progress</c>) to <see cref="LiveProgressText"/>.</summary>
+    /// <summary>
+    /// Appends one live in-turn stream fragment (<c>/api/ws/progress</c>) to <see cref="LiveProgressText"/>.
+    /// #323/#1290: events are discrete labels ("Session started", a tool name, a status) except
+    /// <c>kind:"text", IsPartial:true</c> streaming deltas, which are token-level fragments of one
+    /// sentence — see <see cref="WorkerProgressEvent"/>'s producers in ClaudeWorkerAdapter/AgyWorkerAdapter.
+    /// A continuing partial-text run concatenates raw; anything else gets a separator first so
+    /// distinct events don't run together into one unreadable word.
+    /// </summary>
     public void AppendProgress(WorkerProgressEvent progressEvent)
     {
+        var isContinuingPartialText = _lastProgressWasPartialText && progressEvent is { Kind: "text", IsPartial: true };
+        if (!isContinuingPartialText && LiveProgressText.Length > 0)
+        {
+            LiveProgressText += " · ";
+        }
+
         LiveProgressText += progressEvent.Text;
+        _lastProgressWasPartialText = progressEvent is { Kind: "text", IsPartial: true };
     }
 
     /// <summary>
@@ -914,6 +934,7 @@ public sealed partial class ChatViewModel : ObservableObject
         WorkerChipText = null;
         StatusText = string.Empty;
         LiveProgressText = string.Empty;
+        _lastProgressWasPartialText = false;
         IsSending = false;
         _pendingUserMessage = null;
         LastSendFailed = false;
