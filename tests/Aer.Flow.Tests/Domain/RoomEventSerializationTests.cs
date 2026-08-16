@@ -33,6 +33,10 @@ public class RoomEventSerializationTests
         new RoomEvent.RuntimePermissionRevoked("req-1", "timeout", FixedInstant),
         new RoomEvent.WorkflowSwitched(false, "operator", FixedInstant),
         new RoomEvent.WorkflowSwitched(true, "operator", FixedInstant),
+        new RoomEvent.WorkerJoined(new WorkerId("chat-worker"), "claude", "claude", "sonnet", "standard", FixedInstant),
+        new RoomEvent.WorkerJoined(new WorkerId("chat-worker"), "claude", "claude", null, null, FixedInstant),
+        new RoomEvent.WorkerRenamed(new WorkerId("chat-worker"), "claude-reviewer", FixedInstant),
+        new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant),
     ];
 
     [Theory]

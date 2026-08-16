@@ -21,6 +21,9 @@ namespace Aer.Flow.Domain;
 [JsonDerivedType(typeof(RuntimePermissionRevoked), "runtimePermissionRevoked")]
 [JsonDerivedType(typeof(WorkflowSwitched), "workflowSwitched")]
 [JsonDerivedType(typeof(StandingPermissionRevoked), "standingPermissionRevoked")]
+[JsonDerivedType(typeof(WorkerJoined), "workerJoined")]
+[JsonDerivedType(typeof(WorkerRenamed), "workerRenamed")]
+[JsonDerivedType(typeof(OrchestratorAssigned), "orchestratorAssigned")]
 public abstract record RoomEvent
 {
     private RoomEvent()
@@ -166,6 +169,26 @@ public abstract record RoomEvent
     public sealed record WorkflowSwitched(
         bool IsOn,
         string SwitchedBy,
+        DateTimeOffset Timestamp) : RoomEvent;
+
+    /// <summary>Records that a <see cref="Participant"/> joined the room (0054 §1, #1305) — auto-named, with its initial vendor/model/effort.</summary>
+    public sealed record WorkerJoined(
+        WorkerId WorkerId,
+        string Name,
+        string Vendor,
+        string? Model,
+        string? Effort,
+        DateTimeOffset Timestamp) : RoomEvent;
+
+    /// <summary>Records a user rename of a participant (0054 §1).</summary>
+    public sealed record WorkerRenamed(
+        WorkerId WorkerId,
+        string NewName,
+        DateTimeOffset Timestamp) : RoomEvent;
+
+    /// <summary>Records the room's orchestrator assignment — implicit at first join, or explicit reassignment thereafter (0054 §6, the control built in #592).</summary>
+    public sealed record OrchestratorAssigned(
+        WorkerId WorkerId,
         DateTimeOffset Timestamp) : RoomEvent;
 }
 

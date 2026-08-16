@@ -891,6 +891,12 @@ class _ChatScreenState extends State<ChatScreen> {
   /// no chips.
   String? _workerChipLabel(SessionMetadata? metadata) {
     if (_isSessionRoom) {
+      // 0054 §1 (#1305): the participant's name, not its vendor string -- falls back to
+      // currentAdapter for a room whose room.json predates participants, the same fallback
+      // ChatViewModel.LoadFromMetadata uses on desktop.
+      final participants = metadata?.participants;
+      final name = (participants != null && participants.isNotEmpty) ? participants.first.name : null;
+      if (name != null && name.isNotEmpty) return name;
       final adapter = metadata?.currentAdapter;
       return (adapter == null || adapter.isEmpty) ? null : adapter;
     }

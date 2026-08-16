@@ -45,6 +45,12 @@ public class RoomEventLogJsonTests
         // always carries one — a round trip that dropped it silently would still pass with only one.
         new RoomEvent.StandingPermissionRevoked("w-1", "RoomShell", null, "human", FixedInstant),
         new RoomEvent.StandingPermissionRevoked("w-1", "CommandInRoom", "git status", "human", FixedInstant),
+        // 0054 §1/§6 (#1305): the participant lifecycle events. Two WorkerJoined variants so both
+        // the all-populated and the null-model/effort shapes round-trip.
+        new RoomEvent.WorkerJoined(new WorkerId("chat-worker"), "claude", "claude", "sonnet", "standard", FixedInstant),
+        new RoomEvent.WorkerJoined(new WorkerId("chat-worker"), "claude", "claude", null, null, FixedInstant),
+        new RoomEvent.WorkerRenamed(new WorkerId("chat-worker"), "claude-reviewer", FixedInstant),
+        new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant),
     ];
 
 

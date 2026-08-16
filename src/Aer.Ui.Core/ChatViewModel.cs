@@ -142,15 +142,25 @@ public sealed partial class ChatViewModel : ObservableObject
     private string headlineText = "No room open.";
 
     /// <summary>
-    /// The room's single worker, shown as a chip beside the room name in the header — the daily-driver
-    /// mockup's "aer-flow  claude" (02-screens.md). The vendor (<see cref="CurrentAdapter"/>); null
-    /// until a room is open. "+ Add worker" and multi-worker chips are M27.
+    /// The room's worker, shown as a chip beside the room name in the header — the daily-driver
+    /// mockup's "aer-flow  claude" (02-screens.md). 0054 §1 (#1305): the participant's name, not its
+    /// vendor string — the two coincide for today's single-participant room (auto-named after its
+    /// vendor), but stop coinciding the moment a second participant of the same vendor joins. Falls
+    /// back to <see cref="CurrentAdapter"/> for a room whose <c>room.json</c> predates #1305 (whose
+    /// <c>Participants</c> is null). Null until a room is open. Multiple chips are M27's later slices.
     /// </summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasWorker))]
     private string? workerChipText;
 
     public bool HasWorker => !string.IsNullOrEmpty(WorkerChipText);
+
+    /// <summary>The chip's secondary text — the participant's model, shown alongside its name (0054 §1: "model is secondary text"). Null when the participant has no model recorded, or on a pre-#1305 room.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasWorkerModel))]
+    private string? workerModelText;
+
+    public bool HasWorkerModel => !string.IsNullOrEmpty(WorkerModelText);
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasStatusText))]
@@ -507,7 +517,9 @@ public sealed partial class ChatViewModel : ObservableObject
         // Daily-driver header (02-screens.md): the room name + a worker chip, not "vendor — turn N".
         // The name is the SAME canonical derivation the switcher renders — never a second one (#461/#976).
         HeadlineText = RoomProjectionLoader.FriendlyNameFor(roomDirectoryPath);
-        WorkerChipText = metadata.CurrentAdapter;
+        var firstParticipant = metadata.Participants?.FirstOrDefault();
+        WorkerChipText = firstParticipant?.Name ?? metadata.CurrentAdapter;
+        WorkerModelText = firstParticipant?.Model ?? metadata.Model;
         RaiseOpenStateChanged();
 
         RebuildMessages();
@@ -984,6 +996,7 @@ public sealed partial class ChatViewModel : ObservableObject
         CurrentAdapter = null;
         HeadlineText = "No room open.";
         WorkerChipText = null;
+        WorkerModelText = null;
         StatusText = string.Empty;
         LiveProgressText = string.Empty;
         _lastProgressWasPartialText = false;

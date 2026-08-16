@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Aer.Flow.Domain;
+using Aer.Flow.Store;
 using Aer.Flow.Templates;
 
 namespace Aer.Adapters;
@@ -70,7 +71,14 @@ public sealed record SessionMetadata(
     // *is* an interactive room's marker; a workflow room writes a minimal marker instead. Defaulted
     // so room.json files written before this field existed still load as the interactive rooms they
     // were, and so ReadRoomKind can key on it without a second file.
-    RoomKind Kind = RoomKind.Interactive);
+    RoomKind Kind = RoomKind.Interactive,
+    // 0054 §1, #1305: the room's workers as participant identities, not derived vendor labels --
+    // null on any room.json written before this field existed (the pre-#1305 shape: exactly one
+    // worker, identified only by CurrentAdapter/Model above). Callers that need "the" participant on
+    // an old room fall back to CurrentAdapter/Model directly; this stays null rather than being
+    // synthesized on load, since a synthesized participant would have no corresponding WorkerJoined
+    // journal entry.
+    List<Participant>? Participants = null);
 
 public sealed record StartSessionRequest(
     string? Adapter = null,
@@ -397,6 +405,18 @@ public static class InteractiveSessionMaterializer
                 PermissionGrant: null)
         };
 
+        // 0054 §1/§6, #1305: the room's first (and, for now, only) worker is a participant with its
+        // own identity -- auto-named after its vendor -- and the room's implicit first orchestrator
+        // (0054 §6: no gesture, no one else to choose). ParticipantNaming.NextName against an empty
+        // set always returns the bare vendor name here, since nothing else has joined yet.
+        var firstParticipant = new Participant(
+            Id: new WorkerId(DefaultWorkerName),
+            Name: ParticipantNaming.NextName(normalizedAdapter, existingNames: []),
+            Vendor: normalizedAdapter,
+            Model: model,
+            Effort: null,
+            IsOrchestrator: true);
+
         var metadata = new SessionMetadata(
             SessionId: sessionId,
             RoomDirectoryPath: roomDirectoryPath,
@@ -408,7 +428,8 @@ public static class InteractiveSessionMaterializer
             SafetyCeiling: safetyCeiling > 0 ? safetyCeiling : DefaultSafetyCeiling,
             CreatedAt: DateTimeOffset.UtcNow,
             UpdatedAt: DateTimeOffset.UtcNow,
-            Turns: []);
+            Turns: [],
+            Participants: [firstParticipant]);
 
         return (definition, bindings, metadata);
     }
@@ -468,6 +489,41 @@ public static class InteractiveSessionMaterializer
         await File.WriteAllTextAsync(Path.Combine(aerDir, "bindings-path"), bindingsFilePath, cancellationToken).ConfigureAwait(false);
 
         await SaveMetadataAsync(metadata, metadataFilePath, cancellationToken).ConfigureAwait(false);
+
+        // 0054 §1/§6, #1305: journal the first participant's join and its implicit orchestrator
+        // assignment to room.jsonl, the same durable event log grants and escalations already use
+        // for this room. After the room.json write above, matching that file's own "the metadata is
+        // the source of truth callers read back; the journal is the derived history" ordering.
+        //
+        // An IOException here must not fail room creation (second-reader finding): by this point
+        // workflow.json already exists, so a thrown journal error would tell the caller creation
+        // failed while the existence check at the top of this method permanently blocks retrying the
+        // same room name -- an orphaned room nobody can use or recreate. The participant lives
+        // durably in room.json above; a missed journal line costs only this event's presence in the
+        // derived history, so warn and proceed.
+        var firstParticipant = metadata.Participants?.FirstOrDefault();
+        if (firstParticipant != null)
+        {
+            try
+            {
+                var roomLogPath = Path.Combine(roomDirectoryPath, "room.jsonl");
+                await using var writer = new RoomEventLogWriter(roomLogPath);
+                var joinedAt = DateTimeOffset.UtcNow;
+                await writer.AppendAsync(
+                    new RoomEvent.WorkerJoined(
+                        firstParticipant.Id, firstParticipant.Name, firstParticipant.Vendor,
+                        firstParticipant.Model, firstParticipant.Effort, joinedAt),
+                    cancellationToken).ConfigureAwait(false);
+                await writer.AppendAsync(
+                    new RoomEvent.OrchestratorAssigned(firstParticipant.Id, joinedAt),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (IOException ex)
+            {
+                Console.Error.WriteLine(
+                    $"Could not journal the first participant's join for '{roomDirectoryPath}': {ex.Message}");
+            }
+        }
 
         return metadata;
     }
