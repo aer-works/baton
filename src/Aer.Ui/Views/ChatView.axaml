@@ -88,10 +88,10 @@
            untagged send resolves to. Collapses for 0-1 participants, mirroring ChatHeaderView's
            reassign-control precedent (ruling 3): a control with no addressing choice is clutter, not
            a disabled affordance. -->
-      <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.1}"
+      <StackPanel Name="ChatTagChipRow" Orientation="Horizontal" Spacing="{DynamicResource Space.1}"
                   IsVisible="{Binding Chat.ShowTagChipRow}">
-        <TextBlock Classes="caption secondary" Text="{Binding Chat.SelectedTagLabel}" VerticalAlignment="Center" />
-        <ItemsControl ItemsSource="{Binding Chat.Participants}">
+        <TextBlock Name="ChatTagChipLabel" Classes="caption secondary" Text="{Binding Chat.SelectedTagLabel}" VerticalAlignment="Center" />
+        <ItemsControl Name="ChatTagChipItems" ItemsSource="{Binding Chat.Participants}">
           <ItemsControl.ItemsPanel>
             <ItemsPanelTemplate>
               <StackPanel Orientation="Horizontal" Spacing="{DynamicResource Space.1}" />
@@ -99,13 +99,13 @@
           </ItemsControl.ItemsPanel>
           <ItemsControl.ItemTemplate>
             <DataTemplate x:DataType="domain:Participant">
-              <Button Content="{Binding Name}"
+              <Button Classes="tagChip" Content="{Binding Name}"
                       Command="{Binding ((vm:MainWindowViewModel)DataContext).Chat.SelectTagParticipantCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                       CommandParameter="{Binding Id}" />
             </DataTemplate>
           </ItemsControl.ItemTemplate>
         </ItemsControl>
-        <Button Content="Untag" IsVisible="{Binding Chat.HasSelectedTag}"
+        <Button Name="ChatTagChipUntagButton" Content="Untag" IsVisible="{Binding Chat.HasSelectedTag}"
                 Command="{Binding Chat.ClearTagParticipantCommand}"
                 ToolTip.Tip="Clear the tag — the next send goes to the room, not a specific participant." />
       </StackPanel>
