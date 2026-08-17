@@ -708,7 +708,8 @@ public static class TokenGenerator
 
         return $$"""
 
-        /// #1318's {{family}} meter tiers — the Dart twin of Aer.Ui.Core's {{enumName}}.
+        /// #1318's {{family}} meter tiers.
+        /// record-once-ok: #1318 design/tokens.json
         enum {{enumName}} {
         {{members.ToString().TrimEnd()}}
         }

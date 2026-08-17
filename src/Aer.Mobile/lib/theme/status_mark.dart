@@ -233,8 +233,8 @@ abstract class _TierMeterPainter extends CustomPainter {
       oldDelegate.filledSteps != filledSteps || oldDelegate.color != color;
 }
 
-/// Depth: three ascending dots on one baseline, growing left to right — matches
-/// `Icon.DepthStep1`/`Icon.DepthStep2`/`Icon.DepthStep3` point for point.
+/// Three dots — see `Icons.axaml`'s `Icon.DepthStep1` header for the shape's own reasoning.
+/// Matches `Icon.DepthStep1`/`Icon.DepthStep2`/`Icon.DepthStep3` point for point.
 class _DepthMarkPainter extends _TierMeterPainter {
   const _DepthMarkPainter({required super.filledSteps, required super.color});
 
@@ -256,9 +256,8 @@ class _DepthMarkPainter extends _TierMeterPainter {
   }
 }
 
-/// Effort: four ascending bars on a shared baseline — rectangular, never round, so the family reads
-/// apart from the depth dots above even in greyscale. Matches `Icon.EffortStep1`..`Icon.EffortStep4`
-/// point for point.
+/// Four ascending bars — see `Icons.axaml`'s `Icon.EffortStep1` header for why bars rather than
+/// dots. Matches `Icon.EffortStep1`..`Icon.EffortStep4` point for point.
 class _EffortMarkPainter extends _TierMeterPainter {
   const _EffortMarkPainter({required super.filledSteps, required super.color});
 

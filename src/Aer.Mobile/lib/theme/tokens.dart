@@ -244,7 +244,8 @@ ThemeData aerTheme(Brightness brightness) {
 }
 
 
-/// #1318's depth meter tiers — the Dart twin of Aer.Ui.Core's AerDepthTier.
+/// #1318's depth meter tiers.
+/// record-once-ok: #1318 design/tokens.json
 enum AerDepthTier {
   fast,
   balanced,
@@ -268,7 +269,8 @@ extension AerDepthTierPresentation on AerDepthTier {
       };
 }
 
-/// #1318's effort meter tiers — the Dart twin of Aer.Ui.Core's AerEffortTier.
+/// #1318's effort meter tiers.
+/// record-once-ok: #1318 design/tokens.json
 enum AerEffortTier {
   quick,
   standard,

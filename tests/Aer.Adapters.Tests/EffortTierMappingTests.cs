@@ -1,13 +1,9 @@
 namespace Aer.Adapters.Tests;
 
 /// <summary>
-/// #1318 (decision 0058's scope ruling 4): the canonical->raw effort translation is the one thing
-/// standing between a canonical word landing in <c>WorkerInvocation.Effort</c> and claude silently
-/// running at its default effort with exit 0 (measured, docs/vendor-capabilities.md) because it does
-/// not recognize the word. Each canonical word must resolve to the documented vendor value
-/// (docs/vendor-capabilities.md's "The canonical effort mapping" table), a raw value already in that
-/// vendor's own set must pass through untouched (the #566 escape hatch), and anything else must be
-/// refused rather than forwarded -- the fail-closed guarantee this file exists to assert.
+/// #1318: pins <see cref="EffortTierMapping"/>'s three-way split (canonical translated, a vendor's
+/// own value passed through, anything else refused) against the table its own remarks cite. See
+/// that type's doc comment for why the refusal case matters at all.
 /// </summary>
 public class EffortTierMappingTests
 {
