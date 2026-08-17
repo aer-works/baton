@@ -48,6 +48,13 @@ This table runs the other direction: from measurement to design.
 | `effort.claude-value-set` | claude's `--effort` accepts exactly `{low, medium, high, xhigh, max}` | **Sentinel, not a finding.** 0023's canonical mapping (`quick`/`standard`/`careful`/`exhaustive`) is decided by the vendor's *documented* value set, not a behavioural distinguishability study — this is the re-runnable guard that the set hasn't moved under it. A `FAIL` means a vendor added, removed or renamed a level and the mapping in `vendor-capabilities.md` needs re-deriving before it's trusted again. |
 | `effort.agy-value-set` | agy's `--effort` accepts exactly `{low, medium, high}` | Same guard, other vendor. Also the sentinel that keeps the disclosed collapse honest — `agy` has no fourth level, so `careful` and `exhaustive` both resolve to `high`; a `FAIL` here is the first sign that collapse needs re-checking too. |
 
+## Models
+
+| check | result | architectural impact |
+|---|---|---|
+| `models.agy-value-set` | **written for #1330, NOT YET RUN.** Diffs `agy models`'s live output against the 11-entry catalogue recorded in `vendor-capabilities.md` § "`agy models`" | **Guards the model half of #1330's register the same way `effort.*-value-set` guards the effort half.** The canonical model-purpose mapping's `agy` column is deliberately left unplaced (no repo-recorded purpose for most of the catalogue), but the *set itself* is what a future purpose assignment would rest on — a `FAIL` here means that set moved and any placement attempted against the old one is stale before it starts. |
+| `models.claude-alias-floor` | **written for #1330, NOT YET RUN.** Dispatches each of `ClaudeWorkerAdapter.ModelAliases` (`sonnet`/`opus`/`haiku`) for real and checks each is still accepted | **Not a set-membership guard — claude ships no command to enumerate a set against (0023 §4), so this is a floor, not a ceiling.** It can catch a recorded alias disappearing or being renamed, which would silently break the `deep`/`balanced`/`fast` → `opus`/`sonnet`/`haiku` mapping this register states as fully placed; it cannot catch a fourth alias appearing, since nothing here enumerates one. |
+
 ## Fan-out
 
 | check | result | architectural impact |

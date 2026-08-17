@@ -420,6 +420,54 @@ currently surface anywhere. `agy` would at least abort loudly. Worth a defensive
 `#566`'s raw string is consumed, so a typo degrades to a visible failure on `claude` too rather than
 a silent, wrong-effort success.
 
+## The canonical model-purpose mapping (`deep`/`balanced`/`fast`)
+
+**Decided 2026-08-17 (#1330), resting on what this repo already records about each vendor's model
+set, not a new live probe.** 0023 requires this mapping to be measured before it is written; per its
+own constraint 3 — the same narrowing the effort mapping above already applies — that measurement is
+the vendor's own model *set* and its own tier naming, not a behavioural distinguishability campaign
+judging how "deep" one model's answers actually read next to another's.
+[`tools/vendor-verify`](../tools/vendor-verify/verify.py)'s two new sentinels (`models.agy-value-set`,
+`models.claude-alias-floor`, both `--sentinels`-covered) guard the one thing this mapping actually
+depends on: that each vendor's model set hasn't moved out from under it.
+
+**Not to be confused with** `src/Aer.Adapters/WorkerTiers.json`'s
+frontier/standard/cheap/minimal/orchestrator vocabulary — that is role-dispatch's own internal
+dispatch-tier system, unrelated to this one, and never rendered to a person.
+
+| canonical | `claude` | `agy` |
+|---|---|---|
+| `deep` | `opus` | *(not recorded — see below)* |
+| `balanced` | `sonnet` | *(not recorded — see below)* |
+| `fast` | `haiku` | *(not recorded — see below)* |
+
+**`claude` — fully placed, no collapse.** `claude` ships no model-list subcommand: `claude models` is
+answered as a prompt and spends usage rather than enumerating anything
+([`vendor-doc-audit.md`](vendor-doc-audit.md) item 2 under "Three behaviours found after this audit
+closed", restated in [0023](decisions/0023-effort-and-models-are-named-by-behaviour.md) §4). What the
+CLI *does* expose, and what `ClaudeWorkerAdapter.ModelAliases` already commits to as the stable
+interface, is three named aliases — `sonnet`, `opus`, `haiku` — each always resolving to that tier's
+current model. Three aliases, three canonical purposes, and the assignment is not new: it is the
+design corpus's own worked example for this exact vocabulary
+([`docs/design/04-workers-commands-control.md`](design/04-workers-commands-control.md): *"Opus 4.8 ·
+deep work"*, *"Sonnet 5 · balanced"*, *"Haiku 4.5 · fast"*) — two-thirds of it (`opus`/deep,
+`haiku`/fast) quoted verbatim inside 0023 itself as the settled illustration of the naming rule. Each
+canonical purpose lands on a distinct alias — nothing here collapses.
+
+**`agy` — model set recorded, purpose column left open.** `agy models` is a real, machine-readable
+subcommand — already shelled out to by `AgyWorkerAdapter.DiscoverCapabilitiesAsync` — and its 11-entry
+catalogue is captured above in § "`agy models`". **No entry of that catalogue is placed into a purpose
+here.** The design corpus labels one generic name — *"Gemini 3 Flash · fast"* — but that string
+predates and does not match the actual catalogued names (`gemini-3.6-flash-*`, `gemini-3.5-flash-*`,
+versioned and effort-suffixed); the corpus leaves *"Gemini 3 Pro"* and *"Codex"* unlabelled, and never
+mentions the catalogue's `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, or `gpt-oss-120b-medium`
+entries at all — three of agy's eleven models are served through vendors with no purpose precedent
+recorded anywhere in this repo, not even in mockup form. Bridging the one generic label onto eleven
+specific, effort-suffixed strings would be exactly the guess this record's own discipline forbids.
+**Left for a human-run measurement**: which canonical purpose each agy model family is offered under,
+and how (if at all) a UI reconciles agy's own effort-suffixed naming (a separate axis, § "`agy
+models`" above) with the purpose axis this table is about.
+
 ## A blocking MCP tool holds a turn open — on both vendors
 
 The mechanism [0015](decisions/0015-three-kinds-of-needs-you.md) depends on. A dependency-free stdio

@@ -27,7 +27,7 @@ USAGE
 -----
     pixi run vendor-verify                 # every check that needs no special authorisation
     pixi run vendor-verify -- --list       # names and what each one costs
-    pixi run vendor-verify -- --only gate  # one group: gate | fanout | cost | lifecycle | agy
+    pixi run vendor-verify -- --only gate  # one group: gate | fanout | cost | lifecycle | agy | effort | models
 
 SAFETY
 ------
@@ -3640,6 +3640,97 @@ def _effort_agy_conflict():
                           f"|| {text.strip()[:200]}")
 
 
+# ==================================================================== models
+# #1330: 0023 requires the canonical (deep/balanced/fast) -> vendor model-purpose mapping to rest on
+# a measured vendor model SET, the same discipline the effort mapping above already applies -- but
+# that only stays true if a vendor's model set moving gets caught. These two sentinels are that
+# check, one per vendor, because the two vendors expose their model set through genuinely different
+# surfaces (0023 §4): `agy models` is a real, machine-readable subcommand; `claude` has none.
+#
+# `docs/vendor-capabilities.md` § "The canonical model-purpose mapping" is the register these guard.
+
+# The 11-entry catalogue recorded in docs/vendor-capabilities.md § "`agy models`" (captured while
+# building the effort sentinels above, 2026-07-28). Each entry bakes a model family AND an effort
+# suffix into one string -- that is agy's own shape, not a parsing choice made here.
+AGY_MODELS = {
+    "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+    "gemini-3.5-flash-high", "gemini-3.5-flash-medium", "gemini-3.5-flash-low",
+    "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+    "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
+}
+
+# claude's three model ALIASES (`ClaudeWorkerAdapter.ModelAliases`) -- not a full model set, because
+# claude ships no command that enumerates one (vendor-doc-audit.md item 2, 0023 §4). This is the
+# floor the register's claude row actually depends on.
+CLAUDE_MODEL_ALIASES = ("sonnet", "opus", "haiku")
+
+
+def run_bare(cmd, timeout=300, cwd=None, extra_env=None):
+    """Like run(), but skips the CHEAP model-flag injection entirely.
+
+    `agy models` (like production's own `RunAgySubcommandAsync(["models"], ...)`) takes no --model at
+    all -- it is not a turn, so there is no model to be cheap about. Injecting one would send agy a
+    shape production never sends, and whether agy tolerates an out-of-place --model ahead of a plain
+    subcommand (rather than `-p`) is itself unmeasured. Every other check in this file wants the
+    injection; this one specifically must not have it.
+    """
+    e = env()
+    e.update(extra_env or {})
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout, cwd=cwd, env=e, stdin=subprocess.DEVNULL)
+        return p.returncode, (p.stdout or ""), (p.stderr or "")
+    except subprocess.TimeoutExpired:
+        return None, "", "(timeout)"
+    except FileNotFoundError:
+        return None, "", "(binary not found)"
+
+
+@check("models.agy-value-set", "models",
+       "agy models lists exactly the 11-entry catalogue recorded in docs/vendor-capabilities.md -- "
+       "no fewer, no more, no renames", sentinel=True)
+def _models_agy_value_set():
+    """`agy models` is the machine-readable surface 0023 §4 names. Bare invocation, matching
+    `AgyWorkerAdapter.RunAgySubcommandAsync(["models"], ...)` exactly -- see `run_bare` above for why
+    this deliberately skips the harness's usual cheap-model injection.
+
+    The output is columnar (several names per line); this parses on whitespace across the whole blob
+    rather than per-line, because `ParseModelLines` in `AgyWorkerAdapter.cs` treats each *line* as one
+    opaque string and is not the shape this register cares about -- the register's unit is the
+    individual model+effort name, which whitespace-splitting recovers regardless of column layout.
+    """
+    rc, out, err = run_bare(["agy", "models"])
+    if rc != 0:
+        return INCONCLUSIVE, f"agy models exited {rc} -- {(err or out).strip()[:200]}"
+    found = set(out.split())
+    if found == AGY_MODELS:
+        return PASS, f"unchanged: {len(found)} models"
+    added, removed = sorted(found - AGY_MODELS), sorted(AGY_MODELS - found)
+    return FAIL, (f"catalogue changed -- added={added or 'none'}, removed={removed or 'none'} "
+                  f"(now: {sorted(found)})")
+
+
+@check("models.claude-alias-floor", "models",
+       "claude has no model-list subcommand (0023 §4; vendor-doc-audit.md item 2), so the full set "
+       "cannot be enumerated the way agy's can -- this only re-confirms the three ALIASES the "
+       "register's claude row depends on (sonnet/opus/haiku) are still each accepted", sentinel=True)
+def _models_claude_alias_floor():
+    """Not a set-membership check like the agy one above -- there is no vendor command to enumerate
+    a set against. This is a floor: each of the three aliases the register names is dispatched for
+    real and must still be accepted. It cannot catch a FOURTH alias appearing (nothing enumerates
+    that), only a recorded one disappearing or being renamed -- say so rather than claim more.
+    """
+    results = {}
+    for alias in CLAUDE_MODEL_ALIASES:
+        rc, out, err = run(["claude", "-p", "reply with exactly the word PONG",
+                            "--model", alias, "--effort", "low"])
+        results[alias] = (rc, (out + err).strip()[:120])
+    failed = {a: r for a, r in results.items() if r[0] != 0}
+    if failed:
+        return FAIL, f"alias(es) no longer accepted -- {failed}"
+    return PASS, f"all three aliases still accepted: {list(CLAUDE_MODEL_ALIASES)}"
+
+
 def project_slug_root():
     """Claude records a transcript per working directory under the config root.
 
@@ -3675,7 +3766,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true")
-    ap.add_argument("--only", help="a group (gate | fanout | cost | lifecycle | agy | effort) or a check-name prefix")
+    ap.add_argument("--only", help="a group (gate | fanout | cost | lifecycle | agy | effort | models) or a check-name prefix")
     ap.add_argument("--sentinels", action="store_true",
                     help="run ONLY the checks whose result a design already depends on, so a "
                          "vendor change there would break AER silently. This is the set worth "
