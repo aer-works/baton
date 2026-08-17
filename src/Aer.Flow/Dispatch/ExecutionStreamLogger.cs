@@ -17,6 +17,26 @@ public sealed class ExecutionStreamLogger
     public const string StderrLogFileName = ".stderr.log";
     public const string StderrRolloverFileName = ".stderr.log.1";
 
+    /// <summary>
+    /// True when <paramref name="fileName"/> is one of this logger's own stream files — the four
+    /// names declared above, and nothing else.
+    /// <para>
+    /// #1345 (decision 0021 §2, "documents stay, plumbing goes"): these files land in the execution's
+    /// output directory, so anything enumerating that directory picks them up and presents AER's own
+    /// capture of a run as though the worker had produced it. The engine that writes the names owns
+    /// the question of which names they are — surfaces must never pattern-match filenames to guess.
+    /// </para>
+    /// <para>
+    /// Deliberately NOT a dot-prefix rule: a worker that writes <c>.gitignore</c> or
+    /// <c>.editorconfig</c> has produced a real deliverable, and a prefix rule would swallow it.
+    /// </para>
+    /// </summary>
+    public static bool IsStreamLogFileName(string fileName) =>
+        string.Equals(fileName, StdoutLogFileName, StringComparison.Ordinal)
+        || string.Equals(fileName, StdoutRolloverFileName, StringComparison.Ordinal)
+        || string.Equals(fileName, StderrLogFileName, StringComparison.Ordinal)
+        || string.Equals(fileName, StderrRolloverFileName, StringComparison.Ordinal);
+
     private readonly string _outputDirectory;
     private readonly long _maxSizeBytes;
     private readonly object _lock = new();

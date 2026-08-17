@@ -1,4 +1,5 @@
 using Aer.Ui.Tests.TestSupport;
+using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 
 namespace Aer.Ui.Tests;
@@ -63,6 +64,58 @@ public class ArtifactLineageProjectorTests
 
         var execution = Assert.Single(lineage.Executions);
         Assert.Empty(execution.OutputFiles);
+    }
+
+    // #1345 (0021 §2): the polarity pair for the stream-log filter. AER's own capture of a run is
+    // plumbing and never a room file; a dot-prefixed file a WORKER wrote is a deliverable like any
+    // other. Both arms matter — the first alone would pass for a naive dot-prefix rule, which would
+    // silently eat the second.
+    [Fact]
+    public void The_engines_own_stream_logs_are_not_projected_as_output_files()
+    {
+        var artifactsRoot = NewArtifactsRoot();
+        var executionId = new ExecutionId("a-1");
+        try
+        {
+            WriteOutputFile(artifactsRoot, executionId, "report.md");
+            WriteOutputFile(artifactsRoot, executionId, ExecutionStreamLogger.StdoutLogFileName);
+            WriteOutputFile(artifactsRoot, executionId, ExecutionStreamLogger.StdoutRolloverFileName);
+            WriteOutputFile(artifactsRoot, executionId, ExecutionStreamLogger.StderrLogFileName);
+            WriteOutputFile(artifactsRoot, executionId, ExecutionStreamLogger.StderrRolloverFileName);
+
+            var events = new FlowEvent[] { new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)) };
+            var lineage = ArtifactLineageProjector.Project(events, TwoStepSnapshot(), artifactsRoot);
+
+            var execution = Assert.Single(lineage.Executions);
+            Assert.Equal(["report.md"], execution.OutputFiles);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(artifactsRoot);
+        }
+    }
+
+    [Fact]
+    public void A_dot_prefixed_file_the_worker_produced_is_still_an_output_file()
+    {
+        var artifactsRoot = NewArtifactsRoot();
+        var executionId = new ExecutionId("a-1");
+        try
+        {
+            WriteOutputFile(artifactsRoot, executionId, ".gitignore");
+            WriteOutputFile(artifactsRoot, executionId, ".editorconfig");
+            WriteOutputFile(artifactsRoot, executionId, ExecutionStreamLogger.StdoutLogFileName);
+
+            var events = new FlowEvent[] { new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)) };
+            var lineage = ArtifactLineageProjector.Project(events, TwoStepSnapshot(), artifactsRoot);
+
+            var execution = Assert.Single(lineage.Executions);
+            Assert.Equal([".editorconfig", ".gitignore"], execution.OutputFiles);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(artifactsRoot);
+        }
     }
 
     [Fact]

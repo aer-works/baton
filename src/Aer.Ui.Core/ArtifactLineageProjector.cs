@@ -1,4 +1,5 @@
 using Aer.Flow.Artifacts;
+using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 
 namespace Aer.Ui.Core;
@@ -76,10 +77,18 @@ public static class ArtifactLineageProjector
             }
 
             var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, request.ExecutionId);
+            // #1345 (0021 §2, "documents stay, plumbing goes"): this enumerates the execution's
+            // output directory, which is also where ExecutionStreamLogger writes AER's own capture
+            // of the run — so .stdout.log and friends arrived here as though a worker had produced
+            // them. Filtered at THIS chokepoint rather than per-view, because 0021 says never
+            // surfaced *anywhere* and this list feeds every surface at once: the desktop chips and
+            // Files section, the wire (and so the phone's card preview), and HomeViewModel's
+            // latest-artifact fallback. The engine that writes the names owns which names they are.
             var outputFiles = Directory.Exists(outputDirectory)
                 ? Directory.GetFiles(outputDirectory)
                     .Select(Path.GetFileName)
                     .OfType<string>()
+                    .Where(name => !ExecutionStreamLogger.IsStreamLogFileName(name))
                     .OrderBy(name => name, StringComparer.Ordinal)
                     .ToList()
                 : (IReadOnlyList<string>)[];
