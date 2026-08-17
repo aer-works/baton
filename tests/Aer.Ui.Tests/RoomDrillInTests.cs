@@ -160,7 +160,8 @@ public class RoomDrillInTests
 
             var critic = window.ViewModel.RoomSteps.Single(step => step.StepId == "critic");
             var file = Assert.Single(critic.OutputFiles);
-            Assert.Equal("review.md (c-1)", file.Label);
+            // #1340 (0021 §2 fix): author + version, never the execution's short id.
+            Assert.Equal("review.md (worker · v1)", file.Label);
 
             await file.PreviewCommand.ExecuteAsync(null);
 
@@ -243,10 +244,12 @@ public class RoomDrillInTests
 
             // Still just the one real output -- prompt.txt never leaks into the output-files chips.
             var outputFile = Assert.Single(critic.OutputFiles);
-            Assert.Equal("review.md (c-1)", outputFile.Label);
+            // #1340 (0021 §2 fix): author + version, never the execution's short id.
+            Assert.Equal("review.md (worker · v1)", outputFile.Label);
 
             var promptFile = Assert.Single(critic.PromptFiles);
-            Assert.Equal("Prompt (c-1)", promptFile.Label);
+            // #1340 (0021 §2 fix): author only -- prompt.txt carries no room-file version.
+            Assert.Equal("Prompt (worker)", promptFile.Label);
             Assert.True(critic.HasPromptFiles);
 
             await promptFile.PreviewCommand.ExecuteAsync(null);

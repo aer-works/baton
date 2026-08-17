@@ -238,6 +238,18 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// <summary>The open room's steps as the drill-in surface (M19 Phase 3, #188) — rebuilt wholesale on every load/refresh by <see cref="RebuildRoomSteps"/>.</summary>
     public ObservableCollection<StepItemViewModel> RoomSteps { get; } = [];
 
+    /// <summary>The open room's Files section (#1340, 0021 §2) — rebuilt wholesale on every load/refresh by <see cref="RebuildRoomFiles"/>.</summary>
+    public ObservableCollection<RoomFileViewModel> RoomFiles { get; } = [];
+
+    /// <summary>
+    /// Set alongside <see cref="RoomFiles"/> rather than derived from its <c>Count</c>: an
+    /// <see cref="ObservableCollection{T}"/> raises no property-change notification a
+    /// <c>Count</c>-derived getter could bind to, so the section's visibility is tracked explicitly
+    /// at the same two sites that mutate the collection (<see cref="RebuildRoomFiles"/>, <see cref="ClearRoomFiles"/>).
+    /// </summary>
+    [ObservableProperty]
+    private bool hasRoomFiles;
+
     /// <summary>The step whose drill-in is open. Re-anchored by step id across rebuilds; defaults needs-you-first (paused, else running, else the first step).</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSelectedStep))]
@@ -448,6 +460,29 @@ public sealed partial class MainWindowViewModel : ObservableObject
         RoomSteps.Clear();
         SelectedStep = null;
         RoomHeadlineText = "No room open.";
+    }
+
+    /// <summary>
+    /// Rebuilds <see cref="RoomFiles"/> from a fresh projection's <see cref="RoomProjection.Files"/>
+    /// (#1340) — the desktop Files section, alongside <see cref="RebuildRoomSteps"/> rather than
+    /// folded into it: a room-wide list, not a per-step one.
+    /// </summary>
+    public void RebuildRoomFiles(RoomProjection projection, Func<string, Task> previewFileAsync)
+    {
+        RoomFiles.Clear();
+        foreach (var file in RoomFilesSectionProjector.Build(projection.Files, previewFileAsync))
+        {
+            RoomFiles.Add(file);
+        }
+
+        HasRoomFiles = RoomFiles.Count > 0;
+    }
+
+    /// <summary>Clears the Files section — the error-path counterpart of <see cref="RebuildRoomFiles"/>.</summary>
+    public void ClearRoomFiles()
+    {
+        RoomFiles.Clear();
+        HasRoomFiles = false;
     }
 
     /// <summary>Selects a step by id — the DAG canvas's node-click entry point (the canvas stays code-behind until Phase 5 makes it a custom control).</summary>

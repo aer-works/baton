@@ -155,6 +155,24 @@ public class WebSocketProjectionFrameTests
         Assert.Empty(defaulted.Participants);
     }
 
+    /// <summary>#1340: the same mapping half as the fixtures above, for the projection's own <c>Files</c> field — the room's versioned, attributed file list.</summary>
+    [Fact]
+    public void ToProjection_carries_the_files_from_the_frame_into_the_projection()
+    {
+        var files = new RoomFiles([new RoomFile("plan", [new FileVersion("claude", DateTimeOffset.UnixEpoch, "C:/tasks/foo/artifacts/execution_e-1/plan", new Aer.Flow.Domain.ExecutionId("e-1"))])]);
+
+        var frame = new RoomClient.ProjectionFrame(
+            "C:/tasks/foo", null!, null!, null!, null!, null, null, null, null, null, false, null, files);
+        var projection = RoomClient.ToProjection(frame);
+
+        Assert.Same(files, projection.Files);
+
+        var defaulted = RoomClient.ToProjection(
+            new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null));
+        Assert.NotNull(defaulted.Files);
+        Assert.Empty(defaulted.Files.Files);
+    }
+
     // The record's PRIMARY constructor. A record also emits a copy constructor (one parameter), so the
     // longest-parameter ctor is the declared one.
     private static ParameterInfo[] Primary(Type type) =>

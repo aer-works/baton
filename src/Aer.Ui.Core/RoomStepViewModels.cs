@@ -61,6 +61,17 @@ public static class PlainLanguage
             ? $"Out of plan — resumes {instant.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)}"
             : "Out of plan — reset unknown";
 
+    /// <summary>
+    /// "claude · 14:02" — the room Files section's version vocabulary (#1340, 0021 §2): worker plus
+    /// local time, or an honest gap ("time not recorded") when <see cref="FileVersion.ProducedAt"/>
+    /// is null, the same rule <see cref="ForExhaustion"/> already applies to a reset time nobody
+    /// reported.
+    /// </summary>
+    public static string ForFileVersion(string worker, DateTimeOffset? producedAt) =>
+        producedAt is { } instant
+            ? $"{worker} · {instant.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)}"
+            : $"{worker} · time not recorded";
+
     public static string ForDecision(DecisionType decisionType) => decisionType switch
     {
         DecisionType.Resume => "Approved",
@@ -574,6 +585,14 @@ public static class StepItemProjector
             .Where(execution => execution.StepId is not null)
             .ToDictionary(execution => execution.ExecutionId, execution => execution.StepId!);
 
+        // #1340 (0021 §2 fix): the file chip's version number, keyed by the exact same
+        // outputDirectory/fileName path RoomFilesProjector built its FileVersion.FilePath from — the
+        // one canonical version count, not a second count re-derived here. prompt.txt has no entry
+        // (RoomFilesProjector excludes it), which is why the prompt chip below carries no version.
+        var versionByFilePath = projection.Files.Files
+            .SelectMany(file => file.Versions.Select((version, index) => (version.FilePath, Version: index + 1)))
+            .ToDictionary(pair => pair.FilePath, pair => pair.Version, StringComparer.Ordinal);
+
         var items = new List<StepItemViewModel>(projection.State.Steps.Count);
         foreach (var stepState in projection.State.Steps)
         {
@@ -637,8 +656,11 @@ public static class StepItemProjector
                     // always-visible output chips.
                     if (string.Equals(fileName, ArtifactManager.PromptFileName, StringComparison.Ordinal))
                     {
+                        // #1340 (0021 §2 fix): author, not the execution's short id — prompt.txt
+                        // carries no room-file version (RoomFilesProjector excludes it, #292), so
+                        // there is no version number to show here, only who asked for it.
                         var promptFile = new ArtifactFileViewModel(
-                            $"Prompt ({shortId})",
+                            $"Prompt ({execution.Worker})",
                             Path.Combine(outputDirectory, fileName),
                             previewFileAsync,
                             select: file => SelectOutputFile(promptFiles, file));
@@ -647,9 +669,13 @@ public static class StepItemProjector
                         continue;
                     }
 
+                    // #1340 (0021 §2 fix): author + version — this slice's vocabulary — replaces the
+                    // execution's short id an earlier pass put here.
+                    var filePath = Path.Combine(outputDirectory, fileName);
+                    var version = versionByFilePath.GetValueOrDefault(filePath, 1);
                     var outputFile = new ArtifactFileViewModel(
-                        $"{fileName} ({shortId})",
-                        Path.Combine(outputDirectory, fileName),
+                        $"{fileName} ({execution.Worker} · v{version})",
+                        filePath,
                         previewFileAsync,
                         select: file => SelectOutputFile(outputFiles, file));
                     outputFiles.Add(outputFile);

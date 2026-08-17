@@ -94,6 +94,20 @@ public class RoomProjectionLoaderTests
             Assert.Equal("plan", criticInput.InputName);
             Assert.Equal(Architect, criticInput.ProducerStepId);
             Assert.Equal(executionByStepId[Architect].ExecutionId, criticInput.ProducerExecutionId);
+
+            // #1340: a real, un-migrated room's ExecutionRequest already carried Worker all along
+            // (0021's "existing rooms need nothing" claim), so RoomFilesProjector attributes every
+            // file for free — no fixture change, no migration.
+            var roomFileByName = projection.Files.Files.ToDictionary(file => file.Name);
+            Assert.Equal(["plan", "review", "summary"], roomFileByName.Keys.OrderBy(name => name, StringComparer.Ordinal));
+            foreach (var (name, expectedStepId) in new[] { ("plan", Architect), ("review", Critic), ("summary", Publisher) })
+            {
+                var version = Assert.Single(roomFileByName[name].Versions);
+                // This fixture's convention: Worker equals the step's own id (see the JSON fixture).
+                Assert.Equal(expectedStepId.Value, version.Worker);
+                Assert.Equal(executionByStepId[expectedStepId].ExecutionId, version.Origin);
+                Assert.NotNull(version.ProducedAt);
+            }
         }
         finally
         {
