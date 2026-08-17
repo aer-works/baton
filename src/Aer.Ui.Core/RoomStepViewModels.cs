@@ -164,7 +164,8 @@ public sealed partial class StepItemViewModel : ObservableObject
         FailedStepBannerViewModel? failedBanner = null,
         FailureClassification? latestFailureClassification = null,
         DateTimeOffset? retryNotBefore = null,
-        AerEffortTier? effortTier = null)
+        AerEffortTier? effortTier = null,
+        AerDepthTier? depthTier = null)
     {
         StepId = stepId;
         Worker = worker;
@@ -181,6 +182,7 @@ public sealed partial class StepItemViewModel : ObservableObject
         LatestFailureClassification = latestFailureClassification;
         RetryNotBefore = retryNotBefore;
         EffortTier = effortTier;
+        DepthTier = depthTier;
     }
 
     public string StepId { get; }
@@ -196,12 +198,13 @@ public sealed partial class StepItemViewModel : ObservableObject
     public AerEffortTier? EffortTier { get; }
 
     /// <summary>
-    /// The depth (model-tier) mark's structural slot (#1318). Always null today: nothing produces a
-    /// worker's tier yet — #1330 owns that register. Present so the chip already binds it and renders
-    /// its own absence correctly the day #1330 lands, with no further UI change; see
-    /// <see cref="EffortTierParsing.TryParseDepth"/> for why the parse side is already exercised too.
+    /// The canonical depth (model-tier) word this step's worker resolves to, or null for a null,
+    /// unrecognized-adapter, or unmapped-model value (#1339, decision 0058's scope ruling — see
+    /// <see cref="EffortTierParsing.TryParseDepth"/>). The workflow-room chip's depth mark; null
+    /// renders no mark, never an empty frame (ruling 2) — the common case for an agy-vendored worker,
+    /// since #1330 deliberately left agy's column unrecorded.
     /// </summary>
-    public AerDepthTier? DepthTier => null;
+    public AerDepthTier? DepthTier { get; }
     public FailureClassification? LatestFailureClassification { get; }
     public DateTimeOffset? RetryNotBefore { get; }
     public string PlainStatusText => PlainLanguage.ForStep(Status, LatestFailureClassification, RetryNotBefore);
@@ -570,7 +573,8 @@ public static class StepItemProjector
         IReadOnlyDictionary<string, string>? workerAdapters = null,
         Action? reRunAction = null,
         Action<string, string, string>? askWorkerToFixAction = null,
-        IReadOnlyDictionary<string, string>? workerEffortTiers = null)
+        IReadOnlyDictionary<string, string>? workerEffortTiers = null,
+        IReadOnlyDictionary<string, string>? workerDepthTiers = null)
     {
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
         var pausedByStepId = pausedSteps.ToDictionary(paused => paused.StepId);
@@ -737,6 +741,15 @@ public static class StepItemProjector
                 ? parsedEffort
                 : (AerEffortTier?)null;
 
+            // #1339 (decision 0058's scope ruling): the depth twin of effortTier above. workerDepthTiers
+            // already carries only canonical words -- DepthTierMapping resolved the adapter+model pair
+            // to one upstream of here (Aer.Daemon.DaemonBroadcast / MainWindow.GetWorkerDepthTiers) --
+            // so this is the same vocabulary-only parse EffortTierParsing does for effort, never a
+            // second look at vendor knowledge.
+            var depthTier = EffortTierParsing.TryParseDepth(workerDepthTiers?.GetValueOrDefault(stepDefinition.Worker), out var parsedDepth)
+                ? parsedDepth
+                : (AerDepthTier?)null;
+
             FailedStepBannerViewModel? failedBanner = null;
             // #1116 review must-fix: no failed banner for an ExhaustedUntil step. The banner says
             // "Failed" with a red cross and a live ask-the-worker-to-fix button — for a step that
@@ -779,7 +792,8 @@ public static class StepItemProjector
                 failedBanner,
                 stepState.LatestFailureClassification,
                 resetInstant,
-                effortTier));
+                effortTier,
+                depthTier));
         }
 
         return items;
