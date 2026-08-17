@@ -814,22 +814,44 @@ public static class StepItemProjector
     /// wrote nothing to stdout. Returns null when neither exists, so the caller renders the action
     /// as unavailable rather than opening a substitute and calling it full output.
     /// <para>
-    /// Reached by path rather than through the file chips on purpose: 0021 §2 rules stream logs out
-    /// of the room's file surfaces entirely (<see cref="ExecutionStreamLogger.IsStreamLogFileName"/>
-    /// filters them at <see cref="ArtifactLineageProjector"/>), and this one disclosure — a button
-    /// on a failure, into the preview box — is not the same thing as listing plumbing as a document.
+    /// Reached by path rather than through the file chips on purpose: stream logs are filtered out of
+    /// the room's file surfaces (<see cref="ExecutionStreamLogger.IsStreamLogFileName"/>, applied at
+    /// <see cref="ArtifactLineageProjector"/> — the reasoning is recorded there and not restated
+    /// here), and this one disclosure — a button on a failure, into the preview box — is not the same
+    /// act as listing plumbing among a room's documents.
+    /// </para>
+    /// <para>
+    /// Two limits, stated because the button's label promises more than it delivers: a run that wrote
+    /// both streams shows stdout only (the banner carries a stderr excerpt separately), and after an
+    /// 8 MiB rollover the earlier half lives in <c>.stdout.log.1</c>, which this does not open — so a
+    /// worker that overran the cap shows its tail. Naming the stream being previewed needs a label
+    /// surface the preview box does not have; that is its own issue rather than a fabricated header.
     /// </para>
     /// </summary>
     private static string? ResolveStreamLogPath(string outputDirectory)
     {
         var stdoutPath = Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName);
-        if (File.Exists(stdoutPath))
+        var stderrPath = Path.Combine(outputDirectory, ExecutionStreamLogger.StderrLogFileName);
+
+        // An existing-but-empty stdout log is the case that made "does the file exist" the wrong
+        // question: a worker that died writing only to stderr still gets a zero-byte .stdout.log
+        // from the logger's own open, and preferring it would open a blank box on exactly the
+        // failure someone is trying to read.
+        if (HasContent(stdoutPath))
         {
             return stdoutPath;
         }
 
-        var stderrPath = Path.Combine(outputDirectory, ExecutionStreamLogger.StderrLogFileName);
-        return File.Exists(stderrPath) ? stderrPath : null;
+        if (HasContent(stderrPath))
+        {
+            return stderrPath;
+        }
+
+        // Both empty or absent: still prefer a file that exists, so the surface distinguishes
+        // "ran and said nothing" from "nothing was captured at all".
+        return File.Exists(stdoutPath) ? stdoutPath : File.Exists(stderrPath) ? stderrPath : null;
+
+        static bool HasContent(string path) => File.Exists(path) && new FileInfo(path).Length > 0;
     }
 }
 

@@ -24,7 +24,10 @@ public class CapturedWorkerStreamTests
         // 1. ProducedOutput constructor
         var exConst = Assert.Throws<ArgumentException>(() => new ProducedOutput(".stdout.log"));
         Assert.Contains(".stdout.log", exConst.Message);
-        Assert.Contains("reserved for engine stream logs", exConst.Message);
+        // #1345: asserted against the shared clause rather than a copy of its words — the point of
+        // ReservedOutputNames is that all four rejection sites say one thing, and a test spelling the
+        // sentence out again is a fourth copy that can drift from the three it is guarding.
+        Assert.Contains(ReservedOutputNames.RejectionClause, exConst.Message);
 
         // 2. WorkerBindingConfigParser
         var invalidJson = """
@@ -44,7 +47,7 @@ public class CapturedWorkerStreamTests
         """;
         var exConfig = Assert.Throws<WorkerBindingConfigException>(() => WorkerBindingConfigParser.Parse(invalidJson));
         Assert.Contains(".stderr.log", exConfig.Message);
-        Assert.Contains("reserved for engine stream logs", exConfig.Message);
+        Assert.Contains(ReservedOutputNames.RejectionClause, exConfig.Message);
 
         // 3. WorkflowDefinitionValidator
         var invalidDef = new WorkflowDefinition(
@@ -54,7 +57,7 @@ public class CapturedWorkerStreamTests
 
         var exDef = Assert.Throws<WorkflowDefinitionValidationException>(() => WorkflowDefinitionValidator.Validate(invalidDef));
         Assert.Contains(".stdout.log", exDef.Errors[0]);
-        Assert.Contains("reserved for engine stream logs", exDef.Errors[0]);
+        Assert.Contains(ReservedOutputNames.RejectionClause, exDef.Errors[0]);
 
         // Polarity: Normal name still validates
         var validOutput = new ProducedOutput("plan.md");

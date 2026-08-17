@@ -19,16 +19,24 @@ public sealed class ExecutionStreamLogger
 
     /// <summary>
     /// True when <paramref name="fileName"/> is one of this logger's own stream files — the four
-    /// names declared above, and nothing else.
+    /// names declared above, and nothing else. This is the one place that question is answered
+    /// (#1345); callers filter with it rather than restating which names are the engine's.
     /// <para>
-    /// #1345 (decision 0021 §2, "documents stay, plumbing goes"): these files land in the execution's
-    /// output directory, so anything enumerating that directory picks them up and presents AER's own
-    /// capture of a run as though the worker had produced it. The engine that writes the names owns
-    /// the question of which names they are — surfaces must never pattern-match filenames to guess.
+    /// Why it exists: these files land in the execution's <em>output</em> directory, so anything
+    /// enumerating that directory picks them up and presents AER's own capture of a run as though a
+    /// worker had produced it. Decision
+    /// <c>docs/decisions/0021-artifacts-are-files.md</c> draws exactly that line — the mechanism
+    /// should be abstracted away, the documents should not — and a stream log is mechanism.
     /// </para>
     /// <para>
-    /// Deliberately NOT a dot-prefix rule: a worker that writes <c>.gitignore</c> or
-    /// <c>.editorconfig</c> has produced a real deliverable, and a prefix rule would swallow it.
+    /// Deliberately narrow rather than a dot-prefix rule, and the layering is worth stating because
+    /// two other places sound broader than this one. A dot-prefixed name can never be a
+    /// <em>declared</em> output: <see cref="Aer.Flow.Domain.WorkerContract"/>'s
+    /// <c>ProducedOutput</c> constructor throws on one and <c>WorkflowDefinitionValidator</c> fails
+    /// validation for one. But an <em>undeclared</em> file a worker happens to write into its output
+    /// directory still reaches a surface, because that list is a directory read, not a contract — so
+    /// a worker-written <c>.gitignore</c> is a deliverable this filter must not swallow, even though
+    /// it could never have been declared. Narrow filter, broad declaration ban: both hold.
     /// </para>
     /// </summary>
     public static bool IsStreamLogFileName(string fileName) =>

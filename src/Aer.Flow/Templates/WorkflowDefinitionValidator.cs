@@ -58,9 +58,9 @@ public static class WorkflowDefinitionValidator
             {
                 foreach (var output in step.Outputs)
                 {
-                    if (output is not null && output.StartsWith('.'))
+                    if (ReservedOutputNames.IsReserved(output))
                     {
-                        errors.Add($"Step '{step.StepId}' declares output '{output}', which is rejected: names starting with '.' are reserved for engine stream logs.");
+                        errors.Add($"Step '{step.StepId}' declares output '{output}', which is rejected: {ReservedOutputNames.RejectionClause}.");
                     }
                 }
             }

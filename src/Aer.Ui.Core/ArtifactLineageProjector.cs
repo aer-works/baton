@@ -77,13 +77,16 @@ public static class ArtifactLineageProjector
             }
 
             var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, request.ExecutionId);
-            // #1345 (0021 §2, "documents stay, plumbing goes"): this enumerates the execution's
-            // output directory, which is also where ExecutionStreamLogger writes AER's own capture
-            // of the run — so .stdout.log and friends arrived here as though a worker had produced
-            // them. Filtered at THIS chokepoint rather than per-view, because 0021 says never
-            // surfaced *anywhere* and this list feeds every surface at once: the desktop chips and
-            // Files section, the wire (and so the phone's card preview), and HomeViewModel's
-            // latest-artifact fallback. The engine that writes the names owns which names they are.
+            // #1345: this enumerates the execution's output directory, which is also where
+            // ExecutionStreamLogger writes AER's own capture of the run — so .stdout.log and friends
+            // arrived here as though a worker had produced them. Why they are not documents is
+            // recorded once, on IsStreamLogFileName; this is the chokepoint that applies it.
+            //
+            // Filtered HERE rather than per-view because this list feeds every surface at once: the
+            // desktop chips and Files section, the wire (and so the phone's card preview), the
+            // Details lineage panel, and HomeViewModel's latest-artifact fallback. It is also, as of
+            // #1345, the ONLY place an execution output directory is enumerated — which is what
+            // makes one filter sufficient, and what a second enumerator would quietly undo.
             var outputFiles = Directory.Exists(outputDirectory)
                 ? Directory.GetFiles(outputDirectory)
                     .Select(Path.GetFileName)

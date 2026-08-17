@@ -6,6 +6,7 @@ using Aer.Flow.Templates;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.LogicalTree;
 using Avalonia.Headless.XUnit;
 using Avalonia.VisualTree;
 
@@ -234,10 +235,18 @@ public class MainWindowRoomFilesTests
     /// template and is present as soon as the row exists, whereas its visual tree is only realized
     /// on layout — and this assertion runs deliberately before any expansion.
     /// </summary>
+    /// <remarks>
+    /// Walks logical DESCENDANTS, not just direct children: keying on direct children would redden
+    /// this guard the day someone wraps either text in a Border, while the behaviour it guards is
+    /// unchanged. A false alarm is cheaper than a false pass, but it is not free.
+    /// </remarks>
     private static IReadOnlyList<string> HeaderTexts(Expander expander) => expander.Header switch
     {
-        TextBlock block => [block.Text ?? string.Empty],
-        Panel panel => panel.Children.OfType<TextBlock>().Select(block => block.Text ?? string.Empty).ToList(),
+        Control control => control.GetLogicalDescendants()
+            .OfType<TextBlock>()
+            .Concat(control is TextBlock self ? [self] : [])
+            .Select(block => block.Text ?? string.Empty)
+            .ToList(),
         string text => [text],
         _ => [],
     };
