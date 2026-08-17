@@ -1263,6 +1263,12 @@ class _ChatScreenState extends State<ChatScreen> {
             onReject: () => _decideStep(step, 'Reject'),
             onSendBack: (targetStepId, fileName) =>
                 _decideStepWithReference(step, 'Supersede', targetStepId, fileName), // vocabulary-ok: decision type label
+            onRetry: (fileName, supplementaryWorker, supplementaryOutputName) => _decideStepRetry(
+              step,
+              fileName: fileName,
+              supplementaryWorker: supplementaryWorker,
+              supplementaryOutputName: supplementaryOutputName,
+            ),
           );
         }
         final step = failedSteps[baseIndex - pausedSteps.length];
@@ -1294,6 +1300,41 @@ class _ChatScreenState extends State<ChatScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(decisionType == 'Reject' ? 'Rejected ${step.stepId}' : 'Approved ${step.stepId}')),
         );
+      }
+    } on DaemonException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      if (mounted) setState(() => _pendingStepIds.remove(step.stepId));
+    }
+  }
+
+  /// RetryWithRevision (#1323) — desktop's equivalent is `PausedStepViewModel.RetryAsync`. [fileName]
+  /// is non-null only when the operator opted into attaching this step's own output as the revision —
+  /// see [PausedStepCard]'s doc comment for why that's the only revision content on offer here.
+  Future<void> _decideStepRetry(
+    WorkflowStepState step, {
+    String? fileName,
+    String? supplementaryWorker,
+    String? supplementaryOutputName,
+  }) async {
+    final directoryPath = _projection?.directoryPath;
+    final executionId = step.latestExecutionId;
+    if (directoryPath == null || executionId == null) return;
+
+    setState(() => _pendingStepIds.add(step.stepId));
+    try {
+      await widget.client.decide(
+        directoryPath: directoryPath,
+        stepId: step.stepId,
+        executionId: executionId,
+        decisionType: 'RetryWithRevision',
+        artifactReference: fileName != null ? {'executionId': executionId, 'fileName': fileName} : null,
+        supplementaryWorker: supplementaryWorker,
+        supplementaryOutputName: supplementaryOutputName,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Retry requested for ${step.stepId}')));
       }
     } on DaemonException catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));

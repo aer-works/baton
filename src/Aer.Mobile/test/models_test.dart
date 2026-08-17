@@ -311,6 +311,51 @@ void main() {
     });
   });
 
+  group('StepDefinition.fromJson parses PausePoint.Kind (#1325)', () {
+    Map<String, dynamic> stepJson(Object? kind) => {
+          'stepId': 'review',
+          'worker': 'critic',
+          'pausePoint': {'supersedeTargets': <String>[], 'kind': ?kind},
+        };
+
+    test('parses NeedsInput', () {
+      final definition = StepDefinition.fromJson(stepJson('NeedsInput'));
+      expect(definition.pausePointKind, PausePointKind.needsInput);
+    });
+
+    test('parses ReadyForReview', () {
+      final definition = StepDefinition.fromJson(stepJson('ReadyForReview'));
+      expect(definition.pausePointKind, PausePointKind.readyForReview);
+    });
+
+    // The engine's own default (WorkflowDefinition.cs's PausePointKind.ReadyForReview = 0) — a
+    // snapshot bound before this field existed, or a step with no pausePoint at all, must land on
+    // the historical approval-gate meaning rather than misread absence as NeedsInput.
+    test('an absent kind defaults to ReadyForReview', () {
+      expect(StepDefinition.fromJson(stepJson(null)).pausePointKind, PausePointKind.readyForReview);
+      expect(
+        StepDefinition.fromJson({'stepId': 'review', 'worker': 'critic'}).pausePointKind,
+        PausePointKind.readyForReview,
+      );
+    });
+  });
+
+  group('WorkflowStepState.fromJson parses PausedOutcome', () {
+    test('parses Succeeded (camelCase, REST)', () {
+      final step = WorkflowStepState.fromJson({'stepId': 'review', 'status': 'Paused', 'pausedOutcome': 'Succeeded'});
+      expect(step.pausedOutcome, 'Succeeded');
+    });
+
+    test('parses Failed (PascalCase, WS)', () {
+      final step = WorkflowStepState.fromJson({'StepId': 'review', 'Status': 'Paused', 'PausedOutcome': 'Failed'});
+      expect(step.pausedOutcome, 'Failed');
+    });
+
+    test('an absent PausedOutcome parses as null', () {
+      expect(WorkflowStepState.fromJson({'stepId': 'review', 'status': 'Paused'}).pausedOutcome, isNull);
+    });
+  });
+
   group('SessionTurn.fromJson (isExhausted/exhaustedUntil parse, 0026 §4/#1180)', () {
     test('parses camelCase isExhausted/exhaustedUntil', () {
       final turn = SessionTurn.fromJson({

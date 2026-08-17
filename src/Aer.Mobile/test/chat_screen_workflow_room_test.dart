@@ -27,6 +27,11 @@ class _FakeDaemonClient extends DaemonClient {
   /// Every decision this screen sent, in order — the point of the test being that a decision reaches
   /// the daemon from inside the transcript.
   final List<Map<String, String>> decisions = [];
+
+  /// #1323: the artifactReference/supplementary fields `decisions` above doesn't carry — kept as a
+  /// separate list rather than widening `decisions` so the many existing exact-match assertions
+  /// against it stay unchanged.
+  final List<Map<String, String?>> decisionDetails = [];
   int cancelRunCallCount = 0;
 
   /// Directories this screen asked the daemon to open — the doorbell that makes the current
@@ -78,11 +83,20 @@ class _FakeDaemonClient extends DaemonClient {
     String? targetStepId,
     String? revisionFilePath,
     Map<String, String>? artifactReference,
+    String? supplementaryWorker,
+    String? supplementaryOutputName,
   }) async {
     decisions.add({
       'stepId': stepId,
       'decisionType': decisionType,
       'targetStepId': ?targetStepId,
+    });
+    decisionDetails.add({
+      'stepId': stepId,
+      'decisionType': decisionType,
+      'artifactFileName': artifactReference?['fileName'],
+      'supplementaryWorker': supplementaryWorker,
+      'supplementaryOutputName': supplementaryOutputName,
     });
     final gate = decideGate;
     if (gate != null) await gate.future;
@@ -95,17 +109,28 @@ class _FakeDaemonClient extends DaemonClient {
 }
 
 void main() {
-  RoomProjection workflowProjection({String stepStatus = 'Paused'}) => RoomProjection(
+  RoomProjection workflowProjection({
+    String stepStatus = 'Paused',
+    PausePointKind pausePointKind = PausePointKind.readyForReview,
+    List<String> supersedeTargets = const ['draft'],
+    // Anything other than 'Succeeded' -- the wire value ExternalDecisionValidator rejects
+    // RetryWithRevision against (ExternalDecisionValidator.cs:66). Most of this file's tests are not
+    // about that gate, so the default keeps their pre-existing "Retry… is offered" behaviour.
+    String? pausedOutcome = 'Failed',
+  }) =>
+      RoomProjection(
         directoryPath: '/tasks/foo',
         // No session: this is what makes it a workflow room rather than a chat.
         sessionId: null,
         workflowTemplateId: 'draft-review',
         status: 'Paused',
         stepDefinitions: [
-          StepDefinition(stepId: 'review', worker: 'critic', supersedeTargets: const ['draft']),
+          StepDefinition(
+              stepId: 'review', worker: 'critic', supersedeTargets: supersedeTargets, pausePointKind: pausePointKind),
         ],
         steps: [
-          WorkflowStepState(stepId: 'review', status: stepStatus, latestExecutionId: 'exec-1'),
+          WorkflowStepState(
+              stepId: 'review', status: stepStatus, latestExecutionId: 'exec-1', pausedOutcome: pausedOutcome),
         ],
         executions: [
           ExecutionArtifacts(executionId: 'exec-1', worker: 'critic', outputFiles: const ['review.md']),
@@ -178,6 +203,15 @@ void main() {
   }
 
   Future<_FakeDaemonClient> pumpWorkflowRoom(WidgetTester tester) async {
+    // #1323 grew the paused step's action row by a rung (Retry…), which on the default (narrow,
+    // short) test surface was enough to push trailing transcript items (the stopped-room card, the
+    // failed-step card) past ListView.builder's lazy-build window — a real phone has no such ceiling,
+    // an operator just scrolls, so a cramped test surface would be testing virtualization rather than
+    // the content these tests actually pin. Same knob the long-name header test below uses.
+    tester.view.physicalSize = const Size(1600, 3600);
+    tester.view.devicePixelRatio = 2.0;
+    addTearDown(tester.view.reset);
+
     final client = _FakeDaemonClient();
     await tester.pumpWidget(MaterialApp(
       home: ChatScreen(client: client, sessionId: null, directoryPath: '/tasks/foo'),
@@ -297,6 +331,159 @@ void main() {
       await tester.tap(find.text('Cancel run'));
       await tester.pumpAndSettle();
       expect(client.cancelRunCallCount, 1);
+    });
+  });
+
+  /// #1325: the phone must not offer Approve/Reject on a pause that is asking a question, not
+  /// requesting sign-off on finished work — decisions 0015/0040's kind-derived affordances. The
+  /// polarity pair below is deliberate: a fixture using only one kind cannot fail against the
+  /// pre-#1325 code, which always rendered the same three rungs regardless of kind.
+  ///
+  /// A second reader found the original fix's "Reply" button could not actually reply -- see
+  /// [PausedStepCard]'s doc comment for why, and #1334 for the tracked gap. NeedsInput now renders as
+  /// an announcement with no button at all, rather than an affordance that cannot resolve the pause.
+  group('A paused step\'s affordances are kind-derived (#1325)', () {
+    testWidgets('a NeedsInput step announces it needs an answer, and offers no button at all', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(pausePointKind: PausePointKind.needsInput));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('no way to answer'), findsOneWidget);
+      expect(find.text('Reply'), findsNothing);
+      expect(find.text('Approve'), findsNothing);
+      expect(find.text('Reject'), findsNothing);
+      expect(find.text('Send back to draft'), findsNothing);
+      expect(find.text('Retry…'), findsNothing);
+    });
+
+    testWidgets('a ReadyForReview step keeps Approve/Reject, and announces nothing', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(pausePointKind: PausePointKind.readyForReview));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Approve'), findsOneWidget);
+      expect(find.text('Reject'), findsOneWidget);
+      expect(find.textContaining('no way to answer'), findsNothing);
+    });
+  });
+
+  /// #1322: a pause point may declare more than one supersede target, and every one of them must be
+  /// reachable, not just the first. A single-target fixture (the group above's `workflowProjection`
+  /// default) cannot fail against the pre-#1322 code, which rendered exactly one button regardless of
+  /// how many targets were declared — this group's fixture always carries two.
+  group('Every declared supersede target is reachable (#1322)', () {
+    testWidgets('a pause point with two targets exposes both', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(supersedeTargets: const ['draft', 'outline']));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Send back to draft'), findsOneWidget);
+      expect(find.text('Send back to outline'), findsOneWidget);
+    });
+
+    testWidgets('superseding to the second target sends the second target\'s id', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(supersedeTargets: const ['draft', 'outline']));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Send back to outline'));
+      await tester.pumpAndSettle();
+
+      expect(client.decisions, [
+        {'stepId': 'review', 'decisionType': 'Supersede', 'targetStepId': 'outline'}
+      ]);
+    });
+  });
+
+  /// #1323: RetryWithRevision, the one decision type no phone UI path could construct before this.
+  group('Retry with revision (#1323)', () {
+    testWidgets('a bare retry (no attached revision) sends RetryWithRevision with no artifact', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Retry…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Retry'));
+      await tester.pumpAndSettle();
+
+      expect(client.decisionDetails, [
+        {
+          'stepId': 'review',
+          'decisionType': 'RetryWithRevision',
+          'artifactFileName': null,
+          'supplementaryWorker': null,
+          'supplementaryOutputName': null,
+        }
+      ]);
+    });
+
+    testWidgets('attaching the revision requires worker and output name before Retry is enabled', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Retry…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text("Attach this step's output as the revision"));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Retry')).onPressed, isNull);
+
+      await tester.enterText(find.widgetWithText(TextField, 'Supplementary worker'), 'reviewer');
+      await tester.enterText(find.widgetWithText(TextField, 'Supplementary output name'), 'revision.md');
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Retry')).onPressed, isNotNull);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Retry'));
+      await tester.pumpAndSettle();
+
+      expect(client.decisionDetails, [
+        {
+          'stepId': 'review',
+          'decisionType': 'RetryWithRevision',
+          'artifactFileName': 'review.md',
+          'supplementaryWorker': 'reviewer',
+          'supplementaryOutputName': 'revision.md',
+        }
+      ]);
+    });
+
+    testWidgets('cancelling the dialog sends nothing', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Retry…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(client.decisionDetails, isEmpty);
+    });
+  });
+
+  /// A second reader found Retry rendered on every ReadyForReview paused step, including the ordinary
+  /// review-and-approve case -- where the daemon's `ExternalDecisionValidator` rejects
+  /// `RetryWithRevision` outright because `PausedOutcome` is `Succeeded`
+  /// (`ExternalDecisionValidator.cs:66`). The polarity pair below is deliberate: a fixture asserting
+  /// only one outcome cannot fail against the pre-fix code, which offered Retry unconditionally.
+  group('Retry is only offered where the daemon will accept it', () {
+    testWidgets('a Succeeded paused step (the ordinary approve case) shows no Retry affordance', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(pausedOutcome: 'Succeeded'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Retry…'), findsNothing);
+    });
+
+    testWidgets('a Failed paused step shows the Retry affordance', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(pausedOutcome: 'Failed'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Retry…'), findsOneWidget);
     });
   });
 
