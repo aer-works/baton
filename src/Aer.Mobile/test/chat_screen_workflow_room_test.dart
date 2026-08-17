@@ -98,6 +98,7 @@ void main() {
   RoomProjection workflowProjection({
     String stepStatus = 'Paused',
     PausePointKind pausePointKind = PausePointKind.readyForReview,
+    List<String> supersedeTargets = const ['draft'],
   }) =>
       RoomProjection(
         directoryPath: '/tasks/foo',
@@ -107,7 +108,7 @@ void main() {
         status: 'Paused',
         stepDefinitions: [
           StepDefinition(
-              stepId: 'review', worker: 'critic', supersedeTargets: const ['draft'], pausePointKind: pausePointKind),
+              stepId: 'review', worker: 'critic', supersedeTargets: supersedeTargets, pausePointKind: pausePointKind),
         ],
         steps: [
           WorkflowStepState(stepId: 'review', status: stepStatus, latestExecutionId: 'exec-1'),
@@ -344,6 +345,34 @@ void main() {
       ]);
       expect(find.text('Replied to review'), findsOneWidget);
       expect(find.text('Approved review'), findsNothing);
+    });
+  });
+
+  /// #1322: a pause point may declare more than one supersede target, and every one of them must be
+  /// reachable, not just the first. A single-target fixture (the group above's `workflowProjection`
+  /// default) cannot fail against the pre-#1322 code, which rendered exactly one button regardless of
+  /// how many targets were declared — this group's fixture always carries two.
+  group('Every declared supersede target is reachable (#1322)', () {
+    testWidgets('a pause point with two targets exposes both', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(supersedeTargets: const ['draft', 'outline']));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Send back to draft'), findsOneWidget);
+      expect(find.text('Send back to outline'), findsOneWidget);
+    });
+
+    testWidgets('superseding to the second target sends the second target\'s id', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(supersedeTargets: const ['draft', 'outline']));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Send back to outline'));
+      await tester.pumpAndSettle();
+
+      expect(client.decisions, [
+        {'stepId': 'review', 'decisionType': 'Supersede', 'targetStepId': 'outline'}
+      ]);
     });
   });
 

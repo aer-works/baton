@@ -67,7 +67,7 @@ class _PausedStepCardState extends State<PausedStepCard> {
   @override
   Widget build(BuildContext context) {
     final hasOutput = widget.execution?.outputFiles.isNotEmpty ?? false;
-    final supersedeTarget = widget.definition?.supersedeTargets.firstOrNull;
+    final supersedeTargets = widget.definition?.supersedeTargets ?? const <String>[];
     final outputFile = widget.execution?.outputFiles.firstOrNull ?? 'draft.md';
     final kind = widget.definition?.pausePointKind ?? PausePointKind.readyForReview;
 
@@ -112,24 +112,26 @@ class _PausedStepCardState extends State<PausedStepCard> {
             // 0015/0040 (#1325): a decision-kind pause (NeedsInput) is an ordinary chat turn awaiting
             // your next message, not a review -- it gets one honest Reply rung, never Approve/Reject,
             // which is the exact confusion 0015 exists to design out. An approval-kind pause
-            // (ReadyForReview) keeps the full resolution set: Send back, Reject, Approve.
+            // (ReadyForReview) keeps the full resolution set: one Send back rung per declared
+            // supersede target (#1322 -- every declared target must be reachable, not just the
+            // first), Reject, Approve.
             kind == PausePointKind.needsInput
                 ? Align(
                     alignment: Alignment.centerRight,
                     child: FilledButton(onPressed: widget.isPending ? null : widget.onApprove, child: const Text('Reply')),
                   )
-                : Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
+                : Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
-                      if (supersedeTarget != null && widget.onSendBack != null) ...[
-                        OutlinedButton(
-                          onPressed: widget.isPending ? null : () => widget.onSendBack!(supersedeTarget, outputFile),
-                          child: Text('Send back to $supersedeTarget'),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
+                      for (final target in supersedeTargets)
+                        if (widget.onSendBack != null)
+                          OutlinedButton(
+                            onPressed: widget.isPending ? null : () => widget.onSendBack!(target, outputFile),
+                            child: Text('Send back to $target'),
+                          ),
                       TextButton(onPressed: widget.isPending ? null : widget.onReject, child: const Text('Reject')),
-                      const SizedBox(width: 8),
                       FilledButton(onPressed: widget.isPending ? null : widget.onApprove, child: const Text('Approve')),
                     ],
                   ),
