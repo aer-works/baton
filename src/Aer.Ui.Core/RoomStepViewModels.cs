@@ -1,4 +1,5 @@
 using Aer.Flow.Artifacts;
+using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 using Aer.Flow.Outcomes;
 using Aer.Flow.Projection;
@@ -646,8 +647,6 @@ public static class StepItemProjector
             {
                 var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, execution.ExecutionId);
                 var shortId = PlainLanguage.ShortId(execution.ExecutionId.ToString());
-                ArtifactFileViewModel? firstOutputOfExecution = null;
-                ArtifactFileViewModel? firstPromptOfExecution = null;
                 foreach (var fileName in execution.OutputFiles)
                 {
                     // #292: prompt.txt is durable capture of what the worker was asked, not
@@ -665,7 +664,6 @@ public static class StepItemProjector
                             previewFileAsync,
                             select: file => SelectOutputFile(promptFiles, file));
                         promptFiles.Add(promptFile);
-                        firstPromptOfExecution ??= promptFile;
                         continue;
                     }
 
@@ -679,7 +677,6 @@ public static class StepItemProjector
                         previewFileAsync,
                         select: file => SelectOutputFile(outputFiles, file));
                     outputFiles.Add(outputFile);
-                    firstOutputOfExecution ??= outputFile;
                 }
 
                 ConversationRefViewModel? conversationOfExecution = null;
@@ -692,18 +689,22 @@ public static class StepItemProjector
                     conversations.Add(conversationOfExecution);
                 }
 
+                // #1345: "Show full output" now falls back to the run's actual raw output — the
+                // stream log — instead of the first artifact and then the prompt. Those two were
+                // never full output: they are the worker's deliverable and the question it was
+                // asked, both of which already have their own chips. The old chain only looked
+                // right because `.stdout.log` leaked into OutputFiles and sorts first ordinally,
+                // so `firstOutputOfExecution` often WAS the stream log by accident. With the leak
+                // closed at the lineage projector, that accident is gone and the button would
+                // otherwise have started confidently showing the wrong file.
                 Action? showThisExecution = null;
                 if (conversationOfExecution is { } conversation)
                 {
                     showThisExecution = () => conversation.ShowCommand.Execute(null);
                 }
-                else if (firstOutputOfExecution is { } output)
+                else if (ResolveStreamLogPath(outputDirectory) is { } streamLogPath)
                 {
-                    showThisExecution = () => _ = output.PreviewCommand.ExecuteAsync(null);
-                }
-                else if (firstPromptOfExecution is { } prompt)
-                {
-                    showThisExecution = () => _ = prompt.PreviewCommand.ExecuteAsync(null);
+                    showThisExecution = () => _ = previewFileAsync(streamLogPath);
                 }
 
                 if (showThisExecution != null)
@@ -806,6 +807,51 @@ public static class StepItemProjector
         {
             file.IsSelected = ReferenceEquals(file, selected);
         }
+    }
+
+    /// <summary>
+    /// #1345: the execution's raw stream log, for "Show full output" — stdout, or stderr when a run
+    /// wrote nothing to stdout. Returns null when neither exists, so the caller renders the action
+    /// as unavailable rather than opening a substitute and calling it full output.
+    /// <para>
+    /// Reached by path rather than through the file chips on purpose: stream logs are filtered out of
+    /// the room's file surfaces (<see cref="ExecutionStreamLogger.IsStreamLogFileName"/>, applied at
+    /// <see cref="ArtifactLineageProjector"/> — the reasoning is recorded there and not restated
+    /// here), and this one disclosure — a button on a failure, into the preview box — is not the same
+    /// act as listing plumbing among a room's documents.
+    /// </para>
+    /// <para>
+    /// Two limits, stated because the button's label promises more than it delivers: a run that wrote
+    /// both streams shows stdout only (the banner carries a stderr excerpt separately), and after an
+    /// 8 MiB rollover the earlier half lives in <c>.stdout.log.1</c>, which this does not open — so a
+    /// worker that overran the cap shows its tail. Naming the stream being previewed needs a label
+    /// surface the preview box does not have; that is its own issue rather than a fabricated header.
+    /// </para>
+    /// </summary>
+    private static string? ResolveStreamLogPath(string outputDirectory)
+    {
+        var stdoutPath = Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName);
+        var stderrPath = Path.Combine(outputDirectory, ExecutionStreamLogger.StderrLogFileName);
+
+        // An existing-but-empty stdout log is the case that made "does the file exist" the wrong
+        // question: a worker that died writing only to stderr still gets a zero-byte .stdout.log
+        // from the logger's own open, and preferring it would open a blank box on exactly the
+        // failure someone is trying to read.
+        if (HasContent(stdoutPath))
+        {
+            return stdoutPath;
+        }
+
+        if (HasContent(stderrPath))
+        {
+            return stderrPath;
+        }
+
+        // Both empty or absent: still prefer a file that exists, so the surface distinguishes
+        // "ran and said nothing" from "nothing was captured at all".
+        return File.Exists(stdoutPath) ? stdoutPath : File.Exists(stderrPath) ? stderrPath : null;
+
+        static bool HasContent(string path) => File.Exists(path) && new FileInfo(path).Length > 0;
     }
 }
 

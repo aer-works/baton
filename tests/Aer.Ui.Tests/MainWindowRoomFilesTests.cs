@@ -6,6 +6,7 @@ using Aer.Flow.Templates;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.LogicalTree;
 using Avalonia.Headless.XUnit;
 using Avalonia.VisualTree;
 
@@ -134,7 +135,17 @@ public class MainWindowRoomFilesTests
 
             var filesList = window.FindViewControl<ItemsControl>("RoomFilesList")!;
             var expanders = filesList.GetVisualDescendants().OfType<Expander>().ToList();
-            var planExpander = expanders.Single(e => (string)e.Header! == "plan");
+            // #1345: the header is a panel now, not a bare string — the row carries the file's
+            // name AND its summary, so it is legible without opening it.
+            var planExpander = expanders.Single(e => HeaderTexts(e).Contains("plan"));
+
+            // The regression guard for #1345's first defect. The summary was built correctly all
+            // along and rendered inside the expander body, so every projector test passed while
+            // the list at rest showed nothing but filenames. Asserted BEFORE expanding, because
+            // "visible once you open it" is exactly the bug.
+            Assert.False(planExpander.IsExpanded);
+            Assert.Contains(HeaderTexts(planExpander), text => text.Contains("version") && text.Contains("latest"));
+
             planExpander.IsExpanded = true;
             window.UpdateLayout();
 
@@ -217,4 +228,26 @@ public class MainWindowRoomFilesTests
             DirectoryCleanup.DeleteRecursively(roomDirectory);
         }
     }
+
+    /// <summary>
+    /// Every string a file row shows on the row itself, expanded or not (#1345). Reads the header's
+    /// logical children rather than its visual descendants: the header content is authored in the
+    /// template and is present as soon as the row exists, whereas its visual tree is only realized
+    /// on layout — and this assertion runs deliberately before any expansion.
+    /// </summary>
+    /// <remarks>
+    /// Walks logical DESCENDANTS, not just direct children: keying on direct children would redden
+    /// this guard the day someone wraps either text in a Border, while the behaviour it guards is
+    /// unchanged. A false alarm is cheaper than a false pass, but it is not free.
+    /// </remarks>
+    private static IReadOnlyList<string> HeaderTexts(Expander expander) => expander.Header switch
+    {
+        Control control => control.GetLogicalDescendants()
+            .OfType<TextBlock>()
+            .Concat(control is TextBlock self ? [self] : [])
+            .Select(block => block.Text ?? string.Empty)
+            .ToList(),
+        string text => [text],
+        _ => [],
+    };
 }
