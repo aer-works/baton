@@ -282,10 +282,7 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
 
         if (invocation.Effort is not null)
         {
-            // #1318: the field may now carry 0023's canonical word (quick/standard/careful/exhaustive)
-            // as well as a raw claude value; EffortTierMapping resolves either, and rejects anything
-            // else rather than forwarding it -- claude ignores an unknown --effort and runs at its
-            // default with exit 0, so a blind forward here would be a silent wrong-effort run.
+            // #1318: see EffortTierMapping for why this is resolved rather than forwarded as-is.
             args.Add("--effort");
             args.Add(EffortTierMapping.ResolveForClaude(invocation.Effort));
         }

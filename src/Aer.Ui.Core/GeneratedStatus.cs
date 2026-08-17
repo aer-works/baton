@@ -126,7 +126,7 @@ public static class AerStatusPresentation
 }
 
 
-/// <summary>0058/#1318's depth meter tiers, in the order <c>design/tokens.json</c> names them.</summary>
+/// <summary>#1318's depth meter tiers — <c>design/tokens.json</c> is the source.</summary>
 public enum AerDepthTier
 {
     Fast,
@@ -134,11 +134,7 @@ public enum AerDepthTier
     Deep,
 }
 
-/// <summary>
-/// Vocabulary-to-geometry data for the depth meter — never vendor knowledge (0023
-/// constraint 1 keeps that in <c>Aer.Adapters</c> alone). <see cref="TotalSteps"/> is the
-/// same for every tier in this family; <see cref="FilledSteps"/> is what differs.
-/// </summary>
+/// <summary>Fill count and label per <see cref="AerDepthTier"/> tier.</summary>
 public static class AerDepthTierPresentation
 {
     public const int TotalSteps = 3;
@@ -160,7 +156,7 @@ public static class AerDepthTierPresentation
     };
 }
 
-/// <summary>0058/#1318's effort meter tiers, in the order <c>design/tokens.json</c> names them.</summary>
+/// <summary>#1318's effort meter tiers — <c>design/tokens.json</c> is the source.</summary>
 public enum AerEffortTier
 {
     Quick,
@@ -169,11 +165,7 @@ public enum AerEffortTier
     Exhaustive,
 }
 
-/// <summary>
-/// Vocabulary-to-geometry data for the effort meter — never vendor knowledge (0023
-/// constraint 1 keeps that in <c>Aer.Adapters</c> alone). <see cref="TotalSteps"/> is the
-/// same for every tier in this family; <see cref="FilledSteps"/> is what differs.
-/// </summary>
+/// <summary>Fill count and label per <see cref="AerEffortTier"/> tier.</summary>
 public static class AerEffortTierPresentation
 {
     public const int TotalSteps = 4;

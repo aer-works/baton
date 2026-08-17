@@ -25,8 +25,7 @@ public class EffortTierMappingTests
     [InlineData("quick", "low")]
     [InlineData("standard", "medium")]
     [InlineData("careful", "high")]
-    // agy has no fourth level: exhaustive collapses onto high, a disclosed collapse per 0023
-    // constraint 2 -- see docs/vendor-capabilities.md's own table note.
+    // See EffortTierMapping's own remarks for why exhaustive lands here too.
     [InlineData("exhaustive", "high")]
     public void Agy_maps_every_canonical_word_to_its_documented_value(string canonical, string expectedRaw)
     {

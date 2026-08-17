@@ -186,9 +186,9 @@ public sealed partial class StepItemViewModel : ObservableObject
 
     /// <summary>
     /// The depth (model-tier) mark's structural slot (#1318). Always null today: nothing produces a
-    /// worker's tier yet, #1330 owns that register — see the #1318 scope ruling's "ship the mechanism
-    /// ahead of the producer" call. Present so the chip already binds it and renders its own absence
-    /// correctly the day #1330 lands, with no further UI change.
+    /// worker's tier yet — #1330 owns that register. Present so the chip already binds it and renders
+    /// its own absence correctly the day #1330 lands, with no further UI change; see
+    /// <see cref="EffortTierParsing.TryParseDepth"/> for why the parse side is already exercised too.
     /// </summary>
     public AerDepthTier? DepthTier => null;
     public FailureClassification? LatestFailureClassification { get; }

@@ -708,13 +708,12 @@ public static class TokenGenerator
 
         return $$"""
 
-        /// 0058/#1318's {{family}} meter tiers, in the order design/tokens.json names them.
+        /// #1318's {{family}} meter tiers — the Dart twin of Aer.Ui.Core's {{enumName}}.
         enum {{enumName}} {
         {{members.ToString().TrimEnd()}}
         }
 
-        /// Vocabulary-to-geometry data for the {{family}} meter — never vendor knowledge (0023
-        /// constraint 1 keeps that in Aer.Adapters alone).
+        /// Fill count and label per tier.
         extension {{enumName}}Presentation on {{enumName}} {
           static const int totalSteps = {{totalSteps}};
 
@@ -855,17 +854,13 @@ public static class TokenGenerator
 
         return $$"""
 
-        /// <summary>0058/#1318's {{family}} meter tiers, in the order <c>design/tokens.json</c> names them.</summary>
+        /// <summary>#1318's {{family}} meter tiers — <c>design/tokens.json</c> is the source.</summary>
         public enum {{enumName}}
         {
         {{members.ToString().TrimEnd()}}
         }
 
-        /// <summary>
-        /// Vocabulary-to-geometry data for the {{family}} meter — never vendor knowledge (0023
-        /// constraint 1 keeps that in <c>Aer.Adapters</c> alone). <see cref="TotalSteps"/> is the
-        /// same for every tier in this family; <see cref="FilledSteps"/> is what differs.
-        /// </summary>
+        /// <summary>Fill count and label per <see cref="{{enumName}}"/> tier.</summary>
         public static class {{enumName}}Presentation
         {
             public const int TotalSteps = {{totalSteps}};

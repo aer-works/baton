@@ -244,15 +244,14 @@ ThemeData aerTheme(Brightness brightness) {
 }
 
 
-/// 0058/#1318's depth meter tiers, in the order design/tokens.json names them.
+/// #1318's depth meter tiers — the Dart twin of Aer.Ui.Core's AerDepthTier.
 enum AerDepthTier {
   fast,
   balanced,
   deep,
 }
 
-/// Vocabulary-to-geometry data for the depth meter — never vendor knowledge (0023
-/// constraint 1 keeps that in Aer.Adapters alone).
+/// Fill count and label per tier.
 extension AerDepthTierPresentation on AerDepthTier {
   static const int totalSteps = 3;
 
@@ -269,7 +268,7 @@ extension AerDepthTierPresentation on AerDepthTier {
       };
 }
 
-/// 0058/#1318's effort meter tiers, in the order design/tokens.json names them.
+/// #1318's effort meter tiers — the Dart twin of Aer.Ui.Core's AerEffortTier.
 enum AerEffortTier {
   quick,
   standard,
@@ -277,8 +276,7 @@ enum AerEffortTier {
   exhaustive,
 }
 
-/// Vocabulary-to-geometry data for the effort meter — never vendor knowledge (0023
-/// constraint 1 keeps that in Aer.Adapters alone).
+/// Fill count and label per tier.
 extension AerEffortTierPresentation on AerEffortTier {
   static const int totalSteps = 4;
 

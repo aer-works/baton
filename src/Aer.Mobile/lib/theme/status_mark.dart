@@ -188,21 +188,13 @@ class _StatusMarkPainter extends CustomPainter {
       oldDelegate.mark != mark || oldDelegate.filled != filled || oldDelegate.color != color;
 }
 
-/// Draws a depth or effort meter mark (#1318, decision 0058's scope ruling) — a SIBLING system to
-/// [StatusMark] above, not a generalisation of it (do not fold these into [_StatusMarkPainter]'s
-/// switch). Both meters draw the SAME shape at every position on a shared 16x16 canvas — matching
-/// `Icons.axaml`'s `Icon.DepthStep*`/`Icon.EffortStep*` point for point — and only whether a
-/// position is FILLED changes per tier, never the shape at that position: 0058's own ruling names
-/// the discriminator for these two families as "shape, fill or weight, never colour", not full
-/// per-step silhouette distinctness the way [StatusMark] needs.
-///
-/// Achromatic (0058 constraint 1): a filled step paints [color] solid, an unfilled one is only
-/// stroked — the same fill-vs-stroke split [StatusMark] already uses for a solid mark, applied per
-/// step instead of per whole shape.
-///
-/// A null tier renders nothing (ruling 2): no mark, no empty frame, no reserved outline. `DepthMark`
-/// is the steady state in production today — nothing sets a worker's depth tier yet (#1330 owns that
-/// register) — while `EffortMark` is wired live off a worker's canonical effort word.
+/// Draws a depth or effort meter mark (#1318). Design reasoning — why these two families are a
+/// sibling system to [StatusMark] rather than a generalisation of it, and why fill count rather
+/// than per-step silhouette is what tells tiers apart — lives on `Icons.axaml`'s own header comment
+/// for `Icon.DepthStep1`; this file only mirrors its coordinates, point for point, on the same
+/// 16x16 canvas convention [StatusMark] already follows. Fill vs stroke per step is the same split
+/// [StatusMark] uses for a solid mark, applied per step instead of per whole shape; a null tier
+/// renders nothing, matching every other absence in this file.
 abstract class _TierMeterPainter extends CustomPainter {
   const _TierMeterPainter({required this.filledSteps, required this.color});
 

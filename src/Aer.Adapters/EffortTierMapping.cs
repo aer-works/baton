@@ -2,15 +2,12 @@ namespace Aer.Adapters;
 
 /// <summary>
 /// 0023's canonical effort vocabulary (quick/standard/careful/exhaustive) translated to each
-/// vendor's raw <c>--effort</c> value at dispatch (decision 0058's #1318 scope ruling 4). The
-/// canonical word is now what <see cref="WorkerBindingConfigEntry.Effort"/>/
-/// <see cref="WorkerInvocation.Effort"/> carry — that field's domain widened rather than gaining a
-/// second one, because the canonical set is disjoint from both vendors' raw sets — and this is the
-/// only place that resolves it to a vendor flag value (0023 constraint 1, CLAUDE.md Architecture
-/// Rule 2). <c>Aer.Flow</c>, <c>Aer.Ui</c> and <c>Aer.Mobile</c> never see a raw vendor effort
-/// string; the mapping itself lives only here and is stated once, in
-/// <c>docs/vendor-capabilities.md</c>'s "The canonical effort mapping" table — restated in this
-/// file's data, never in prose elsewhere (record-once).
+/// vendor's raw <c>--effort</c> value at dispatch (decision 0058's #1318 scope ruling 4). See
+/// <see cref="WorkerInvocation.Effort"/> for what this field now carries and why; this is the only
+/// place that resolves it to a vendor flag value (0023 constraint 1, CLAUDE.md Architecture Rule 2).
+/// <c>Aer.Flow</c>, <c>Aer.Ui</c> and <c>Aer.Mobile</c> never see a raw vendor effort string; the
+/// mapping itself lives only here and is stated once, in <c>docs/vendor-capabilities.md</c>'s "The
+/// canonical effort mapping" table — restated in this file's data, never in prose elsewhere.
 /// </summary>
 /// <remarks>
 /// <b>Fail closed, not fail-forward.</b> <c>claude</c> silently ignores an unknown <c>--effort</c>
