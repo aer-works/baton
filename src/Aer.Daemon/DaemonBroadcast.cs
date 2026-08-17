@@ -197,16 +197,10 @@ internal sealed class DaemonBroadcast
                     }
                     node["WorkerAdapters"] = adaptersNode;
                     node["WorkerEffortTiers"] = BuildWorkerEffortTiers(doc.RootElement);
+                    node["WorkerDepthTiers"] = BuildWorkerDepthTiers(doc.RootElement);
                 }
                 catch { }
             }
-
-            // #1318 (decision 0058's scope ruling): the depth (model-tier) sibling to
-            // WorkerEffortTiers above, staying null until #1330 registers the vendor-model->tier
-            // mapping nothing produces yet. An additive sibling, not a RoomProjection field, mirroring
-            // WorkerAdapters/WorkerEffortTiers exactly -- a client reads its absence the same way it
-            // already reads an absent DirectoryPath: no tier, not a default one.
-            node["WorkerDepthTiers"] = null;
         }
 
         var bytes = System.Text.Encoding.UTF8.GetBytes(node.ToJsonString(options));
@@ -240,6 +234,39 @@ internal sealed class DaemonBroadcast
         }
 
         return effortTiers;
+    }
+
+    /// <summary>
+    /// The additive <c>WorkerDepthTiers</c> sibling (#1339, decision 0058's scope ruling 4): worker
+    /// name -> canonical depth (model-tier) word, resolved from the same bindings-file shape
+    /// <c>WorkerAdapters</c>/<c>WorkerEffortTiers</c> already read above -- this one keys on each
+    /// entry's <c>Adapter</c> and <c>Model</c> pair rather than a directly-authored field, because
+    /// unlike effort's canonical word (typed straight into the binding) a worker's depth is never
+    /// authored in AER's vocabulary at all -- only a vendor's own model string is. <see cref="DepthTierMapping"/>
+    /// is the one place that pair resolves to a canonical word (0023 constraint 1); this method never
+    /// inspects a model string itself. A binding whose adapter+model pair the mapping does not carry
+    /// (every agy entry today, or an unrecognized claude model) is simply absent from this object,
+    /// never defaulted or guessed -- a client that reads no entry for a worker renders no mark.
+    /// </summary>
+    internal static System.Text.Json.Nodes.JsonObject BuildWorkerDepthTiers(JsonElement bindingsRoot)
+    {
+        var depthTiers = new System.Text.Json.Nodes.JsonObject();
+        foreach (var prop in bindingsRoot.EnumerateObject())
+        {
+            var adapter = prop.Value.TryGetProperty("Adapter", out var adapterProp) || prop.Value.TryGetProperty("adapter", out adapterProp)
+                ? adapterProp.GetString()
+                : null;
+            var model = prop.Value.TryGetProperty("Model", out var modelProp) || prop.Value.TryGetProperty("model", out modelProp)
+                ? modelProp.GetString()
+                : null;
+
+            if (DepthTierMapping.TryResolve(adapter, model, out var purpose))
+            {
+                depthTiers[prop.Name] = purpose;
+            }
+        }
+
+        return depthTiers;
     }
 
     // Helper method for broadcasting state to all sockets

@@ -406,7 +406,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         Func<string, Task> previewFileAsync,
         Action<string, string> showConversation,
         IReadOnlyDictionary<string, string>? workerAdapters = null,
-        IReadOnlyDictionary<string, string>? workerEffortTiers = null)
+        IReadOnlyDictionary<string, string>? workerEffortTiers = null,
+        IReadOnlyDictionary<string, string>? workerDepthTiers = null)
     {
         var previousSelectedStepId = SelectedStep?.StepId;
 
@@ -424,7 +425,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
             workerAdapters: workerAdapters,
             reRunAction: reRunAvailable ? () => _ = RequestRoomRunAsync() : null,
             askWorkerToFixAction: (adapter, stepId, reason) => AskWorkerToFix(adapter, stepId, reason, roomDirectoryPath),
-            workerEffortTiers: workerEffortTiers))
+            workerEffortTiers: workerEffortTiers,
+            workerDepthTiers: workerDepthTiers))
         {
             RoomSteps.Add(item);
         }

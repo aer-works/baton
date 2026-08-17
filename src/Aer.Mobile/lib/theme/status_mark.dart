@@ -358,3 +358,17 @@ AerEffortTier? parseCanonicalEffortTier(String? raw) {
   }
   return null;
 }
+
+/// The mobile mirror of `Aer.Ui.Core.EffortTierParsing.TryParseDepth` -- depth's twin of
+/// [parseCanonicalEffortTier] above, same reasoning. [AerDepthTier]'s enum member names are the three
+/// canonical words `tokens.dart`'s generator emits from `design/tokens.json`, so this is a name
+/// lookup, not a second hand-authored vocabulary list; anything that fails the lookup (null, a raw
+/// vendor model string, or anything else unmapped) returns null, which [DepthMark] renders as its
+/// usual absence.
+AerDepthTier? parseCanonicalDepthTier(String? raw) {
+  if (raw == null) return null;
+  for (final candidate in AerDepthTier.values) {
+    if (candidate.name == raw) return candidate;
+  }
+  return null;
+}

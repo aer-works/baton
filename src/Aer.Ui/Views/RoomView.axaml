@@ -108,11 +108,12 @@
                         Fill="{Binding VendorKey, Converter={StaticResource VendorIconBrushConverter}}"
                         Width="11" Height="11" Stretch="Uniform" VerticalAlignment="Center" />
                   <TextBlock Classes="caption" Text="{Binding VendorDisplay}" VerticalAlignment="Center" />
-                  <!-- #1318 (decision 0058's scope ruling): depth and effort as marks beside the
-                       vendor word — vendor stays text (constraint 4), depth/effort become marks.
-                       DepthTier is always null today (its producer is #1330); the control renders
-                       nothing for it, which is expected (ruling 2), not a missing binding. 16, not
-                       11: the geometry is authored on a 16-unit grid with a 3-unit smallest feature
+                  <!-- #1318/#1339 (decision 0058's scope ruling): depth and effort as marks beside
+                       the vendor word — vendor stays text (constraint 4), depth/effort become marks.
+                       DepthTier renders for a claude worker on a recorded model alias; an agy worker
+                       (or an unrecognized model) resolves to null, and the control renders nothing
+                       for it, which is expected (ruling 2), not a missing binding. 16, not 11: the
+                       geometry is authored on a 16-unit grid with a 3-unit smallest feature
                        (Icons.axaml's Icon.EffortStep*), and the status mark beside it already gets
                        12 (below) — 11 left no room for a step to read as anything but a smear. -->
                   <controls:TierMeter Steps="{Binding DepthTier, Converter={StaticResource DepthTierMeterStepsConverter}}"

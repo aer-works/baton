@@ -114,6 +114,7 @@ void main() {
   RoomProjection workflowProjection({
     String stepStatus = 'Paused',
     Map<String, String> workerEffortTiers = const {},
+    Map<String, String> workerDepthTiers = const {},
     PausePointKind pausePointKind = PausePointKind.readyForReview,
     List<String> supersedeTargets = const ['draft'],
     // Anything other than 'Succeeded' -- the wire value ExternalDecisionValidator rejects
@@ -140,6 +141,7 @@ void main() {
         ],
         workerAdapters: const {'critic': 'claude'},
         workerEffortTiers: workerEffortTiers,
+        workerDepthTiers: workerDepthTiers,
       );
 
   /// The real WS wire fixture, parsed rather than hand-built, so a rename of any sibling on the
@@ -242,13 +244,16 @@ void main() {
       expect(find.text('Approve'), findsOneWidget);
     });
 
-    // #1318 (decision 0058's scope ruling 4): the second reader's finding was that DepthMark/
-    // EffortMark had no call site anywhere in lib -- this is that call site, exercised. Depth has no
-    // producer yet (#1330) so it always renders nothing; effort is wired live off workerEffortTiers.
-    testWidgets('the paused step card carries a depth mark (always absent) and a live effort mark', (tester) async {
+    // #1318/#1339 (decision 0058's scope ruling 4): the second reader's finding was that DepthMark/
+    // EffortMark had no call site anywhere in lib -- this is that call site, exercised. #1339 wired
+    // depth live off workerDepthTiers, the same way #1318 already wired effort off workerEffortTiers.
+    testWidgets('the paused step card carries a live depth mark and a live effort mark', (tester) async {
       final client = await pumpWorkflowRoom(tester);
 
-      client.push(workflowProjection(workerEffortTiers: const {'critic': 'careful'}));
+      client.push(workflowProjection(
+        workerEffortTiers: const {'critic': 'careful'},
+        workerDepthTiers: const {'critic': 'deep'},
+      ));
       await tester.pumpAndSettle();
 
       expect(find.byType(PausedStepCard), findsOneWidget);
@@ -259,7 +264,7 @@ void main() {
       expect(effortMark.tier, AerEffortTier.careful);
 
       final depthMark = tester.widget<DepthMark>(find.byType(DepthMark));
-      expect(depthMark.tier, isNull);
+      expect(depthMark.tier, AerDepthTier.deep);
     });
 
     testWidgets('a worker with no canonical effort word renders no effort mark, not a fabricated one', (tester) async {
@@ -272,6 +277,20 @@ void main() {
 
       final effortMark = tester.widget<EffortMark>(find.byType(EffortMark));
       expect(effortMark.tier, isNull);
+    });
+
+    // The depth twin of the effort polarity test above -- an agy-vendored worker's WorkerDepthTiers
+    // entry is absent entirely (#1330 left agy's column unrecorded), which reaches the phone
+    // identically to an unrecognized string: both take ruling 2's absence path, never a fabricated
+    // tier.
+    testWidgets('a worker with no canonical depth word renders no depth mark, not a fabricated one', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+
+      client.push(workflowProjection());
+      await tester.pumpAndSettle();
+
+      final depthMark = tester.widget<DepthMark>(find.byType(DepthMark));
+      expect(depthMark.tier, isNull);
     });
 
     testWidgets('asks the daemon to push this room, so a paused room is not opened empty', (tester) async {

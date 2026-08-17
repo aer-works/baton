@@ -30,6 +30,9 @@ class PausedStepCard extends StatefulWidget {
 
   /// See [RoomProjection.workerEffortTiers] for the shape and why absence is never defaulted.
   final Map<String, String> workerEffortTiers;
+
+  /// See [RoomProjection.workerDepthTiers] for the shape and why absence is never defaulted.
+  final Map<String, String> workerDepthTiers;
   final bool isPending;
   final VoidCallback onApprove;
   final VoidCallback onReject;
@@ -52,6 +55,7 @@ class PausedStepCard extends StatefulWidget {
     required this.execution,
     required this.workerAdapters,
     required this.workerEffortTiers,
+    required this.workerDepthTiers,
     required this.isPending,
     required this.onApprove,
     required this.onReject,
@@ -109,6 +113,7 @@ class _PausedStepCardState extends State<PausedStepCard> {
     final adapter = widget.workerAdapters[workerName];
     final titleText = adapter != null ? '$workerName ($adapter)' : workerName; // vocabulary-ok: technical adapter setting
     final effortTier = parseCanonicalEffortTier(widget.workerEffortTiers[workerName]);
+    final depthTier = parseCanonicalDepthTier(widget.workerDepthTiers[workerName]);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -121,10 +126,10 @@ class _PausedStepCardState extends State<PausedStepCard> {
               children: [
                 buildVendorIcon(adapter),
                 const SizedBox(width: 8),
-                // #1318: the mobile call site RoomView.axaml's desktop chip already has -- see its
-                // own comment for the pairing's reasoning. DepthMark always gets a null tier (no
-                // producer yet, #1330); EffortMark is wired live off workerEffortTiers.
-                DepthMark(null, size: 14),
+                // #1318/#1339: the mobile call site RoomView.axaml's desktop chip already has -- see
+                // its own comment for the pairing's reasoning and the absence rule ruling 2 states.
+                // Both marks are wired live now, off workerDepthTiers/workerEffortTiers.
+                DepthMark(depthTier, size: 14),
                 const SizedBox(width: 2),
                 EffortMark(effortTier, size: 14),
                 const SizedBox(width: 8),
