@@ -1836,7 +1836,7 @@ public partial class MainWindow : Window
                 {
                     if ((prop.Value.TryGetProperty("Effort", out var effortProp) || prop.Value.TryGetProperty("effort", out effortProp)) // vocabulary-ok: JSON property name
                         && effortProp.GetString() is { } effortStr
-                        && Aer.Adapters.EffortTierMapping.IsCanonical(effortStr))
+                        && Aer.Ui.Core.EffortTierParsing.TryParseEffort(effortStr, out _))
                     {
                         result[prop.Name] = effortStr;
                     }

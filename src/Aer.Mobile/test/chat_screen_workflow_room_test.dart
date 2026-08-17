@@ -12,6 +12,8 @@ import 'package:aer_mobile/daemon/recorded_decision_wording.dart';
 import 'package:aer_mobile/failed_step_card.dart';
 import 'package:aer_mobile/paused_step_card.dart';
 import 'package:aer_mobile/room_stopped_card.dart';
+import 'package:aer_mobile/theme/status_mark.dart';
+import 'package:aer_mobile/theme/tokens.dart';
 
 /// #1226 (#1196 slice 6a): a workflow room renders in the phone's room screen — the one rendering a
 /// room has — and its paused step is answered there rather than on a decision surface of its own.
@@ -95,7 +97,8 @@ class _FakeDaemonClient extends DaemonClient {
 }
 
 void main() {
-  RoomProjection workflowProjection({String stepStatus = 'Paused'}) => RoomProjection(
+  RoomProjection workflowProjection({String stepStatus = 'Paused', Map<String, String> workerEffortTiers = const {}}) =>
+      RoomProjection(
         directoryPath: '/tasks/foo',
         // No session: this is what makes it a workflow room rather than a chat.
         sessionId: null,
@@ -111,6 +114,7 @@ void main() {
           ExecutionArtifacts(executionId: 'exec-1', worker: 'critic', outputFiles: const ['review.md']),
         ],
         workerAdapters: const {'critic': 'claude'},
+        workerEffortTiers: workerEffortTiers,
       );
 
   /// The real WS wire fixture, parsed rather than hand-built, so a rename of any sibling on the
@@ -202,6 +206,38 @@ void main() {
       expect(find.byType(PausedStepCard), findsOneWidget);
       expect(find.text('critic (claude)'), findsOneWidget);
       expect(find.text('Approve'), findsOneWidget);
+    });
+
+    // #1318 (decision 0058's scope ruling 4): the second reader's finding was that DepthMark/
+    // EffortMark had no call site anywhere in lib -- this is that call site, exercised. Depth has no
+    // producer yet (#1330) so it always renders nothing; effort is wired live off workerEffortTiers.
+    testWidgets('the paused step card carries a depth mark (always absent) and a live effort mark', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+
+      client.push(workflowProjection(workerEffortTiers: const {'critic': 'careful'}));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(PausedStepCard), findsOneWidget);
+      expect(find.byType(DepthMark), findsOneWidget);
+      expect(find.byType(EffortMark), findsOneWidget);
+
+      final effortMark = tester.widget<EffortMark>(find.byType(EffortMark));
+      expect(effortMark.tier, AerEffortTier.careful);
+
+      final depthMark = tester.widget<DepthMark>(find.byType(DepthMark));
+      expect(depthMark.tier, isNull);
+    });
+
+    testWidgets('a worker with no canonical effort word renders no effort mark, not a fabricated one', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+
+      // Absent entirely, and a raw vendor value ('high', never one of 0023's four canonical words)
+      // both take the same absence path -- ruling 2's rule applies identically to either.
+      client.push(workflowProjection(workerEffortTiers: const {'critic': 'high'}));
+      await tester.pumpAndSettle();
+
+      final effortMark = tester.widget<EffortMark>(find.byType(EffortMark));
+      expect(effortMark.tier, isNull);
     });
 
     testWidgets('asks the daemon to push this room, so a paused room is not opened empty', (tester) async {

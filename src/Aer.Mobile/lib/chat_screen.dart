@@ -1258,6 +1258,7 @@ class _ChatScreenState extends State<ChatScreen> {
             definition: projection.definitionFor(step.stepId),
             execution: projection.executionFor(step.latestExecutionId),
             workerAdapters: projection.workerAdapters,
+            workerEffortTiers: projection.workerEffortTiers,
             isPending: _pendingStepIds.contains(step.stepId),
             onApprove: () => _decideStep(step, 'Resume'),
             onReject: () => _decideStep(step, 'Reject'),

@@ -31,6 +31,7 @@ public static class WireFixtureGenerator
         restNode["sessionId"] = "session-123";
         var workerAdaptersRest = new JsonObject { ["critic"] = "agy" };
         restNode["workerAdapters"] = workerAdaptersRest;
+        restNode["workerEffortTiers"] = new JsonObject { ["critic"] = "careful" };
         restNode["roomCardStatus"] = roomCardStatus.ToString();
         restNode["roomCardStatusText"] = roomCardStatusText;
         fixtures[Path.Combine(RelativeFixturesPath, "room_projection.rest.json")] = FormatJson(restNode, DaemonSerializerOptions.Rest);
@@ -41,6 +42,7 @@ public static class WireFixtureGenerator
         wsNode["SessionId"] = "session-123";
         var workerAdaptersWs = new JsonObject { ["critic"] = "agy" };
         wsNode["WorkerAdapters"] = workerAdaptersWs;
+        wsNode["WorkerEffortTiers"] = new JsonObject { ["critic"] = "careful" };
         wsNode["RoomCardStatus"] = roomCardStatus.ToString();
         wsNode["RoomCardStatusText"] = roomCardStatusText;
         fixtures[Path.Combine(RelativeFixturesPath, "room_projection.ws.json")] = FormatJson(wsNode, DaemonSerializerOptions.WebSocket);

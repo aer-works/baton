@@ -12,10 +12,17 @@
              x:DataType="controls:TierMeter">
   <UserControl.Styles>
     <!-- Achromatic (0058 constraint 1, the same theme-variant-aware pattern
-         StatusToIconFillConverter established): a filled step paints Color.TextSecondary; an
-         unfilled one keeps only the Stroke outline below. Fill count is the signal, never colour. -->
-    <Style Selector="Path.filled">
+         StatusToIconFillConverter established): every step is a SOLID fill, filled or unfilled —
+         never a stroke outline (#1318 second reader: a stroked step's interior gap is too fine a
+         fraction of its own area to read as hollow at chip size). An unfilled step paints the same
+         Color.TextSecondary at reduced opacity, so the filled/unfilled contrast is a lightness
+         difference that survives greyscale, not a hairline the fill nearly covers. -->
+    <Style Selector="Path">
       <Setter Property="Fill" Value="{DynamicResource Color.TextSecondary}" />
+      <Setter Property="Opacity" Value="0.32" />
+    </Style>
+    <Style Selector="Path.filled">
+      <Setter Property="Opacity" Value="1" />
     </Style>
   </UserControl.Styles>
   <!-- Each step's own StreamGeometry is already positioned within one shared 16x16 canvas (see
@@ -29,10 +36,15 @@
     </ItemsControl.ItemsPanel>
     <ItemsControl.ItemTemplate>
       <DataTemplate DataType="controls:TierMeterStep">
-        <Path Data="{Binding Geometry}" Classes.filled="{Binding IsFilled}"
-              Stroke="{DynamicResource Color.TextSecondary}" StrokeThickness="1"
-              StrokeLineCap="Round" StrokeJoin="Round" Stretch="Uniform"
-              Width="16" Height="16" />
+        <!-- Stretch="None": Uniform computes its scale/position from the GEOMETRY'S OWN Bounds, not
+             the shared authoring grid (the exact trap MainWindow.axaml's titlebar-icon comment
+             documents), so with three differently-sized steps sharing one 16x16 canvas, Uniform
+             scaled every step up to fill its own box individually — concentric circles, nested
+             rectangles, not the ascending meter the geometry describes. None draws each step at its
+             already-authored absolute position, and no Width/Height here: the Panel arranges every
+             step to the control's own real slot (RoomView.axaml sizes TierMeter itself), so there is
+             one place, not two, where the meter's rendered size is stated. -->
+        <Path Data="{Binding Geometry}" Classes.filled="{Binding IsFilled}" Stretch="None" />
       </DataTemplate>
     </ItemsControl.ItemTemplate>
   </ItemsControl>

@@ -121,16 +121,16 @@
        task/session directories at once, not one task's steps. -->
   <StreamGeometry x:Key="Icon.Fleet">M 2.5,2.5 L 6.8,2.5 L 6.8,6.8 L 2.5,6.8 Z M 9.2,2.5 L 13.5,2.5 L 13.5,6.8 L 9.2,6.8 Z M 2.5,9.2 L 6.8,9.2 L 6.8,13.5 L 2.5,13.5 Z M 9.2,9.2 L 13.5,9.2 L 13.5,13.5 L 9.2,13.5 Z</StreamGeometry>
 
-  <!-- #1318 (decision 0058's scope ruling): the depth and effort METER families — a sibling system
-       to the status marks above, not a generalisation of them (do not fold TierMeter into
-       StatusIconMap). Each family draws the SAME shape at every position; only whether a position is
-       filled changes per tier (design/tokens.json's depth/effort blocks name each tier's fill count,
-       never a per-tier shape). 0058's own ruling names the discriminator for these two families as
-       "shape, fill or weight, never colour" — not full per-step silhouette distinctness the way
-       status needs — so the fill count at the family's own step total is what tells tiers apart, and
-       the two families are drawn as different shapes (round vs rectangular) so a fill-count
-       coincidence between them can never read as the other family's tier, and neither collides with a
-       status mark or a vendor mark already on the same chip (constraint 4). -->
+  <!-- #1318 (decision 0058's scope ruling, constraint 2): the depth and effort METER families — a
+       sibling system to the status marks above, not a generalisation of them (do not fold TierMeter
+       into StatusIconMap). Each family draws the SAME shape at every position, sized ascending by
+       position (design/tokens.json's depth/effort blocks name each tier's fill count against that
+       fixed per-position size), so each tier's FILLED REGION has a distinct envelope — a
+       battery-gauge reading, not a tally. See 0058 constraint 2 for why that satisfies "silhouette,
+       not count-of-things" and why a fine stroke does not. The two families are also drawn as
+       different shapes from each other (round vs rectangular), so a fill-count coincidence between
+       them can never read as the other family's tier, and neither collides with a status mark or a
+       vendor mark already on the same chip (constraint 4). -->
 
   <!-- Depth: three ascending dots, centred on one baseline, growing left to right — a batteries/
        signal-strength reading, not a status. -->
@@ -140,11 +140,14 @@
 
   <!-- Effort: four ascending bars on a shared baseline — rectangular, never round, so the family
        reads apart from the depth dots above (and from every status/vendor circle-or-arc mark) even
-       in greyscale. -->
-  <StreamGeometry x:Key="Icon.EffortStep1">M 1.5,11.5 L 3.7,11.5 L 3.7,14 L 1.5,14 Z</StreamGeometry>
-  <StreamGeometry x:Key="Icon.EffortStep2">M 5.1,9.5 L 7.3,9.5 L 7.3,14 L 5.1,14 Z</StreamGeometry>
-  <StreamGeometry x:Key="Icon.EffortStep3">M 8.7,7.5 L 10.9,7.5 L 10.9,14 L 8.7,14 Z</StreamGeometry>
-  <StreamGeometry x:Key="Icon.EffortStep4">M 12.3,5.5 L 14.5,5.5 L 14.5,14 L 12.3,14 Z</StreamGeometry>
+       in greyscale. 3.0 units wide, not 2.2 (#1318 second reader): a stroked 2.2-unit bar's interior
+       gap was 9% of its own width, so every tier read as "all bars solid" regardless of fill — the
+       widen keeps each bar's centre fixed and only grows the half-width, so the 0.6-unit gaps
+       between bars stay even. -->
+  <StreamGeometry x:Key="Icon.EffortStep1">M 1.1,11.5 L 4.1,11.5 L 4.1,14 L 1.1,14 Z</StreamGeometry>
+  <StreamGeometry x:Key="Icon.EffortStep2">M 4.7,9.5 L 7.7,9.5 L 7.7,14 L 4.7,14 Z</StreamGeometry>
+  <StreamGeometry x:Key="Icon.EffortStep3">M 8.3,7.5 L 11.3,7.5 L 11.3,14 L 8.3,14 Z</StreamGeometry>
+  <StreamGeometry x:Key="Icon.EffortStep4">M 11.9,5.5 L 14.9,5.5 L 14.9,14 L 11.9,14 Z</StreamGeometry>
 
   <!-- M22 template-picker vendor icons (issue #250 review follow-up): closed, fillable shapes (same
        16x16 grid as the set above), each a distinct point-count silhouette so the two read apart

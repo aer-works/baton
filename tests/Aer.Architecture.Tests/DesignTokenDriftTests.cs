@@ -337,7 +337,11 @@ public class DesignTokenDriftTests
     /// makes: this asserts a shape is defined per position and a widget exists per family, not that
     /// the two toolkits' drawings agree pixel for pixel, and it does not attempt to assert greyscale
     /// silhouette discriminability — that stays a review judgment, per the #1318 scope ruling's own
-    /// instruction not to pretend a test can settle it.
+    /// instruction not to pretend a test can settle it. What this check cannot see at all —
+    /// whether desktop actually renders a defined shape at its authored position rather than
+    /// silently mis-transforming it — is <c>Aer.Ui.Tests.TierMeterRenderTests</c> (#1318 second
+    /// reader), which renders the real <c>TierMeter</c> control headlessly and asserts each step's
+    /// rendered geometry matches its authored one.
     /// </remarks>
     [Fact]
     public void EveryDepthAndEffortStepIsDrawnByBothToolkits()

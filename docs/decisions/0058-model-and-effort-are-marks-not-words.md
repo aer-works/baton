@@ -34,6 +34,13 @@ previously unresolved:
 2. **Silhouette, not count-of-things.** 0006 rule 2's reasoning — marks must differ in silhouette,
    not merely be distinguishable by colour once you can see it — applies verbatim here. Three depth
    steps and four effort steps must be told apart in greyscale, at chip size.
+
+   A meter family satisfies this constraint when each tier's **filled region** has a distinct
+   silhouette readable without counting — ascending step sizes so the eye reads the envelope's
+   extent, the way a battery gauge is read. N identical steps distinguishable only by tallying which
+   are filled does not satisfy it; neither does a filled/unfilled contrast too fine to survive
+   greyscale at chip size (unfilled steps must differ from filled by weight — a muted solid — not by
+   a hairline outline on a shape the outline nearly covers).
 3. **Tier, never the model string.** [0023](0023-effort-and-models-are-named-by-behaviour.md): the
    mark encodes the tier (deep / balanced / fast) or the effort behaviour (quick / standard /
    careful / exhaustive), never a vendor's model string or flag. The vendor→tier mapping is #498's
