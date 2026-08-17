@@ -134,6 +134,27 @@ public class WebSocketProjectionFrameTests
         Assert.Empty(defaulted.RecordedDecisionMoments);
     }
 
+    /// <summary>0054 §7/#1307: the same mapping half as the fixtures above, for the projection's own <c>Participants</c> field.</summary>
+    [Fact]
+    public void ToProjection_carries_the_participants_from_the_frame_into_the_projection()
+    {
+        var participants = new List<Aer.Flow.Domain.Participant>
+        {
+            new(new Aer.Flow.Domain.WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true)
+        };
+
+        var frame = new RoomClient.ProjectionFrame(
+            "C:/tasks/foo", null!, null!, null!, null!, null, null, null, null, null, false, participants);
+        var projection = RoomClient.ToProjection(frame);
+
+        Assert.Same(participants, projection.Participants);
+
+        var defaulted = RoomClient.ToProjection(
+            new RoomClient.ProjectionFrame("C:/tasks/foo", null!, null!, null!, null!, null));
+        Assert.NotNull(defaulted.Participants);
+        Assert.Empty(defaulted.Participants);
+    }
+
     // The record's PRIMARY constructor. A record also emits a copy constructor (one parameter), so the
     // longest-parameter ctor is the declared one.
     private static ParameterInfo[] Primary(Type type) =>

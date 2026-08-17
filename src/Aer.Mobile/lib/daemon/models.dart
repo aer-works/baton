@@ -273,6 +273,12 @@ class RoomProjection {
   /// switch is #1196 slice 6.
   final bool isWorkflowOff;
 
+  /// 0054 §7/#1307 ruling 7: the wire twin of `SessionMetadata.Participants` — see
+  /// `RoomProjection.Participants`'s doc in Aer.Ui.Core/RoomProjection.cs for why this exists
+  /// alongside that field rather than instead of it. Parsing only this slice (ruling 6): nothing on
+  /// the phone reads it yet.
+  final List<Participant> participants;
+
   RoomProjection({
     required this.directoryPath,
     required this.sessionId,
@@ -289,6 +295,7 @@ class RoomProjection {
     this.roomCardStatus,
     this.roomCardStatusText,
     this.isWorkflowOff = false,
+    this.participants = const [],
   });
 
   bool get isDormant => dormancyTransitions.isNotEmpty && dormancyTransitions.last.isEntered;
@@ -348,6 +355,9 @@ class RoomProjection {
       roomCardStatusText:
           (j['roomcardstatustext']?.toString().isEmpty ?? true) ? null : j['roomcardstatustext'].toString(),
       isWorkflowOff: j['isworkflowoff'] == true,
+      participants: ((j['participants'] as List<dynamic>?) ?? [])
+          .map((p) => Participant.fromJson(p as Map<String, dynamic>))
+          .toList(),
     );
   }
 }
@@ -372,6 +382,12 @@ class SessionTurn {
   final bool isExhausted;
   final DateTime? exhaustedUntil;
 
+  /// 0054 §4/#1307: the sender's tag, durable on the turn — see
+  /// `SessionTurn.TargetParticipantId`'s doc in Aer.Adapters/InteractiveSessions.cs (canonical: why
+  /// null means "posted to the room" and is never the daemon's resolved orchestrator). Parsing only
+  /// — no addressing UI on the phone this slice (ruling 6).
+  final String? targetParticipantId;
+
   SessionTurn({
     required this.turnIndex,
     required this.vendor,
@@ -382,6 +398,7 @@ class SessionTurn {
     this.isDormancyAnswer = false,
     this.isExhausted = false,
     this.exhaustedUntil,
+    this.targetParticipantId,
   });
 
   factory SessionTurn.fromJson(Map<String, dynamic> json) {
@@ -396,6 +413,7 @@ class SessionTurn {
       isDormancyAnswer: j['isdormancyanswer'] == true,
       isExhausted: j['isexhausted'] == true,
       exhaustedUntil: j['exhausteduntil'] == null ? null : DateTime.tryParse(j['exhausteduntil'].toString()),
+      targetParticipantId: j['targetparticipantid']?.toString(),
     );
   }
 }

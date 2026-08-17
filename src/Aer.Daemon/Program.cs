@@ -2047,6 +2047,12 @@ namespace Aer.Daemon
                 return Results.Ok(metadata);
             });
 
+            // Its response's ResolvedParticipantId (see resolvedParticipantId below) has no production
+            // reader today -- only SessionSendAddressingEndpointTests does. It stays on the response
+            // because it is the observable proof that untagged->orchestrator resolution actually
+            // happened: per-participant *execution* of that resolved id is #1306's job, not this
+            // endpoint's, so today the value cannot yet change who actually answers -- without the
+            // field on the wire there would be nothing for a test to assert the resolution against.
             app.MapPost("/api/sessions/send", async ([FromBody] SendSessionMessageRequest request, RoomClient session, BindingsPathHolder pathHolder, IReadOnlyDictionary<string, IWorkerAdapter> adapters) =>
             {
                 if (string.IsNullOrWhiteSpace(request.Message))
@@ -2075,6 +2081,22 @@ namespace Aer.Daemon
                 {
                     return Results.BadRequest("Not a valid interactive session directory.");
                 }
+
+                // 0054 §4/#1307 ruling 4: a tagged send must name an existing participant -- 400,
+                // the same unknown-WorkerId shape /api/rooms/orchestrator/reassign already returns
+                // (both read the same SessionMetadata.Participants list). Checked before the dormancy
+                // branch below: an unknown tag is a bad request regardless of the room's dormancy.
+                if (ValidateSendTarget(metadata, request.TargetParticipantId) is { } targetError)
+                {
+                    return Results.BadRequest(targetError);
+                }
+
+                // See ResolveOrchestrator's own remarks for what this is and why it exists even
+                // though today's single-participant rooms make it a no-op: the resolved id is
+                // reported back on the response below (never stamped onto the durable turn -- see
+                // SessionTurn.TargetParticipantId), which is what lets a test prove untagged->
+                // orchestrator resolution against synthetic multi-participant metadata.
+                var resolvedParticipantId = request.TargetParticipantId ?? ResolveOrchestrator(metadata);
 
                 // #1179: a freshly materialized room (POST /api/sessions/start) is never dormant --
                 // its room.jsonl has no dormancy transition yet -- so that endpoint needs no change;
@@ -2113,7 +2135,10 @@ namespace Aer.Daemon
                             ExecutedAt: DateTimeOffset.UtcNow,
                             NativeSessionResumed: false,
                             VendorHandoffSynthesized: false,
-                            IsDormancyAnswer: true);
+                            IsDormancyAnswer: true,
+                            // Ruling 4: a product-initiated dispatch path, never addressed by a
+                            // sender -- explicit, not the field's own default by coincidence.
+                            TargetParticipantId: null);
 
                         var updatedMetadata = currentMetadata with
                         {
@@ -2137,7 +2162,7 @@ namespace Aer.Daemon
                         await broadcast.BroadcastStateAsync(refreshedProjection, directoryPath).ConfigureAwait(true);
                     }
 
-                    return Results.Ok(new { SessionId = metadata.SessionId, RoomDirectoryPath = directoryPath });
+                    return Results.Ok(new { SessionId = metadata.SessionId, RoomDirectoryPath = directoryPath, ResolvedParticipantId = resolvedParticipantId?.Value });
                 }
 
                 pathHolder.BindingsFilePath = AerPaths.RoomBindingsFile(directoryPath);
@@ -2146,7 +2171,7 @@ namespace Aer.Daemon
                 {
                     try
                     {
-                        await ExecuteSessionTurnAsync(session, directoryPath, metadata, request.Message, request.Adapter, request.Model, isInitial: false, broadcast.BroadcastStateAsync, adapters, broadcast.BroadcastSessionProgressAsync).ConfigureAwait(false);
+                        await ExecuteSessionTurnAsync(session, directoryPath, metadata, request.Message, request.Adapter, request.Model, isInitial: false, broadcast.BroadcastStateAsync, adapters, broadcast.BroadcastSessionProgressAsync, targetParticipantId: request.TargetParticipantId).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
@@ -2161,7 +2186,7 @@ namespace Aer.Daemon
                     }
                 });
 
-                return Results.Ok(new { SessionId = metadata.SessionId, RoomDirectoryPath = directoryPath });
+                return Results.Ok(new { SessionId = metadata.SessionId, RoomDirectoryPath = directoryPath, ResolvedParticipantId = resolvedParticipantId?.Value });
             });
 
             app.MapGet("/api/sessions/{sessionId}", async (string sessionId) =>
@@ -2401,7 +2426,9 @@ namespace Aer.Daemon
                     try
                     {
                         var compactMsg = "/compact Please provide a concise summary of our conversation so far, including all key requirements, code changes, decisions, and current progress.";
-                        await ExecuteSessionTurnAsync(session, directoryPath, metadata, compactMsg, metadata.CurrentAdapter, metadata.Model, isInitial: false, broadcast.BroadcastStateAsync, adapters, broadcast.BroadcastSessionProgressAsync, forceHandoff: true).ConfigureAwait(false);
+                        // Ruling 4: forced compaction is product-initiated, never addressed by a
+                        // sender -- explicit null, the same as the dormancy-answer path above.
+                        await ExecuteSessionTurnAsync(session, directoryPath, metadata, compactMsg, metadata.CurrentAdapter, metadata.Model, isInitial: false, broadcast.BroadcastStateAsync, adapters, broadcast.BroadcastSessionProgressAsync, forceHandoff: true, targetParticipantId: null).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
@@ -2770,6 +2797,37 @@ namespace Aer.Daemon
         internal static SemaphoreSlim SessionTurnLockFor(string directoryPath) =>
             SessionTurnLocks.GetOrAdd(SessionTurnLockKey(directoryPath), _ => new SemaphoreSlim(1, 1));
 
+        /// <summary>
+        /// 0054 §4/#1307 ruling 4: a tagged <c>POST /api/sessions/send</c> must name an existing
+        /// participant -- returns an error message for the 400, or null when the tag is valid or
+        /// absent (an absent tag is never an error; resolving it is <see cref="ResolveOrchestrator"/>'s
+        /// job, not this check's). Mirrors <c>/api/rooms/orchestrator/reassign</c>'s own unknown-
+        /// WorkerId handling, which reads the same <c>SessionMetadata.Participants</c> list.
+        /// </summary>
+        internal static string? ValidateSendTarget(SessionMetadata metadata, WorkerId? targetParticipantId)
+        {
+            if (targetParticipantId is not { } target)
+            {
+                return null;
+            }
+
+            var exists = metadata.Participants?.Any(p => p.Id == target) ?? false;
+            return exists ? null : $"WorkerId '{target.Value}' is not a participant in this room.";
+        }
+
+        /// <summary>
+        /// 0054 §4's own definition of an untagged send's answerer, and the single implementation of
+        /// its "structural lookup, never content inspection" rule (Architecture Rule 1): the
+        /// participant whose <see cref="Participant.IsOrchestrator"/> reads true. Every untagged
+        /// dispatch path -- the composer's send, the dormancy-answer turn, forced compaction -- is
+        /// meant to route through this one lookup rather than re-deriving "who answers" per call site
+        /// (0032's own definition of the orchestrator, "where an otherwise ambiguous routing choice is
+        /// credited"). Null on a pre-#1305 room (no <c>Participants</c> at all) or one with no
+        /// orchestrator recorded yet.
+        /// </summary>
+        internal static WorkerId? ResolveOrchestrator(SessionMetadata metadata)
+            => metadata.Participants?.FirstOrDefault(p => p.IsOrchestrator)?.Id;
+
         private static async Task ExecuteSessionTurnAsync(
             RoomClient session,
             string directoryPath,
@@ -2781,7 +2839,12 @@ namespace Aer.Daemon
             Func<RoomProjection, string?, Task> broadcastStateAsync,
             IReadOnlyDictionary<string, IWorkerAdapter> adapters,
             Func<string, string, WorkerProgressEvent, Task> broadcastSessionProgressAsync,
-            bool forceHandoff = false)
+            bool forceHandoff = false,
+            // 0054 §4/#1307 ruling 3: the sender's own tag, carried straight to the recorded turn --
+            // never the daemon's resolved orchestrator (see SessionTurn.TargetParticipantId). Every
+            // caller passes this explicitly (ruling 4): the composer's send forwards its request
+            // field, the dormancy-answer and forced-compaction paths pass null on purpose.
+            WorkerId? targetParticipantId = null)
         {
             // #1296: the global/per-vendor concurrency cap sits BEFORE the turn lock -- it gates how
             // many turns dispatch to a vendor CLI at once across the whole daemon, not (like the turn
@@ -2819,7 +2882,8 @@ namespace Aer.Daemon
                     broadcastStateAsync,
                     adapters,
                     broadcastSessionProgressAsync,
-                    forceHandoff).ConfigureAwait(false);
+                    forceHandoff,
+                    targetParticipantId).ConfigureAwait(false);
             }
             finally
             {
@@ -2859,7 +2923,8 @@ namespace Aer.Daemon
             Func<RoomProjection, string?, Task> broadcastStateAsync,
             IReadOnlyDictionary<string, IWorkerAdapter> adapters,
             Func<string, string, WorkerProgressEvent, Task> broadcastSessionProgressAsync,
-            bool forceHandoff = false)
+            bool forceHandoff = false,
+            WorkerId? targetParticipantId = null)
         {
             var targetAdapter = string.IsNullOrWhiteSpace(requestAdapter) ? metadata.CurrentAdapter : requestAdapter.Trim().ToLowerInvariant();
             bool isVendorChange = !string.Equals(targetAdapter, metadata.CurrentAdapter, StringComparison.OrdinalIgnoreCase);
@@ -3306,7 +3371,8 @@ namespace Aer.Daemon
                 VendorHandoffSynthesized: handoff,
                 ErrorMessage: errorMessage,
                 IsExhausted: isExhausted,
-                ExhaustedUntil: exhaustedUntil);
+                ExhaustedUntil: exhaustedUntil,
+                TargetParticipantId: targetParticipantId);
 
             var updatedTurns = new List<SessionTurn>(metadata.Turns) { turn };
             var updatedTurnCount = isCeilingReached ? 1 : newTurnIndex;

@@ -238,6 +238,7 @@
       "recordedAt": "2026-08-03T15:45:00\u002B00:00"
     }
   ],
+  "participants": [],
   "isDormant": false,
   "directoryPath": "C:/tasks/foo",
   "sessionId": "session-123",

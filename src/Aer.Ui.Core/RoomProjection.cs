@@ -36,6 +36,13 @@ namespace Aer.Ui.Core;
 /// plain bool rather than a transitions list (unlike <paramref name="DormancyTransitions"/>, whose
 /// history is shown to the person): the switch is a "non-event" and nothing reads its past.
 /// </param>
+/// <param name="Participants">
+/// 0054 §7/#1307: the room's participants as the projection's own live render source — the wire
+/// twin of <c>SessionMetadata.Participants</c>, which stays the persistence truth. Populated
+/// additively by <c>DaemonBroadcast.SendStateAsync</c>, the same site and pattern that already
+/// stamps <c>SessionId</c> onto a push (it loads <c>SessionMetadata</c> in scope for exactly that).
+/// Empty until a room is open, or on a pre-#1305 room.
+/// </param>
 public sealed record RoomProjection(
     WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage,
     PendingPermission? PendingPermission = null,
@@ -43,11 +50,13 @@ public sealed record RoomProjection(
     IReadOnlyList<DormancyTransition>? DormancyTransitions = null,
     IReadOnlyList<StepPauseMoment>? StepPauseMoments = null,
     IReadOnlyList<RecordedDecisionMoment>? RecordedDecisionMoments = null,
-    bool IsWorkflowOff = false)
+    bool IsWorkflowOff = false,
+    IReadOnlyList<Participant>? Participants = null)
 {
     public IReadOnlyList<PermissionAnswer> PermissionAnswers { get; init; } = PermissionAnswers ?? [];
     public IReadOnlyList<DormancyTransition> DormancyTransitions { get; init; } = DormancyTransitions ?? [];
     public IReadOnlyList<StepPauseMoment> StepPauseMoments { get; init; } = StepPauseMoments ?? [];
     public IReadOnlyList<RecordedDecisionMoment> RecordedDecisionMoments { get; init; } = RecordedDecisionMoments ?? [];
+    public IReadOnlyList<Participant> Participants { get; init; } = Participants ?? [];
     public bool IsDormant => DormancyTransitions.Count > 0 && DormancyTransitions[^1].IsEntered;
 }

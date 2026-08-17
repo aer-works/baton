@@ -133,6 +133,221 @@ public class ChatViewModelTests
         Assert.False(viewModel.IsOrchestratorReassignVisible);
     }
 
+    /// <summary>0054 §4/#1307 ruling 2: tapping a chip sets the sticky tag, and it shows for a room with more than one participant -- the same visibility precedent <see cref="IsOrchestratorReassignVisible"/> already establishes.</summary>
+    [Fact]
+    public void SelectTagParticipant_SetsTheStickyTag_AndShowsTheChipRowForTwoParticipants()
+    {
+        var viewModel = new ChatViewModel();
+        var second = new Participant(new WorkerId("claude-2"), "claude-2", "claude", "sonnet", null, IsOrchestrator: false);
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        {
+            Participants =
+            [
+                new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true),
+                second,
+            ],
+        };
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.True(viewModel.ShowTagChipRow);
+        Assert.False(viewModel.HasSelectedTag);
+
+        viewModel.SelectTagParticipantCommand.Execute(second.Id);
+
+        Assert.True(viewModel.HasSelectedTag);
+        Assert.Equal(second, viewModel.SelectedTagParticipant);
+        Assert.Equal("To: claude-2", viewModel.SelectedTagLabel);
+    }
+
+    /// <summary>The row collapses for a single-participant room -- ruling 4's "match the reassign control's hidden-at-one-participant precedent."</summary>
+    [Fact]
+    public void ShowTagChipRow_IsFalse_ForASingleParticipantRoom()
+    {
+        var viewModel = new ChatViewModel();
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        { Participants = [new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true)] };
+
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.False(viewModel.ShowTagChipRow);
+    }
+
+    /// <summary>The untag/clear affordance returns the composer to the room default (an untagged send).</summary>
+    [Fact]
+    public void ClearTagParticipant_ReturnsToTheRoomDefault()
+    {
+        var viewModel = new ChatViewModel();
+        var second = new Participant(new WorkerId("claude-2"), "claude-2", "claude", "sonnet", null, IsOrchestrator: false);
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        {
+            Participants =
+            [
+                new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true),
+                second,
+            ],
+        };
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+        viewModel.SelectTagParticipantCommand.Execute(second.Id);
+
+        viewModel.ClearTagParticipantCommand.Execute(null);
+
+        Assert.False(viewModel.HasSelectedTag);
+        Assert.Null(viewModel.SelectedTagParticipant);
+        Assert.Equal("To: room", viewModel.SelectedTagLabel);
+    }
+
+    /// <summary>
+    /// 0054 §4/#1307's queued-capture rule: each queued message keeps the tag that was selected at
+    /// enqueue time, even if the operator re-tags (or clears) the sticky chip afterward -- a later
+    /// choice must not silently retarget a message already waiting.
+    /// </summary>
+    [Fact]
+    public void EnqueueMessage_CapturesTheStickyTagAtEnqueueTime_NotAtDrainTime()
+    {
+        var viewModel = new ChatViewModel();
+        var second = new Participant(new WorkerId("claude-2"), "claude-2", "claude", "sonnet", null, IsOrchestrator: false);
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        {
+            Participants =
+            [
+                new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true),
+                second,
+            ],
+        };
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        viewModel.SelectTagParticipantCommand.Execute(second.Id);
+        viewModel.EnqueueMessage("tagged message");
+
+        viewModel.ClearTagParticipantCommand.Execute(null);
+        viewModel.EnqueueMessage("untagged message");
+
+        Assert.Equal(2, viewModel.QueuedMessages.Count);
+        Assert.Equal(second.Id, viewModel.QueuedMessages[0].TargetParticipantId);
+        Assert.Null(viewModel.QueuedMessages[1].TargetParticipantId);
+    }
+
+    /// <summary>
+    /// #1307 second-reader finding: the tagged participant leaving the room (#1308 will make this
+    /// routine) must not leave <see cref="ChatViewModel.SelectedTagParticipantId"/> naming someone who
+    /// is no longer in <see cref="ChatViewModel.Participants"/> -- otherwise <see cref="ChatViewModel.SelectedTagLabel"/>
+    /// reads "To: room" while <see cref="ChatViewModel.HasSelectedTag"/> stays true, and the next send
+    /// still carries the vanished id. A subsequent enqueue must capture the cleared (null) tag, not the
+    /// stale one.
+    /// </summary>
+    [Fact]
+    public void LoadFromMetadata_TaggedParticipantNoLongerInTheRoster_ClearsTheTag_AndTheNextEnqueueCapturesNull()
+    {
+        var viewModel = new ChatViewModel();
+        var orchestrator = new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true);
+        var second = new Participant(new WorkerId("claude-2"), "claude-2", "claude", "sonnet", null, IsOrchestrator: false);
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        { Participants = [orchestrator, second] };
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+        viewModel.SelectTagParticipantCommand.Execute(second.Id);
+        Assert.True(viewModel.HasSelectedTag);
+
+        var afterSecondLeft = metadata with { Participants = [orchestrator] };
+        viewModel.LoadFromMetadata(afterSecondLeft, "/tmp/sess-1");
+
+        Assert.False(viewModel.HasSelectedTag);
+        Assert.Null(viewModel.SelectedTagParticipantId);
+        Assert.Equal("To: room", viewModel.SelectedTagLabel);
+
+        viewModel.EnqueueMessage("posted after the tagged participant left");
+        Assert.Null(Assert.Single(viewModel.QueuedMessages).TargetParticipantId);
+    }
+
+    /// <summary>Polarity pair for the guard above: a room reload that STILL carries the tagged participant must not clear it -- guards against a regression that always clears on every LoadFromMetadata call.</summary>
+    [Fact]
+    public void LoadFromMetadata_TaggedParticipantStillPresent_KeepsTheTag()
+    {
+        var viewModel = new ChatViewModel();
+        var orchestrator = new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true);
+        var second = new Participant(new WorkerId("claude-2"), "claude-2", "claude", "sonnet", null, IsOrchestrator: false);
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        { Participants = [orchestrator, second] };
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+        viewModel.SelectTagParticipantCommand.Execute(second.Id);
+
+        // A second LoadFromMetadata call (the ordinary live-refresh poll) describing the SAME roster.
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        Assert.True(viewModel.HasSelectedTag);
+        Assert.Equal(second.Id, viewModel.SelectedTagParticipantId);
+        Assert.Equal("To: claude-2", viewModel.SelectedTagLabel);
+    }
+
+    /// <summary>
+    /// Pins <see cref="QueuedChatMessageViewModel.ClearTargetParticipantId"/>'s call site -- see its
+    /// own remarks and <see cref="ChatViewModel.LoadFromMetadata"/>'s for the decision and why it
+    /// differs from the re-tag freeze <see cref="EnqueueMessage_CapturesTheStickyTagAtEnqueueTime_NotAtDrainTime"/>
+    /// pins.
+    /// </summary>
+    [Fact]
+    public void LoadFromMetadata_QueuedItemsTaggedToADepartedParticipant_HaveTheirCapturedTagCleared()
+    {
+        var viewModel = new ChatViewModel();
+        var orchestrator = new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true);
+        var second = new Participant(new WorkerId("claude-2"), "claude-2", "claude", "sonnet", null, IsOrchestrator: false);
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        { Participants = [orchestrator, second] };
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+
+        viewModel.SelectTagParticipantCommand.Execute(second.Id);
+        viewModel.EnqueueMessage("queued for claude-2");
+        viewModel.ClearTagParticipantCommand.Execute(null);
+        viewModel.EnqueueMessage("queued for the room");
+        Assert.Equal(second.Id, viewModel.QueuedMessages[0].TargetParticipantId);
+        Assert.Null(viewModel.QueuedMessages[1].TargetParticipantId);
+
+        var afterSecondLeft = metadata with { Participants = [orchestrator] };
+        viewModel.LoadFromMetadata(afterSecondLeft, "/tmp/sess-1");
+
+        Assert.Equal(2, viewModel.QueuedMessages.Count); // the guard clears the captured tag, never the queued item itself
+        Assert.Null(viewModel.QueuedMessages[0].TargetParticipantId);
+        Assert.Null(viewModel.QueuedMessages[1].TargetParticipantId);
+    }
+
+    /// <summary>Ruling 2 (see ChatViewModel.Clear's own comment): Clear() resets the sticky tag, so a room close never leaks the previous room's tag into the next one opened.</summary>
+    [Fact]
+    public void Clear_ResetsTheStickyTag()
+    {
+        var viewModel = new ChatViewModel();
+        var second = new Participant(new WorkerId("claude-2"), "claude-2", "claude", "sonnet", null, IsOrchestrator: false);
+        var metadata = MetadataWithTurns(
+            new SessionTurn(1, "claude", "Hello", "Hi there", DateTimeOffset.UtcNow, false, false))
+            with
+        {
+            Participants =
+            [
+                new Participant(new WorkerId("claude"), "claude", "claude", "sonnet", null, IsOrchestrator: true),
+                second,
+            ],
+        };
+        viewModel.LoadFromMetadata(metadata, "/tmp/sess-1");
+        viewModel.SelectTagParticipantCommand.Execute(second.Id);
+
+        viewModel.Clear();
+
+        Assert.False(viewModel.HasSelectedTag);
+        Assert.Null(viewModel.SelectedTagParticipantId);
+    }
+
     [Fact]
     public void LoadFromMetadata_ParticipantWithModel_SetsWorkerModelText()
     {
