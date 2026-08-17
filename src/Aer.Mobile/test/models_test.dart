@@ -80,6 +80,10 @@ void main() {
         projection.recordedDecisionMoments.single.recordedAt.toUtc(),
         DateTime.utc(2026, 8, 3, 15, 45),
       );
+
+      // #1318 (decision 0058's scope ruling 4): WorkerEffortTiers' wire twin, the daemon's own
+      // canonical-word-only broadcast sibling to WorkerAdapters.
+      expect(projection.workerEffortTiers, {'critic': 'careful'});
     });
 
     // #1240: the derived pair the daemon bolts on, both halves. It is what the phone cannot compute

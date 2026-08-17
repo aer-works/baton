@@ -323,6 +323,73 @@ public class DesignTokenDriftTests
     };
 
     /// <summary>
+    /// #1318 (decision 0058's scope ruling): the depth/effort twin of
+    /// <see cref="EveryStatusMarkIsDrawnByBothToolkits"/>. These two meter families name no per-tier
+    /// shape the way a status does — every tier in a family draws the SAME position geometry, only
+    /// the fill count differs — so what a "mark" means here is the family's own step positions, not
+    /// its tiers. For each of <c>TokenGenerator.MeterFamilies</c>, this checks that both toolkits
+    /// define a step shape for every position 1..steps (Avalonia's <c>Icon.&lt;Family&gt;Step&lt;n&gt;</c>
+    /// geometries) and that mobile draws a widget for the family at all — a family whose token block
+    /// nothing hand-draws would otherwise show up only as a blank space on whichever platform.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately shallow, the same admission <see cref="EveryStatusMarkIsDrawnByBothToolkits"/>
+    /// makes: this asserts a shape is defined per position and a widget exists per family, not that
+    /// the two toolkits' drawings agree pixel for pixel, and it does not attempt to assert greyscale
+    /// silhouette discriminability — that stays a review judgment, per the #1318 scope ruling's own
+    /// instruction not to pretend a test can settle it. What this check cannot see at all —
+    /// whether desktop actually renders a defined shape at its authored position rather than
+    /// silently mis-transforming it — is <c>Aer.Ui.Tests.TierMeterRenderTests</c> (#1318 second
+    /// reader), which renders the real <c>TierMeter</c> control headlessly and asserts each step's
+    /// rendered geometry matches its authored one.
+    /// </remarks>
+    [Fact]
+    public void EveryDepthAndEffortStepIsDrawnByBothToolkits()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var tokensJson = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.TokensPath));
+        var avaloniaIcons = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.AvaloniaIconsPath));
+        var flutterMarks = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.FlutterStatusMarkPath));
+
+        foreach (var family in TokenGenerator.MeterFamilies)
+        {
+            var tiers = TokenGenerator.MeterTiers(tokensJson, family).ToList();
+            Assert.NotEmpty(tiers);
+
+            var pascalFamily = char.ToUpperInvariant(family[0]) + family[1..];
+            var totalSteps = tiers[0].TotalSteps;
+
+            for (var step = 1; step <= totalSteps; step++)
+            {
+                var geometryKey = $"Icon.{pascalFamily}Step{step}";
+                Assert.True(
+                    avaloniaIcons.Contains($"""x:Key="{geometryKey}" """.TrimEnd(), StringComparison.Ordinal),
+                    $"""
+                    design/tokens.json's '{family}' meter has {totalSteps} steps, but {TokenGenerator.AvaloniaIconsPath}
+                    defines no geometry with the key '{geometryKey}'. Desktop would render step {step} as a blank space.
+                    """);
+            }
+
+            var markWidget = $"class {pascalFamily}Mark";
+            Assert.True(
+                flutterMarks.Contains(markWidget, StringComparison.Ordinal),
+                $"""
+                design/tokens.json names the '{family}' meter, but {TokenGenerator.FlutterStatusMarkPath}
+                defines no '{markWidget}' widget. Mobile would have nothing to draw it.
+                """);
+
+            // Every tier's own fill count must actually fit within the family's step budget -- a
+            // tier claiming more filled steps than the family has would ask both toolkits' repeaters
+            // to fill a position that does not exist.
+            foreach (var (_, _, filled, familyTotalSteps, _) in tiers)
+            {
+                Assert.InRange(filled, 1, familyTotalSteps);
+                Assert.Equal(totalSteps, familyTotalSteps);
+            }
+        }
+    }
+
+    /// <summary>
     /// The first differing line, both sides. A whole-file diff in an assertion message is unreadable;
     /// the first divergence is almost always the whole story for a generated file.
     /// </summary>

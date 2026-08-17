@@ -245,6 +245,9 @@
   "WorkerAdapters": {
     "critic": "agy"
   },
+  "WorkerEffortTiers": {
+    "critic": "careful"
+  },
   "RoomCardStatus": "NeedsYou",
   "RoomCardStatusText": "Waiting for your review"
 }

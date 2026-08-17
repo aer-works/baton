@@ -196,9 +196,17 @@ internal sealed class DaemonBroadcast
                         }
                     }
                     node["WorkerAdapters"] = adaptersNode;
+                    node["WorkerEffortTiers"] = BuildWorkerEffortTiers(doc.RootElement);
                 }
                 catch { }
             }
+
+            // #1318 (decision 0058's scope ruling): the depth (model-tier) sibling to
+            // WorkerEffortTiers above, staying null until #1330 registers the vendor-model->tier
+            // mapping nothing produces yet. An additive sibling, not a RoomProjection field, mirroring
+            // WorkerAdapters/WorkerEffortTiers exactly -- a client reads its absence the same way it
+            // already reads an absent DirectoryPath: no tier, not a default one.
+            node["WorkerDepthTiers"] = null;
         }
 
         var bytes = System.Text.Encoding.UTF8.GetBytes(node.ToJsonString(options));
@@ -206,6 +214,32 @@ internal sealed class DaemonBroadcast
         {
             await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
         }
+    }
+
+    /// <summary>
+    /// The additive <c>WorkerEffortTiers</c> sibling (#1318, decision 0058's scope ruling 4): worker
+    /// name -> canonical effort word, read from the same bindings file <c>WorkerAdapters</c> reads
+    /// above, for exactly the entries whose own <c>Effort</c> is one of 0023's four canonical words.
+    /// A binding still holding a raw vendor value (or none) is simply absent from this object, never
+    /// defaulted or reverse-mapped -- a raw->canonical reverse map is provably lossy (agy <c>high</c>
+    /// is the image of both <c>careful</c> and <c>exhaustive</c>) and the ruling forbids building one.
+    /// A client that reads no entry for a worker renders no mark, matching #1312's nullable-omission
+    /// precedent (the phone chip omitting absent model text) rather than inventing a value.
+    /// </summary>
+    internal static System.Text.Json.Nodes.JsonObject BuildWorkerEffortTiers(JsonElement bindingsRoot)
+    {
+        var effortTiers = new System.Text.Json.Nodes.JsonObject();
+        foreach (var prop in bindingsRoot.EnumerateObject())
+        {
+            if ((prop.Value.TryGetProperty("Effort", out var effortProp) || prop.Value.TryGetProperty("effort", out effortProp))
+                && effortProp.GetString() is { } effortStr
+                && EffortTierMapping.IsCanonical(effortStr))
+            {
+                effortTiers[prop.Name] = effortStr;
+            }
+        }
+
+        return effortTiers;
     }
 
     // Helper method for broadcasting state to all sockets

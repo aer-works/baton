@@ -29,7 +29,11 @@ namespace Aer.Adapters;
 /// portable even though the project directory it points at is not. Null keeps the prior default (no
 /// explicit cwd).
 /// </param>
-/// <param name="Effort">Forwarded verbatim into the resolved <see cref="WorkerInvocation"/>.</param>
+/// <param name="Effort">
+/// Forwarded into the resolved <see cref="WorkerInvocation"/> unchanged as a string — but no longer
+/// verbatim in effect, since #1318 widened this field's domain to also accept 0023's canonical effort
+/// word; see <see cref="WorkerInvocation.Effort"/>'s own doc for where that word is resolved.
+/// </param>
 /// <param name="Worktree">
 /// When set, the worker's workspace is a git worktree the engine provisions before dispatch and tears
 /// down on Terminal (#669), rather than a pre-existing <paramref name="WorkingDirectory"/>. The two are

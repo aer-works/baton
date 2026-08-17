@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'daemon/daemon_client.dart';
 import 'daemon/models.dart';
+import 'theme/status_mark.dart';
 
 /// The card a step paused for your sign-off renders as: who produced it, the output it produced
 /// (expandable, fetched on demand), and its resolution affordances — kind-derived per decisions
@@ -26,6 +27,9 @@ class PausedStepCard extends StatefulWidget {
   final StepDefinition? definition;
   final ExecutionArtifacts? execution;
   final Map<String, String> workerAdapters;
+
+  /// See [RoomProjection.workerEffortTiers] for the shape and why absence is never defaulted.
+  final Map<String, String> workerEffortTiers;
   final bool isPending;
   final VoidCallback onApprove;
   final VoidCallback onReject;
@@ -47,6 +51,7 @@ class PausedStepCard extends StatefulWidget {
     required this.definition,
     required this.execution,
     required this.workerAdapters,
+    required this.workerEffortTiers,
     required this.isPending,
     required this.onApprove,
     required this.onReject,
@@ -103,6 +108,7 @@ class _PausedStepCardState extends State<PausedStepCard> {
     final workerName = widget.definition?.worker ?? widget.step.stepId;
     final adapter = widget.workerAdapters[workerName];
     final titleText = adapter != null ? '$workerName ($adapter)' : workerName; // vocabulary-ok: technical adapter setting
+    final effortTier = parseCanonicalEffortTier(widget.workerEffortTiers[workerName]);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -114,6 +120,13 @@ class _PausedStepCardState extends State<PausedStepCard> {
             Row(
               children: [
                 buildVendorIcon(adapter),
+                const SizedBox(width: 8),
+                // #1318: the mobile call site RoomView.axaml's desktop chip already has -- see its
+                // own comment for the pairing's reasoning. DepthMark always gets a null tier (no
+                // producer yet, #1330); EffortMark is wired live off workerEffortTiers.
+                DepthMark(null, size: 14),
+                const SizedBox(width: 2),
+                EffortMark(effortTier, size: 14),
                 const SizedBox(width: 8),
                 Expanded(child: Text(titleText, style: Theme.of(context).textTheme.titleMedium)),
               ],

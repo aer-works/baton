@@ -268,6 +268,11 @@ class RoomProjection {
   final List<ExecutionArtifacts> executions;
   final Map<String, String> workerAdapters;
 
+  /// Worker name -> canonical effort word (#1318, decision 0058's scope ruling 4) — the wire twin of
+  /// `Aer.Daemon.DaemonBroadcast.BuildWorkerEffortTiers`; see that method's doc comment for what is
+  /// and is not present here.
+  final Map<String, String> workerEffortTiers;
+
   /// The runtime conversational permission gate (0022, #390's mobile phase), or null when no worker
   /// is blocked on one — see [PendingPermission]'s doc comment for where this sits on the wire.
   final PendingPermission? pendingPermission;
@@ -315,6 +320,7 @@ class RoomProjection {
     required this.steps,
     required this.executions,
     required this.workerAdapters,
+    this.workerEffortTiers = const {},
     this.pendingPermission,
     this.permissionAnswers = const [],
     this.dormancyTransitions = const [],
@@ -354,6 +360,13 @@ class RoomProjection {
       });
     }
 
+    final workerEffortTiers = <String, String>{};
+    if (j['workerefforttiers'] is Map<String, dynamic>) {
+      (j['workerefforttiers'] as Map<String, dynamic>).forEach((k, v) {
+        if (v != null) workerEffortTiers[k] = v.toString();
+      });
+    }
+
     return RoomProjection(
       directoryPath: j['directorypath']?.toString(),
       sessionId: j['sessionid']?.toString(),
@@ -366,6 +379,7 @@ class RoomProjection {
           .map((e) => ExecutionArtifacts.fromJson(e as Map<String, dynamic>))
           .toList(),
       workerAdapters: workerAdapters,
+      workerEffortTiers: workerEffortTiers,
       pendingPermission: j['pendingpermission'] == null
           ? null
           : PendingPermission.fromJson(j['pendingpermission'] as Map<String, dynamic>),

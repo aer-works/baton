@@ -124,3 +124,67 @@ public static class AerStatusPresentation
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };
 }
+
+
+/// <summary>#1318's depth meter tiers — <c>design/tokens.json</c> is the source.</summary>
+public enum AerDepthTier
+{
+    Fast,
+    Balanced,
+    Deep,
+}
+
+/// <summary>Fill count and label per <see cref="AerDepthTier"/> tier.</summary>
+public static class AerDepthTierPresentation
+{
+    public const int TotalSteps = 3;
+
+    public static int FilledSteps(this AerDepthTier tier) => tier switch
+    {
+        AerDepthTier.Fast => 1,
+        AerDepthTier.Balanced => 2,
+        AerDepthTier.Deep => 3,
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped AerDepthTier."),
+    };
+
+    public static string Label(this AerDepthTier tier) => tier switch
+    {
+        AerDepthTier.Fast => "Fast",
+        AerDepthTier.Balanced => "Balanced",
+        AerDepthTier.Deep => "Deep",
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped AerDepthTier."),
+    };
+}
+
+/// <summary>#1318's effort meter tiers — <c>design/tokens.json</c> is the source.</summary>
+public enum AerEffortTier
+{
+    Quick,
+    Standard,
+    Careful,
+    Exhaustive,
+}
+
+/// <summary>Fill count and label per <see cref="AerEffortTier"/> tier.</summary>
+public static class AerEffortTierPresentation
+{
+    public const int TotalSteps = 4;
+
+    public static int FilledSteps(this AerEffortTier tier) => tier switch
+    {
+        AerEffortTier.Quick => 1,
+        AerEffortTier.Standard => 2,
+        AerEffortTier.Careful => 3,
+        AerEffortTier.Exhaustive => 4,
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped AerEffortTier."),
+    };
+
+    public static string Label(this AerEffortTier tier) => tier switch
+    {
+        AerEffortTier.Quick => "Quick",
+        AerEffortTier.Standard => "Standard",
+        AerEffortTier.Careful => "Careful",
+        AerEffortTier.Exhaustive => "Exhaustive",
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped AerEffortTier."),
+    };
+}

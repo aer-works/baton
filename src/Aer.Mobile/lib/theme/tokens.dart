@@ -242,3 +242,57 @@ ThemeData aerTheme(Brightness brightness) {
     ),
   );
 }
+
+
+/// #1318's depth meter tiers.
+/// record-once-ok: #1318 design/tokens.json
+enum AerDepthTier {
+  fast,
+  balanced,
+  deep,
+}
+
+/// Fill count and label per tier.
+extension AerDepthTierPresentation on AerDepthTier {
+  static const int totalSteps = 3;
+
+  int get filledSteps => switch (this) {
+        AerDepthTier.fast => 1,
+        AerDepthTier.balanced => 2,
+        AerDepthTier.deep => 3,
+      };
+
+  String get label => switch (this) {
+        AerDepthTier.fast => 'Fast',
+        AerDepthTier.balanced => 'Balanced',
+        AerDepthTier.deep => 'Deep',
+      };
+}
+
+/// #1318's effort meter tiers.
+/// record-once-ok: #1318 design/tokens.json
+enum AerEffortTier {
+  quick,
+  standard,
+  careful,
+  exhaustive,
+}
+
+/// Fill count and label per tier.
+extension AerEffortTierPresentation on AerEffortTier {
+  static const int totalSteps = 4;
+
+  int get filledSteps => switch (this) {
+        AerEffortTier.quick => 1,
+        AerEffortTier.standard => 2,
+        AerEffortTier.careful => 3,
+        AerEffortTier.exhaustive => 4,
+      };
+
+  String get label => switch (this) {
+        AerEffortTier.quick => 'Quick',
+        AerEffortTier.standard => 'Standard',
+        AerEffortTier.careful => 'Careful',
+        AerEffortTier.exhaustive => 'Exhaustive',
+      };
+}

@@ -1,0 +1,51 @@
+<!-- #1318 (decision 0058's scope ruling): the small parametric composite control the ruling asks
+     for — overlaid Path children, one per step, via a data-bound repeater. A sibling mechanism to
+     the status marks' single StreamGeometry-per-state, not a generalization of StatusIconMap; do not
+     fold this into that machinery. One control serves both the three-step depth meter and the
+     four-step effort meter — Steps carries whichever family's step list the bound converter built
+     (Converters/TierMeterConverters.cs), so this control itself knows nothing about tiers or
+     vendors, only how to lay out a list of (geometry, filled) pairs. -->
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:Aer.Ui.Controls"
+             x:Class="Aer.Ui.Controls.TierMeter"
+             x:DataType="controls:TierMeter">
+  <UserControl.Styles>
+    <!-- Achromatic (0058 constraint 1, the same theme-variant-aware pattern
+         StatusToIconFillConverter established): every step is a SOLID fill, filled or unfilled —
+         never a stroke outline (#1318 second reader: a stroked step's interior gap is too fine a
+         fraction of its own area to read as hollow at chip size). An unfilled step paints the same
+         Color.TextSecondary at reduced opacity, so the filled/unfilled contrast is a lightness
+         difference that survives greyscale, not a hairline the fill nearly covers. -->
+    <Style Selector="Path">
+      <Setter Property="Fill" Value="{DynamicResource Color.TextSecondary}" />
+      <Setter Property="Opacity" Value="0.32" />
+    </Style>
+    <Style Selector="Path.filled">
+      <Setter Property="Opacity" Value="1" />
+    </Style>
+  </UserControl.Styles>
+  <!-- Each step's own StreamGeometry is already positioned within one shared 16x16 canvas (see
+       Icons.axaml's Icon.DepthStep*/Icon.EffortStep*), so the steps are OVERLAID in one Panel rather
+       than spaced apart by a StackPanel — "overlaid" in the ruling's own sense, not a row of icons. -->
+  <ItemsControl ItemsSource="{Binding Steps, RelativeSource={RelativeSource AncestorType=controls:TierMeter}}">
+    <ItemsControl.ItemsPanel>
+      <ItemsPanelTemplate>
+        <Panel />
+      </ItemsPanelTemplate>
+    </ItemsControl.ItemsPanel>
+    <ItemsControl.ItemTemplate>
+      <DataTemplate DataType="controls:TierMeterStep">
+        <!-- Stretch="None": Uniform computes its scale/position from the GEOMETRY'S OWN Bounds, not
+             the shared authoring grid (the exact trap MainWindow.axaml's titlebar-icon comment
+             documents), so with three differently-sized steps sharing one 16x16 canvas, Uniform
+             scaled every step up to fill its own box individually — concentric circles, nested
+             rectangles, not the ascending meter the geometry describes. None draws each step at its
+             already-authored absolute position, and no Width/Height here: the Panel arranges every
+             step to the control's own real slot (RoomView.axaml sizes TierMeter itself), so there is
+             one place, not two, where the meter's rendered size is stated. -->
+        <Path Data="{Binding Geometry}" Classes.filled="{Binding IsFilled}" Stretch="None" />
+      </DataTemplate>
+    </ItemsControl.ItemTemplate>
+  </ItemsControl>
+</UserControl>

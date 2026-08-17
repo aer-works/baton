@@ -282,8 +282,9 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
 
         if (invocation.Effort is not null)
         {
+            // #1318: see EffortTierMapping for why this is resolved rather than forwarded as-is.
             args.Add("--effort");
-            args.Add(invocation.Effort);
+            args.Add(EffortTierMapping.ResolveForClaude(invocation.Effort));
         }
 
         // #445: the withheld set is the same computation either way -- what changes is which band it
