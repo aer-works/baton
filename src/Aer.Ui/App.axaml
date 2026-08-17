@@ -26,6 +26,9 @@
       <conv:VendorIconBrushConverter x:Key="VendorIconBrushConverter" />
       <conv:VendorDisplayNameConverter x:Key="VendorDisplayNameConverter" />
       <conv:ByteArrayToBitmapConverter x:Key="ByteArrayToBitmapConverter" />
+      <!-- #1318: depth/effort meter tiers -> the mark control's step list -->
+      <conv:DepthTierMeterStepsConverter x:Key="DepthTierMeterStepsConverter" />
+      <conv:EffortTierMeterStepsConverter x:Key="EffortTierMeterStepsConverter" />
     </ResourceDictionary>
   </Application.Resources>
   <Application.Styles>

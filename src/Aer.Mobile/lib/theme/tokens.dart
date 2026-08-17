@@ -242,3 +242,57 @@ ThemeData aerTheme(Brightness brightness) {
     ),
   );
 }
+
+
+/// 0058/#1318's depth meter tiers, in the order design/tokens.json names them.
+enum AerDepthTier {
+  fast,
+  balanced,
+  deep,
+}
+
+/// Vocabulary-to-geometry data for the depth meter — never vendor knowledge (0023
+/// constraint 1 keeps that in Aer.Adapters alone).
+extension AerDepthTierPresentation on AerDepthTier {
+  static const int totalSteps = 3;
+
+  int get filledSteps => switch (this) {
+        AerDepthTier.fast => 1,
+        AerDepthTier.balanced => 2,
+        AerDepthTier.deep => 3,
+      };
+
+  String get label => switch (this) {
+        AerDepthTier.fast => 'Fast',
+        AerDepthTier.balanced => 'Balanced',
+        AerDepthTier.deep => 'Deep',
+      };
+}
+
+/// 0058/#1318's effort meter tiers, in the order design/tokens.json names them.
+enum AerEffortTier {
+  quick,
+  standard,
+  careful,
+  exhaustive,
+}
+
+/// Vocabulary-to-geometry data for the effort meter — never vendor knowledge (0023
+/// constraint 1 keeps that in Aer.Adapters alone).
+extension AerEffortTierPresentation on AerEffortTier {
+  static const int totalSteps = 4;
+
+  int get filledSteps => switch (this) {
+        AerEffortTier.quick => 1,
+        AerEffortTier.standard => 2,
+        AerEffortTier.careful => 3,
+        AerEffortTier.exhaustive => 4,
+      };
+
+  String get label => switch (this) {
+        AerEffortTier.quick => 'Quick',
+        AerEffortTier.standard => 'Standard',
+        AerEffortTier.careful => 'Careful',
+        AerEffortTier.exhaustive => 'Exhaustive',
+      };
+}

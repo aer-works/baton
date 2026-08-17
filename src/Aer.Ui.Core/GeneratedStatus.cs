@@ -124,3 +124,75 @@ public static class AerStatusPresentation
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unmapped status."),
     };
 }
+
+
+/// <summary>0058/#1318's depth meter tiers, in the order <c>design/tokens.json</c> names them.</summary>
+public enum AerDepthTier
+{
+    Fast,
+    Balanced,
+    Deep,
+}
+
+/// <summary>
+/// Vocabulary-to-geometry data for the depth meter — never vendor knowledge (0023
+/// constraint 1 keeps that in <c>Aer.Adapters</c> alone). <see cref="TotalSteps"/> is the
+/// same for every tier in this family; <see cref="FilledSteps"/> is what differs.
+/// </summary>
+public static class AerDepthTierPresentation
+{
+    public const int TotalSteps = 3;
+
+    public static int FilledSteps(this AerDepthTier tier) => tier switch
+    {
+        AerDepthTier.Fast => 1,
+        AerDepthTier.Balanced => 2,
+        AerDepthTier.Deep => 3,
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped AerDepthTier."),
+    };
+
+    public static string Label(this AerDepthTier tier) => tier switch
+    {
+        AerDepthTier.Fast => "Fast",
+        AerDepthTier.Balanced => "Balanced",
+        AerDepthTier.Deep => "Deep",
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped AerDepthTier."),
+    };
+}
+
+/// <summary>0058/#1318's effort meter tiers, in the order <c>design/tokens.json</c> names them.</summary>
+public enum AerEffortTier
+{
+    Quick,
+    Standard,
+    Careful,
+    Exhaustive,
+}
+
+/// <summary>
+/// Vocabulary-to-geometry data for the effort meter — never vendor knowledge (0023
+/// constraint 1 keeps that in <c>Aer.Adapters</c> alone). <see cref="TotalSteps"/> is the
+/// same for every tier in this family; <see cref="FilledSteps"/> is what differs.
+/// </summary>
+public static class AerEffortTierPresentation
+{
+    public const int TotalSteps = 4;
+
+    public static int FilledSteps(this AerEffortTier tier) => tier switch
+    {
+        AerEffortTier.Quick => 1,
+        AerEffortTier.Standard => 2,
+        AerEffortTier.Careful => 3,
+        AerEffortTier.Exhaustive => 4,
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped AerEffortTier."),
+    };
+
+    public static string Label(this AerEffortTier tier) => tier switch
+    {
+        AerEffortTier.Quick => "Quick",
+        AerEffortTier.Standard => "Standard",
+        AerEffortTier.Careful => "Careful",
+        AerEffortTier.Exhaustive => "Exhaustive",
+        _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped AerEffortTier."),
+    };
+}

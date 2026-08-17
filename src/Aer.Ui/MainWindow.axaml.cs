@@ -1699,6 +1699,7 @@ public partial class MainWindow : Window
         RenderConversation();
 
         var workerAdapters = GetWorkerAdapters(roomDirectoryPath, ViewModel.BindingsFilePath);
+        var workerEffortTiers = GetWorkerEffortTiers(roomDirectoryPath, ViewModel.BindingsFilePath);
 
         // M19 Phase 3 (#188): the per-step drill-in — built after the session has rebuilt
         // PausedSteps, so each paused step's inline decision card is the same live VM instance.
@@ -1706,7 +1707,8 @@ public partial class MainWindow : Window
             projection, roomDirectoryPath, isFlowLockHeld,
             previewFileAsync: filePath => ShowArtifactPreviewAsync(filePath),
             showConversation: ShowConversation,
-            workerAdapters: workerAdapters);
+            workerAdapters: workerAdapters,
+            workerEffortTiers: workerEffortTiers);
 
         // #390: surface (or clear) the inline conversational permission gate from the same projection.
         // The answer delegate captures this render's roomDirectoryPath; the daemon broadcasts a fresh
@@ -1792,6 +1794,51 @@ public partial class MainWindow : Window
                         {
                             result[prop.Name] = adapterStr;
                         }
+                    }
+                }
+            }
+            catch { }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// #1318 (decision 0058's scope ruling 4): the effort twin of <see cref="GetWorkerAdapters"/>,
+    /// reading the same bindings file for the same reason (desktop resolves its own worker facts
+    /// locally rather than through the daemon's <c>WorkerEffortTiers</c> broadcast sibling, which
+    /// exists for a client with no local file access — see <c>Aer.Daemon.DaemonBroadcast</c>). Only a
+    /// canonical word is kept; a binding still holding a raw vendor value is simply absent, so the
+    /// chip renders no mark for it rather than fabricating one (ruling 2).
+    /// </summary>
+    private static Dictionary<string, string> GetWorkerEffortTiers(string roomDirectoryPath, string? bindingsFilePath)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var targetBindingsFile = bindingsFilePath;
+        if (string.IsNullOrWhiteSpace(targetBindingsFile) || !File.Exists(targetBindingsFile))
+        {
+            targetBindingsFile = System.IO.Path.Combine(roomDirectoryPath, "bindings.json"); // vocabulary-ok: technical file path
+        }
+        if (!File.Exists(targetBindingsFile))
+        {
+            var metaFile = System.IO.Path.Combine(roomDirectoryPath, ".aer", "bindings-path"); // vocabulary-ok: technical file path
+            if (File.Exists(metaFile))
+            {
+                try { targetBindingsFile = File.ReadAllText(metaFile).Trim(); } catch { }
+            }
+        }
+        if (File.Exists(targetBindingsFile))
+        {
+            try
+            {
+                var json = File.ReadAllText(targetBindingsFile);
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if ((prop.Value.TryGetProperty("Effort", out var effortProp) || prop.Value.TryGetProperty("effort", out effortProp)) // vocabulary-ok: JSON property name
+                        && effortProp.GetString() is { } effortStr
+                        && Aer.Adapters.EffortTierMapping.IsCanonical(effortStr))
+                    {
+                        result[prop.Name] = effortStr;
                     }
                 }
             }

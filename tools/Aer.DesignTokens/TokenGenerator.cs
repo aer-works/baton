@@ -135,6 +135,45 @@ public static class TokenGenerator
             .ToList();
     }
 
+    /// <summary>
+    /// The meter families #1318 added beside 'status' -- depth (model tier, #1330 owns its
+    /// producer) and effort (wired live, 0023). Both are "how many of N steps are lit", not a
+    /// per-tier silhouette, which is why a family name is all a generator-side check needs; the
+    /// per-position geometry is hand-drawn (see <see cref="AvaloniaIconsPath"/> / <see cref="FlutterStatusMarkPath"/>).
+    /// </summary>
+    public static readonly IReadOnlyList<string> MeterFamilies = ["depth", "effort"];
+
+    /// <summary>
+    /// A meter family's total step count and every tier's own fill count, as (family, tier name,
+    /// filled, totalSteps, label) -- mirrors <see cref="StatusMarks"/>'s role for the status ramp: the
+    /// gate reads the same values the generator emitted rather than re-deriving them.
+    /// </summary>
+    public static IEnumerable<(string Family, string Tier, int Filled, int TotalSteps, string Label)> MeterTiers(string tokensJson, string family)
+    {
+        using var document = JsonDocument.Parse(tokensJson, new JsonDocumentOptions
+        {
+            CommentHandling = JsonCommentHandling.Skip,
+        });
+
+        return MeterTiers(document.RootElement, family);
+    }
+
+    private static IReadOnlyList<(string Family, string Tier, int Filled, int TotalSteps, string Label)> MeterTiers(JsonElement root, string family)
+    {
+        var familyElement = root.GetProperty(family);
+        var totalSteps = familyElement.GetProperty("steps").GetInt32();
+
+        return Entries(familyElement)
+            .Where(entry => entry.Name != "steps")
+            .Select(entry => (
+                family,
+                entry.Name,
+                entry.Value.GetProperty("filled").GetInt32(),
+                totalSteps,
+                entry.Value.GetProperty("label").GetString()!))
+            .ToList();
+    }
+
     /// <summary>The regeneration command, quoted in both the banner and the CI gate's failure text.</summary>
     public const string RegenerateCommand = "pixi run tokens";
 
@@ -545,6 +584,12 @@ public static class TokenGenerator
 
         var motion = root.GetProperty("motion");
 
+        var meterEnums = new StringBuilder();
+        foreach (var family in MeterFamilies)
+        {
+            meterEnums.Append(GenerateMeterEnumFlutter(root, family));
+        }
+
         return $$"""
         {{Banner("//", null)}}
         import 'package:flutter/material.dart';
@@ -640,7 +685,49 @@ public static class TokenGenerator
           );
         }
 
+        {{meterEnums.ToString().TrimEnd()}}
         """.ReplaceLineEndings(Lf);
+    }
+
+    /// <summary>Dart twin of <see cref="GenerateMeterEnumUiCore"/> — same vocabulary, same reasoning.</summary>
+    private static string GenerateMeterEnumFlutter(JsonElement root, string family)
+    {
+        var enumName = "Aer" + Pascal(family) + "Tier";
+        var tiers = MeterTiers(root, family);
+        var totalSteps = tiers[0].TotalSteps;
+
+        var members = new StringBuilder();
+        var filled = new StringBuilder();
+        var labels = new StringBuilder();
+        foreach (var (_, tier, tierFilled, _, label) in tiers)
+        {
+            members.AppendLine($"  {tier},");
+            filled.AppendLine($"""        {enumName}.{tier} => {tierFilled},""");
+            labels.AppendLine($"""        {enumName}.{tier} => '{label}',""");
+        }
+
+        return $$"""
+
+        /// 0058/#1318's {{family}} meter tiers, in the order design/tokens.json names them.
+        enum {{enumName}} {
+        {{members.ToString().TrimEnd()}}
+        }
+
+        /// Vocabulary-to-geometry data for the {{family}} meter — never vendor knowledge (0023
+        /// constraint 1 keeps that in Aer.Adapters alone).
+        extension {{enumName}}Presentation on {{enumName}} {
+          static const int totalSteps = {{totalSteps}};
+
+          int get filledSteps => switch (this) {
+        {{filled.ToString().TrimEnd()}}
+              };
+
+          String get label => switch (this) {
+        {{labels.ToString().TrimEnd()}}
+              };
+        }
+
+        """;
     }
 
     // ---- Aer.Ui.Core ----------------------------------------------------------------------
@@ -666,6 +753,12 @@ public static class TokenGenerator
             labels.AppendLine($"""        AerStatus.{Pascal(name)} => "{token.GetProperty("label").GetString()}",""");
             colors.AppendLine($"""        AerStatus.{Pascal(name)} => "Status{Pascal(name)}Color",""");
             fills.AppendLine($"        AerStatus.{Pascal(name)} => {(MarkFilled(token) ? "true" : "false")},");
+        }
+
+        var meterEnums = new StringBuilder();
+        foreach (var family in MeterFamilies)
+        {
+            meterEnums.Append(GenerateMeterEnumUiCore(root, family));
         }
 
         return $$"""
@@ -731,7 +824,66 @@ public static class TokenGenerator
             };
         }
 
+        {{meterEnums.ToString().TrimEnd()}}
+
         """.ReplaceLineEndings(Lf);
+    }
+
+    /// <summary>
+    /// One meter family (#1318: <c>depth</c>/<c>effort</c>) as a C# enum plus a presentation class
+    /// giving each tier its fill count, total step count and label — the same "vocabulary as a
+    /// closed type" pattern <see cref="GenerateUiCore"/> already uses for <c>AerStatus</c>, so a
+    /// consumer can quantify over every tier rather than trusting a raw string. Vector geometry for
+    /// the meter itself is hand-drawn per toolkit (see <see cref="AvaloniaIconsPath"/> and
+    /// <see cref="FlutterStatusMarkPath"/>'s own notes) — this only emits the vocabulary.
+    /// </summary>
+    private static string GenerateMeterEnumUiCore(JsonElement root, string family)
+    {
+        var enumName = "Aer" + Pascal(family) + "Tier";
+        var tiers = MeterTiers(root, family);
+        var totalSteps = tiers[0].TotalSteps;
+
+        var members = new StringBuilder();
+        var filled = new StringBuilder();
+        var labels = new StringBuilder();
+        foreach (var (_, tier, tierFilled, _, label) in tiers)
+        {
+            members.AppendLine($"    {Pascal(tier)},");
+            filled.AppendLine($"""        {enumName}.{Pascal(tier)} => {tierFilled},""");
+            labels.AppendLine($"""        {enumName}.{Pascal(tier)} => "{label}",""");
+        }
+
+        return $$"""
+
+        /// <summary>0058/#1318's {{family}} meter tiers, in the order <c>design/tokens.json</c> names them.</summary>
+        public enum {{enumName}}
+        {
+        {{members.ToString().TrimEnd()}}
+        }
+
+        /// <summary>
+        /// Vocabulary-to-geometry data for the {{family}} meter — never vendor knowledge (0023
+        /// constraint 1 keeps that in <c>Aer.Adapters</c> alone). <see cref="TotalSteps"/> is the
+        /// same for every tier in this family; <see cref="FilledSteps"/> is what differs.
+        /// </summary>
+        public static class {{enumName}}Presentation
+        {
+            public const int TotalSteps = {{totalSteps}};
+
+            public static int FilledSteps(this {{enumName}} tier) => tier switch
+            {
+        {{filled.ToString().TrimEnd()}}
+                _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped {{enumName}}."),
+            };
+
+            public static string Label(this {{enumName}} tier) => tier switch
+            {
+        {{labels.ToString().TrimEnd()}}
+                _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unmapped {{enumName}}."),
+            };
+        }
+
+        """;
     }
 
     private static string GenerateInteractionStates(JsonElement root)

@@ -6,6 +6,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="clr-namespace:Aer.Ui.Core;assembly=Aer.Ui.Core"
+             xmlns:controls="clr-namespace:Aer.Ui.Controls"
              x:Class="Aer.Ui.Views.RoomView"
              x:DataType="vm:MainWindowViewModel">
   <!-- #1204's horizontal scroller is gone with what overflowed. It existed because this view's
@@ -107,6 +108,14 @@
                         Fill="{Binding VendorKey, Converter={StaticResource VendorIconBrushConverter}}"
                         Width="11" Height="11" Stretch="Uniform" VerticalAlignment="Center" />
                   <TextBlock Classes="caption" Text="{Binding VendorDisplay}" VerticalAlignment="Center" />
+                  <!-- #1318 (decision 0058's scope ruling): depth and effort as marks beside the
+                       vendor word — vendor stays text (constraint 4), depth/effort become marks.
+                       DepthTier is always null today (its producer is #1330); the control renders
+                       nothing for it, which is expected (ruling 2), not a missing binding. -->
+                  <controls:TierMeter Steps="{Binding DepthTier, Converter={StaticResource DepthTierMeterStepsConverter}}"
+                                       Width="11" Height="11" VerticalAlignment="Center" />
+                  <controls:TierMeter Steps="{Binding EffortTier, Converter={StaticResource EffortTierMeterStepsConverter}}"
+                                       Width="11" Height="11" VerticalAlignment="Center" />
                 </StackPanel>
               </StackPanel>
             </Button>

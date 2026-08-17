@@ -75,7 +75,17 @@ namespace Aer.Adapters;
 /// <param name="LogFilePath">
 /// The path to a log file where the vendor CLI writes side-channel logs (e.g. Gemini <c>--log-file</c> for capturing conversation id).
 /// </param>
-/// <param name="Effort">The vendor's raw effort-level string to configure reasoning/thinking effort (e.g. Claude's <c>--effort low|medium|high|xhigh|max</c>, Gemini's <c>--effort low|medium|high</c>; see <c>docs/vendor-capabilities.md</c>). Null when not applicable or not set.</param>
+/// <param name="Effort">
+/// 0023's canonical effort word (quick/standard/careful/exhaustive) OR a vendor's own raw
+/// effort-level string (Claude's <c>--effort low|medium|high|xhigh|max</c>, Gemini's <c>--effort
+/// low|medium|high</c>; see <c>docs/vendor-capabilities.md</c>) — the two sets are disjoint, so the
+/// field's domain widened rather than gaining a second one (decision 0058's #1318 scope ruling 4).
+/// No longer forwarded verbatim: each adapter's <c>Resolve</c> runs this through
+/// <see cref="EffortTierMapping"/>, which translates a canonical word to that vendor's raw value and
+/// passes a value already in the vendor's own raw set through untouched as the <c>#566</c> escape
+/// hatch — see that type for why an unrecognized value is refused rather than forwarded. Null when
+/// not applicable or not set.
+/// </param>
 /// <param name="Timeout">
 /// The timeout AER will itself enforce on this worker's executions — the same
 /// <c>WorkerBindingConfigEntry.Timeout</c> that becomes <c>ExecutionRequest.Timeout</c> (#588).

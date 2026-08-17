@@ -152,7 +152,8 @@ public sealed partial class StepItemViewModel : ObservableObject
         IReadOnlyList<ArtifactFileViewModel>? promptFiles = null,
         FailedStepBannerViewModel? failedBanner = null,
         FailureClassification? latestFailureClassification = null,
-        DateTimeOffset? retryNotBefore = null)
+        DateTimeOffset? retryNotBefore = null,
+        AerEffortTier? effortTier = null)
     {
         StepId = stepId;
         Worker = worker;
@@ -168,12 +169,28 @@ public sealed partial class StepItemViewModel : ObservableObject
         FailedBanner = failedBanner;
         LatestFailureClassification = latestFailureClassification;
         RetryNotBefore = retryNotBefore;
+        EffortTier = effortTier;
     }
 
     public string StepId { get; }
     public string Worker { get; }
     public string? Adapter { get; }
     public StepStatus Status { get; }
+
+    /// <summary>
+    /// The canonical effort word this step's worker is bound to, or null for a null, raw, or unmapped
+    /// value (#1318, decision 0058's scope ruling — see <see cref="EffortTierParsing"/>). The
+    /// workflow-room chip's effort mark; null renders no mark, never an empty frame (ruling 2).
+    /// </summary>
+    public AerEffortTier? EffortTier { get; }
+
+    /// <summary>
+    /// The depth (model-tier) mark's structural slot (#1318). Always null today: nothing produces a
+    /// worker's tier yet, #1330 owns that register — see the #1318 scope ruling's "ship the mechanism
+    /// ahead of the producer" call. Present so the chip already binds it and renders its own absence
+    /// correctly the day #1330 lands, with no further UI change.
+    /// </summary>
+    public AerDepthTier? DepthTier => null;
     public FailureClassification? LatestFailureClassification { get; }
     public DateTimeOffset? RetryNotBefore { get; }
     public string PlainStatusText => PlainLanguage.ForStep(Status, LatestFailureClassification, RetryNotBefore);
@@ -541,7 +558,8 @@ public static class StepItemProjector
         Action<StepItemViewModel> select,
         IReadOnlyDictionary<string, string>? workerAdapters = null,
         Action? reRunAction = null,
-        Action<string, string, string>? askWorkerToFixAction = null)
+        Action<string, string, string>? askWorkerToFixAction = null,
+        IReadOnlyDictionary<string, string>? workerEffortTiers = null)
     {
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
         var pausedByStepId = pausedSteps.ToDictionary(paused => paused.StepId);
@@ -685,6 +703,14 @@ public static class StepItemProjector
             var stepDefinition = projection.Snapshot.Steps.First(step => step.StepId == stepState.StepId);
             var adapter = workerAdapters?.GetValueOrDefault(stepDefinition.Worker);
 
+            // #1318 (decision 0058's scope ruling): the canonical word travels forward into this same
+            // string field (ruling 4), and EffortTierParsing is the UI's only map from it to a mark
+            // parameter. A raw vendor value or an unmapped word simply fails the parse -- rendering
+            // absence, not fabricating a tier (ruling 2).
+            var effortTier = EffortTierParsing.TryParseEffort(workerEffortTiers?.GetValueOrDefault(stepDefinition.Worker), out var parsedEffort)
+                ? parsedEffort
+                : (AerEffortTier?)null;
+
             FailedStepBannerViewModel? failedBanner = null;
             // #1116 review must-fix: no failed banner for an ExhaustedUntil step. The banner says
             // "Failed" with a red cross and a live ask-the-worker-to-fix button — for a step that
@@ -726,7 +752,8 @@ public static class StepItemProjector
                 promptFiles,
                 failedBanner,
                 stepState.LatestFailureClassification,
-                resetInstant));
+                resetInstant,
+                effortTier));
         }
 
         return items;

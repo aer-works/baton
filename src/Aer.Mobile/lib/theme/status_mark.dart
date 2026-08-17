@@ -187,3 +187,164 @@ class _StatusMarkPainter extends CustomPainter {
   bool shouldRepaint(_StatusMarkPainter oldDelegate) =>
       oldDelegate.mark != mark || oldDelegate.filled != filled || oldDelegate.color != color;
 }
+
+/// Draws a depth or effort meter mark (#1318, decision 0058's scope ruling) — a SIBLING system to
+/// [StatusMark] above, not a generalisation of it (do not fold these into [_StatusMarkPainter]'s
+/// switch). Both meters draw the SAME shape at every position on a shared 16x16 canvas — matching
+/// `Icons.axaml`'s `Icon.DepthStep*`/`Icon.EffortStep*` point for point — and only whether a
+/// position is FILLED changes per tier, never the shape at that position: 0058's own ruling names
+/// the discriminator for these two families as "shape, fill or weight, never colour", not full
+/// per-step silhouette distinctness the way [StatusMark] needs.
+///
+/// Achromatic (0058 constraint 1): a filled step paints [color] solid, an unfilled one is only
+/// stroked — the same fill-vs-stroke split [StatusMark] already uses for a solid mark, applied per
+/// step instead of per whole shape.
+///
+/// A null tier renders nothing (ruling 2): no mark, no empty frame, no reserved outline. `DepthMark`
+/// is the steady state in production today — nothing sets a worker's depth tier yet (#1330 owns that
+/// register) — while `EffortMark` is wired live off a worker's canonical effort word.
+abstract class _TierMeterPainter extends CustomPainter {
+  const _TierMeterPainter({required this.filledSteps, required this.color});
+
+  final int filledSteps;
+  final Color color;
+
+  /// The grid these coordinates are authored on, shared with `Icons.axaml`.
+  static const double _grid = 16.0;
+  static const double _strokeOnGrid = 1.0;
+
+  int get totalSteps;
+
+  /// Draws step [index] (1-based, left to right) at its own fixed position — every tier of this
+  /// family draws the identical shape here; [paint] alone carries whether it is filled.
+  void paintStep(Canvas canvas, int index, Offset Function(double, double) at, double scale, Paint paint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = size.shortestSide / _grid;
+    Offset at(double x, double y) => Offset(x * scale, y * scale);
+
+    for (var index = 1; index <= totalSteps; index++) {
+      final filled = index <= filledSteps;
+      final paint = Paint()
+        ..color = color
+        ..style = filled ? PaintingStyle.fill : PaintingStyle.stroke
+        ..strokeWidth = _strokeOnGrid * scale
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+      paintStep(canvas, index, at, scale, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TierMeterPainter oldDelegate) =>
+      oldDelegate.filledSteps != filledSteps || oldDelegate.color != color;
+}
+
+/// Depth: three ascending dots on one baseline, growing left to right — matches
+/// `Icon.DepthStep1`/`Icon.DepthStep2`/`Icon.DepthStep3` point for point.
+class _DepthMarkPainter extends _TierMeterPainter {
+  const _DepthMarkPainter({required super.filledSteps, required super.color});
+
+  @override
+  int get totalSteps => AerDepthTierPresentation.totalSteps;
+
+  @override
+  void paintStep(Canvas canvas, int index, Offset Function(double, double) at, double scale, Paint paint) {
+    switch (index) {
+      case 1:
+        canvas.drawCircle(at(3.3, 12.4), 1.1 * scale, paint);
+      case 2:
+        canvas.drawCircle(at(8.0, 11.8), 1.7 * scale, paint);
+      case 3:
+        canvas.drawCircle(at(13.0, 11.2), 2.3 * scale, paint);
+      default:
+        throw ArgumentError.value(index, 'index', 'No depth step at this position');
+    }
+  }
+}
+
+/// Effort: four ascending bars on a shared baseline — rectangular, never round, so the family reads
+/// apart from the depth dots above even in greyscale. Matches `Icon.EffortStep1`..`Icon.EffortStep4`
+/// point for point.
+class _EffortMarkPainter extends _TierMeterPainter {
+  const _EffortMarkPainter({required super.filledSteps, required super.color});
+
+  @override
+  int get totalSteps => AerEffortTierPresentation.totalSteps;
+
+  @override
+  void paintStep(Canvas canvas, int index, Offset Function(double, double) at, double scale, Paint paint) {
+    Rect bar(double x0, double y0, double x1, double y1) => Rect.fromPoints(at(x0, y0), at(x1, y1));
+    switch (index) {
+      case 1:
+        canvas.drawRect(bar(1.5, 11.5, 3.7, 14), paint);
+      case 2:
+        canvas.drawRect(bar(5.1, 9.5, 7.3, 14), paint);
+      case 3:
+        canvas.drawRect(bar(8.7, 7.5, 10.9, 14), paint);
+      case 4:
+        canvas.drawRect(bar(12.3, 5.5, 14.5, 14), paint);
+      default:
+        throw ArgumentError.value(index, 'index', 'No effort step at this position');
+    }
+  }
+}
+
+/// The depth (model-tier) meter widget. See [_TierMeterPainter]'s doc comment for the shared
+/// reasoning with [EffortMark] below.
+class DepthMark extends StatelessWidget {
+  const DepthMark(this.tier, {super.key, this.size = 16.0, this.color});
+
+  final AerDepthTier? tier;
+  final double size;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final currentTier = tier;
+    if (currentTier == null) {
+      // #1318 ruling 2: a null tier renders nothing -- no mark, no empty frame.
+      return SizedBox(width: size, height: size);
+    }
+
+    final brightness = Theme.of(context).brightness;
+    final resolved = color ?? (brightness == Brightness.dark ? AerTokens.textSecondaryDark : AerTokens.textSecondaryLight);
+    return Semantics(
+      label: currentTier.label,
+      child: CustomPaint(
+        size: Size(size, size),
+        painter: _DepthMarkPainter(filledSteps: currentTier.filledSteps, color: resolved),
+      ),
+    );
+  }
+}
+
+/// The effort meter widget — wired live off a worker's canonical effort word. See
+/// [_TierMeterPainter]'s doc comment for the shared reasoning with [DepthMark] above.
+class EffortMark extends StatelessWidget {
+  const EffortMark(this.tier, {super.key, this.size = 16.0, this.color});
+
+  final AerEffortTier? tier;
+  final double size;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final currentTier = tier;
+    if (currentTier == null) {
+      // #1318 ruling 2: a null, raw, or unmapped tier renders nothing -- no mark, no empty frame.
+      return SizedBox(width: size, height: size);
+    }
+
+    final brightness = Theme.of(context).brightness;
+    final resolved = color ?? (brightness == Brightness.dark ? AerTokens.textSecondaryDark : AerTokens.textSecondaryLight);
+    return Semantics(
+      label: currentTier.label,
+      child: CustomPaint(
+        size: Size(size, size),
+        painter: _EffortMarkPainter(filledSteps: currentTier.filledSteps, color: resolved),
+      ),
+    );
+  }
+}

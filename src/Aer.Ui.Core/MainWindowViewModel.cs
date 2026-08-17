@@ -405,7 +405,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         bool isFlowLockHeld,
         Func<string, Task> previewFileAsync,
         Action<string, string> showConversation,
-        IReadOnlyDictionary<string, string>? workerAdapters = null)
+        IReadOnlyDictionary<string, string>? workerAdapters = null,
+        IReadOnlyDictionary<string, string>? workerEffortTiers = null)
     {
         var previousSelectedStepId = SelectedStep?.StepId;
 
@@ -422,7 +423,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
             select: item => SelectedStep = item,
             workerAdapters: workerAdapters,
             reRunAction: reRunAvailable ? () => _ = RequestRoomRunAsync() : null,
-            askWorkerToFixAction: (adapter, stepId, reason) => AskWorkerToFix(adapter, stepId, reason, roomDirectoryPath)))
+            askWorkerToFixAction: (adapter, stepId, reason) => AskWorkerToFix(adapter, stepId, reason, roomDirectoryPath),
+            workerEffortTiers: workerEffortTiers))
         {
             RoomSteps.Add(item);
         }

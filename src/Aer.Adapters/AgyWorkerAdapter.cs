@@ -414,9 +414,15 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         if (invocation.Effort is { } effort)
         {
-            ReconcileAgyEffort(invocation.Model, effort); // #1090
+            // #1318: resolve 0023's canonical word (quick/standard/careful/exhaustive) to agy's raw
+            // value first -- careful and exhaustive both collapse to high, a disclosed collapse per
+            // docs/vendor-capabilities.md -- then run the EXISTING model-suffix reconciliation (#1090)
+            // against the resolved raw value, exactly as it already ran against a raw Effort before
+            // this field's domain widened.
+            var resolvedEffort = EffortTierMapping.ResolveForAgy(effort);
+            ReconcileAgyEffort(invocation.Model, resolvedEffort);
             args.Add("--effort");
-            args.Add(effort);
+            args.Add(resolvedEffort);
         }
 
         if (invocation.Timeout is { } timeout)
