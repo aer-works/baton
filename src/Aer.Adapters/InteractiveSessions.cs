@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Aer.Flow.Domain;
 using Aer.Flow.Store;
@@ -552,6 +553,72 @@ public static class InteractiveSessionMaterializer
     private static readonly TimeSpan MetadataIoRetryDelay = TimeSpan.FromMilliseconds(25);
 
     /// <summary>
+    /// #1319: per-room mutex guarding every <see cref="SessionMetadata"/> read-modify-write --
+    /// <c>room.json</c> had no lock of its own before this; its safety rested entirely on
+    /// <c>Aer.Daemon.Program</c>'s <c>SessionTurnLockFor</c> serializing every chat-turn endpoint's
+    /// whole turn. Keyed via <see cref="AerPaths.RecordKey"/>/<see cref="AerPaths.RecordKeyComparer"/>,
+    /// the same normalisation <c>SessionTurnLockFor</c> itself uses, so two spellings of one directory
+    /// can never each acquire their own semaphore. Wherever a caller already holds the turn lock, this
+    /// one must nest INSIDE it, never the reverse -- see <see cref="UpdateMetadataAsync"/> for why it
+    /// is safe to acquire on its own where no turn lock is held at all.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> MetadataMutexes =
+        new(AerPaths.RecordKeyComparer);
+
+    private static SemaphoreSlim MetadataMutexFor(string roomDirectoryPath) =>
+        MetadataMutexes.GetOrAdd(AerPaths.RecordKey(roomDirectoryPath), _ => new SemaphoreSlim(1, 1));
+
+    /// <summary>
+    /// The one write path production code has to change an existing room's <c>room.json</c>: loads
+    /// the current file under this room's metadata mutex, applies <paramref name="mutate"/> to it, and
+    /// saves the result before releasing -- so two concurrent load-mutate-saves against the same room
+    /// can no longer interleave and silently drop one caller's change (#1319, PR A of #1306's
+    /// three-way split). <see cref="SaveMetadataAsync"/> is <c>internal</c> precisely so this is the
+    /// only write path reachable from <c>Aer.Daemon</c> endpoint code; the raw primitive stays
+    /// reachable in-assembly for <see cref="MaterializeToDirectoryAsync"/> (a brand-new file, not a
+    /// read-modify-write) and for test fixtures that need to seed an exact starting state.
+    /// <para>
+    /// Held only around the load-mutate-save, never across a vendor dispatch -- a turn-completion
+    /// caller reads metadata once at dispatch start (outside this lock; that read feeds decisions the
+    /// whole turn needs, long before there is anything to save) and folds its final write through here
+    /// once the vendor call returns, so this mutex's held duration is a single file replace, not the
+    /// length of a CLI invocation.
+    /// </para>
+    /// <para>
+    /// <paramref name="fallback"/> exists for the one legitimate case a fresh load returns null: a
+    /// caller that already holds its own pre-lock snapshot, mirroring the "current ?? metadata" idiom
+    /// every call site used before this helper existed. Neither the fresh load nor the fallback having
+    /// anything throws <see cref="InvalidOperationException"/> -- callers are expected to have already
+    /// confirmed the room exists before reaching this helper.
+    /// </para>
+    /// </summary>
+    public static async Task<SessionMetadata> UpdateMetadataAsync(
+        string roomDirectoryPath,
+        Func<SessionMetadata, SessionMetadata> mutate,
+        SessionMetadata? fallback = null,
+        CancellationToken cancellationToken = default)
+    {
+        var metadataFilePath = Path.Combine(roomDirectoryPath, ".aer", AerPaths.RoomMetadataFileName);
+        var mutex = MetadataMutexFor(roomDirectoryPath);
+        await mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var current = await LoadMetadataAsync(metadataFilePath, cancellationToken).ConfigureAwait(false)
+                ?? fallback
+                ?? throw new InvalidOperationException(
+                    $"'{roomDirectoryPath}' is not an interactive room directory (no room.json).");
+
+            var updated = mutate(current);
+            await SaveMetadataAsync(updated, metadataFilePath, cancellationToken).ConfigureAwait(false);
+            return updated;
+        }
+        finally
+        {
+            mutex.Release();
+        }
+    }
+
+    /// <summary>
     /// Writes an interactive room's <c>room.json</c> so that a concurrent reader can neither fail the write nor observe
     /// a half-written file.
     /// <para>
@@ -572,8 +639,15 @@ public static class InteractiveSessionMaterializer
     /// <c>MOVEFILE_REPLACE_EXISTING</c> needs delete rights on the target and throws
     /// <see cref="UnauthorizedAccessException"/> against a live reader, trading one race for another.
     /// </para>
+    /// <para>
+    /// #1319: <c>internal</c> on purpose -- this is the raw, RMW-unsafe primitive. Production code
+    /// outside this assembly must go through <see cref="UpdateMetadataAsync"/>, which is the only
+    /// public path that guards the load this write depends on. Kept reachable in-assembly for
+    /// <see cref="MaterializeToDirectoryAsync"/> (writing a brand-new file, not a read-modify-write)
+    /// and, via <c>InternalsVisibleTo</c>, for test fixtures seeding an exact starting state.
+    /// </para>
     /// </summary>
-    public static async Task SaveMetadataAsync(SessionMetadata metadata, string filePath, CancellationToken cancellationToken = default)
+    internal static async Task SaveMetadataAsync(SessionMetadata metadata, string filePath, CancellationToken cancellationToken = default)
     {
         var dir = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(dir))
