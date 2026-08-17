@@ -339,12 +339,9 @@ void main() {
   /// polarity pair below is deliberate: a fixture using only one kind cannot fail against the
   /// pre-#1325 code, which always rendered the same three rungs regardless of kind.
   ///
-  /// A second reader found the original fix's "Reply" button could not actually reply: it sent a bare
-  /// `Resume` with no payload, and the engine's only mechanism for answering a NeedsInput pause is a
-  /// Supersede decision carrying the answer as a supplementary artifact -- which this screen has no
-  /// composer to construct one for. So NeedsInput now renders as an announcement with no button at
-  /// all (#1334 tracks building a real answer path), rather than an affordance that cannot resolve
-  /// the pause.
+  /// A second reader found the original fix's "Reply" button could not actually reply -- see
+  /// [PausedStepCard]'s doc comment for why, and #1334 for the tracked gap. NeedsInput now renders as
+  /// an announcement with no button at all, rather than an affordance that cannot resolve the pause.
   group('A paused step\'s affordances are kind-derived (#1325)', () {
     testWidgets('a NeedsInput step announces it needs an answer, and offers no button at all', (tester) async {
       final client = await pumpWorkflowRoom(tester);
