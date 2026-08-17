@@ -3,7 +3,7 @@
 ```
 pixi run vendor-verify                        # every check that needs no special authorisation
 pixi run vendor-verify -- --list              # names, groups, and what each one claims
-pixi run vendor-verify -- --only gate         # one group: gate | fanout | cost | lifecycle | agy
+pixi run vendor-verify -- --only gate         # one group: gate | fanout | cost | lifecycle | agy | effort | models
 pixi run vendor-verify -- --allow-config-writes   # also the checks that touch real settings files
 ```
 
