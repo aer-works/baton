@@ -4,7 +4,10 @@ import 'daemon/daemon_client.dart';
 import 'daemon/models.dart';
 
 /// The card a step paused for your sign-off renders as: who produced it, the output it produced
-/// (expandable, fetched on demand), and the rungs — Send back / Reject / Approve.
+/// (expandable, fetched on demand), and its resolution affordances — kind-derived per decisions
+/// 0015/0040 (#1325): a [PausePointKind.needsInput] step offers one Reply rung, since it is an
+/// ordinary chat turn awaiting your next message, not a review; a [PausePointKind.readyForReview]
+/// step keeps the full approval set (Send back / Reject / Approve).
 ///
 /// Extracted from `inbox_screen.dart` unchanged by #1226 (#1196 slice 6a) so the room's transcript
 /// can render the identical card. It is the same position-move-not-redesign the desktop family made
@@ -66,6 +69,7 @@ class _PausedStepCardState extends State<PausedStepCard> {
     final hasOutput = widget.execution?.outputFiles.isNotEmpty ?? false;
     final supersedeTarget = widget.definition?.supersedeTargets.firstOrNull;
     final outputFile = widget.execution?.outputFiles.firstOrNull ?? 'draft.md';
+    final kind = widget.definition?.pausePointKind ?? PausePointKind.readyForReview;
 
     final workerName = widget.definition?.worker ?? widget.step.stepId;
     final adapter = widget.workerAdapters[workerName];
@@ -105,21 +109,30 @@ class _PausedStepCardState extends State<PausedStepCard> {
                 ],
               ),
             const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (supersedeTarget != null && widget.onSendBack != null) ...[
-                  OutlinedButton(
-                    onPressed: widget.isPending ? null : () => widget.onSendBack!(supersedeTarget, outputFile),
-                    child: Text('Send back to $supersedeTarget'),
+            // 0015/0040 (#1325): a decision-kind pause (NeedsInput) is an ordinary chat turn awaiting
+            // your next message, not a review -- it gets one honest Reply rung, never Approve/Reject,
+            // which is the exact confusion 0015 exists to design out. An approval-kind pause
+            // (ReadyForReview) keeps the full resolution set: Send back, Reject, Approve.
+            kind == PausePointKind.needsInput
+                ? Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton(onPressed: widget.isPending ? null : widget.onApprove, child: const Text('Reply')),
+                  )
+                : Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      if (supersedeTarget != null && widget.onSendBack != null) ...[
+                        OutlinedButton(
+                          onPressed: widget.isPending ? null : () => widget.onSendBack!(supersedeTarget, outputFile),
+                          child: Text('Send back to $supersedeTarget'),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      TextButton(onPressed: widget.isPending ? null : widget.onReject, child: const Text('Reject')),
+                      const SizedBox(width: 8),
+                      FilledButton(onPressed: widget.isPending ? null : widget.onApprove, child: const Text('Approve')),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                ],
-                TextButton(onPressed: widget.isPending ? null : widget.onReject, child: const Text('Reject')),
-                const SizedBox(width: 8),
-                FilledButton(onPressed: widget.isPending ? null : widget.onApprove, child: const Text('Approve')),
-              ],
-            ),
           ],
         ),
       ),

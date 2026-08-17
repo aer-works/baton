@@ -95,14 +95,19 @@ class _FakeDaemonClient extends DaemonClient {
 }
 
 void main() {
-  RoomProjection workflowProjection({String stepStatus = 'Paused'}) => RoomProjection(
+  RoomProjection workflowProjection({
+    String stepStatus = 'Paused',
+    PausePointKind pausePointKind = PausePointKind.readyForReview,
+  }) =>
+      RoomProjection(
         directoryPath: '/tasks/foo',
         // No session: this is what makes it a workflow room rather than a chat.
         sessionId: null,
         workflowTemplateId: 'draft-review',
         status: 'Paused',
         stepDefinitions: [
-          StepDefinition(stepId: 'review', worker: 'critic', supersedeTargets: const ['draft']),
+          StepDefinition(
+              stepId: 'review', worker: 'critic', supersedeTargets: const ['draft'], pausePointKind: pausePointKind),
         ],
         steps: [
           WorkflowStepState(stepId: 'review', status: stepStatus, latestExecutionId: 'exec-1'),
@@ -297,6 +302,48 @@ void main() {
       await tester.tap(find.text('Cancel run'));
       await tester.pumpAndSettle();
       expect(client.cancelRunCallCount, 1);
+    });
+  });
+
+  /// #1325: the phone must not offer Approve/Reject on a pause that is asking a question, not
+  /// requesting sign-off on finished work — decisions 0015/0040's kind-derived affordances. The
+  /// polarity pair below is deliberate: a fixture using only one kind cannot fail against the
+  /// pre-#1325 code, which always rendered the same three rungs regardless of kind.
+  group('A paused step\'s affordances are kind-derived (#1325)', () {
+    testWidgets('a NeedsInput step offers a Reply rung, and no Approve/Reject', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(pausePointKind: PausePointKind.needsInput));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Reply'), findsOneWidget);
+      expect(find.text('Approve'), findsNothing);
+      expect(find.text('Reject'), findsNothing);
+      expect(find.text('Send back to draft'), findsNothing);
+    });
+
+    testWidgets('a ReadyForReview step keeps Approve/Reject, and offers no Reply', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(pausePointKind: PausePointKind.readyForReview));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Approve'), findsOneWidget);
+      expect(find.text('Reject'), findsOneWidget);
+      expect(find.text('Reply'), findsNothing);
+    });
+
+    testWidgets('a NeedsInput reply is sent as Resume, worded as a reply rather than an approval', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(pausePointKind: PausePointKind.needsInput));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Reply'));
+      await tester.pumpAndSettle();
+
+      expect(client.decisions, [
+        {'stepId': 'review', 'decisionType': 'Resume'}
+      ]);
+      expect(find.text('Replied to review'), findsOneWidget);
+      expect(find.text('Approved review'), findsNothing);
     });
   });
 
