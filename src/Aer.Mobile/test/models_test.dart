@@ -84,6 +84,10 @@ void main() {
       // #1318 (decision 0058's scope ruling 4): WorkerEffortTiers' wire twin, the daemon's own
       // canonical-word-only broadcast sibling to WorkerAdapters.
       expect(projection.workerEffortTiers, {'critic': 'careful'});
+
+      // #1339: WorkerDepthTiers' wire twin, resolved server-side from each worker's adapter+model
+      // pair rather than authored directly -- see BuildWorkerDepthTiers' own doc comment.
+      expect(projection.workerDepthTiers, {'planner': 'deep'});
     });
 
     // #1240: the derived pair the daemon bolts on, both halves. It is what the phone cannot compute

@@ -1700,6 +1700,7 @@ public partial class MainWindow : Window
 
         var workerAdapters = GetWorkerAdapters(roomDirectoryPath, ViewModel.BindingsFilePath);
         var workerEffortTiers = GetWorkerEffortTiers(roomDirectoryPath, ViewModel.BindingsFilePath);
+        var workerDepthTiers = GetWorkerDepthTiers(roomDirectoryPath, ViewModel.BindingsFilePath);
 
         // M19 Phase 3 (#188): the per-step drill-in — built after the session has rebuilt
         // PausedSteps, so each paused step's inline decision card is the same live VM instance.
@@ -1708,7 +1709,8 @@ public partial class MainWindow : Window
             previewFileAsync: filePath => ShowArtifactPreviewAsync(filePath),
             showConversation: ShowConversation,
             workerAdapters: workerAdapters,
-            workerEffortTiers: workerEffortTiers);
+            workerEffortTiers: workerEffortTiers,
+            workerDepthTiers: workerDepthTiers);
 
         // #390: surface (or clear) the inline conversational permission gate from the same projection.
         // The answer delegate captures this render's roomDirectoryPath; the daemon broadcasts a fresh
@@ -1839,6 +1841,60 @@ public partial class MainWindow : Window
                         && Aer.Ui.Core.EffortTierParsing.TryParseEffort(effortStr, out _))
                     {
                         result[prop.Name] = effortStr;
+                    }
+                }
+            }
+            catch { }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// #1339 (decision 0058's scope ruling 4): the depth twin of <see cref="GetWorkerEffortTiers"/>,
+    /// reading the same bindings file for the same reason (desktop resolves its own worker facts
+    /// locally rather than through the daemon's <c>WorkerDepthTiers</c> broadcast sibling, which
+    /// exists for a client with no local file access — see <c>Aer.Daemon.DaemonBroadcast</c>). Unlike
+    /// effort, a binding never authors a depth word directly -- only its <c>Adapter</c>/<c>Model</c>
+    /// vendor pair -- so <see cref="Aer.Adapters.DepthTierMapping"/> is what resolves that pair to a
+    /// canonical word (0023 constraint 1: the mapping lives in <c>Aer.Adapters</c> and nowhere else).
+    /// See <see cref="Aer.Daemon.DaemonBroadcast.BuildWorkerDepthTiers"/>'s doc comment for which
+    /// pairs the mapping does and does not carry; a pair it does not carry is simply absent from the
+    /// result here too, so the chip renders no mark for it rather than fabricating one (ruling 2).
+    /// </summary>
+    private static Dictionary<string, string> GetWorkerDepthTiers(string roomDirectoryPath, string? bindingsFilePath)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var targetBindingsFile = bindingsFilePath;
+        if (string.IsNullOrWhiteSpace(targetBindingsFile) || !File.Exists(targetBindingsFile))
+        {
+            targetBindingsFile = System.IO.Path.Combine(roomDirectoryPath, "bindings.json"); // vocabulary-ok: technical file path
+        }
+        if (!File.Exists(targetBindingsFile))
+        {
+            var metaFile = System.IO.Path.Combine(roomDirectoryPath, ".aer", "bindings-path"); // vocabulary-ok: technical file path
+            if (File.Exists(metaFile))
+            {
+                try { targetBindingsFile = File.ReadAllText(metaFile).Trim(); } catch { }
+            }
+        }
+        if (File.Exists(targetBindingsFile))
+        {
+            try
+            {
+                var json = File.ReadAllText(targetBindingsFile);
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    var adapter = prop.Value.TryGetProperty("Adapter", out var adapterProp) || prop.Value.TryGetProperty("adapter", out adapterProp) // vocabulary-ok: JSON property name
+                        ? adapterProp.GetString()
+                        : null;
+                    var model = prop.Value.TryGetProperty("Model", out var modelProp) || prop.Value.TryGetProperty("model", out modelProp) // vocabulary-ok: JSON property name
+                        ? modelProp.GetString()
+                        : null;
+
+                    if (Aer.Adapters.DepthTierMapping.TryResolve(adapter, model, out var purpose))
+                    {
+                        result[prop.Name] = purpose;
                     }
                 }
             }

@@ -273,6 +273,12 @@ class RoomProjection {
   /// and is not present here.
   final Map<String, String> workerEffortTiers;
 
+  /// Worker name -> canonical depth (model-tier) word (#1339, decision 0058's scope ruling 4) — the
+  /// wire twin of `Aer.Daemon.DaemonBroadcast.BuildWorkerDepthTiers`; see that method's doc comment
+  /// for what is and is not present here. A worker whose adapter+model pair the registered mapping
+  /// does not carry (every agy worker today) is simply absent, never defaulted.
+  final Map<String, String> workerDepthTiers;
+
   /// The runtime conversational permission gate (0022, #390's mobile phase), or null when no worker
   /// is blocked on one — see [PendingPermission]'s doc comment for where this sits on the wire.
   final PendingPermission? pendingPermission;
@@ -321,6 +327,7 @@ class RoomProjection {
     required this.executions,
     required this.workerAdapters,
     this.workerEffortTiers = const {},
+    this.workerDepthTiers = const {},
     this.pendingPermission,
     this.permissionAnswers = const [],
     this.dormancyTransitions = const [],
@@ -367,6 +374,13 @@ class RoomProjection {
       });
     }
 
+    final workerDepthTiers = <String, String>{};
+    if (j['workerdepthtiers'] is Map<String, dynamic>) {
+      (j['workerdepthtiers'] as Map<String, dynamic>).forEach((k, v) {
+        if (v != null) workerDepthTiers[k] = v.toString();
+      });
+    }
+
     return RoomProjection(
       directoryPath: j['directorypath']?.toString(),
       sessionId: j['sessionid']?.toString(),
@@ -380,6 +394,7 @@ class RoomProjection {
           .toList(),
       workerAdapters: workerAdapters,
       workerEffortTiers: workerEffortTiers,
+      workerDepthTiers: workerDepthTiers,
       pendingPermission: j['pendingpermission'] == null
           ? null
           : PendingPermission.fromJson(j['pendingpermission'] as Map<String, dynamic>),

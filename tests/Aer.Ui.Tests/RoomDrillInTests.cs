@@ -816,5 +816,85 @@ public class RoomDrillInTests
             DirectoryCleanup.DeleteRecursively(roomDirectory);
         }
     }
+
+    // #1339 (decision 0058's scope ruling 4): DepthTierMappingTests pins the same polarity set at the
+    // mapping itself -- see its own doc comment for why all three cases matter. This exercises it at
+    // the desktop's real load path instead: MainWindow.LoadAsync reading a bindings.json resolved
+    // through GetWorkerDepthTiers -> Aer.Adapters.DepthTierMapping -> StepItemProjector.Build, landing
+    // on StepItemViewModel.DepthTier -- the always-null slot #1318 shipped ahead of this producer.
+    [AvaloniaFact]
+    public async Task A_claude_worker_on_a_recorded_alias_renders_its_depth_tier()
+    {
+        var roomDirectory = await CreateRoomDirectoryAsync(TwoStepSnapshot(), [], TestContext.Current.CancellationToken);
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(roomDirectory, "bindings.json"),
+                """
+                { "architect": { "Adapter": "claude", "Model": "opus" } }
+                """,
+                TestContext.Current.CancellationToken);
+
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            var architect = window.ViewModel.RoomSteps.Single(step => step.StepId == "architect");
+            Assert.Equal(AerDepthTier.Deep, architect.DepthTier);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task An_agy_vendored_worker_renders_no_depth_mark()
+    {
+        var roomDirectory = await CreateRoomDirectoryAsync(TwoStepSnapshot(), [], TestContext.Current.CancellationToken);
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(roomDirectory, "bindings.json"),
+                """
+                { "architect": { "Adapter": "agy", "Model": "gemini-3.6-flash-thinking" } }
+                """,
+                TestContext.Current.CancellationToken);
+
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            var architect = window.ViewModel.RoomSteps.Single(step => step.StepId == "architect");
+            Assert.Null(architect.DepthTier);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task An_unrecognised_model_string_renders_no_depth_mark()
+    {
+        var roomDirectory = await CreateRoomDirectoryAsync(TwoStepSnapshot(), [], TestContext.Current.CancellationToken);
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(roomDirectory, "bindings.json"),
+                """
+                { "architect": { "Adapter": "claude", "Model": "claude-opus-4-8" } }
+                """,
+                TestContext.Current.CancellationToken);
+
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            var architect = window.ViewModel.RoomSteps.Single(step => step.StepId == "architect");
+            Assert.Null(architect.DepthTier);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
 }
 

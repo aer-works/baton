@@ -248,6 +248,9 @@
   "workerEffortTiers": {
     "critic": "careful"
   },
+  "workerDepthTiers": {
+    "planner": "deep"
+  },
   "roomCardStatus": "NeedsYou",
   "roomCardStatusText": "Waiting for your review"
 }
