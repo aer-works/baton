@@ -59,12 +59,20 @@ class WorkflowStepState {
   final String? latestFailureReason;
   final String? latestFailureClassification;
 
+  /// The underlying terminal outcome ('Succeeded'/'Failed'/'Cancelled') a Paused step reached before
+  /// being masked to Paused (`Aer.Flow.Domain.FlowState.StepState.PausedOutcome`) -- what
+  /// `ExternalDecisionValidator`'s `RetryWithRevision` arm rejects on when it reads 'Succeeded'
+  /// (`ExternalDecisionValidator.cs:66-70`). Null for any non-Paused step, or a step paused before
+  /// this field existed.
+  final String? pausedOutcome;
+
   WorkflowStepState({
     required this.stepId,
     required this.status,
     required this.latestExecutionId,
     this.latestFailureReason,
     this.latestFailureClassification,
+    this.pausedOutcome,
   });
 
   bool get isPaused => status == 'Paused';
@@ -78,6 +86,7 @@ class WorkflowStepState {
       latestExecutionId: j['latestexecutionid']?.toString(),
       latestFailureReason: j['latestfailurereason']?.toString(),
       latestFailureClassification: j['latestfailureclassification']?.toString(),
+      pausedOutcome: j['pausedoutcome']?.toString(),
     );
   }
 }

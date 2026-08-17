@@ -1251,7 +1251,6 @@ class _ChatScreenState extends State<ChatScreen> {
         if (baseIndex < pausedSteps.length) {
           final step = pausedSteps[baseIndex];
           final projection = _projection!;
-          final kind = projection.definitionFor(step.stepId)?.pausePointKind ?? PausePointKind.readyForReview;
           return PausedStepCard(
             client: widget.client,
             directoryPath: projection.directoryPath,
@@ -1260,10 +1259,7 @@ class _ChatScreenState extends State<ChatScreen> {
             execution: projection.executionFor(step.latestExecutionId),
             workerAdapters: projection.workerAdapters,
             isPending: _pendingStepIds.contains(step.stepId),
-            onApprove: () => _decideStep(step, 'Resume',
-                // #1325: see PausedStepCard's doc comment for why NeedsInput isn't approval -- the
-                // confirmation must not say "Approved" over an answer.
-                successMessage: kind == PausePointKind.needsInput ? 'Replied to ${step.stepId}' : null),
+            onApprove: () => _decideStep(step, 'Resume'),
             onReject: () => _decideStep(step, 'Reject'),
             onSendBack: (targetStepId, fileName) =>
                 _decideStepWithReference(step, 'Supersede', targetStepId, fileName), // vocabulary-ok: decision type label
@@ -1291,11 +1287,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// confirmation and its in-flight guard intact. The confirmation earns its place for the reason
   /// recorded there: the card vanishes as soon as the next projection lands, which without a word
   /// reads as "did that even work?".
-  ///
-  /// [successMessage] overrides the decisionType-derived default (#1325) — needed because `Resume`
-  /// means two different things depending on the pause's kind: "approved" for a ReadyForReview step,
-  /// "replied" for a NeedsInput one, and the confirmation must say which actually happened.
-  Future<void> _decideStep(WorkflowStepState step, String decisionType, {String? successMessage}) async {
+  Future<void> _decideStep(WorkflowStepState step, String decisionType) async {
     final directoryPath = _projection?.directoryPath;
     final executionId = step.latestExecutionId;
     if (directoryPath == null || executionId == null) return;
@@ -1306,9 +1298,7 @@ class _ChatScreenState extends State<ChatScreen> {
           directoryPath: directoryPath, stepId: step.stepId, executionId: executionId, decisionType: decisionType);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(
-                  successMessage ?? (decisionType == 'Reject' ? 'Rejected ${step.stepId}' : 'Approved ${step.stepId}'))),
+          SnackBar(content: Text(decisionType == 'Reject' ? 'Rejected ${step.stepId}' : 'Approved ${step.stepId}')),
         );
       }
     } on DaemonException catch (e) {

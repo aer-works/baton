@@ -340,6 +340,22 @@ void main() {
     });
   });
 
+  group('WorkflowStepState.fromJson parses PausedOutcome', () {
+    test('parses Succeeded (camelCase, REST)', () {
+      final step = WorkflowStepState.fromJson({'stepId': 'review', 'status': 'Paused', 'pausedOutcome': 'Succeeded'});
+      expect(step.pausedOutcome, 'Succeeded');
+    });
+
+    test('parses Failed (PascalCase, WS)', () {
+      final step = WorkflowStepState.fromJson({'StepId': 'review', 'Status': 'Paused', 'PausedOutcome': 'Failed'});
+      expect(step.pausedOutcome, 'Failed');
+    });
+
+    test('an absent PausedOutcome parses as null', () {
+      expect(WorkflowStepState.fromJson({'stepId': 'review', 'status': 'Paused'}).pausedOutcome, isNull);
+    });
+  });
+
   group('SessionTurn.fromJson (isExhausted/exhaustedUntil parse, 0026 §4/#1180)', () {
     test('parses camelCase isExhausted/exhaustedUntil', () {
       final turn = SessionTurn.fromJson({

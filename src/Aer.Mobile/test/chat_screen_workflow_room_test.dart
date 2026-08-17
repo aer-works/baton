@@ -113,6 +113,10 @@ void main() {
     String stepStatus = 'Paused',
     PausePointKind pausePointKind = PausePointKind.readyForReview,
     List<String> supersedeTargets = const ['draft'],
+    // Anything other than 'Succeeded' -- the wire value ExternalDecisionValidator rejects
+    // RetryWithRevision against (ExternalDecisionValidator.cs:66). Most of this file's tests are not
+    // about that gate, so the default keeps their pre-existing "Retry… is offered" behaviour.
+    String? pausedOutcome = 'Failed',
   }) =>
       RoomProjection(
         directoryPath: '/tasks/foo',
@@ -125,7 +129,8 @@ void main() {
               stepId: 'review', worker: 'critic', supersedeTargets: supersedeTargets, pausePointKind: pausePointKind),
         ],
         steps: [
-          WorkflowStepState(stepId: 'review', status: stepStatus, latestExecutionId: 'exec-1'),
+          WorkflowStepState(
+              stepId: 'review', status: stepStatus, latestExecutionId: 'exec-1', pausedOutcome: pausedOutcome),
         ],
         executions: [
           ExecutionArtifacts(executionId: 'exec-1', worker: 'critic', outputFiles: const ['review.md']),
@@ -333,41 +338,35 @@ void main() {
   /// requesting sign-off on finished work — decisions 0015/0040's kind-derived affordances. The
   /// polarity pair below is deliberate: a fixture using only one kind cannot fail against the
   /// pre-#1325 code, which always rendered the same three rungs regardless of kind.
+  ///
+  /// A second reader found the original fix's "Reply" button could not actually reply: it sent a bare
+  /// `Resume` with no payload, and the engine's only mechanism for answering a NeedsInput pause is a
+  /// Supersede decision carrying the answer as a supplementary artifact -- which this screen has no
+  /// composer to construct one for. So NeedsInput now renders as an announcement with no button at
+  /// all (#1334 tracks building a real answer path), rather than an affordance that cannot resolve
+  /// the pause.
   group('A paused step\'s affordances are kind-derived (#1325)', () {
-    testWidgets('a NeedsInput step offers a Reply rung, and no Approve/Reject', (tester) async {
+    testWidgets('a NeedsInput step announces it needs an answer, and offers no button at all', (tester) async {
       final client = await pumpWorkflowRoom(tester);
       client.push(workflowProjection(pausePointKind: PausePointKind.needsInput));
       await tester.pumpAndSettle();
 
-      expect(find.text('Reply'), findsOneWidget);
+      expect(find.textContaining('no way to answer'), findsOneWidget);
+      expect(find.text('Reply'), findsNothing);
       expect(find.text('Approve'), findsNothing);
       expect(find.text('Reject'), findsNothing);
       expect(find.text('Send back to draft'), findsNothing);
+      expect(find.text('Retry…'), findsNothing);
     });
 
-    testWidgets('a ReadyForReview step keeps Approve/Reject, and offers no Reply', (tester) async {
+    testWidgets('a ReadyForReview step keeps Approve/Reject, and announces nothing', (tester) async {
       final client = await pumpWorkflowRoom(tester);
       client.push(workflowProjection(pausePointKind: PausePointKind.readyForReview));
       await tester.pumpAndSettle();
 
       expect(find.text('Approve'), findsOneWidget);
       expect(find.text('Reject'), findsOneWidget);
-      expect(find.text('Reply'), findsNothing);
-    });
-
-    testWidgets('a NeedsInput reply is sent as Resume, worded as a reply rather than an approval', (tester) async {
-      final client = await pumpWorkflowRoom(tester);
-      client.push(workflowProjection(pausePointKind: PausePointKind.needsInput));
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.text('Reply'));
-      await tester.pumpAndSettle();
-
-      expect(client.decisions, [
-        {'stepId': 'review', 'decisionType': 'Resume'}
-      ]);
-      expect(find.text('Replied to review'), findsOneWidget);
-      expect(find.text('Approved review'), findsNothing);
+      expect(find.textContaining('no way to answer'), findsNothing);
     });
   });
 
@@ -465,6 +464,29 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(client.decisionDetails, isEmpty);
+    });
+  });
+
+  /// A second reader found Retry rendered on every ReadyForReview paused step, including the ordinary
+  /// review-and-approve case -- where the daemon's `ExternalDecisionValidator` rejects
+  /// `RetryWithRevision` outright because `PausedOutcome` is `Succeeded`
+  /// (`ExternalDecisionValidator.cs:66`). The polarity pair below is deliberate: a fixture asserting
+  /// only one outcome cannot fail against the pre-fix code, which offered Retry unconditionally.
+  group('Retry is only offered where the daemon will accept it', () {
+    testWidgets('a Succeeded paused step (the ordinary approve case) shows no Retry affordance', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(pausedOutcome: 'Succeeded'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Retry…'), findsNothing);
+    });
+
+    testWidgets('a Failed paused step shows the Retry affordance', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection(pausedOutcome: 'Failed'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Retry…'), findsOneWidget);
     });
   });
 

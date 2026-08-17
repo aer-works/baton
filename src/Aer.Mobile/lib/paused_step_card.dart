@@ -5,9 +5,15 @@ import 'daemon/models.dart';
 
 /// The card a step paused for your sign-off renders as: who produced it, the output it produced
 /// (expandable, fetched on demand), and its resolution affordances — kind-derived per decisions
-/// 0015/0040 (#1325): a [PausePointKind.needsInput] step offers one Reply rung, since it is an
-/// ordinary chat turn awaiting your next message, not a review; a [PausePointKind.readyForReview]
-/// step keeps the full approval set (Send back / Reject / Approve / Retry).
+/// 0015/0040 (#1325). A [PausePointKind.needsInput] step is announced, not answerable: the engine's
+/// only mechanism for resolving a NeedsInput pause is a Supersede decision carrying the answer as a
+/// supplementary artifact, and the wire protocol gives a remote client no way to mint one from typed
+/// text (`RevisionFilePath` names a path on the daemon's own filesystem; `ArtifactReference` only
+/// points at an execution the daemon already has) — there is also no composer on this screen to type
+/// an answer into. So this card renders the kind honestly, with no button that promises an answer it
+/// cannot deliver. See #1334 for the tracked gap. A [PausePointKind.readyForReview] step keeps the
+/// full approval set (Send back / Reject / Approve / Retry, the last gated on the same
+/// `PausedOutcome != Succeeded` precondition the daemon's `ExternalDecisionValidator` enforces).
 ///
 /// Extracted from `inbox_screen.dart` unchanged by #1226 (#1196 slice 6a) so the room's transcript
 /// can render the identical card. It is the same position-move-not-redesign the desktop family made
@@ -132,14 +138,15 @@ class _PausedStepCardState extends State<PausedStepCard> {
                 ],
               ),
             const SizedBox(height: 8),
-            // Kind-derived per this class's own doc comment above (0015/0040, #1325). ReadyForReview's
-            // resolution set: one Send back rung per declared supersede target (#1322 -- every declared
-            // target must be reachable, not just the first), Retry with an optional attached revision
-            // (#1323), Reject, Approve.
+            // Kind-derived per this class's own doc comment above (0015/0040, #1325). NeedsInput has
+            // no honest affordance to offer (#1334 tracks building one); ReadyForReview's resolution
+            // set: one Send back rung per declared supersede target (#1322 -- every declared target
+            // must be reachable, not just the first), Retry gated on the same PausedOutcome precondition
+            // the daemon enforces with an optional attached revision (#1323), Reject, Approve.
             kind == PausePointKind.needsInput
-                ? Align(
-                    alignment: Alignment.centerRight,
-                    child: FilledButton(onPressed: widget.isPending ? null : widget.onApprove, child: const Text('Reply')),
+                ? Text(
+                    'This step is waiting on an answer to a question. The phone has no way to answer one yet.',
+                    style: Theme.of(context).textTheme.bodySmall,
                   )
                 : Wrap(
                     alignment: WrapAlignment.end,
@@ -152,7 +159,11 @@ class _PausedStepCardState extends State<PausedStepCard> {
                             onPressed: widget.isPending ? null : () => widget.onSendBack!(target, outputFile),
                             child: Text('Send back to $target'),
                           ),
-                      if (widget.onRetry != null)
+                      // The daemon's ExternalDecisionValidator rejects RetryWithRevision outright when
+                      // PausedOutcome is Succeeded (the ordinary review-and-approve case) -- offering the
+                      // button there would just 400. Gate on the same precondition so the button only
+                      // ever appears where it can succeed.
+                      if (widget.onRetry != null && widget.step.pausedOutcome != 'Succeeded')
                         OutlinedButton(
                           onPressed: widget.isPending ? null : () => _showRetryDialog(context, ownOutputFile),
                           child: const Text('Retry…'),
