@@ -15,13 +15,11 @@ namespace Aer.Ui.Tests;
 /// #1318 second reader: <see cref="DesignTokenDriftTests.EveryDepthAndEffortStepIsDrawnByBothToolkits"/>
 /// admits it cannot see whether <c>TierMeter</c> actually renders the ascending meter the geometry
 /// describes — it only checks that each step's geometry key and mark widget exist. It could not have
-/// caught the shipped defect: <c>Stretch="Uniform"</c> computes its scale/position from each step
-/// geometry's OWN <c>Bounds</c> rather than the shared 16x16 authoring grid, so three differently-sized
-/// steps sharing one canvas were each independently scaled to fill their own box — concentric circles,
-/// nested rectangles, not an ascending meter. This test renders the real control and asserts what that
-/// defect actually breaks: <see cref="Shape.RenderedGeometry"/> (the geometry Avalonia actually paints,
-/// stretch transform included) must keep each step at its own authored position, not collapse every
-/// step onto the same centre.
+/// caught the shipped <c>Stretch="Uniform"</c> defect <c>TierMeter.axaml</c>'s own style comment
+/// describes. This test renders the real control and asserts what that defect actually breaks:
+/// <see cref="Shape.RenderedGeometry"/> (the geometry Avalonia actually paints, stretch transform
+/// included) must keep each step at its own authored position, not collapse every step onto the same
+/// centre.
 /// </summary>
 public class TierMeterRenderTests
 {
@@ -53,16 +51,14 @@ public class TierMeterRenderTests
         var paths = meter.GetVisualDescendants().OfType<ShapePath>().ToList();
         Assert.Equal(steps.Count, paths.Count);
 
-        // The precise shape of the bug: Stretch="Uniform" computes its scale/translate transform from
-        // the GEOMETRY'S OWN Bounds (not the shared 16x16 authoring grid), so RenderedGeometry.Bounds
-        // (what Avalonia actually paints, transform included) no longer matches the geometry's own
-        // authored Bounds -- each step gets independently rescaled/repositioned to fill its own box.
-        // Stretch="None" applies no transform at all, so the two must be pixel-identical. This is
-        // stronger than just checking the steps differ from EACH OTHER: depth's dots (same aspect
-        // ratio, different radii) render exactly concentric under Uniform and are caught by a
-        // distinctness check alone, but effort's bars (different aspect ratios per step) happen to
-        // scale to different sizes under the same bug and would slip past a same-vs-different check
-        // even though every one of them is still wrong.
+        // RenderedGeometry.Bounds (what Avalonia actually paints, stretch transform included) must
+        // equal the geometry's own authored Bounds -- see TierMeter.axaml's style comment for why
+        // Stretch="Uniform" broke that equality. Checking equality to the authored Bounds is stronger
+        // than just checking the steps differ from EACH OTHER: depth's dots (same aspect ratio,
+        // different radii) render exactly concentric under Uniform and are caught by a distinctness
+        // check alone, but effort's bars (different aspect ratios per step) happen to scale to
+        // different sizes under the same bug and would slip past a same-vs-different check even
+        // though every one of them is still wrong.
         for (var i = 0; i < paths.Count; i++)
         {
             var authored = steps[i].Geometry.Bounds;
@@ -81,11 +77,10 @@ public class TierMeterRenderTests
     }
 
     /// <summary>
-    /// The second BLOCKER (#1318 second reader): a stroked unfilled step's interior gap was too fine
-    /// a fraction of its own area to read as hollow at chip size, so every tier read as "all steps
-    /// solid" regardless of fill. The fix is a muted solid fill, not a stroke -- this asserts the
-    /// resolved <see cref="Shape.Opacity"/> actually differs between a filled and an unfilled step
-    /// once styles apply, not just that the XAML says it should.
+    /// The second BLOCKER (#1318 second reader) -- see <c>TierMeter.axaml</c>'s own style comment for
+    /// why a stroke could not discriminate at chip size, and why the fix is a muted solid fill
+    /// instead. This asserts the resolved <see cref="Shape.Opacity"/> actually differs between a
+    /// filled and an unfilled step once styles apply, not just that the XAML says it should.
     /// </summary>
     [AvaloniaFact]
     public void UnfilledStep_ResolvesToAMutedOpacity_NotFullOpacityOrAStroke()

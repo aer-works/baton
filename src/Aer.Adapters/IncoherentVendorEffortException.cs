@@ -12,11 +12,9 @@ namespace Aer.Adapters;
 /// On both agy and claude, from <see cref="EffortTierMapping"/>'s shared <c>Resolve</c> (used by both
 /// <see cref="EffortTierMapping.ResolveForClaude"/> and <see cref="EffortTierMapping.ResolveForAgy"/>):
 /// the effort string is neither one of 0023's four canonical words nor already one of that vendor's
-/// own raw values. Refused up-front like its sibling <see cref="MalformedVendorModelException"/>,
-/// naming the real cause instead of letting the vendor's own behaviour (agy refuses at bind time;
-/// claude silently runs at its default, per <c>docs/vendor-capabilities.md</c>) surface after the
-/// operator has waited for a run that could never have honoured the value requested. An agreeing pair
-/// is left untouched and emitted byte-for-byte.
+/// own raw values — see that type's own remarks for why this is refused rather than forwarded.
+/// Refused up-front like its sibling <see cref="MalformedVendorModelException"/>. An agreeing pair is
+/// left untouched and emitted byte-for-byte.
 /// </summary>
 public sealed class IncoherentVendorEffortException : AerFlowException
 {

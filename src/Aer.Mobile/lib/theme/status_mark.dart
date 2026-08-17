@@ -346,12 +346,11 @@ class EffortMark extends StatelessWidget {
   }
 }
 
-/// The mobile mirror of `Aer.Ui.Core.EffortTierParsing.TryParseEffort` (#1318, decision 0058's scope
-/// ruling 4): canonical word -> mark parameter, never vendor knowledge. [AerEffortTier]'s enum member
-/// names are themselves the four canonical words `tokens.dart`'s generator emits from
-/// `design/tokens.json`, so this is a name lookup rather than a second hand-authored vocabulary list.
-/// Null, a raw vendor value, or anything else unmapped all return null -- the same absence
-/// [EffortMark] already renders nothing for.
+/// The mobile mirror of `Aer.Ui.Core.EffortTierParsing.TryParseEffort` -- see that type's own doc
+/// comment for the shared reasoning. [AerEffortTier]'s enum member names are themselves the four
+/// canonical words `tokens.dart`'s generator emits from `design/tokens.json`, so this is a name
+/// lookup rather than a second hand-authored vocabulary list. Null, a raw vendor value, or anything
+/// else unmapped all return null -- the same absence [EffortMark] already renders nothing for.
 AerEffortTier? parseCanonicalEffortTier(String? raw) {
   if (raw == null) return null;
   for (final candidate in AerEffortTier.values) {

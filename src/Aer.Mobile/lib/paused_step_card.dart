@@ -19,8 +19,7 @@ class PausedStepCard extends StatefulWidget {
   final ExecutionArtifacts? execution;
   final Map<String, String> workerAdapters;
 
-  /// Worker name -> canonical effort word (#1318, decision 0058's scope ruling 4) — see
-  /// [RoomProjection.workerEffortTiers] for the shape and why absence is never defaulted.
+  /// See [RoomProjection.workerEffortTiers] for the shape and why absence is never defaulted.
   final Map<String, String> workerEffortTiers;
   final bool isPending;
   final VoidCallback onApprove;
@@ -89,10 +88,9 @@ class _PausedStepCardState extends State<PausedStepCard> {
               children: [
                 buildVendorIcon(adapter),
                 const SizedBox(width: 8),
-                // #1318 (decision 0058's scope ruling): depth and effort as marks beside the vendor
-                // glyph, the same pairing RoomView.axaml's desktop chip draws. Depth has no producer
-                // yet (#1330) so DepthMark always gets a null tier here and renders nothing (ruling
-                // 2); effort is wired live off workerEffortTiers.
+                // #1318: the mobile call site RoomView.axaml's desktop chip already has -- see its
+                // own comment for the pairing's reasoning. DepthMark always gets a null tier (no
+                // producer yet, #1330); EffortMark is wired live off workerEffortTiers.
                 DepthMark(null, size: 14),
                 const SizedBox(width: 2),
                 EffortMark(effortTier, size: 14),

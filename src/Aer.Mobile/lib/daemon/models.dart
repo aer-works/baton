@@ -242,9 +242,8 @@ class RoomProjection {
   final Map<String, String> workerAdapters;
 
   /// Worker name -> canonical effort word (#1318, decision 0058's scope ruling 4) — the wire twin of
-  /// `Aer.Daemon.DaemonBroadcast.BuildWorkerEffortTiers`. Already filtered server-side to entries
-  /// whose binding holds one of 0023's four canonical words; a worker with a raw vendor value or no
-  /// effort at all is simply absent here, never defaulted or reverse-mapped.
+  /// `Aer.Daemon.DaemonBroadcast.BuildWorkerEffortTiers`; see that method's doc comment for what is
+  /// and is not present here.
   final Map<String, String> workerEffortTiers;
 
   /// The runtime conversational permission gate (0022, #390's mobile phase), or null when no worker
