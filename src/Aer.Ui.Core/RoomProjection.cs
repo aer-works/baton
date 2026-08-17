@@ -43,6 +43,12 @@ namespace Aer.Ui.Core;
 /// stamps <c>SessionId</c> onto a push (it loads <c>SessionMetadata</c> in scope for exactly that).
 /// Empty until a room is open, or on a pre-#1305 room.
 /// </param>
+/// <param name="Files">
+/// The room's files as one versioned, attributed list (0021 §2; #1340) — a sixth read-model
+/// surface, re-grouping the same facts <paramref name="Lineage"/> already carries by name instead of
+/// by execution. Defaulted for the same source-compatibility reason as the other optional surfaces
+/// above; an empty <see cref="RoomFiles"/> for any construction site that hasn't populated it.
+/// </param>
 public sealed record RoomProjection(
     WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage,
     PendingPermission? PendingPermission = null,
@@ -51,12 +57,14 @@ public sealed record RoomProjection(
     IReadOnlyList<StepPauseMoment>? StepPauseMoments = null,
     IReadOnlyList<RecordedDecisionMoment>? RecordedDecisionMoments = null,
     bool IsWorkflowOff = false,
-    IReadOnlyList<Participant>? Participants = null)
+    IReadOnlyList<Participant>? Participants = null,
+    RoomFiles? Files = null)
 {
     public IReadOnlyList<PermissionAnswer> PermissionAnswers { get; init; } = PermissionAnswers ?? [];
     public IReadOnlyList<DormancyTransition> DormancyTransitions { get; init; } = DormancyTransitions ?? [];
     public IReadOnlyList<StepPauseMoment> StepPauseMoments { get; init; } = StepPauseMoments ?? [];
     public IReadOnlyList<RecordedDecisionMoment> RecordedDecisionMoments { get; init; } = RecordedDecisionMoments ?? [];
     public IReadOnlyList<Participant> Participants { get; init; } = Participants ?? [];
+    public RoomFiles Files { get; init; } = Files ?? new RoomFiles([]);
     public bool IsDormant => DormancyTransitions.Count > 0 && DormancyTransitions[^1].IsEntered;
 }

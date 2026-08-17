@@ -1710,6 +1710,10 @@ public partial class MainWindow : Window
             workerAdapters: workerAdapters,
             workerEffortTiers: workerEffortTiers);
 
+        // #1340: the room-wide Files section, alongside the per-step drill-in above — same
+        // previewFileAsync plumbing, a room-wide list rather than one sliced per step.
+        ViewModel.RebuildRoomFiles(projection, previewFileAsync: filePath => ShowArtifactPreviewAsync(filePath));
+
         // #390: surface (or clear) the inline conversational permission gate from the same projection.
         // The answer delegate captures this render's roomDirectoryPath; the daemon broadcasts a fresh
         // projection on answer, and the LoadAsync refresh below it re-renders with the gate cleared.
@@ -1862,6 +1866,7 @@ public partial class MainWindow : Window
         ClearArtifactPreview();
         DiffPanel.Children.Clear();
         ViewModel.ClearRoomSteps();
+        ViewModel.ClearRoomFiles();
     }
 
     /// <summary>The one status system's token keys (M19 Phase 5, #190) — line color and area tint per <see cref="StepStatus"/>, resolved from the active theme at render time so the DAG follows light/dark like every other surface.</summary>

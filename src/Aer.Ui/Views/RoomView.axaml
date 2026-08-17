@@ -252,6 +252,41 @@
         </StackPanel>
       </Border>
 
+      <!-- #1340 (0021 §2): the room's Files section — one list, name/version-count/latest
+           author+time, each row's versions inside an Expander with previewable chips, the same
+           chip idiom the per-step drill-in's Outputs tab above already uses. Hidden entirely (not
+           shown empty) when the room has produced nothing yet, matching the "Working right now"
+           section's own empty-state rule just below. -->
+      <Border Classes="card" IsVisible="{Binding HasRoomFiles}">
+        <StackPanel Spacing="8">
+          <TextBlock Classes="heading" Text="Files" />
+          <ItemsControl x:Name="RoomFilesList" ItemsSource="{Binding RoomFiles}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:RoomFileViewModel">
+                <Expander Header="{Binding Name}" Margin="0,0,0,4">
+                  <StackPanel Spacing="4" Margin="0,8,0,0">
+                    <TextBlock Classes="secondary" Text="{Binding SummaryText}" />
+                    <ItemsControl ItemsSource="{Binding Versions}">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                          <WrapPanel />
+                        </ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:ArtifactFileViewModel">
+                          <Button Content="{Binding Label}" Command="{Binding PreviewCommand}"
+                                  Classes="chip" Classes.selected="{Binding IsSelected}" Margin="0,0,4,4" />
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </Expander>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
       <!-- Owner feedback: this rendered its heading with nothing underneath whenever nothing was
            actually running — hidden entirely rather than shown as an unexplained blank panel. -->
       <StackPanel Spacing="12" IsVisible="{Binding HasRunningExecutions}">

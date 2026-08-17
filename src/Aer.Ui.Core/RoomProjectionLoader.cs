@@ -132,6 +132,7 @@ public static class RoomProjectionLoader
 
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactsDirectoryName);
         var lineage = ArtifactLineageProjector.Project(events, snapshot, artifactsRootPath);
+        var files = RoomFilesProjector.Project(lineage, entries, artifactsRootPath);
 
         var (pendingPermission, permissionAnswers, dormancyTransitions, isWorkflowOff) =
             await LoadJournalStateAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
@@ -139,7 +140,8 @@ public static class RoomProjectionLoader
         return new RoomProjection(
             snapshot, state, history, lineage,
             pendingPermission, permissionAnswers, dormancyTransitions,
-            stepPauseMoments, recordedDecisionMoments, isWorkflowOff);
+            stepPauseMoments, recordedDecisionMoments, isWorkflowOff,
+            Files: files);
     }
 
     /// <summary>

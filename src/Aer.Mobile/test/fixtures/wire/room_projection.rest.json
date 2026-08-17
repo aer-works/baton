@@ -239,6 +239,9 @@
     }
   ],
   "participants": [],
+  "files": {
+    "files": []
+  },
   "isDormant": false,
   "directoryPath": "C:/tasks/foo",
   "sessionId": "session-123",

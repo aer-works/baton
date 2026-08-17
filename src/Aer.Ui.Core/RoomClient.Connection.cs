@@ -338,13 +338,14 @@ public sealed partial class RoomClient
         IReadOnlyList<StepPauseMoment>? StepPauseMoments = null,
         IReadOnlyList<RecordedDecisionMoment>? RecordedDecisionMoments = null,
         bool IsWorkflowOff = false,
-        IReadOnlyList<Participant>? Participants = null);
+        IReadOnlyList<Participant>? Participants = null,
+        RoomFiles? Files = null);
 
     /// <summary>Rebuilds the projection a live WS frame carries — the one place the frame's members
     /// map back onto <see cref="RoomProjection"/>. Every member goes through here (see the frame's
     /// remarks for why an omission is invisible on the HTTP path).</summary>
     internal static RoomProjection ToProjection(ProjectionFrame frame) =>
-        new(frame.Snapshot, frame.State, frame.History, frame.Lineage, frame.PendingPermission, frame.PermissionAnswers, frame.DormancyTransitions, frame.StepPauseMoments, frame.RecordedDecisionMoments, frame.IsWorkflowOff, frame.Participants);
+        new(frame.Snapshot, frame.State, frame.History, frame.Lineage, frame.PendingPermission, frame.PermissionAnswers, frame.DormancyTransitions, frame.StepPauseMoments, frame.RecordedDecisionMoments, frame.IsWorkflowOff, frame.Participants, frame.Files);
 
     /// <summary>The M24 Phase 1 live in-turn streaming socket's client-side counterpart -- see <see cref="SessionProgressReceived"/>. A dedicated connection, not folded into <see cref="StartWebSocketListenerAsync"/>'s own socket, for the exact same reason the daemon keeps the two endpoints separate (<c>Aer.Daemon.Program</c>'s <c>progressWebSockets</c> remarks): this frame shape has no type discriminator, so sharing a socket risks a <see cref="RoomProjection"/> deserialization corrupting on it.</summary>
     private async Task StartProgressWebSocketListenerAsync(string resolvedUrl, string? token, CancellationToken cancellationToken)
