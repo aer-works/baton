@@ -27,6 +27,11 @@ class _FakeDaemonClient extends DaemonClient {
   /// Every decision this screen sent, in order — the point of the test being that a decision reaches
   /// the daemon from inside the transcript.
   final List<Map<String, String>> decisions = [];
+
+  /// #1323: the artifactReference/supplementary fields `decisions` above doesn't carry — kept as a
+  /// separate list rather than widening `decisions` so the many existing exact-match assertions
+  /// against it stay unchanged.
+  final List<Map<String, String?>> decisionDetails = [];
   int cancelRunCallCount = 0;
 
   /// Directories this screen asked the daemon to open — the doorbell that makes the current
@@ -78,11 +83,20 @@ class _FakeDaemonClient extends DaemonClient {
     String? targetStepId,
     String? revisionFilePath,
     Map<String, String>? artifactReference,
+    String? supplementaryWorker,
+    String? supplementaryOutputName,
   }) async {
     decisions.add({
       'stepId': stepId,
       'decisionType': decisionType,
       'targetStepId': ?targetStepId,
+    });
+    decisionDetails.add({
+      'stepId': stepId,
+      'decisionType': decisionType,
+      'artifactFileName': artifactReference?['fileName'],
+      'supplementaryWorker': supplementaryWorker,
+      'supplementaryOutputName': supplementaryOutputName,
     });
     final gate = decideGate;
     if (gate != null) await gate.future;
@@ -184,6 +198,15 @@ void main() {
   }
 
   Future<_FakeDaemonClient> pumpWorkflowRoom(WidgetTester tester) async {
+    // #1323 grew the paused step's action row by a rung (Retry…), which on the default (narrow,
+    // short) test surface was enough to push trailing transcript items (the stopped-room card, the
+    // failed-step card) past ListView.builder's lazy-build window — a real phone has no such ceiling,
+    // an operator just scrolls, so a cramped test surface would be testing virtualization rather than
+    // the content these tests actually pin. Same knob the long-name header test below uses.
+    tester.view.physicalSize = const Size(1600, 3600);
+    tester.view.devicePixelRatio = 2.0;
+    addTearDown(tester.view.reset);
+
     final client = _FakeDaemonClient();
     await tester.pumpWidget(MaterialApp(
       home: ChatScreen(client: client, sessionId: null, directoryPath: '/tasks/foo'),
@@ -373,6 +396,75 @@ void main() {
       expect(client.decisions, [
         {'stepId': 'review', 'decisionType': 'Supersede', 'targetStepId': 'outline'}
       ]);
+    });
+  });
+
+  /// #1323: RetryWithRevision, the one decision type no phone UI path could construct before this.
+  group('Retry with revision (#1323)', () {
+    testWidgets('a bare retry (no attached revision) sends RetryWithRevision with no artifact', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Retry…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Retry'));
+      await tester.pumpAndSettle();
+
+      expect(client.decisionDetails, [
+        {
+          'stepId': 'review',
+          'decisionType': 'RetryWithRevision',
+          'artifactFileName': null,
+          'supplementaryWorker': null,
+          'supplementaryOutputName': null,
+        }
+      ]);
+    });
+
+    testWidgets('attaching the revision requires worker and output name before Retry is enabled', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Retry…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text("Attach this step's output as the revision"));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Retry')).onPressed, isNull);
+
+      await tester.enterText(find.widgetWithText(TextField, 'Supplementary worker'), 'reviewer');
+      await tester.enterText(find.widgetWithText(TextField, 'Supplementary output name'), 'revision.md');
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Retry')).onPressed, isNotNull);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Retry'));
+      await tester.pumpAndSettle();
+
+      expect(client.decisionDetails, [
+        {
+          'stepId': 'review',
+          'decisionType': 'RetryWithRevision',
+          'artifactFileName': 'review.md',
+          'supplementaryWorker': 'reviewer',
+          'supplementaryOutputName': 'revision.md',
+        }
+      ]);
+    });
+
+    testWidgets('cancelling the dialog sends nothing', (tester) async {
+      final client = await pumpWorkflowRoom(tester);
+      client.push(workflowProjection());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Retry…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(client.decisionDetails, isEmpty);
     });
   });
 
