@@ -9,26 +9,44 @@ library;
 Map<String, dynamic> caseInsensitive(Map<String, dynamic> json) =>
     json.map((key, value) => MapEntry(key.toLowerCase(), value));
 
+/// Wire twin of the engine's PausePointKind (src/Aer.Flow/Domain/WorkflowDefinition.cs) -- decision
+/// 0015's "which human act does this pause demand", 0040's axis for grouping resolution affordances.
+/// Serialized by name (JsonStringEnumConverter, `DaemonSerializerOptions`), never by ordinal.
+/// [readyForReview] is the default: a snapshot predating this field, or any value this app does not
+/// recognize, must still read as the historical approval-gate meaning rather than as "unknown".
+enum PausePointKind {
+  readyForReview,
+  needsInput;
+
+  static PausePointKind fromWire(String? value) =>
+      value == 'NeedsInput' ? PausePointKind.needsInput : PausePointKind.readyForReview;
+}
+
 /// One step's static definition, from RoomProjection.Snapshot.Steps.
 class StepDefinition {
   final String stepId;
   final String worker;
   final List<String> supersedeTargets;
+  final PausePointKind pausePointKind;
 
-  StepDefinition({required this.stepId, required this.worker, required this.supersedeTargets});
+  StepDefinition({
+    required this.stepId,
+    required this.worker,
+    required this.supersedeTargets,
+    this.pausePointKind = PausePointKind.readyForReview,
+  });
 
   factory StepDefinition.fromJson(Map<String, dynamic> json) {
     final j = caseInsensitive(json);
     final pausePoint = j['pausepoint'] as Map<String, dynamic>?; // vocabulary-ok: payload field key
-    final targets = pausePoint == null
-        ? <String>[]
-        : ((caseInsensitive(pausePoint)['supersedetargets'] as List<dynamic>?) ?? [])
-            .map((t) => t.toString())
-            .toList();
+    final ci = pausePoint == null ? null : caseInsensitive(pausePoint);
+    final targets =
+        ci == null ? <String>[] : ((ci['supersedetargets'] as List<dynamic>?) ?? []).map((t) => t.toString()).toList();
     return StepDefinition(
       stepId: j['stepid'].toString(),
       worker: j['worker'].toString(),
       supersedeTargets: targets,
+      pausePointKind: PausePointKind.fromWire(ci?['kind']?.toString()),
     );
   }
 }
@@ -41,12 +59,20 @@ class WorkflowStepState {
   final String? latestFailureReason;
   final String? latestFailureClassification;
 
+  /// The underlying terminal outcome ('Succeeded'/'Failed'/'Cancelled') a Paused step reached before
+  /// being masked to Paused (`Aer.Flow.Domain.FlowState.StepState.PausedOutcome`) -- what
+  /// `ExternalDecisionValidator`'s `RetryWithRevision` arm rejects on when it reads 'Succeeded'
+  /// (`ExternalDecisionValidator.cs:66-70`). Null for any non-Paused step, or a step paused before
+  /// this field existed.
+  final String? pausedOutcome;
+
   WorkflowStepState({
     required this.stepId,
     required this.status,
     required this.latestExecutionId,
     this.latestFailureReason,
     this.latestFailureClassification,
+    this.pausedOutcome,
   });
 
   bool get isPaused => status == 'Paused';
@@ -60,6 +86,7 @@ class WorkflowStepState {
       latestExecutionId: j['latestexecutionid']?.toString(),
       latestFailureReason: j['latestfailurereason']?.toString(),
       latestFailureClassification: j['latestfailureclassification']?.toString(),
+      pausedOutcome: j['pausedoutcome']?.toString(),
     );
   }
 }

@@ -5,7 +5,16 @@ import 'daemon/models.dart';
 import 'theme/status_mark.dart';
 
 /// The card a step paused for your sign-off renders as: who produced it, the output it produced
-/// (expandable, fetched on demand), and the rungs — Send back / Reject / Approve.
+/// (expandable, fetched on demand), and its resolution affordances — kind-derived per decisions
+/// 0015/0040 (#1325). A [PausePointKind.needsInput] step is announced, not answerable: the engine's
+/// only mechanism for resolving a NeedsInput pause is a Supersede decision carrying the answer as a
+/// supplementary artifact, and the wire protocol gives a remote client no way to mint one from typed
+/// text (`RevisionFilePath` names a path on the daemon's own filesystem; `ArtifactReference` only
+/// points at an execution the daemon already has) — there is also no composer on this screen to type
+/// an answer into. So this card renders the kind honestly, with no button that promises an answer it
+/// cannot deliver. See #1334 for the tracked gap. A [PausePointKind.readyForReview] step keeps the
+/// full approval set (Send back / Reject / Approve / Retry, the last gated on the same
+/// `PausedOutcome != Succeeded` precondition the daemon's `ExternalDecisionValidator` enforces).
 ///
 /// Extracted from `inbox_screen.dart` unchanged by #1226 (#1196 slice 6a) so the room's transcript
 /// can render the identical card. It is the same position-move-not-redesign the desktop family made
@@ -26,6 +35,14 @@ class PausedStepCard extends StatefulWidget {
   final VoidCallback onReject;
   final Function(String targetStepId, String fileName)? onSendBack;
 
+  /// #1323: RetryWithRevision, mirroring desktop's `PausedStepViewModel.RetryAsync`. [fileName] is
+  /// this step's own current output, attached as the revision only when the operator opts in via the
+  /// retry dialog's checkbox (null otherwise) -- the phone has no local filesystem to author a fresh
+  /// revision file from, so unlike desktop's file picker, the only revision content the wire protocol
+  /// lets a phone attach is an artifact the daemon already has (the same constraint [onSendBack]'s
+  /// own supplementary artifact is already bound by).
+  final void Function(String? fileName, String? supplementaryWorker, String? supplementaryOutputName)? onRetry;
+
   const PausedStepCard({
     super.key,
     required this.client,
@@ -39,6 +56,7 @@ class PausedStepCard extends StatefulWidget {
     required this.onApprove,
     required this.onReject,
     this.onSendBack,
+    this.onRetry,
   });
 
   @override
@@ -66,11 +84,26 @@ class _PausedStepCardState extends State<PausedStepCard> {
     }
   }
 
+  Future<void> _showRetryDialog(BuildContext context, String? attachableFileName) async {
+    final result = await showDialog<_RetryResult>(
+      context: context,
+      builder: (context) => _RetryDialog(attachableFileName: attachableFileName),
+    );
+    if (result != null) {
+      widget.onRetry?.call(result.fileName, result.supplementaryWorker, result.supplementaryOutputName);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasOutput = widget.execution?.outputFiles.isNotEmpty ?? false;
-    final supersedeTarget = widget.definition?.supersedeTargets.firstOrNull;
+    final supersedeTargets = widget.definition?.supersedeTargets ?? const <String>[];
     final outputFile = widget.execution?.outputFiles.firstOrNull ?? 'draft.md';
+    // Unlike [outputFile] above (which falls back to a guessed name for send-back), the retry dialog
+    // must only offer to attach a real, already-produced output -- a guessed 'draft.md' would fail
+    // the daemon's ArtifactReference lookup the moment the operator opted in.
+    final ownOutputFile = widget.execution?.outputFiles.firstOrNull;
+    final kind = widget.definition?.pausePointKind ?? PausePointKind.readyForReview;
 
     final workerName = widget.definition?.worker ?? widget.step.stepId;
     final adapter = widget.workerAdapters[workerName];
@@ -118,21 +151,40 @@ class _PausedStepCardState extends State<PausedStepCard> {
                 ],
               ),
             const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (supersedeTarget != null && widget.onSendBack != null) ...[
-                  OutlinedButton(
-                    onPressed: widget.isPending ? null : () => widget.onSendBack!(supersedeTarget, outputFile),
-                    child: Text('Send back to $supersedeTarget'),
+            // Kind-derived per this class's own doc comment above (0015/0040, #1325). NeedsInput has
+            // no honest affordance to offer (#1334 tracks building one); ReadyForReview's resolution
+            // set: one Send back rung per declared supersede target (#1322 -- every declared target
+            // must be reachable, not just the first), Retry gated on the same PausedOutcome precondition
+            // the daemon enforces with an optional attached revision (#1323), Reject, Approve.
+            kind == PausePointKind.needsInput
+                ? Text(
+                    'This step is waiting on an answer to a question. The phone has no way to answer one yet.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  )
+                : Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final target in supersedeTargets)
+                        if (widget.onSendBack != null)
+                          OutlinedButton(
+                            onPressed: widget.isPending ? null : () => widget.onSendBack!(target, outputFile),
+                            child: Text('Send back to $target'),
+                          ),
+                      // The daemon's ExternalDecisionValidator rejects RetryWithRevision outright when
+                      // PausedOutcome is Succeeded (the ordinary review-and-approve case) -- offering the
+                      // button there would just 400. Gate on the same precondition so the button only
+                      // ever appears where it can succeed.
+                      if (widget.onRetry != null && widget.step.pausedOutcome != 'Succeeded')
+                        OutlinedButton(
+                          onPressed: widget.isPending ? null : () => _showRetryDialog(context, ownOutputFile),
+                          child: const Text('Retry…'),
+                        ),
+                      TextButton(onPressed: widget.isPending ? null : widget.onReject, child: const Text('Reject')),
+                      FilledButton(onPressed: widget.isPending ? null : widget.onApprove, child: const Text('Approve')),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                ],
-                TextButton(onPressed: widget.isPending ? null : widget.onReject, child: const Text('Reject')),
-                const SizedBox(width: 8),
-                FilledButton(onPressed: widget.isPending ? null : widget.onApprove, child: const Text('Approve')),
-              ],
-            ),
           ],
         ),
       ),
@@ -142,6 +194,97 @@ class _PausedStepCardState extends State<PausedStepCard> {
 
 extension FirstOrNull<T> on List<T> {
   T? get firstOrNull => isEmpty ? null : first;
+}
+
+class _RetryResult {
+  final String? fileName;
+  final String? supplementaryWorker;
+  final String? supplementaryOutputName;
+
+  const _RetryResult({this.fileName, this.supplementaryWorker, this.supplementaryOutputName});
+}
+
+/// #1323's revision dialog. The phone has no filesystem to author a fresh revision file from, unlike
+/// desktop's `PausedStepViewModel`, which points `RetryWithRevision` at an operator-chosen local file
+/// -- so the only revision content this dialog can attach is the paused step's own already-produced
+/// output, opted into via the checkbox, which the caller then sends as an `ArtifactReference` the
+/// same way [PausedStepCard.onSendBack]'s supplementary artifact already is. There is no free-text
+/// "write a correction" field: `/api/rooms/decide`'s `RevisionFilePath` names a path on the daemon's
+/// own filesystem, never content a remote client typed, and `ArtifactReference` only resolves an
+/// execution the daemon already has -- neither can carry fresh operator-authored text.
+class _RetryDialog extends StatefulWidget {
+  final String? attachableFileName;
+
+  const _RetryDialog({required this.attachableFileName});
+
+  @override
+  State<_RetryDialog> createState() => _RetryDialogState();
+}
+
+class _RetryDialogState extends State<_RetryDialog> {
+  bool _attach = false;
+  final _workerController = TextEditingController();
+  final _outputNameController = TextEditingController();
+
+  @override
+  void dispose() {
+    _workerController.dispose();
+    _outputNameController.dispose();
+    super.dispose();
+  }
+
+  // Mirrors desktop's PausedStepViewModel.CanRetry: the revision is optional, but once attached the
+  // worker/output-name pair SupplyCommand mints the supplementary execution under is not.
+  bool get _canSubmit =>
+      !_attach || (_workerController.text.trim().isNotEmpty && _outputNameController.text.trim().isNotEmpty);
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Retry with revision'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (widget.attachableFileName != null)
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text("Attach this step's output as the revision"),
+              value: _attach,
+              onChanged: (value) => setState(() => _attach = value ?? false),
+            ),
+          if (_attach) ...[
+            TextField(
+              controller: _workerController,
+              decoration: const InputDecoration(labelText: 'Supplementary worker'),
+              onChanged: (_) => setState(() {}),
+            ),
+            TextField(
+              controller: _outputNameController,
+              decoration: const InputDecoration(labelText: 'Supplementary output name'),
+              onChanged: (_) => setState(() {}),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: _canSubmit
+              ? () => Navigator.pop(
+                    context,
+                    _RetryResult(
+                      fileName: _attach ? widget.attachableFileName : null,
+                      supplementaryWorker: _attach ? _workerController.text.trim() : null,
+                      supplementaryOutputName: _attach ? _outputNameController.text.trim() : null,
+                    ),
+                  )
+              : null,
+          child: const Text('Retry'),
+        ),
+      ],
+    );
+  }
 }
 
 /// M22 review follow-up (issue #250): a real vendor glyph instead of a stock Material icon standing

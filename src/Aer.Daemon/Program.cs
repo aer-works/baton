@@ -963,19 +963,25 @@ namespace Aer.Daemon
                         return Results.Conflict("This room is running. Stop it before reassigning its orchestrator.");
                     }
 
-                    var currentMetadata =
-                        await InteractiveSessionMaterializer.LoadMetadataAsync(reassignMetadataPath).ConfigureAwait(false)
-                        ?? reassignMetadata;
+                    // #1319: folded through the guarded helper -- load, mutate, save all happen under
+                    // this room's metadata mutex, nested inside the turn lock already held above.
+                    // currentMetadata.Participants == null (a pre-#1305 room; targetParticipant above
+                    // would already have returned 400 for it via reassignMetadata, so this is only a
+                    // defensive no-op for a fresh load racing that unlikely further) leaves the file
+                    // untouched by returning it unchanged, matching the original guard's intent.
+                    await InteractiveSessionMaterializer.UpdateMetadataAsync(
+                        request.RoomDirectoryPath,
+                        currentMetadata =>
+                        {
+                            var updatedParticipants = currentMetadata.Participants?
+                                .Select(p => p with { IsOrchestrator = p.Id == targetWorkerId })
+                                .ToList();
 
-                    var updatedParticipants = currentMetadata.Participants?
-                        .Select(p => p with { IsOrchestrator = p.Id == targetWorkerId })
-                        .ToList();
-
-                    if (updatedParticipants != null)
-                    {
-                        var updatedMetadata = currentMetadata with { Participants = updatedParticipants };
-                        await InteractiveSessionMaterializer.SaveMetadataAsync(updatedMetadata, reassignMetadataPath).ConfigureAwait(false);
-                    }
+                            return updatedParticipants != null
+                                ? currentMetadata with { Participants = updatedParticipants }
+                                : currentMetadata;
+                        },
+                        fallback: reassignMetadata).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -2114,40 +2120,41 @@ namespace Aer.Daemon
                     // (/api/rooms/turn-host/clear-dormancy).
                     //
                     // #393/#285 (the #1179 review's blocking find): this is a metadata read-modify-write
-                    // like every real turn's, and SaveMetadataAsync is last-writer-wins by design -- so
-                    // it takes the SAME per-directory turn lock and re-reads metadata inside it, exactly
-                    // as ExecuteSessionTurnAsync does. Without this, a dormancy answer built from the
-                    // endpoint's pre-lock snapshot could land after an in-flight real turn's save and
-                    // silently erase that turn (reverting VendorSessionEstablished -- the #285 wedge).
+                    // like every real turn's -- so it takes the SAME per-directory turn lock and, via
+                    // UpdateMetadataAsync (#1319), re-reads metadata under the metadata mutex nested
+                    // inside it, exactly as ExecuteSessionTurnAsync does. Without this, a dormancy
+                    // answer built from the endpoint's pre-lock snapshot could land after an in-flight
+                    // real turn's save and silently erase that turn (reverting VendorSessionEstablished
+                    // -- the #285 wedge).
                     var dormancyTurnLock = SessionTurnLockFor(directoryPath);
                     await dormancyTurnLock.WaitAsync().ConfigureAwait(true);
                     try
                     {
-                        var currentMetadata =
-                            await InteractiveSessionMaterializer.LoadMetadataAsync(metadataPath).ConfigureAwait(true)
-                            ?? metadata;
+                        await InteractiveSessionMaterializer.UpdateMetadataAsync(
+                            directoryPath,
+                            currentMetadata =>
+                            {
+                                var dormancyTurn = new SessionTurn(
+                                    TurnIndex: currentMetadata.TurnCount + 1,
+                                    Vendor: "System",
+                                    HumanMessage: request.Message,
+                                    AssistantResponse: null,
+                                    ExecutedAt: DateTimeOffset.UtcNow,
+                                    NativeSessionResumed: false,
+                                    VendorHandoffSynthesized: false,
+                                    IsDormancyAnswer: true,
+                                    // Ruling 4: a product-initiated dispatch path, never addressed by a
+                                    // sender -- explicit, not the field's own default by coincidence.
+                                    TargetParticipantId: null);
 
-                        var dormancyTurn = new SessionTurn(
-                            TurnIndex: currentMetadata.TurnCount + 1,
-                            Vendor: "System",
-                            HumanMessage: request.Message,
-                            AssistantResponse: null,
-                            ExecutedAt: DateTimeOffset.UtcNow,
-                            NativeSessionResumed: false,
-                            VendorHandoffSynthesized: false,
-                            IsDormancyAnswer: true,
-                            // Ruling 4: a product-initiated dispatch path, never addressed by a
-                            // sender -- explicit, not the field's own default by coincidence.
-                            TargetParticipantId: null);
-
-                        var updatedMetadata = currentMetadata with
-                        {
-                            TurnCount = currentMetadata.TurnCount + 1,
-                            UpdatedAt = DateTimeOffset.UtcNow,
-                            Turns = new List<SessionTurn>(currentMetadata.Turns) { dormancyTurn },
-                        };
-
-                        await InteractiveSessionMaterializer.SaveMetadataAsync(updatedMetadata, metadataPath).ConfigureAwait(true);
+                                return currentMetadata with
+                                {
+                                    TurnCount = currentMetadata.TurnCount + 1,
+                                    UpdatedAt = DateTimeOffset.UtcNow,
+                                    Turns = new List<SessionTurn>(currentMetadata.Turns) { dormancyTurn },
+                                };
+                            },
+                            fallback: metadata).ConfigureAwait(true);
                     }
                     finally
                     {
@@ -2379,21 +2386,29 @@ namespace Aer.Daemon
                 }
 
                 var (directoryPath, metadata) = resolved.Value;
-                var freshVendorSessionId = string.Equals(metadata.CurrentAdapter, "claude", StringComparison.OrdinalIgnoreCase)
-                    ? Guid.NewGuid().ToString()
-                    : null;
 
-                var cleared = metadata with
-                {
-                    Turns = [],
-                    TurnCount = 0,
-                    CurrentVendorSessionId = freshVendorSessionId,
-                    VendorSessionEstablished = false,
-                    UpdatedAt = DateTimeOffset.UtcNow,
-                };
+                // #1319: folded through the guarded helper. This endpoint took no turn lock before
+                // and still doesn't -- that coordination gap with an in-flight turn is pre-existing
+                // and out of this refactor's scope -- but the read-modify-write itself is now safe
+                // against another guarded writer racing it, which it never was before.
+                var cleared = await InteractiveSessionMaterializer.UpdateMetadataAsync(
+                    directoryPath,
+                    current =>
+                    {
+                        var freshVendorSessionId = string.Equals(current.CurrentAdapter, "claude", StringComparison.OrdinalIgnoreCase)
+                            ? Guid.NewGuid().ToString()
+                            : null;
 
-                var metadataPath = Path.Combine(directoryPath, ".aer", AerPaths.RoomMetadataFileName);
-                await InteractiveSessionMaterializer.SaveMetadataAsync(cleared, metadataPath).ConfigureAwait(true);
+                        return current with
+                        {
+                            Turns = [],
+                            TurnCount = 0,
+                            CurrentVendorSessionId = freshVendorSessionId,
+                            VendorSessionEstablished = false,
+                            UpdatedAt = DateTimeOffset.UtcNow,
+                        };
+                    },
+                    fallback: metadata).ConfigureAwait(true);
 
                 return Results.Ok(cleared);
             });
@@ -3374,43 +3389,59 @@ namespace Aer.Daemon
                 ExhaustedUntil: exhaustedUntil,
                 TargetParticipantId: targetParticipantId);
 
-            var updatedTurns = new List<SessionTurn>(metadata.Turns) { turn };
             var updatedTurnCount = isCeilingReached ? 1 : newTurnIndex;
 
-            // #1305: a mid-room vendor/model swap updates the participant's properties while the
-            // name stays -- the property/identity split Participant's own doc comment defines.
-            // Without this the chip renders creation-time vendor/model forever while CurrentAdapter
-            // tracks the swap (second-reader finding). Null Participants (a pre-#1305 room) stays null.
-            var updatedParticipants = metadata.Participants;
-            if (updatedParticipants is { Count: > 0 })
-            {
-                updatedParticipants = new List<Participant>(updatedParticipants)
+            // #1319: folded through the guarded helper -- the mutate closure re-derives Turns/
+            // Participants/VendorSessionEstablished from the freshly-loaded `current` rather than the
+            // pre-dispatch `metadata` snapshot captured above. Under today's still-present room-wide
+            // turn lock (held for this whole method's duration, including the vendor dispatch above)
+            // nothing else can have written room.json between that snapshot and this save, so a fresh
+            // load returns identical content and this is behaviour-preserving. It is also the shape
+            // #1306's PR C needs once that lock is retired: this closure will then be racing a
+            // concurrent participant's own turn-completion write, and acting on a fresh load (not the
+            // stale pre-dispatch snapshot) is what keeps both turns' Turns-appends from clobbering one
+            // another. `metadata` is passed as the fallback for the pre-#1319 "current ?? metadata"
+            // edge case (an unreadable file on the fresh load).
+            await InteractiveSessionMaterializer.UpdateMetadataAsync(
+                directoryPath,
+                current =>
                 {
-                    [0] = updatedParticipants[0] with
+                    // #1305: a mid-room vendor/model swap updates the participant's properties while
+                    // the name stays -- the property/identity split Participant's own doc comment
+                    // defines. Without this the chip renders creation-time vendor/model forever while
+                    // CurrentAdapter tracks the swap (second-reader finding). Null Participants (a
+                    // pre-#1305 room) stays null.
+                    var updatedParticipants = current.Participants;
+                    if (updatedParticipants is { Count: > 0 })
                     {
-                        Vendor = targetAdapter,
-                        Model = requestModel ?? metadata.Model,
-                    },
-                };
-            }
+                        updatedParticipants = new List<Participant>(updatedParticipants)
+                        {
+                            [0] = updatedParticipants[0] with
+                            {
+                                Vendor = targetAdapter,
+                                Model = requestModel ?? current.Model,
+                            },
+                        };
+                    }
 
-            var updatedMetadata = metadata with
-            {
-                CurrentAdapter = targetAdapter,
-                CurrentVendorSessionId = vendorSessionId,
-                Model = requestModel ?? metadata.Model,
-                TurnCount = updatedTurnCount,
-                UpdatedAt = DateTimeOffset.UtcNow,
-                Turns = updatedTurns,
-                Participants = updatedParticipants,
-                // #285: a handoff mints a brand-new vendorSessionId, so prior establishment doesn't
-                // carry over -- only this turn's own outcome counts for it. Otherwise, once
-                // established stays established even if a later turn fails for an unrelated reason
-                // (rate limit, transient network blip) -- the id itself is still real and resumable.
-                VendorSessionEstablished = handoff ? establishedThisTurn : (metadata.VendorSessionEstablished || establishedThisTurn)
-            };
-
-            await InteractiveSessionMaterializer.SaveMetadataAsync(updatedMetadata, Path.Combine(directoryPath, ".aer", AerPaths.RoomMetadataFileName)).ConfigureAwait(false);
+                    return current with
+                    {
+                        CurrentAdapter = targetAdapter,
+                        CurrentVendorSessionId = vendorSessionId,
+                        Model = requestModel ?? current.Model,
+                        TurnCount = updatedTurnCount,
+                        UpdatedAt = DateTimeOffset.UtcNow,
+                        Turns = new List<SessionTurn>(current.Turns) { turn },
+                        Participants = updatedParticipants,
+                        // #285: a handoff mints a brand-new vendorSessionId, so prior establishment
+                        // doesn't carry over -- only this turn's own outcome counts for it. Otherwise,
+                        // once established stays established even if a later turn fails for an
+                        // unrelated reason (rate limit, transient network blip) -- the id itself is
+                        // still real and resumable.
+                        VendorSessionEstablished = handoff ? establishedThisTurn : (current.VendorSessionEstablished || establishedThisTurn)
+                    };
+                },
+                fallback: metadata).ConfigureAwait(false);
         }
 
         /// <summary>

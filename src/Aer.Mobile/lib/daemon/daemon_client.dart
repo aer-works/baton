@@ -466,6 +466,11 @@ class DaemonClient {
   /// decisionType is one of "Resume" | "Reject" | "Supersede" | "RetryWithRevision".
   /// Supports optional [artifactReference] ({'executionId': ..., 'fileName': ...}) for server-side
   /// resolution when the client has no local filesystem access.
+  ///
+  /// [supplementaryWorker]/[supplementaryOutputName] (#1323) name the worker role and output
+  /// `SupplyCommand` mints the supplementary execution under -- required together whenever
+  /// [revisionFilePath] or [artifactReference] rides the decision, optional otherwise. Wire twins of
+  /// `DecideRoomRequest.SupplementaryWorker`/`.SupplementaryOutputName` (`Aer.Ui.Core/RoomClient.cs`).
   Future<void> decide({
     required String directoryPath,
     required String stepId,
@@ -474,6 +479,8 @@ class DaemonClient {
     String? targetStepId,
     String? revisionFilePath,
     Map<String, String>? artifactReference,
+    String? supplementaryWorker,
+    String? supplementaryOutputName,
   }) async {
     final payload = <String, dynamic>{
       'directoryPath': directoryPath,
@@ -486,6 +493,10 @@ class DaemonClient {
       if (revisionFilePath != null) 'revisionFilePath': revisionFilePath,
       // ignore: use_null_aware_elements
       if (artifactReference != null) 'artifactReference': artifactReference,
+      // ignore: use_null_aware_elements
+      if (supplementaryWorker != null) 'supplementaryWorker': supplementaryWorker,
+      // ignore: use_null_aware_elements
+      if (supplementaryOutputName != null) 'supplementaryOutputName': supplementaryOutputName,
     };
     final response = await _post(
       Uri.http(host, '/api/rooms/decide'),
