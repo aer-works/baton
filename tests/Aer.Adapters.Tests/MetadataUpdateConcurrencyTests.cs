@@ -52,7 +52,7 @@ public class MetadataUpdateConcurrencyTests
                         {
                             // A tiny yield inside the guarded section: without the mutex this widens
                             // the window for the second call's load to race the first call's save.
-                            Thread.Sleep(1);
+                            Thread.Sleep(1); // wait-ok: widens a deliberate race window in a concurrency test, not a poll/settle wait
                             var turn = new SessionTurn(
                                 TurnIndex: current.TurnCount + 1,
                                 Vendor: "claude",
