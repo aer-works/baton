@@ -148,7 +148,7 @@ public class MainWindowRoomFilesTests
             var deadline = DateTime.UtcNow.AddSeconds(5);
             while (string.IsNullOrEmpty(previewBox.Text) && DateTime.UtcNow < deadline)
             {
-                await Task.Delay(10, TestContext.Current.CancellationToken);
+                await Task.Delay(10, TestContext.Current.CancellationToken); // wait-ok: poll interval for the fire-and-forget preview read; the 5s deadline above is the ceiling
             }
 
             Assert.Contains("the-plan", previewBox.Text);
