@@ -237,7 +237,7 @@ public static class DispatchCommand
 
         if (options.OutputPath is not null)
         {
-            ValidateOutputOverride(options.OutputPath, role);
+            ValidateOutputOverride(options, role);
         }
 
         var spec = await File.ReadAllTextAsync(options.SpecFilePath, cancellationToken).ConfigureAwait(false);
@@ -262,8 +262,9 @@ public static class DispatchCommand
     /// (<see cref="Aer.Flow.Artifacts.ArtifactManager.PromptFileName"/>), or another output the same
     /// role already declares.
     /// </summary>
-    private static void ValidateOutputOverride(string outputPath, WorkerRole role)
+    private static void ValidateOutputOverride(DispatchOptions options, WorkerRole role)
     {
+        var outputPath = options.OutputPath!;
         var customName = Path.GetFileName(outputPath);
         if (string.IsNullOrEmpty(customName))
         {
@@ -273,11 +274,16 @@ public static class DispatchCommand
                 "pass a file path instead of a directory, e.g. --output report.md");
         }
 
+        // #1382 F6: "choose a different file name for --output" restated the message with no
+        // invocation in it. The rest of the corrected command is already in scope here -- only the
+        // replacement file name is genuinely unknowable, so that alone stays a placeholder.
+        var retryInvocation = $"aer dispatch {options.Name} --spec {options.SpecFilePath} --output <different-file-name>";
+
         if (ReservedOutputNames.IsReserved(customName))
         {
             throw new CliArgumentException(
                 $"'--output {customName}' is invalid: {ReservedOutputNames.RejectionClause}.",
-                "choose a different file name for --output");
+                retryInvocation);
         }
 
         if (string.Equals(customName, Aer.Flow.Artifacts.ArtifactManager.PromptFileName, StringComparison.Ordinal))
@@ -286,14 +292,14 @@ public static class DispatchCommand
                 $"'--output {customName}' collides with '{Aer.Flow.Artifacts.ArtifactManager.PromptFileName}', "
                 + "the durable prompt capture the engine writes into every execution's own output directory. "
                 + "Choose a different name.",
-                "choose a different file name for --output");
+                retryInvocation);
         }
 
         if (role.Outputs.Skip(1).Any(o => string.Equals(o.Name, customName, StringComparison.Ordinal)))
         {
             throw new CliArgumentException(
                 $"'--output {customName}' collides with role '{role.Id}''s own declared output of the same name.",
-                "choose a different file name for --output");
+                retryInvocation);
         }
     }
 

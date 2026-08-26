@@ -223,7 +223,7 @@ public class TerminalSentinelEndToEndTests
             // not just the diagnosis -- an agent following invoking-baton.md's advice to watch
             // terminal.json instead of scraping stderr must still see it.
             Assert.NotNull(view.Try);
-            Assert.Contains("registered adapter", view.Try);
+            Assert.Contains("\"Adapter\"", view.Try, StringComparison.Ordinal);
         }
         finally
         {
