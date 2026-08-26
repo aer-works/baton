@@ -8,12 +8,13 @@ namespace Aer.Cli;
 /// </summary>
 public static class StatusOptionsParser
 {
-    public const string Usage = "Usage: aer status <room-dir> [--follow]";
+    public const string Usage = "Usage: aer status <room-dir> [--follow] [--json]";
 
     public static StatusOptions Parse(IReadOnlyList<string> args)
     {
         string? roomDirectoryPath = null;
         var follow = false;
+        var json = false;
 
         var i = 0;
         while (i < args.Count)
@@ -23,6 +24,10 @@ public static class StatusOptionsParser
             {
                 case "--follow":
                     follow = true;
+                    i++;
+                    break;
+                case "--json":
+                    json = true;
                     i++;
                     break;
                 default:
@@ -47,6 +52,13 @@ public static class StatusOptionsParser
             throw new CliArgumentException($"Missing required <room-dir> argument. {Usage}");
         }
 
-        return new StatusOptions(RoomDirectoryPath.Resolve(roomDirectoryPath), follow);
+        if (follow && json)
+        {
+            throw new CliArgumentException(
+                $"'--follow' and '--json' are incompatible: --json prints exactly one object and returns, --follow " +
+                $"never stops printing on its own. {Usage}");
+        }
+
+        return new StatusOptions(RoomDirectoryPath.Resolve(roomDirectoryPath), follow, json);
     }
 }

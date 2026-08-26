@@ -69,7 +69,7 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine(
         "       aer supply <room-dir> --worker <role> --output <name> --file <source-path> " +
         "--bindings <bindings-file> [--workflow-id <id>]");
-    Console.Error.WriteLine("       aer status <room-dir> [--follow]");
+    Console.Error.WriteLine($"       {StatusOptionsParser.Usage[7..]}");
     Console.Error.WriteLine("       aer templates [--json]");
     Console.Error.WriteLine("       aer --version");
     Console.Error.WriteLine();
@@ -89,6 +89,13 @@ Console.CancelKeyPress += (_, eventArgs) =>
     eventArgs.Cancel = true;
     hostStopSource.Cancel();
 };
+
+// #1356: the room directory for whichever mutating command is about to run, captured as soon as
+// its options are parsed — declared here, outside the try, so the typed-exception catch below can
+// still see it and record a pre-ledger failure sentinel for `run`/`dispatch` even though the
+// AerFlowException that reaches it was thrown from deep inside RunCommand.ExecuteAsync, well past
+// the switch's own scope (a variable declared inside `try` is not visible in its `catch`).
+string? roomDirectoryPathForFailureSentinel = null;
 
 try
 {
@@ -114,6 +121,7 @@ try
         case "run":
             {
                 var options = RunOptionsParser.Parse(args[1..]);
+                roomDirectoryPathForFailureSentinel = options.RoomDirectoryPath;
                 result = await RunCommand.ExecuteAsync(options, WorkerAdapterRegistry.Default, cancellationToken: hostStopSource.Token)
                     .ConfigureAwait(false);
                 break;
@@ -122,6 +130,7 @@ try
         case "dispatch":
             {
                 var options = DispatchOptionsParser.Parse(args[1..]);
+                roomDirectoryPathForFailureSentinel = options.RoomDirectoryPath;
                 result = await DispatchCommand.ExecuteAsync(options, WorkerAdapterRegistry.Default, hostStopSource.Token)
                     .ConfigureAwait(false);
                 break;
@@ -165,6 +174,25 @@ try
             + (teardown.Detail is { } detail ? $" — {detail}" : string.Empty));
     }
 
+    // #1356 point 4: written on reaching Terminal for every mutating command, not just `run` — a
+    // workflow that pauses and is later carried to Terminal by a separate `aer decide` needs this
+    // exactly as much as a straight-through `aer run`. Last, deliberately: every output an outcome
+    // could reference is already on disk by the time the pump/decision call above returned.
+    if (result.State.Status == WorkflowStatus.Terminal && result.RoomDirectoryPath is { } terminalRoomDirectoryPath)
+    {
+        var view = WorkflowStatusProjector.Project(result.State, result.Snapshot, terminalRoomDirectoryPath);
+        // CancellationToken.None: a Ctrl-C that already carried the workflow to Terminal must not
+        // then lose the sentinel write for the terminal state it just reached.
+        await TerminalSentinelWriter.WriteAsync(terminalRoomDirectoryPath, view, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    if (args[0] is "run" or "dispatch")
+    {
+        return (int)RunExitCodeResolver.Resolve(result);
+    }
+
+    // Unchanged for cancel/decide/supply — #1356 scoped its exit-code table to run/dispatch only;
+    // widening it to the rest was not asked for and is not done here.
     return result.State.Status == WorkflowStatus.Terminal && result.State.Steps.All(step => step.Status == StepStatus.Succeeded)
         ? 0
         : 1;
@@ -175,5 +203,17 @@ catch (AerFlowException ex)
     // workflow/bindings/argument failure surfaces as one of these further up the call stack, so
     // this is the one place that turns it into a clean CLI failure instead of a raw stack trace.
     Console.Error.WriteLine(ex.Message);
+
+    // #1356 points 2+3: for `run`/`dispatch` specifically, this is the provisioning/validation
+    // failure class — distinct from a worker that actually ran and failed — and the room (which
+    // Directory.CreateDirectory already created inside RunCommand/DispatchCommand by the time
+    // anything here can throw) must be left queryable rather than eternally "Running/no ledger yet".
+    if (args[0] is "run" or "dispatch" && roomDirectoryPathForFailureSentinel is not null)
+    {
+        await TerminalSentinelWriter.WriteValidationRefusedAsync(
+            roomDirectoryPathForFailureSentinel, ex.Message, CancellationToken.None).ConfigureAwait(false);
+        return (int)RunExitCode.ValidationRefused;
+    }
+
     return 1;
 }

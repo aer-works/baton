@@ -38,10 +38,22 @@ namespace Aer.Cli;
 /// caller that may set it is the daemon's own interactive session turn, which reaches the pump
 /// in-process, because attendedness is not something a command line or an HTTP body can attest to.
 /// </param>
+/// <param name="Wait">
+/// #1356: the pump (<c>MutationInterface.StartWorkflowAsync</c>) already blocks in-process until it
+/// returns <see cref="Aer.Flow.Domain.WorkflowStatus.Terminal"/> or <see cref="Aer.Flow.Domain.WorkflowStatus.Paused"/> —
+/// this flag only changes what happens on the latter. Without it, a paused workflow returns
+/// immediately (today's behaviour: nothing further to dispatch until an external <c>aer decide</c>
+/// resolves it). With it, <see cref="RunCommand"/> keeps polling the room's own journal — the same
+/// technique <c>aer status --follow</c> already uses — until a *different* process's decision carries
+/// the workflow to Terminal, or the caller cancels. It does not reconnect to, or detect, a crashed
+/// engine process from an earlier <c>aer run</c> invocation against the same room — that remains an
+/// open gap (see the PR this flag shipped in).
+/// </param>
 public sealed record RunOptions(
     string? WorkflowFilePath,
     string BindingsFilePath,
     string RoomDirectoryPath,
     string? WorkflowId = null,
     bool EchoWorker = false,
-    bool SettleOnVendorExhaustion = false);
+    bool SettleOnVendorExhaustion = false,
+    bool Wait = false);

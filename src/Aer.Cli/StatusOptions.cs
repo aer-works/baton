@@ -15,4 +15,10 @@ namespace Aer.Cli;
 /// When set, keep polling <c>flow.jsonl</c> for new events after printing the current state,
 /// printing each as it lands, until the workflow reaches a terminal state or the caller cancels.
 /// </param>
-public sealed record StatusOptions(string RoomDirectoryPath, bool Follow = false);
+/// <param name="Json">
+/// #1356: emit one <see cref="WorkflowStatusView"/> JSON object to stdout instead of the human
+/// rendering — nothing else on stdout in this mode. Incompatible with <paramref name="Follow"/>
+/// (refused by the parser): a follow loop's whole point is a running commentary, which is exactly
+/// the "parseable, single object" contract this flag promises.
+/// </param>
+public sealed record StatusOptions(string RoomDirectoryPath, bool Follow = false, bool Json = false);
