@@ -21,6 +21,19 @@ public static class TerminalSentinelWriter
     /// after every output an outcome could reference already exists on disk — so a watcher that wakes
     /// on this file's appearance never reads a room mid-write (#1356 point 4).
     /// </summary>
+    /// <remarks>
+    /// #1374 F2: serializes to a <c>.tmp</c> sibling then <see cref="File.Move(string, string, bool)"/>s
+    /// it into place, rather than truncating <paramref name="roomDirectoryPath"/>'s
+    /// <see cref="TerminalSentinelFileName"/> directly. <c>WriteIndented</c> makes the payload
+    /// multi-line, so a direct truncate-then-write leaves a real window in which a concurrent reader
+    /// (the watcher this file exists for) observes an empty or partial file -- made concrete by
+    /// <c>--wait</c>, where the waiting <c>aer run</c> and a separate <c>aer decide</c> can both reach
+    /// this call for the same room within one poll interval. A same-directory move is atomic-enough
+    /// on both platforms this ships on: a reader ever sees either the old complete file or the new one,
+    /// never a torn write. The temp name carries a per-call GUID (not a fixed <c>.tmp</c> suffix) so
+    /// that same double-writer case can't have the two processes torn-write each other's temp file
+    /// before either reaches its own rename.
+    /// </remarks>
     public static async Task WriteAsync(string roomDirectoryPath, WorkflowStatusView view, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
@@ -28,8 +41,10 @@ public static class TerminalSentinelWriter
 
         Directory.CreateDirectory(roomDirectoryPath);
         var path = Path.Combine(roomDirectoryPath, TerminalSentinelFileName);
+        var tempPath = Path.Combine(roomDirectoryPath, $"{TerminalSentinelFileName}.{Guid.NewGuid():N}.tmp");
         var json = JsonSerializer.Serialize(view, JsonOptions);
-        await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(false);
+        await File.WriteAllTextAsync(tempPath, json, cancellationToken).ConfigureAwait(false);
+        File.Move(tempPath, path, overwrite: true);
     }
 
     /// <summary>
@@ -46,13 +61,17 @@ public static class TerminalSentinelWriter
         return WriteAsync(roomDirectoryPath, view, cancellationToken);
     }
 
-    /// <summary>Deletes a stale sentinel from a prior terminal attempt, if any, before a fresh dispatch begins.</summary>
+    /// <summary>
+    /// Deletes a stale sentinel from a prior pre-ledger failure, if any, before a fresh dispatch
+    /// begins. Callers must only invoke this once they have confirmed the room is not already
+    /// Terminal (#1374 F1) — see <c>RunCommand</c>'s own call site for why.
+    /// </summary>
     /// <remarks>
-    /// Without this, retrying a room that previously failed pre-ledger (or resuming one that was
-    /// already terminal) leaves the old <c>terminal.json</c> in place for the whole duration of the
-    /// new, genuinely in-progress attempt — exactly the false "already done" signal a file-watcher
-    /// (this file's whole reason to exist) must never see. Best-effort: <see cref="File.Delete"/> is
-    /// already a silent no-op when the file is absent.
+    /// Without this, retrying a room that previously failed pre-ledger leaves the old
+    /// <c>terminal.json</c> in place for the whole duration of the new, genuinely in-progress
+    /// attempt — exactly the false "already done" signal a file-watcher (this file's whole reason to
+    /// exist) must never see. Best-effort: <see cref="File.Delete"/> is already a silent no-op when
+    /// the file is absent.
     /// </remarks>
     public static void DeleteStaleSentinel(string roomDirectoryPath)
     {
@@ -61,7 +80,14 @@ public static class TerminalSentinelWriter
         File.Delete(path);
     }
 
-    /// <summary>Reads a room's terminal sentinel, or <c>null</c> when the room has not reached one yet.</summary>
+    /// <summary>
+    /// Reads a room's terminal sentinel, or <c>null</c> when the room has not reached one yet OR its
+    /// <c>terminal.json</c> is present but not valid JSON matching the shape (#1374 F2: a torn write
+    /// caught mid-move, or a hand-edited/corrupted file). Either way this is a queryable "no answer
+    /// yet", not a caller-visible crash — a malformed sentinel on a pre-ledger room has no ledger to
+    /// fall back to, so letting <see cref="JsonException"/> escape here would make that room
+    /// permanently unqueryable rather than just not-yet-terminal.
+    /// </summary>
     public static async Task<WorkflowStatusView?> TryReadAsync(string roomDirectoryPath, CancellationToken cancellationToken)
     {
         var path = Path.Combine(roomDirectoryPath, TerminalSentinelFileName);
@@ -70,8 +96,15 @@ public static class TerminalSentinelWriter
             return null;
         }
 
-        await using var stream = File.OpenRead(path);
-        return await JsonSerializer.DeserializeAsync<WorkflowStatusView>(stream, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            await using var stream = File.OpenRead(path);
+            return await JsonSerializer.DeserializeAsync<WorkflowStatusView>(stream, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }

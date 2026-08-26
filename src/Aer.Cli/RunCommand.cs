@@ -112,11 +112,21 @@ public static class RunCommand
         var workflowId = new WorkflowId(options.WorkflowId ?? snapshot.WorkflowTemplateId.Value);
 
         // #1356: invalidate a stale sentinel from a PRIOR terminal attempt against this same room
-        // (a pre-ledger failure now being retried with corrected bindings, or a resumed
-        // already-terminal room) before this attempt's own pump can run for any length of time.
-        // Left in place, it would read as "already done" to a file-watcher for the whole duration of
-        // a genuinely fresh run. Best-effort no-op when there was nothing to invalidate.
-        TerminalSentinelWriter.DeleteStaleSentinel(options.RoomDirectoryPath);
+        // (a pre-ledger failure now being retried with corrected bindings) before this attempt's
+        // own pump can run for any length of time. Left in place, it would read as "already done"
+        // to a file-watcher for the whole duration of a genuinely fresh run.
+        //
+        // #1374 F1: skipped when the room's OWN ledger already says Terminal. Deleting a still-valid
+        // terminal record before knowing this attempt will produce a new one means a Ctrl-C (or any
+        // interruption) landing right after the delete leaves a genuinely-Terminal room with no
+        // sentinel at all -- "absence means not terminal yet" (spec/aer-room-spec-v1.0.md) would then
+        // be false. A room that is not yet Terminal never has a sentinel to lose, so the probe costs
+        // nothing there and the delete still runs.
+        var priorProbe = await WorkflowTerminalProbe.ProbeAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
+        if (!priorProbe.IsTerminal)
+        {
+            TerminalSentinelWriter.DeleteStaleSentinel(options.RoomDirectoryPath);
+        }
 
         FlowState state;
         {

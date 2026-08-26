@@ -382,9 +382,11 @@ public static class StatusCommand
     /// <summary>
     /// Renders a room whose only queryable record is its terminal sentinel (no <c>flow.jsonl</c> —
     /// see the pre-ledger branch in <see cref="ExecuteAsync"/>). Mirrors <see cref="PrintState"/>'s
-    /// first line in human mode; in <c>--json</c> mode re-serializes the sentinel's own view rather
-    /// than trusting its on-disk bytes verbatim, so a hand-edited or future-shaped file still comes
-    /// out as this build's exact <see cref="WorkflowStatusView"/> shape.
+    /// first line in human mode; in <c>--json</c> mode re-serializes the already-parsed
+    /// <paramref name="sentinel"/> rather than trusting its on-disk bytes verbatim. Only ever called
+    /// with a sentinel <see cref="TerminalSentinelWriter.TryReadAsync"/> already parsed successfully —
+    /// a malformed <c>terminal.json</c> comes back <c>null</c> from that call and is handled by the
+    /// caller before this method is reached, not passed in here.
     /// </summary>
     private static void PrintSentinel(TextWriter output, bool json, WorkflowStatusView sentinel)
     {

@@ -197,6 +197,17 @@ try
         ? 0
         : 1;
 }
+catch (Exception ex) when (ex is Aer.Flow.Concurrency.WorkflowLockedException or Aer.Flow.Store.FlowJournalHeldException)
+{
+    // #1374 F1: this room is held by another Flow instance -- most often a live 'aer run' pump on
+    // a perfectly healthy room, sometimes a background component's brief lock. Neither is a
+    // provisioning/validation refusal, so this must NOT fall into the catch below: writing a
+    // Failed sentinel here would tell a file-watcher a running room just died, and it would
+    // contradict 'aer status --json' reading the very same room's ledger as Running at the same
+    // moment. The room is left exactly as it was; the exit code alone says "retry later".
+    Console.Error.WriteLine(ex.Message);
+    return args[0] is "run" or "dispatch" ? (int)RunExitCode.RoomHeld : 1;
+}
 catch (AerFlowException ex)
 {
     // The typed-exception boundary CLAUDE.md's error-handling rules require: every malformed
@@ -208,10 +219,21 @@ catch (AerFlowException ex)
     // failure class — distinct from a worker that actually ran and failed — and the room (which
     // Directory.CreateDirectory already created inside RunCommand/DispatchCommand by the time
     // anything here can throw) must be left queryable rather than eternally "Running/no ledger yet".
+    //
+    // #1374 F1: only when the room is genuinely pre-ledger. A room whose flow.jsonl already
+    // exists has been dispatched at least once before -- its ledger (or a still-live pump) is the
+    // room's real terminal record, and this invocation's own failure (e.g. a re-run with a
+    // typo'd --bindings against an already-completed room) must not overwrite it with a
+    // fabricated Failed/no-outputs sentinel. The exit code still reports the refusal; only the
+    // sentinel write is conditional.
     if (args[0] is "run" or "dispatch" && roomDirectoryPathForFailureSentinel is not null)
     {
-        await TerminalSentinelWriter.WriteValidationRefusedAsync(
-            roomDirectoryPathForFailureSentinel, ex.Message, CancellationToken.None).ConfigureAwait(false);
+        if (!File.Exists(Path.Combine(roomDirectoryPathForFailureSentinel, "flow.jsonl")))
+        {
+            await TerminalSentinelWriter.WriteValidationRefusedAsync(
+                roomDirectoryPathForFailureSentinel, ex.Message, CancellationToken.None).ConfigureAwait(false);
+        }
+
         return (int)RunExitCode.ValidationRefused;
     }
 

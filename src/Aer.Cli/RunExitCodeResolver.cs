@@ -16,6 +16,17 @@ public enum RunExitCode
     ValidationRefused = 2,
     Timeout = 3,
     Cancelled = 4,
+
+    /// <summary>
+    /// #1374 F1: <see cref="Aer.Flow.Concurrency.WorkflowLockedException"/> or
+    /// <see cref="Aer.Flow.Store.FlowJournalHeldException"/> reached <c>Program</c>'s catch —
+    /// another Flow instance already holds this room. Distinct from <see cref="ValidationRefused"/>
+    /// on purpose: this room may be perfectly healthy (a live pump, or a background sweep's brief
+    /// lock), so nothing here is refused and no terminal sentinel is written. The caller's answer is
+    /// "retry later", not "this room is done" — check <c>aer status</c> or the room's own ledger
+    /// rather than treating this exit code as a terminal outcome.
+    /// </summary>
+    RoomHeld = 5,
 }
 
 /// <summary>
