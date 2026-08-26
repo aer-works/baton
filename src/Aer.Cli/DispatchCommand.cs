@@ -45,12 +45,40 @@ public static class DispatchCommand
         var workspace = options.WorkspaceDirectory ?? workspaceDirectory ?? Directory.GetCurrentDirectory();
         var (definition, bindings) = await MaterializeAsync(options, workspace, cancellationToken).ConfigureAwait(false);
 
+        // R1 (#1354/#1380): disclose the consequence up front, before the run starts, whenever
+        // RoleDispatch.ToBinding declared a fresh worktree for an audited role — the worker then never
+        // sees uncommitted or staged changes in `workspace`, only what HEAD already had (finding 5).
+        string? workspaceFact = null;
+        if (bindings.Values.Any(b => b.Worktree is not null))
+        {
+            var headSha = await WorkspaceHead.CaptureAsync(workspace, cancellationToken).ConfigureAwait(false);
+            var shortSha = headSha.Length > 8 ? headSha[..8] : headSha;
+            workspaceFact = $"Workspace: worktree of {workspace} at HEAD ({shortSha}) — uncommitted changes are not visible to the worker";
+        }
+
         Directory.CreateDirectory(options.RoomDirectoryPath);
 
         var primaryOutputName = definition.Steps.FirstOrDefault()?.Outputs.FirstOrDefault() ?? "output";
-        var outputPathToReport = options.OutputPath ?? Path.Combine(options.RoomDirectoryPath, "artifacts", primaryOutputName);
         Console.Out.WriteLine($"Room directory: {options.RoomDirectoryPath}");
-        Console.Out.WriteLine($"Output path: {outputPathToReport}");
+        if (workspaceFact is not null)
+        {
+            Console.Out.WriteLine(workspaceFact);
+        }
+
+        // R4 (#1354/#1380): the execution-scoped artifact path isn't known until dispatch actually runs,
+        // so without --output the only truthful thing to print beforehand is the artifacts directory
+        // itself, labeled as a directory — not a fabricated per-execution file path that will not exist
+        // (finding 4).
+        if (options.OutputPath is not null)
+        {
+            Console.Out.WriteLine($"Output path: {options.OutputPath}");
+        }
+        else
+        {
+            var artifactsDirectory = Path.Combine(options.RoomDirectoryPath, Aer.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName);
+            Console.Out.WriteLine($"Artifacts directory: {artifactsDirectory} (each execution's outputs land in its own subdirectory under it)");
+        }
+
         Console.Out.WriteLine($"Completion signal: process exit code or {Path.Combine(options.RoomDirectoryPath, TerminalSentinelWriter.TerminalSentinelFileName)}");
 
         var workflowFilePath = Path.Combine(options.RoomDirectoryPath, WorkflowFileName);
@@ -63,24 +91,54 @@ public static class DispatchCommand
 
         if (options.OutputPath is not null && result.State.Status == WorkflowStatus.Terminal)
         {
-            var step = result.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Succeeded);
-            if (step is not null && step.LatestExecutionId is { } execId)
-            {
-                var srcPath = Path.Combine(options.RoomDirectoryPath, Aer.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName, $"execution_{execId}", primaryOutputName);
-                if (File.Exists(srcPath))
-                {
-                    var destPath = Path.GetFullPath(options.OutputPath);
-                    var destDir = Path.GetDirectoryName(destPath);
-                    if (!string.IsNullOrEmpty(destDir))
-                    {
-                        Directory.CreateDirectory(destDir);
-                    }
-                    File.Copy(srcPath, destPath, overwrite: true);
-                }
-            }
+            CopyPrimaryOutputToOverride(options, result, primaryOutputName);
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// R3 (#1354/#1380, finding 3): this copy must never be the thing that kills the process before
+    /// <c>Program</c> writes <c>terminal.json</c> (#1374's completion contract) — an existing-directory
+    /// destination, a read-only target, or a file another process still holds open all throw
+    /// <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/>, neither of which derives
+    /// from <see cref="AerFlowException"/>, so neither of <c>Program</c>'s typed catches would have
+    /// handled it. Report on stderr and return, letting the normal exit path run — the workflow has
+    /// already reached Terminal and its declared output already exists at <c>srcPath</c> regardless of
+    /// whether this copy succeeds.
+    /// </summary>
+    private static void CopyPrimaryOutputToOverride(DispatchOptions options, CommandResult result, string primaryOutputName)
+    {
+        var step = result.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Succeeded);
+        if (step is null || step.LatestExecutionId is not { } execId)
+        {
+            return;
+        }
+
+        var srcPath = Path.Combine(
+            options.RoomDirectoryPath, Aer.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName, $"execution_{execId}", primaryOutputName);
+        if (!File.Exists(srcPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var destPath = Path.GetFullPath(options.OutputPath!);
+            var destDir = Path.GetDirectoryName(destPath);
+            if (!string.IsNullOrEmpty(destDir))
+            {
+                Directory.CreateDirectory(destDir);
+            }
+
+            File.Copy(srcPath, destPath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine(
+                $"Could not copy the declared output to '{options.OutputPath}': {ex.Message}. "
+                + $"The output still exists at '{srcPath}'.");
+        }
     }
 
     private static async Task<(WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings)>
@@ -138,6 +196,17 @@ public static class DispatchCommand
                 + "--spec does not apply. Pass --spec only when dispatching a role.");
         }
 
+        // R5 (#1354/#1380, finding 7): a template's steps each declare their own output — there is no
+        // one "primary output" for --output to rename, and the prior behaviour renamed whichever step
+        // happened to be first regardless of what kind of step that was (a capture step, say), silently.
+        // Refuse up front, the same way --spec already is above.
+        if (options.OutputPath is not null)
+        {
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — its phases each declare their own outputs, so "
+                + "--output does not apply. Pass --output only when dispatching a role.");
+        }
+
         var template = WorkflowTemplateCatalog.For(options.Name);
         // #1083: hand every phase the workspace too, so a role run as a template phase can read the repo
         // exactly as a directly-dispatched role now can.
@@ -162,6 +231,12 @@ public static class DispatchCommand
         }
 
         var role = WorkerRoleCatalog.For(options.Name);
+
+        if (options.OutputPath is not null)
+        {
+            ValidateOutputOverride(options.OutputPath, role);
+        }
+
         var spec = await File.ReadAllTextAsync(options.SpecFilePath, cancellationToken).ConfigureAwait(false);
 
         // #1083: pin the workspace onto the binding so the worker can actually read the project it was
@@ -170,6 +245,48 @@ public static class DispatchCommand
         return RoleDispatch.Materialize(
             role, spec, options.Adapter, workingDirectory: workspaceDirectory,
             modelOverride: options.Model, effortOverride: options.Effort, outputOverride: options.OutputPath);
+    }
+
+    /// <summary>
+    /// R6 (#1354/#1380, finding 8): validated before anything is printed or written — the
+    /// materialization that calls this runs before the room directory is even created (finding 6's
+    /// three checks). <see cref="Path.GetFileName"/> on a trailing-separator path (<c>--output
+    /// reports/</c>) returns an empty string, which would otherwise declare an anonymous
+    /// <see cref="ProducedOutput"/> that pays for a full run before failing "contract not satisfied"
+    /// with nothing naming the cause. The other two checks catch a rename that collides with something
+    /// already writing to the same execution output directory: the engine's own reserved namespace
+    /// (<see cref="ReservedOutputNames"/>), its durable prompt capture
+    /// (<see cref="Aer.Flow.Artifacts.ArtifactManager.PromptFileName"/>), or another output the same
+    /// role already declares.
+    /// </summary>
+    private static void ValidateOutputOverride(string outputPath, WorkerRole role)
+    {
+        var customName = Path.GetFileName(outputPath);
+        if (string.IsNullOrEmpty(customName))
+        {
+            throw new CliArgumentException(
+                $"'--output {outputPath}' names no file — a path ending in a directory separator has no "
+                + "filename. Pass a file path, e.g. --output report.md.");
+        }
+
+        if (ReservedOutputNames.IsReserved(customName))
+        {
+            throw new CliArgumentException($"'--output {customName}' is invalid: {ReservedOutputNames.RejectionClause}.");
+        }
+
+        if (string.Equals(customName, Aer.Flow.Artifacts.ArtifactManager.PromptFileName, StringComparison.Ordinal))
+        {
+            throw new CliArgumentException(
+                $"'--output {customName}' collides with '{Aer.Flow.Artifacts.ArtifactManager.PromptFileName}', "
+                + "the durable prompt capture the engine writes into every execution's own output directory. "
+                + "Choose a different name.");
+        }
+
+        if (role.Outputs.Skip(1).Any(o => string.Equals(o.Name, customName, StringComparison.Ordinal)))
+        {
+            throw new CliArgumentException(
+                $"'--output {customName}' collides with role '{role.Id}''s own declared output of the same name.");
+        }
     }
 
     /// <summary>
