@@ -418,5 +418,18 @@ public class WorkflowDefinitionParserTests
         var ex = await Assert.ThrowsAsync<WorkflowDefinitionValidationException>(
             () => WorkflowDefinitionParser.LoadFromFileAsync(missing, TestContext.Current.CancellationToken));
         Assert.Contains("does not exist", ex.Message);
+        Assert.Null(ex.TryInvocation); // The missing file ends in .json, so it gets no Try: built-in suggestion.
+    }
+
+    [Fact]
+    public async Task LoadFromFileAsync_on_a_missing_file_without_json_extension_suggests_aer_dispatch()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"no-such-template-{Guid.NewGuid():N}");
+
+        var ex = await Assert.ThrowsAsync<WorkflowDefinitionValidationException>(
+            () => WorkflowDefinitionParser.LoadFromFileAsync(missing, TestContext.Current.CancellationToken));
+        
+        Assert.Contains("does not exist", ex.Message);
+        Assert.Contains("'aer run' takes a workflow FILE; built-in templates are used via 'aer dispatch <role>'", ex.TryInvocation, StringComparison.Ordinal);
     }
 }

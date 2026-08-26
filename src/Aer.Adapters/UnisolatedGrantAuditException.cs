@@ -23,5 +23,6 @@ public sealed class UnisolatedGrantAuditException : AerFlowException
             "provisioned does not; an audit against a shared working directory would see unrelated dirt or miss nothing.")
     {
         WorkerName = workerName;
+        TryInvocation = "use 'aer dispatch <role>' to auto-provision an isolated workspace, or add a \"Worktree\" spec to this worker's bindings.json entry.";
     }
 }

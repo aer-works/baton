@@ -178,7 +178,8 @@ public static class DispatchCommand
             }
 
             throw new CliArgumentException(
-                $"No worker role or workflow template named '{options.Name}'.");
+                $"No worker role or workflow template named '{options.Name}'.",
+                "run 'aer templates' to list available built-ins.");
         }
         catch (Exception ex) when (ex is FileNotFoundException or JsonException or InvalidOperationException or KeyNotFoundException)
         {
@@ -204,7 +205,8 @@ public static class DispatchCommand
         {
             throw new CliArgumentException(
                 $"'{options.Name}' is a workflow template — its phases each declare their own outputs, so "
-                + "--output does not apply. Pass --output only when dispatching a role.");
+                + "--output does not apply. Pass --output only when dispatching a role.",
+                "remove the --output flag, or dispatch a single role instead of a template.");
         }
 
         var template = WorkflowTemplateCatalog.For(options.Name);
@@ -266,12 +268,15 @@ public static class DispatchCommand
         {
             throw new CliArgumentException(
                 $"'--output {outputPath}' names no file — a path ending in a directory separator has no "
-                + "filename. Pass a file path, e.g. --output report.md.");
+                + "filename. Pass a file path, e.g. --output report.md.",
+                "pass a file path instead of a directory, e.g. --output report.md");
         }
 
         if (ReservedOutputNames.IsReserved(customName))
         {
-            throw new CliArgumentException($"'--output {customName}' is invalid: {ReservedOutputNames.RejectionClause}.");
+            throw new CliArgumentException(
+                $"'--output {customName}' is invalid: {ReservedOutputNames.RejectionClause}.",
+                "choose a different file name for --output");
         }
 
         if (string.Equals(customName, Aer.Flow.Artifacts.ArtifactManager.PromptFileName, StringComparison.Ordinal))
@@ -279,13 +284,15 @@ public static class DispatchCommand
             throw new CliArgumentException(
                 $"'--output {customName}' collides with '{Aer.Flow.Artifacts.ArtifactManager.PromptFileName}', "
                 + "the durable prompt capture the engine writes into every execution's own output directory. "
-                + "Choose a different name.");
+                + "Choose a different name.",
+                "choose a different file name for --output");
         }
 
         if (role.Outputs.Skip(1).Any(o => string.Equals(o.Name, customName, StringComparison.Ordinal)))
         {
             throw new CliArgumentException(
-                $"'--output {customName}' collides with role '{role.Id}''s own declared output of the same name.");
+                $"'--output {customName}' collides with role '{role.Id}''s own declared output of the same name.",
+                "choose a different file name for --output");
         }
     }
 

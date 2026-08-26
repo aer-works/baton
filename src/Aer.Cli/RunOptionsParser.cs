@@ -81,7 +81,9 @@ public static class RunOptionsParser
 
         if (bindingsFilePath is null)
         {
-            throw new CliArgumentException($"Missing required option '--bindings <bindings-file>'. {Usage} {ResumeNote}");
+            throw new CliArgumentException(
+                $"Missing required option '--bindings <bindings-file>'. {Usage} {ResumeNote}",
+                "pass --bindings <path-to-bindings.json> to configure the workers for this run, or use 'aer dispatch' to auto-generate them.");
         }
 
         // Derived from the workflow file's own name when not given, so `aer run workflow.json`

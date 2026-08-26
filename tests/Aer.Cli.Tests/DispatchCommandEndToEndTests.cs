@@ -117,6 +117,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             var ex = await Assert.ThrowsAsync<CliArgumentException>(
                 () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
             Assert.Contains("no-such-role", ex.Message);
+            Assert.Contains("run 'aer templates'", ex.TryInvocation, StringComparison.Ordinal);
         }
         finally
         {
@@ -295,6 +296,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             Console.SetOut(originalOut);
 
             Assert.Contains("names no file", ex.Message);
+            Assert.Contains("pass a file path instead of a directory", ex.TryInvocation, StringComparison.Ordinal);
             Assert.Empty(consoleOutput.ToString());
             Assert.False(Directory.Exists(roomDirectory), "a refused dispatch must not have created the room directory");
         }
@@ -322,6 +324,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
                 () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
 
             Assert.Contains("--output", ex.Message);
+            Assert.Contains("remove the --output flag", ex.TryInvocation, StringComparison.Ordinal);
             Assert.False(Directory.Exists(roomDirectory), "a refused dispatch must not have created the room directory");
         }
         finally

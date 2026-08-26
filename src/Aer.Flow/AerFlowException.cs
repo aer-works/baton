@@ -7,6 +7,8 @@ namespace Aer.Flow;
 /// </summary>
 public abstract class AerFlowException : Exception
 {
+    public string? TryInvocation { get; init; }
+
     protected AerFlowException(string message)
         : base(message)
     {

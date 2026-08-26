@@ -13,9 +13,10 @@ public sealed class UnknownWorkerAdapterException : AerFlowException
 {
     public string AdapterName { get; }
 
-    public UnknownWorkerAdapterException(string adapterName)
+    public UnknownWorkerAdapterException(string adapterName, IEnumerable<string> availableAdapters)
         : base($"No IWorkerAdapter registered for adapter name '{adapterName}'.")
     {
         AdapterName = adapterName;
+        TryInvocation = $"use a registered adapter name (e.g. {string.Join(", ", availableAdapters)}).";
     }
 }

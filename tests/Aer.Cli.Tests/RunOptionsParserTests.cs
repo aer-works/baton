@@ -54,7 +54,8 @@ public class RunOptionsParserTests
     [Fact]
     public void A_missing_bindings_option_throws()
     {
-        Assert.Throws<CliArgumentException>(() => RunOptionsParser.Parse(["workflow.json"]));
+        var ex = Assert.Throws<CliArgumentException>(() => RunOptionsParser.Parse(["workflow.json"]));
+        Assert.Contains("pass --bindings <path-to-bindings.json>", ex.TryInvocation, StringComparison.Ordinal);
     }
 
     [Fact]

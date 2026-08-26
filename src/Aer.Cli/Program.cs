@@ -214,6 +214,10 @@ catch (AerFlowException ex)
     // workflow/bindings/argument failure surfaces as one of these further up the call stack, so
     // this is the one place that turns it into a clean CLI failure instead of a raw stack trace.
     Console.Error.WriteLine(ex.Message);
+    if (ex.TryInvocation is not null)
+    {
+        Console.Error.WriteLine($"Try: {ex.TryInvocation}");
+    }
 
     // #1356 points 2+3: for `run`/`dispatch` specifically, this is the provisioning/validation
     // failure class — distinct from a worker that actually ran and failed — and the room (which
