@@ -58,14 +58,11 @@ public static class WorkflowStatusProjector
                 firstFailureReason = step.LatestFailureReason;
             }
 
-            // #740's rule, same as FlowStateReporter: a succeeded execution's declared outputs, plus a
-            // Paused step whose underlying outcome already Succeeded (the ready-for-review gate).
-            var executionSucceeded = step.Status == StepStatus.Succeeded
-                || (step.Status == StepStatus.Paused && step.PausedOutcome == StepStatus.Succeeded);
-            if (executionSucceeded && step.LatestExecutionId is not null && stepDefByStepId.TryGetValue(step.StepId, out var stepDef))
+            // #740's rule via StepOutputResolver, the one place it is implemented (#1374 F5) — this
+            // must never drift from FlowStateReporter's own printed paths for the same room.
+            if (stepDefByStepId.TryGetValue(step.StepId, out var stepDef))
             {
-                var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, step.LatestExecutionId.Value);
-                outputs.AddRange(stepDef.Outputs.Select(outputName => Path.Combine(outputDirectory, outputName)));
+                outputs.AddRange(StepOutputResolver.Resolve(step, stepDef, artifactsRootPath).Select(o => o.Path));
             }
         }
 
