@@ -2,19 +2,21 @@ using System.Diagnostics;
 using System.Text.Json;
 using Aer.Adapters;
 using Aer.Cli.Tests.TestSupport;
+using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Flow.Templates;
 
 namespace Aer.Cli.Tests;
 
 /// <summary>
-/// #1356 points 2-4: the terminal sentinel (<c>terminal.json</c>), the pre-ledger Failed state a
-/// provisioning/validation failure must leave behind, and the exit codes <c>Program</c> derives from
-/// both. The exit-code CLASSIFICATION itself is unit-tested directly in
-/// <see cref="WorkflowOutcomeAndExitCodeTests"/>; this file covers the wiring — the real
-/// <c>Program.cs</c> catch/success paths, which are not otherwise reachable from a test (top-level
-/// statements), so the two process-spawn tests below follow the same real-process pattern
-/// <c>DecideCommandEndToEndTests</c> established for exactly this reason.
+/// #1356 points 2-4 and #1374's follow-up fixes: the terminal sentinel (<c>terminal.json</c>), the
+/// pre-ledger Failed state a provisioning/validation failure must leave behind (but only when the
+/// room is genuinely pre-ledger), the RoomHeld exit code a concurrency refusal gets instead, and the
+/// exit codes <c>Program</c> derives from all of it. The exit-code CLASSIFICATION itself is
+/// unit-tested directly in <see cref="WorkflowOutcomeAndExitCodeTests"/>; this file covers the
+/// wiring — the real <c>Program.cs</c> catch/success paths, which are not otherwise reachable from a
+/// test (top-level statements), so the process-spawn tests below follow the same real-process
+/// pattern <c>DecideCommandEndToEndTests</c> established for exactly this reason.
 /// </summary>
 [Collection(WorkingDirectoryCollection.Name)]
 public class TerminalSentinelEndToEndTests
@@ -108,56 +110,46 @@ public class TerminalSentinelEndToEndTests
     }
 
     [Fact]
-    public async Task The_sentinel_is_absent_while_a_step_output_already_exists_mid_run_and_present_once_terminal()
+    public async Task The_real_CLI_process_writes_the_sentinel_no_earlier_than_every_output_it_declares()
     {
-        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-sentinel-order-{Guid.NewGuid():N}");
+        // #1374 F3: the prior version of this test asserted the sentinel's absence against
+        // RunCommand.ExecuteAsync called directly -- code that never writes the sentinel at all, so
+        // the assertion could not fail. Program's shared post-pump step (the thing that actually
+        // writes terminal.json last) only exists in the real 'aer' binary (top-level statements
+        // aren't otherwise reachable from a test), so the write-last guarantee needs the real
+        // process, same as the exit-code tests below. Two steps, both via the production-registered
+        // NoOpWorkerAdapter (the "shell" test double used elsewhere in this file only exists in the
+        // in-process Adapters dictionary above, not WorkerAdapterRegistry.Default the real binary
+        // resolves against), so there are two independently-declared outputs to check ordering against.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-sentinel-order-proc-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
         {
             var workflowFilePath = await WriteTwoStepWorkflowAsync(testRoot);
-            var bindingsFilePath = await WriteTwoStepBindingsAsync(testRoot, SleepThenWriteCommand("out_b", seconds: 4));
-            var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            var bindingsFilePath = await WriteTwoStepNoOpBindingsAsync(testRoot);
             var sentinelPath = Path.Combine(roomDirectory, "terminal.json");
 
-            var runTask = RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
-            try
-            {
-                var artifactsDir = Path.Combine(roomDirectory, "artifacts");
-                var deadline = DateTime.UtcNow.AddSeconds(20);
-                var sawOutputMidRun = false;
-                while (DateTime.UtcNow < deadline)
-                {
-                    if (Directory.Exists(artifactsDir)
-                        && Directory.GetDirectories(artifactsDir, "execution_*")
-                            .Any(d => File.Exists(Path.Combine(d, "out_a"))))
-                    {
-                        sawOutputMidRun = true;
-                        break;
-                    }
-
-                    // wait-ok: filesystem re-check cadence while waiting for step a's output file; capped by the 20s deadline above.
-                    await Task.Delay(50, TestContext.Current.CancellationToken);
-                }
-
-                Assert.True(sawOutputMidRun, "Step 'a' never produced its output within the deadline.");
-                // RunCommand itself never writes the sentinel -- only Program's shared post-pump
-                // step does, and this test has not reached that step yet. Absence here is therefore
-                // exactly "still running", not a race against the writer.
-                Assert.False(File.Exists(sentinelPath), "The sentinel must not exist while the room is still mid-run.");
-            }
-            finally
-            {
-                var result = await runTask;
-
-                // The same two calls Program.cs's shared post-pump step makes.
-                var view = WorkflowStatusProjector.Project(result.State, result.Snapshot, roomDirectory);
-                await TerminalSentinelWriter.WriteAsync(roomDirectory, view, TestContext.Current.CancellationToken);
-            }
+            using var process = StartAerProcess(
+                "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(0, process.ExitCode);
 
             Assert.True(File.Exists(sentinelPath));
-            var written = JsonSerializer.Deserialize<WorkflowStatusView>(await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken));
-            Assert.Equal("Succeeded", written!.State);
-            Assert.Equal(2, written.Outputs.Count);
+            var view = JsonSerializer.Deserialize<WorkflowStatusView>(await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken));
+            Assert.Equal("Succeeded", view!.State);
+            Assert.Equal(2, view.Outputs.Count);
+
+            // The load-bearing assertion: every output the sentinel names actually exists, and the
+            // sentinel itself was written no earlier than the newest of them -- the ordering #1356
+            // point 4 exists to guarantee, checked against the real write, not a hand-reproduced one.
+            var sentinelWrittenAtUtc = File.GetLastWriteTimeUtc(sentinelPath);
+            foreach (var outputPath in view.Outputs)
+            {
+                Assert.True(File.Exists(outputPath), $"Declared output '{outputPath}' must exist once the sentinel is read.");
+                Assert.True(
+                    File.GetLastWriteTimeUtc(outputPath) <= sentinelWrittenAtUtc,
+                    $"The sentinel must be written no earlier than declared output '{outputPath}'.");
+            }
         }
         finally
         {
@@ -219,6 +211,103 @@ public class TerminalSentinelEndToEndTests
             Assert.True(File.Exists(sentinelPath));
             var view = JsonSerializer.Deserialize<WorkflowStatusView>(await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken));
             Assert.Equal("Succeeded", view!.State);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_second_real_CLI_run_against_an_already_completed_room_does_not_overwrite_its_sentinel()
+    {
+        // #1374 F1's second scenario: a room finishes, then a LATER invocation against that same
+        // room fails validation (a typo'd --bindings, here). Before the fix, Program's catch wrote
+        // a fresh Failed/no-outputs sentinel unconditionally, destroying the room's real terminal
+        // record. The room already has a ledger (flow.jsonl from the first run), so the fix must
+        // leave the sentinel untouched -- the second invocation still exits non-zero, it just must
+        // not lie about what the room actually is.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-run-proc-reledger-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot);
+            var goodBindingsFilePath = await WriteNoOpBindingsAsync(testRoot);
+
+            using (var firstProcess = StartAerProcess(
+                "run", workflowFilePath, "--bindings", goodBindingsFilePath, "--room-dir", roomDirectory))
+            {
+                await firstProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+                Assert.Equal(0, firstProcess.ExitCode);
+            }
+
+            var sentinelPath = Path.Combine(roomDirectory, "terminal.json");
+            Assert.True(File.Exists(sentinelPath));
+            var originalSentinelJson = await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken);
+            var originalView = JsonSerializer.Deserialize<WorkflowStatusView>(originalSentinelJson);
+            Assert.Equal("Succeeded", originalView!.State);
+
+            // Same workflow file and room (the CLI always requires the positional <workflow-file>
+            // argument, even on a resume -- RunOptionsParser.Parse's own contract), a bindings file
+            // naming an unregistered adapter, same fixture as the pre-ledger test above -- except
+            // this room already has a ledger and a real Succeeded terminal record behind it.
+            var badBindingsFilePath = await WriteUnregisteredAdapterBindingsAsync(testRoot);
+            using var secondProcess = StartAerProcess(
+                "run", workflowFilePath, "--bindings", badBindingsFilePath, "--room-dir", roomDirectory);
+            var stderrTask = secondProcess.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await secondProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+            var stderr = await stderrTask;
+
+            Assert.Equal((int)RunExitCode.ValidationRefused, secondProcess.ExitCode);
+            Assert.Contains("not-registered", stderr);
+
+            var sentinelJsonAfterSecondRun = await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken);
+            Assert.Equal(originalSentinelJson, sentinelJsonAfterSecondRun);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_real_CLI_run_against_a_room_whose_lock_is_held_exits_RoomHeld_and_writes_no_sentinel()
+    {
+        // #1374 F1's first scenario, the concurrency family: WorkflowLockedException/
+        // FlowJournalHeldException must map to a code distinct from ValidationRefused and must never
+        // write a sentinel -- the room this exception fires against may be perfectly healthy. Holding
+        // ConcurrencyGuard's own lock file from this test process is the same deterministic technique
+        // WorktreeProvisioningCommandTests already uses for WorkflowLockedException, chosen over a
+        // real two-process timing race so this test cannot flake on scheduling.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-run-proc-locked-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteNoOpBindingsAsync(testRoot);
+
+            var sentinelPath = Path.Combine(roomDirectory, "terminal.json");
+            Directory.CreateDirectory(roomDirectory);
+            using (ConcurrencyGuard.Acquire(roomDirectory))
+            {
+                using var process = StartAerProcess(
+                    "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
+                var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+                await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+                var stderr = await stderrTask;
+
+                Assert.Equal((int)RunExitCode.RoomHeld, process.ExitCode);
+                Assert.Contains("already locked", stderr);
+                Assert.False(File.Exists(sentinelPath), "A room-held refusal must not fabricate a terminal sentinel.");
+            }
+
+            // Releasing the lock and running again proves the room itself was never touched by the
+            // refused attempt -- it starts and completes exactly as if the first attempt never happened.
+            using var retryProcess = StartAerProcess(
+                "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
+            await retryProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(0, retryProcess.ExitCode);
+            Assert.True(File.Exists(sentinelPath));
         }
         finally
         {
@@ -316,17 +405,17 @@ public class TerminalSentinelEndToEndTests
         return path;
     }
 
-    private static async Task<string> WriteTwoStepBindingsAsync(string directory, string stepBCommand)
+    private static async Task<string> WriteTwoStepNoOpBindingsAsync(string directory)
     {
         Directory.CreateDirectory(directory);
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["a"] = new WorkerBindingConfigEntry(
-                "shell", new WorkerContract("a", [], [new ProducedOutput("out_a")], []),
-                WriteFileCommand("out_a", "a-done"), TimeSpan.FromSeconds(30)),
+                NoOpWorkerAdapter.AdapterName, new WorkerContract("a", [], [new ProducedOutput("out_a")], []),
+                PromptTemplate: "unused-by-noop", TimeSpan.FromSeconds(30)),
             ["b"] = new WorkerBindingConfigEntry(
-                "shell", new WorkerContract("b", [], [new ProducedOutput("out_b")], []),
-                stepBCommand, TimeSpan.FromSeconds(30)),
+                NoOpWorkerAdapter.AdapterName, new WorkerContract("b", [], [new ProducedOutput("out_b")], []),
+                PromptTemplate: "unused-by-noop", TimeSpan.FromSeconds(30)),
         };
 
         var path = Path.Combine(directory, "bindings.json");
@@ -337,8 +426,4 @@ public class TerminalSentinelEndToEndTests
     private static string WriteFileCommand(string outputName, string content) => OperatingSystem.IsWindows()
         ? $"echo {content}>%AER_OUTPUT_DIR%\\{outputName}"
         : $"echo {content} > \"$AER_OUTPUT_DIR/{outputName}\"";
-
-    private static string SleepThenWriteCommand(string outputName, int seconds) => OperatingSystem.IsWindows()
-        ? $"ping -n {seconds + 1} 127.0.0.1>nul & echo done>%AER_OUTPUT_DIR%\\{outputName}"
-        : $"sleep {seconds}; echo done > \"$AER_OUTPUT_DIR/{outputName}\"";
 }
