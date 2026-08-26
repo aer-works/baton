@@ -56,15 +56,31 @@ public static class RoleDispatch
     /// and the variables are positional per the step's list — an input the contract omits is delivered
     /// but never disclosed, so the worker cannot find it. Empty for a role dispatched alone.
     /// </param>
-    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null)
+    /// <param name="autoProvisionWorktree">
+    /// When an audited grant needs isolation (<see cref="GrantAuditMode.AuditedNotEnforced"/>), declare
+    /// a fresh worktree of <paramref name="workingDirectory"/> at <c>HEAD</c> — never handing the
+    /// worker that directory as-is, regardless of whether it already happens to be a worktree itself,
+    /// because <see cref="WorkerBindingConfigEntry.IsWorktree"/> is the provisioner's own stamp that a
+    /// run made the tree (#1354). <see cref="RoleDispatch.Materialize"/> (a direct role dispatch) takes
+    /// this path; <see cref="WorkflowTemplateComposer"/> deliberately opts out (R5) — see its own call
+    /// site for why.
+    /// </param>
+    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null, bool autoProvisionWorktree = true)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
 
+        var outputs = role.Outputs.ToList();
+        if (!string.IsNullOrWhiteSpace(outputOverride) && outputs.Count > 0)
+        {
+            var customName = Path.GetFileName(outputOverride);
+            outputs[0] = new WorkerRoleOutput(customName, outputs[0].Schema, outputs[0].Instruction);
+        }
+
         var contract = new WorkerContract(
             WorkerName: string.IsNullOrWhiteSpace(workerName) ? role.Id : workerName,
             RequiredInputs: requiredInputs ?? [],
-            ProducedOutputs: role.Outputs.Select(o => new ProducedOutput(o.Name, Schema: o.Schema)).ToList(),
+            ProducedOutputs: outputs.Select(o => new ProducedOutput(o.Name, Schema: o.Schema)).ToList(),
             OptionalMetadata: []);
 
         // Normalize whichever adapter wins, not just the CLI override: role.Adapter comes from the
@@ -102,16 +118,31 @@ public static class RoleDispatch
             }
         }
 
+        WorktreeWorkspace? worktreeSpec = null;
+        var effectiveWorkDir = workingDirectory;
+
+        if (autoProvisionWorktree && grantAuditMode == GrantAuditMode.AuditedNotEnforced && !string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            // R1: always a fresh worktree of the caller's directory at HEAD, whether that directory is
+            // a plain checkout or already a worktree itself — never trust the caller's own tree, and
+            // never stamp IsWorktree on it (see the parameter doc above). WorktreeWorkspaces.Provision
+            // is what actually creates the tree and stamps IsWorktree: true once it has.
+            worktreeSpec = new WorktreeWorkspace(workingDirectory, "HEAD");
+            effectiveWorkDir = null;
+        }
+
         return new WorkerBindingConfigEntry(
             Adapter: adapter,
             Contract: contract,
-            PromptTemplate: BuildPrompt(role, spec),
+            PromptTemplate: BuildPrompt(role, spec, outputs),
             Timeout: role.Timeout,
             Model: model,
             PermissionGrant: grant,
-            WorkingDirectory: workingDirectory,
+            WorkingDirectory: effectiveWorkDir,
             Effort: effort,
+            Worktree: worktreeSpec,
             GrantAuditMode: grantAuditMode,
+            IsWorktree: false,
             // #1089: agy only. Streaming puts agy's terminal `result` event on stdout so a teardown-hang
             // (agy holds a scratch handle and never exits) classifies as the satisfied contract it is,
             // instead of a from-scratch retry. claude has no such hang and no detector wired, so streaming
@@ -127,13 +158,15 @@ public static class RoleDispatch
     /// </summary>
     public static (WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings) Materialize(
         WorkerRole role, string spec, string? adapterOverride = null, string? workingDirectory = null,
-        string? modelOverride = null, string? effortOverride = null)
+        string? modelOverride = null, string? effortOverride = null, string? outputOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
         var binding = ToBinding(
             role, spec, adapterOverride, workingDirectory: workingDirectory,
-            modelOverride: modelOverride, effortOverride: effortOverride);
+            modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride);
+
+        var stepOutputs = binding.Contract.ProducedOutputs.Select(o => o.Name).ToList();
 
         var definition = new WorkflowDefinition(
             WorkflowTemplateId: new WorkflowTemplateId($"dispatch-{role.Id}"),
@@ -144,7 +177,7 @@ public static class RoleDispatch
                     StepId: new StepId(role.Id),
                     Worker: role.Id,
                     Inputs: [],
-                    Outputs: role.Outputs.Select(o => o.Name).ToList(),
+                    Outputs: stepOutputs,
                     DependsOn: [],
                     RetryPolicy: new RetryPolicy(3),
                     PausePoint: null)
@@ -159,9 +192,14 @@ public static class RoleDispatch
     /// exactly the files the contract asserts. A role always declares at least one output (the catalog
     /// enforces it at load), so the header is never emitted without lines under it.
     /// </summary>
-    private static string BuildPrompt(WorkerRole role, string spec)
+    private static string BuildPrompt(WorkerRole role, string spec, IReadOnlyList<WorkerRoleOutput>? outputs = null)
     {
-        var instructions = string.Join("\n", role.Outputs.Select(o => $"- {o.Instruction}"));
+        var activeOutputs = outputs ?? role.Outputs;
+        var instructions = string.Join("\n", activeOutputs.Select(o => $"- {o.Instruction}"));
+        if (role.Outputs.Count > 0 && activeOutputs.Count > 0 && !string.Equals(role.Outputs[0].Name, activeOutputs[0].Name, StringComparison.Ordinal))
+        {
+            instructions = instructions.Replace(role.Outputs[0].Name, activeOutputs[0].Name, StringComparison.Ordinal);
+        }
         return $"{spec.TrimEnd()}\n\nRequired outputs:\n{instructions}\n\n{OneShotContract}";
     }
 

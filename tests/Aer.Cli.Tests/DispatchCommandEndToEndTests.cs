@@ -23,6 +23,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
 
     private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
     private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
+    private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
 
     // Pin the shipped catalog. Without this these tests resolve through ResolvePath's middle rung
     // ({AerPaths.Root}/worker-roles.json) and would silently read an operator's local override on a
@@ -31,19 +32,23 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     // so this class is not the only catalog reader that matters. It shares
     // [Collection(WorkerCatalogEnvCollection.Name)] with DispatchTemplateEndToEndTests (see that
     // collection for the bleed it prevents); the ctor/Dispose set-and-restore keeps it clean within the
-    // serialized group.
+    // serialized group. Templates are pinned too (#1380, finding 7's test): DispatchCommand.MaterializeAsync
+    // probes WorkflowTemplateCatalog.All to decide role-vs-template even for a role dispatch.
     public DispatchCommandEndToEndTests()
     {
         Environment.SetEnvironmentVariable(
             WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
         Environment.SetEnvironmentVariable(
             WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"));
+        Environment.SetEnvironmentVariable(
+            WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"));
     }
 
     public void Dispose()
     {
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
+        Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
     }
 
     [Fact]
@@ -157,6 +162,167 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
 
             await Assert.ThrowsAsync<CliArgumentException>(
                 () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_a_role_with_output_override_copies_artifact_to_output_path()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var customOutputPath = Path.Combine(testRoot, "custom-output.md");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake", OutputPath: customOutputPath);
+
+            var state = (await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken)).State;
+
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+            Assert.True(File.Exists(customOutputPath));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Output_pointing_at_an_existing_directory_survives_and_still_reaches_terminal()
+    {
+        // R3 (#1354/#1380, finding 3): the red test for the copy crashing before Program's
+        // terminal-sentinel write. File.Copy(src, existingDirectoryPath, overwrite: true) throws
+        // (UnauthorizedAccessException on Windows, IOException on Linux/macOS) -- neither derives from
+        // AerFlowException, so before the fix this escaped ExecuteAsync raw. The run must still reach
+        // Terminal and ExecuteAsync must still return normally, since that return is what lets Program
+        // go on to write terminal.json.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalError = Console.Error;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var existingDirectoryAsDestination = Path.Combine(testRoot, "already-a-directory");
+            Directory.CreateDirectory(existingDirectoryAsDestination);
+            var options = new DispatchOptions(
+                "advise", specPath, roomDirectory, Adapter: "fake", OutputPath: existingDirectoryAsDestination);
+
+            using var stderrCapture = new StringWriter();
+            Console.SetError(stderrCapture);
+            var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+            Console.SetError(originalError);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var step = Assert.Single(result.State.Steps);
+            Assert.Equal(StepStatus.Succeeded, step.Status);
+            Assert.Contains("Could not copy", stderrCapture.ToString());
+
+            // The declared output the copy tried to move still exists where the engine wrote it,
+            // regardless of the copy's own failure. --output renames the role's primary declared output
+            // to its own filename (RoleDispatch's outputOverride), so the real artifact is named after
+            // the destination, not "advice.md".
+            var declaredOutputName = Path.GetFileName(existingDirectoryAsDestination);
+            var realOutputPath = Path.Combine(
+                roomDirectory, "artifacts", $"execution_{step.LatestExecutionId}", declaredOutputName);
+            Assert.True(File.Exists(realOutputPath));
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Without_output_the_printed_fact_names_the_artifacts_directory_not_a_fabricated_file_path()
+    {
+        // R4 (#1354/#1380, finding 4): the prior line printed a per-execution file path
+        // (room/artifacts/advice.md) that never exists -- real outputs land one level deeper, under
+        // room/artifacts/execution_<id>/advice.md, a path not known until the run actually happens.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake");
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            var printed = consoleOutput.ToString();
+            var artifactsDirectory = Path.Combine(roomDirectory, "artifacts");
+            Assert.Contains($"Artifacts directory: {artifactsDirectory}", printed);
+            Assert.DoesNotContain("Output path:", printed);
+
+            // The printed directory is genuinely the parent of where the real output landed.
+            var step = Assert.Single(result.State.Steps);
+            var realOutputPath = Path.Combine(artifactsDirectory, $"execution_{step.LatestExecutionId}", "advice.md");
+            Assert.True(File.Exists(realOutputPath));
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Output_ending_in_a_directory_separator_is_refused_before_any_fact_is_printed()
+    {
+        // R6 (#1354/#1380, finding 8) -- see ValidateOutputOverride's own doc for what a trailing
+        // separator would otherwise cost. Must be refused before the room directory even exists.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions(
+                "advise", specPath, roomDirectory, Adapter: "fake",
+                OutputPath: Path.Combine(testRoot, "reports") + Path.DirectorySeparatorChar);
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+            Console.SetOut(originalOut);
+
+            Assert.Contains("names no file", ex.Message);
+            Assert.Empty(consoleOutput.ToString());
+            Assert.False(Directory.Exists(roomDirectory), "a refused dispatch must not have created the room directory");
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Output_on_a_template_dispatch_is_refused_up_front_like_spec_already_is()
+    {
+        // R5 (#1354/#1380, finding 7) -- see MaterializeTemplateAsync's own comment for why. Mirrors
+        // the existing --spec-on-a-template refusal exercised elsewhere in this class.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions(
+                "implement-review", SpecFilePath: null, roomDirectory, Adapter: "fake",
+                OutputPath: Path.Combine(testRoot, "out.md"));
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("--output", ex.Message);
+            Assert.False(Directory.Exists(roomDirectory), "a refused dispatch must not have created the room directory");
         }
         finally
         {

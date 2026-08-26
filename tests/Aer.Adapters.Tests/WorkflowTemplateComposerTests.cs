@@ -64,6 +64,26 @@ public class WorkflowTemplateComposerTests
         Assert.Null(unpinned["build"].WorkingDirectory);
     }
 
+    /// <summary>
+    /// R5 (#1354/#1380, finding 6) — the scope decision itself lives on this composer's own
+    /// <c>autoProvisionWorktree: false</c> call site. Pins the resulting shape: WorkingDirectory set
+    /// directly, no Worktree spec, so <c>WorkerBindingResolver</c>'s <c>UnisolatedGrantAuditException</c>
+    /// is what refuses an audited phase at bind time, not this composer.
+    /// </summary>
+    [Fact]
+    public void An_audited_phase_declares_no_worktree_reverting_to_the_pre_auto_provisioning_bind_time_refusal()
+    {
+        var template = new WorkflowTemplate("t", [Phase("check", "review")]);
+
+        var (_, bindings) = WorkflowTemplateComposer.Materialize(template, adapterOverride: "agy", workingDirectory: "/repo/root");
+
+        var binding = bindings["check"];
+        Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
+        Assert.Null(binding.Worktree);
+        Assert.Equal("/repo/root", binding.WorkingDirectory);
+        Assert.False(binding.IsWorktree);
+    }
+
     [Fact]
     public void Two_phases_naming_the_same_role_key_by_phase_name_without_collision()
     {

@@ -125,9 +125,15 @@ public static class WorkflowTemplateComposer
                 PausePoint: phase.AskFirst ? new PausePoint([]) : null));
             // requiredInputs mirrors the step's Inputs above — why the mirroring matters (and its
             // ordering rule) is on RoleDispatch.ToBinding's requiredInputs doc (#1147).
+            // autoProvisionWorktree: false (R5, #1354/#1380) — a composed template's audited phases
+            // refuse at bind time exactly as before worktree auto-provisioning existed. Widening it to
+            // every phase of a multi-step template was out of scope: it would hand each audited phase a
+            // fresh HEAD copy blind to what an earlier phase in the SAME run just wrote (e.g. an
+            // implement-then-review template), which is worse than the loud bind-time refusal it would
+            // replace.
             bindings[phase.Name] = RoleDispatch.ToBinding(
                 role, phase.Instruction, adapterOverride, workerName: phase.Name, workingDirectory: workingDirectory,
-                requiredInputs: blockerOutputs);
+                requiredInputs: blockerOutputs, autoProvisionWorktree: false);
 
             blockerId = stepId;
             blockerOutputs = outputs;

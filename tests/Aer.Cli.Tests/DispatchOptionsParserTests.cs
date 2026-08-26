@@ -46,6 +46,13 @@ public class DispatchOptionsParserTests
     }
 
     [Fact]
+    public void Parses_the_output_path_axis()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--output", "custom-report.md"]);
+        Assert.Equal(System.IO.Path.GetFullPath("custom-report.md"), options.OutputPath);
+    }
+
+    [Fact]
     public void The_new_axis_flags_default_to_null_when_absent()
     {
         var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md"]);
@@ -81,5 +88,22 @@ public class DispatchOptionsParserTests
         var first = DispatchOptionsParser.Parse(["review", "--spec", "t.md"]).RoomDirectoryPath;
         var second = DispatchOptionsParser.Parse(["review", "--spec", "t.md"]).RoomDirectoryPath;
         Assert.NotEqual(first, second);
+    }
+
+    /// <summary>
+    /// R2 (#1354/#1380, finding 2) -- see the parser's own comment for why the default must sit outside
+    /// any workspace a dispatch might audit. <c>Aer.Adapters.AerPaths.Rooms</c> is the one place that
+    /// root is resolved from (honouring <c>AER_HOME</c>); this pins that the default is built from it,
+    /// not re-derives it.
+    /// </summary>
+    [Fact]
+    public void The_default_room_directory_lives_under_AerPaths_Rooms_not_the_current_directory()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--spec", "t.md"]);
+
+        Assert.StartsWith(
+            Path.GetFullPath(Aer.Adapters.AerPaths.Rooms), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            Path.GetFullPath(Directory.GetCurrentDirectory()), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
     }
 }

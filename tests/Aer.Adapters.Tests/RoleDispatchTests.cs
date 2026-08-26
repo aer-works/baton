@@ -204,5 +204,32 @@ public class RoleDispatchTests
         Assert.True(agyBinding.PermissionGrant?.WriteFiles);
         Assert.Equal(GrantAuditMode.AuditedNotEnforced, agyBinding.GrantAuditMode);
     }
+
+    [Fact]
+    public void OutputOverride_replaces_primary_output_name_and_updates_prompt_instructions()
+    {
+        var binding = RoleDispatch.ToBinding(Advise, "spec", outputOverride: "custom-advice.md");
+        Assert.Equal("custom-advice.md", binding.Contract.ProducedOutputs[0].Name);
+        Assert.Contains("custom-advice.md", binding.PromptTemplate);
+    }
+
+    /// <summary>
+    /// R1's polarity, per <see cref="RoleDispatch.ToBinding"/>'s <c>autoProvisionWorktree</c> doc — this
+    /// mapping step declares the worktree spec but never stamps <see cref="WorkerBindingConfigEntry.IsWorktree"/>
+    /// itself, so a hand-authored or prematurely-set <c>true</c> can never claim an isolation this step
+    /// did not provide.
+    /// </summary>
+    [Fact]
+    public void Worktree_is_always_declared_fresh_for_an_audited_grant_regardless_of_the_callers_directory_shape()
+    {
+        var binding = RoleDispatch.ToBinding(Review, "spec", adapterOverride: "agy", workingDirectory: "/any/caller/directory");
+
+        Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
+        Assert.NotNull(binding.Worktree);
+        Assert.Equal("/any/caller/directory", binding.Worktree!.Repository);
+        Assert.Equal("HEAD", binding.Worktree!.Ref);
+        Assert.Null(binding.WorkingDirectory);
+        Assert.False(binding.IsWorktree);
+    }
 }
 
