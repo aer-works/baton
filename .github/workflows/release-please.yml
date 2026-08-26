@@ -22,4 +22,10 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # #1369: an operator PAT, not the default token. github.token made every release
+      # PR bot-authored -- a permanent "first-time contributor" needing a manual
+      # approve-workflows click -- and default-token-created PRs never trigger
+      # pull_request workflows (anti-recursion), so release CI needed hand-kicks too.
       - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.BATON_RELEASE_PLEASE }}
