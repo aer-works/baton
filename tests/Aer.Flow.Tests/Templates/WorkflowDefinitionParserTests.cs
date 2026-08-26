@@ -428,7 +428,7 @@ public class WorkflowDefinitionParserTests
 
         var ex = await Assert.ThrowsAsync<WorkflowDefinitionValidationException>(
             () => WorkflowDefinitionParser.LoadFromFileAsync(missing, TestContext.Current.CancellationToken));
-        
+
         Assert.Contains("does not exist", ex.Message);
         Assert.Contains("'aer run' takes a workflow FILE; built-in templates are used via 'aer dispatch <role>'", ex.TryInvocation, StringComparison.Ordinal);
     }
