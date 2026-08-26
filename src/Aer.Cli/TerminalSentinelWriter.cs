@@ -53,11 +53,14 @@ public static class TerminalSentinelWriter
     /// to project a normal <see cref="WorkflowStatusView"/> from. Writes the coarse outcome directly:
     /// <see cref="WorkflowOutcome.Failed"/>, no steps, no outputs, <paramref name="reason"/> as the
     /// error — enough for "aer status on such a room says Failed and why" without inventing per-step
-    /// detail for steps that were never reached.
+    /// detail for steps that were never reached. <paramref name="tryInvocation"/> (#1382 F3) carries the
+    /// refusing <see cref="Aer.Flow.AerFlowException.TryInvocation"/> through to the same field a
+    /// file-watching agent reads instead of stderr — <c>null</c> when the refusal had no suggestion.
     /// </summary>
-    public static Task WriteValidationRefusedAsync(string roomDirectoryPath, string reason, CancellationToken cancellationToken)
+    public static Task WriteValidationRefusedAsync(
+        string roomDirectoryPath, string reason, CancellationToken cancellationToken, string? tryInvocation = null)
     {
-        var view = new WorkflowStatusView(WorkflowOutcome.Failed, [], [], reason);
+        var view = new WorkflowStatusView(WorkflowOutcome.Failed, [], [], reason, tryInvocation);
         return WriteAsync(roomDirectoryPath, view, cancellationToken);
     }
 

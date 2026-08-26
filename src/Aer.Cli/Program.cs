@@ -236,7 +236,7 @@ catch (AerFlowException ex)
         if (!RoomLedgerProbe.HasLedger(roomDirectoryPathForFailureSentinel))
         {
             await TerminalSentinelWriter.WriteValidationRefusedAsync(
-                roomDirectoryPathForFailureSentinel, ex.Message, CancellationToken.None).ConfigureAwait(false);
+                roomDirectoryPathForFailureSentinel, ex.Message, CancellationToken.None, ex.TryInvocation).ConfigureAwait(false);
         }
 
         return (int)RunExitCode.ValidationRefused;

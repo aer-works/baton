@@ -16,15 +16,21 @@ public sealed record WorkflowStatusStepView(
 
 /// <summary>
 /// The one JSON object <c>aer status --json</c> writes to stdout (#1356's machine completion
-/// contract): <c>{state, steps:[{id, state, execution}], outputs:[...], error}</c>. Also what the
+/// contract): <c>{state, steps:[{id, state, execution}], outputs:[...], error, try}</c>. Also what the
 /// terminal sentinel (<c>terminal.json</c>, <see cref="TerminalSentinelWriter"/>) serializes, so a
 /// file-watching agent and a polling <c>status --json</c> caller read the identical shape.
+/// <c>Try</c> (#1382 F3) is additive to #1356's shape: the corrected-invocation text an
+/// <see cref="Aer.Flow.AerFlowException.TryInvocation"/>-carrying refusal set, kept as its own field
+/// rather than appended into <see cref="Error"/> so a consumer can tell diagnosis from remedy apart.
+/// Only ever populated on the pre-ledger sentinel path (<see cref="TerminalSentinelWriter.WriteValidationRefusedAsync"/>) —
+/// a normal ledger projection has no exception to carry one.
 /// </summary>
 public sealed record WorkflowStatusView(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("steps")] IReadOnlyList<WorkflowStatusStepView> Steps,
     [property: JsonPropertyName("outputs")] IReadOnlyList<string> Outputs,
-    [property: JsonPropertyName("error")] string? Error);
+    [property: JsonPropertyName("error")] string? Error,
+    [property: JsonPropertyName("try")] string? Try = null);
 
 /// <summary>
 /// Builds <see cref="WorkflowStatusView"/> from the same <see cref="FlowState"/>

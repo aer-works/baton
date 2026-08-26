@@ -219,6 +219,11 @@ public class TerminalSentinelEndToEndTests
             var view = JsonSerializer.Deserialize<WorkflowStatusView>(await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken));
             Assert.Equal("Failed", view!.State);
             Assert.Contains("not-registered", view.Error);
+            // #1382 F3: the sentinel/status--json channel must carry the same Try text stderr got,
+            // not just the diagnosis -- an agent following invoking-baton.md's advice to watch
+            // terminal.json instead of scraping stderr must still see it.
+            Assert.NotNull(view.Try);
+            Assert.Contains("registered adapter", view.Try);
         }
         finally
         {
