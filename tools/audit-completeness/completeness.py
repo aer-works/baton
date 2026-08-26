@@ -759,14 +759,16 @@ GATE_SCAN_EXCLUDE = ("docs/archive",)
 GATE_SCAN_SUFFIXES = (".md", ".py", ".cs", ".toml", ".yml", ".yaml", ".rs", ".go")
 
 
-def gate_scan_skips(filename: str) -> bool:
-    """Whether step 10 skips a file by NAME, before any content is read.
+def generated_changelog(filename: str) -> bool:
+    """Whether a file is a release-please-generated changelog, judged by NAME alone.
 
-    #1365: generated changelogs (release-please) transcribe immutable commit messages
-    verbatim, so a numeric gate citation there is unactionable at every link -- the
-    commit is history, the transcription is mechanical -- and one blocked release PR
-    #309 outright. Step 10 polices LIVING documents; keeping NEW commit messages on
-    slugs is review-time work, not lint-time. Pure, so selfcheck can drive both arms.
+    #1365/#1367: generated changelogs transcribe immutable commit messages verbatim --
+    into EVERY affected package's changelog for a monorepo release -- so both a numeric
+    gate citation (step 10) and N identical transcriptions of one commit line
+    (record-once) are unactionable there at every link: the commit is history, the
+    transcription is mechanical, and each blocked release PR #309 in turn. The living-
+    document lints share this one predicate rather than growing two; keeping NEW commit
+    messages clean is review-time work. Pure, so selfcheck can drive both arms.
     """
     return filename == "CHANGELOG.md"
 
@@ -939,7 +941,7 @@ def step10_gate_citations():
             for fn in filenames:
                 if not fn.endswith(GATE_SCAN_SUFFIXES):
                     continue
-                if gate_scan_skips(fn):
+                if generated_changelog(fn):
                     continue
                 rel = os.path.relpath(os.path.join(dirpath, fn), ROOT).replace("\\", "/")
                 if any(rel.startswith(x) for x in GATE_SCAN_EXCLUDE):

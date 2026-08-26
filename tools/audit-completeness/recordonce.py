@@ -65,6 +65,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from completeness import generated_changelog
+
 ROOT = Path(__file__).resolve().parents[2]
 
 # Escapes one PASSAGE, for a second copy that is genuinely right -- a decision record and the code it
@@ -617,6 +619,16 @@ def main(argv: list[str]) -> int:
         print(f"!! cannot diff against '{base}' -- {exc.stderr.strip()}", file=sys.stderr)
         print("   CI needs actions/checkout with fetch-depth: 0 for this to work.", file=sys.stderr)
         return 1
+
+    # #1367: release-please transcribes ONE commit line into every affected package's
+    # changelog -- mechanical duplication of a record whose canonical home is the commit
+    # itself. Filtered here in main(), not in added_lines_by_file, so --prove's
+    # historical re-derivation sees exactly what it was pinned against.
+    skipped = sorted(p for p in by_file if generated_changelog(Path(p).name))
+    for p in skipped:
+        del by_file[p]
+    if skipped:
+        print(f" -- generated changelog(s), not compared (#1367): {', '.join(skipped)}")
 
     print(f"record-once: {len(by_file)} changed file(s) against {base}")
     if not by_file:
