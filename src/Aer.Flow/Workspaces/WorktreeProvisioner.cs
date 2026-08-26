@@ -46,6 +46,46 @@ public static class WorktreeProvisioner
     }
 
     /// <summary>
+    /// Detects whether <paramref name="directoryPath"/> is a provisioned git worktree by checking
+    /// if <c>git rev-parse --git-common-dir</c> differs from <c>--git-dir</c> (#1354). Returns false when
+    /// the directory does not exist, git fails, or the path is a main repository root.
+    /// </summary>
+    public static bool IsWorktree(string? directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var (exitCode, stdout, _) = RunGit(directoryPath, "rev-parse", "--git-common-dir", "--git-dir");
+            if (exitCode != 0 || string.IsNullOrWhiteSpace(stdout))
+            {
+                return false;
+            }
+
+            var lines = stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (lines.Length < 2)
+            {
+                return false;
+            }
+
+            var commonDir = Path.GetFullPath(Path.Combine(directoryPath, lines[0]));
+            var gitDir = Path.GetFullPath(Path.Combine(directoryPath, lines[1]));
+
+            return !string.Equals(
+                NormalizeForComparison(commonDir),
+                NormalizeForComparison(gitDir),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Creates a git worktree of <paramref name="repository"/> at <paramref name="reference"/> at the
     /// absolute <paramref name="worktreePath"/> — the value the worker's WorkingDirectory then points
     /// at. The caller owns the path so a room with several workers gives each its own tree (one

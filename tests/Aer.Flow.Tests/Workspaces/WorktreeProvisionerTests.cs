@@ -162,6 +162,31 @@ public sealed class WorktreeProvisionerTests : IDisposable
         RunGit(repo, "worktree", "unlock", worktree); // so cleanup can delete the tree
     }
 
+    [Fact]
+    public void IsWorktree_returns_true_for_a_provisioned_worktree()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+
+        Assert.True(WorktreeProvisioner.IsWorktree(worktree));
+    }
+
+    [Fact]
+    public void IsWorktree_returns_false_for_a_main_repo()
+    {
+        var (repo, _) = CreateRepoWithBranch("committed.txt");
+
+        Assert.False(WorktreeProvisioner.IsWorktree(repo));
+    }
+
+    [Fact]
+    public void IsWorktree_returns_false_for_non_existent_or_non_git_path()
+    {
+        Assert.False(WorktreeProvisioner.IsWorktree(_root));
+        Assert.False(WorktreeProvisioner.IsWorktree(Path.Combine(_root, "nonexistent")));
+    }
+
     // --- fixture ---
 
     private string NewDir(string name)
