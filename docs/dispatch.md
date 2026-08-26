@@ -9,7 +9,7 @@ It is **not** the chat surface. A dispatch turn is non-interactive and runs to c
 interactive session (chat) is a different path with a different prompt and a continuing turn.
 
 ```
-aer dispatch <role> --spec <file> --room-dir <dir> [--adapter <vendor>] [--model <m>] [--effort <e>]
+aer dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
                     [--workspace <dir>] [--workflow-id <label>]
 ```
 
@@ -18,7 +18,7 @@ aer dispatch <role> --spec <file> --room-dir <dir> [--adapter <vendor>] [--model
 | Flag | Meaning |
 |------|---------|
 | `--spec <file>` | The task prompt for the worker — the file whose contents become the spec. |
-| `--room-dir <dir>` | Where the run is recorded (created if absent). Required — this is the room. |
+| `--room-dir <dir>` | Where the run is recorded (created if absent) — this is the room. Optional: omitted, each invocation gets a fresh unique one at `./.aer/dispatch-<role>-<8 hex>`, because a dispatch is one-shot and a stable derived directory would make the second `aer dispatch review` *resume* the first's terminal snapshot instead of running. |
 | `--adapter <vendor>` | Run the role on a specific vendor (`claude` / `agy`) instead of its tier's default. The `--adapter` escape hatch; a role never names a vendor itself. |
 | `--model <m>` | The model axis, independent of the role ([0017]/[0023]). Omitted keeps the tier's model — except on a vendor swap, where the tier's vendor-specific model is dropped for the new vendor's default (#1082). |
 | `--effort <e>` | The effort axis, independent of the role. Omitted keeps the tier's effort; dropped on a vendor swap. |
@@ -60,7 +60,8 @@ schedule background work or wait for a wake-up, because nothing resumes the turn
 The room directory accumulates the materialised workflow definition and its worker bindings, the
 `flow.jsonl` event ledger (the append-only record of what the engine did), and an `artifacts/` tree
 holding each step's declared outputs. The authoritative room layout is `spec/aer-room-spec-v1.0.md`;
-`aer status --room-dir <dir>` reads the ledger and reports where each step stands.
+`aer status <dir>` — the room directory is positional there, not a flag — reads the ledger and
+reports where each step stands.
 
 ## The vendor premise
 
