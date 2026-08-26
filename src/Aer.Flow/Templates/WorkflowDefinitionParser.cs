@@ -68,15 +68,12 @@ public static class WorkflowDefinitionParser
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
-            var exception = new WorkflowDefinitionValidationException([$"Template file '{path}' does not exist."], ex);
-            if (!path.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            throw new WorkflowDefinitionValidationException([$"Template file '{path}' does not exist."], ex)
             {
-                exception = new WorkflowDefinitionValidationException([$"Template file '{path}' does not exist."], ex)
-                {
-                    TryInvocation = "'aer run' takes a workflow FILE; built-in templates are used via 'aer dispatch <role>'."
-                };
-            }
-            throw exception;
+                TryInvocation = path.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                    ? null
+                    : "'aer run' takes a workflow FILE; built-in templates are used via 'aer dispatch <role>'.",
+            };
         }
 
         return Parse(json, path);
