@@ -35,6 +35,14 @@ directory (`~/.aer/rooms/<room>/`: `flow.jsonl`, `artifacts/`, bindings, and the
 marker) — #443 converged the code's identifiers onto that noun. One directory may contain several
 repositories; the room does not know or care.
 
+A workflow room additionally gets `terminal.json` (#1356) the moment its workflow reaches a
+terminal state — `{state, steps, outputs, error}`, the same shape `aer status --json` prints, written
+last so a file-watching agent can treat its appearance as the completion signal instead of polling
+`aer status` prose or racing the `aer run` process's own exit. Its absence means "not terminal yet",
+never "never started" — a room that fails during provisioning, before `flow.jsonl` exists at all,
+still gets one (`state: "Failed"`), which is what makes such a room queryable instead of reading
+"Running" forever.
+
 A room's lifecycle surface at HEAD is the daemon's room API (`src/Aer.Daemon/Program.cs` is the
 authority for the route list): open, run, decide, cancel, archive/unarchive/delete, artifact
 retrieval, and a recent-rooms list. Archival is a client-side shelving state, not an engine state —

@@ -8,12 +8,13 @@ It is **not** for developing Baton — that is [`CLAUDE.md`](../../CLAUDE.md) �
 reference for `aer dispatch`, which is [`docs/dispatch.md`](../dispatch.md). Where those own a fact,
 this links rather than restates.
 
-Everything below is the state of the tree on the day it was written. Three known-sharp edges are
+Everything below is the state of the tree on the day it was written. Two known-sharp edges remain
 tracked as open issues and are called out where you will hit them: dispatch ergonomics
-([#1354](https://github.com/aer-works/baton/issues/1354)), the machine completion contract
-([#1356](https://github.com/aer-works/baton/issues/1356)), and errors that diagnose without
+([#1354](https://github.com/aer-works/baton/issues/1354)) and errors that diagnose without
 prescribing ([#1357](https://github.com/aer-works/baton/issues/1357)). Nothing here describes
-behaviour those issues would add.
+behaviour those issues would add. The third, the machine completion contract
+([#1356](https://github.com/aer-works/baton/issues/1356)), has landed — §3 and §5 below describe
+what it actually does rather than what it was tracked to add.
 
 ---
 
@@ -148,6 +149,21 @@ Workflow status: Terminal
 **Read that line rather than reconstructing the path.** The `execution_<id>` segment is allocated per
 execution, so a retry writes to a different directory and the previous one is still on disk.
 
+That prose is for a person watching. For a machine caller (#1356), the same information is
+available two other ways, and both give you the same set of paths without parsing a sentence:
+
+- **`aer status <room-dir> --json`** — one JSON object to stdout, nothing else:
+  `{state, steps:[{id, state, execution}], outputs:[...], error}`. `outputs` is the flat list of
+  absolute paths every succeeded step's declared outputs resolved to — the same paths the human
+  line above prints, derived from the same read. Works on a running room too (`state: "Running"`),
+  not only a settled one.
+- **`<room-dir>/terminal.json`** — written once, the moment the workflow reaches a terminal state,
+  in the identical shape `status --json` prints. Written *last*, after every output it could
+  reference already exists on disk, specifically so you can watch this one file with a file monitor
+  instead of polling `aer status` or babysitting the `aer run` process — the async
+  task-notification parity the issue asked for. Its absence means "not terminal yet", not "never
+  started"; see §5 for the one case where it is the *only* record a room has.
+
 The room directory also holds `snapshot.json` (the workflow this room is bound to), `flow.jsonl` (the
 append-only event ledger), and `flow.lock`. The authoritative room layout is
 [`spec/aer-room-spec-v1.0.md`](../../spec/aer-room-spec-v1.0.md).
@@ -213,15 +229,33 @@ never looked — reported as `Contract not satisfied`, after the run was paid fo
 **`aer status` takes the room directory positionally**: `aer status <room-dir> [--follow]`. There is
 no `--room-dir` flag on it, and passing one is an `Unknown option` error.
 
-**You cannot yet tell a dead room from a slow one, and exit codes are not a contract.** `aer run`
-returns 0 only when the workflow is Terminal with every step Succeeded, 1 otherwise — but a room
-whose provisioning failed before a ledger existed sits at "Running / no ledger yet" forever, and at
-least one validation-failure path has been observed exiting 0. There is no `--wait`, no
-`status --json`, and no completion sentinel to watch. All of that is
-[#1356](https://github.com/aer-works/baton/issues/1356); until it lands, the only completion signal
-is the `aer run` process itself exiting, and the only progress signal is prose from
-`aer status --follow` or the `--echo-worker` stream. **Do not background an `aer run` and poll
-`aer status` for a state word — wait on the process.**
+**Exit codes are a contract, and a dead room from provisioning is no longer indistinguishable from a
+slow one (#1356).** `aer run`/`aer dispatch` return one of five codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | `Succeeded` — every step Succeeded |
+| 1 | `Failed` — a step ran and failed for an ordinary reason (also the bucket a still-Running or still-Paused process falls into if it returns short of Terminal, e.g. no `--wait`) |
+| 2 | `ValidationRefused` — bindings/workflow validation, or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), was refused **before anything was dispatched** |
+| 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own |
+| 4 | `Cancelled` — the workflow settled via cancellation, not failure |
+
+A room whose provisioning fails before `flow.jsonl` ever exists — the GrantAuditMode case above is
+one way to reach this, a malformed bindings/workflow file is another — no longer sits at "Running /
+no ledger yet" forever: it is left in a queryable `Failed` state (`aer status`, or the
+`terminal.json` sentinel §3 describes, which such a room gets even though it has no ledger at all)
+that names why, and the process that hit it exits 2.
+
+**`--wait` on `aer run`** changes what happens when a run pauses rather than settles. The pump
+already blocks in-process until Terminal *or* Paused — nothing new there — so without the flag a
+paused run returns immediately (nothing further to dispatch until a separate `aer decide` resolves
+it, same as today). With it, the same call keeps polling the room's own journal instead of
+returning, until a *different* process's decision carries the workflow all the way to Terminal, or
+you cancel. It does not reconnect to a crashed `aer run` process from an earlier invocation against
+the same room — **that gap (crash-orphaning) is still open.** The only completion signal for that
+case is still the `aer run` process itself exiting, or the `terminal.json` sentinel from §3 for a
+room you did not start yourself. **Do not background an `aer run` and poll `aer status` for a state
+word — wait on the process, or watch `terminal.json`.**
 
 **Budget the wall clock in minutes, not seconds.** A repo-scale agy review ran roughly 3–5 minutes in
 the 2026-08-26 session that prompted [#1358](https://github.com/aer-works/baton/issues/1358) — one
