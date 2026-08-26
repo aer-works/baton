@@ -8,13 +8,12 @@ It is **not** for developing Baton — that is [`CLAUDE.md`](../../CLAUDE.md) �
 reference for `aer dispatch`, which is [`docs/dispatch.md`](../dispatch.md). Where those own a fact,
 this links rather than restates.
 
-Everything below is the state of the tree on the day it was written. One known-sharp edge remains
-tracked as an open issue and is called out where you will hit it: errors that diagnose without
-prescribing ([#1357](https://github.com/aer-works/baton/issues/1357)). Nothing here describes
-behaviour that issue would add. Dispatch ergonomics
-([#1354](https://github.com/aer-works/baton/issues/1354)) and the machine completion contract
-([#1356](https://github.com/aer-works/baton/issues/1356)) have both landed — §3, §5, and §6 below
-describe what they actually do rather than what they were tracked to add.
+Everything below is the state of the tree on the day it was written. Dispatch ergonomics
+([#1354](https://github.com/aer-works/baton/issues/1354)), the machine completion contract
+([#1356](https://github.com/aer-works/baton/issues/1356)), and validation errors carrying a
+corrected-invocation `Try:` line ([#1357](https://github.com/aer-works/baton/issues/1357)) have all
+landed — §3, §5, and §6 below describe what they actually do rather than what they were tracked to
+add.
 
 ---
 
@@ -35,7 +34,8 @@ still refuses at bind time.
 
 **The first argument is a file path.** `aer templates` lists template *ids*, and `aer run` does not
 resolve them — it opens the argument as a file and fails with `Template file '<name>' does not
-exist.` That the two are different namespaces is not said anywhere the error can reach you
+exist.` That the two are different namespaces now shows up in the error itself, as a `Try:` line:
+`'aer run' takes a workflow FILE; built-in templates are used via 'aer dispatch <role>'`
 ([#1357](https://github.com/aer-works/baton/issues/1357)).
 
 ---
@@ -274,10 +274,12 @@ binding's `Timeout` field, which the example above sets to 25 minutes to match w
 declares in [`src/Aer.Adapters/WorkerRoles.json`](../../src/Aer.Adapters/WorkerRoles.json). A timeout
 shorter than the work kills a run you have already paid for.
 
-**Validation errors name the invariant, not the fix.** They are precise about what is wrong and say
-nothing about which invocation would be right, so a cold agent learns by rejection —
-[#1357](https://github.com/aer-works/baton/issues/1357). Two you are most likely to meet are the
-template-file error in §1 and the worktree error in §6.
+**Most validation/refusal errors now carry a `Try:` line naming a corrected invocation**, printed
+directly under the error and echoed on the pre-ledger `terminal.json`/`status --json` sentinel's
+`try` field (§3) — [#1357](https://github.com/aer-works/baton/issues/1357). Two you are most likely
+to meet are the template-file error in §1 and the worktree error in §6. Not every refusal gets one:
+an unknown option or an extra positional argument has no way to infer what you meant, so those are
+left without a suggestion rather than a guessed one.
 
 ---
 
