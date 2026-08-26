@@ -316,21 +316,19 @@ in the workspace are invisible to the worker.** Dispatch discloses this before t
 Workspace: worktree of <repo> at HEAD (<short-sha>) — uncommitted changes are not visible to the worker
 ```
 
-— and the provisioned tree is torn down on Terminal *unless* it carries uncommitted output (a worker's
-own writes, kept rather than discarded) or removal is blocked, in which case it is left behind as one
-more entry in the workspace repository's own `git worktree list` (reported on stderr, not silently).
-See `docs/dispatch.md`'s `--workspace` row and its "auto-provisioned worktree" section for the rest.
+— and the tree's eventual teardown follows the same kept-vs-removed rule as any other provisioned
+worktree. See `docs/dispatch.md`'s `--workspace` row and its "auto-provisioned worktree" section for
+what that rule is and where the disclosure comes from.
 
 This still only reaches the composed **role** dispatch above — a template phase's audited grant (`aer
 dispatch <template>`) is unchanged and refuses at bind time exactly as it always has;
-`WorkflowTemplateComposer` deliberately does not auto-provision (widening it to every phase of a
-multi-step template was out of scope: an earlier phase's writes in the same run would be invisible to
-a later audited phase handed its own blind `HEAD` copy). **Workaround for a template phase: use `aer
-run` with a hand-authored pair**, the same way §2's example runs `review` on `agy` directly — it clears
-the refusal because it asks for the write in the first place instead of having one flipped on for it,
-so `GrantAuditMode` stays at its `Enforced` default. Hand-editing generated bindings to claim
-`IsWorktree: true` is still not a workaround for that case: that field is a stamp the provisioner
-leaves, and a hand-authored `true` claims an isolation that does not exist.
+`WorkflowTemplateComposer` deliberately does not auto-provision (see its own `autoProvisionWorktree:
+false` call site for why). **Workaround for a template phase: use `aer run` with a hand-authored
+pair**, the same way §2's example runs `review` on `agy` directly — it clears the refusal because it
+asks for the write in the first place instead of having one flipped on for it, so `GrantAuditMode`
+stays at its `Enforced` default. Hand-editing generated bindings to claim `IsWorktree: true` is still
+not a workaround for that case: that field is a stamp the provisioner leaves, and a hand-authored
+`true` claims an isolation that does not exist.
 
 Cells marked *works* still require that vendor's CLI to be logged in on this host, and `--adapter`
 without `--model`/`--effort` drops the role tier's vendor-specific model.
