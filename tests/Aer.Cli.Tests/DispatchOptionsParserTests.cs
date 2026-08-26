@@ -91,11 +91,10 @@ public class DispatchOptionsParserTests
     }
 
     /// <summary>
-    /// R2 (#1354/#1380, finding 2): the default room directory must sit outside any workspace a
-    /// dispatch might audit, not under the current directory — a room dropped inside the audited tree
-    /// shows up as `?? .aer/` on that tree's own `git status` and fails the audit even when the tree is
-    /// otherwise pristine. <c>Aer.Adapters.AerPaths.Rooms</c> is the one place that root is resolved
-    /// from (honouring <c>AER_HOME</c>); this pins that the default is built from it, not re-derives it.
+    /// R2 (#1354/#1380, finding 2) -- see the parser's own comment for why the default must sit outside
+    /// any workspace a dispatch might audit. <c>Aer.Adapters.AerPaths.Rooms</c> is the one place that
+    /// root is resolved from (honouring <c>AER_HOME</c>); this pins that the default is built from it,
+    /// not re-derives it.
     /// </summary>
     [Fact]
     public void The_default_room_directory_lives_under_AerPaths_Rooms_not_the_current_directory()

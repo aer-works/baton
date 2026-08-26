@@ -276,9 +276,8 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     [Fact]
     public async Task Output_ending_in_a_directory_separator_is_refused_before_any_fact_is_printed()
     {
-        // R6 (#1354/#1380, finding 8): Path.GetFileName on a trailing-separator path returns "", which
-        // would otherwise declare an anonymous ProducedOutput and pay for a full run before failing
-        // "contract not satisfied" naming nothing. Must be refused before the room directory even exists.
+        // R6 (#1354/#1380, finding 8) -- see ValidateOutputOverride's own doc for what a trailing
+        // separator would otherwise cost. Must be refused before the room directory even exists.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
         var originalOut = Console.Out;
         try

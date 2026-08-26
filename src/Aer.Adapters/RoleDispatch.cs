@@ -58,16 +58,12 @@ public static class RoleDispatch
     /// </param>
     /// <param name="autoProvisionWorktree">
     /// When an audited grant needs isolation (<see cref="GrantAuditMode.AuditedNotEnforced"/>), declare
-    /// a fresh worktree of <paramref name="workingDirectory"/> at <c>HEAD</c> rather than handing the
-    /// worker that directory directly (#1354). Always taken regardless of whether
-    /// <paramref name="workingDirectory"/> already happens to be a worktree itself — <see cref="WorkerBindingConfigEntry.IsWorktree"/>
-    /// is the provisioner's own stamp that a run made the tree, so it is never set from an inspection of
-    /// the caller's directory; the audit's premise (the tree started clean because this run made it)
-    /// only holds for a tree this run actually provisioned. <see cref="RoleDispatch.Materialize"/> (a
-    /// direct role dispatch) takes this path; <see cref="WorkflowTemplateComposer"/> deliberately does
-    /// not (R5) — a composed template's audited phases still refuse at bind time, exactly as before this
-    /// worktree behaviour existed, because widening auto-provisioning to every phase of a multi-step
-    /// template was out of this fix's scope.
+    /// a fresh worktree of <paramref name="workingDirectory"/> at <c>HEAD</c> — never handing the
+    /// worker that directory as-is, regardless of whether it already happens to be a worktree itself,
+    /// because <see cref="WorkerBindingConfigEntry.IsWorktree"/> is the provisioner's own stamp that a
+    /// run made the tree (#1354). <see cref="RoleDispatch.Materialize"/> (a direct role dispatch) takes
+    /// this path; <see cref="WorkflowTemplateComposer"/> deliberately opts out (R5) — see its own call
+    /// site for why.
     /// </param>
     public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null, bool autoProvisionWorktree = true)
     {

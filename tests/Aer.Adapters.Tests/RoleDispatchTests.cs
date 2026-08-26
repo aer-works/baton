@@ -214,14 +214,10 @@ public class RoleDispatchTests
     }
 
     /// <summary>
-    /// R1 (#1354/#1380): a direct role dispatch ALWAYS declares a fresh worktree of the caller's
-    /// directory at <c>HEAD</c> for an audited grant — <see cref="RoleDispatch.ToBinding"/> makes no git
-    /// call of its own to ask whether that directory already happens to be a worktree, so this holds
-    /// for a plain checkout exactly as for a real worktree (the caller's own dirt is never the audit's
-    /// premise). <see cref="WorktreeWorkspaces.Provision"/>, not this mapping step, is what actually
-    /// creates the tree and stamps <see cref="WorkerBindingConfigEntry.IsWorktree"/> once it has —
-    /// asserting <c>false</c> here is the polarity that stops a hand-authored or prematurely-set
-    /// <c>true</c> from ever claiming an isolation this step did not provide.
+    /// R1's polarity, per <see cref="RoleDispatch.ToBinding"/>'s <c>autoProvisionWorktree</c> doc — this
+    /// mapping step declares the worktree spec but never stamps <see cref="WorkerBindingConfigEntry.IsWorktree"/>
+    /// itself, so a hand-authored or prematurely-set <c>true</c> can never claim an isolation this step
+    /// did not provide.
     /// </summary>
     [Fact]
     public void Worktree_is_always_declared_fresh_for_an_audited_grant_regardless_of_the_callers_directory_shape()

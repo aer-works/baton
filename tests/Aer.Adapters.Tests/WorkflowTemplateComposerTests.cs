@@ -65,13 +65,10 @@ public class WorkflowTemplateComposerTests
     }
 
     /// <summary>
-    /// R5 (#1354/#1380, finding 6): RoleDispatch's R1 auto-provisioning is a direct-role-dispatch-only
-    /// behaviour. Widening it to every phase of a composed template would hand an audited phase its own
-    /// blind <c>HEAD</c> copy instead of the tree an earlier phase in the SAME run (e.g. `implement`)
-    /// just wrote to — worse than the loud bind-time refusal it would silently replace. So a phase
-    /// binding here still gets its WorkingDirectory set directly, with no Worktree spec, exactly as
-    /// before worktree auto-provisioning existed; <c>WorkerBindingResolver</c>'s
-    /// <c>UnisolatedGrantAuditException</c> is what refuses it at bind time, not this composer.
+    /// R5 (#1354/#1380, finding 6) — the scope decision itself lives on this composer's own
+    /// <c>autoProvisionWorktree: false</c> call site. Pins the resulting shape: WorkingDirectory set
+    /// directly, no Worktree spec, so <c>WorkerBindingResolver</c>'s <c>UnisolatedGrantAuditException</c>
+    /// is what refuses an audited phase at bind time, not this composer.
     /// </summary>
     [Fact]
     public void An_audited_phase_declares_no_worktree_reverting_to_the_pre_auto_provisioning_bind_time_refusal()
