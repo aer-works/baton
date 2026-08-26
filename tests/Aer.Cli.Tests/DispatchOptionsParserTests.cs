@@ -66,6 +66,15 @@ public class DispatchOptionsParserTests
     {
         var ex = Assert.Throws<CliArgumentException>(() => DispatchOptionsParser.Parse(["--spec", "task.md"]));
         Assert.Contains("<name>", ex.Message);
+        Assert.Equal("run 'aer templates' to see available role and template names.", ex.TryInvocation);
+    }
+
+    [Fact]
+    public void An_option_missing_its_value_names_the_option_in_the_Try_line()
+    {
+        var ex = Assert.Throws<CliArgumentException>(() => DispatchOptionsParser.Parse(["review", "--spec"]));
+        Assert.NotNull(ex.TryInvocation);
+        Assert.Contains("--spec", ex.TryInvocation, StringComparison.Ordinal);
     }
 
     [Fact]

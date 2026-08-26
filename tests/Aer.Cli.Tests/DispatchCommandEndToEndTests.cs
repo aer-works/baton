@@ -126,6 +126,26 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Dispatching_a_role_without_a_spec_is_a_typed_argument_error_naming_the_fix()
+    {
+        // #1382 F2: the highest-traffic dispatch rejection -- 'aer dispatch <role>' with no --spec --
+        // must carry a Try line an invoking agent can follow literally.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var options = new DispatchOptions("advise", SpecFilePath: null, Path.Combine(testRoot, "task"));
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+            Assert.Equal("aer dispatch advise --spec <spec-file>", ex.TryInvocation);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task An_unreadable_catalog_is_a_typed_argument_error_not_a_crash()
     {
         // A typo'd env override or a hand-broken worker-roles.json must exit cleanly, not dump an

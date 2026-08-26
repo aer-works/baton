@@ -101,7 +101,9 @@ public static class RunOptionsParser
     {
         if (index + 1 >= args.Count)
         {
-            throw new CliArgumentException($"Option '{optionName}' requires a value. {Usage} {ResumeNote}");
+            throw new CliArgumentException(
+                $"Option '{optionName}' requires a value. {Usage} {ResumeNote}",
+                $"pass a value after '{optionName}', e.g. {optionName} <value>.");
         }
 
         var value = args[index + 1];

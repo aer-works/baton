@@ -56,7 +56,8 @@ public static class StatusOptionsParser
         {
             throw new CliArgumentException(
                 $"'--follow' and '--json' are incompatible: --json prints exactly one object and returns, --follow " +
-                $"never stops printing on its own. {Usage}");
+                $"never stops printing on its own. {Usage}",
+                $"aer status {roomDirectoryPath} --json");
         }
 
         return new StatusOptions(RoomDirectoryPath.Resolve(roomDirectoryPath), follow, json);

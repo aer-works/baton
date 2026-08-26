@@ -224,7 +224,8 @@ public static class DispatchCommand
         if (options.SpecFilePath is null)
         {
             throw new CliArgumentException(
-                $"'{options.Name}' is a worker role, which runs against a task spec. Pass --spec <spec-file>.");
+                $"'{options.Name}' is a worker role, which runs against a task spec. Pass --spec <spec-file>.",
+                $"aer dispatch {options.Name} --spec <spec-file>");
         }
 
         if (!File.Exists(options.SpecFilePath))
