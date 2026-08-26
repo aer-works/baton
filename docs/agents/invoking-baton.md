@@ -8,13 +8,13 @@ It is **not** for developing Baton — that is [`CLAUDE.md`](../../CLAUDE.md) �
 reference for `aer dispatch`, which is [`docs/dispatch.md`](../dispatch.md). Where those own a fact,
 this links rather than restates.
 
-Everything below is the state of the tree on the day it was written. Two known-sharp edges remain
-tracked as open issues and are called out where you will hit them: dispatch ergonomics
-([#1354](https://github.com/aer-works/baton/issues/1354)) and errors that diagnose without
+Everything below is the state of the tree on the day it was written. One known-sharp edge remains
+tracked as an open issue and is called out where you will hit it: errors that diagnose without
 prescribing ([#1357](https://github.com/aer-works/baton/issues/1357)). Nothing here describes
-behaviour those issues would add. The third, the machine completion contract
-([#1356](https://github.com/aer-works/baton/issues/1356)), has landed — §3 and §5 below describe
-what it actually does rather than what it was tracked to add.
+behaviour that issue would add. Dispatch ergonomics
+([#1354](https://github.com/aer-works/baton/issues/1354)) and the machine completion contract
+([#1356](https://github.com/aer-works/baton/issues/1356)) have both landed — §3, §5, and §6 below
+describe what they actually do rather than what they were tracked to add.
 
 ---
 
@@ -27,9 +27,11 @@ aer run <workflow-file> --bindings <bindings-file> --room-dir <fresh-dir> --echo
 Two files you author, one directory you name. `--echo-worker` streams the worker's stdout so you can
 see it is alive; drop it and you see nothing until the run settles.
 
-`aer dispatch` is the intended front door and needs no JSON from you — but it does not complete for
-every role/adapter pair yet. Read §6 before choosing it; `aer run` is the path that works for all of
-them.
+`aer dispatch` is the intended front door and needs no JSON from you. Read §6 before choosing it —
+an audited role/adapter pair now auto-provisions its own worktree rather than refusing, which is a
+real consequence (uncommitted changes become invisible to the worker), not a formality. `aer run`
+remains the path that works uniformly, including for a composed template's audited phase, which §6
+still refuses at bind time.
 
 **The first argument is a file path.** `aer templates` lists template *ids*, and `aer run` does not
 resolve them — it opens the argument as a file and fails with `Template file '<name>' does not
@@ -285,38 +287,54 @@ role/adapter pair.
 
 ```
 aer dispatch <role> --spec <spec-file> --room-dir <fresh-dir> [--adapter agy|claude] [--workspace <dir>]
+                    [--output <path>]
 ```
 
 A role whose grant withholds writes, dispatched to an adapter whose withheld writes do **not** reach
-the outbox, is bound as `AuditedNotEnforced` — which requires a provisioned git worktree that
-`dispatch` does not provision and no flag can express. Today that is exactly the write-withholding
-roles on `agy`:
+the outbox, is bound as `AuditedNotEnforced` — which needs a provisioned git worktree, or
+`WorkerBindingResolver` refuses it at bind time. `dispatch` now provisions that worktree itself,
+automatically, for every such role/adapter pair (#1354/#1380) — no flag needed, and none exists to
+suppress it. Today that is exactly the write-withholding roles on `agy`:
 
 | Role | Writes | `--adapter claude` | `--adapter agy` |
 |---|---|---|---|
 | `advise` | `advice.md` | works | works |
 | `implement` | `changes.md` | works | works |
 | `janitor` | `janitor.md`, `branch.diff` | works | works |
-| `review` | `report.md`, `verdict.json` | works | blocked — [#1354](https://github.com/aer-works/baton/issues/1354) |
-| `patch` | `patch.diff` | works | blocked — [#1354](https://github.com/aer-works/baton/issues/1354) |
-| `fact-check` | `findings.md` | works | blocked — [#1354](https://github.com/aer-works/baton/issues/1354) |
-| `orchestrate` | `turn-actions.json` | works | blocked — [#1354](https://github.com/aer-works/baton/issues/1354) |
+| `review` | `report.md`, `verdict.json` | works | works — auto-provisioned worktree |
+| `patch` | `patch.diff` | works | works — auto-provisioned worktree |
+| `fact-check` | `findings.md` | works | works — auto-provisioned worktree |
+| `orchestrate` | `turn-actions.json` | works | works — auto-provisioned worktree |
 
-The blocked cells fail with:
+**"Auto-provisioned worktree" is a real consequence, not a formality.** The worker is handed a fresh
+worktree of `--workspace` (or the cwd) at `HEAD` — never the caller's own directory, whether or not
+that directory already happens to be a worktree itself, because the post-run audit's whole premise is
+that the tree started clean *because this run made it*. Concretely: **uncommitted and staged changes
+in the workspace are invisible to the worker.** Dispatch discloses this before the run starts —
 
-> Worker-binding config entry for '<role>' specifies GrantAuditMode.AuditedNotEnforced without a
-> provisioned worktree.
+```
+Workspace: worktree of <repo> at HEAD (<short-sha>) — uncommitted changes are not visible to the worker
+```
 
-**Workaround: use `aer run` with a hand-authored pair.** §2's example is that same `review` lane on
-`agy`. It clears the blocker because it asks for the write in the first place instead of having one
-flipped on for it, so `GrantAuditMode` stays at its `Enforced` default — and `Enforced` runs no
-post-run worktree audit, which is what the isolation requirement exists for. Hand-editing generated
-bindings to claim `IsWorktree: true` is not a second workaround: that field is a stamp the
-provisioner leaves, and a hand-authored `true` claims an isolation that does not exist.
+— and the provisioned tree is torn down on Terminal *unless* it carries uncommitted output (a worker's
+own writes, kept rather than discarded) or removal is blocked, in which case it is left behind as one
+more entry in the workspace repository's own `git worktree list` (reported on stderr, not silently).
+See `docs/dispatch.md`'s `--workspace` row and its "auto-provisioned worktree" section for the rest.
+
+This still only reaches the composed **role** dispatch above — a template phase's audited grant (`aer
+dispatch <template>`) is unchanged and refuses at bind time exactly as it always has;
+`WorkflowTemplateComposer` deliberately does not auto-provision (widening it to every phase of a
+multi-step template was out of scope: an earlier phase's writes in the same run would be invisible to
+a later audited phase handed its own blind `HEAD` copy). **Workaround for a template phase: use `aer
+run` with a hand-authored pair**, the same way §2's example runs `review` on `agy` directly — it clears
+the refusal because it asks for the write in the first place instead of having one flipped on for it,
+so `GrantAuditMode` stays at its `Enforced` default. Hand-editing generated bindings to claim
+`IsWorktree: true` is still not a workaround for that case: that field is a stamp the provisioner
+leaves, and a hand-authored `true` claims an isolation that does not exist.
 
 Cells marked *works* still require that vendor's CLI to be logged in on this host, and `--adapter`
 without `--model`/`--effort` drops the role tier's vendor-specific model.
 
-**Per-role copy-paste examples land here as [#1354](https://github.com/aer-works/baton/issues/1354)
-closes those cells.** Until then, a role's declared outputs — the `Outputs`/`ProducedOutputs` pair you
-need for the `aer run` shape — are in `WorkerRoles.json`, and the table above lists them.
+A role's declared outputs — the `Outputs`/`ProducedOutputs` pair you need for the `aer run` shape — are
+in `WorkerRoles.json`, and the table above lists them. `--output <path>` copies the primary one out to
+`<path>` once the room reaches Terminal; see `docs/dispatch.md` for its validation rules.

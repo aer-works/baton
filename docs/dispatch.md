@@ -10,7 +10,7 @@ interactive session (chat) is a different path with a different prompt and a con
 
 ```
 aer dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
-                    [--workspace <dir>] [--workflow-id <label>]
+                    [--workspace <dir>] [--workflow-id <label>] [--output <path>]
 ```
 
 ## Flags
@@ -18,12 +18,13 @@ aer dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--mod
 | Flag | Meaning |
 |------|---------|
 | `--spec <file>` | The task prompt for the worker — the file whose contents become the spec. |
-| `--room-dir <dir>` | Where the run is recorded (created if absent) — this is the room. Optional: omitted, each invocation gets a fresh unique one at `./.aer/dispatch-<role>-<8 hex>`, because a dispatch is one-shot and a stable derived directory would make the second `aer dispatch review` *resume* the first's terminal snapshot instead of running. |
+| `--room-dir <dir>` | Where the run is recorded (created if absent) — this is the room. Optional: omitted, each invocation gets a fresh unique one at `$AER_HOME/rooms/dispatch-<role>-<8 hex>` (`AER_HOME` defaults to `~/.aer`, see `AerPaths`) — outside any workspace a dispatch might audit (#1354/#1380), and fresh each time because a dispatch is one-shot and a stable derived directory would make the second `aer dispatch review` *resume* the first's terminal snapshot instead of running. |
 | `--adapter <vendor>` | Run the role on a specific vendor (`claude` / `agy`) instead of its tier's default. The `--adapter` escape hatch; a role never names a vendor itself. |
 | `--model <m>` | The model axis, independent of the role ([0017]/[0023]). Omitted keeps the tier's model — except on a vendor swap, where the tier's vendor-specific model is dropped for the new vendor's default (#1082). |
 | `--effort <e>` | The effort axis, independent of the role. Omitted keeps the tier's effort; dropped on a vendor swap. |
-| `--workspace <dir>` | The directory the worker runs in and may read. Defaults to the current directory. Bound explicitly because `agy -p` ignores the process working directory (#491). |
+| `--workspace <dir>` | The repository the worker's read access is scoped to. Defaults to the current directory. For a role whose grant is enforced as declared, this is literally the directory the worker runs in. For a role whose write grant is audited rather than enforced (a withheld-write role on a vendor whose withheld writes do not reach the outbox — today, the write-withholding roles on `agy`), dispatch instead auto-provisions a **fresh git worktree of this directory at `HEAD`** and hands the worker that (#1354/#1380) — the worker never sees uncommitted or staged changes in that case, only what HEAD already had. Bound explicitly because `agy -p` ignores the process working directory (#491). |
 | `--workflow-id <label>` | A label forwarded to the run; defaults to the materialised template id. |
+| `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. |
 
 Vendor, model, and effort are **three independent axes** over a role's instructions ([0017]):
 the role carries a default bundle (its tier), and each axis overrides on its own.
@@ -32,6 +33,21 @@ Model and effort are validated at the adapter boundary before dispatch (#1090): 
 id (`claude-opus-4.8`, a typo for `claude-opus-4-8`) is refused with the correction rather than run;
 and on agy, where the effort suffix in the model name and `--effort` are one control, a disagreeing
 pair is refused up-front naming the real cause instead of failing after the run has started.
+
+### The auto-provisioned worktree, and what it costs
+
+An audited role's dispatch prints the consequence before the run starts:
+
+```
+Workspace: worktree of <repo> at HEAD (<short-sha>) — uncommitted changes are not visible to the worker
+```
+
+The provisioned tree is torn down once the room reaches Terminal — **except** when it carries
+uncommitted changes (a worker's own output written but not committed) or a removal is blocked (a
+still-held file), in which case it is deliberately kept rather than discarded, and a Ctrl-C or crash
+mid-run leaves it in place too. A kept tree is one more entry in the *workspace repository's* own `git
+worktree list`, not something the operator asked for per invocation — `aer run`'s own worktree teardown
+reporting (`worktree <outcome> at <path>`, printed to stderr) is what surfaces it.
 
 ## Roles
 
