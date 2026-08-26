@@ -204,5 +204,33 @@ public class RoleDispatchTests
         Assert.True(agyBinding.PermissionGrant?.WriteFiles);
         Assert.Equal(GrantAuditMode.AuditedNotEnforced, agyBinding.GrantAuditMode);
     }
+
+    [Fact]
+    public void OutputOverride_replaces_primary_output_name_and_updates_prompt_instructions()
+    {
+        var binding = RoleDispatch.ToBinding(Advise, "spec", outputOverride: "custom-advice.md");
+        Assert.Equal("custom-advice.md", binding.Contract.ProducedOutputs[0].Name);
+        Assert.Contains("custom-advice.md", binding.PromptTemplate);
+    }
+
+    [Fact]
+    public void Worktree_is_auto_provisioned_for_audited_not_enforced_grant_mode_on_non_worktree_workspace()
+    {
+        // review dispatched on agy results in AuditedNotEnforced
+        var tempDir = Path.Combine(Path.GetTempPath(), "test-repo-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var binding = RoleDispatch.ToBinding(Review, "spec", adapterOverride: "agy", workingDirectory: tempDir);
+            Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
+            Assert.NotNull(binding.Worktree);
+            Assert.Null(binding.WorkingDirectory);
+            Assert.False(binding.IsWorktree);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
 }
 
