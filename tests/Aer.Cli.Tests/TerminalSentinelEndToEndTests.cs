@@ -135,7 +135,7 @@ public class TerminalSentinelEndToEndTests
                         break;
                     }
 
-                    // wait-ok: poll interval for an in-process room this test is driving; the loop's own 20s deadline is the real ceiling.
+                    // wait-ok: filesystem re-check cadence while waiting for step a's output file; capped by the 20s deadline above.
                     await Task.Delay(50, TestContext.Current.CancellationToken);
                 }
 

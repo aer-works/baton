@@ -103,7 +103,7 @@ public class RunWaitEndToEndTests
                 }
             }
 
-            // wait-ok: poll interval for an in-process room this test is driving; the loop's own 10s deadline is the real ceiling.
+            // wait-ok: local status-poll cadence while waiting for step 'a' to reach Paused; capped by the 10s deadline above.
             await Task.Delay(50, cancellationToken);
         }
 
