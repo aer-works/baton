@@ -308,9 +308,8 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     [Fact]
     public async Task Output_on_a_template_dispatch_is_refused_up_front_like_spec_already_is()
     {
-        // R5 (#1354/#1380, finding 7): a template's phases each declare their own outputs, so there is
-        // no one "primary output" for --output to rename -- mirrors the existing --spec-on-a-template
-        // refusal below.
+        // R5 (#1354/#1380, finding 7) -- see MaterializeTemplateAsync's own comment for why. Mirrors
+        // the existing --spec-on-a-template refusal exercised elsewhere in this class.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
         try
         {
