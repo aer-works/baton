@@ -83,10 +83,15 @@ public static class DispatchOptionsParser
         // second `aer dispatch review` resume — and so replay — the first's terminal snapshot rather
         // than run again. The per-execution artifact dir already keeps outputs collision-free (#897);
         // this keeps the *task* fresh so the orchestrator's repeated self-dispatch (#778) actually reruns.
+        //
+        // R2 (#1354/#1380): the default lives OUTSIDE the workspace, under AerPaths.Rooms
+        // ($AER_HOME/rooms, default ~/.aer/rooms) — never under the audited tree itself. A room dropped
+        // inside the workspace it audits shows up as `?? .aer/` on that tree's own `git status`, which
+        // fails the audit even on an otherwise-pristine workspace (finding 2).
         if (roomDirectoryPath is null)
         {
             var uniqueName = $"dispatch-{name}-{Guid.NewGuid().ToString("N")[..8]}";
-            roomDirectoryPath = Path.Combine(Directory.GetCurrentDirectory(), ".aer", uniqueName);
+            roomDirectoryPath = Path.Combine(Aer.Adapters.AerPaths.Rooms, uniqueName);
         }
 
         return new DispatchOptions(
