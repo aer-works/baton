@@ -55,6 +55,7 @@ public class RunWaitEndToEndTests
 
             // Give the waiting call every chance to (wrongly) return early on its own before the
             // decision lands -- if --wait were a no-op this would already be Paused by now.
+            // wait-ok: in-process settle window proving --wait didn't return early, not an external wait.
             await Task.Delay(500, TestContext.Current.CancellationToken);
             Assert.False(waitingRunTask.IsCompleted, "--wait must not return at Paused.");
 
@@ -65,6 +66,7 @@ public class RunWaitEndToEndTests
             var decideResult = await DecideCommand.ExecuteAsync(decideOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(WorkflowStatus.Terminal, decideResult.State.Status);
 
+            // wait-ok: safety ceiling on a task that should already be resolving post-decision, not a real external wait.
             var waitedResult = await waitingRunTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, waitedResult.State.Status);
@@ -101,6 +103,7 @@ public class RunWaitEndToEndTests
                 }
             }
 
+            // wait-ok: poll interval for an in-process room this test is driving; the loop's own 10s deadline is the real ceiling.
             await Task.Delay(50, cancellationToken);
         }
 

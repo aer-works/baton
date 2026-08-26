@@ -148,11 +148,7 @@ public static class RunCommand
                 .ConfigureAwait(false);
         }
 
-        // #1356 --wait: the pump above already blocks until Terminal or Paused — this only changes
-        // what happens on the latter. Without --wait a paused workflow is reported as-is (nothing
-        // further to dispatch until a separate `aer decide` resolves it); with it, keep polling this
-        // room's own journal for a decision recorded by a DIFFERENT process, the same technique
-        // `aer status --follow` already uses, until Terminal or cancellation.
+        // See RunOptions.Wait's own doc for the full contract; this just implements it.
         if (options.Wait && state.Status != WorkflowStatus.Terminal && !cancellationToken.IsCancellationRequested)
         {
             state = await WaitForTerminalAsync(options.RoomDirectoryPath, snapshot, logPath, cancellationToken)

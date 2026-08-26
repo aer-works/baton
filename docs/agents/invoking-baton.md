@@ -246,16 +246,16 @@ no ledger yet" forever: it is left in a queryable `Failed` state (`aer status`, 
 `terminal.json` sentinel §3 describes, which such a room gets even though it has no ledger at all)
 that names why, and the process that hit it exits 2.
 
-**`--wait` on `aer run`** changes what happens when a run pauses rather than settles. The pump
-already blocks in-process until Terminal *or* Paused — nothing new there — so without the flag a
-paused run returns immediately (nothing further to dispatch until a separate `aer decide` resolves
-it, same as today). With it, the same call keeps polling the room's own journal instead of
-returning, until a *different* process's decision carries the workflow all the way to Terminal, or
-you cancel. It does not reconnect to a crashed `aer run` process from an earlier invocation against
-the same room — **that gap (crash-orphaning) is still open.** The only completion signal for that
-case is still the `aer run` process itself exiting, or the `terminal.json` sentinel from §3 for a
-room you did not start yourself. **Do not background an `aer run` and poll `aer status` for a state
-word — wait on the process, or watch `terminal.json`.**
+**`--wait` on `aer run`** only matters at a pause point — its full contract is
+[`RunOptions.Wait`](../../src/Aer.Cli/RunOptions.cs)'s own doc comment; in short, omitting it hands
+control back to you the moment a workflow pauses (as today, leaving `aer decide` to carry it
+forward later), while passing it keeps that same invocation attached, watching the room until the
+pause is resolved from elsewhere and the workflow settles, or you interrupt it. One thing it does
+not cover: an `aer run` that already crashed in an earlier invocation is not something a later
+`--wait` call reattaches to — **that gap (crash-orphaning) is still open.** For a room you did not
+start yourself, the only completion signals stay the process's own exit or the `terminal.json`
+sentinel §3 describes. **Do not background an `aer run` and poll `aer status` for a state word —
+wait on the process, or watch `terminal.json`.**
 
 **Budget the wall clock in minutes, not seconds.** A repo-scale agy review ran roughly 3–5 minutes in
 the 2026-08-26 session that prompted [#1358](https://github.com/aer-works/baton/issues/1358) — one
