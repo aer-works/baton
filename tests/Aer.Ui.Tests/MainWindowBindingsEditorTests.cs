@@ -780,6 +780,7 @@ public class MainWindowBindingsEditorTests
     [InlineData("flow.jsonl")]
     [InlineData("snapshot.json")]
     [InlineData("flow.lock")]
+    [InlineData("terminal.json")] // #1356: the fifth room-identifying file.
     public async Task Each_room_evidence_file_discriminates_on_its_own_to_refuse_save(string evidenceFileName)
     {
         var roomDir = Path.Combine(Path.GetTempPath(), $"ui-evidence-{evidenceFileName}-{Guid.NewGuid():N}");

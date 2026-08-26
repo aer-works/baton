@@ -47,4 +47,20 @@ public class StatusOptionsParserTests
     {
         Assert.Throws<CliArgumentException>(() => StatusOptionsParser.Parse(["task", "extra"]));
     }
+
+    [Fact]
+    public void The_json_flag_parses_to_true()
+    {
+        var options = StatusOptionsParser.Parse(["task", "--json"]);
+
+        Assert.Equal(Path.GetFullPath("task"), options.RoomDirectoryPath);
+        Assert.True(options.Json);
+    }
+
+    [Fact]
+    public void Follow_and_json_together_are_refused()
+    {
+        var exception = Assert.Throws<CliArgumentException>(() => StatusOptionsParser.Parse(["task", "--follow", "--json"]));
+        Assert.Contains("incompatible", exception.Message, StringComparison.Ordinal);
+    }
 }
