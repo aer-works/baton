@@ -67,9 +67,10 @@ public static class StatusCommand
         // flow.jsonl (bindings/workflow validation can fail before snapshot.json exists too, e.g. a
         // dispatch materialization error) or may get one only much later. Its terminal sentinel is
         // then the only queryable answer, and it wins over the ledger precisely because there is no
-        // ledger to be authoritative instead — once flow.jsonl exists, this branch never runs again
-        // and the ledger (spec §7's system of record) is read below as usual.
-        if (!File.Exists(logPath))
+        // ledger to be authoritative instead — once the room has a REAL ledger (RoomLedgerProbe,
+        // #1374 F1 -- a zero-byte flow.jsonl left by a room-held refusal does not count), this branch
+        // never runs again and the ledger (spec §7's system of record) is read below as usual.
+        if (!RoomLedgerProbe.HasLedger(options.RoomDirectoryPath))
         {
             var sentinel = await TerminalSentinelWriter.TryReadAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
             if (sentinel is not null)

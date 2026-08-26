@@ -110,6 +110,44 @@ public class TerminalSentinelEndToEndTests
     }
 
     [Fact]
+    public async Task Resuming_an_already_Terminal_room_leaves_its_existing_sentinel_alone()
+    {
+        // The other polarity of the retry test above (#1374 F1): RunCommand's stale-sentinel delete
+        // is now guarded on WorkflowTerminalProbe finding the room NOT already Terminal. This proves
+        // the guard's SKIP branch -- a room whose ledger is already Terminal must keep its valid
+        // sentinel through a second RunCommand.ExecuteAsync call, not have it deleted and left absent
+        // (RunCommand itself never rewrites the sentinel -- only Program's shared post-pump step
+        // does -- so if the old unconditional delete ran here, nothing in this test would restore it).
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-terminal-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteOneStepBindingsAsync(testRoot, WriteFileCommand("plan", "the-plan"));
+            var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+
+            var firstResult = await RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, firstResult.State.Status);
+
+            var view = WorkflowStatusProjector.Project(firstResult.State, firstResult.Snapshot, roomDirectory);
+            await TerminalSentinelWriter.WriteAsync(roomDirectory, view, TestContext.Current.CancellationToken);
+            var sentinelPath = Path.Combine(roomDirectory, "terminal.json");
+            var originalSentinelJson = await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken);
+
+            var secondOptions = new RunOptions(WorkflowFilePath: null, bindingsFilePath, roomDirectory);
+            var secondResult = await RunCommand.ExecuteAsync(secondOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, secondResult.State.Status);
+            Assert.True(File.Exists(sentinelPath), "RunCommand must not delete a sentinel for a room whose ledger is already Terminal.");
+            Assert.Equal(originalSentinelJson, await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task The_real_CLI_process_writes_the_sentinel_no_earlier_than_every_output_it_declares()
     {
         // #1374 F3: the prior version of this test asserted the sentinel's absence against
@@ -301,13 +339,87 @@ public class TerminalSentinelEndToEndTests
                 Assert.False(File.Exists(sentinelPath), "A room-held refusal must not fabricate a terminal sentinel.");
             }
 
-            // Releasing the lock and running again proves the room itself was never touched by the
-            // refused attempt -- it starts and completes exactly as if the first attempt never happened.
+            // Releasing the lock and running again with the SAME (good) bindings proves the refusal
+            // left nothing that stops this room from completing normally. It does NOT prove the room
+            // directory is byte-for-byte as it was -- the refused attempt's own FlowEventLogWriter
+            // construction creates a zero-byte flow.jsonl before ConcurrencyGuard.Acquire can throw
+            // (see the next test, which pins that mechanism and the fix it requires).
             using var retryProcess = StartAerProcess(
                 "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
             await retryProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
             Assert.Equal(0, retryProcess.ExitCode);
             Assert.True(File.Exists(sentinelPath));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_room_held_refusal_leaves_a_zero_byte_ledger_and_a_later_failure_still_gets_a_pre_ledger_sentinel()
+    {
+        // #1374 F1's own follow-up (found in second-reader review): flow.jsonl can exist and be
+        // EMPTY -- e.g. because another live 'aer run' engine's FlowEventLogWriter just created it
+        // and holds it open, a moment before its first event lands. A bare File.Exists would then
+        // treat a LATER genuine validation failure against that same room as "already ledgered" and
+        // skip the pre-ledger sentinel write, leaving the room stuck "Running / no ledger yet"
+        // forever -- RoomLedgerProbe's zero-length check (Program.cs and StatusCommand.cs both use
+        // it) is what prevents that, and this test would fail without it.
+        //
+        // #816's measured mechanism reproduces the "already open, empty" ledger deterministically:
+        // holding an Append handle on flow.jsonl from THIS process (same technique
+        // DecideCommandEndToEndTests uses for FlowJournalHeldException). Windows-only in practice --
+        // see that exception type's own doc for why -- so this arm is gated the same way its sibling
+        // tests already are.
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows; see FlowJournalHeldException's own doc");
+
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-run-proc-emptyledger-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot);
+            var goodBindingsFilePath = await WriteNoOpBindingsAsync(testRoot);
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var sentinelPath = Path.Combine(roomDirectory, "terminal.json");
+
+            Directory.CreateDirectory(roomDirectory);
+            using (var liveEngineHolder = new FileStream(
+                logPath, FileMode.Append, FileAccess.Write, FileShare.Read, bufferSize: 1, useAsync: true))
+            {
+                using var refusedProcess = StartAerProcess(
+                    "run", workflowFilePath, "--bindings", goodBindingsFilePath, "--room-dir", roomDirectory);
+                var refusedStderrTask = refusedProcess.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+                await refusedProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+                var refusedStderr = await refusedStderrTask;
+                Assert.True((int)RunExitCode.RoomHeld == refusedProcess.ExitCode, $"stderr: {refusedStderr}");
+            }
+
+            // Pin the exact mechanism the review found: a real, zero-byte flow.jsonl on disk --
+            // not a hypothetical -- with no sentinel written for it.
+            Assert.True(File.Exists(logPath));
+            Assert.Equal(0, new FileInfo(logPath).Length);
+            Assert.False(File.Exists(sentinelPath));
+
+            // Now a genuine validation failure against that same, still-really-pre-ledger room.
+            var badBindingsFilePath = await WriteUnregisteredAdapterBindingsAsync(testRoot);
+            using var secondProcess = StartAerProcess(
+                "run", workflowFilePath, "--bindings", badBindingsFilePath, "--room-dir", roomDirectory);
+            var stderrTask = secondProcess.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await secondProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+            var stderr = await stderrTask;
+
+            Assert.Equal((int)RunExitCode.ValidationRefused, secondProcess.ExitCode);
+            Assert.Contains("not-registered", stderr);
+
+            Assert.True(File.Exists(sentinelPath), "The room must not be left stuck pre-ledger with no sentinel at all.");
+            var view = JsonSerializer.Deserialize<WorkflowStatusView>(await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken));
+            Assert.Equal("Failed", view!.State);
+
+            using var jsonOutput = new StringWriter();
+            await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory, Json: true), jsonOutput, TestContext.Current.CancellationToken);
+            var statusView = JsonSerializer.Deserialize<WorkflowStatusView>(jsonOutput.ToString());
+            Assert.Equal("Failed", statusView!.State);
         }
         finally
         {

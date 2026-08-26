@@ -81,13 +81,23 @@ public static class TerminalSentinelWriter
     }
 
     /// <summary>
-    /// Reads a room's terminal sentinel, or <c>null</c> when the room has not reached one yet OR its
+    /// Reads a room's terminal sentinel, or <c>null</c> when the room has not reached one yet, its
     /// <c>terminal.json</c> is present but not valid JSON matching the shape (#1374 F2: a torn write
-    /// caught mid-move, or a hand-edited/corrupted file). Either way this is a queryable "no answer
-    /// yet", not a caller-visible crash — a malformed sentinel on a pre-ledger room has no ledger to
-    /// fall back to, so letting <see cref="JsonException"/> escape here would make that room
-    /// permanently unqueryable rather than just not-yet-terminal.
+    /// caught mid-move, or a hand-edited/corrupted file), or the file is transiently unreadable
+    /// because a concurrent <see cref="WriteAsync"/> is mid-<see cref="File.Move(string, string, bool)"/>.
+    /// Either way this is a queryable "no answer yet", not a caller-visible crash — a malformed or
+    /// momentarily-unreadable sentinel on a pre-ledger room has no ledger to fall back to, so letting
+    /// any of these escape here would make that room permanently unqueryable rather than just
+    /// not-yet-terminal.
     /// </summary>
+    /// <remarks>
+    /// Opens with <see cref="FileShare.ReadWrite"/> | <see cref="FileShare.Delete"/>, not the
+    /// <see cref="FileShare.Read"/>-only default <see cref="File.OpenRead(string)"/> uses: on Windows,
+    /// <see cref="WriteAsync"/>'s replace-in-place <c>File.Move</c> needs delete access on this same
+    /// path, and a reader that denies it turns a routine concurrent read into an <see cref="IOException"/>
+    /// on the WRITER's side instead — the exact torn-read window #1374 F2 exists to close, just moved
+    /// to the other party.
+    /// </remarks>
     public static async Task<WorkflowStatusView?> TryReadAsync(string roomDirectoryPath, CancellationToken cancellationToken)
     {
         var path = Path.Combine(roomDirectoryPath, TerminalSentinelFileName);
@@ -98,11 +108,12 @@ public static class TerminalSentinelWriter
 
         try
         {
-            await using var stream = File.OpenRead(path);
+            await using var stream = new FileStream(
+                path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             return await JsonSerializer.DeserializeAsync<WorkflowStatusView>(stream, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
             return null;
         }

@@ -220,15 +220,16 @@ catch (AerFlowException ex)
     // Directory.CreateDirectory already created inside RunCommand/DispatchCommand by the time
     // anything here can throw) must be left queryable rather than eternally "Running/no ledger yet".
     //
-    // #1374 F1: only when the room is genuinely pre-ledger. A room whose flow.jsonl already
-    // exists has been dispatched at least once before -- its ledger (or a still-live pump) is the
-    // room's real terminal record, and this invocation's own failure must not overwrite it with a
-    // fabricated Failed/no-outputs sentinel (see invoking-baton.md's exit-code section for the
-    // scenario this guards). The exit code still reports the refusal; only the sentinel write is
+    // #1374 F1: only when the room is genuinely pre-ledger (RoomLedgerProbe.HasLedger, not a bare
+    // File.Exists -- see that type's own doc for why a zero-byte flow.jsonl must not count). A room
+    // with a real ledger has been dispatched at least once before -- its ledger (or a still-live
+    // pump) is the room's real terminal record, and this invocation's own failure must not overwrite
+    // it with a fabricated Failed/no-outputs sentinel (see invoking-baton.md's exit-code section for
+    // the scenario this guards). The exit code still reports the refusal; only the sentinel write is
     // conditional.
     if (args[0] is "run" or "dispatch" && roomDirectoryPathForFailureSentinel is not null)
     {
-        if (!File.Exists(Path.Combine(roomDirectoryPathForFailureSentinel, "flow.jsonl")))
+        if (!RoomLedgerProbe.HasLedger(roomDirectoryPathForFailureSentinel))
         {
             await TerminalSentinelWriter.WriteValidationRefusedAsync(
                 roomDirectoryPathForFailureSentinel, ex.Message, CancellationToken.None).ConfigureAwait(false);
