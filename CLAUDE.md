@@ -2,6 +2,9 @@
 
 The product is **Baton** (decision 0045); "AER" stays the name of the ecosystem around it, and `aer-flow` stays this repo's engine layer. Built in .NET, that layer reads structured workflow definitions, dispatches them to Workers (via `aer-core`), and bridges outputs back to the engine.
 
+**This file is for developing Baton.** If your job is instead to *invoke* Baton — run a lane against
+some other repo and collect its output — read `docs/agents/invoking-baton.md` and stop there.
+
 ---
 
 ## Repo structure

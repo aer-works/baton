@@ -17,6 +17,9 @@ Built in .NET, it reads structured workflow definitions, dispatches them to Work
 - [The plan](docs/plan.md) - The living, gated plan: the bar, the decisions in force, and the work by phase.
 - [Milestone history & decisions of record](docs/milestone-history.md) - What each completed milestone shipped and the durable decisions it left behind.
 - [Agent Instructions](CLAUDE.md) - Architectural rules and development workflows for AI agents.
+- [Invoking Baton](docs/agents/invoking-baton.md) - For an agent whose job is to *run* a Baton lane
+  against some other repo rather than develop Baton: the invocation that works today, a complete
+  workflow+bindings pair, and the edges it will hit.
 - [Vendor capabilities](docs/vendor-capabilities.md) - What each worker CLI can actually enforce and
   ask, every claim observed rather than assumed.
 - [Behavioral Specs](spec/) - The source of truth for engine routing and adapter behaviors. The
