@@ -230,21 +230,26 @@ never looked — reported as `Contract not satisfied`, after the run was paid fo
 no `--room-dir` flag on it, and passing one is an `Unknown option` error.
 
 **Exit codes are a contract, and a dead room from provisioning is no longer indistinguishable from a
-slow one (#1356).** `aer run`/`aer dispatch` return one of five codes:
+slow one (#1356, #1374).** `aer run`/`aer dispatch` return one of six codes:
 
 | Code | Meaning |
 |---|---|
 | 0 | `Succeeded` — every step Succeeded |
 | 1 | `Failed` — a step ran and failed for an ordinary reason (also the bucket a still-Running or still-Paused process falls into if it returns short of Terminal, e.g. no `--wait`) |
-| 2 | `ValidationRefused` — bindings/workflow validation, or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), was refused **before anything was dispatched** |
+| 2 | `ValidationRefused` — bindings/workflow validation, or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), was refused **before anything was dispatched, against a room with no ledger yet** |
 | 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own |
 | 4 | `Cancelled` — the workflow settled via cancellation, not failure |
+| 5 | `RoomHeld` — another Flow instance already holds this room (a live pump, or a background component's brief lock). Not a terminal outcome and not written to `terminal.json`: the room may be perfectly healthy, so nothing here overwrites its real state. Retry later, or check `aer status`/the sentinel for what the room actually is |
 
 A room whose provisioning fails before `flow.jsonl` ever exists — the GrantAuditMode case above is
 one way to reach this, a malformed bindings/workflow file is another — no longer sits at "Running /
 no ledger yet" forever: it is left in a queryable `Failed` state (`aer status`, or the
 `terminal.json` sentinel §3 describes, which such a room gets even though it has no ledger at all)
-that names why, and the process that hit it exits 2.
+that names why, and the process that hit it exits 2. **That queryable-`Failed` treatment is reserved
+for a genuinely pre-ledger room** (#1374): a later invocation that fails against a room whose
+`flow.jsonl` already exists — a re-run with a typo'd `--bindings` against an already-completed room,
+say — still exits 2 for that invocation, but leaves the room's own ledger/sentinel untouched rather
+than overwriting a real terminal record with a fabricated one.
 
 **`--wait` on `aer run`** only matters at a pause point — its full contract is
 [`RunOptions.Wait`](../../src/Aer.Cli/RunOptions.cs)'s own doc comment; in short, omitting it hands
