@@ -14,6 +14,35 @@ public sealed record WorkerContract(
     IReadOnlyList<ProducedOutput> ProducedOutputs,
     IReadOnlyList<string> OptionalMetadata);
 
+/// <summary>
+/// The one statement of why a declared output name may not begin with a dot, and the one wording
+/// every rejection uses (#1345).
+/// <para>
+/// Four production sites reject the same thing — <see cref="ProducedOutput"/>'s constructor,
+/// <c>WorkflowDefinitionValidator</c>, <c>WorkerBindingConfigParser</c> and
+/// <c>WorkerRoleCatalog</c> — and each had written the sentence out again, in three different
+/// phrasings, with three test files asserting a substring of it. All four also said the namespace
+/// was "reserved for engine stream logs", which undersells the rule: the whole leading-dot namespace
+/// is reserved, not just the names
+/// <see cref="Aer.Flow.Dispatch.ExecutionStreamLogger.IsStreamLogFileName"/> happens to use today.
+/// </para>
+/// <para>
+/// The reservation covers <em>declaring</em> an output. A worker may still write an undeclared
+/// dot-named file into its output directory, and that file is a document like any other — which is
+/// why the stream-log filter is four exact names rather than a prefix test.
+/// </para>
+/// </summary>
+public static class ReservedOutputNames
+{
+    public const string LeadingDot = ".";
+
+    public static bool IsReserved(string? name) => name is not null && name.StartsWith(LeadingDot, StringComparison.Ordinal);
+
+    /// <summary>The shared rejection clause. Callers prefix it with their own context.</summary>
+    public const string RejectionClause =
+        "a declared output cannot start with '.' — that namespace is reserved for engine-written files, such as ExecutionStreamLogger's stream logs";
+}
+
 /// <summary>A named output file role a <see cref="WorkerContract"/> requires (spec §4).</summary>
 /// <param name="Schema">
 /// A declared document shape the file must parse as (spec §4.2, decision 0043) — the structural
@@ -31,10 +60,10 @@ public sealed record ProducedOutput
     [JsonConstructor]
     public ProducedOutput(string Name, OutputCondition? Condition = null, OutputSchema Schema = OutputSchema.None)
     {
-        if (Name is not null && Name.StartsWith('.'))
+        if (ReservedOutputNames.IsReserved(Name))
         {
             throw new ArgumentException(
-                $"ProducedOutput name '{Name}' is invalid: names starting with '.' are reserved for engine stream logs.",
+                $"ProducedOutput name '{Name}' is invalid: {ReservedOutputNames.RejectionClause}.",
                 nameof(Name));
         }
 

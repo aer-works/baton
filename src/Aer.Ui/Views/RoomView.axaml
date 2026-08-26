@@ -144,36 +144,50 @@
           <!-- #617: failed-step banner (0020 clause 4: errors are content) -->
           <Border Classes="card" IsVisible="{Binding HasFailedBanner}" Background="{DynamicResource Color.SurfaceSubtle}" Margin="0,4,0,4">
             <StackPanel Spacing="8" DataContext="{Binding FailedBanner}" x:DataType="vm:FailedStepBannerViewModel">
-              <StackPanel Orientation="Horizontal" Spacing="8">
-                <Path Data="{StaticResource Icon.Cross}" Stroke="{DynamicResource Status.Failed}"
+              <!-- #1345: a Grid, not a horizontal StackPanel. `TextWrapping="Wrap"` cannot do
+                   anything inside a horizontal StackPanel — the panel measures its children with
+                   infinite width, so the headline laid out on one line and got clipped by the
+                   pane instead of wrapping. The star column is what gives it a real width to
+                   wrap against. Same defect class as the action row below. -->
+              <Grid ColumnDefinitions="Auto,*">
+                <Path Grid.Column="0" Data="{StaticResource Icon.Cross}" Stroke="{DynamicResource Status.Failed}"
                       StrokeThickness="1.6" StrokeLineCap="Round" StrokeJoin="Round"
-                      Width="14" Height="14" Stretch="Uniform" VerticalAlignment="Center" />
-                <TextBlock Classes="body-strong" Text="{Binding Headline}" TextWrapping="Wrap" VerticalAlignment="Center" />
-              </StackPanel>
+                      Width="14" Height="14" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <TextBlock Grid.Column="1" Classes="body-strong" Text="{Binding Headline}" TextWrapping="Wrap" VerticalAlignment="Center" />
+              </Grid>
               <Border IsVisible="{Binding HasStderrExcerpt}" Background="{DynamicResource Color.Background}" Padding="8" CornerRadius="4">
                 <TextBlock Text="{Binding StderrExcerpt}" Classes="mono" TextWrapping="Wrap" MaxHeight="120" />
               </Border>
-              <StackPanel Orientation="Horizontal" Spacing="8">
+              <!-- #1345: a WrapPanel, not a horizontal StackPanel. A horizontal StackPanel's
+                   desired width is the SUM of its children and it never shrinks below that, so
+                   three buttons forced this card wider than the Shape panel: the headline wrapped
+                   at the inflated width and "Show full output" sat past the pane's right edge,
+                   rendered and unclickable. 0020 clause 4 makes errors content, and an action you
+                   cannot reach is not content. The suite could not see this — it asserts the
+                   button exists, which it did. Driving the app is what found it. -->
+              <WrapPanel>
                 <!-- Hidden, not disabled, while the task is unfinished: re-run-as-clone exists only
                      for a Terminal task, and a click that silently no-ops is worse than no button. -->
-                <Button Command="{Binding TryAgainCommand}" IsVisible="{Binding CanTryAgain}">
+                <!-- WrapPanel has no Spacing, so the gap the StackPanel used to give is a margin
+                     on each button; the bottom half keeps the rows apart once they wrap. -->
+                <Button Command="{Binding TryAgainCommand}" IsVisible="{Binding CanTryAgain}" Margin="0,0,8,4">
                   <StackPanel Orientation="Horizontal" Spacing="4">
                     <Path Data="{StaticResource Icon.Refresh}" StrokeThickness="1.4" StrokeLineCap="Round" StrokeJoin="Round"
                           Width="12" Height="12" Stretch="Uniform" VerticalAlignment="Center" />
                     <TextBlock Text="{Binding TryAgainLabel}" VerticalAlignment="Center" />
                   </StackPanel>
                 </Button>
-                <Button Command="{Binding AskWorkerToFixCommand}">
+                <Button Command="{Binding AskWorkerToFixCommand}" Margin="0,0,8,4">
                   <StackPanel Orientation="Horizontal" Spacing="4">
                     <TextBlock Text="{Binding AskWorkerLabel}" VerticalAlignment="Center" />
                   </StackPanel>
                 </Button>
-                <Button Command="{Binding ShowFullOutputCommand}" IsEnabled="{Binding CanShowFullOutput}">
+                <Button Command="{Binding ShowFullOutputCommand}" IsEnabled="{Binding CanShowFullOutput}" Margin="0,0,8,4">
                   <StackPanel Orientation="Horizontal" Spacing="4">
                     <TextBlock Text="Show full output" VerticalAlignment="Center" />
                   </StackPanel>
                 </Button>
-              </StackPanel>
+              </WrapPanel>
             </StackPanel>
           </Border>
           <TabControl x:Name="StepDetailTabControl">
@@ -264,9 +278,19 @@
           <ItemsControl x:Name="RoomFilesList" ItemsSource="{Binding RoomFiles}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:RoomFileViewModel">
-                <Expander Header="{Binding Name}" Margin="0,0,0,4">
+                <!-- #1345: the summary belongs on the ROW, not inside the body. Shipped in the
+                     body, the list at rest was three bare filenames and you had to open each one
+                     to learn anything — the opposite of #1340's own scope ("name, version count,
+                     latest author and time"). Found by driving, not by the suite: the projector
+                     built the right string, the view just hid it one click away. -->
+                <Expander Margin="0,0,0,4">
+                  <Expander.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+                      <TextBlock Classes="secondary" Text="{Binding SummaryText}" VerticalAlignment="Center" />
+                    </StackPanel>
+                  </Expander.Header>
                   <StackPanel Spacing="4" Margin="0,8,0,0">
-                    <TextBlock Classes="secondary" Text="{Binding SummaryText}" />
                     <ItemsControl ItemsSource="{Binding Versions}">
                       <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Aer.Flow.Domain;
 
 namespace Aer.Adapters;
 
@@ -65,11 +66,11 @@ public static class WorkerBindingConfigParser
             {
                 foreach (var output in entry.Contract.ProducedOutputs)
                 {
-                    if (output.Name is not null && output.Name.StartsWith('.'))
+                    if (ReservedOutputNames.IsReserved(output.Name))
                     {
                         throw new WorkerBindingConfigException(
                             $"Worker-binding config entry for '{workerName}'{location} declares ProducedOutput '{output.Name}' — "
-                            + "names starting with '.' are reserved for engine stream logs.");
+                            + $"{ReservedOutputNames.RejectionClause}.");
                     }
                 }
             }

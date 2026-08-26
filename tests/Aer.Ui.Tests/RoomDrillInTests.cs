@@ -676,6 +676,123 @@ public class RoomDrillInTests
         }
     }
 
+    // #1346: the three branches of "Show full output"'s resolution. Every one of these was
+    // unpinned when the behaviour changed — and the change existed precisely because the old chain
+    // was silently resolving to the wrong file while looking right, which is the failure mode a
+    // projector-level assertion catches and a "the button exists" assertion cannot.
+    private static async Task<string> CreateFailedStepRoomWithStreamLogsAsync(
+        (string FileName, string Content)[] streamFiles, CancellationToken cancellationToken)
+    {
+        var roomDirectory = await CreateRoomDirectoryAsync(
+            TwoStepSnapshot(),
+            [
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("a-1"), Architect)),
+                new FlowEvent.ExecutionFailed(
+                    new ExecutionId("a-1"), FailureClassification.Permanent, "It failed."),
+            ],
+            cancellationToken);
+
+        // Deliberately NO transcript.jsonl: the conversation branch wins when one exists, and it is
+        // the branch this change did not touch.
+        var executionDirectory = Path.Combine(roomDirectory, "artifacts", "execution_a-1");
+        Directory.CreateDirectory(executionDirectory);
+        foreach (var (fileName, content) in streamFiles)
+        {
+            await File.WriteAllTextAsync(Path.Combine(executionDirectory, fileName), content, cancellationToken);
+        }
+
+        return roomDirectory;
+    }
+
+    private static async Task<string?> ReadPreviewAfterShowFullOutputAsync(
+        string roomDirectory, CancellationToken cancellationToken)
+    {
+        var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+        await window.LoadAsync(roomDirectory, cancellationToken);
+
+        var architect = window.ViewModel.RoomSteps.Single(step => step.StepId == "architect");
+        Assert.NotNull(architect.FailedBanner);
+        Assert.True(architect.FailedBanner.CanShowFullOutput);
+        architect.FailedBanner.ShowFullOutputCommand.Execute(null);
+
+        var previewBox = window.FindViewControl<TextBox>("ArtifactPreviewBox")!;
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (string.IsNullOrEmpty(previewBox.Text) && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10, cancellationToken); // wait-ok: poll interval for the fire-and-forget preview read; the 5s deadline is the ceiling
+        }
+
+        return previewBox.Text;
+    }
+
+    [AvaloniaFact]
+    public async Task Show_full_output_opens_the_runs_stream_log_not_its_first_artifact()
+    {
+        var roomDirectory = await CreateFailedStepRoomWithStreamLogsAsync(
+            [
+                // report.md sorts before .stdout.log only if a dot-prefix were stripped; what matters
+                // is that an artifact EXISTS, so a resolver that reached for the first artifact — the
+                // pre-#1346 behaviour — would open this instead and this test would fail.
+                ("plan.md", "THE DELIVERABLE"),
+                (".stdout.log", "THE RAW OUTPUT"),
+            ],
+            TestContext.Current.CancellationToken);
+        try
+        {
+            var preview = await ReadPreviewAfterShowFullOutputAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.Contains("THE RAW OUTPUT", preview);
+            Assert.DoesNotContain("THE DELIVERABLE", preview);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Show_full_output_falls_back_to_stderr_when_stdout_captured_nothing()
+    {
+        var roomDirectory = await CreateFailedStepRoomWithStreamLogsAsync(
+            [
+                // Zero-byte stdout: why that is the interesting case, and not merely a tidy edge,
+                // is on ResolveStreamLogPath.
+                (".stdout.log", string.Empty),
+                (".stderr.log", "THE STDERR TAIL"),
+            ],
+            TestContext.Current.CancellationToken);
+        try
+        {
+            var preview = await ReadPreviewAfterShowFullOutputAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.Contains("THE STDERR TAIL", preview);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Show_full_output_is_unavailable_when_no_stream_was_captured_at_all()
+    {
+        // The polarity arm, and the half of the claim most likely to rot: with nothing to show, the
+        // action must render unavailable rather than open a substitute under a label promising output.
+        var roomDirectory = await CreateFailedStepRoomWithStreamLogsAsync(
+            [("plan.md", "THE DELIVERABLE")], TestContext.Current.CancellationToken);
+        try
+        {
+            var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()));
+            await window.LoadAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            var architect = window.ViewModel.RoomSteps.Single(step => step.StepId == "architect");
+            Assert.NotNull(architect.FailedBanner);
+            Assert.False(architect.FailedBanner.CanShowFullOutput);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     [AvaloniaFact]
     public async Task Try_again_is_hidden_while_a_sibling_step_is_still_live()
     {

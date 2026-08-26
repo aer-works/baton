@@ -154,15 +154,14 @@ public static class WorkerRoleCatalog
 
     private static WorkerRoleOutput ResolveOutput(string roleId, RawOutput raw)
     {
-        // Reject a '.'-prefixed name at load, mirroring ProducedOutput's own constructor (those names
-        // are reserved for engine stream logs). Without this the invalid name would sail through the
-        // catalog and only throw when the front door converts it to a ProducedOutput at dispatch —
-        // the exact "fail at dispatch, not at load" this catalog exists to prevent.
-        if (raw.Name.StartsWith('.'))
+        // Reject a '.'-prefixed name at load, mirroring ProducedOutput's own constructor (see
+        // ReservedOutputNames for why the namespace is reserved). Without this the invalid name would
+        // sail through the catalog and only throw when the front door converts it to a ProducedOutput
+        // at dispatch — the exact "fail at dispatch, not at load" this catalog exists to prevent.
+        if (ReservedOutputNames.IsReserved(raw.Name))
         {
             throw new InvalidOperationException(
-                $"Worker role '{roleId}' output name '{raw.Name}' is invalid: names starting with '.' are " +
-                "reserved for engine stream logs.");
+                $"Worker role '{roleId}' output name '{raw.Name}' is invalid: {ReservedOutputNames.RejectionClause}.");
         }
 
         // Mapped explicitly rather than deserialized straight into OutputSchema: the catalog's wire
