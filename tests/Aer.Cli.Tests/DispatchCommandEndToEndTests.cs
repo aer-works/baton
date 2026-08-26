@@ -164,6 +164,28 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Dispatching_a_role_with_output_override_copies_artifact_to_output_path()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var customOutputPath = Path.Combine(testRoot, "custom-output.md");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake", OutputPath: customOutputPath);
+
+            var state = (await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken)).State;
+
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+            Assert.True(File.Exists(customOutputPath));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static async Task<string> WriteSpecAsync(string directory, string content)
     {
         Directory.CreateDirectory(directory);

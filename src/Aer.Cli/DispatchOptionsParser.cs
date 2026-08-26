@@ -12,7 +12,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>aer dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>]";
+        "Usage: aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>]";
 
     public static DispatchOptions Parse(IReadOnlyList<string> args)
     {
@@ -24,6 +24,7 @@ public static class DispatchOptionsParser
         string? roomDirectoryPath = null;
         string? workspaceDirectory = null;
         string? workflowId = null;
+        string? outputPath = null;
 
         var i = 0;
         while (i < args.Count)
@@ -51,6 +52,9 @@ public static class DispatchOptionsParser
                     break;
                 case "--workflow-id":
                     workflowId = RequireValue(args, ref i, arg);
+                    break;
+                case "--output":
+                    outputPath = RequireValue(args, ref i, arg);
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -88,7 +92,8 @@ public static class DispatchOptionsParser
         return new DispatchOptions(
             name, specFilePath, RoomDirectoryPath.Resolve(roomDirectoryPath), adapter, workflowId,
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
-            model, effort);
+            model, effort,
+            outputPath is null ? null : Path.GetFullPath(outputPath));
     }
 
     private static string RequireValue(IReadOnlyList<string> args, ref int index, string optionName)

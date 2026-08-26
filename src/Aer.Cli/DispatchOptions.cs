@@ -34,6 +34,7 @@ namespace Aer.Cli;
 /// <see cref="Aer.Adapters.RoleDispatch"/>'s <c>modelOverride</c> (#1082).
 /// </param>
 /// <param name="Effort">The effort axis, independent of the role's tier ([0017]/[0023]); null keeps the tier's effort.</param>
+/// <param name="OutputPath">The path where the primary worker report output must land (#1354); null keeps room artifact path default.</param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -42,4 +43,5 @@ public sealed record DispatchOptions(
     string? WorkflowId = null,
     string? WorkspaceDirectory = null,
     string? Model = null,
-    string? Effort = null);
+    string? Effort = null,
+    string? OutputPath = null);

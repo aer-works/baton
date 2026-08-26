@@ -46,13 +46,41 @@ public static class DispatchCommand
         var (definition, bindings) = await MaterializeAsync(options, workspace, cancellationToken).ConfigureAwait(false);
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
+
+        var primaryOutputName = definition.Steps.FirstOrDefault()?.Outputs.FirstOrDefault() ?? "output";
+        var outputPathToReport = options.OutputPath ?? Path.Combine(options.RoomDirectoryPath, "artifacts", primaryOutputName);
+        Console.Out.WriteLine($"Room directory: {options.RoomDirectoryPath}");
+        Console.Out.WriteLine($"Output path: {outputPathToReport}");
+        Console.Out.WriteLine($"Completion signal: process exit code or {Path.Combine(options.RoomDirectoryPath, TerminalSentinelWriter.TerminalSentinelFileName)}");
+
         var workflowFilePath = Path.Combine(options.RoomDirectoryPath, WorkflowFileName);
         var bindingsFilePath = Path.Combine(options.RoomDirectoryPath, BindingsFileName);
         await WorkflowDefinitionWriter.SaveToFileAsync(definition, workflowFilePath, cancellationToken).ConfigureAwait(false);
         await WorkerBindingConfigWriter.SaveToFileAsync(bindings, bindingsFilePath, cancellationToken).ConfigureAwait(false);
 
         var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, options.WorkflowId);
-        return await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var result = await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (options.OutputPath is not null && result.State.Status == WorkflowStatus.Terminal)
+        {
+            var step = result.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Succeeded);
+            if (step is not null && step.LatestExecutionId is { } execId)
+            {
+                var srcPath = Path.Combine(options.RoomDirectoryPath, Aer.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName, $"execution_{execId}", primaryOutputName);
+                if (File.Exists(srcPath))
+                {
+                    var destPath = Path.GetFullPath(options.OutputPath);
+                    var destDir = Path.GetDirectoryName(destPath);
+                    if (!string.IsNullOrEmpty(destDir))
+                    {
+                        Directory.CreateDirectory(destDir);
+                    }
+                    File.Copy(srcPath, destPath, overwrite: true);
+                }
+            }
+        }
+
+        return result;
     }
 
     private static async Task<(WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings)>
@@ -141,7 +169,7 @@ public static class DispatchCommand
         // #1082: vendor/model/effort are three independent axes over the role's instructions ([0017]).
         return RoleDispatch.Materialize(
             role, spec, options.Adapter, workingDirectory: workspaceDirectory,
-            modelOverride: options.Model, effortOverride: options.Effort);
+            modelOverride: options.Model, effortOverride: options.Effort, outputOverride: options.OutputPath);
     }
 
     /// <summary>

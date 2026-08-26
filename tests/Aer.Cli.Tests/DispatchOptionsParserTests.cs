@@ -46,6 +46,13 @@ public class DispatchOptionsParserTests
     }
 
     [Fact]
+    public void Parses_the_output_path_axis()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--output", "custom-report.md"]);
+        Assert.Equal(System.IO.Path.GetFullPath("custom-report.md"), options.OutputPath);
+    }
+
+    [Fact]
     public void The_new_axis_flags_default_to_null_when_absent()
     {
         var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md"]);
