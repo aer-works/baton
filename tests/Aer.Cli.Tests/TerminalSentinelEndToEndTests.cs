@@ -359,13 +359,9 @@ public class TerminalSentinelEndToEndTests
     [Fact]
     public async Task A_room_held_refusal_leaves_a_zero_byte_ledger_and_a_later_failure_still_gets_a_pre_ledger_sentinel()
     {
-        // #1374 F1's own follow-up (found in second-reader review): flow.jsonl can exist and be
-        // EMPTY -- e.g. because another live 'aer run' engine's FlowEventLogWriter just created it
-        // and holds it open, a moment before its first event lands. A bare File.Exists would then
-        // treat a LATER genuine validation failure against that same room as "already ledgered" and
-        // skip the pre-ledger sentinel write, leaving the room stuck "Running / no ledger yet"
-        // forever -- RoomLedgerProbe's zero-length check (Program.cs and StatusCommand.cs both use
-        // it) is what prevents that, and this test would fail without it.
+        // #1374 F1's own follow-up (found in second-reader review) -- see RoomLedgerProbe's own doc
+        // for why a zero-byte flow.jsonl must not read as "already ledgered". This test would fail
+        // without that fix.
         //
         // #816's measured mechanism reproduces the "already open, empty" ledger deterministically:
         // holding an Append handle on flow.jsonl from THIS process (same technique
