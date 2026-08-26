@@ -759,6 +759,18 @@ GATE_SCAN_EXCLUDE = ("docs/archive",)
 GATE_SCAN_SUFFIXES = (".md", ".py", ".cs", ".toml", ".yml", ".yaml", ".rs", ".go")
 
 
+def gate_scan_skips(filename: str) -> bool:
+    """Whether step 10 skips a file by NAME, before any content is read.
+
+    #1365: generated changelogs (release-please) transcribe immutable commit messages
+    verbatim, so a numeric gate citation there is unactionable at every link -- the
+    commit is history, the transcription is mechanical -- and one blocked release PR
+    #309 outright. Step 10 polices LIVING documents; keeping NEW commit messages on
+    slugs is review-time work, not lint-time. Pure, so selfcheck can drive both arms.
+    """
+    return filename == "CHANGELOG.md"
+
+
 def gate_slugs(claude_md: str) -> set[str]:
     """The gate slugs CLAUDE.md actually defines, from its own headings."""
     return set(GATE_HEADING.findall(claude_md))
@@ -926,6 +938,8 @@ def step10_gate_citations():
             dirnames[:] = [d for d in dirnames if d not in (".git", "bin", "obj", "__pycache__")]
             for fn in filenames:
                 if not fn.endswith(GATE_SCAN_SUFFIXES):
+                    continue
+                if gate_scan_skips(fn):
                     continue
                 rel = os.path.relpath(os.path.join(dirpath, fn), ROOT).replace("\\", "/")
                 if any(rel.startswith(x) for x in GATE_SCAN_EXCLUDE):

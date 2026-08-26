@@ -1164,8 +1164,16 @@ def _gate_lint_discriminates():
         faults = completeness.gate_citation_faults({"planted.md": text}, slugs)
         assert not faults, f"the lint fires on {label}: {text!r} -> {faults}"
 
+    # #1365: the name-level skip that keeps generated changelogs out of the scan entirely.
+    # Both arms: the release-please artifact is skipped; a near-name living doc is not.
+    assert completeness.gate_scan_skips("CHANGELOG.md"), \
+        "generated changelogs must be skipped by name -- release PR #309 was unmergeable without this"
+    for near in ("CHANGES.md", "changelog-notes.md", "CHANGELOG.py"):
+        assert not completeness.gate_scan_skips(near), \
+            f"the skip must be exact -- {near!r} is a living document and stays policed"
+
     return (f"{len(slugs)} slugs; {len(caught)} fault shapes caught, "
-            f"{len(ignored)} correct shapes ignored")
+            f"{len(ignored)} correct shapes ignored; changelog name-skip discriminates")
 
 
 @check("step 9 fails CLOSED when either of its two file sources goes unreadable")
