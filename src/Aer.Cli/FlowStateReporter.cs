@@ -76,17 +76,11 @@ public static class FlowStateReporter
             // output name -> absolute path. A Paused step whose underlying outcome Succeeded — the
             // ready-for-review approval gate — prints them too: that is exactly the moment a person
             // wants to open what the worker produced.
-            var executionSucceeded = step.Status == StepStatus.Succeeded ||
-                (step.Status == StepStatus.Paused && step.PausedOutcome == StepStatus.Succeeded);
-            if (executionSucceeded &&
-                step.LatestExecutionId is not null &&
-                artifactsRootPath is not null &&
-                stepDefByStepId.TryGetValue(step.StepId, out var stepDef))
+            if (artifactsRootPath is not null && stepDefByStepId.TryGetValue(step.StepId, out var stepDef))
             {
-                var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, step.LatestExecutionId.Value);
-                foreach (var outputName in stepDef.Outputs)
+                foreach (var (outputName, outputPath) in StepOutputResolver.Resolve(step, stepDef, artifactsRootPath))
                 {
-                    output.WriteLine($"  {outputName} -> {Path.Combine(outputDirectory, outputName)}");
+                    output.WriteLine($"  {outputName} -> {outputPath}");
                 }
             }
         }

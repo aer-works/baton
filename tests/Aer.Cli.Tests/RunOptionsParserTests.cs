@@ -90,4 +90,20 @@ public class RunOptionsParserTests
     {
         Assert.Throws<CliArgumentException>(() => RunOptionsParser.Parse(["workflow.json", "extra.json", "--bindings", "b.json"]));
     }
+
+    [Fact]
+    public void Wait_flag_defaults_to_false()
+    {
+        var options = RunOptionsParser.Parse(["workflow.json", "--bindings", "bindings.json"]);
+
+        Assert.False(options.Wait);
+    }
+
+    [Fact]
+    public void Wait_flag_parses_when_specified()
+    {
+        var options = RunOptionsParser.Parse(["workflow.json", "--bindings", "bindings.json", "--wait"]);
+
+        Assert.True(options.Wait);
+    }
 }

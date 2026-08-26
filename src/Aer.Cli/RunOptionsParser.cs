@@ -13,7 +13,7 @@ public static class RunOptionsParser
     /// by <c>Program</c> in the full command list.
     /// </summary>
     public const string Usage =
-        "Usage: aer run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker]";
+        "Usage: aer run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait]";
 
     /// <summary>
     /// #628: <c>&lt;workflow-file&gt;</c> reads as "this is what runs", and under
@@ -32,6 +32,7 @@ public static class RunOptionsParser
         string? roomDirectoryPath = null;
         string? workflowId = null;
         var echoWorker = false;
+        var wait = false;
 
         var i = 0;
         while (i < args.Count)
@@ -50,6 +51,10 @@ public static class RunOptionsParser
                     break;
                 case "--echo-worker":
                     echoWorker = true;
+                    i++;
+                    break;
+                case "--wait":
+                    wait = true;
                     i++;
                     break;
                 default:
@@ -86,7 +91,8 @@ public static class RunOptionsParser
             Directory.GetCurrentDirectory(), ".aer", Path.GetFileNameWithoutExtension(workflowFilePath));
 
         return new RunOptions(
-            workflowFilePath, bindingsFilePath, RoomDirectoryPath.Resolve(roomDirectoryPath), workflowId, echoWorker);
+            workflowFilePath, bindingsFilePath, RoomDirectoryPath.Resolve(roomDirectoryPath), workflowId, echoWorker,
+            Wait: wait);
     }
 
     private static string RequireValue(IReadOnlyList<string> args, ref int index, string optionName)

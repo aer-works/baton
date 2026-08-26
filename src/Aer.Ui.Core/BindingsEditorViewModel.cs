@@ -616,8 +616,14 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
         }
 
         // `flow.lock` comes from the constant that owns it; the other three have no canonical home
-        // anywhere in the repo yet and are literals until #1271 gives them one.
-        string[] roomEvidenceFiles = ["room.jsonl", "flow.jsonl", "snapshot.json", ConcurrencyGuard.FlowLockFileName];
+        // anywhere in the repo yet and are literals until #1271 gives them one. `terminal.json`
+        // (#1356) is a fifth room-identifying file, added straight from the constant that owns it
+        // rather than repeating the same drift for a file introduced today.
+        string[] roomEvidenceFiles =
+        [
+            "room.jsonl", "flow.jsonl", "snapshot.json", ConcurrencyGuard.FlowLockFileName,
+            Aer.Cli.TerminalSentinelWriter.TerminalSentinelFileName,
+        ];
         foreach (var evidenceFile in roomEvidenceFiles)
         {
             if (File.Exists(Path.Combine(directoryPath, evidenceFile)))

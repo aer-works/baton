@@ -3,6 +3,7 @@ using Aer.Flow.Artifacts;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
+using Aer.Flow.Projection;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;
 using Aer.Flow.Workspaces;
@@ -110,33 +111,115 @@ public static class RunCommand
 
         var workflowId = new WorkflowId(options.WorkflowId ?? snapshot.WorkflowTemplateId.Value);
 
-        await using var writer = new FlowEventLogWriter(logPath);
-        var reader = new FlowEventLogReader(logPath);
-        var dispatcher = new CoreDispatcher(writer);
+        // #1356: invalidate a stale sentinel from a PRIOR terminal attempt against this same room
+        // (a pre-ledger failure now being retried with corrected bindings) before this attempt's
+        // own pump can run for any length of time. Left in place, it would read as "already done"
+        // to a file-watcher for the whole duration of a genuinely fresh run.
+        //
+        // #1374 F1: skipped when the room's OWN ledger already says Terminal. Deleting a still-valid
+        // terminal record before knowing this attempt will produce a new one means a Ctrl-C (or any
+        // interruption) landing right after the delete leaves a genuinely-Terminal room with no
+        // sentinel at all -- "absence means not terminal yet" (spec/aer-room-spec-v1.0.md) would then
+        // be false. A room that is not yet Terminal never has a sentinel to lose, so the probe costs
+        // nothing there and the delete still runs.
+        var priorProbe = await WorkflowTerminalProbe.ProbeAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
+        if (!priorProbe.IsTerminal)
+        {
+            TerminalSentinelWriter.DeleteStaleSentinel(options.RoomDirectoryPath);
+        }
 
-        var state = await MutationInterface.StartWorkflowAsync(
-                workflowId,
-                options.RoomDirectoryPath,
-                snapshot,
-                workerBindings,
-                artifactsRootPath,
-                reader,
-                writer,
-                dispatcher,
-                inFlightExecutions,
-                cancellationToken,
-                holderDescription: $"aer run pump (pid {Environment.ProcessId})",
-                // #1094: a foreground run that quota-parks would otherwise sit silently until the reset
-                // (~a day out); surface it so the paced wait is legible. To stderr — it is a status
-                // notice, not run output.
-                onVendorQuotaPark: resumesAt => Console.Error.WriteLine(FormatVendorQuotaParkNotice(resumesAt)),
-                settleOnVendorExhaustion: options.SettleOnVendorExhaustion)
-            .ConfigureAwait(false);
+        FlowState state;
+        {
+            // Scoped, not the method-wide `await using` this used to be: a Paused return must
+            // release the journal handle before the --wait poll loop below can start, or it holds
+            // the exact lock a separate `aer decide` process needs to record the very decision
+            // being waited on (FlowJournalHeldException — measured by this PR's own --wait test).
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            state = await MutationInterface.StartWorkflowAsync(
+                    workflowId,
+                    options.RoomDirectoryPath,
+                    snapshot,
+                    workerBindings,
+                    artifactsRootPath,
+                    reader,
+                    writer,
+                    dispatcher,
+                    inFlightExecutions,
+                    cancellationToken,
+                    holderDescription: $"aer run pump (pid {Environment.ProcessId})",
+                    // #1094: a foreground run that quota-parks would otherwise sit silently until the
+                    // reset (~a day out); surface it so the paced wait is legible. To stderr — it is a
+                    // status notice, not run output.
+                    onVendorQuotaPark: resumesAt => Console.Error.WriteLine(FormatVendorQuotaParkNotice(resumesAt)),
+                    settleOnVendorExhaustion: options.SettleOnVendorExhaustion)
+                .ConfigureAwait(false);
+        }
+
+        // See RunOptions.Wait's own doc for the full contract; this just implements it.
+        if (options.Wait && state.Status != WorkflowStatus.Terminal && !cancellationToken.IsCancellationRequested)
+        {
+            state = await WaitForTerminalAsync(options.RoomDirectoryPath, snapshot, logPath, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         var worktreeTeardowns = WorktreeProvisioner.TeardownIfTerminal(state.Status, provisionedWorktrees);
 
         return new CommandResult(state, snapshot, resumedFromSnapshot, options.RoomDirectoryPath, worktreeTeardowns);
     }
+
+    /// <summary>
+    /// #1356's <c>--wait</c> poll loop: re-projects <paramref name="logPath"/> at a fixed interval
+    /// (mirroring <c>StatusCommand.FollowAsync</c>'s own poll-on-length-change technique, without the
+    /// per-event printing) until <see cref="WorkflowStatus.Terminal"/> or cancellation. Reads only —
+    /// this process already returned its own <see cref="FlowEventLogWriter"/>'s lock by the time this
+    /// runs, and the state change being waited on is necessarily written by a different process.
+    /// </summary>
+    private static async Task<FlowState> WaitForTerminalAsync(
+        string roomDirectoryPath, WorkflowDefinitionSnapshot snapshot, string logPath, CancellationToken cancellationToken)
+    {
+        var reader = new FlowEventLogReader(logPath);
+        var lastObservedLength = -1L;
+
+        while (true)
+        {
+            try
+            {
+                await Task.Delay(StatusPollIntervalMs, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            var logFile = new FileInfo(logPath);
+            var currentLength = logFile.Exists ? logFile.Length : 0;
+            if (currentLength == lastObservedLength)
+            {
+                continue;
+            }
+
+            lastObservedLength = currentLength;
+
+            var events = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
+            var state = StateProjector.Project(events, snapshot, checkpoint);
+            if (state.Status == WorkflowStatus.Terminal)
+            {
+                return state;
+            }
+        }
+
+        // Cancelled before reaching Terminal: report the latest state we actually observed rather
+        // than a synthetic one, same as the pump itself does on a host stop.
+        var finalEvents = await reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false);
+        return StateProjector.Project(finalEvents, snapshot, ProjectionCheckpointStore.Load(roomDirectoryPath));
+    }
+
+    /// <summary>Matches <c>StatusCommand</c>'s own follow-poll cadence (#1356) — see that constant's doc for why a fixed poll rather than a <see cref="FileSystemWatcher"/>.</summary>
+    private const int StatusPollIntervalMs = 500;
 
     /// <summary>
     /// #628: resuming the bound snapshot instead of the named file is intended (M15 Phase 1, #137),

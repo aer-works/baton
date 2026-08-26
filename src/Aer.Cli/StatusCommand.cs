@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Aer.Flow.Domain;
 using Aer.Flow.Projection;
 using Aer.Flow.Store;
@@ -20,6 +21,13 @@ namespace Aer.Cli;
 /// point of a status/watch command. It also never resolves a worker binding (no <c>--bindings</c>
 /// option exists on <see cref="StatusOptions"/> at all) — nothing here dispatches, so there is
 /// nothing to bind.
+/// </para>
+/// <para>
+/// #1356's one exception to "every field comes from <see cref="StateProjector.Project"/>": a room
+/// with no <c>flow.jsonl</c> yet has nothing for that projection to read, so a pre-ledger failure is
+/// answered from its terminal sentinel (<see cref="TerminalSentinelWriter"/>) instead — see the
+/// early branch in <see cref="ExecuteAsync"/>. <c>--json</c> emits <see cref="WorkflowStatusView"/>
+/// (<see cref="WorkflowStatusProjector"/>), built from that same projected state in the normal case.
 /// </para>
 /// </summary>
 public static class StatusCommand
@@ -55,6 +63,23 @@ public static class StatusCommand
         var snapshotPath = Path.Combine(options.RoomDirectoryPath, SnapshotFileName);
         var logPath = Path.Combine(options.RoomDirectoryPath, LogFileName);
 
+        // #1356 point 3: a room that fails during provisioning/validation may never get a
+        // flow.jsonl (bindings/workflow validation can fail before snapshot.json exists too, e.g. a
+        // dispatch materialization error) or may get one only much later. Its terminal sentinel is
+        // then the only queryable answer, and it wins over the ledger precisely because there is no
+        // ledger to be authoritative instead — once the room has a REAL ledger (RoomLedgerProbe,
+        // #1374 F1 -- a zero-byte flow.jsonl left by a room-held refusal does not count), this branch
+        // never runs again and the ledger (spec §7's system of record) is read below as usual.
+        if (!RoomLedgerProbe.HasLedger(options.RoomDirectoryPath))
+        {
+            var sentinel = await TerminalSentinelWriter.TryReadAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
+            if (sentinel is not null)
+            {
+                PrintSentinel(output, options.Json, sentinel);
+                return;
+            }
+        }
+
         // Never Directory.CreateDirectory here (unlike RunCommand): a status probe against a room
         // that was never started must report the same typed failure, not conjure the directory
         // into existence as a side effect of looking at it.
@@ -82,6 +107,15 @@ public static class StatusCommand
 
             var checkpoint = ProjectionCheckpointStore.Load(options.RoomDirectoryPath);
             var state = StateProjector.Project(events, snapshot, checkpoint);
+
+            if (options.Json)
+            {
+                // #1356 point 1: the SAME state just projected above, not a second read of the
+                // ledger — one derivation, two renderings. Nothing else reaches stdout in this mode.
+                var view = WorkflowStatusProjector.Project(state, snapshot, options.RoomDirectoryPath);
+                output.WriteLine(JsonSerializer.Serialize(view));
+                return;
+            }
 
             PrintState(output, state, logPath, events, entries);
 
@@ -344,6 +378,30 @@ public static class StatusCommand
             or System.Globalization.UnicodeCategory.LineSeparator
             or System.Globalization.UnicodeCategory.ParagraphSeparator
             or System.Globalization.UnicodeCategory.SpaceSeparator);
+    }
+
+    /// <summary>
+    /// Renders a room whose only queryable record is its terminal sentinel (no <c>flow.jsonl</c> —
+    /// see the pre-ledger branch in <see cref="ExecuteAsync"/>). Mirrors <see cref="PrintState"/>'s
+    /// first line in human mode; in <c>--json</c> mode re-serializes the already-parsed
+    /// <paramref name="sentinel"/> rather than trusting its on-disk bytes verbatim. Only ever called
+    /// with a sentinel <see cref="TerminalSentinelWriter.TryReadAsync"/> already parsed successfully —
+    /// a malformed <c>terminal.json</c> comes back <c>null</c> from that call and is handled by the
+    /// caller before this method is reached, not passed in here.
+    /// </summary>
+    private static void PrintSentinel(TextWriter output, bool json, WorkflowStatusView sentinel)
+    {
+        if (json)
+        {
+            output.WriteLine(JsonSerializer.Serialize(sentinel));
+            return;
+        }
+
+        output.WriteLine($"Workflow status: {sentinel.State}");
+        if (!string.IsNullOrWhiteSpace(sentinel.Error))
+        {
+            output.WriteLine($"  {sentinel.Error}");
+        }
     }
 
     private static void PrintState(
