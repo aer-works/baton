@@ -32,9 +32,8 @@ Baton does not authenticate to any model provider. It spawns the vendor's own fi
 on their own machine.
 
 **AER never reads, copies, forwards, or stores a vendor credential** — no API keys, no OAuth tokens,
-no access to the OS credential store. It deliberately does not redirect the vendor CLIs'
-configuration directories, which belong to those tools. This is an enforced invariant, not an
-intention: see
+no access to the OS credential store, and it never places a credential into a config directory. This
+is an enforced invariant, not an intention: see
 [`VendorCredentialIsolationTests`](tests/Aer.Architecture.Tests/VendorCredentialIsolationTests.cs).
 
 Baton is a personal tool. It is not offered as a product or a service, and it does not provide,
