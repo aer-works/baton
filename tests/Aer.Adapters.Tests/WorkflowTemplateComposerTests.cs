@@ -64,6 +64,29 @@ public class WorkflowTemplateComposerTests
         Assert.Null(unpinned["build"].WorkingDirectory);
     }
 
+    /// <summary>
+    /// R5 (#1354/#1380, finding 6): RoleDispatch's R1 auto-provisioning is a direct-role-dispatch-only
+    /// behaviour. Widening it to every phase of a composed template would hand an audited phase its own
+    /// blind <c>HEAD</c> copy instead of the tree an earlier phase in the SAME run (e.g. `implement`)
+    /// just wrote to — worse than the loud bind-time refusal it would silently replace. So a phase
+    /// binding here still gets its WorkingDirectory set directly, with no Worktree spec, exactly as
+    /// before worktree auto-provisioning existed; <c>WorkerBindingResolver</c>'s
+    /// <c>UnisolatedGrantAuditException</c> is what refuses it at bind time, not this composer.
+    /// </summary>
+    [Fact]
+    public void An_audited_phase_declares_no_worktree_reverting_to_the_pre_auto_provisioning_bind_time_refusal()
+    {
+        var template = new WorkflowTemplate("t", [Phase("check", "review")]);
+
+        var (_, bindings) = WorkflowTemplateComposer.Materialize(template, adapterOverride: "agy", workingDirectory: "/repo/root");
+
+        var binding = bindings["check"];
+        Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
+        Assert.Null(binding.Worktree);
+        Assert.Equal("/repo/root", binding.WorkingDirectory);
+        Assert.False(binding.IsWorktree);
+    }
+
     [Fact]
     public void Two_phases_naming_the_same_role_key_by_phase_name_without_collision()
     {

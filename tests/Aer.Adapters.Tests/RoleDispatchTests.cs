@@ -213,24 +213,27 @@ public class RoleDispatchTests
         Assert.Contains("custom-advice.md", binding.PromptTemplate);
     }
 
+    /// <summary>
+    /// R1 (#1354/#1380): a direct role dispatch ALWAYS declares a fresh worktree of the caller's
+    /// directory at <c>HEAD</c> for an audited grant — <see cref="RoleDispatch.ToBinding"/> makes no git
+    /// call of its own to ask whether that directory already happens to be a worktree, so this holds
+    /// for a plain checkout exactly as for a real worktree (the caller's own dirt is never the audit's
+    /// premise). <see cref="WorktreeWorkspaces.Provision"/>, not this mapping step, is what actually
+    /// creates the tree and stamps <see cref="WorkerBindingConfigEntry.IsWorktree"/> once it has —
+    /// asserting <c>false</c> here is the polarity that stops a hand-authored or prematurely-set
+    /// <c>true</c> from ever claiming an isolation this step did not provide.
+    /// </summary>
     [Fact]
-    public void Worktree_is_auto_provisioned_for_audited_not_enforced_grant_mode_on_non_worktree_workspace()
+    public void Worktree_is_always_declared_fresh_for_an_audited_grant_regardless_of_the_callers_directory_shape()
     {
-        // review dispatched on agy results in AuditedNotEnforced
-        var tempDir = Path.Combine(Path.GetTempPath(), "test-repo-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempDir);
-        try
-        {
-            var binding = RoleDispatch.ToBinding(Review, "spec", adapterOverride: "agy", workingDirectory: tempDir);
-            Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
-            Assert.NotNull(binding.Worktree);
-            Assert.Null(binding.WorkingDirectory);
-            Assert.False(binding.IsWorktree);
-        }
-        finally
-        {
-            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-        }
+        var binding = RoleDispatch.ToBinding(Review, "spec", adapterOverride: "agy", workingDirectory: "/any/caller/directory");
+
+        Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
+        Assert.NotNull(binding.Worktree);
+        Assert.Equal("/any/caller/directory", binding.Worktree!.Repository);
+        Assert.Equal("HEAD", binding.Worktree!.Ref);
+        Assert.Null(binding.WorkingDirectory);
+        Assert.False(binding.IsWorktree);
     }
 }
 

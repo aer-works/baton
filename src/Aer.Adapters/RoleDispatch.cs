@@ -56,7 +56,20 @@ public static class RoleDispatch
     /// and the variables are positional per the step's list — an input the contract omits is delivered
     /// but never disclosed, so the worker cannot find it. Empty for a role dispatched alone.
     /// </param>
-    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null)
+    /// <param name="autoProvisionWorktree">
+    /// When an audited grant needs isolation (<see cref="GrantAuditMode.AuditedNotEnforced"/>), declare
+    /// a fresh worktree of <paramref name="workingDirectory"/> at <c>HEAD</c> rather than handing the
+    /// worker that directory directly (#1354). Always taken regardless of whether
+    /// <paramref name="workingDirectory"/> already happens to be a worktree itself — <see cref="WorkerBindingConfigEntry.IsWorktree"/>
+    /// is the provisioner's own stamp that a run made the tree, so it is never set from an inspection of
+    /// the caller's directory; the audit's premise (the tree started clean because this run made it)
+    /// only holds for a tree this run actually provisioned. <see cref="RoleDispatch.Materialize"/> (a
+    /// direct role dispatch) takes this path; <see cref="WorkflowTemplateComposer"/> deliberately does
+    /// not (R5) — a composed template's audited phases still refuse at bind time, exactly as before this
+    /// worktree behaviour existed, because widening auto-provisioning to every phase of a multi-step
+    /// template was out of this fix's scope.
+    /// </param>
+    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null, bool autoProvisionWorktree = true)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -110,21 +123,16 @@ public static class RoleDispatch
         }
 
         WorktreeWorkspace? worktreeSpec = null;
-        var isWorktree = false;
         var effectiveWorkDir = workingDirectory;
 
-        if (grantAuditMode == GrantAuditMode.AuditedNotEnforced && !string.IsNullOrWhiteSpace(workingDirectory))
+        if (autoProvisionWorktree && grantAuditMode == GrantAuditMode.AuditedNotEnforced && !string.IsNullOrWhiteSpace(workingDirectory))
         {
-            if (Aer.Flow.Workspaces.WorktreeProvisioner.IsWorktree(workingDirectory))
-            {
-                isWorktree = true;
-                effectiveWorkDir = workingDirectory;
-            }
-            else
-            {
-                worktreeSpec = new WorktreeWorkspace(workingDirectory, "HEAD");
-                effectiveWorkDir = null;
-            }
+            // R1: always a fresh worktree of the caller's directory at HEAD, whether that directory is
+            // a plain checkout or already a worktree itself — never trust the caller's own tree, and
+            // never stamp IsWorktree on it (see the parameter doc above). WorktreeWorkspaces.Provision
+            // is what actually creates the tree and stamps IsWorktree: true once it has.
+            worktreeSpec = new WorktreeWorkspace(workingDirectory, "HEAD");
+            effectiveWorkDir = null;
         }
 
         return new WorkerBindingConfigEntry(
@@ -138,7 +146,7 @@ public static class RoleDispatch
             Effort: effort,
             Worktree: worktreeSpec,
             GrantAuditMode: grantAuditMode,
-            IsWorktree: isWorktree,
+            IsWorktree: false,
             // #1089: agy only. Streaming puts agy's terminal `result` event on stdout so a teardown-hang
             // (agy holds a scratch handle and never exits) classifies as the satisfied contract it is,
             // instead of a from-scratch retry. claude has no such hang and no detector wired, so streaming
