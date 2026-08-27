@@ -1649,13 +1649,17 @@ public class DaemonIntegrationTests : IAsyncLifetime
                 $"{item.FriendlyName}: Updated {item.Updated:o} precedes Created {item.Created:o}");
         }
 
-        // #322: the list is ordered most-recently-updated first. Asserting the monotonic invariant
-        // (each entry's Updated >= the next's) rather than "the last-started session is index 0"
-        // avoids a wall-clock race when two sessions are created within one timestamp tick.
+        // #322: the list is ordered most-recent-first. Asserting the monotonic invariant rather than
+        // "the last-started session is index 0" avoids a wall-clock race when two sessions are
+        // created within one timestamp tick. #1379: the invariant must hold on the key the endpoint
+        // actually sorts by — LastActivityAt with an Updated fallback — not on Updated alone, whose
+        // order can legitimately differ from the activity order by nanoseconds and made this flaky.
         for (var i = 0; i + 1 < items.Count; i++)
         {
-            Assert.True(items[i].Updated >= items[i + 1].Updated,
-                $"fleet not ordered by recency at index {i}: {items[i].Updated:o} < {items[i + 1].Updated:o}");
+            var left = items[i].LastActivityAt ?? items[i].Updated;
+            var right = items[i + 1].LastActivityAt ?? items[i + 1].Updated;
+            Assert.True(left >= right,
+                $"fleet not ordered by recency at index {i}: {left:o} < {right:o}");
         }
     }
 
