@@ -20,7 +20,12 @@ namespace Aer.Cli.Tests;
 [Collection(WorkingDirectoryCollection.Name)]
 public class ResumeCommandEndToEndTests
 {
-    private static readonly IReadOnlyDictionary<string, IWorkerAdapter> ObservingAdapters =
+    // Instance, not static (#1388 review F10): xUnit gives each [Fact] its own class instance, so an
+    // instance field gives each test its own ResumeObservingWorkerAdapter -- a static one accumulated
+    // every test's invocations for the class's whole lifetime, which made ObservedInvocations.First()
+    // below a control that could not fail (it read whichever test in the class happened to dispatch
+    // first, not this test's own first invocation).
+    private readonly IReadOnlyDictionary<string, IWorkerAdapter> ObservingAdapters =
         new Dictionary<string, IWorkerAdapter> { ["observer"] = new ResumeObservingWorkerAdapter() };
 
     [Fact]
@@ -62,6 +67,13 @@ public class ResumeCommandEndToEndTests
             // And the first invocation was NOT a resume -- confirms this isn't just always-on.
             var firstInvocation = adapter.ObservedInvocations.First();
             Assert.False(firstInvocation.ResumeSession);
+
+            // #1388 review, question 3: everything BESIDES the message and ResumeSession must be
+            // byte-for-byte identical to the original dispatch -- the "implement lane silently
+            // narrowed to review defaults" failure this guards has no other test.
+            Assert.Equal(
+                firstInvocation with { PromptTemplate = "also cover the CI workflows", ResumeSession = true },
+                resumedInvocation);
         }
         finally
         {
