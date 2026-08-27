@@ -109,6 +109,82 @@ public class ResumeCommandEndToEndTests
     }
 
     [Fact]
+    public async Task Resuming_a_missing_message_file_throws_a_CliArgumentException_with_a_Try_line()
+    {
+        // #1388 review F10: the message-file-missing refusal (ResumeCommand.cs:74-77) had no test.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-nomsgfile-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteObservingBindingsAsync(testRoot, sessionId: "sess-unused");
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            await RunCommand.ExecuteAsync(runOptions, ObservingAdapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            var missingMessageFilePath = Path.Combine(testRoot, "does-not-exist.txt");
+            var resumeOptions = new ResumeOptions(roomDirectory, "observer", null, missingMessageFilePath, bindingsFilePath);
+            var thrown = await Assert.ThrowsAsync<CliArgumentException>(
+                () => ResumeCommand.ExecuteAsync(resumeOptions, ObservingAdapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains(missingMessageFilePath, thrown.Message, StringComparison.Ordinal);
+            Assert.NotNull(thrown.TryInvocation);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Resuming_a_worker_missing_from_the_bindings_file_throws_a_CliArgumentException_with_a_Try_line()
+    {
+        // #1388 review F10: the missing-bindings-entry refusal (ResumeCommand.cs:100-105) had no test.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-nobindingsentry-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteObservingBindingsAsync(testRoot, sessionId: "sess-unused");
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            await RunCommand.ExecuteAsync(runOptions, ObservingAdapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            var resumeOptions = new ResumeOptions(roomDirectory, "no-such-worker", "continue please", null, bindingsFilePath);
+            var thrown = await Assert.ThrowsAsync<CliArgumentException>(
+                () => ResumeCommand.ExecuteAsync(resumeOptions, ObservingAdapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("no-such-worker", thrown.Message, StringComparison.Ordinal);
+            Assert.NotNull(thrown.TryInvocation);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Resuming_a_room_with_no_bound_snapshot_throws_a_SnapshotLoadException_with_a_Try_line()
+    {
+        // #1388 review F10: the pre-ledger SnapshotLoadException refusal (ResumeCommand.cs:86-91) had
+        // no test -- a room directory aer run never touched at all.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-nosnapshot-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var bindingsFilePath = await WriteObservingBindingsAsync(testRoot, sessionId: "sess-unused");
+
+            var resumeOptions = new ResumeOptions(roomDirectory, "observer", "continue please", null, bindingsFilePath);
+            var thrown = await Assert.ThrowsAsync<SnapshotLoadException>(
+                () => ResumeCommand.ExecuteAsync(resumeOptions, ObservingAdapters, TestContext.Current.CancellationToken));
+
+            Assert.NotNull(thrown.TryInvocation);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Resuming_a_worker_with_no_recorded_SessionId_refuses_loudly_with_a_Try_line()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-nosession-{Guid.NewGuid():N}");
