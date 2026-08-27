@@ -60,6 +60,10 @@ build = { cmd = "dotnet build", depends-on = ["build-core", "build-sidecar"] }
 # already forced a rebuild via `lint`, so the protection existed where the risk was lowest and was
 # absent from the inner loop, where a session runs this dozens of times.
 test = { cmd = "dotnet build --no-incremental && dotnet test --no-build", depends-on = ["build-core", "test-sidecar"] }
+test-dotnet = { cmd = "dotnet build --no-incremental && dotnet test --no-build", depends-on = ["build-core"] }
+# Sharded test tasks for CI (#1363) — see .github/workflows/ci.yml
+test-flow = { cmd = "dotnet build --no-incremental && dotnet test --no-build --filter \"FullyQualifiedName~Aer.Flow.Tests\"", depends-on = ["build-core"] }
+test-other = { cmd = "dotnet build --no-incremental && dotnet test --no-build --filter \"FullyQualifiedName!~Aer.Flow.Tests\"", depends-on = ["build-core"] }
 # The gates-only test leg (#986): `gates` sequences this after `lint`, whose forced
 # `--no-incremental` build is the same protection `test`'s own build step buys (the "partial
 # cover" note under `lint` below) -- so building again inside the same run was pure duplication.

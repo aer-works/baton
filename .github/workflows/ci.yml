@@ -53,6 +53,7 @@ jobs:
     # !cancelled() makes this a status-check expression, so a skipped `changes` (PR-only, #410)
     # does not skip this job on push.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dotnet == 'true') }}
+    name: test (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
@@ -78,10 +79,13 @@ jobs:
         # main-only while still listed as required (an unexplained CI hang, not an obvious
         # misconfiguration). Rule: require only the always-running `ci` gate; never list a
         # path-filterable leg as a required context.
+        #
+        # Sharding the long-pole Windows test leg (#1363): Flow suite vs remaining
+        # test projects cuts test duration from ~3:49 to ~1:55.
         include: >-
           ${{ github.event_name == 'push'
-              && fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll"},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so"},{"os":"macos-latest","rid":"osx-arm64","lib-name":"libaer_core.dylib"}]')
-              || fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll"},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so"}]') }}
+              && fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-flow","task":"test-flow"},{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-other","task":"test-other","skip-artifact":true},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so","name":"ubuntu","task":"test-dotnet"},{"os":"macos-latest","rid":"osx-arm64","lib-name":"libaer_core.dylib","name":"macos","task":"test-dotnet"}]')
+              || fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-flow","task":"test-flow"},{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-other","task":"test-other","skip-artifact":true},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so","name":"ubuntu","task":"test-dotnet"}]') }}
     runs-on: ${{ matrix.os }}
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
@@ -161,7 +165,7 @@ jobs:
           fi
 
       - name: Test
-        run: pixi run test
+        run: pixi run ${{ matrix.task }}
 
       # Diagnostic for the #398 file-lock flake class. On a Windows test failure, capture whether
       # Defender real-time protection is actually on (PR #922 measured that windows-latest excludes
@@ -220,8 +224,10 @@ jobs:
 
       # M13 Phase 3 (#109): each OS's own cargo build output (already produced above as a
       # dependency of lint/test) becomes this platform's contribution to the fat multi-RID
-      # package the pack job below assembles.
+      # package the pack job below assembles. Shard 2 on Windows skips upload to avoid duplicate
+      # artifact conflicts.
       - name: Upload native library artifact
+        if: ${{ !matrix.skip-artifact }}
         uses: actions/upload-artifact@v4
         with:
           name: native-lib-${{ matrix.rid }}
