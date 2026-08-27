@@ -65,6 +65,47 @@ public class MutationInterfaceResumeTests
     }
 
     [Fact]
+    public async Task RecordResumeAsync_dispatches_a_linked_execution_for_a_Paused_step()
+    {
+        // #1388 review F10: a Paused step is the other resume target InvalidResumeException's own
+        // doc names (alongside terminal) -- previously untested. Paused is neither Pending nor
+        // Running, so RecordResumeAsync's own checks must let it through.
+        var snapshot = MakeSnapshot(Step(Solo, worker: "solo-worker", pausePoint: new PausePoint([])));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["solo-worker"] = new WorkerBinding.Process(Contract, WriteFile("plan", "first"), Timeout),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+            var workflowId = new WorkflowId("wf-resume-paused");
+
+            var firstState = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher,
+                cancellationToken: TestContext.Current.CancellationToken);
+            var firstExecutionId = firstState.Steps.Single().LatestExecutionId!.Value;
+            Assert.Equal(StepStatus.Paused, firstState.Steps.Single().Status);
+
+            var (resumedState, resumedExecutionId) = await MutationInterface.RecordResumeAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, "solo-worker",
+                reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            var resumedStep = resumedState.Steps.Single();
+            Assert.Equal(resumedExecutionId, resumedStep.LatestExecutionId);
+            Assert.NotEqual(firstExecutionId, resumedExecutionId);
+            Assert.Equal(firstExecutionId, resumedStep.LinkedFromExecutionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
     public async Task RecordResumeAsync_refuses_when_no_step_names_the_worker()
     {
         var snapshot = MakeSnapshot(Step(Solo, worker: "solo-worker"));
@@ -368,8 +409,8 @@ public class MutationInterfaceResumeTests
         }
     }
 
-    private static WorkflowStepDefinition Step(StepId stepId, string worker, int maxAttempts = 1) =>
-        new(stepId, worker, [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(maxAttempts));
+    private static WorkflowStepDefinition Step(StepId stepId, string worker, int maxAttempts = 1, PausePoint? pausePoint = null) =>
+        new(stepId, worker, [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(maxAttempts), PausePoint: pausePoint);
 
     private static WorkflowDefinitionSnapshot MakeSnapshot(params WorkflowStepDefinition[] steps) => new(
         new WorkflowDefinitionSnapshotId($"snapshot-{Guid.NewGuid():N}"),
