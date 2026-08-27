@@ -22,11 +22,23 @@ public static class RetryEngine
     /// <see cref="StepStatus.Cancelled"/> is never retried regardless of policy (§9, §10): cancellation is a
     /// decision to stop, not a failure to route around, and this predicate only ever returns true for a
     /// step whose latest attempt is <see cref="StepStatus.Failed"/>.
+    /// <see cref="StepState.LinkedFromExecutionId"/> not null bypasses everything above straight to
+    /// <c>false</c> (issue #1359 F4): a failed resume is never auto-retried by the settling pump.
+    /// <c>aer resume</c>'s own contract is "one message per resume invocation" — a MaxAttempts-driven
+    /// retry would silently dispatch further, unattended vendor invocations against a budget the
+    /// operator was never asked about, and <c>PrepareExecutionAsync</c>'s retry-minted
+    /// <see cref="ExecutionRequest"/> carries no <see cref="ExecutionRequest.LinkedFromExecutionId"/>
+    /// of its own, so a retry would also silently clear the very link this verb exists to record.
     /// </summary>
     public static bool MayRetry(StepState stepState, RetryPolicy retryPolicy)
     {
         ArgumentNullException.ThrowIfNull(stepState);
         ArgumentNullException.ThrowIfNull(retryPolicy);
+
+        if (stepState.LinkedFromExecutionId is not null)
+        {
+            return false;
+        }
 
         return stepState.Status == StepStatus.Failed
             && stepState.LatestFailureClassification != FailureClassification.Permanent

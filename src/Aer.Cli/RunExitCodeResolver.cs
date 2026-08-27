@@ -5,9 +5,10 @@ namespace Aer.Cli;
 /// <summary>
 /// The exit codes <c>aer run</c>/<c>aer dispatch</c> return (#1356) — distinct per failure class so a
 /// caller can branch on <c>$?</c>/<c>%ERRORLEVEL%</c> alone, without parsing <c>status --json</c>.
-/// <c>aer cancel</c>/<c>aer decide</c>/<c>aer supply</c> keep their pre-existing 0/1 contract
-/// (<c>Program</c> only routes here for <c>run</c>/<c>dispatch</c>) — those commands were not named in
-/// #1356's scope, and folding them in was not asked for.
+/// <c>aer resume</c> (#1359) also routes here, on its own design ruling that it gets the same
+/// truthful completion contract. <c>aer cancel</c>/<c>aer decide</c>/<c>aer supply</c> keep their
+/// pre-existing 0/1 contract (<c>Program</c> only routes here for <c>run</c>/<c>dispatch</c>/<c>resume</c>)
+/// — those commands were not named in #1356's scope, and folding them in was not asked for.
 /// </summary>
 public enum RunExitCode
 {
@@ -33,6 +34,13 @@ public enum RunExitCode
 /// Classifies a <see cref="CommandResult"/> into a <see cref="RunExitCode"/>. Pure and side-effect
 /// free so every class is covered by direct unit tests against hand-built <see cref="FlowState"/>s,
 /// not just the handful an end-to-end shell fixture can cheaply reproduce.
+/// <para>
+/// #1388 review F9: for <c>aer resume</c>, this still classifies the WHOLE room's <see cref="FlowState"/>,
+/// not "did the resumed step itself succeed" — a successful resume of one step in a room where a
+/// different step already Failed exits <see cref="RunExitCode.Failed"/>, consistent with #1356's
+/// room-scoped table (§5) rather than a per-verb verdict. Read the resumed step's own
+/// <see cref="StepState.Status"/> (via <c>status --json</c>) for that.
+/// </para>
 /// </summary>
 public static class RunExitCodeResolver
 {

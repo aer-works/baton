@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Aer.Flow.Domain;
+using Aer.Flow.Outcomes;
 using Aer.Flow.Projection;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;

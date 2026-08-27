@@ -3,6 +3,7 @@ using System.Text.Json;
 using Aer.Adapters;
 using Aer.Cli.Tests.TestSupport;
 using Aer.Flow.Domain;
+using Aer.Flow.Mutation;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;
 using Aer.Flow.Workspaces;
@@ -280,6 +281,121 @@ public class WorktreeProvisioningCommandTests
         {
             ForceDeleteDirectory(testRoot);
         }
+    }
+
+    [Fact]
+    public async Task ResumeCommand_reuses_the_kept_dirty_worktree_a_prior_run_left_behind_rather_than_provisioning_fresh()
+    {
+        // Issue #1359 F1: aer resume must continue in the EXACT workspace the execution being
+        // resumed ran in. A worktree with uncommitted changes is KEPT (not torn down) on Terminal
+        // (WorktreeProvisioner.Teardown) -- exactly the population this test exercises: it plants a
+        // marker file directly in the worktree's own cwd (never committed, so the tree is left
+        // dirty), then has the RESUMED invocation read that same marker back out. That only
+        // succeeds if aer resume is running in the SAME directory, not a fresh `git worktree add`.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-worktree-resume-reuse-{Guid.NewGuid():N}");
+        var repository = Path.Combine(testRoot, "repo");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            await SetupGitRepositoryAsync(repository, "notes.txt", "unused", "review-target");
+
+            var workflowFilePath = await WriteSingleStepWorkflowAsync(testRoot);
+            var firstCommand = OperatingSystem.IsWindows()
+                ? "echo marker-from-first-run>marker.txt & echo out_b>%AER_OUTPUT_DIR%\\output_b"
+                : "echo marker-from-first-run > marker.txt && echo out_b > \"$AER_OUTPUT_DIR/output_b\"";
+            var bindingsFilePath = await WriteWorktreeResumeBindingsAsync(
+                testRoot, repository, "review-target", sessionId: "sess-resume-wt", command: firstCommand);
+
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            var runResult = await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, runResult.State.Status);
+
+            var worktreePath = Path.Combine(roomDirectory, WorktreeWorkspaces.WorkspacesDirectoryName, "b");
+            Assert.True(Directory.Exists(worktreePath), "a worktree left dirty by its worker must be kept, not torn down");
+            Assert.Contains(runResult.WorktreeTeardowns, t => t.Outcome == WorktreeTeardownOutcome.KeptUncommitted);
+
+            var firstExecutionId = runResult.State.Steps.Single().LatestExecutionId!.Value;
+
+            var resumeCommand = OperatingSystem.IsWindows()
+                ? "type marker.txt>%AER_OUTPUT_DIR%\\output_b"
+                : "cat marker.txt > \"$AER_OUTPUT_DIR/output_b\"";
+            var resumeOptions = new ResumeOptions(roomDirectory, "b", resumeCommand, null, bindingsFilePath);
+            var resumeResult = await ResumeCommand.ExecuteAsync(resumeOptions, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, resumeResult.State.Status);
+            var resumedStep = resumeResult.State.Steps.Single();
+            Assert.Equal(StepStatus.Succeeded, resumedStep.Status);
+            Assert.Equal(firstExecutionId, resumedStep.LinkedFromExecutionId);
+
+            var outputPath = Path.Combine(
+                roomDirectory, "artifacts", $"execution_{resumedStep.LatestExecutionId!.Value}", "output_b");
+            Assert.Equal(
+                "marker-from-first-run", (await File.ReadAllTextAsync(outputPath, TestContext.Current.CancellationToken)).Trim());
+        }
+        finally
+        {
+            ForceDeleteDirectory(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ResumeCommand_refuses_with_a_Try_line_naming_the_path_when_the_prior_worktree_is_gone()
+    {
+        // Issue #1359 F1's refusal half: a worktree with NO uncommitted changes IS torn down on
+        // Terminal, so the room's own bindings still declare a worktree for a directory that no
+        // longer exists. aer resume must refuse rather than silently `git worktree add` a fresh one.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-worktree-resume-gone-{Guid.NewGuid():N}");
+        var repository = Path.Combine(testRoot, "repo");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            await SetupGitRepositoryAsync(repository, "notes.txt", "from-worktree-repo", "review-target");
+
+            var workflowFilePath = await WriteSingleStepWorkflowAsync(testRoot);
+            var cleanCommand = OperatingSystem.IsWindows()
+                ? "type notes.txt>%AER_OUTPUT_DIR%\\output_b"
+                : "cat notes.txt > \"$AER_OUTPUT_DIR/output_b\"";
+            var bindingsFilePath = await WriteWorktreeResumeBindingsAsync(
+                testRoot, repository, "review-target", sessionId: "sess-resume-gone", command: cleanCommand);
+
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            var runResult = await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, runResult.State.Status);
+
+            var worktreePath = Path.Combine(roomDirectory, WorktreeWorkspaces.WorkspacesDirectoryName, "b");
+            Assert.False(Directory.Exists(worktreePath), "a clean worktree must be torn down on Terminal");
+
+            var resumeOptions = new ResumeOptions(roomDirectory, "b", "continue please", null, bindingsFilePath);
+            var thrown = await Assert.ThrowsAsync<InvalidResumeException>(
+                () => ResumeCommand.ExecuteAsync(resumeOptions, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains(worktreePath, thrown.Message, StringComparison.Ordinal);
+            Assert.NotNull(thrown.TryInvocation);
+
+            // And nothing was re-provisioned as a side effect of the refusal.
+            Assert.False(Directory.Exists(worktreePath), "a refused resume must not conjure a fresh worktree");
+        }
+        finally
+        {
+            ForceDeleteDirectory(testRoot);
+        }
+    }
+
+    private static async Task<string> WriteWorktreeResumeBindingsAsync(
+        string directory, string repository, string reference, string sessionId, string command)
+    {
+        Directory.CreateDirectory(directory);
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["b"] = new WorkerBindingConfigEntry(
+                "shell", new WorkerContract("b", [], [new ProducedOutput("output_b")], []),
+                command, TimeSpan.FromSeconds(30), // wait-ok: test config timeout
+                Worktree: new WorktreeWorkspace(repository, reference), SessionId: sessionId),
+        };
+
+        var path = Path.Combine(directory, "bindings.json");
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(config));
+        return path;
     }
 
     private static async Task SetupGitRepositoryAsync(string repository, string filename, string content, string branchName)

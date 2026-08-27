@@ -35,6 +35,9 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
         [typeof(SupplyOptionsParser)] = () =>
             SupplyOptionsParser.Parse([Relative, "--worker", "w", "--output", "o", "--file", "f.txt", "--bindings", "b.json"])
                 .RoomDirectoryPath,
+        [typeof(ResumeOptionsParser)] = () =>
+            ResumeOptionsParser.Parse([Relative, "--worker", "w", "--message", "m", "--bindings", "b.json"])
+                .RoomDirectoryPath,
         [typeof(StatusOptionsParser)] = () =>
             StatusOptionsParser.Parse([Relative]).RoomDirectoryPath,
     };

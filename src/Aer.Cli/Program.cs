@@ -56,7 +56,7 @@ if (args.Length >= 1 && args[0] == "agy-hook-check")
         Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns);
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "cancel", "decide", "supply", "status", "templates" };
+var knownSubcommands = new[] { "run", "dispatch", "cancel", "decide", "supply", "resume", "status", "templates" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -69,6 +69,7 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine(
         "       aer supply <room-dir> --worker <role> --output <name> --file <source-path> " +
         "--bindings <bindings-file> [--workflow-id <id>]");
+    Console.Error.WriteLine($"       {ResumeOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {StatusOptionsParser.Usage[7..]}");
     Console.Error.WriteLine("       aer templates [--json]");
     Console.Error.WriteLine("       aer --version");
@@ -152,6 +153,14 @@ try
                 break;
             }
 
+        case "resume":
+            {
+                var options = ResumeOptionsParser.Parse(args[1..]);
+                result = await ResumeCommand.ExecuteAsync(options, WorkerAdapterRegistry.Default, hostStopSource.Token)
+                    .ConfigureAwait(false);
+                break;
+            }
+
         default:
             {
                 var options = SupplyOptionsParser.Parse(args[1..]);
@@ -186,7 +195,10 @@ try
         await TerminalSentinelWriter.WriteAsync(terminalRoomDirectoryPath, view, CancellationToken.None).ConfigureAwait(false);
     }
 
-    if (args[0] is "run" or "dispatch")
+    // #1359: aer resume gets the same truthful exit-code table as run/dispatch — its own design
+    // ruling names the completion contract explicitly, unlike cancel/decide/supply below, which
+    // #1356 never asked to widen.
+    if (args[0] is "run" or "dispatch" or "resume")
     {
         return (int)RunExitCodeResolver.Resolve(result);
     }
@@ -206,7 +218,7 @@ catch (AerFlowException ex) when (ex is Aer.Flow.Concurrency.WorkflowLockedExcep
     // contradict 'aer status --json' reading the very same room's ledger as Running at the same
     // moment. The room is left exactly as it was; the exit code alone says "retry later".
     WriteErrorWithTry(ex);
-    return args[0] is "run" or "dispatch" ? (int)RunExitCode.RoomHeld : 1;
+    return args[0] is "run" or "dispatch" or "resume" ? (int)RunExitCode.RoomHeld : 1;
 }
 catch (AerFlowException ex)
 {
@@ -235,6 +247,15 @@ catch (AerFlowException ex)
                 roomDirectoryPathForFailureSentinel, ex.Message, CancellationToken.None, ex.TryInvocation).ConfigureAwait(false);
         }
 
+        return (int)RunExitCode.ValidationRefused;
+    }
+
+    // #1359: a resume always targets an already-dispatched room — it never has a pre-ledger state to
+    // leave a sentinel for (that branch above is run/dispatch-only), but its own refusals (no
+    // SessionId recorded, an ambiguous or unresolvable worker, a still-running target) are exactly
+    // #1356's ValidationRefused shape: refused before anything new was dispatched.
+    if (args[0] == "resume")
+    {
         return (int)RunExitCode.ValidationRefused;
     }
 

@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 
-namespace Aer.Cli;
+namespace Aer.Flow.Outcomes;
 
 public enum EngineLivenessStatus
 {
@@ -12,6 +12,13 @@ public enum EngineLivenessStatus
 
 public sealed record EngineLivenessResult(EngineLivenessStatus Status, string? Why = null);
 
+/// <summary>
+/// Whether the engine process that recorded a <c>FlowEvent.ExecutionRequestAccepted</c> is still
+/// alive — the one liveness mechanism this codebase has, consulted by both <c>aer status</c>'s human
+/// rendering (<c>Aer.Cli.StatusCommand.FormatStepStatus</c>) and <c>aer resume</c>'s STALLED
+/// reconciliation (<c>MutationInterface.RecordResumeAsync</c>, issue #1359 F3) — never a second,
+/// independently-invented check.
+/// </summary>
 public static class EngineLivenessProbe
 {
     public static EngineLivenessResult Probe(int? pid, DateTimeOffset? startTime)

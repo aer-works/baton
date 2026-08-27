@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Aer.Cli;
 using Aer.Flow.Domain;
+using Aer.Flow.Outcomes;
 
 namespace Aer.Cli.Tests;
 

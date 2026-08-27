@@ -1,0 +1,48 @@
+using Aer.Adapters;
+using Aer.Flow.Dispatch;
+using Aer.Flow.Domain;
+
+namespace Aer.Cli.Tests.TestSupport;
+
+/// <summary>
+/// A CI-safe stand-in for a real vendor adapter (issue #1359's <c>aer resume</c> tests): records
+/// every <see cref="WorkerInvocation"/> it is asked to resolve — in particular
+/// <see cref="WorkerInvocation.PromptTemplate"/>, <see cref="WorkerInvocation.ResumeSession"/>, and
+/// <see cref="WorkerInvocation.SessionId"/> — so a test can assert the resume-shaped override
+/// (<c>ResumeSession: true</c>, the operator's message as <c>PromptTemplate</c>, the recorded
+/// <c>SessionId</c>) actually reached the adapter, the same seam <c>ClaudeWorkerAdapter</c>'s
+/// <c>--resume</c>/<c>--session-id</c> branch reads. Always writes every declared output so the
+/// contract is satisfied and the workflow proceeds.
+/// </summary>
+internal sealed class ResumeObservingWorkerAdapter : IWorkerAdapter
+{
+    private readonly Lock _gate = new();
+    private readonly List<WorkerInvocation> _observedInvocations = [];
+
+    public IReadOnlyList<WorkerInvocation> ObservedInvocations
+    {
+        get { lock (_gate) { return [.. _observedInvocations]; } }
+    }
+
+    public CoreDispatchTarget Resolve(WorkerInvocation invocation, WorkerContract contract)
+    {
+        lock (_gate)
+        {
+            _observedInvocations.Add(invocation);
+        }
+
+        var script = contract.ProducedOutputs.Count > 0
+            ? string.Join(
+                OperatingSystem.IsWindows() ? " & " : " && ",
+                contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
+            : "exit 0";
+
+        return OperatingSystem.IsWindows()
+            ? new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory)
+            : new CoreDispatchTarget("sh", ["-c", script], invocation.WorkingDirectory);
+    }
+
+    private static string WriteCommand(string outputName) => OperatingSystem.IsWindows()
+        ? $"echo x>%AER_OUTPUT_DIR%\\{outputName}"
+        : $"echo x > \"$AER_OUTPUT_DIR/{outputName}\"";
+}

@@ -305,6 +305,238 @@ public static class MutationInterface
     }
 
     /// <summary>
+    /// A fifth mutation-surface entry point (issue #1359): re-enters an already-dispatched step's
+    /// worker with a new message on the same workspace and grants, via the adapter's existing
+    /// resume-session plumbing (<c>WorkerInvocation.ResumeSession</c>/<c>SessionId</c>, in
+    /// <c>Aer.Adapters</c> — <c>Aer.Flow</c> never references that assembly, per Adapter Isolation).
+    /// <paramref name="workerBindings"/> must already carry the resume-shaped override for
+    /// <paramref name="worker"/> (<c>ResumeSession: true</c>, the operator's message as its
+    /// <c>PromptTemplate</c>) — <c>Aer.Cli.ResumeCommand</c>
+    /// builds that override the same way <c>SupplyCommand</c> overlays its own single-worker binding;
+    /// this method only decides WHICH step that binding dispatches against and links the resulting
+    /// execution to the one it continues.
+    /// <para>
+    /// Unlike <see cref="StartWorkflowAsync"/>'s readiness-driven dispatch, this always dispatches
+    /// exactly one execution regardless of <see cref="Scheduling.DependencyResolver"/>'s ordinary
+    /// conditions — a resume is an explicit operator override of an already-terminal (or paused)
+    /// step, not a step the DAG itself would ever re-offer as ready on its own. Blocks until that one
+    /// dispatch completes and its outcome is recorded; unlike every other entry point above, this
+    /// does NOT pump to a fixed point on its own (#1359's scope: "one message per resume invocation",
+    /// no cascading multi-step orchestration folded in here) — a caller wanting downstream
+    /// consequences (a sibling step this one's outcome newly unblocks, or a pause obligation) makes a
+    /// separate <see cref="StartWorkflowAsync"/> call afterward, the same two-call sequence
+    /// <c>SupplyCommand</c> already uses for its own single-execution mutation.
+    /// </para>
+    /// </summary>
+    /// <param name="worker">
+    /// The worker ROLE (<see cref="WorkflowStepDefinition.Worker"/>) to resume — identifies the
+    /// target step by which snapshot step declares it, not by step id. Refused as ambiguous if more
+    /// than one step in <paramref name="snapshot"/> names the same worker.
+    /// </param>
+    /// <param name="sessionId">
+    /// The vendor session id the caller's bindings file records for <paramref name="worker"/> right
+    /// now, stored on <see cref="ExecutionRequest.SessionId"/> (that field's doc owns the why). Here
+    /// it is also the refusal input: a resume whose target execution already recorded a DIFFERENT
+    /// session id is refused up front instead of silently forking the vendor session. <c>null</c> is
+    /// never checked against — the first resume of an ordinary dispatch has nothing to compare.
+    /// </param>
+    /// <exception cref="Aer.Flow.Concurrency.WorkflowLockedException">
+    /// Another Flow instance already holds <paramref name="roomDirectoryPath"/>'s lock.
+    /// </exception>
+    /// <exception cref="InvalidResumeException">
+    /// No step names <paramref name="worker"/>, more than one does, the target step has never been
+    /// dispatched (<see cref="StepStatus.Pending"/>), its latest attempt is still
+    /// <see cref="StepStatus.Running"/> (mid-flight steering is out of #1359's scope),
+    /// <paramref name="workerBindings"/> resolves it to a <see cref="WorkerBinding.NonProcess"/>
+    /// (nothing to resume a session on), or <paramref name="sessionId"/> disagrees with the session
+    /// id the execution being resumed actually recorded (F6).
+    /// </exception>
+    public static async Task<(FlowState State, ExecutionId ExecutionId)> RecordResumeAsync(
+        WorkflowId workflowId,
+        string roomDirectoryPath,
+        WorkflowDefinitionSnapshot snapshot,
+        IReadOnlyDictionary<string, WorkerBinding> workerBindings,
+        string artifactsRootPath,
+        string worker,
+        IEventLogReader eventLogReader,
+        IEventLogWriter eventLogWriter,
+        ICoreDispatcher dispatcher,
+        CancellationToken cancellationToken = default,
+        TimeProvider? timeProvider = null,
+        string? holderDescription = null,
+        string? sessionId = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(workerBindings);
+        ArgumentException.ThrowIfNullOrEmpty(artifactsRootPath);
+        ArgumentException.ThrowIfNullOrEmpty(worker);
+        ArgumentNullException.ThrowIfNull(eventLogReader);
+        ArgumentNullException.ThrowIfNull(eventLogWriter);
+        ArgumentNullException.ThrowIfNull(dispatcher);
+
+        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, holderDescription);
+
+        var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
+        var log = await eventLogReader.ReadSnapshotFromOffsetAsync(checkpoint?.ByteOffset ?? 0, cancellationToken).ConfigureAwait(false);
+        if (log.IsFallbackToFull)
+        {
+            checkpoint = null;
+        }
+        var (state, resumeCheckpoint) = StateProjector.ProjectAndCheckpoint(log.FlowEvents, snapshot, checkpoint, log.ByteOffset);
+
+        var matchingSteps = snapshot.Steps.Where(s => s.Worker == worker).ToList();
+        if (matchingSteps.Count == 0)
+        {
+            throw new InvalidResumeException($"No step in this workflow names worker '{worker}'.")
+            {
+                TryInvocation = "pass --worker naming one of this workflow's roles: " +
+                    $"{string.Join(", ", snapshot.Steps.Select(s => s.Worker).Distinct())}.",
+            };
+        }
+
+        if (matchingSteps.Count > 1)
+        {
+            throw new InvalidResumeException(
+                $"Worker '{worker}' is bound to {matchingSteps.Count} steps " +
+                $"({string.Join(", ", matchingSteps.Select(s => s.StepId))}) — aer resume needs a single, " +
+                "unambiguous target step.")
+            {
+                TryInvocation = "give each step its own worker name in the workflow definition, so aer " +
+                    "resume can target exactly one.",
+            };
+        }
+
+        var stepDefinition = matchingSteps[0];
+        var stepState = state.Steps.Single(s => s.StepId == stepDefinition.StepId);
+
+        if (stepState.Status == StepStatus.Pending)
+        {
+            throw new InvalidResumeException($"Step '{stepDefinition.StepId}' (worker '{worker}') has never run — nothing to resume.")
+            {
+                TryInvocation = "dispatch it at least once first (`aer run` or `aer dispatch`), then resume it.",
+            };
+        }
+
+        if (stepState.Status == StepStatus.Running)
+        {
+            // §1359 F3: room-says-Running is not the same fact as "the engine dispatching it is still
+            // alive" — reuse the same probe `aer status`'s human rendering already consults rather than
+            // inventing a second liveness mechanism (StatusCommand.FormatStepStatus).
+            var allEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            var accepted = allEvents.OfType<FlowEvent.ExecutionRequestAccepted>()
+                .LastOrDefault(e => e.Request.ExecutionId == stepState.LatestExecutionId);
+            var liveness = EngineLivenessProbe.Probe(accepted?.EnginePid, accepted?.EngineStartTime);
+
+            if (liveness.Status != EngineLivenessStatus.Dead)
+            {
+                var unknownSuffix = liveness.Status == EngineLivenessStatus.Unknown ? $" (liveness unknown: {liveness.Why})" : string.Empty;
+                throw new InvalidResumeException(
+                    $"Step '{stepDefinition.StepId}' (worker '{worker}') is still running{unknownSuffix} — aer resume only " +
+                    "continues a terminal or stalled (paused) worker; steering a live one is out of scope for " +
+                    "this verb.")
+                {
+                    TryInvocation = $"wait for the current run to finish, or check `aer status {roomDirectoryPath}` " +
+                        "for progress; retry once it reaches a terminal or stalled state.",
+                };
+            }
+
+            // STALLED (§1359 F3): the room projects Running, but the engine that accepted this
+            // execution is provably dead — the crash-recovery case this verb exists to rescue.
+            // Record the takeover before dispatching the resume's own linked execution, so the
+            // orphaned attempt is never left with an accepted request and no resolution.
+            await eventLogWriter.AppendAsync(
+                    new FlowEvent.ExecutionFailed(
+                        stepState.LatestExecutionId!.Value,
+                        FailureClassification.Retryable,
+                        "Abandoned: aer resume found the engine behind this execution is no longer alive " +
+                        "(a stalled run) and took over the step."),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        var previousExecutionId = stepState.LatestExecutionId
+            ?? throw new InvalidResumeException($"Step '{stepDefinition.StepId}' (worker '{worker}') has no recorded execution to resume.")
+            {
+                TryInvocation = "re-run `aer run` (or `aer dispatch`) to dispatch it fresh — there is no recorded execution for aer resume to continue.",
+            };
+
+        // F6: the execution being resumed already recorded which session IT continued (null for the
+        // first resume of an ordinary dispatch, which never had one). If the bindings file now names
+        // a DIFFERENT session, the operator's SessionId edit and the ledger's own history disagree —
+        // refuse rather than silently record a continuity nothing actually backs.
+        if (resumeCheckpoint.State.AcceptedRequestByExecutionId.TryGetValue(previousExecutionId, out var previousRequest)
+            && previousRequest.SessionId is { } previousSessionId
+            && sessionId is not null
+            && !string.Equals(previousSessionId, sessionId, StringComparison.Ordinal))
+        {
+            throw new InvalidResumeException(
+                $"Worker '{worker}''s bindings file records SessionId '{sessionId}', but the execution " +
+                $"being resumed ({previousExecutionId}) already recorded session '{previousSessionId}' — " +
+                "aer resume refuses rather than silently forking the vendor session under a claimed " +
+                "continuity nothing backs.")
+            {
+                TryInvocation = $"fix the SessionId recorded for '{worker}' in the bindings file back to " +
+                    $"'{previousSessionId}' (the session the execution being resumed actually continued), " +
+                    "or target the room/worker whose bindings file's SessionId edit was intentional.",
+            };
+        }
+
+        if (!workerBindings.TryGetValue(worker, out var binding) || binding is not WorkerBinding.Process processBinding)
+        {
+            throw new InvalidResumeException($"Worker '{worker}' has no dispatchable (process) binding to resume a session on.")
+            {
+                TryInvocation = $"check the bindings file's entry for '{worker}' — aer resume needs a Process " +
+                    "binding (a vendor CLI with a session to continue), not a non-process worker.",
+            };
+        }
+
+        var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
+        var inputPaths = ArtifactManager.ResolveInputPaths(stepDefinition, snapshot, state, artifactsRootPath);
+        var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRootPath, executionId);
+        var environment = ArtifactManager.BuildEnvironment(inputPaths, outputDirectory, artifactsRootPath);
+
+        var request = new ExecutionRequest(
+            executionId,
+            workflowId,
+            stepDefinition.StepId,
+            worker,
+            inputPaths,
+            stepDefinition.Outputs,
+            processBinding.Timeout,
+            environment,
+            stepState.UpstreamExecutionIds,
+            GrantAuditMode: binding.GrantAuditMode,
+            LinkedFromExecutionId: previousExecutionId,
+            SessionId: sessionId);
+
+        // §7's write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
+        await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken).ConfigureAwait(false);
+
+        var inFlightExecutions = new InFlightExecutionRegistry();
+        inFlightExecutions.Bind(eventLogWriter);
+        var dispatchCancellationToken = inFlightExecutions.Register(executionId);
+        var prepared = new PreparedExecution(request, outputDirectory);
+
+        // Awaited directly, not fire-and-forget: a resume is a single-shot operation that blocks and
+        // reports exactly like the rest of this surface (DecideCommand's own doc comment states the
+        // same contract), not a round dispatching arbitrarily many concurrent siblings.
+        await DispatchAndRecordOutcomeAsync(
+                prepared, processBinding, eventLogWriter, dispatcher, inFlightExecutions, dispatchCancellationToken, timeProvider ?? TimeProvider.System)
+            .ConfigureAwait(false);
+
+        var finalCheckpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
+        var finalLog = await eventLogReader.ReadSnapshotFromOffsetAsync(finalCheckpoint?.ByteOffset ?? 0, cancellationToken).ConfigureAwait(false);
+        if (finalLog.IsFallbackToFull)
+        {
+            finalCheckpoint = null;
+        }
+        var (finalState, _) = StateProjector.ProjectAndCheckpoint(finalLog.FlowEvents, snapshot, finalCheckpoint, finalLog.ByteOffset);
+
+        return (finalState, executionId);
+    }
+
+    /// <summary>
     /// The scheduling pump shared by every mutation-surface entry point that needs one: repeatedly
     /// projects <see cref="FlowState"/>, finalizes any settled non-process execution, finalizes any
     /// non-process execution with an unfulfilled cancellation request, appends any owed
