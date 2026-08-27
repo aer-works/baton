@@ -1072,6 +1072,17 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// and quota" section is the register this reads against). <c>total_cost_usd</c> and the
     /// cache-token breakdown are real on this vendor but outside #1360's additive
     /// <c>{wallClockMs, tokensIn, tokensOut, turns}</c> shape, so they are read by nothing here.
+    /// <para>
+    /// <b>Scope, measured (docs/vendor-doc-audit.md, #479): this is a top-level figure, not a
+    /// whole-tree one.</b> <c>usage.output_tokens</c> excludes tokens spent by any subagent the
+    /// dispatched worker itself fans out to — confirmed at a 22% shortfall against the same result's
+    /// <c>modelUsage</c> object on a single subagent, growing with the tree. AER caps a worker's own
+    /// subagent fan-out at depth 1 (<see cref="MaxSubagentSpawnDepthVariable"/>) rather than zero, so
+    /// this undercount is a real, reachable case here, not a hypothetical. <c>modelUsage</c> is left
+    /// unread: summing it correctly needs a per-model breakdown this shape's single
+    /// <c>tokensIn</c>/<c>tokensOut</c> scalars cannot carry without inventing a field #1360 never
+    /// asked for.
+    /// </para>
     /// </summary>
     public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage)
     {

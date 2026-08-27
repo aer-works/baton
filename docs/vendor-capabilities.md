@@ -605,7 +605,7 @@ This section used to say agy's usage number might surface from the local RPC ser
 hard-coded *"agy has no usage"* would now be wrong. The honest element is one that can say *"no usage
 data from this worker"* and carry a figure once one appears, without being redesigned — agy's is here.
 
-### What `aer status --json`'s `usage` field actually populates, per adapter (#1360)
+### Baton's usage field, per adapter (#1360)
 
 Baton's own consumer of the facts above, not a new vendor measurement — see
 `docs/agents/invoking-baton.md`'s `usage`/`linkedFromUsage` entry for the field shape.
@@ -625,6 +625,13 @@ dispatch runs in plain-text mode instead (today's default for an ordinary `aer r
 lane; see `RoleDispatch.ToBinding`'s own remarks on why claude stays text-mode there), stdout is prose
 with no such line in it, and `tokensIn`/`tokensOut`/`turns` are absent for that execution regardless
 of what the vendor is otherwise capable of reporting. `wallClockMs` is unaffected either way.
+
+**On claude, `tokensOut` is a top-level count, not a whole-tree one (#479, above).** The dispatched
+worker's own subagent fan-out spends tokens the `result` event's `usage` object does not carry — a
+22% shortfall was measured against a single subagent, and it grows with the tree; `modelUsage` is
+where the complete figure lives. AER's own depth-1 subagent cap makes one level of fan-out the normal
+case, not an edge case, so treat a claude execution's `tokensOut` as a lower bound whenever that
+execution's worker could have spawned a subagent.
 
 ## Neither `--mode` nor `--add-dir` stops `agy` writing a file
 

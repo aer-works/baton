@@ -235,6 +235,10 @@ read-only lane that still produces its report. That asymmetry is why §6's table
 register, [`docs/vendor-capabilities.md`](../vendor-capabilities.md#usage-cost-and-quota--the-asymmetry-that-matters-most).
 It additionally computes a per-turn dollar cost, which `status --json`'s additive
 `{wallClockMs, tokensIn?, tokensOut?, turns?}` shape has no field for and therefore does not surface.
+One more thing worth knowing before reading `tokensOut` as a lane's whole cost: it is a top-level
+count that a worker's own subagent fan-out is not folded into — see
+[`docs/vendor-capabilities.md`](../vendor-capabilities.md#batons-usage-field-per-adapter-1360)
+for the measured shortfall.
 
 Both adapters spawn the vendor's own already-authenticated CLI. Baton never handles a credential, so
 a lane only runs on a vendor that is already logged in on this host — see the README's *Vendor
