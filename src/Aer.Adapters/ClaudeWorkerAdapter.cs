@@ -1063,6 +1063,68 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         return false;
     }
 
+    /// <summary>
+    /// Parses claude's <c>stream-json</c> terminal <c>"type":"result"</c> line (issue #1360) — the one
+    /// line <see cref="TryParseProgressEvent"/> deliberately does not surface as progress, since it is
+    /// a turn-completion summary rather than in-turn text. <c>usage.input_tokens</c>/<c>output_tokens</c>
+    /// and top-level <c>num_turns</c> are read independently: a line reporting one and not the other
+    /// yields exactly that field, never a fabricated zero (docs/vendor-capabilities.md's "Usage, cost
+    /// and quota" section is the register this reads against). <c>total_cost_usd</c> and the
+    /// cache-token breakdown are real on this vendor but outside #1360's additive
+    /// <c>{wallClockMs, tokensIn, tokensOut, turns}</c> shape, so they are read by nothing here.
+    /// </summary>
+    public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage)
+    {
+        usage = null;
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var typeProp)
+                || typeProp.GetString() != "result")
+            {
+                return false;
+            }
+
+            long? tokensIn = null;
+            long? tokensOut = null;
+            if (root.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
+            {
+                if (usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
+                {
+                    tokensIn = inTokens;
+                }
+
+                if (usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens))
+                {
+                    tokensOut = outTokens;
+                }
+            }
+
+            int? turns = root.TryGetProperty("num_turns", out var turnsProp) && turnsProp.TryGetInt32(out var turnsValue)
+                ? turnsValue
+                : null;
+
+            if (tokensIn is null && tokensOut is null && turns is null)
+            {
+                return false;
+            }
+
+            usage = new WorkerUsage(tokensIn, tokensOut, turns);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private static bool TryParseStreamEvent(JsonElement root, out WorkerProgressEvent? progressEvent)
     {
         progressEvent = null;

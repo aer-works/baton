@@ -97,6 +97,22 @@ public interface IWorkerAdapter : Aer.Flow.Outcomes.IFailureClassifier
     }
 
     /// <summary>
+    /// Attempts to interpret one raw stdout line — ordinarily the last line of a completed
+    /// execution's captured stream — as this vendor's terminal usage report (issue #1360). Distinct
+    /// from <see cref="TryParseProgressEvent"/>: that reads in-turn progress from a live dispatch,
+    /// this reads a finished execution's own accounting after the fact, and callers try every
+    /// registered adapter against a line rather than knowing in advance which vendor produced it (the
+    /// two vendors' envelopes are structurally distinct, so at most one ever matches). Default false:
+    /// an adapter with no structured usage report of its own contributes nothing rather than a
+    /// fabricated figure.
+    /// </summary>
+    bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage)
+    {
+        usage = null;
+        return false;
+    }
+
+    /// <summary>
     /// True when a worker this adapter spawns with <see cref="PermissionGrant.WriteFiles"/> withheld
     /// can nonetheless write its declared <see cref="WorkerContract.ProducedOutputs"/> into
     /// <c>AER_OUTPUT_DIR</c> (#649). "Withhold writes" means <em>do not modify the workspace</em>; it
