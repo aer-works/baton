@@ -6,6 +6,13 @@ namespace Aer.Cli;
 /// same workspace and grants, recording the result as a new execution linked to the one it continues.
 /// Mirrors <see cref="SupplyOptions"/>'s shape: a mutation command never binds a fresh snapshot
 /// (§11.2), and it names its target by worker role the same way <c>aer supply</c> does.
+/// <para>
+/// Scope of the continuation claim (F7): only ONE <c>--resume</c> hop is vendor-verified
+/// (<c>docs/vendor-doc-audit.md</c>'s "defer ends the query, and the session resumes" entry). A
+/// resume of an already-resumed session dispatches the same way, but whether the vendor actually
+/// continues from THAT resume's own turn rather than forking back to before it is not measured — see
+/// that entry for the details, rather than restating them here.
+/// </para>
 /// </summary>
 /// <param name="RoomDirectoryPath">An already-started room's durable state directory.</param>
 /// <param name="Worker">

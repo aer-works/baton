@@ -423,6 +423,12 @@ a claim 0022's answer semantics may depend on.
 Also documented, and worth having: when several hooks or rules apply, the precedence is
 **`deny` > `defer` > `ask` > `allow`**. And `updatedInput` is ignored on a `defer`.
 
+**Also unmeasured (issue #1359, `aer resume`): only ONE `--resume` hop is verified above.** Whether a
+*second* `--resume` — passing the session id a first resume already continued — reaches the first
+resume's own turn, or forks back to before it, has never been run. `aer resume` itself refuses nothing
+based on this (a resume-of-a-resume dispatches the same way any resume does), but its own doc scopes
+the continuation claim to this one measured hop rather than asserting it chains indefinitely.
+
 ### The conflict this resolves
 
 The SDK's user-input page says `defer` is how a gate outlives its process:

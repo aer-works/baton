@@ -155,19 +155,25 @@ That prose is for a person watching. For a machine caller (#1356), the same info
 available two other ways, and both give you the same set of paths without parsing a sentence:
 
 - **`aer status <room-dir> --json`** — one JSON object to stdout, nothing else:
-  `{state, steps:[{id, state, execution}], outputs:[...], error, try}`. `outputs` is the flat list of
-  absolute paths every succeeded step's declared outputs resolved to — the same paths the human
-  line above prints, derived from the same read. Works on a running room too (`state: "Running"`),
-  not only a settled one. `try` (#1357) is the same corrected-invocation text a validation refusal's
-  `Try:` stderr line carries, kept as its own field rather than folded into `error` — `null` when the
-  refusal had none. Only ever populated on a pre-ledger `Failed` room (§5's exit-code-2 case); a
-  settled or running room's ledger projection has no exception to carry one.
-- **`<room-dir>/terminal.json`** — written once, the moment the workflow reaches a terminal state,
-  in the identical shape `status --json` prints. Written *last*, after every output it could
+  `{state, steps:[{id, state, execution, linkedFrom}], outputs:[...], error, try}`. `outputs` is the
+  flat list of absolute paths every succeeded step's declared outputs resolved to — the same paths
+  the human line above prints, derived from the same read. Works on a running room too
+  (`state: "Running"`), not only a settled one. `try` (#1357) is the same corrected-invocation text a
+  validation refusal's `Try:` stderr line carries, kept as its own field rather than folded into
+  `error` — `null` when the refusal had none. Only ever populated on a pre-ledger `Failed` room (§5's
+  exit-code-2 case); a settled or running room's ledger projection has no exception to carry one.
+  `linkedFrom` (#1359) is the execution `aer resume` continued, when a step's current `execution` is
+  a resume's own new attempt — `null` for every ordinary dispatch or retry.
+- **`<room-dir>/terminal.json`** — written once, the moment the workflow FIRST reaches a terminal
+  state, in the identical shape `status --json` prints. Written *last*, after every output it could
   reference already exists on disk, specifically so you can watch this one file with a file monitor
   instead of polling `aer status` or babysitting the `aer run` process — the async
   task-notification parity the issue asked for. Its absence means "not terminal yet", not "never
-  started"; see §5 for the one case where it is the *only* record a room has.
+  started"; see §5 for the one case where it is the *only* record a room has. **`aer resume` rewrites
+  it** on that step's own settle, but does NOT invalidate it the moment the resume starts — a watcher
+  polling this file sees the FIRST run's terminal state for the resume's whole duration and cannot
+  tell the room is busy again from this file alone; check `aer status <room-dir>` (no `--json`) for
+  that, or the exit code of the `aer resume` process itself.
 
 The room directory also holds `snapshot.json` (the workflow this room is bound to), `flow.jsonl` (the
 append-only event ledger), and `flow.lock`. The authoritative room layout is
@@ -235,7 +241,14 @@ never looked — reported as `Contract not satisfied`, after the run was paid fo
 no `--room-dir` flag on it, and passing one is an `Unknown option` error.
 
 **Exit codes are a contract, and a dead room from provisioning is no longer indistinguishable from a
-slow one (#1356, #1374).** `aer run`/`aer dispatch` return one of six codes:
+slow one (#1356, #1374).** `aer run`/`aer dispatch`/`aer resume` (#1359) return one of six codes.
+**`aer resume` continues ONE worker** — re-enters an already-dispatched step's vendor session with a
+new message, on the same workspace and grants, recording the result as a new execution linked to the
+one it continues (`aer resume <room-dir> --worker <role> --message <text> --bindings <file>`; see
+`aer resume --help`). Its exit code is still the WHOLE ROOM's outcome, same table, not "did the
+resumed step itself succeed" — a successful resume of one step in a room where a different step
+already Failed still exits 1; read the resumed step's own status via `aer status --json`'s
+`steps[].state`/`linkedFrom` for that:
 
 | Code | Meaning |
 |---|---|
