@@ -111,9 +111,9 @@ public class WorkerRoleCatalogTests
         Assert.Equal(TimeSpan.FromMinutes(40), implement.Timeout);
 
         var advise = WorkerRoleCatalog.For("advise");
-        // #1355: read-shaped roles (review, fact-check, advise) default to no write grant of their
-        // own -- the one declared output (advice.md) reaches the worker only through the same
-        // audited-not-enforced path RoleDispatchTests proves for review/fact-check/patch.
+        // #1355: advise carries no write grant of its own now either (docs/dispatch.md's "Read-shaped
+        // roles" section names the population and why) -- RoleDispatchTests proves it takes the same
+        // agy branch review already does.
         Assert.False(advise.Grant.WriteFiles);
         Assert.False(advise.Grant.RunShellCommands);
         Assert.False(advise.Grant.NetworkAccess);
