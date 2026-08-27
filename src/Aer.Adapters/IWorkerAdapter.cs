@@ -97,14 +97,14 @@ public interface IWorkerAdapter : Aer.Flow.Outcomes.IFailureClassifier
     }
 
     /// <summary>
-    /// Attempts to interpret one raw stdout line — ordinarily the last line of a completed
-    /// execution's captured stream — as this vendor's terminal usage report (issue #1360). Distinct
-    /// from <see cref="TryParseProgressEvent"/>: that reads in-turn progress from a live dispatch,
-    /// this reads a finished execution's own accounting after the fact, and callers try every
-    /// registered adapter against a line rather than knowing in advance which vendor produced it (the
-    /// two vendors' envelopes are structurally distinct, so at most one ever matches). Default false:
-    /// an adapter with no structured usage report of its own contributes nothing rather than a
-    /// fabricated figure.
+    /// Attempts to interpret one raw stdout line — the last non-blank line of a completed execution's
+    /// captured stream — as this vendor's terminal usage report (issue #1360). Distinct from
+    /// <see cref="TryParseProgressEvent"/>: that reads in-turn progress from a live dispatch, this
+    /// reads a finished execution's own accounting after the fact. A caller tries only the ONE adapter
+    /// the execution's own <c>bindings.json</c> entry names it was actually dispatched through (#1360
+    /// F1's review) — never every registered adapter against a line, since a worker's stdout can
+    /// contain a vendor-shaped line it did not itself produce. Default false: an adapter with no
+    /// structured usage report of its own contributes nothing rather than a fabricated figure.
     /// </summary>
     bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage)
     {
