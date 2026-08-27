@@ -8,7 +8,7 @@
     "network_access": false,
     "timeout_minutes": 25,
     "verdict_schema": false,
-    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. #1355 tried making this read-shaped (write_files: false, the review/fact-check/patch shape) but reverted it: advise's tier defaults to agy, which is not outbox-write-capable, and tools/aer-agy-loop/dispatch.py's grant_refusal() refuses a withheld-write role on a non-outbox-capable adapter outright by design (satisfiability there is unmeasured, #638) rather than auto-granting the audited write the C# engine's RoleDispatch now does. Narrowing this needs either a tier change (a separate decision) or teaching dispatch.py the engine's audited-grant translation -- see #1355's PR body for the follow-up.",
+    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. #1355 tried making this read-shaped (write_files: false, the review/fact-check/patch shape) but reverted it: advise's tier defaults to agy, which is not outbox-write-capable, and tools/aer-agy-loop/dispatch.py's grant_refusal() refuses a withheld-write role on a non-outbox-capable adapter outright by design (satisfiability there is unmeasured, #638) rather than auto-granting the audited write the C# engine's RoleDispatch now does. Narrowing this needs either a tier change (a separate decision) or teaching dispatch.py the engine's audited-grant translation -- see #1386 for the follow-up.",
     "outputs": [
       {
         "name": "advice.md",
@@ -26,7 +26,7 @@
     "network_access": true,
     "timeout_minutes": 40,
     "verdict_schema": false,
-    "purpose": "A bounded change with the approach already decided. Exercises the write path and agy's skip-permissions translation, which is the half of AER that review-only dispatches never touch. Its 40 minutes is NOT the #588 path -- every template's timeout exercises that equally -- so do not reach for the skip-permissions grant expecting it to buy that. #1355 kept network_access true here: this role's tier defaults to agy, and AgyWorkerAdapter.TryTranslatePermissionGrant refuses RunShellCommands without NetworkAccess outright (no scoped-shell-without-network exists on that vendor) -- defaulting network off would make every unmodified dispatch of this role throw PermissionGrantUnsupportedException. See #1355's PR body for the follow-up this leaves open.",
+    "purpose": "A bounded change with the approach already decided. Exercises the write path and agy's skip-permissions translation, which is the half of AER that review-only dispatches never touch. Its 40 minutes is NOT the #588 path -- every template's timeout exercises that equally -- so do not reach for the skip-permissions grant expecting it to buy that. #1355 kept network_access true here: PermissionGrant.CategoriesDefeatedByTheShell/WorkerBindingResolver refuse RunShellCommands without NetworkAccess outright for EVERY grant-consuming adapter, claude included, not agy alone (--adapter claude is not an escape hatch) -- and agy's own AgyWorkerAdapter.TryTranslatePermissionGrant refuses the same combination a second time at the vendor-translation layer, since --dangerously-skip-permissions grants both or neither. Defaulting network off here would make every unmodified dispatch of this role throw. See #1387 for the follow-up this leaves open.",
     "outputs": [
       {
         "name": "changes.md",
@@ -103,7 +103,7 @@
     "network_access": true,
     "timeout_minutes": 15,
     "verdict_schema": false,
-    "purpose": "After an implementer commits: run the named mechanical checkers and make them green without changing behavior (#729). The canonical brief is janitor-prompt.md next to dispatch.py -- pass it via --prompt-file rather than restating the contract. The checkers determine the work, so the cheap tier runs it; anything needing judgment comes back [NOT DONE], not guessed at. #1355 kept network_access true here for the same reason as implement: this role's tier also defaults to agy, and agy refuses RunShellCommands without NetworkAccess -- see implement's purpose field for the full reasoning, not restated here.",
+    "purpose": "After an implementer commits: run the named mechanical checkers and make them green without changing behavior (#729). The canonical brief is janitor-prompt.md next to dispatch.py -- pass it via --prompt-file rather than restating the contract. The checkers determine the work, so the cheap tier runs it; anything needing judgment comes back [NOT DONE], not guessed at. #1355 kept network_access true here for the same reason as implement -- see implement's purpose field for the full reasoning (it is not agy-specific), not restated here.",
     "outputs": [
       {
         "name": "janitor.md",
