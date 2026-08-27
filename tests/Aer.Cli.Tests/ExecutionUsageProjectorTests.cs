@@ -125,10 +125,9 @@ public sealed class ExecutionUsageProjectorTests
     [Fact]
     public void Token_counts_are_still_read_after_a_retention_sweep_moves_stdout_log_to_the_pruned_path()
     {
-        // #1360 F7: RoomRetentionSweep/ArtifactPruner move a whole execution directory (.stdout.log
-        // included) to {artifacts}/pruned/execution_{id}. terminal.json was written before any sweep
-        // could run, so a post-sweep status read of the same unchanged room must still find the same
-        // figure -- not silently drop it because the live path is now empty.
+        // #1360 F7: pins the fallback ExecutionUsageProjector.TryReadWorkerUsage documents -- see
+        // that method's own remarks for why the fallback exists. Here: only the pruned path has
+        // .stdout.log, so the live-path lookup must fail through to it rather than giving up.
         var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-pruned-{Guid.NewGuid():N}");
         try
         {
