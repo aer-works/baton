@@ -452,11 +452,17 @@ public static class StatusCommand
     }
 
     /// <summary>
-    /// The room-wide roll-up (#1360's "one rolled-up line in human aer status"). Wall-clock is summed
-    /// across every execution with both a start and exit event, since that half is always derivable;
-    /// a token/turn figure is summed and its reporting count disclosed only when at least one
-    /// execution actually carried it — an adapter (or a text-mode dispatch) that reports none is
-    /// silence, not a printed zero.
+    /// The room-wide roll-up (#1360's "one rolled-up line in human aer status"). Sums the per-execution
+    /// <see cref="ExecutionUsageView.WallClockMs"/> figures across every execution with both a start
+    /// and exit event, since that half is always derivable; a token/turn figure is summed and its
+    /// reporting count disclosed only when at least one execution actually carried it — an adapter (or
+    /// a text-mode dispatch) that reports none is silence, not a printed zero.
+    /// <para>
+    /// Labelled "execution time", not "wall-clock" (#1360 F4, review): parallel steps' executions
+    /// overlap in real time, so this sum can exceed the room's own actual elapsed time — it is
+    /// aggregate execution time, the same quantity <see cref="ExecutionUsageView.WallClockMs"/> names
+    /// per execution, not a claim about how long the room itself took end to end.
+    /// </para>
     /// </summary>
     private static string FormatUsageSummary(IReadOnlyDictionary<string, ExecutionUsageView> usageByExecutionId)
     {
@@ -465,11 +471,11 @@ public static class StatusCommand
             return "Usage: no completed executions yet.";
         }
 
-        var totalWallClockSeconds = usageByExecutionId.Values.Sum(u => u.WallClockMs) / 1000.0;
+        var totalExecutionSeconds = usageByExecutionId.Values.Sum(u => u.WallClockMs) / 1000.0;
         var parts = new List<string>
         {
             $"{usageByExecutionId.Count} execution(s)",
-            $"{totalWallClockSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}s wall-clock",
+            $"{totalExecutionSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}s execution time",
         };
 
         AppendTokenPart(parts, usageByExecutionId, u => u.TokensIn, "tokens in");

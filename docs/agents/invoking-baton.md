@@ -174,6 +174,11 @@ available two other ways, and both give you the same set of paths without parsin
   missing key as "not reported for this run", never as zero: §4 spells out per-vendor which counts
   that actually is today, and it hinges on running in structured-output mode in the first place (a
   plain-text dispatch, which is most of them right now, carries none of the three).
+  **Narrower population than the human line** (#1360 F4, review): `--json` exposes only each step's
+  current and linked-from executions, never a failed attempt a retry superseded or a step-less
+  supplementary execution (§17.3) — those are in the human roll-up's total but have no home here. Sum
+  `usage`/`linkedFromUsage` across steps for a machine-computed total that is a lower bound, not the
+  room's full cost.
 - **`<room-dir>/terminal.json`** — written once, the moment the workflow FIRST reaches a terminal
   state, in the identical shape `status --json` prints. Written *last*, after every output it could
   reference already exists on disk, specifically so you can watch this one file with a file monitor

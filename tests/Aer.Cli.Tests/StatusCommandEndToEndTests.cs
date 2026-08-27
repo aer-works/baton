@@ -50,8 +50,10 @@ public class StatusCommandEndToEndTests
     public async Task Status_of_a_terminal_workflow_prints_one_rolled_up_usage_line_for_the_room()
     {
         // #1360: human `aer status` gets one room-wide roll-up line rather than a per-step usage
-        // block -- this shell-stub room's stdout is plain text, so the line must report wall-clock
-        // only, disclosing zero executions reporting tokens rather than a fabricated figure.
+        // block -- this shell-stub room's stdout is plain text, so the line must report execution
+        // time only, disclosing zero executions reporting tokens rather than a fabricated figure.
+        // #1360 F4 (review): labelled "execution time", not "wall-clock" -- parallel steps' executions
+        // overlap in real time, so this sum is not a claim about the room's own elapsed time.
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
@@ -66,7 +68,7 @@ public class StatusCommandEndToEndTests
 
             var text = output.ToString();
             Assert.Contains("Usage: 3 execution(s)", text);
-            Assert.Contains("wall-clock", text);
+            Assert.Contains("execution time", text);
             Assert.DoesNotContain("tokens in", text);
             Assert.DoesNotContain("tokens out", text);
         }
