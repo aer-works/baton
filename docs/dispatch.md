@@ -26,6 +26,11 @@ aer dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--mod
 | `--workflow-id <label>` | A label forwarded to the run; defaults to the materialised template id. |
 | `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. |
 
+#1355's acceptance criterion "one output path" is about `--output`/the printed fact above naming one
+destination — not about a role declaring only one output (`review` declares two: `report.md` AND
+`verdict.json`). `DispatchCommandEndToEndTests.Without_output_the_printed_fact_names_the_artifacts_directory_not_a_fabricated_file_path`
+(pre-existing, #1354/#1380) is what pins the reading actually shipped.
+
 Vendor, model, and effort are **three independent axes** over a role's instructions ([0017]):
 the role carries a default bundle (its tier), and each axis overrides on its own.
 
