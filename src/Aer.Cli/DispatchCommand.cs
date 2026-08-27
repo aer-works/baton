@@ -158,6 +158,16 @@ public static class DispatchCommand
     /// (read/write/shell/network, negated with a <c>no-</c> prefix) -- one register for "what a grant
     /// says", not a second one invented for this printed line.
     /// </summary>
+    /// <remarks>
+    /// #1355 F1: the <see cref="GrantAuditMode.AuditedNotEnforced"/> branch must say only what that
+    /// mode's own doc says is true (<see cref="GrantAuditMode"/>'s remarks) -- the grant EXCEEDS the
+    /// role's intent because the vendor hook cannot path-scope it, not "scoped to declared outputs".
+    /// What actually bounds the write is the hook confining write-family tools to the worktree/outbox
+    /// (<c>AgyHookCheckCommand</c>'s write-family check) -- i.e. every file in the provisioned
+    /// worktree -- with declared-output confinement checked only AFTER the run, by
+    /// <c>OutcomeClassifier</c>'s worktree-cleanliness audit. Do not restate the two mechanisms here
+    /// beyond naming them (record-once); the citations above are the source, this line is the gloss.
+    /// </remarks>
     private static string DescribeGrant(WorkerBindingConfigEntry binding)
     {
         var grant = binding.PermissionGrant;
@@ -168,7 +178,7 @@ public static class DispatchCommand
 
         var write = grant.WriteFiles
             ? binding.GrantAuditMode == GrantAuditMode.AuditedNotEnforced
-                ? "write (scoped to declared outputs, audited not enforced)"
+                ? "write (workspace-wide inside an isolated worktree; audited against declared outputs after the run)"
                 : "write"
             : "no-write";
 

@@ -59,12 +59,20 @@ privilege default grants per role):
 Grant: read, no-write, no-shell, no-network
 ```
 
-Read left to right: `ReadFiles`, then `WriteFiles` (a scoped, `AuditedNotEnforced` write — the shape
-`--workspace`'s row above describes — prints as `write (scoped to declared outputs, audited not
-enforced)` rather than a bare `write`), `RunShellCommands`, `NetworkAccess`. This is the same category
-vocabulary the fake adapters in the test suite already use for a grant, not a second one invented for
-this line — read it as what the invoking agent can honestly relay to its own permission layer, not as
-a hardening claim about a vendor that was never asked.
+Read left to right: `ReadFiles`, then `WriteFiles` (an `AuditedNotEnforced` write — the shape
+`--workspace`'s row above describes — prints as `write (workspace-wide inside an isolated worktree;
+audited against declared outputs after the run)` rather than a bare `write`: the grant is NOT scoped to
+the declared outputs while the worker runs — the vendor hook cannot path-scope it, only confine writes
+to the provisioned worktree — and declared-output confinement is checked only afterward, by the
+post-run cleanliness audit; see `GrantAuditMode.AuditedNotEnforced`'s own doc), `RunShellCommands`,
+`NetworkAccess`. This is the same category vocabulary the fake adapters in the test suite already use
+for a grant, not a second one invented for this line — read it as what the invoking agent can honestly
+relay to its own permission layer, not as a hardening claim about a vendor that was never asked.
+
+Only printed for a bound worker whose adapter actually consumes a structured grant (implements
+`IPermissionGrantTranslator`, `src/Aer.Adapters/WorkerBindingResolver.cs`'s own rule for which
+adapters a grant governs) — a step bound to an adapter outside that population (e.g. a composed
+template's capture step) gets no grant line, not a placeholder one.
 
 **Read-shaped roles** (`review`, `fact-check` — both `write_files: false`, so their one write reaches
 the worker only through the scoped `AuditedNotEnforced` path above) default to `no-shell`/`no-network`

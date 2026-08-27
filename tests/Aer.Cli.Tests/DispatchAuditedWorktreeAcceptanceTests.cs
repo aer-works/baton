@@ -98,7 +98,7 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
             Console.SetOut(originalOut);
 
             Assert.Contains(
-                "Grant: read, write (scoped to declared outputs, audited not enforced), no-shell, no-network",
+                "Grant: read, write (workspace-wide inside an isolated worktree; audited against declared outputs after the run), no-shell, no-network",
                 consoleOutput.ToString());
         }
         finally
