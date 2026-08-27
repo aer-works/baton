@@ -118,6 +118,55 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_composed_templates_capture_step_prints_no_grant_line_while_its_role_siblings_do()
+    {
+        // F2 (#1355 PR #1385 review): the capture step's adapter (BaseRefCapturingWorkerAdapter, standing
+        // in for the real CaptureWorkerAdapter) spawns git directly and is IWorkerAdapter only -- it never
+        // consumes a PermissionGrant. Before F2, DispatchCommand printed a "Grant (review-capture): ..."
+        // line for it anyway, and "no-shell" in that line was false in the only sense that matters: the
+        // step runs a git subprocess regardless of what the grant says. The role phases, bound to a
+        // translator-implementing fake here, still get their own lines.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-tmpl-grant-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var workspace = Path.Combine(testRoot, "workspace");
+            await InitGitWorkspaceAsync(workspace);
+
+            var verdictFixture = Path.Combine(testRoot, "verdict-fixture.json");
+            await File.WriteAllTextAsync(
+                verdictFixture, """{"reviewedRef":"HEAD","findings":[]}""", TestContext.Current.CancellationToken);
+
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new GrantConsumingContractOutputWorkerAdapter(
+                    satisfyOutputs: true,
+                    outputFixtures: new Dictionary<string, string> { ["verdict.json"] = verdictFixture }),
+                [WorkflowTemplateComposer.CaptureAdapter] = new BaseRefCapturingWorkerAdapter(),
+            };
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("implement-review", SpecFilePath: null, roomDirectory, Adapter: "fake");
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(
+                options, adapters, TestContext.Current.CancellationToken, workspaceDirectory: workspace);
+            Console.SetOut(originalOut);
+
+            var printed = consoleOutput.ToString();
+            Assert.Contains("Grant (implement):", printed);
+            Assert.Contains("Grant (janitor):", printed);
+            Assert.Contains("Grant (review):", printed);
+            Assert.DoesNotContain("review-capture", printed);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task A_template_with_a_capture_step_in_a_non_git_workspace_fails_loudly_before_running()
     {
         // The polarity opposite of the test above: a capture template pointed at a non-git workspace has

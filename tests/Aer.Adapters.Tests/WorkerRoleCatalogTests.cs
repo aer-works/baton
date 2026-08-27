@@ -92,11 +92,29 @@ public class WorkerRoleCatalogTests
         Assert.Equal("sonnet", review.Model);
         Assert.Equal("high", review.Effort);
         Assert.False(review.Grant.WriteFiles);
+        // #1355: the read-shaped least-privilege default -- no network, no shell (the honest subset:
+        // agy has no scoped-shell-without-network grant to ask for, so this stays a flat refusal
+        // rather than a ShellCommandPatterns allowlist that would not actually enforce there).
+        Assert.False(review.Grant.NetworkAccess);
+        Assert.False(review.Grant.RunShellCommands);
         Assert.True(review.ProducesVerdict);
+
+        var factCheck = WorkerRoleCatalog.For("fact-check");
+        Assert.Equal("claude", factCheck.Adapter);
+        Assert.False(factCheck.Grant.WriteFiles);
+        // F4 (#1355 PR #1385 review): the issue names review/fact-check/advise as the read lanes, but
+        // only review got a tested guarantee here -- fact-check appeared nowhere under tests/. Mirrors
+        // review's own NetworkAccess/RunShellCommands assertions above.
+        Assert.False(factCheck.Grant.NetworkAccess);
+        Assert.False(factCheck.Grant.RunShellCommands);
 
         var implement = WorkerRoleCatalog.For("implement");
         Assert.Equal("agy", implement.Adapter);
         Assert.True(implement.Grant.RunShellCommands);
+        // #1355: network stays granted here -- implement's tier defaults to agy, and agy's translator
+        // refuses RunShellCommands without NetworkAccess (no scoped-shell-without-network exists on
+        // that vendor), so defaulting it off would make every unmodified dispatch of this role throw.
+        // See the role's own purpose field in WorkerRoles.json for the full reasoning.
         Assert.True(implement.Grant.NetworkAccess);
         Assert.False(implement.ProducesVerdict);
         Assert.Equal(TimeSpan.FromMinutes(40), implement.Timeout);

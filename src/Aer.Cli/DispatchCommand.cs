@@ -65,6 +65,29 @@ public static class DispatchCommand
             Console.Out.WriteLine(workspaceFact);
         }
 
+        // #1355: the least-privilege grant profile actually in force, so the invoking agent can relay
+        // it to its own permission layer honestly. Extends the same printing seam as
+        // workspaceFact/output-path above rather than building a second one -- one line per bound
+        // worker whose adapter actually consumes a grant, which for a single-role dispatch (the common
+        // case) is the one line the issue asks for.
+        //
+        // F2: a grant is only "what the worker can do" for an adapter that consumes it --
+        // WorkerBindingResolver.cs:137-141 already draws this population as `is IPermissionGrantTranslator`
+        // (checked against this same `adapters` registry, the one WorkerBindingResolver.Resolve is
+        // handed downstream via RunCommand). A binding bound to an adapter outside that population
+        // (e.g. a composed template's capture step, which spawns git directly) never had its grant
+        // consumed, so its "no-shell"/"no-network" would be false in the only sense an invoking agent's
+        // permission layer cares about. Skip it -- no placeholder line either.
+        var translatorBindings = bindings
+            .Where(pair => adapters.TryGetValue(pair.Value.Adapter, out var boundAdapter) && boundAdapter is IPermissionGrantTranslator)
+            .ToList();
+        var multipleWorkers = translatorBindings.Count > 1;
+        foreach (var (workerName, binding) in translatorBindings)
+        {
+            var label = multipleWorkers ? $"Grant ({workerName})" : "Grant";
+            Console.Out.WriteLine($"{label}: {DescribeGrant(binding)}");
+        }
+
         // R4 (#1354/#1380): the execution-scoped artifact path isn't known until dispatch actually runs,
         // so without --output the only truthful thing to print beforehand is the artifacts directory
         // itself, labeled as a directory — not a fabricated per-execution file path that will not exist
@@ -139,6 +162,43 @@ public static class DispatchCommand
                 $"Could not copy the declared output to '{options.OutputPath}': {ex.Message}. "
                 + $"The output still exists at '{srcPath}'.");
         }
+    }
+
+    /// <summary>
+    /// Same category vocabulary <c>FakeEchoWorkerAdapter</c>'s translator uses in the test suite
+    /// (read/write/shell/network, negated with a <c>no-</c> prefix) -- one register for "what a grant
+    /// says", not a second one invented for this printed line.
+    /// </summary>
+    /// <remarks>
+    /// #1355 F1: the <see cref="GrantAuditMode.AuditedNotEnforced"/> branch must say only what that
+    /// mode's own doc says is true (<see cref="GrantAuditMode"/>'s remarks) -- the grant EXCEEDS the
+    /// role's intent because the vendor hook cannot path-scope it, not "scoped to declared outputs".
+    /// What actually bounds the write is the hook confining write-family tools to the worktree/outbox
+    /// (<c>AgyHookCheckCommand</c>'s write-family check) -- i.e. every file in the provisioned
+    /// worktree -- with declared-output confinement checked only AFTER the run, by
+    /// <c>OutcomeClassifier</c>'s worktree-cleanliness audit. Do not restate the two mechanisms here
+    /// beyond naming them (record-once); the citations above are the source, this line is the gloss.
+    /// </remarks>
+    private static string DescribeGrant(WorkerBindingConfigEntry binding)
+    {
+        var grant = binding.PermissionGrant;
+        if (grant is null)
+        {
+            return "unset (falls back to the adapter's raw PermissionScope)";
+        }
+
+        var write = grant.WriteFiles
+            ? binding.GrantAuditMode == GrantAuditMode.AuditedNotEnforced
+                ? "write (workspace-wide inside an isolated worktree; audited against declared outputs after the run)"
+                : "write"
+            : "no-write";
+
+        return string.Join(
+            ", ",
+            grant.ReadFiles ? "read" : "no-read",
+            write,
+            grant.RunShellCommands ? "shell" : "no-shell",
+            grant.NetworkAccess ? "network" : "no-network");
     }
 
     private static async Task<(WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings)>

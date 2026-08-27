@@ -74,6 +74,41 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
     }
 
     [Fact]
+    public async Task Dispatching_review_on_agy_prints_the_audited_write_grant_not_a_bare_write()
+    {
+        // #1355: the printed grant line has to name the audited-not-enforced write it actually
+        // resolved to, not just "write" -- otherwise an invoking agent relaying the line to its own
+        // permission layer under-reports what the run really carried.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-agy-grant-line-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var workspace = Path.Combine(testRoot, "workspace");
+            await InitGitRepoAsync(workspace);
+
+            var specPath = await WriteSpecAsync(testRoot, "Review the change.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var adapters = await AgyFakeAdaptersAsync(testRoot, translatesGrants: true);
+
+            var options = new DispatchOptions("review", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace);
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            Assert.Contains(
+                "Grant: read, write (workspace-wide inside an isolated worktree; audited against declared outputs after the run), no-shell, no-network",
+                consoleOutput.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Dispatching_review_on_agy_against_a_workspace_that_is_itself_a_worktree_with_an_untracked_file_still_succeeds()
     {
         // The red test for finding 1/R1: before this fix, IsWorktree(workspace) == true routed the
@@ -113,7 +148,16 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
         }
     }
 
-    private static async Task<IReadOnlyDictionary<string, IWorkerAdapter>> AgyFakeAdaptersAsync(string testRoot)
+    /// <param name="translatesGrants">
+    /// F2/F3: the printed-grant-line test needs the bound "agy" adapter to actually consume a grant
+    /// (<see cref="IPermissionGrantTranslator"/>) or <see cref="DispatchCommand"/> now prints nothing
+    /// for it. The other two tests here assert on run outcome, not the grant line, so they keep the
+    /// plain <see cref="ContractOutputWorkerAdapter"/> that sits outside that population -- narrower
+    /// than opting every acceptance test here into WorkerBindingResolver's grant-consuming refusal
+    /// checks for no reason.
+    /// </param>
+    private static async Task<IReadOnlyDictionary<string, IWorkerAdapter>> AgyFakeAdaptersAsync(
+        string testRoot, bool translatesGrants = false)
     {
         // A minimal conforming ReviewVerdict (decision 0043: the engine checks only that it PARSES as
         // one — ReviewedRef required, empty Findings valid).
@@ -122,12 +166,12 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
         await File.WriteAllTextAsync(
             verdictFixture, """{"reviewedRef":"HEAD","findings":[]}""", TestContext.Current.CancellationToken);
 
-        return new Dictionary<string, IWorkerAdapter>
-        {
-            ["agy"] = new ContractOutputWorkerAdapter(
-                satisfyOutputs: true,
-                outputFixtures: new Dictionary<string, string> { ["verdict.json"] = verdictFixture }),
-        };
+        var outputFixtures = new Dictionary<string, string> { ["verdict.json"] = verdictFixture };
+        IWorkerAdapter agyAdapter = translatesGrants
+            ? new GrantConsumingContractOutputWorkerAdapter(satisfyOutputs: true, outputFixtures)
+            : new ContractOutputWorkerAdapter(satisfyOutputs: true, outputFixtures);
+
+        return new Dictionary<string, IWorkerAdapter> { ["agy"] = agyAdapter };
     }
 
     private static async Task<string> WriteSpecAsync(string directory, string content)

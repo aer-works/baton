@@ -311,6 +311,13 @@ suppress it. Today that is exactly the write-withholding roles on `agy`:
 | `fact-check` | `findings.md` | works | works — auto-provisioned worktree |
 | `orchestrate` | `turn-actions.json` | works | works — auto-provisioned worktree |
 
+**`advise`'s "works" on `agy` is not the same shape as `review`'s.** Unlike the other read-shaped
+roles, `advise` keeps an explicit `write_files: true` grant (pinned reason in `WorkerRoles.json`'s
+`advise` entry), so it never enters the `AuditedNotEnforced`/auto-provisioned-worktree path this
+table otherwise describes: on `agy` its write stays `Enforced` against your live `--workspace`
+directory, not a disposable worktree. See `docs/dispatch.md`'s printed-grant-line section for what a
+dispatch actually discloses before it runs.
+
 **"Auto-provisioned worktree" is a real consequence, not a formality.** The worker is handed a fresh
 worktree of `--workspace` (or the cwd) at `HEAD` — never the caller's own directory, whether or not
 that directory already happens to be a worktree itself, because the post-run audit's whole premise is

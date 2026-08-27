@@ -26,6 +26,11 @@ aer dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--mod
 | `--workflow-id <label>` | A label forwarded to the run; defaults to the materialised template id. |
 | `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. |
 
+#1355's acceptance criterion "one output path" is about `--output`/the printed fact above naming one
+destination — not about a role declaring only one output (`review` declares two: `report.md` AND
+`verdict.json`). `DispatchCommandEndToEndTests.Without_output_the_printed_fact_names_the_artifacts_directory_not_a_fabricated_file_path`
+(pre-existing, #1354/#1380) is what pins the reading actually shipped.
+
 Vendor, model, and effort are **three independent axes** over a role's instructions ([0017]):
 the role carries a default bundle (its tier), and each axis overrides on its own.
 
@@ -48,6 +53,49 @@ still-held file), in which case it is deliberately kept rather than discarded, a
 mid-run leaves it in place too. A kept tree is one more entry in the *workspace repository's* own `git
 worktree list`, not something the operator asked for per invocation — `aer run`'s own worktree teardown
 reporting (`worktree <outcome> at <path>`, printed to stderr) is what surfaces it.
+
+### The printed grant line
+
+Every dispatch also prints the least-privilege grant profile actually in force, one line per bound
+worker (just one line for an ordinary single-role dispatch), before the run starts (#1355 — least
+privilege default grants per role):
+
+```
+Grant: read, no-write, no-shell, no-network
+```
+
+Read left to right: `ReadFiles`, then `WriteFiles` (an `AuditedNotEnforced` write — the shape
+`--workspace`'s row above describes — prints as `write (workspace-wide inside an isolated worktree;
+audited against declared outputs after the run)` rather than a bare `write`: the grant is NOT scoped to
+the declared outputs while the worker runs — the vendor hook cannot path-scope it, only confine writes
+to the provisioned worktree — and declared-output confinement is checked only afterward, by the
+post-run cleanliness audit; see `GrantAuditMode.AuditedNotEnforced`'s own doc), `RunShellCommands`,
+`NetworkAccess`. This is the same category vocabulary the fake adapters in the test suite already use
+for a grant, not a second one invented for this line — read it as what the invoking agent can honestly
+relay to its own permission layer, not as a hardening claim about a vendor that was never asked.
+
+Only printed for a bound worker whose adapter actually consumes a structured grant (implements
+`IPermissionGrantTranslator`, `src/Aer.Adapters/WorkerBindingResolver.cs`'s own rule for which
+adapters a grant governs). A composed template's capture step, say, spawns `git` directly and never
+reads a grant at all — its phase gets no line printed, never a placeholder one.
+
+**Read-shaped roles** (`review`, `fact-check` — both `write_files: false`) default to `claude`, whose
+withheld writes still reach the outbox through AER's own hook rather than the `AuditedNotEnforced`
+path above (`IWorkerAdapter.WithheldWritesReachTheOutbox`, `docs/decisions/0004-permission-scopes.md`)
+— that path is only entered on `--adapter agy`. Both also default to `no-shell`/`no-network`
+outright rather than a `RunShellCommands: true` scoped to a read-only command allowlist (`git log`/
+`show`/`diff`/`grep`, …): `agy`'s `IPermissionGrantTranslator` refuses `RunShellCommands` without
+`NetworkAccess` with no scoped exception (see `AgyWorkerAdapter.TryTranslatePermissionGrant`), so a
+grant narrowed by `ShellCommandPatterns` there would either be refused outright or (on a vendor that
+did resolve it) not actually be enforced as scoped — the exact "pretend allowlist" this default avoids
+shipping. A real read-command allowlist is follow-up work, tracked against whichever adapter first
+gains a shell grant that can express "these commands, no network" and have it mean something.
+
+`advise` and `patch` are the same shape by outcome (no unscoped shell or network) but not by
+mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose` field in
+`WorkerRoles.json` for why — narrowing it broke `tools/aer-agy-loop/dispatch.py`'s own grant
+coherence check on its default `agy` tier), and `patch` never grants a write in the first place —
+its whole point is proposing a diff without mutating the workspace.
 
 ## Roles
 

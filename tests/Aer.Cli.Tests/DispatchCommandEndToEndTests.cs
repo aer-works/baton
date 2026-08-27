@@ -295,6 +295,78 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Dispatching_a_role_prints_its_least_privilege_grant_profile_before_the_run_starts()
+    {
+        // #1355: the invoking agent needs this line to relay the actual grant to its own permission
+        // layer honestly -- review is read-shaped (write_files: false) on the "fake" adapter, which
+        // WorkerAdapterRegistry.Default does not know, so ToBinding never flips the audited branch and
+        // the printed line reflects the role's plain catalog grant.
+        //
+        // F2 needs the bound adapter to actually consume a grant (IPermissionGrantTranslator) for the
+        // line to print at all, so this test registers GrantConsumingContractOutputWorkerAdapter under
+        // "fake" rather than the class-level Adapters -- ContractOutputWorkerAdapter deliberately sits
+        // outside that population so the many other dispatch tests never pay for grant refusal checks.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Review the change.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("review", specPath, roomDirectory, Adapter: "fake");
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new GrantConsumingContractOutputWorkerAdapter(satisfyOutputs: true),
+            };
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            Assert.Contains("Grant: read, no-write, no-shell, no-network", consoleOutput.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_a_shell_and_network_granting_role_prints_shell_and_network_not_the_negations()
+    {
+        // F3: the two tests above only ever assert the negated arms (no-write / no-shell / no-network)
+        // for DescribeGrant's shell/network categories -- someone could flip those two ternaries to
+        // always emit the negation and every existing test would stay green. "implement" is the
+        // catalog's one role that grants both (WorkerRoles.json), so dispatching it is the control that
+        // discriminates in the dangerous direction.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Make the bounded change.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("implement", specPath, roomDirectory, Adapter: "fake");
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new GrantConsumingContractOutputWorkerAdapter(satisfyOutputs: true),
+            };
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            Assert.Contains("Grant: read, write, shell, network", consoleOutput.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Output_ending_in_a_directory_separator_is_refused_before_any_fact_is_printed()
     {
         // R6 (#1354/#1380, finding 8) -- see ValidateOutputOverride's own doc for what a trailing
