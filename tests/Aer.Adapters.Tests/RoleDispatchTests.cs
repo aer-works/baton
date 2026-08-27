@@ -206,10 +206,10 @@ public class RoleDispatchTests
     }
 
     /// <summary>
-    /// #1355: advise moved from an unscoped write grant to the same write_files: false shape
-    /// review/fact-check/patch already use, so it now gains the identical audited-write treatment on
-    /// agy -- the one declared output (advice.md) reaches the worker through the audited path rather
-    /// than an unscoped write grant. Mirrors <c>ToBinding_on_agy_adapter_for_write_files_false_role_with_outputs_materializes_audited_grant</c>.
+    /// #1355: advise moved off its old unscoped write grant onto the same shape review already has,
+    /// so it now takes the identical agy branch review does. Mirrors
+    /// <c>ToBinding_on_agy_adapter_for_write_files_false_role_with_outputs_materializes_audited_grant</c>
+    /// one role over.
     /// </summary>
     [Fact]
     public void Advise_is_read_shaped_and_gains_the_same_audited_write_grant_on_agy_as_review()

@@ -303,13 +303,18 @@ suppress it. Today that is exactly the write-withholding roles on `agy`:
 
 | Role | Writes | `--adapter claude` | `--adapter agy` |
 |---|---|---|---|
-| `advise` | `advice.md` | works | works |
+| `advise` | `advice.md` | works | works — auto-provisioned worktree |
 | `implement` | `changes.md` | works | works |
 | `janitor` | `janitor.md`, `branch.diff` | works | works |
 | `review` | `report.md`, `verdict.json` | works | works — auto-provisioned worktree |
 | `patch` | `patch.diff` | works | works — auto-provisioned worktree |
 | `fact-check` | `findings.md` | works | works — auto-provisioned worktree |
 | `orchestrate` | `turn-actions.json` | works | works — auto-provisioned worktree |
+
+`advise` joined the auto-provisioned-worktree column in #1355: it moved to the read-shaped
+`write_files: false` grant shape review/fact-check/patch already use (least-privilege default
+grants per role), which on `agy` — a vendor whose withheld writes do not reach the outbox — is
+exactly the condition that triggers the audited grant and its worktree, same as those three.
 
 **"Auto-provisioned worktree" is a real consequence, not a formality.** The worker is handed a fresh
 worktree of `--workspace` (or the cwd) at `HEAD` — never the caller's own directory, whether or not

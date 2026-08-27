@@ -49,6 +49,32 @@ mid-run leaves it in place too. A kept tree is one more entry in the *workspace 
 worktree list`, not something the operator asked for per invocation — `aer run`'s own worktree teardown
 reporting (`worktree <outcome> at <path>`, printed to stderr) is what surfaces it.
 
+### The printed grant line
+
+Every dispatch also prints the least-privilege grant profile actually in force, one line per bound
+worker (just one line for an ordinary single-role dispatch), before the run starts (#1355 — least
+privilege default grants per role):
+
+```
+Grant: read, no-write, no-shell, no-network
+```
+
+Read left to right: `ReadFiles`, then `WriteFiles` (a scoped, `AuditedNotEnforced` write — the shape
+`--workspace`'s row above describes — prints as `write (scoped to declared outputs, audited not
+enforced)` rather than a bare `write`), `RunShellCommands`, `NetworkAccess`. This is the same category
+vocabulary the fake adapters in the test suite already use for a grant, not a second one invented for
+this line — read it as what the invoking agent can honestly relay to its own permission layer, not as
+a hardening claim about a vendor that was never asked.
+
+**Read-shaped roles** (`review`, `fact-check`, `advise`) default to `no-shell`/`no-network` outright
+rather than a `RunShellCommands: true` scoped to a read-only command allowlist (`git log`/`show`/
+`diff`/`grep`, …): `agy`'s `IPermissionGrantTranslator` refuses `RunShellCommands` without
+`NetworkAccess` with no scoped exception (see `AgyWorkerAdapter.TryTranslatePermissionGrant`), so a
+grant narrowed by `ShellCommandPatterns` there would either be refused outright or (on a vendor that
+did resolve it) not actually be enforced as scoped — the exact "pretend allowlist" this default avoids
+shipping. A real read-command allowlist is follow-up work, tracked against whichever adapter first
+gains a shell grant that can express "these commands, no network" and have it mean something.
+
 ## Roles
 
 Each role declares what it must produce; those declarations become the contract the engine enforces,

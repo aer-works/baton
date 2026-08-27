@@ -295,6 +295,35 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Dispatching_a_role_prints_its_least_privilege_grant_profile_before_the_run_starts()
+    {
+        // #1355: the invoking agent needs this line to relay the actual grant to its own permission
+        // layer honestly -- advise is read-shaped (write_files: false) on the "fake" adapter, which
+        // WorkerAdapterRegistry.Default does not know, so ToBinding never flips the audited branch and
+        // the printed line reflects the role's plain catalog grant.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake");
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            Assert.Contains("Grant: read, no-write, no-shell, no-network", consoleOutput.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Output_ending_in_a_directory_separator_is_refused_before_any_fact_is_printed()
     {
         // R6 (#1354/#1380, finding 8) -- see ValidateOutputOverride's own doc for what a trailing

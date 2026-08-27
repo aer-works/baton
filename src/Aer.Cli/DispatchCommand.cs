@@ -65,6 +65,18 @@ public static class DispatchCommand
             Console.Out.WriteLine(workspaceFact);
         }
 
+        // #1355: the least-privilege grant profile actually in force, so the invoking agent can relay
+        // it to its own permission layer honestly instead of assuming the wide legacy default this
+        // issue replaced. Extends the same printing seam as workspaceFact/output-path above rather than
+        // building a second one -- one line per bound worker, which for a single-role dispatch (the
+        // common case) is the one line the issue asks for.
+        var multipleWorkers = bindings.Count > 1;
+        foreach (var (workerName, binding) in bindings)
+        {
+            var label = multipleWorkers ? $"Grant ({workerName})" : "Grant";
+            Console.Out.WriteLine($"{label}: {DescribeGrant(binding)}");
+        }
+
         // R4 (#1354/#1380): the execution-scoped artifact path isn't known until dispatch actually runs,
         // so without --output the only truthful thing to print beforehand is the artifacts directory
         // itself, labeled as a directory — not a fabricated per-execution file path that will not exist
@@ -139,6 +151,33 @@ public static class DispatchCommand
                 $"Could not copy the declared output to '{options.OutputPath}': {ex.Message}. "
                 + $"The output still exists at '{srcPath}'.");
         }
+    }
+
+    /// <summary>
+    /// Same category vocabulary <c>FakeEchoWorkerAdapter</c>'s translator uses in the test suite
+    /// (read/write/shell/network, negated with a <c>no-</c> prefix) -- one register for "what a grant
+    /// says", not a second one invented for this printed line.
+    /// </summary>
+    private static string DescribeGrant(WorkerBindingConfigEntry binding)
+    {
+        var grant = binding.PermissionGrant;
+        if (grant is null)
+        {
+            return "unset (falls back to the adapter's raw PermissionScope)";
+        }
+
+        var write = grant.WriteFiles
+            ? binding.GrantAuditMode == GrantAuditMode.AuditedNotEnforced
+                ? "write (scoped to declared outputs, audited not enforced)"
+                : "write"
+            : "no-write";
+
+        return string.Join(
+            ", ",
+            grant.ReadFiles ? "read" : "no-read",
+            write,
+            grant.RunShellCommands ? "shell" : "no-shell",
+            grant.NetworkAccess ? "network" : "no-network");
     }
 
     private static async Task<(WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings)>
