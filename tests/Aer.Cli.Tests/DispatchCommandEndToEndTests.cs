@@ -356,10 +356,10 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     [Fact]
     public async Task The_suggested_output_rename_actually_clears_the_collision_it_follows_from()
     {
-        // #1382 F10.1: DispatchCommand's --output-collides-with-declared-output refusal suggests
-        // "aer dispatch <role> --spec <spec-file> --output <different-file-name>" -- prove that shape
-        // actually clears the check, not just that the string was set (this is what would have caught
-        // F5's stale worktree suggestion, applied to F6's rewritten Try lines).
+        // #1382 F10.1 (see DispatchOptionsParserTests for what this class of test guards): the
+        // --output-collides-with-declared-output refusal's suggested
+        // "aer dispatch <role> --spec <spec-file> --output <different-file-name>" shape, proven to
+        // actually clear the check it follows from.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
         try
         {

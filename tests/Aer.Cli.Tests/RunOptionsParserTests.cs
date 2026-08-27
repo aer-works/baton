@@ -58,10 +58,6 @@ public class RunOptionsParserTests
         Assert.Contains("pass --bindings <path-to-bindings.json>", ex.TryInvocation, StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// #1382 F10.1: the missing-<c>--bindings</c> Try line's flag round-trips through the real
-    /// parser rather than only being pinned as a set string.
-    /// </summary>
     [Fact]
     public void The_suggested_bindings_flag_round_trips_through_this_parser()
     {

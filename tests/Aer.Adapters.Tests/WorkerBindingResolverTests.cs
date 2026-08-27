@@ -231,9 +231,7 @@ public class WorkerBindingResolverTests
     [Fact]
     public void An_empty_adapter_registry_leaves_TryInvocation_null_rather_than_an_empty_example()
     {
-        // #1382 F7: string.Join(", ", []) used to produce "(e.g. )" -- the null-text-leak shape via
-        // an empty join rather than a null. No suggestion is possible with nothing registered, so
-        // this must render no Try: line at all, never an empty one.
+        // #1382 F7 (see the exception's own constructor comment for the defect this guards).
         var ex = new UnknownWorkerAdapterException("claude", []);
 
         Assert.Null(ex.TryInvocation);
