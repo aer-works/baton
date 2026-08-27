@@ -205,25 +205,6 @@ public class RoleDispatchTests
         Assert.Equal(GrantAuditMode.AuditedNotEnforced, agyBinding.GrantAuditMode);
     }
 
-    /// <summary>
-    /// #1355: advise moved off its old unscoped write grant onto the same shape review already has,
-    /// so it now takes the identical agy branch review does. Mirrors
-    /// <c>ToBinding_on_agy_adapter_for_write_files_false_role_with_outputs_materializes_audited_grant</c>
-    /// one role over.
-    /// </summary>
-    [Fact]
-    public void Advise_is_read_shaped_and_gains_the_same_audited_write_grant_on_agy_as_review()
-    {
-        Assert.False(Advise.Grant.WriteFiles);
-        Assert.False(Advise.Grant.RunShellCommands);
-        Assert.False(Advise.Grant.NetworkAccess);
-
-        var binding = RoleDispatch.ToBinding(Advise, "spec", "agy");
-
-        Assert.True(binding.PermissionGrant?.WriteFiles);
-        Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
-    }
-
     [Fact]
     public void OutputOverride_replaces_primary_output_name_and_updates_prompt_instructions()
     {

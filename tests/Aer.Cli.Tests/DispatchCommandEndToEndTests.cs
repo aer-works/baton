@@ -298,16 +298,16 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     public async Task Dispatching_a_role_prints_its_least_privilege_grant_profile_before_the_run_starts()
     {
         // #1355: the invoking agent needs this line to relay the actual grant to its own permission
-        // layer honestly -- advise is read-shaped (write_files: false) on the "fake" adapter, which
+        // layer honestly -- review is read-shaped (write_files: false) on the "fake" adapter, which
         // WorkerAdapterRegistry.Default does not know, so ToBinding never flips the audited branch and
         // the printed line reflects the role's plain catalog grant.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
         var originalOut = Console.Out;
         try
         {
-            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var specPath = await WriteSpecAsync(testRoot, "Review the change.");
             var roomDirectory = Path.Combine(testRoot, "task");
-            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake");
+            var options = new DispatchOptions("review", specPath, roomDirectory, Adapter: "fake");
 
             using var consoleOutput = new StringWriter();
             Console.SetOut(consoleOutput);

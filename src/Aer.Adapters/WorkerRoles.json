@@ -3,12 +3,12 @@
     "id": "advise",
     "tier": "standard",
     "read_files": true,
-    "write_files": false,
+    "write_files": true,
     "run_shell_commands": false,
     "network_access": false,
     "timeout_minutes": 25,
     "verdict_schema": false,
-    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. Read-shaped (#1355): write_files stays false so the one declared output (advice.md) reaches the worker only through the same audited-write path review/fact-check/patch already use, never an unscoped write grant.",
+    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. #1355 tried making this read-shaped (write_files: false, the review/fact-check/patch shape) but reverted it: advise's tier defaults to agy, which is not outbox-write-capable, and tools/aer-agy-loop/dispatch.py's grant_refusal() refuses a withheld-write role on a non-outbox-capable adapter outright by design (satisfiability there is unmeasured, #638) rather than auto-granting the audited write the C# engine's RoleDispatch now does. Narrowing this needs either a tier change (a separate decision) or teaching dispatch.py the engine's audited-grant translation -- see #1355's PR body for the follow-up.",
     "outputs": [
       {
         "name": "advice.md",

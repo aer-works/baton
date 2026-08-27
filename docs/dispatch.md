@@ -66,14 +66,21 @@ vocabulary the fake adapters in the test suite already use for a grant, not a se
 this line — read it as what the invoking agent can honestly relay to its own permission layer, not as
 a hardening claim about a vendor that was never asked.
 
-**Read-shaped roles** (`review`, `fact-check`, `advise`) default to `no-shell`/`no-network` outright
-rather than a `RunShellCommands: true` scoped to a read-only command allowlist (`git log`/`show`/
-`diff`/`grep`, …): `agy`'s `IPermissionGrantTranslator` refuses `RunShellCommands` without
+**Read-shaped roles** (`review`, `fact-check` — both `write_files: false`, so their one write reaches
+the worker only through the scoped `AuditedNotEnforced` path above) default to `no-shell`/`no-network`
+outright rather than a `RunShellCommands: true` scoped to a read-only command allowlist (`git log`/
+`show`/`diff`/`grep`, …): `agy`'s `IPermissionGrantTranslator` refuses `RunShellCommands` without
 `NetworkAccess` with no scoped exception (see `AgyWorkerAdapter.TryTranslatePermissionGrant`), so a
 grant narrowed by `ShellCommandPatterns` there would either be refused outright or (on a vendor that
 did resolve it) not actually be enforced as scoped — the exact "pretend allowlist" this default avoids
 shipping. A real read-command allowlist is follow-up work, tracked against whichever adapter first
 gains a shell grant that can express "these commands, no network" and have it mean something.
+
+`advise` and `patch` are the same shape by outcome (no unscoped shell or network) but not by
+mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose` field in
+`WorkerRoles.json` for why — narrowing it broke `tools/aer-agy-loop/dispatch.py`'s own grant
+coherence check on its default `agy` tier), and `patch` never grants a write in the first place —
+its whole point is proposing a diff without mutating the workspace.
 
 ## Roles
 
