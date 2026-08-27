@@ -335,11 +335,10 @@ public static class MutationInterface
     /// </param>
     /// <param name="sessionId">
     /// The vendor session id the caller's bindings file records for <paramref name="worker"/> right
-    /// now (issue #1359 F6) — recorded on the new <see cref="ExecutionRequest.SessionId"/> so a
-    /// LATER resume of this same execution can check the two agree, and refused up front when the
-    /// execution being resumed already recorded a DIFFERENT session id, rather than silently forking
-    /// the vendor session under a claimed continuity nothing actually backs. <c>null</c> is never
-    /// checked against — the first resume of an ordinary dispatch has nothing recorded to compare.
+    /// now, stored on <see cref="ExecutionRequest.SessionId"/> (that field's doc owns the why). Here
+    /// it is also the refusal input: a resume whose target execution already recorded a DIFFERENT
+    /// session id is refused up front instead of silently forking the vendor session. <c>null</c> is
+    /// never checked against — the first resume of an ordinary dispatch has nothing to compare.
     /// </param>
     /// <exception cref="Aer.Flow.Concurrency.WorkflowLockedException">
     /// Another Flow instance already holds <paramref name="roomDirectoryPath"/>'s lock.

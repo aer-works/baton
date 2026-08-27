@@ -155,6 +155,7 @@ That prose is for a person watching. For a machine caller (#1356), the same info
 available two other ways, and both give you the same set of paths without parsing a sentence:
 
 - **`aer status <room-dir> --json`** — one JSON object to stdout, nothing else:
+  <!-- record-once-ok: #1359 src/Aer.Cli/WorkflowStatusView.cs -->
   `{state, steps:[{id, state, execution, linkedFrom}], outputs:[...], error, try}`. `outputs` is the
   flat list of absolute paths every succeeded step's declared outputs resolved to — the same paths
   the human line above prints, derived from the same read. Works on a running room too
@@ -162,8 +163,8 @@ available two other ways, and both give you the same set of paths without parsin
   validation refusal's `Try:` stderr line carries, kept as its own field rather than folded into
   `error` — `null` when the refusal had none. Only ever populated on a pre-ledger `Failed` room (§5's
   exit-code-2 case); a settled or running room's ledger projection has no exception to carry one.
-  `linkedFrom` (#1359) is the execution `aer resume` continued, when a step's current `execution` is
-  a resume's own new attempt — `null` for every ordinary dispatch or retry.
+  `linkedFrom` (#1359) names the predecessor execution when the step's current one was started by
+  `aer resume`; anything that was dispatched or retried normally shows `null` there.
 - **`<room-dir>/terminal.json`** — written once, the moment the workflow FIRST reaches a terminal
   state, in the identical shape `status --json` prints. Written *last*, after every output it could
   reference already exists on disk, specifically so you can watch this one file with a file monitor
@@ -242,13 +243,13 @@ no `--room-dir` flag on it, and passing one is an `Unknown option` error.
 
 **Exit codes are a contract, and a dead room from provisioning is no longer indistinguishable from a
 slow one (#1356, #1374).** `aer run`/`aer dispatch`/`aer resume` (#1359) return one of six codes.
-**`aer resume` continues ONE worker** — re-enters an already-dispatched step's vendor session with a
-new message, on the same workspace and grants, recording the result as a new execution linked to the
-one it continues (`aer resume <room-dir> --worker <role> --message <text> --bindings <file>`; see
-`aer resume --help`). Its exit code is still the WHOLE ROOM's outcome, same table, not "did the
-resumed step itself succeed" — a successful resume of one step in a room where a different step
-already Failed still exits 1; read the resumed step's own status via `aer status --json`'s
-`steps[].state`/`linkedFrom` for that:
+**`aer resume` continues ONE worker** — it hands an already-dispatched step's vendor session your
+follow-up message, reusing the workspace and grant that step already had, and the ledger gains a
+fresh execution pointing back at its predecessor (`aer resume <room-dir> --worker <role>
+--message <text> --bindings <file>`; see `aer resume --help`). Its exit code is still the WHOLE
+ROOM's outcome, same table, not "did the resumed step itself succeed" — if some other step had
+already Failed, even a perfectly good resume exits 1; read the resumed step's own status via
+`aer status --json`'s `steps[].state`/`linkedFrom` for that:
 
 | Code | Meaning |
 |---|---|

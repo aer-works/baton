@@ -87,9 +87,8 @@ public class RetryEngineTests
     [Fact]
     public void A_failed_resume_shaped_attempt_never_retries_even_with_budget_remaining()
     {
-        // Issue #1359 F4: aer resume's own contract is "one message per resume invocation" -- the
-        // settling pump must never auto-dispatch further attempts against a failed resume, however
-        // much MaxAttempts budget remains.
+        // Pins the RetryEngine's linked-from bypass (why: RetryEngine.ShouldRetry's doc, #1359 F4),
+        // with MaxAttempts budget deliberately left over so only that bypass can explain a no-retry.
         var stepState = new StepState(
             Architect, StepStatus.Failed, ExecutionId, NoUpstream,
             ConsecutiveFailureCount: 1, LinkedFromExecutionId: new ExecutionId("resumed-from"));

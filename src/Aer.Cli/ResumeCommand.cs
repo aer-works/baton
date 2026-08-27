@@ -46,12 +46,12 @@ public static class ResumeCommand
     /// #1359's design ruling: refuse loudly rather than silently starting cold.
     /// </exception>
     /// <exception cref="InvalidResumeException">
-    /// See that type's own doc for the closed set of state-based refusals this can mean, including
-    /// F1's: the worker's worktree workspace no longer exists on disk.
+    /// See that type's own doc for the closed set of state-based refusals this can mean (missing
+    /// on-disk workspace included).
     /// </exception>
     /// <exception cref="Aer.Flow.Workspaces.InvalidWorkspaceSpecException">
-    /// The worker's worktree spec is malformed, or the entry declares both a <c>WorkingDirectory</c>
-    /// and a worktree.
+    /// A bad worktree spec, per <see cref="Aer.Adapters.WorktreeWorkspaces.Provision"/>'s documented
+    /// checks.
     /// </exception>
     /// <exception cref="Aer.Flow.Concurrency.WorkflowLockedException">
     /// Another Flow instance already holds this room directory's lock.
