@@ -144,11 +144,6 @@ jobs:
           go-version: "1.26"
           cache-dependency-path: src/Aer.Sidecar/go.sum
 
-      - name: Check formatting
-        run: pixi run fmt-check
-
-      - name: Lint
-        run: pixi run lint
 
       # Isolation guard (#318). The suite redirects AER_HOME to a throwaway temp root
       # (tests/Shared/AerHomeRedirect.cs), so a correct run never touches the real ~/.aer. Snapshot
@@ -232,6 +227,60 @@ jobs:
           name: native-lib-${{ matrix.rid }}
           path: external/aer-core/target/debug/${{ matrix.lib-name }}
           if-no-files-found: error
+
+  # Platform-independent formatting and compiler/linter checks hoisted out of the test matrix (#1363).
+  # Runs on ubuntu-latest parallel to the test legs, saving ~2 min of serial overhead off the long pole.
+  lint:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dotnet == 'true') }}
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: external/aer-core
+
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        id: pixi-attempt-1
+        continue-on-error: true
+        with:
+          run-install: false
+          cache: false
+      - if: steps.pixi-attempt-1.outcome == 'failure'
+        shell: bash
+        run: sleep 30
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        if: steps.pixi-attempt-1.outcome == 'failure'
+        with:
+          run-install: false
+          cache: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.x"
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: src/Aer.Sidecar/go.sum
+
+      - name: Check formatting
+        run: pixi run fmt-check
+
+      - name: Lint
+        run: pixi run lint
+
+      - name: Shutdown dotnet build server
+        run: pixi run dotnet build-server shutdown
+        if: always()
 
   # M21 Phase 2 (#232): Aer.Mobile is a separate Dart/Flutter toolchain with no dependency on
   # aer_core or the .NET solution, so it gets its own job rather than joining the matrix above.
@@ -433,7 +482,7 @@ jobs:
       # this job; only the invocation against the live body did.
 
   ci:
-    needs: [changes, test, mobile, audit]
+    needs: [changes, test, lint, mobile, audit]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -441,11 +490,12 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           TEST: ${{ needs.test.result }}
+          LINT: ${{ needs.lint.result }}
           MOBILE: ${{ needs.mobile.result }}
           AUDIT: ${{ needs.audit.result }}
         run: |
-          echo "results: changes=$CHANGES test=$TEST mobile=$MOBILE audit=$AUDIT"
-          for r in "$CHANGES" "$TEST" "$MOBILE" "$AUDIT"; do
+          echo "results: changes=$CHANGES test=$TEST lint=$LINT mobile=$MOBILE audit=$AUDIT"
+          for r in "$CHANGES" "$TEST" "$LINT" "$MOBILE" "$AUDIT"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::A required CI job reported '$r'."
               exit 1
