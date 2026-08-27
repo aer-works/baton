@@ -74,8 +74,10 @@ Only printed for a bound worker whose adapter actually consumes a structured gra
 adapters a grant governs) — a step bound to an adapter outside that population (e.g. a composed
 template's capture step) gets no grant line, not a placeholder one.
 
-**Read-shaped roles** (`review`, `fact-check` — both `write_files: false`, so their one write reaches
-the worker only through the scoped `AuditedNotEnforced` path above) default to `no-shell`/`no-network`
+**Read-shaped roles** (`review`, `fact-check` — both `write_files: false`) default to `claude`, whose
+withheld writes still reach the outbox through AER's own hook rather than the `AuditedNotEnforced`
+path above (`IWorkerAdapter.WithheldWritesReachTheOutbox`, `docs/decisions/0004-permission-scopes.md`)
+— that path is only entered on `--adapter agy`. Both also default to `no-shell`/`no-network`
 outright rather than a `RunShellCommands: true` scoped to a read-only command allowlist (`git log`/
 `show`/`diff`/`grep`, …): `agy`'s `IPermissionGrantTranslator` refuses `RunShellCommands` without
 `NetworkAccess` with no scoped exception (see `AgyWorkerAdapter.TryTranslatePermissionGrant`), so a
