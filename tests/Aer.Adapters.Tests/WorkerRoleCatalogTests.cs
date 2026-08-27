@@ -99,6 +99,15 @@ public class WorkerRoleCatalogTests
         Assert.False(review.Grant.RunShellCommands);
         Assert.True(review.ProducesVerdict);
 
+        var factCheck = WorkerRoleCatalog.For("fact-check");
+        Assert.Equal("claude", factCheck.Adapter);
+        Assert.False(factCheck.Grant.WriteFiles);
+        // F4 (#1355 PR #1385 review): the issue names review/fact-check/advise as the read lanes, but
+        // only review got a tested guarantee here -- fact-check appeared nowhere under tests/. Mirrors
+        // review's own NetworkAccess/RunShellCommands assertions above.
+        Assert.False(factCheck.Grant.NetworkAccess);
+        Assert.False(factCheck.Grant.RunShellCommands);
+
         var implement = WorkerRoleCatalog.For("implement");
         Assert.Equal("agy", implement.Adapter);
         Assert.True(implement.Grant.RunShellCommands);
