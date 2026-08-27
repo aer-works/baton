@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Aer.Adapters;
 using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
 
@@ -16,7 +17,14 @@ public sealed record WorkflowStatusStepView(
     // #1359: the execution `aer resume` continued, when Execution is a resume's own new attempt —
     // null for every ordinary dispatch/retry. Lets a status consumer render both executions of a
     // resumed step without a second lookup.
-    [property: JsonPropertyName("linkedFrom")] string? LinkedFrom = null);
+    [property: JsonPropertyName("linkedFrom")] string? LinkedFrom = null,
+    // #1360: Execution's own usage -- absent (not present as a whole) when that execution has no
+    // recorded start/exit pair to derive wall-clock from (still running, or Flow crashed before Core
+    // recorded either lifecycle event). See ExecutionUsageProjector.
+    [property: JsonPropertyName("usage")] ExecutionUsageView? Usage = null,
+    // #1360: LinkedFrom's own usage, kept separate from Usage rather than merged -- a resumed step's
+    // two executions are two distinct cost entries, not one to be added or overwritten.
+    [property: JsonPropertyName("linkedFromUsage")] ExecutionUsageView? LinkedFromUsage = null);
 
 /// <summary>
 /// The one JSON object <c>aer status --json</c> writes to stdout (#1356's machine completion
@@ -43,11 +51,28 @@ public sealed record WorkflowStatusView(
 /// <c>StatusCommand.PrintState</c>/<c>FlowStateReporter.Report</c> already render (one derivation,
 /// two — now three, counting the terminal sentinel — renderings; #1356 requires never forking the
 /// projection itself). Never re-reads <c>flow.jsonl</c> or <c>snapshot.json</c> on its own: callers
-/// pass in the already-projected <see cref="FlowState"/>.
+/// pass in the already-projected <see cref="FlowState"/>, and (#1360) the raw <see cref="LogEntry"/>
+/// list a caller already read for that same projection, when per-execution usage is wanted.
 /// </summary>
 public static class WorkflowStatusProjector
 {
-    public static WorkflowStatusView Project(FlowState state, WorkflowDefinitionSnapshot snapshot, string roomDirectoryPath)
+    /// <param name="entries">
+    /// The same ledger entries the caller already read to produce <paramref name="state"/> (#1360) —
+    /// source data for <see cref="ExecutionUsageProjector.BuildByExecutionId"/>. Omitted (or empty)
+    /// yields a view with no <c>usage</c> on any step, never a fabricated one; a caller that has no
+    /// use for usage data (or has not read the ledger for another reason) is not forced to.
+    /// </param>
+    /// <param name="adapters">
+    /// Registered adapters (#1360) tried, content-sniff style, against each execution's captured
+    /// stdout — see <see cref="ExecutionUsageProjector"/>'s remarks for why <c>aer status</c> has no
+    /// binding-resolved vendor to consult directly. Defaults to <see cref="WorkerAdapterRegistry.Default"/>.
+    /// </param>
+    public static WorkflowStatusView Project(
+        FlowState state,
+        WorkflowDefinitionSnapshot snapshot,
+        string roomDirectoryPath,
+        IReadOnlyList<LogEntry>? entries = null,
+        IReadOnlyDictionary<string, IWorkerAdapter>? adapters = null)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -56,14 +81,25 @@ public static class WorkflowStatusProjector
         var stepDefByStepId = snapshot.Steps.ToDictionary(step => step.StepId);
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
 
+        var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
+            entries ?? [], artifactsRootPath, adapters ?? WorkerAdapterRegistry.Default);
+
         var steps = new List<WorkflowStatusStepView>(state.Steps.Count);
         var outputs = new List<string>();
         string? firstFailureReason = null;
 
         foreach (var step in state.Steps)
         {
+            var usage = step.LatestExecutionId is { } latest && usageByExecutionId.TryGetValue(latest.Value, out var latestUsage)
+                ? latestUsage
+                : null;
+            var linkedFromUsage = step.LinkedFromExecutionId is { } linkedFrom && usageByExecutionId.TryGetValue(linkedFrom.Value, out var linkedUsage)
+                ? linkedUsage
+                : null;
+
             steps.Add(new WorkflowStatusStepView(
-                step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value));
+                step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
+                usage, linkedFromUsage));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))

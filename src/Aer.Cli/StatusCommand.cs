@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Aer.Adapters;
+using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
 using Aer.Flow.Outcomes;
 using Aer.Flow.Projection;
@@ -113,12 +115,13 @@ public static class StatusCommand
             {
                 // #1356 point 1: the SAME state just projected above, not a second read of the
                 // ledger — one derivation, two renderings. Nothing else reaches stdout in this mode.
-                var view = WorkflowStatusProjector.Project(state, snapshot, options.RoomDirectoryPath);
+                // #1360: entries is the same list already read above, not a second ledger read.
+                var view = WorkflowStatusProjector.Project(state, snapshot, options.RoomDirectoryPath, entries);
                 output.WriteLine(JsonSerializer.Serialize(view));
                 return;
             }
 
-            PrintState(output, state, logPath, events, entries);
+            PrintState(output, state, logPath, events, entries, options.RoomDirectoryPath);
 
             if (options.Follow)
             {
@@ -406,7 +409,8 @@ public static class StatusCommand
     }
 
     private static void PrintState(
-        TextWriter output, FlowState state, string logPath, IReadOnlyList<FlowEvent> events, IReadOnlyList<LogEntry> entries)
+        TextWriter output, FlowState state, string logPath, IReadOnlyList<FlowEvent> events, IReadOnlyList<LogEntry> entries,
+        string roomDirectoryPath)
     {
         output.WriteLine($"Workflow status: {state.Status}");
         output.WriteLine($"Log last updated: {ResolveLogUpdatedAt(logPath)}");
@@ -427,6 +431,61 @@ public static class StatusCommand
         {
             output.WriteLine($"  (supplementary) {stepLess.Worker}: execution={stepLess.ExecutionId} pending");
         }
+
+        // #1360: one rolled-up line for the whole room, never per step here -- a machine consumer
+        // wanting per-execution figures already has them from `--json`'s usage/linkedFromUsage.
+        var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
+        var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(entries, artifactsRootPath, WorkerAdapterRegistry.Default);
+        output.WriteLine(FormatUsageSummary(usageByExecutionId));
+    }
+
+    /// <summary>
+    /// The room-wide roll-up (#1360's "one rolled-up line in human aer status"). Wall-clock is summed
+    /// across every execution with both a start and exit event, since that half is always derivable;
+    /// a token/turn figure is summed and its reporting count disclosed only when at least one
+    /// execution actually carried it — an adapter (or a text-mode dispatch) that reports none is
+    /// silence, not a printed zero.
+    /// </summary>
+    private static string FormatUsageSummary(IReadOnlyDictionary<string, ExecutionUsageView> usageByExecutionId)
+    {
+        if (usageByExecutionId.Count == 0)
+        {
+            return "Usage: no completed executions yet.";
+        }
+
+        var totalWallClockSeconds = usageByExecutionId.Values.Sum(u => u.WallClockMs) / 1000.0;
+        var parts = new List<string>
+        {
+            $"{usageByExecutionId.Count} execution(s)",
+            $"{totalWallClockSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}s wall-clock",
+        };
+
+        AppendTokenPart(parts, usageByExecutionId, u => u.TokensIn, "tokens in");
+        AppendTokenPart(parts, usageByExecutionId, u => u.TokensOut, "tokens out");
+
+        var turnsReporting = usageByExecutionId.Values.Where(u => u.Turns is not null).ToList();
+        if (turnsReporting.Count > 0)
+        {
+            parts.Add($"{turnsReporting.Sum(u => u.Turns!.Value)} turns ({turnsReporting.Count}/{usageByExecutionId.Count} reporting)");
+        }
+
+        return "Usage: " + string.Join(", ", parts);
+    }
+
+    private static void AppendTokenPart(
+        List<string> parts,
+        IReadOnlyDictionary<string, ExecutionUsageView> usageByExecutionId,
+        Func<ExecutionUsageView, long?> selector,
+        string label)
+    {
+        var reporting = usageByExecutionId.Values.Where(u => selector(u) is not null).ToList();
+        if (reporting.Count == 0)
+        {
+            return;
+        }
+
+        var total = reporting.Sum(u => selector(u)!.Value);
+        parts.Add($"{total} {label} ({reporting.Count}/{usageByExecutionId.Count} reporting)");
     }
 
     private static Dictionary<string, DateTime> ExtractEventTimestamps(IReadOnlyList<LogEntry> entries)
