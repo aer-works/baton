@@ -96,10 +96,10 @@ public sealed class ExecutionUsageProjectorTests
     [Fact]
     public void An_execution_whose_exit_timestamp_precedes_its_start_is_entirely_absent_never_a_zero_wall_clock()
     {
-        // #1360 F6: a backwards clock step (NTP correction, VM resume) between the two DateTime.UtcNow
-        // stamps produces a negative delta. Clamping that to 0 would print the exact "zero standing in
-        // for unknown" the issue rules out; the honest response is the same as a still-running
-        // execution -- absent from the result entirely.
+        // #1360 F6: pins the clamp-avoidance ExecutionUsageProjector.BuildByExecutionId documents --
+        // see its own remarks for why. Here: a backwards clock step (NTP correction, VM resume)
+        // between the two DateTime.UtcNow stamps produces a negative delta, and the result must treat
+        // it the same as a still-running execution -- absent entirely, not a printed 0.
         var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-{Guid.NewGuid():N}");
         try
         {
