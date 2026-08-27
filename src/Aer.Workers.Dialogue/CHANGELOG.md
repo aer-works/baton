@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/aer-works/baton/compare/dialogue-worker-v0.20.0...dialogue-worker-v0.21.0) (2026-08-27)
+
+
+### Miscellaneous
+
+* **dialogue-worker:** Synchronize core versions
+
 ## [0.20.0](https://github.com/aer-works/baton/compare/dialogue-worker-v0.19.0...dialogue-worker-v0.20.0) (2026-08-26)
 
 

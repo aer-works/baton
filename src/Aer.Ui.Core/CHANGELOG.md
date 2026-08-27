@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/aer-works/baton/compare/ui-core-v0.20.0...ui-core-v0.21.0) (2026-08-27)
+
+
+### Features
+
+* **flow:** Machine completion contract -- --wait, exit codes, status --json, terminal state for pre-ledger failures ([#1374](https://github.com/aer-works/baton/issues/1374)) ([a6ca232](https://github.com/aer-works/baton/commit/a6ca2322b155aae37a46a26865e7ea7b1cf6ee0b))
+
 ## [0.20.0](https://github.com/aer-works/baton/compare/ui-core-v0.19.0...ui-core-v0.20.0) (2026-08-26)
 
 
