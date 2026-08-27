@@ -3,12 +3,12 @@
     "id": "advise",
     "tier": "standard",
     "read_files": true,
-    "write_files": true,
+    "write_files": false,
     "run_shell_commands": false,
     "network_access": false,
     "timeout_minutes": 25,
     "verdict_schema": false,
-    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice.",
+    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. Read-shaped (#1355): write_files stays false so the one declared output (advice.md) reaches the worker only through the same audited-write path review/fact-check/patch already use, never an unscoped write grant.",
     "outputs": [
       {
         "name": "advice.md",
@@ -26,7 +26,7 @@
     "network_access": true,
     "timeout_minutes": 40,
     "verdict_schema": false,
-    "purpose": "A bounded change with the approach already decided. Exercises the write path and agy's skip-permissions translation, which is the half of AER that review-only dispatches never touch. Its 40 minutes is NOT the #588 path -- every template's timeout exercises that equally -- so do not reach for the skip-permissions grant expecting it to buy that.",
+    "purpose": "A bounded change with the approach already decided. Exercises the write path and agy's skip-permissions translation, which is the half of AER that review-only dispatches never touch. Its 40 minutes is NOT the #588 path -- every template's timeout exercises that equally -- so do not reach for the skip-permissions grant expecting it to buy that. #1355 kept network_access true here: this role's tier defaults to agy, and AgyWorkerAdapter.TryTranslatePermissionGrant refuses RunShellCommands without NetworkAccess outright (no scoped-shell-without-network exists on that vendor) -- defaulting network off would make every unmodified dispatch of this role throw PermissionGrantUnsupportedException. See #1355's PR body for the follow-up this leaves open.",
     "outputs": [
       {
         "name": "changes.md",
@@ -103,7 +103,7 @@
     "network_access": true,
     "timeout_minutes": 15,
     "verdict_schema": false,
-    "purpose": "After an implementer commits: run the named mechanical checkers and make them green without changing behavior (#729). The canonical brief is janitor-prompt.md next to dispatch.py -- pass it via --prompt-file rather than restating the contract. The checkers determine the work, so the cheap tier runs it; anything needing judgment comes back [NOT DONE], not guessed at.",
+    "purpose": "After an implementer commits: run the named mechanical checkers and make them green without changing behavior (#729). The canonical brief is janitor-prompt.md next to dispatch.py -- pass it via --prompt-file rather than restating the contract. The checkers determine the work, so the cheap tier runs it; anything needing judgment comes back [NOT DONE], not guessed at. #1355 kept network_access true here for the same reason as implement: this role's tier also defaults to agy, and agy refuses RunShellCommands without NetworkAccess -- see implement's purpose field for the full reasoning, not restated here.",
     "outputs": [
       {
         "name": "janitor.md",

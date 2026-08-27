@@ -92,14 +92,31 @@ public class WorkerRoleCatalogTests
         Assert.Equal("sonnet", review.Model);
         Assert.Equal("high", review.Effort);
         Assert.False(review.Grant.WriteFiles);
+        // #1355: the read-shaped least-privilege default -- no network, no shell (the honest subset:
+        // agy has no scoped-shell-without-network grant to ask for, so this stays a flat refusal
+        // rather than a ShellCommandPatterns allowlist that would not actually enforce there).
+        Assert.False(review.Grant.NetworkAccess);
+        Assert.False(review.Grant.RunShellCommands);
         Assert.True(review.ProducesVerdict);
 
         var implement = WorkerRoleCatalog.For("implement");
         Assert.Equal("agy", implement.Adapter);
         Assert.True(implement.Grant.RunShellCommands);
+        // #1355: network stays granted here -- implement's tier defaults to agy, and agy's translator
+        // refuses RunShellCommands without NetworkAccess (no scoped-shell-without-network exists on
+        // that vendor), so defaulting it off would make every unmodified dispatch of this role throw.
+        // See the role's own purpose field in WorkerRoles.json for the full reasoning.
         Assert.True(implement.Grant.NetworkAccess);
         Assert.False(implement.ProducesVerdict);
         Assert.Equal(TimeSpan.FromMinutes(40), implement.Timeout);
+
+        var advise = WorkerRoleCatalog.For("advise");
+        // #1355: read-shaped roles (review, fact-check, advise) default to no write grant of their
+        // own -- the one declared output (advice.md) reaches the worker only through the same
+        // audited-not-enforced path RoleDispatchTests proves for review/fact-check/patch.
+        Assert.False(advise.Grant.WriteFiles);
+        Assert.False(advise.Grant.RunShellCommands);
+        Assert.False(advise.Grant.NetworkAccess);
     }
 
     [Fact]
