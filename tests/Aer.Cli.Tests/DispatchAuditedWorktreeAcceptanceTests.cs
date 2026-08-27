@@ -88,7 +88,7 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
 
             var specPath = await WriteSpecAsync(testRoot, "Review the change.");
             var roomDirectory = Path.Combine(testRoot, "task");
-            var adapters = await AgyFakeAdaptersAsync(testRoot);
+            var adapters = await AgyFakeAdaptersAsync(testRoot, translatesGrants: true);
 
             var options = new DispatchOptions("review", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace);
 
@@ -148,7 +148,16 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
         }
     }
 
-    private static async Task<IReadOnlyDictionary<string, IWorkerAdapter>> AgyFakeAdaptersAsync(string testRoot)
+    /// <param name="translatesGrants">
+    /// F2/F3: the printed-grant-line test needs the bound "agy" adapter to actually consume a grant
+    /// (<see cref="IPermissionGrantTranslator"/>) or <see cref="DispatchCommand"/> now prints nothing
+    /// for it. The other two tests here assert on run outcome, not the grant line, so they keep the
+    /// plain <see cref="ContractOutputWorkerAdapter"/> that sits outside that population -- narrower
+    /// than opting every acceptance test here into WorkerBindingResolver's grant-consuming refusal
+    /// checks for no reason.
+    /// </param>
+    private static async Task<IReadOnlyDictionary<string, IWorkerAdapter>> AgyFakeAdaptersAsync(
+        string testRoot, bool translatesGrants = false)
     {
         // A minimal conforming ReviewVerdict (decision 0043: the engine checks only that it PARSES as
         // one — ReviewedRef required, empty Findings valid).
@@ -157,12 +166,12 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
         await File.WriteAllTextAsync(
             verdictFixture, """{"reviewedRef":"HEAD","findings":[]}""", TestContext.Current.CancellationToken);
 
-        return new Dictionary<string, IWorkerAdapter>
-        {
-            ["agy"] = new ContractOutputWorkerAdapter(
-                satisfyOutputs: true,
-                outputFixtures: new Dictionary<string, string> { ["verdict.json"] = verdictFixture }),
-        };
+        var outputFixtures = new Dictionary<string, string> { ["verdict.json"] = verdictFixture };
+        IWorkerAdapter agyAdapter = translatesGrants
+            ? new GrantConsumingContractOutputWorkerAdapter(satisfyOutputs: true, outputFixtures)
+            : new ContractOutputWorkerAdapter(satisfyOutputs: true, outputFixtures);
+
+        return new Dictionary<string, IWorkerAdapter> { ["agy"] = agyAdapter };
     }
 
     private static async Task<string> WriteSpecAsync(string directory, string content)

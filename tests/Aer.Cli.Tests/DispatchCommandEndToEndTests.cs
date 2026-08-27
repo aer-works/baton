@@ -301,6 +301,11 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         // layer honestly -- review is read-shaped (write_files: false) on the "fake" adapter, which
         // WorkerAdapterRegistry.Default does not know, so ToBinding never flips the audited branch and
         // the printed line reflects the role's plain catalog grant.
+        //
+        // F2 needs the bound adapter to actually consume a grant (IPermissionGrantTranslator) for the
+        // line to print at all, so this test registers GrantConsumingContractOutputWorkerAdapter under
+        // "fake" rather than the class-level Adapters -- ContractOutputWorkerAdapter deliberately sits
+        // outside that population so the many other dispatch tests never pay for grant refusal checks.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
         var originalOut = Console.Out;
         try
@@ -308,10 +313,14 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             var specPath = await WriteSpecAsync(testRoot, "Review the change.");
             var roomDirectory = Path.Combine(testRoot, "task");
             var options = new DispatchOptions("review", specPath, roomDirectory, Adapter: "fake");
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new GrantConsumingContractOutputWorkerAdapter(satisfyOutputs: true),
+            };
 
             using var consoleOutput = new StringWriter();
             Console.SetOut(consoleOutput);
-            await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
             Console.SetOut(originalOut);
 
             Assert.Contains("Grant: read, no-write, no-shell, no-network", consoleOutput.ToString());

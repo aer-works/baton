@@ -66,12 +66,23 @@ public static class DispatchCommand
         }
 
         // #1355: the least-privilege grant profile actually in force, so the invoking agent can relay
-        // it to its own permission layer honestly instead of assuming the wide legacy default this
-        // issue replaced. Extends the same printing seam as workspaceFact/output-path above rather than
-        // building a second one -- one line per bound worker, which for a single-role dispatch (the
-        // common case) is the one line the issue asks for.
-        var multipleWorkers = bindings.Count > 1;
-        foreach (var (workerName, binding) in bindings)
+        // it to its own permission layer honestly. Extends the same printing seam as
+        // workspaceFact/output-path above rather than building a second one -- one line per bound
+        // worker whose adapter actually consumes a grant, which for a single-role dispatch (the common
+        // case) is the one line the issue asks for.
+        //
+        // F2: a grant is only "what the worker can do" for an adapter that consumes it --
+        // WorkerBindingResolver.cs:137-141 already draws this population as `is IPermissionGrantTranslator`
+        // (checked against this same `adapters` registry, the one WorkerBindingResolver.Resolve is
+        // handed downstream via RunCommand). A binding bound to an adapter outside that population
+        // (e.g. a composed template's capture step, which spawns git directly) never had its grant
+        // consumed, so its "no-shell"/"no-network" would be false in the only sense an invoking agent's
+        // permission layer cares about. Skip it -- no placeholder line either.
+        var translatorBindings = bindings
+            .Where(pair => adapters.TryGetValue(pair.Value.Adapter, out var boundAdapter) && boundAdapter is IPermissionGrantTranslator)
+            .ToList();
+        var multipleWorkers = translatorBindings.Count > 1;
+        foreach (var (workerName, binding) in translatorBindings)
         {
             var label = multipleWorkers ? $"Grant ({workerName})" : "Grant";
             Console.Out.WriteLine($"{label}: {DescribeGrant(binding)}");
