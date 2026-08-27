@@ -156,7 +156,8 @@ available two other ways, and both give you the same set of paths without parsin
 
 - **`aer status <room-dir> --json`** — one JSON object to stdout, nothing else:
   <!-- record-once-ok: #1359 src/Aer.Cli/WorkflowStatusView.cs -->
-  `{state, steps:[{id, state, execution, linkedFrom}], outputs:[...], error, try}`. `outputs` is the
+  `{state, steps:[{id, state, execution, linkedFrom, usage, linkedFromUsage}], outputs:[...], error, try}`.
+  `outputs` is the
   flat list of absolute paths every succeeded step's declared outputs resolved to — the same paths
   the human line above prints, derived from the same read. Works on a running room too
   (`state: "Running"`), not only a settled one. `try` (#1357) is the same corrected-invocation text a
@@ -165,6 +166,19 @@ available two other ways, and both give you the same set of paths without parsin
   exit-code-2 case); a settled or running room's ledger projection has no exception to carry one.
   `linkedFrom` (#1359) names the predecessor execution when the step's current one was started by
   `aer resume`; anything that was dispatched or retried normally shows `null` there.
+- **`usage`/`linkedFromUsage` (#1360)** cost per execution — the second field is the linked-from
+  execution's own separate figure, present exactly when `linkedFrom` is. Shape:
+  `{wallClockMs, tokensIn?, tokensOut?, turns?}`. The clock figure lands the moment Core has recorded
+  both ends of an execution's lifetime, no matter which vendor ran it. The three counts are a
+  different kind of fact — pulled from whatever the vendor's own CLI put on stdout — so treat a
+  missing key as "not reported for this run", never as zero: §4 spells out per-vendor which counts
+  that actually is today, and it hinges on running in structured-output mode in the first place (a
+  plain-text dispatch, which is most of them right now, carries none of the three).
+  **Narrower population than the human line** (#1360 F4, review): `--json` exposes only each step's
+  current and linked-from executions, never a failed attempt a retry superseded or a step-less
+  supplementary execution (§17.3) — those are in the human roll-up's total but have no home here. Sum
+  `usage`/`linkedFromUsage` across steps for a machine-computed total that is a lower bound, not the
+  room's full cost.
 - **`<room-dir>/terminal.json`** — written once, the moment the workflow FIRST reaches a terminal
   state, in the identical shape `status --json` prints. Written *last*, after every output it could
   reference already exists on disk, specifically so you can watch this one file with a file monitor
@@ -209,12 +223,27 @@ what the repo's own audit checks those pins against. `gemini-3.6-flash-low` abov
 `draft-review-paused-bindings.json` uses; take a current one from those two sources rather than from
 this sentence.
 
+**Usage (#1360):** agy's structured-output mode reports token counts, and separately a turn count —
+[`docs/vendor-capabilities.md`](../vendor-capabilities.md#usage-cost-and-quota--the-asymmetry-that-matters-most)
+is the register for the underlying vendor facts. One shape quirk this repo does not paper over: when
+that report collapses the input/output split into a single combined figure, `status --json`'s
+`tokensIn`/`tokensOut` both come back absent rather than guessing a direction for it.
+
 ### claude
 
 `claude` is the other registered adapter and takes the same binding shape (see
 `readonly-reviewer-bindings.json`, which is a claude entry). One difference matters when choosing:
 on claude a **withheld** write still reaches the outbox, so `WriteFiles: false` there is a genuine
 read-only lane that still produces its report. That asymmetry is why §6's table splits by adapter.
+
+**Usage (#1360):** claude's structured-output mode reports the same token/turn shape agy does — same
+register, [`docs/vendor-capabilities.md`](../vendor-capabilities.md#usage-cost-and-quota--the-asymmetry-that-matters-most).
+It additionally computes a per-turn dollar cost, which `status --json`'s additive
+`{wallClockMs, tokensIn?, tokensOut?, turns?}` shape has no field for and therefore does not surface.
+One more thing worth knowing before reading `tokensOut` as a lane's whole cost: it is a top-level
+count that a worker's own subagent fan-out is not folded into — see
+[`docs/vendor-capabilities.md`](../vendor-capabilities.md#batons-usage-field-per-adapter-1360)
+for the measured shortfall.
 
 Both adapters spawn the vendor's own already-authenticated CLI. Baton never handles a credential, so
 a lane only runs on a vendor that is already logged in on this host — see the README's *Vendor

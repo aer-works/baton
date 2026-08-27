@@ -53,10 +53,29 @@ public class ResumeCommandEndToEndTests
 
             // The ledger shows both executions -- the issue's own acceptance wording -- via the same
             // status --json shape #1356 already renders every other execution fact through.
-            var view = WorkflowStatusProjector.Project(resumeResult.State, resumeResult.Snapshot, roomDirectory);
+            var logEntries = await new Aer.Flow.Store.FlowEventLogReader(Path.Combine(roomDirectory, "flow.jsonl"))
+                .ReadAllEntriesWithTimestampsAsync(TestContext.Current.CancellationToken);
+            var view = WorkflowStatusProjector.Project(resumeResult.State, resumeResult.Snapshot, roomDirectory, logEntries);
             var stepView = view.Steps.Single();
             Assert.Equal(resumedStep.LatestExecutionId!.Value.Value, stepView.Execution);
             Assert.Equal(firstExecutionId.Value, stepView.LinkedFrom);
+
+            // #1360 F2: the resumed execution and the one it linked from each carry their OWN usage --
+            // two distinct entries, not one merged/overwritten figure. Discriminating, not tautological
+            // (the review's finding): the resume stub sleeps so the two wall-clock figures are actually
+            // distinguishable, and both step-view fields are checked against an independent oracle
+            // (ExecutionUsageProjector's own map, keyed by the two known execution ids) rather than
+            // only asserted non-negative -- inverting WorkflowStatusProjector's field mapping (using
+            // LatestExecutionId for both Usage and LinkedFromUsage) fails this.
+            var artifactsRootPath = Path.Combine(roomDirectory, Aer.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName);
+            var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
+                logEntries, artifactsRootPath, WorkerAdapterRegistry.Default, roomDirectory);
+
+            Assert.NotNull(stepView.Usage);
+            Assert.NotNull(stepView.LinkedFromUsage);
+            Assert.NotEqual(stepView.LinkedFromUsage!.WallClockMs, stepView.Usage!.WallClockMs);
+            Assert.Equal(usageByExecutionId[resumedStep.LatestExecutionId!.Value.Value].WallClockMs, stepView.Usage.WallClockMs);
+            Assert.Equal(usageByExecutionId[firstExecutionId.Value].WallClockMs, stepView.LinkedFromUsage.WallClockMs);
 
             var adapter = (ResumeObservingWorkerAdapter)ObservingAdapters["observer"];
             var resumedInvocation = adapter.ObservedInvocations.Last();

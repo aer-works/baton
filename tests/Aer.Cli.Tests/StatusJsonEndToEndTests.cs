@@ -50,6 +50,145 @@ public class StatusJsonEndToEndTests
     }
 
     [Fact]
+    public async Task A_succeeded_execution_reports_wall_clock_with_no_token_fields_when_stdout_is_plain_text()
+    {
+        // #1360: a shell-stub worker's stdout is plain text, never a vendor's structured usage line --
+        // wallClockMs is still derivable (Core recorded both lifecycle events), but tokensIn/tokensOut/
+        // turns must be OMITTED from the JSON entirely, never emitted as a fabricated zero or null.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-usage-plain-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot, "solo");
+            var bindingsFilePath = await WriteOneStepBindingsAsync(testRoot, WriteFileCommand("plan", "the-plan"));
+            var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            await RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            using var stdout = new StringWriter();
+            await StatusCommand.ExecuteAsync(
+                new StatusOptions(roomDirectory, Json: true), stdout, TestContext.Current.CancellationToken);
+
+            var rawJson = stdout.ToString();
+            var view = ParseSingleObject(rawJson);
+            var step = Assert.Single(view.Steps);
+            Assert.NotNull(step.Usage);
+            Assert.True(step.Usage!.WallClockMs >= 0);
+            Assert.Null(step.Usage.TokensIn);
+            Assert.Null(step.Usage.TokensOut);
+            Assert.Null(step.Usage.Turns);
+
+            // The stronger claim: the keys themselves are absent from the wire format, not merely
+            // null after deserialization -- JsonIgnoreCondition.WhenWritingNull is what #1360 requires.
+            Assert.DoesNotContain("tokensIn", rawJson);
+            Assert.DoesNotContain("tokensOut", rawJson);
+            Assert.DoesNotContain("\"turns\"", rawJson);
+            Assert.Contains("wallClockMs", rawJson);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_succeeded_execution_with_a_vendor_shaped_stdout_line_reports_no_tokens_when_dispatched_through_a_different_adapter()
+    {
+        // #1360 F1 spoof regression: a claude-shaped stream-json result line in the captured stdout
+        // must NOT be picked up when this room actually dispatched through the test-only "shell"
+        // adapter (per bindings.json) -- attribution, not a content-sniff across every registered
+        // adapter. "shell" is not itself a registered adapter in status's own WorkerAdapterRegistry,
+        // so this also proves an execution whose adapter name cannot be resolved fails closed rather
+        // than falling back to guessing from content.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-usage-vendor-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot, "solo");
+            var bindingsFilePath = await WriteOneStepBindingsAsync(
+                testRoot, WriteFileAndEchoClaudeResultCommand(testRoot, "plan", "the-plan"));
+            var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            await RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            using var stdout = new StringWriter();
+            await StatusCommand.ExecuteAsync(
+                new StatusOptions(roomDirectory, Json: true), stdout, TestContext.Current.CancellationToken);
+
+            var view = ParseSingleObject(stdout.ToString());
+            var step = Assert.Single(view.Steps);
+            Assert.NotNull(step.Usage);
+            Assert.True(step.Usage!.WallClockMs >= 0);
+            Assert.Null(step.Usage.TokensIn);
+            Assert.Null(step.Usage.TokensOut);
+            Assert.Null(step.Usage.Turns);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_running_steps_usage_and_linkedFromUsage_keys_are_absent_from_the_wire_JSON_not_null()
+    {
+        // #1360 F3: a step with no recorded start/exit pair yet (still running) -- and, same as every
+        // ordinary dispatch, no LinkedFrom -- must omit "usage"/"linkedFromUsage" from the wire format
+        // entirely. The pre-fix code comment already claimed this; JsonIgnoreCondition.WhenWritingNull
+        // was missing from both properties, so the actual bytes were `"usage":null,"linkedFromUsage":null`.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-usage-absent-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot, "solo");
+            var bindingsFilePath = await WriteOneStepBindingsAsync(testRoot, SleepThenWriteCommand("plan", seconds: 5));
+            var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+
+            var runTask = RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+            try
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(20);
+                string? rawJson = null;
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (Directory.Exists(roomDirectory))
+                    {
+                        using var stdout = new StringWriter();
+                        try
+                        {
+                            await StatusCommand.ExecuteAsync(
+                                new StatusOptions(roomDirectory, Json: true), stdout, TestContext.Current.CancellationToken);
+                            var candidate = stdout.ToString();
+                            if (candidate.Contains("\"Running\"", StringComparison.Ordinal))
+                            {
+                                rawJson = candidate;
+                                break;
+                            }
+                        }
+                        catch (SnapshotLoadException)
+                        {
+                            // Not persisted yet -- keep polling.
+                        }
+                    }
+
+                    // wait-ok: re-check cadence while waiting for the step to show Running; capped by the 20s deadline above.
+                    await Task.Delay(50, TestContext.Current.CancellationToken);
+                }
+
+                Assert.NotNull(rawJson);
+                Assert.DoesNotContain("\"usage\"", rawJson, StringComparison.Ordinal);
+                Assert.DoesNotContain("\"linkedFromUsage\"", rawJson, StringComparison.Ordinal);
+            }
+            finally
+            {
+                await runTask;
+            }
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task A_failed_room_reports_state_Failed_with_the_step_failure_reason_as_the_top_level_error()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-fail-{Guid.NewGuid():N}");
@@ -212,6 +351,43 @@ public class StatusJsonEndToEndTests
     private static string WriteFileCommand(string outputName, string content) => OperatingSystem.IsWindows()
         ? $"echo {content}>%AER_OUTPUT_DIR%\\{outputName}"
         : $"echo {content} > \"$AER_OUTPUT_DIR/{outputName}\"";
+
+    // #1360: writes the declared output AND echoes a claude-shaped stream-json result line to
+    // stdout, which ExecutionStreamLogger captures verbatim -- proving ExecutionUsageProjector reads
+    // real captured stdout, not a test-only seam.
+    private const string ClaudeResultLine =
+        """{"type":"result","num_turns":2,"usage":{"input_tokens":10,"output_tokens":5}}""";
+
+    /// <summary>
+    /// Writes a small script file to <paramref name="scriptDirectory"/> and returns a command that
+    /// invokes it, rather than embedding <see cref="ClaudeResultLine"/>'s literal double quotes
+    /// directly on the binding's own command line: <c>ShellCommandWorkerAdapter</c> passes that line
+    /// through <c>cmd /c</c> as a single <c>ArgumentList</c> element, and on Windows .NET's own argv
+    /// re-quoting for an argument containing embedded quotes escapes them as <c>\"</c> — bytes cmd
+    /// then hands to <c>echo</c> literally, corrupting the JSON (and doing the same to a quoted path,
+    /// which is why the invoking command below stays unquoted rather than only the JSON). A script
+    /// file sidesteps that: its content is written directly by
+    /// <see cref="File.WriteAllText(string, string)"/>, never round-tripped through command-line
+    /// quoting at all. <see cref="Path.GetTempPath"/> is assumed space-free here, which holds for
+    /// every CI/dev host this suite runs on.
+    /// </summary>
+    private static string WriteFileAndEchoClaudeResultCommand(string scriptDirectory, string outputName, string content)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var scriptPath = Path.Combine(scriptDirectory, "echo-claude-result.cmd");
+            File.WriteAllText(
+                scriptPath,
+                $"@echo off\r\necho {ClaudeResultLine}\r\necho {content}>%AER_OUTPUT_DIR%\\{outputName}\r\n");
+            return $"call {scriptPath}";
+        }
+
+        var shScriptPath = Path.Combine(scriptDirectory, "echo-claude-result.sh");
+        File.WriteAllText(
+            shScriptPath,
+            $"#!/bin/sh\necho '{ClaudeResultLine}'\necho {content} > \"$AER_OUTPUT_DIR/{outputName}\"\n");
+        return $"sh {shScriptPath}";
+    }
 
     private static string SleepThenWriteCommand(string outputName, int seconds) => OperatingSystem.IsWindows()
         ? $"ping -n {seconds + 1} 127.0.0.1>nul & echo done>%AER_OUTPUT_DIR%\\{outputName}"

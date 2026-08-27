@@ -605,6 +605,34 @@ This section used to say agy's usage number might surface from the local RPC ser
 hard-coded *"agy has no usage"* would now be wrong. The honest element is one that can say *"no usage
 data from this worker"* and carry a figure once one appears, without being redesigned — agy's is here.
 
+### Baton's usage field, per adapter (#1360)
+
+Baton's own consumer of the facts above, not a new vendor measurement — see
+`docs/agents/invoking-baton.md`'s `usage`/`linkedFromUsage` entry for the field shape.
+`ExecutionUsageProjector` reads whichever registered adapter's `TryParseFinalUsage` recognizes a line
+in the execution's captured stdout; nothing here is fabricated when a line does not match.
+
+| field | claude | agy |
+|---|---|---|
+| `wallClockMs` | always, once Core has recorded both ends of the execution's lifetime — derived from the ledger, not from either vendor | same |
+| `tokensIn` / `tokensOut` | `usage.input_tokens`/`output_tokens` off the `stream-json` `result` event | `result.usage.input_tokens`/`output_tokens` — **only when agy reports the split**; a run reporting a single combined `total_tokens` (both shapes are observed, above) leaves both fields absent rather than guessing a direction |
+| `turns` | `num_turns` off the same `result` event | `result.num_turns` |
+| dollar cost (`total_cost_usd`) | real, but has no field in `usage`'s additive shape (issue #1360 scoped it to tokens/turns/wall-clock) | n/a (agy reports none, per this section) |
+
+**The gate every one of these rows sits behind: structured-output mode.** All three vendor-reported
+fields live in the `stream-json` terminal line this whole document has been describing — if a
+dispatch runs in plain-text mode instead (today's default for an ordinary `aer run`/`aer dispatch`
+lane; see `RoleDispatch.ToBinding`'s own remarks on why claude stays text-mode there), stdout is prose
+with no such line in it, and `tokensIn`/`tokensOut`/`turns` are absent for that execution regardless
+of what the vendor is otherwise capable of reporting. `wallClockMs` is unaffected either way.
+
+**On claude, `tokensOut` is a top-level count, not a whole-tree one (#479, above).** The dispatched
+worker's own subagent fan-out spends tokens the `result` event's `usage` object does not carry — a
+22% shortfall was measured against a single subagent, and it grows with the tree; `modelUsage` is
+where the complete figure lives. AER's own depth-1 subagent cap makes one level of fan-out the normal
+case, not an edge case, so treat a claude execution's `tokensOut` as a lower bound whenever that
+execution's worker could have spawned a subagent.
+
 ## Neither `--mode` nor `--add-dir` stops `agy` writing a file
 
 Read this before treating either flag as a safety boundary. Check:

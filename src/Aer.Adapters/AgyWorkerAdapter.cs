@@ -1109,6 +1109,68 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         }
     }
 
+    /// <summary>
+    /// Parses agy's <c>stream-json</c> terminal <c>"event":"result"</c> line (issue #1360). agy's
+    /// <c>result.usage</c> shape is inconsistent across observed captures (#1088,
+    /// docs/vendor-capabilities.md): sometimes a full breakdown (<c>input_tokens</c>/<c>output_tokens</c>/
+    /// <c>thinking_tokens</c>/<c>cache_read_tokens</c>/<c>total_tokens</c>), sometimes only
+    /// <c>total_tokens</c>. Only <c>input_tokens</c>/<c>output_tokens</c> map to this shape's
+    /// <c>tokensIn</c>/<c>tokensOut</c> — a lone <c>total_tokens</c> is a real number but not a
+    /// direction, and splitting it would fabricate a breakdown agy never reported. Turns come from
+    /// <c>result.num_turns</c>, read independently of the usage object.
+    /// </summary>
+    public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage)
+    {
+        usage = null;
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("event", out var eventProp) || eventProp.GetString() != "result"
+                || !root.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            long? tokensIn = null;
+            long? tokensOut = null;
+            if (result.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
+            {
+                if (usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
+                {
+                    tokensIn = inTokens;
+                }
+
+                if (usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens))
+                {
+                    tokensOut = outTokens;
+                }
+            }
+
+            int? turns = result.TryGetProperty("num_turns", out var turnsProp) && turnsProp.TryGetInt32(out var turnsValue)
+                ? turnsValue
+                : null;
+
+            if (tokensIn is null && tokensOut is null && turns is null)
+            {
+                return false;
+            }
+
+            usage = new WorkerUsage(tokensIn, tokensOut, turns);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private static IReadOnlyList<string> ParseModelLines(string? stdout) =>
         NonEmptyTrimmedLines(stdout).ToList();
 

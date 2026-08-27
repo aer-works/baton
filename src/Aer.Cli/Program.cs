@@ -3,6 +3,7 @@ using Aer.Adapters;
 using Aer.Cli;
 using Aer.Flow;
 using Aer.Flow.Domain;
+using Aer.Flow.Store;
 
 if (args.Length == 1 && args[0] == "--version")
 {
@@ -189,7 +190,13 @@ try
     // could reference is already on disk by the time the pump/decision call above returned.
     if (result.State.Status == WorkflowStatus.Terminal && result.RoomDirectoryPath is { } terminalRoomDirectoryPath)
     {
-        var view = WorkflowStatusProjector.Project(result.State, result.Snapshot, terminalRoomDirectoryPath);
+        // #1360: entries feeds the sentinel's per-execution usage. A fresh ledger read (CommandResult
+        // carries only the already-projected FlowState, not the raw entries) -- one extra read at
+        // terminal completion, not a hot path.
+        var terminalLogPath = Path.Combine(terminalRoomDirectoryPath, "flow.jsonl");
+        var terminalEntries = await new FlowEventLogReader(terminalLogPath)
+            .ReadAllEntriesWithTimestampsAsync(CancellationToken.None).ConfigureAwait(false);
+        var view = WorkflowStatusProjector.Project(result.State, result.Snapshot, terminalRoomDirectoryPath, terminalEntries);
         // CancellationToken.None: a Ctrl-C that already carried the workflow to Terminal must not
         // then lose the sentinel write for the terminal state it just reached.
         await TerminalSentinelWriter.WriteAsync(terminalRoomDirectoryPath, view, CancellationToken.None).ConfigureAwait(false);
