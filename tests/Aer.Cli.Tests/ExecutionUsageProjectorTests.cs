@@ -123,6 +123,47 @@ public sealed class ExecutionUsageProjectorTests
     }
 
     [Fact]
+    public void Token_counts_are_still_read_after_a_retention_sweep_moves_stdout_log_to_the_pruned_path()
+    {
+        // #1360 F7: RoomRetentionSweep/ArtifactPruner move a whole execution directory (.stdout.log
+        // included) to {artifacts}/pruned/execution_{id}. terminal.json was written before any sweep
+        // could run, so a post-sweep status read of the same unchanged room must still find the same
+        // figure -- not silently drop it because the live path is now empty.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-pruned-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-pruned");
+            var start = DateTime.UtcNow;
+            WriteBindings(testRoot, ("plan", "claude"));
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId, "plan"))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(4)),
+            };
+
+            // No execution_<id> directory at all -- only its pruned counterpart exists, as after a sweep.
+            var prunedDir = ArtifactManager.ResolvePrunedOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(prunedDir);
+            File.WriteAllText(
+                Path.Combine(prunedDir, ExecutionStreamLogger.StdoutLogFileName),
+                """{"type":"result","num_turns":6,"usage":{"input_tokens":12,"output_tokens":9}}""" + "\n");
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot);
+
+            var view = Assert.Single(usage).Value;
+            Assert.Equal(4000, view.WallClockMs);
+            Assert.Equal(12, view.TokensIn);
+            Assert.Equal(9, view.TokensOut);
+            Assert.Equal(6, view.Turns);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public void Token_and_turn_counts_are_read_when_the_execution_is_attributed_to_its_dispatching_adapter()
     {
         // #1360 F1: attribution, not content-sniffing -- the claude-shaped line is only trusted

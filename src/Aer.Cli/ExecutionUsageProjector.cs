@@ -181,13 +181,19 @@ public static class ExecutionUsageProjector
             return null;
         }
 
-        var stdoutPath = Path.Combine(
-            ArtifactManager.ResolveOutputDirectory(artifactsRootPath, new ExecutionId(executionId)),
-            ExecutionStreamLogger.StdoutLogFileName);
-
+        var id = new ExecutionId(executionId);
+        var stdoutPath = Path.Combine(ArtifactManager.ResolveOutputDirectory(artifactsRootPath, id), ExecutionStreamLogger.StdoutLogFileName);
         if (!File.Exists(stdoutPath))
         {
-            return null;
+            // #1360 F7 (review): a retention sweep moves the whole execution directory -- .stdout.log
+            // included -- to the pruned location (RoomRetentionSweep -> ArtifactPruner). Without this
+            // fallback, terminal.json (written before any sweep) and a post-sweep status read of the
+            // same unchanged room would disagree about a figure both once knew.
+            stdoutPath = Path.Combine(ArtifactManager.ResolvePrunedOutputDirectory(artifactsRootPath, id), ExecutionStreamLogger.StdoutLogFileName);
+            if (!File.Exists(stdoutPath))
+            {
+                return null;
+            }
         }
 
         string[] lines;
@@ -195,10 +201,12 @@ public static class ExecutionUsageProjector
         {
             lines = File.ReadAllLines(stdoutPath);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Held by a writer that has not yet reached MarkTerminal, or a transient sharing race --
-            // not this projector's failure to surface; the caller simply sees no usage this time.
+            // Held by a writer that has not yet reached MarkTerminal, a transient sharing race, or an
+            // ACL'd stream log (UnauthorizedAccessException is not an IOException in .NET, so the
+            // review's minor finding needed its own arm) -- none of these are this projector's failure
+            // to surface; the caller simply sees no usage this time.
             return null;
         }
 
