@@ -198,6 +198,17 @@ public static class StatusCommand
                 if (state.Status == WorkflowStatus.Terminal)
                 {
                     output.WriteLine($"Workflow status: {state.Status}");
+
+                    // #1360 F5 (review): the one invocation shape where a human is actually watching
+                    // for what a run cost never re-rendered the roll-up PrintState prints before a
+                    // follow starts -- a fresh read here (once, at follow's own exit, not per poll)
+                    // is cheaper than restructuring the loop above to carry timestamped LogEntry
+                    // alongside the plain FlowEvent list it already tracks.
+                    var finalEntries = await reader.ReadAllEntriesWithTimestampsAsync(cancellationToken).ConfigureAwait(false);
+                    var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
+                    var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
+                        finalEntries, artifactsRootPath, WorkerAdapterRegistry.Default, roomDirectoryPath);
+                    output.WriteLine(FormatUsageSummary(usageByExecutionId));
                     return;
                 }
             }
