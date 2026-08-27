@@ -1,4 +1,5 @@
 using Aer.Flow.Concurrency;
+using Aer.Flow.Mutation;
 using Aer.Flow.Workspaces;
 
 namespace Aer.Adapters;
@@ -55,6 +56,65 @@ public static class WorktreeWorkspaces
                    IReadOnlyList<SkippedWorktreeProvisioning> Skipped)
         ProvisionLazily(IReadOnlyDictionary<string, WorkerBindingConfigEntry> bindings, string roomDirectoryPath) =>
         Walk(bindings, roomDirectoryPath, throwOnFailure: false);
+
+    /// <summary>
+    /// The reuse-or-refuse half of <c>aer resume</c>'s worktree handling (issue #1359 F1). A resume
+    /// NEVER provisions — it continues in the exact workspace the execution being resumed already ran
+    /// in, never a freshly-created one: <see cref="Provision"/>'s ordinary "create if missing"
+    /// behavior would otherwise let a resume silently re-provision a torn-down tree at whatever
+    /// <c>HEAD</c> is now, resuming the vendor session into an empty directory that describes edits
+    /// that are not on disk — worse than an ordinary cold start, because the transcript claims
+    /// otherwise. Refuses instead when the directory is gone, naming the missing path.
+    /// <para>
+    /// An entry with no <see cref="WorkerBindingConfigEntry.Worktree"/> spec (an ordinary
+    /// <c>WorkingDirectory</c>, or none) passes through unchanged — nothing here applies to it.
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidWorkspaceSpecException">
+    /// The entry declares both a <c>WorkingDirectory</c> and a worktree, or the worktree spec itself
+    /// is malformed (same checks <see cref="Provision"/> runs).
+    /// </exception>
+    /// <exception cref="InvalidResumeException">
+    /// The worker's worktree spec is otherwise valid, but the directory it names no longer exists on
+    /// disk — the prior run's workspace is gone, and a resume must not conjure a fresh one wearing
+    /// its clothes.
+    /// </exception>
+    public static WorkerBindingConfigEntry ReuseForResume(WorkerBindingConfigEntry entry, string workerName, string roomDirectoryPath)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workerName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(roomDirectoryPath);
+
+        if (entry.Worktree is not { } spec)
+        {
+            return entry;
+        }
+
+        if (entry.WorkingDirectory is not null)
+        {
+            throw new InvalidWorkspaceSpecException(
+                $"Worker '{workerName}' declares both a WorkingDirectory and a worktree workspace; " +
+                "a worker runs in exactly one place. Set one, not both.");
+        }
+
+        WorktreeProvisioner.ValidateSpec(spec.Repository, spec.Ref);
+        var worktreePath = Path.Combine(roomDirectoryPath, WorkspacesDirectoryName, workerName);
+
+        if (!Directory.Exists(worktreePath))
+        {
+            throw new InvalidResumeException(
+                $"Worker '{workerName}''s prior workspace no longer exists at '{worktreePath}' — aer " +
+                "resume reuses the exact workspace the execution being resumed ran in, and never " +
+                "provisions a fresh one, so a resumed worker never starts cold in an empty tree.")
+            {
+                TryInvocation = $"restore '{worktreePath}' from backup if the prior work is still needed; " +
+                    "otherwise this worker's session cannot be continued — dispatch it fresh with `aer run` " +
+                    "or `aer dispatch` instead of `aer resume`.",
+            };
+        }
+
+        return entry with { WorkingDirectory = worktreePath, Worktree = null, IsWorktree = true };
+    }
 
     /// <summary>
     /// The one walk both entry points above share. <paramref name="throwOnFailure"/> rethrows at the

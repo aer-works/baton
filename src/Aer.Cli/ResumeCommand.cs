@@ -46,7 +46,12 @@ public static class ResumeCommand
     /// #1359's design ruling: refuse loudly rather than silently starting cold.
     /// </exception>
     /// <exception cref="InvalidResumeException">
-    /// See that type's own doc for the closed set of state-based refusals this can mean.
+    /// See that type's own doc for the closed set of state-based refusals this can mean, including
+    /// F1's: the worker's worktree workspace no longer exists on disk.
+    /// </exception>
+    /// <exception cref="Aer.Flow.Workspaces.InvalidWorkspaceSpecException">
+    /// The worker's worktree spec is malformed, or the entry declares both a <c>WorkingDirectory</c>
+    /// and a worktree.
     /// </exception>
     /// <exception cref="Aer.Flow.Concurrency.WorkflowLockedException">
     /// Another Flow instance already holds this room directory's lock.
@@ -73,7 +78,9 @@ public static class ResumeCommand
             var messageFilePath = options.MessageFilePath!;
             if (!File.Exists(messageFilePath))
             {
-                throw new CliArgumentException($"Message file '{messageFilePath}' does not exist.");
+                throw new CliArgumentException(
+                    $"Message file '{messageFilePath}' does not exist.",
+                    "create the file, or pass --message with the text inline instead.");
             }
 
             message = await File.ReadAllTextAsync(messageFilePath, cancellationToken).ConfigureAwait(false);
@@ -87,17 +94,18 @@ public static class ResumeCommand
         {
             throw new SnapshotLoadException(
                 $"Room directory '{options.RoomDirectoryPath}' has no bound snapshot — 'aer resume' " +
-                "targets a room 'aer run' has already started, and never binds one fresh.");
+                "targets a room 'aer run' has already started, and never binds one fresh.")
+            {
+                TryInvocation = $"run `aer run` (or `aer dispatch`) against '{options.RoomDirectoryPath}' first, then resume it.",
+            };
         }
 
         var snapshot = await SnapshotBinder.LoadFromFileAsync(snapshotPath, cancellationToken).ConfigureAwait(false);
 
         var bindingConfig = await WorkerBindingConfigParser.LoadFromFileAsync(options.BindingsFilePath, cancellationToken)
             .ConfigureAwait(false);
-        var (provisionedConfig, provisionedWorktrees) =
-            WorktreeWorkspaces.Provision(bindingConfig, options.RoomDirectoryPath);
 
-        if (!provisionedConfig.TryGetValue(options.Worker, out var entry))
+        if (!bindingConfig.TryGetValue(options.Worker, out var entry))
         {
             throw new CliArgumentException(
                 $"No bindings entry for worker '{options.Worker}' in '{options.BindingsFilePath}'.",
@@ -115,7 +123,12 @@ public static class ResumeCommand
                 $"'{options.BindingsFilePath}' (captured from a prior invocation), then retry.");
         }
 
-        var overrideEntry = entry with { PromptTemplate = message, ResumeSession = true };
+        // F1 (#1388 review): aer resume never provisions a fresh worktree for the worker it is
+        // continuing — it reuses the exact one that execution already ran in, or refuses if that
+        // workspace is gone. This is the only worktree touched before the resume itself is validated.
+        var resumeEntry = WorktreeWorkspaces.ReuseForResume(entry, options.Worker, options.RoomDirectoryPath);
+
+        var overrideEntry = resumeEntry with { PromptTemplate = message, ResumeSession = true };
         var profiles = await AerProfileStore.LoadAsync(AerProfileStore.DefaultPath, cancellationToken).ConfigureAwait(false);
         var bindingsFileDirectory = Path.GetDirectoryName(options.BindingsFilePath);
 
@@ -123,23 +136,38 @@ public static class ResumeCommand
             new Dictionary<string, WorkerBindingConfigEntry> { [options.Worker] = overrideEntry },
             adapters, profiles, bindingsFileDirectory);
 
-        // Lazy for every OTHER worker (#662, the same reasoning SupplyCommand/CancelCommand already
-        // rest on): a resume targets one already-dispatched worker — a bindings file naming an
-        // unrelated, unresolvable adapter for a step this call never touches must not block it.
-        var lazyBaseBindings = WorkerBindingResolver.ResolveLazily(
-            provisionedConfig, adapters, profiles, bindingsFileDirectory);
-        var workerBindings = new WorkerBindingOverride(lazyBaseBindings, options.Worker, resolvedOverride[options.Worker]);
-
         var workflowId = new WorkflowId(options.WorkflowId ?? snapshot.WorkflowTemplateId.Value);
 
         await using var writer = new FlowEventLogWriter(logPath);
         var reader = new FlowEventLogReader(logPath);
         var dispatcher = new CoreDispatcher(writer);
 
+        // F5 (#1388 review): RecordResumeAsync only ever looks up the worker actually being resumed —
+        // it never touches any other entry in the bindings file — so this is the ONLY binding it
+        // needs. Provisioning (or even resolving) the rest of the file waits until after this call
+        // succeeds, so a refusal here (never ran, still running, ambiguous, no recorded execution,
+        // non-process) leaves every other worker's workspace untouched, the same as any other refusal
+        // in this verb.
+        var resumeOnlyBindings = new Dictionary<string, WorkerBinding> { [options.Worker] = resolvedOverride[options.Worker] };
+
         await MutationInterface.RecordResumeAsync(
-                workflowId, options.RoomDirectoryPath, snapshot, workerBindings, artifactsRootPath,
+                workflowId, options.RoomDirectoryPath, snapshot, resumeOnlyBindings, artifactsRootPath,
                 options.Worker, reader, writer, dispatcher, cancellationToken)
             .ConfigureAwait(false);
+
+        // Only now, with the resume itself validated and dispatched, provision workspaces for
+        // whatever OTHER steps the settling pump below might newly make ready — ordinary `aer
+        // run`/`aer dispatch` provisioning, unrelated to F1's reuse-or-refuse rule above (which
+        // applies only to the worker being resumed, already reflected in resolvedOverride).
+        var (provisionedConfig, provisionedWorktrees) =
+            WorktreeWorkspaces.Provision(bindingConfig, options.RoomDirectoryPath);
+
+        // Lazy for every OTHER worker (#662, the same reasoning SupplyCommand/CancelCommand already
+        // rest on): a resume targets one already-dispatched worker — a bindings file naming an
+        // unrelated, unresolvable adapter for a step this call never touches must not block it.
+        var lazyBaseBindings = WorkerBindingResolver.ResolveLazily(
+            provisionedConfig, adapters, profiles, bindingsFileDirectory);
+        var workerBindings = new WorkerBindingOverride(lazyBaseBindings, options.Worker, resolvedOverride[options.Worker]);
 
         var settledState = await MutationInterface.StartWorkflowAsync(
                 workflowId, options.RoomDirectoryPath, snapshot, workerBindings, artifactsRootPath,

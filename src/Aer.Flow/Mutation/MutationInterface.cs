@@ -379,7 +379,11 @@ public static class MutationInterface
         var matchingSteps = snapshot.Steps.Where(s => s.Worker == worker).ToList();
         if (matchingSteps.Count == 0)
         {
-            throw new InvalidResumeException($"No step in this workflow names worker '{worker}'.");
+            throw new InvalidResumeException($"No step in this workflow names worker '{worker}'.")
+            {
+                TryInvocation = "pass --worker naming one of this workflow's roles: " +
+                    $"{string.Join(", ", snapshot.Steps.Select(s => s.Worker).Distinct())}.",
+            };
         }
 
         if (matchingSteps.Count > 1)
@@ -387,7 +391,11 @@ public static class MutationInterface
             throw new InvalidResumeException(
                 $"Worker '{worker}' is bound to {matchingSteps.Count} steps " +
                 $"({string.Join(", ", matchingSteps.Select(s => s.StepId))}) — aer resume needs a single, " +
-                "unambiguous target step.");
+                "unambiguous target step.")
+            {
+                TryInvocation = "give each step its own worker name in the workflow definition, so aer " +
+                    "resume can target exactly one.",
+            };
         }
 
         var stepDefinition = matchingSteps[0];
@@ -395,23 +403,62 @@ public static class MutationInterface
 
         if (stepState.Status == StepStatus.Pending)
         {
-            throw new InvalidResumeException($"Step '{stepDefinition.StepId}' (worker '{worker}') has never run — nothing to resume.");
+            throw new InvalidResumeException($"Step '{stepDefinition.StepId}' (worker '{worker}') has never run — nothing to resume.")
+            {
+                TryInvocation = "dispatch it at least once first (`aer run` or `aer dispatch`), then resume it.",
+            };
         }
 
         if (stepState.Status == StepStatus.Running)
         {
-            throw new InvalidResumeException(
-                $"Step '{stepDefinition.StepId}' (worker '{worker}') is still running — aer resume only " +
-                "continues a terminal or stalled (paused) worker; steering a live one is out of scope for " +
-                "this verb.");
+            // §1359 F3: room-says-Running is not the same fact as "the engine dispatching it is still
+            // alive" — reuse the same probe `aer status`'s human rendering already consults rather than
+            // inventing a second liveness mechanism (StatusCommand.FormatStepStatus).
+            var allEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            var accepted = allEvents.OfType<FlowEvent.ExecutionRequestAccepted>()
+                .LastOrDefault(e => e.Request.ExecutionId == stepState.LatestExecutionId);
+            var liveness = EngineLivenessProbe.Probe(accepted?.EnginePid, accepted?.EngineStartTime);
+
+            if (liveness.Status != EngineLivenessStatus.Dead)
+            {
+                var unknownSuffix = liveness.Status == EngineLivenessStatus.Unknown ? $" (liveness unknown: {liveness.Why})" : string.Empty;
+                throw new InvalidResumeException(
+                    $"Step '{stepDefinition.StepId}' (worker '{worker}') is still running{unknownSuffix} — aer resume only " +
+                    "continues a terminal or stalled (paused) worker; steering a live one is out of scope for " +
+                    "this verb.")
+                {
+                    TryInvocation = $"wait for the current run to finish, or check `aer status {roomDirectoryPath}` " +
+                        "for progress; retry once it reaches a terminal or stalled state.",
+                };
+            }
+
+            // STALLED (§1359 F3): the room projects Running, but the engine that accepted this
+            // execution is provably dead — the crash-recovery case this verb exists to rescue.
+            // Record the takeover before dispatching the resume's own linked execution, so the
+            // orphaned attempt is never left with an accepted request and no resolution.
+            await eventLogWriter.AppendAsync(
+                    new FlowEvent.ExecutionFailed(
+                        stepState.LatestExecutionId!.Value,
+                        FailureClassification.Retryable,
+                        "Abandoned: aer resume found the engine behind this execution is no longer alive " +
+                        "(a stalled run) and took over the step."),
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         var previousExecutionId = stepState.LatestExecutionId
-            ?? throw new InvalidResumeException($"Step '{stepDefinition.StepId}' (worker '{worker}') has no recorded execution to resume.");
+            ?? throw new InvalidResumeException($"Step '{stepDefinition.StepId}' (worker '{worker}') has no recorded execution to resume.")
+            {
+                TryInvocation = "re-run `aer run` (or `aer dispatch`) to dispatch it fresh — there is no recorded execution for aer resume to continue.",
+            };
 
         if (!workerBindings.TryGetValue(worker, out var binding) || binding is not WorkerBinding.Process processBinding)
         {
-            throw new InvalidResumeException($"Worker '{worker}' has no dispatchable (process) binding to resume a session on.");
+            throw new InvalidResumeException($"Worker '{worker}' has no dispatchable (process) binding to resume a session on.")
+            {
+                TryInvocation = $"check the bindings file's entry for '{worker}' — aer resume needs a Process " +
+                    "binding (a vendor CLI with a session to continue), not a non-process worker.",
+            };
         }
 
         var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
