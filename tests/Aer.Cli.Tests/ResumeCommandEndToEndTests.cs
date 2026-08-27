@@ -53,10 +53,19 @@ public class ResumeCommandEndToEndTests
 
             // The ledger shows both executions -- the issue's own acceptance wording -- via the same
             // status --json shape #1356 already renders every other execution fact through.
-            var view = WorkflowStatusProjector.Project(resumeResult.State, resumeResult.Snapshot, roomDirectory);
+            var logEntries = await new Aer.Flow.Store.FlowEventLogReader(Path.Combine(roomDirectory, "flow.jsonl"))
+                .ReadAllEntriesWithTimestampsAsync(TestContext.Current.CancellationToken);
+            var view = WorkflowStatusProjector.Project(resumeResult.State, resumeResult.Snapshot, roomDirectory, logEntries);
             var stepView = view.Steps.Single();
             Assert.Equal(resumedStep.LatestExecutionId!.Value.Value, stepView.Execution);
             Assert.Equal(firstExecutionId.Value, stepView.LinkedFrom);
+
+            // #1360: the resumed execution and the one it linked from each carry their OWN usage --
+            // two distinct entries, not one merged/overwritten figure.
+            Assert.NotNull(stepView.Usage);
+            Assert.True(stepView.Usage!.WallClockMs >= 0);
+            Assert.NotNull(stepView.LinkedFromUsage);
+            Assert.True(stepView.LinkedFromUsage!.WallClockMs >= 0);
 
             var adapter = (ResumeObservingWorkerAdapter)ObservingAdapters["observer"];
             var resumedInvocation = adapter.ObservedInvocations.Last();

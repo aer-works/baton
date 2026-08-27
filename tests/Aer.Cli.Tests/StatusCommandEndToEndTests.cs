@@ -47,6 +47,36 @@ public class StatusCommandEndToEndTests
     }
 
     [Fact]
+    public async Task Status_of_a_terminal_workflow_prints_one_rolled_up_usage_line_for_the_room()
+    {
+        // #1360: human `aer status` gets one room-wide roll-up line rather than a per-step usage
+        // block -- this shell-stub room's stdout is plain text, so the line must report wall-clock
+        // only, disclosing zero executions reporting tokens rather than a fabricated figure.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteThreeStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteThreeStepBindingsAsync(testRoot);
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            var output = new StringWriter();
+            await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory), output, TestContext.Current.CancellationToken);
+
+            var text = output.ToString();
+            Assert.Contains("Usage: 3 execution(s)", text);
+            Assert.Contains("wall-clock", text);
+            Assert.DoesNotContain("tokens in", text);
+            Assert.DoesNotContain("tokens out", text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Status_against_a_nonexistent_room_directory_throws_a_typed_error_and_creates_nothing()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
