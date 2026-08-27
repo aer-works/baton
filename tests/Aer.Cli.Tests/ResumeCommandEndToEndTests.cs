@@ -1,0 +1,259 @@
+using System.Diagnostics;
+using System.Text.Json;
+using Aer.Adapters;
+using Aer.Cli.Tests.TestSupport;
+using Aer.Flow.Domain;
+using Aer.Flow.Templates;
+
+namespace Aer.Cli.Tests;
+
+/// <summary>
+/// Issue #1359's <c>aer resume</c> verb, end to end: dispatch a review lane, let it finish, resume it
+/// with a follow-up message, and the room ledger shows both executions (the acceptance criterion the
+/// issue itself names). Two registers, mirroring <see cref="TerminalSentinelEndToEndTests"/>'s split —
+/// an in-process pass with a <see cref="ResumeObservingWorkerAdapter"/> to assert exactly what reached
+/// the adapter (the message, <c>ResumeSession</c>, the recorded <c>SessionId</c>), and a real spawned
+/// <c>aer</c> process (via the production <c>noop</c> adapter) to prove the completion contract —
+/// truthful exit codes, <c>terminal.json</c>, <c>status --json</c> — the same way that file's own
+/// process-spawn tests prove it for <c>run</c>.
+/// </summary>
+[Collection(WorkingDirectoryCollection.Name)]
+public class ResumeCommandEndToEndTests
+{
+    private static readonly IReadOnlyDictionary<string, IWorkerAdapter> ObservingAdapters =
+        new Dictionary<string, IWorkerAdapter> { ["observer"] = new ResumeObservingWorkerAdapter() };
+
+    [Fact]
+    public async Task Resuming_a_succeeded_step_dispatches_a_linked_execution_carrying_the_message_and_ResumeSession()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteObservingBindingsAsync(testRoot, sessionId: "sess-abc123");
+
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            var runResult = await RunCommand.ExecuteAsync(runOptions, ObservingAdapters, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, runResult.State.Status);
+            var firstExecutionId = runResult.State.Steps.Single().LatestExecutionId!.Value;
+
+            var resumeOptions = new ResumeOptions(roomDirectory, "observer", "also cover the CI workflows", null, bindingsFilePath);
+            var resumeResult = await ResumeCommand.ExecuteAsync(resumeOptions, ObservingAdapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, resumeResult.State.Status);
+            var resumedStep = resumeResult.State.Steps.Single();
+            Assert.Equal(StepStatus.Succeeded, resumedStep.Status);
+            Assert.NotEqual(firstExecutionId, resumedStep.LatestExecutionId);
+
+            // The ledger shows both executions -- the issue's own acceptance wording -- via the same
+            // status --json shape #1356 already renders every other execution fact through.
+            var view = WorkflowStatusProjector.Project(resumeResult.State, resumeResult.Snapshot, roomDirectory);
+            var stepView = view.Steps.Single();
+            Assert.Equal(resumedStep.LatestExecutionId!.Value.Value, stepView.Execution);
+            Assert.Equal(firstExecutionId.Value, stepView.LinkedFrom);
+
+            var adapter = (ResumeObservingWorkerAdapter)ObservingAdapters["observer"];
+            var resumedInvocation = adapter.ObservedInvocations.Last();
+            Assert.True(resumedInvocation.ResumeSession);
+            Assert.Equal("sess-abc123", resumedInvocation.SessionId);
+            Assert.Equal("also cover the CI workflows", resumedInvocation.PromptTemplate);
+
+            // And the first invocation was NOT a resume -- confirms this isn't just always-on.
+            var firstInvocation = adapter.ObservedInvocations.First();
+            Assert.False(firstInvocation.ResumeSession);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Resuming_from_a_message_file_reads_its_full_contents_as_the_message()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-msgfile-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteObservingBindingsAsync(testRoot, sessionId: "sess-xyz");
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            await RunCommand.ExecuteAsync(runOptions, ObservingAdapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            var messageFilePath = Path.Combine(testRoot, "message.txt");
+            await File.WriteAllTextAsync(messageFilePath, "a longer follow-up message", TestContext.Current.CancellationToken);
+
+            var resumeOptions = new ResumeOptions(roomDirectory, "observer", null, messageFilePath, bindingsFilePath);
+            await ResumeCommand.ExecuteAsync(resumeOptions, ObservingAdapters, TestContext.Current.CancellationToken);
+
+            var adapter = (ResumeObservingWorkerAdapter)ObservingAdapters["observer"];
+            Assert.Equal("a longer follow-up message", adapter.ObservedInvocations.Last().PromptTemplate);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Resuming_a_worker_with_no_recorded_SessionId_refuses_loudly_with_a_Try_line()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-nosession-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteObservingBindingsAsync(testRoot, sessionId: null);
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+            await RunCommand.ExecuteAsync(runOptions, ObservingAdapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            var resumeOptions = new ResumeOptions(roomDirectory, "observer", "continue please", null, bindingsFilePath);
+            var thrown = await Assert.ThrowsAsync<WorkerCannotResumeException>(
+                () => ResumeCommand.ExecuteAsync(resumeOptions, ObservingAdapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("SessionId", thrown.Message, StringComparison.Ordinal);
+            Assert.NotNull(thrown.TryInvocation);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task The_real_CLI_process_exits_0_for_a_successful_resume_and_the_sentinel_shows_the_linked_execution()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-proc-ok-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot, worker: "solo");
+            var bindingsFilePath = await WriteNoOpBindingsAsync(testRoot, sessionId: "sess-real-proc");
+
+            using (var runProcess = StartAerProcess(
+                "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory))
+            {
+                await runProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+                Assert.Equal(0, runProcess.ExitCode);
+            }
+
+            var sentinelPath = Path.Combine(roomDirectory, "terminal.json");
+            var firstView = JsonSerializer.Deserialize<WorkflowStatusView>(
+                await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken));
+            var firstExecutionId = firstView!.Steps.Single().Execution;
+
+            using var resumeProcess = StartAerProcess(
+                "resume", roomDirectory, "--worker", "solo", "--message", "continue",
+                "--bindings", bindingsFilePath);
+            await resumeProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(0, resumeProcess.ExitCode);
+
+            var secondView = JsonSerializer.Deserialize<WorkflowStatusView>(
+                await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken));
+            Assert.Equal("Succeeded", secondView!.State);
+            var stepView = secondView.Steps.Single();
+            Assert.NotEqual(firstExecutionId, stepView.Execution);
+            Assert.Equal(firstExecutionId, stepView.LinkedFrom);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task The_real_CLI_process_exits_ValidationRefused_when_no_SessionId_is_recorded()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resume-proc-nosession-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot, worker: "solo");
+            var bindingsFilePath = await WriteNoOpBindingsAsync(testRoot, sessionId: null);
+
+            using (var runProcess = StartAerProcess(
+                "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory))
+            {
+                await runProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+                Assert.Equal(0, runProcess.ExitCode);
+            }
+
+            using var resumeProcess = StartAerProcess(
+                "resume", roomDirectory, "--worker", "solo", "--message", "continue",
+                "--bindings", bindingsFilePath);
+            var stderrTask = resumeProcess.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await resumeProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+            var stderr = await stderrTask;
+
+            Assert.Equal((int)RunExitCode.ValidationRefused, resumeProcess.ExitCode);
+            Assert.Contains("SessionId", stderr, StringComparison.Ordinal);
+            Assert.Contains("Try:", stderr, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    private static Process StartAerProcess(params string[] args)
+    {
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("exec");
+        startInfo.ArgumentList.Add(typeof(RunCommand).Assembly.Location);
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        return Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start 'aer'.");
+    }
+
+    private static async Task<string> WriteOneStepWorkflowAsync(string directory, string worker = "observer")
+    {
+        Directory.CreateDirectory(directory);
+        var definition = new WorkflowDefinition(
+            new WorkflowTemplateId("one-step-resume"), 1,
+            [new WorkflowStepDefinition(new StepId("solo"), worker, [], ["plan"], [], new RetryPolicy(1))]);
+
+        var path = Path.Combine(directory, "workflow.json");
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(definition));
+        return path;
+    }
+
+    private static async Task<string> WriteObservingBindingsAsync(string directory, string? sessionId)
+    {
+        Directory.CreateDirectory(directory);
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["observer"] = new WorkerBindingConfigEntry(
+                "observer", new WorkerContract("observer", [], [new ProducedOutput("plan")], []),
+                "the original task", TimeSpan.FromSeconds(30), SessionId: sessionId),
+        };
+
+        var path = Path.Combine(directory, "bindings.json");
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(config));
+        return path;
+    }
+
+    private static async Task<string> WriteNoOpBindingsAsync(string directory, string? sessionId)
+    {
+        Directory.CreateDirectory(directory);
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["solo"] = new WorkerBindingConfigEntry(
+                NoOpWorkerAdapter.AdapterName, new WorkerContract("solo", [], [new ProducedOutput("plan")], []),
+                PromptTemplate: "unused-by-noop", TimeSpan.FromSeconds(30), SessionId: sessionId),
+        };
+
+        var path = Path.Combine(directory, "bindings.json");
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(config));
+        return path;
+    }
+}

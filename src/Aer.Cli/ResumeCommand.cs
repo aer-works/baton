@@ -10,11 +10,10 @@ using Aer.Flow.Workspaces;
 namespace Aer.Cli;
 
 /// <summary>
-/// <c>aer resume</c> (issue #1359): the first-class "continue this worker with this message" verb —
-/// exposes <see cref="MutationInterface.RecordResumeAsync"/> on the CLI. Like <see cref="DecideCommand"/>
+/// The CLI surface for <see cref="ResumeOptions"/> (see that type's own doc for what <c>aer resume</c>
+/// is) — exposes <see cref="MutationInterface.RecordResumeAsync"/>. Like <see cref="DecideCommand"/>
 /// and <see cref="SupplyCommand"/>, this never binds a fresh snapshot — a mutation command only ever
-/// acts against a room <c>aer run</c> has already started (§11.2) — and names its target worker by
-/// role, the same convention <c>aer supply</c> already uses.
+/// acts against a room <c>aer run</c> has already started (§11.2).
 /// <para>
 /// Runs the SAME two-call sequence <see cref="SupplyCommand"/> established for a single-execution
 /// mutation: <see cref="MutationInterface.RecordResumeAsync"/> mints and dispatches the one linked
@@ -47,8 +46,7 @@ public static class ResumeCommand
     /// #1359's design ruling: refuse loudly rather than silently starting cold.
     /// </exception>
     /// <exception cref="InvalidResumeException">
-    /// No step names the worker, more than one does, the target step has never run, its latest
-    /// attempt is still running, or it resolves to a non-process binding.
+    /// See that type's own doc for the closed set of state-based refusals this can mean.
     /// </exception>
     /// <exception cref="Aer.Flow.Concurrency.WorkflowLockedException">
     /// Another Flow instance already holds this room directory's lock.
@@ -106,11 +104,8 @@ public static class ResumeCommand
                 "pass --worker naming a key present in the bindings file.");
         }
 
-        // Design ruling (#1359): "If an adapter cannot resume (no session id recorded, or the vendor
-        // CLI lacks it), REFUSE loudly ... never silently start cold." Adapters do not yet capture a
-        // vendor session id into the room ledger on their own — that capture is aer-works/baton#1381's
-        // separate ask — so today the only source of one is an operator-recorded SessionId on the
-        // bindings entry, captured from a prior invocation's own transcript/logs.
+        // See WorkerCannotResumeException's own doc for why this is the refusal today rather than a
+        // captured-automatically session id.
         if (entry.SessionId is null)
         {
             throw new WorkerCannotResumeException(
