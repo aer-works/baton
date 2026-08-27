@@ -76,8 +76,8 @@ relay to its own permission layer, not as a hardening claim about a vendor that 
 
 Only printed for a bound worker whose adapter actually consumes a structured grant (implements
 `IPermissionGrantTranslator`, `src/Aer.Adapters/WorkerBindingResolver.cs`'s own rule for which
-adapters a grant governs) — a step bound to an adapter outside that population (e.g. a composed
-template's capture step) gets no grant line, not a placeholder one.
+adapters a grant governs). A composed template's capture step, say, spawns `git` directly and never
+reads a grant at all — its phase gets no line printed, never a placeholder one.
 
 **Read-shaped roles** (`review`, `fact-check` — both `write_files: false`) default to `claude`, whose
 withheld writes still reach the outbox through AER's own hook rather than the `AuditedNotEnforced`
