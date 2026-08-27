@@ -222,6 +222,94 @@ public class MutationInterfaceResumeTests
     }
 
     [Fact]
+    public async Task A_resume_of_a_resume_refuses_when_the_bindings_files_SessionId_disagrees_with_the_recorded_one()
+    {
+        // Issue #1359 F6: once a resume itself records a session id, a LATER resume of that same
+        // execution must be refused if the bindings file's SessionId no longer matches -- an
+        // operator edit (or a re-run of `aer dispatch` rewriting bindings.json) must not silently
+        // record a continuity the ledger's own history contradicts.
+        var snapshot = MakeSnapshot(Step(Solo, worker: "solo-worker"));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["solo-worker"] = new WorkerBinding.Process(Contract, WriteFile("plan", "first"), Timeout),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+            var workflowId = new WorkflowId("wf-resume-session");
+
+            await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            // First resume records session "sess-1".
+            await MutationInterface.RecordResumeAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, "solo-worker",
+                reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken,
+                sessionId: "sess-1");
+
+            // A resume-of-that-resume naming a DIFFERENT session id refuses.
+            var thrown = await Assert.ThrowsAsync<InvalidResumeException>(() => MutationInterface.RecordResumeAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, "solo-worker",
+                reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken,
+                sessionId: "sess-2"));
+
+            Assert.Contains("sess-1", thrown.Message, StringComparison.Ordinal);
+            Assert.Contains("sess-2", thrown.Message, StringComparison.Ordinal);
+            Assert.NotNull(thrown.TryInvocation);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task A_resume_of_a_resume_proceeds_when_the_bindings_files_SessionId_still_agrees()
+    {
+        // Polarity partner of the refusal above -- the SAME recorded session id, one resume later,
+        // must not be refused.
+        var snapshot = MakeSnapshot(Step(Solo, worker: "solo-worker"));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["solo-worker"] = new WorkerBinding.Process(Contract, WriteFile("plan", "first"), Timeout),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+            var workflowId = new WorkflowId("wf-resume-session-agree");
+
+            await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            await MutationInterface.RecordResumeAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, "solo-worker",
+                reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken,
+                sessionId: "sess-1");
+
+            var (secondResumeState, _) = await MutationInterface.RecordResumeAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, "solo-worker",
+                reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken,
+                sessionId: "sess-1");
+
+            Assert.Equal(StepStatus.Succeeded, secondResumeState.Steps.Single().Status);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
     public async Task A_failed_resume_is_never_auto_retried_by_the_settling_pump_and_its_link_survives()
     {
         // Issue #1359 F4: the settling pump must never spend a resume's own step against

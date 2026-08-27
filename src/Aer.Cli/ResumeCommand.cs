@@ -152,7 +152,11 @@ public static class ResumeCommand
 
         await MutationInterface.RecordResumeAsync(
                 workflowId, options.RoomDirectoryPath, snapshot, resumeOnlyBindings, artifactsRootPath,
-                options.Worker, reader, writer, dispatcher, cancellationToken)
+                options.Worker, reader, writer, dispatcher, cancellationToken,
+                // F6: the bindings file's own SessionId for this worker, so RecordResumeAsync can
+                // refuse if it disagrees with the session the execution being resumed already
+                // recorded, rather than recording a continuity nothing backs.
+                sessionId: entry.SessionId)
             .ConfigureAwait(false);
 
         // Only now, with the resume itself validated and dispatched, provision workspaces for

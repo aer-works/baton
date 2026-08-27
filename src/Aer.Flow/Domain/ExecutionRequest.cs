@@ -27,6 +27,13 @@ namespace Aer.Flow.Domain;
 /// same JSON-replay reason <see cref="FlowEvent.ExecutionFailed.Reason"/> documents: an older
 /// <c>flow.jsonl</c> line written before this field existed must still replay.
 /// </param>
+/// <param name="SessionId">
+/// The vendor session id this resume's bindings file recorded for <see cref="Worker"/> at dispatch
+/// time (issue #1359 F6) — an opaque string Flow never interprets, carried purely so a LATER resume
+/// of this same execution can check the operator's bindings file still names the session this one
+/// actually continued, rather than trusting an unrecorded assertion. <c>null</c> for every ordinary
+/// dispatch and retry, same as <paramref name="LinkedFromExecutionId"/>.
+/// </param>
 public sealed record ExecutionRequest(
     ExecutionId ExecutionId,
     WorkflowId WorkflowId,
@@ -38,4 +45,5 @@ public sealed record ExecutionRequest(
     IReadOnlyList<EnvironmentVariable> Environment,
     IReadOnlyDictionary<StepId, ExecutionId> UpstreamExecutionIds,
     GrantAuditMode? GrantAuditMode = null,
-    ExecutionId? LinkedFromExecutionId = null);
+    ExecutionId? LinkedFromExecutionId = null,
+    string? SessionId = null);

@@ -11,7 +11,10 @@ namespace Aer.Flow.Mutation;
 /// is allowed rather than refused, per F3), the resolved binding is not a
 /// <see cref="WorkerBinding.Process"/> (a non-process worker has no vendor session to resume), or the
 /// worker's worktree workspace no longer exists on disk (F1 — <c>Aer.Adapters.WorktreeWorkspaces.ReuseForResume</c>,
-/// thrown before any dispatch is even attempted). Nothing is appended to the log when this is thrown.
+/// thrown before any dispatch is even attempted), or the bindings file's recorded session id
+/// disagrees with the one the execution being resumed already recorded (F6). Nothing is appended to
+/// the log when this is thrown, EXCEPT the STALLED takeover branch above, which appends the
+/// abandoned prior execution's own outcome before throwing on some other, later condition.
 /// </summary>
 public sealed class InvalidResumeException : AerFlowException
 {

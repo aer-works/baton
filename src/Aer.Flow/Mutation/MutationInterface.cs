@@ -333,15 +333,24 @@ public static class MutationInterface
     /// target step by which snapshot step declares it, not by step id. Refused as ambiguous if more
     /// than one step in <paramref name="snapshot"/> names the same worker.
     /// </param>
+    /// <param name="sessionId">
+    /// The vendor session id the caller's bindings file records for <paramref name="worker"/> right
+    /// now (issue #1359 F6) — recorded on the new <see cref="ExecutionRequest.SessionId"/> so a
+    /// LATER resume of this same execution can check the two agree, and refused up front when the
+    /// execution being resumed already recorded a DIFFERENT session id, rather than silently forking
+    /// the vendor session under a claimed continuity nothing actually backs. <c>null</c> is never
+    /// checked against — the first resume of an ordinary dispatch has nothing recorded to compare.
+    /// </param>
     /// <exception cref="Aer.Flow.Concurrency.WorkflowLockedException">
     /// Another Flow instance already holds <paramref name="roomDirectoryPath"/>'s lock.
     /// </exception>
     /// <exception cref="InvalidResumeException">
     /// No step names <paramref name="worker"/>, more than one does, the target step has never been
     /// dispatched (<see cref="StepStatus.Pending"/>), its latest attempt is still
-    /// <see cref="StepStatus.Running"/> (mid-flight steering is out of #1359's scope), or
+    /// <see cref="StepStatus.Running"/> (mid-flight steering is out of #1359's scope),
     /// <paramref name="workerBindings"/> resolves it to a <see cref="WorkerBinding.NonProcess"/>
-    /// (nothing to resume a session on).
+    /// (nothing to resume a session on), or <paramref name="sessionId"/> disagrees with the session
+    /// id the execution being resumed actually recorded (F6).
     /// </exception>
     public static async Task<(FlowState State, ExecutionId ExecutionId)> RecordResumeAsync(
         WorkflowId workflowId,
@@ -355,7 +364,8 @@ public static class MutationInterface
         ICoreDispatcher dispatcher,
         CancellationToken cancellationToken = default,
         TimeProvider? timeProvider = null,
-        string? holderDescription = null)
+        string? holderDescription = null,
+        string? sessionId = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -374,7 +384,7 @@ public static class MutationInterface
         {
             checkpoint = null;
         }
-        var (state, _) = StateProjector.ProjectAndCheckpoint(log.FlowEvents, snapshot, checkpoint, log.ByteOffset);
+        var (state, resumeCheckpoint) = StateProjector.ProjectAndCheckpoint(log.FlowEvents, snapshot, checkpoint, log.ByteOffset);
 
         var matchingSteps = snapshot.Steps.Where(s => s.Worker == worker).ToList();
         if (matchingSteps.Count == 0)
@@ -452,6 +462,27 @@ public static class MutationInterface
                 TryInvocation = "re-run `aer run` (or `aer dispatch`) to dispatch it fresh — there is no recorded execution for aer resume to continue.",
             };
 
+        // F6: the execution being resumed already recorded which session IT continued (null for the
+        // first resume of an ordinary dispatch, which never had one). If the bindings file now names
+        // a DIFFERENT session, the operator's SessionId edit and the ledger's own history disagree —
+        // refuse rather than silently record a continuity nothing actually backs.
+        if (resumeCheckpoint.State.AcceptedRequestByExecutionId.TryGetValue(previousExecutionId, out var previousRequest)
+            && previousRequest.SessionId is { } previousSessionId
+            && sessionId is not null
+            && !string.Equals(previousSessionId, sessionId, StringComparison.Ordinal))
+        {
+            throw new InvalidResumeException(
+                $"Worker '{worker}''s bindings file records SessionId '{sessionId}', but the execution " +
+                $"being resumed ({previousExecutionId}) already recorded session '{previousSessionId}' — " +
+                "aer resume refuses rather than silently forking the vendor session under a claimed " +
+                "continuity nothing backs.")
+            {
+                TryInvocation = $"fix the SessionId recorded for '{worker}' in the bindings file back to " +
+                    $"'{previousSessionId}' (the session the execution being resumed actually continued), " +
+                    "or target the room/worker whose bindings file's SessionId edit was intentional.",
+            };
+        }
+
         if (!workerBindings.TryGetValue(worker, out var binding) || binding is not WorkerBinding.Process processBinding)
         {
             throw new InvalidResumeException($"Worker '{worker}' has no dispatchable (process) binding to resume a session on.")
@@ -477,7 +508,8 @@ public static class MutationInterface
             environment,
             stepState.UpstreamExecutionIds,
             GrantAuditMode: binding.GrantAuditMode,
-            LinkedFromExecutionId: previousExecutionId);
+            LinkedFromExecutionId: previousExecutionId,
+            SessionId: sessionId);
 
         // §7's write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
         await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken).ConfigureAwait(false);
