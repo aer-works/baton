@@ -63,9 +63,10 @@ public static class WorkflowStatusProjector
     /// use for usage data (or has not read the ledger for another reason) is not forced to.
     /// </param>
     /// <param name="adapters">
-    /// Registered adapters (#1360) tried, content-sniff style, against each execution's captured
-    /// stdout — see <see cref="ExecutionUsageProjector"/>'s remarks for why <c>aer status</c> has no
-    /// binding-resolved vendor to consult directly. Defaults to <see cref="WorkerAdapterRegistry.Default"/>.
+    /// Registered adapters (#1360) an execution's own dispatched worker is attributed to via
+    /// <paramref name="roomDirectoryPath"/>'s <c>bindings.json</c> — see
+    /// <see cref="ExecutionUsageProjector"/>'s remarks for how attribution works and what happens
+    /// without it. Defaults to <see cref="WorkerAdapterRegistry.Default"/>.
     /// </param>
     public static WorkflowStatusView Project(
         FlowState state,
@@ -82,7 +83,7 @@ public static class WorkflowStatusProjector
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
 
         var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
-            entries ?? [], artifactsRootPath, adapters ?? WorkerAdapterRegistry.Default);
+            entries ?? [], artifactsRootPath, adapters ?? WorkerAdapterRegistry.Default, roomDirectoryPath);
 
         var steps = new List<WorkflowStatusStepView>(state.Steps.Count);
         var outputs = new List<string>();

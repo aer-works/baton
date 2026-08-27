@@ -435,7 +435,8 @@ public static class StatusCommand
         // #1360: one rolled-up line for the whole room, never per step here -- a machine consumer
         // wanting per-execution figures already has them from `--json`'s usage/linkedFromUsage.
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
-        var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(entries, artifactsRootPath, WorkerAdapterRegistry.Default);
+        var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
+            entries, artifactsRootPath, WorkerAdapterRegistry.Default, roomDirectoryPath);
         output.WriteLine(FormatUsageSummary(usageByExecutionId));
     }
 

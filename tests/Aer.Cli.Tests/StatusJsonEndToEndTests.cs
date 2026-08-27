@@ -91,11 +91,14 @@ public class StatusJsonEndToEndTests
     }
 
     [Fact]
-    public async Task A_succeeded_execution_with_a_vendor_shaped_stdout_line_reports_tokens_and_turns()
+    public async Task A_succeeded_execution_with_a_vendor_shaped_stdout_line_reports_no_tokens_when_dispatched_through_a_different_adapter()
     {
-        // #1360: content-sniffing, not a bindings lookup -- a claude-shaped stream-json result line
-        // anywhere in the captured stdout is picked up by the registered ClaudeWorkerAdapter even
-        // though this room dispatches through the test-only "shell" adapter.
+        // #1360 F1 spoof regression: a claude-shaped stream-json result line in the captured stdout
+        // must NOT be picked up when this room actually dispatched through the test-only "shell"
+        // adapter (per bindings.json) -- attribution, not a content-sniff across every registered
+        // adapter. "shell" is not itself a registered adapter in status's own WorkerAdapterRegistry,
+        // so this also proves an execution whose adapter name cannot be resolved fails closed rather
+        // than falling back to guessing from content.
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-usage-vendor-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
@@ -114,9 +117,9 @@ public class StatusJsonEndToEndTests
             var step = Assert.Single(view.Steps);
             Assert.NotNull(step.Usage);
             Assert.True(step.Usage!.WallClockMs >= 0);
-            Assert.Equal(10, step.Usage.TokensIn);
-            Assert.Equal(5, step.Usage.TokensOut);
-            Assert.Equal(2, step.Usage.Turns);
+            Assert.Null(step.Usage.TokensIn);
+            Assert.Null(step.Usage.TokensOut);
+            Assert.Null(step.Usage.Turns);
         }
         finally
         {
