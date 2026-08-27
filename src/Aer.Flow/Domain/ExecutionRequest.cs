@@ -19,6 +19,14 @@ namespace Aer.Flow.Domain;
 /// <see cref="ExecutionId"/>s this request's <paramref name="Inputs"/> were derived from. This is
 /// what makes staleness (§11.3, §17.5) derivable purely by reading the log.
 /// </param>
+/// <param name="LinkedFromExecutionId">
+/// The prior execution this one continues (issue #1359's <c>aer resume</c>): the same step's own
+/// <c>LatestExecutionId</c> at the moment the resume was recorded, resumed via the adapter's
+/// vendor-session plumbing rather than dispatched fresh. <c>null</c> for every ordinary dispatch and
+/// retry — a resume is the only request shape that ever sets this. Defaulted, not required, for the
+/// same JSON-replay reason <see cref="FlowEvent.ExecutionFailed.Reason"/> documents: an older
+/// <c>flow.jsonl</c> line written before this field existed must still replay.
+/// </param>
 public sealed record ExecutionRequest(
     ExecutionId ExecutionId,
     WorkflowId WorkflowId,
@@ -29,4 +37,5 @@ public sealed record ExecutionRequest(
     TimeSpan? Timeout,
     IReadOnlyList<EnvironmentVariable> Environment,
     IReadOnlyDictionary<StepId, ExecutionId> UpstreamExecutionIds,
-    GrantAuditMode? GrantAuditMode = null);
+    GrantAuditMode? GrantAuditMode = null,
+    ExecutionId? LinkedFromExecutionId = null);

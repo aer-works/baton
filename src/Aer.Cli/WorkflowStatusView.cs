@@ -12,7 +12,11 @@ namespace Aer.Cli;
 public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("state")] string State,
-    [property: JsonPropertyName("execution")] string? Execution);
+    [property: JsonPropertyName("execution")] string? Execution,
+    // #1359: the execution `aer resume` continued, when Execution is a resume's own new attempt —
+    // null for every ordinary dispatch/retry. Lets a status consumer render both executions of a
+    // resumed step without a second lookup.
+    [property: JsonPropertyName("linkedFrom")] string? LinkedFrom = null);
 
 /// <summary>
 /// The one JSON object <c>aer status --json</c> writes to stdout (#1356's machine completion
@@ -56,7 +60,8 @@ public static class WorkflowStatusProjector
 
         foreach (var step in state.Steps)
         {
-            steps.Add(new WorkflowStatusStepView(step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value));
+            steps.Add(new WorkflowStatusStepView(
+                step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))

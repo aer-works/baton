@@ -254,6 +254,13 @@ public static class StateProjector
                 ? (IReadOnlyDictionary<StepId, ExecutionId>)dict
                 : new Dictionary<StepId, ExecutionId>();
 
+            // #1359: the latest attempt's own recorded request, not a separate tracking dict — the
+            // same source AcceptedRequestByExecutionId already is for every other request-carried
+            // fact (contract reconstruction, GrantAuditMode replay).
+            var linkedFromExecutionId = state.AcceptedRequestByExecutionId.TryGetValue(latestExecutionId, out var latestRequest)
+                ? latestRequest.LinkedFromExecutionId
+                : null;
+
             steps.Add(new StepState(
                 stepDefinition.StepId,
                 status,
@@ -271,7 +278,8 @@ public static class StateProjector
                 state.RetryNotBeforeByStepId.TryGetValue(stepDefinition.StepId, out var rnb) ? rnb : null,
                 state.RetryDelayMsByStepId.TryGetValue(stepDefinition.StepId, out var rdm) ? rdm : null,
                 state.RetryScheduledForExecutionIdByStepId.TryGetValue(stepDefinition.StepId, out var rfe) ? rfe : null,
-                state.LatestExecutionFailedRetryNotBeforeByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.LatestExecutionFailedRetryNotBeforeByStepId.GetValueOrDefault(stepDefinition.StepId),
+                linkedFromExecutionId));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

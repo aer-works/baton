@@ -139,6 +139,11 @@ public enum StepStatus
 /// consequence the Dependency Resolver dispatches without regard to §11.3's ordinary conditions,
 /// since a superseded step is never "ready" through staleness alone (§17.5).
 /// </param>
+/// <param name="LinkedFromExecutionId">
+/// <see cref="Domain.ExecutionRequest.LinkedFromExecutionId"/> carried on <paramref name="LatestExecutionId"/>'s
+/// own request (issue #1359) — the prior execution <c>aer resume</c> continued to produce this one.
+/// <c>null</c> for every step whose latest attempt was an ordinary dispatch or retry.
+/// </param>
 public sealed record StepState(
     StepId StepId,
     StepStatus Status,
@@ -154,7 +159,8 @@ public sealed record StepState(
     DateTimeOffset? RetryNotBefore = null,
     int? RetryDelayMs = null,
     ExecutionId? RetryScheduledForExecutionId = null,
-    DateTimeOffset? LatestExecutionFailedRetryNotBefore = null);
+    DateTimeOffset? LatestExecutionFailedRetryNotBefore = null,
+    ExecutionId? LinkedFromExecutionId = null);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion (spec §17.3): minted outside the
