@@ -77,6 +77,21 @@ public class DispatchOptionsParserTests
         Assert.Contains("--spec", ex.TryInvocation, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// #1382 F10.1: DispatchCommand's missing-<c>--spec</c> refusal suggests
+    /// <c>aer dispatch &lt;role&gt; --spec &lt;spec-file&gt;</c> -- feed that shape back through the
+    /// real parser rather than only pinning that the string was set (this is what would have caught
+    /// F5's stale worktree suggestion).
+    /// </summary>
+    [Fact]
+    public void The_suggested_missing_spec_invocation_round_trips_through_this_parser()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--spec", "<spec-file>"]);
+
+        Assert.Equal("review", options.Name);
+        Assert.Equal("<spec-file>", options.SpecFilePath);
+    }
+
     [Fact]
     public void An_unknown_option_is_a_typed_argument_error()
     {

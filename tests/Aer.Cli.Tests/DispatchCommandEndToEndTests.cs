@@ -353,6 +353,42 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task The_suggested_output_rename_actually_clears_the_collision_it_follows_from()
+    {
+        // #1382 F10.1: DispatchCommand's --output-collides-with-declared-output refusal suggests
+        // "aer dispatch <role> --spec <spec-file> --output <different-file-name>" -- prove that shape
+        // actually clears the check, not just that the string was set (this is what would have caught
+        // F5's stale worktree suggestion, applied to F6's rewritten Try lines).
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Review the diff.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            // "review" declares report.md (primary, --output's target) and verdict.json (secondary) --
+            // renaming the primary onto the secondary's own name is the Skip(1) collision this refusal
+            // guards.
+            var collidingOptions = new DispatchOptions(
+                "review", specPath, roomDirectory, Adapter: "fake", OutputPath: Path.Combine(testRoot, "verdict.json"));
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(collidingOptions, Adapters, TestContext.Current.CancellationToken));
+            Assert.Contains("collides with role 'review'", ex.Message, StringComparison.Ordinal);
+            Assert.Equal($"aer dispatch review --spec {specPath} --output <different-file-name>", ex.TryInvocation);
+
+            var correctedRoomDirectory = Path.Combine(testRoot, "task-corrected");
+            var correctedOptions = new DispatchOptions(
+                "review", specPath, correctedRoomDirectory, Adapter: "fake", OutputPath: Path.Combine(testRoot, "renamed-report.md"));
+
+            var state = (await DispatchCommand.ExecuteAsync(correctedOptions, Adapters, TestContext.Current.CancellationToken)).State;
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static async Task<string> WriteSpecAsync(string directory, string content)
     {
         Directory.CreateDirectory(directory);

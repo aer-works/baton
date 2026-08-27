@@ -115,4 +115,19 @@ public class DecideOptionsParserTests
         Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
             ["task", "extra", "--execution", "exec-1", "--type", "resume", "--bindings", "bindings.json"]));
     }
+
+    /// <summary>
+    /// #1382 F10.1: each missing-option Try line's flag round-trips through the real parser rather
+    /// than only being pinned as a set string.
+    /// </summary>
+    [Fact]
+    public void The_suggested_execution_type_and_bindings_flags_round_trip_through_this_parser()
+    {
+        var options = DecideOptionsParser.Parse(
+            ["task", "--execution", "<execution-id>", "--type", "resume", "--bindings", "<path-to-bindings.json>"]);
+
+        Assert.Equal("<execution-id>", options.ExecutionId);
+        Assert.Equal(DecisionType.Resume, options.DecisionType);
+        Assert.Equal("<path-to-bindings.json>", options.BindingsFilePath);
+    }
 }

@@ -25,6 +25,22 @@ public class TerminalSentinelEndToEndTests
         new Dictionary<string, IWorkerAdapter> { ["shell"] = new ShellCommandWorkerAdapter() };
 
     [Fact]
+    public async Task The_templates_subcommand_a_dispatch_Try_line_suggests_is_a_real_known_subcommand()
+    {
+        // #1382 F10.1: DispatchCommand's "run 'aer templates' to list available built-ins." Try line
+        // is only true if 'templates' is actually one of Program.cs's knownSubcommands -- the prior
+        // tests only pinned that the STRING was set (Assert.Contains against the literal), never that
+        // the command it names is real. Round-tripped through the real binary since knownSubcommands
+        // is a top-level-statement local with no other test seam.
+        using var process = StartAerProcess("templates");
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, process.ExitCode);
+        Assert.Contains("Available built-in workflow templates", await stdoutTask);
+    }
+
+    [Fact]
     public async Task A_room_that_fails_before_a_ledger_exists_is_left_queryable_as_Failed()
     {
         // The task's own suggested fixture -- a bindings entry naming a model the vendor would

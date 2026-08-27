@@ -64,4 +64,17 @@ public class StatusOptionsParserTests
         Assert.Contains("incompatible", exception.Message, StringComparison.Ordinal);
         Assert.Equal("aer status task --json", exception.TryInvocation);
     }
+
+    /// <summary>
+    /// #1382 F10.1: the incompatible-flags Try line names a full invocation ("aer status task
+    /// --json") -- feed it back through the real parser rather than only pinning the string.
+    /// </summary>
+    [Fact]
+    public void The_suggested_json_only_invocation_round_trips_through_this_parser()
+    {
+        var options = StatusOptionsParser.Parse(["task", "--json"]);
+
+        Assert.True(options.Json);
+        Assert.False(options.Follow);
+    }
 }
