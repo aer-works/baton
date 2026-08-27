@@ -106,7 +106,17 @@ public static class ExecutionUsageProjector
                 continue;
             }
 
-            var wallClockMs = Math.Max(0, (long)(exitedAt - startedAt).TotalMilliseconds);
+            var wallClockMs = (long)(exitedAt - startedAt).TotalMilliseconds;
+            if (wallClockMs < 0)
+            {
+                // #1360 F6 (review): a clamp to 0 here would print the exact "zero standing in for
+                // unknown" the issue rules out, indistinguishable from a genuinely instantaneous
+                // execution. The only way this fires is a backwards clock step (NTP correction, VM
+                // resume) mid-execution -- the honest response is to skip the entry, same as an
+                // execution with no exit event yet.
+                continue;
+            }
+
             workerNameByExecutionId.TryGetValue(executionId, out var workerName);
             var usage = TryReadWorkerUsage(artifactsRootPath, executionId, workerName, bindings, adapters);
             result[executionId] = new ExecutionUsageView(wallClockMs, usage?.TokensIn, usage?.TokensOut, usage?.Turns);

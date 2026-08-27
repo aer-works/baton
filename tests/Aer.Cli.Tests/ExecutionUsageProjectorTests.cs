@@ -94,6 +94,35 @@ public sealed class ExecutionUsageProjectorTests
     }
 
     [Fact]
+    public void An_execution_whose_exit_timestamp_precedes_its_start_is_entirely_absent_never_a_zero_wall_clock()
+    {
+        // #1360 F6: a backwards clock step (NTP correction, VM resume) between the two DateTime.UtcNow
+        // stamps produces a negative delta. Clamping that to 0 would print the exact "zero standing in
+        // for unknown" the issue rules out; the honest response is the same as a still-running
+        // execution -- absent from the result entirely.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-backwards-clock");
+            var start = new DateTime(2026, 1, 1, 12, 0, 5, DateTimeKind.Utc);
+            var exit = start.AddSeconds(-3);
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), exit),
+            };
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default);
+
+            Assert.Empty(usage);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public void Token_and_turn_counts_are_read_when_the_execution_is_attributed_to_its_dispatching_adapter()
     {
         // #1360 F1: attribution, not content-sniffing -- the claude-shaped line is only trusted
