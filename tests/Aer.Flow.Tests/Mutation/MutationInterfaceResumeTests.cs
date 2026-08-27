@@ -221,8 +221,67 @@ public class MutationInterfaceResumeTests
         }
     }
 
-    private static WorkflowStepDefinition Step(StepId stepId, string worker) =>
-        new(stepId, worker, [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1));
+    [Fact]
+    public async Task A_failed_resume_is_never_auto_retried_by_the_settling_pump_and_its_link_survives()
+    {
+        // Issue #1359 F4: the settling pump must never spend a resume's own step against
+        // MaxAttempts, however much budget remains, and LinkedFromExecutionId must still point at
+        // the ORIGINAL execution afterward, not get cleared by a retry-minted request.
+        var snapshot = MakeSnapshot(Step(Solo, worker: "solo-worker", maxAttempts: 3));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["solo-worker"] = new WorkerBinding.Process(Contract, WriteFile("plan", "first"), Timeout),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+            var workflowId = new WorkflowId("wf-resume-retry");
+
+            var firstState = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher,
+                cancellationToken: TestContext.Current.CancellationToken);
+            var firstExecutionId = firstState.Steps.Single().LatestExecutionId!.Value;
+            Assert.Equal(StepStatus.Succeeded, firstState.Steps.Single().Status);
+
+            // The resumed attempt exits cleanly but never writes the contract's required "plan"
+            // output -- an ordinary Retryable contract failure, the shape a real vendor timeout or
+            // a no-op follow-up would also produce.
+            var failingBindings = new Dictionary<string, WorkerBinding>
+            {
+                ["solo-worker"] = new WorkerBinding.Process(Contract, ExitCleanlyWithoutWriting(), Timeout),
+            };
+
+            var (resumedState, resumedExecutionId) = await MutationInterface.RecordResumeAsync(
+                workflowId, roomDirectory, snapshot, failingBindings, artifactsRoot, "solo-worker",
+                reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            var resumedStep = resumedState.Steps.Single();
+            Assert.Equal(StepStatus.Failed, resumedStep.Status);
+            Assert.Equal(firstExecutionId, resumedStep.LinkedFromExecutionId);
+
+            // The settling pump this command runs next (ResumeCommand's own two-call sequence) must
+            // not auto-dispatch a further attempt, even though MaxAttempts(3) leaves budget.
+            var settledState = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, failingBindings, artifactsRoot, reader, writer, dispatcher,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            var settledStep = settledState.Steps.Single();
+            Assert.Equal(StepStatus.Failed, settledStep.Status);
+            Assert.Equal(resumedExecutionId, settledStep.LatestExecutionId);
+            Assert.Equal(firstExecutionId, settledStep.LinkedFromExecutionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    private static WorkflowStepDefinition Step(StepId stepId, string worker, int maxAttempts = 1) =>
+        new(stepId, worker, [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(maxAttempts));
 
     private static WorkflowDefinitionSnapshot MakeSnapshot(params WorkflowStepDefinition[] steps) => new(
         new WorkflowDefinitionSnapshotId($"snapshot-{Guid.NewGuid():N}"),

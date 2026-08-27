@@ -83,4 +83,34 @@ public class RetryEngineTests
 
         Assert.False(mayRetry);
     }
+
+    [Fact]
+    public void A_failed_resume_shaped_attempt_never_retries_even_with_budget_remaining()
+    {
+        // Issue #1359 F4: aer resume's own contract is "one message per resume invocation" -- the
+        // settling pump must never auto-dispatch further attempts against a failed resume, however
+        // much MaxAttempts budget remains.
+        var stepState = new StepState(
+            Architect, StepStatus.Failed, ExecutionId, NoUpstream,
+            ConsecutiveFailureCount: 1, LinkedFromExecutionId: new ExecutionId("resumed-from"));
+
+        var mayRetry = RetryEngine.MayRetry(stepState, new RetryPolicy(MaxAttempts: 3));
+
+        Assert.False(mayRetry);
+    }
+
+    [Fact]
+    public void The_same_failure_shape_without_a_link_still_retries()
+    {
+        // The polarity partner of the test above -- one field apart (no LinkedFromExecutionId),
+        // otherwise identical, to prove the refusal above is about the link, not incidentally about
+        // ConsecutiveFailureCount or MaxAttempts.
+        var stepState = new StepState(
+            Architect, StepStatus.Failed, ExecutionId, NoUpstream,
+            ConsecutiveFailureCount: 1, LinkedFromExecutionId: null);
+
+        var mayRetry = RetryEngine.MayRetry(stepState, new RetryPolicy(MaxAttempts: 3));
+
+        Assert.True(mayRetry);
+    }
 }
