@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/aer-works/baton/compare/daemon-v0.20.0...daemon-v0.21.0) (2026-08-27)
+
+
+### Miscellaneous
+
+* **daemon:** Synchronize desktop versions
+
 ## [0.20.0](https://github.com/aer-works/baton/compare/daemon-v0.19.0...daemon-v0.20.0) (2026-08-26)
 
 

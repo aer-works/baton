@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.21.0](https://github.com/aer-works/baton/compare/adapters-v0.20.0...adapters-v0.21.0) (2026-08-27)
+
+
+### Features
+
+* **dispatch:** Agent-first dispatch -- worktree auto-provisioning, output override, dispatch-time facts ([#1380](https://github.com/aer-works/baton/issues/1380)) ([bd0c2a5](https://github.com/aer-works/baton/commit/bd0c2a54d0c7905a75520248b1db10d6c1d72d26))
+* **dispatch:** Print the resolved grant profile; least-privilege review verified ([#1385](https://github.com/aer-works/baton/issues/1385)) ([9e88a6a](https://github.com/aer-works/baton/commit/9e88a6a9408a95ed47e7b02d0d01468856adf45e))
+* **flow:** First-class resume verb -- continue a worker session with a message ([#1388](https://github.com/aer-works/baton/issues/1388)) ([1453d04](https://github.com/aer-works/baton/commit/1453d042cf83b951b0b4ea053ac73458fd694297))
+* **store:** Per-execution usage accounting -- wall-clock always, tokens where the vendor reports them ([#1389](https://github.com/aer-works/baton/issues/1389)) ([15b6519](https://github.com/aer-works/baton/commit/15b6519d55acd404ce938defd55f5f0e23a92d37))
+
+
+### Miscellaneous
+
+* **cli:** Add TryInvocation lines to CLI and validation errors ([#1382](https://github.com/aer-works/baton/issues/1382)) ([859dadc](https://github.com/aer-works/baton/commit/859dadc0b07fc7f6929a8dbef6eeff549bbf581e))
+
 ## [0.20.0](https://github.com/aer-works/baton/compare/adapters-v0.19.0...adapters-v0.20.0) (2026-08-26)
 
 
