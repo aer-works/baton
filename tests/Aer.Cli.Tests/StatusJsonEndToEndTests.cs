@@ -128,6 +128,67 @@ public class StatusJsonEndToEndTests
     }
 
     [Fact]
+    public async Task A_running_steps_usage_and_linkedFromUsage_keys_are_absent_from_the_wire_JSON_not_null()
+    {
+        // #1360 F3: a step with no recorded start/exit pair yet (still running) -- and, same as every
+        // ordinary dispatch, no LinkedFrom -- must omit "usage"/"linkedFromUsage" from the wire format
+        // entirely. The pre-fix code comment already claimed this; JsonIgnoreCondition.WhenWritingNull
+        // was missing from both properties, so the actual bytes were `"usage":null,"linkedFromUsage":null`.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-usage-absent-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteOneStepWorkflowAsync(testRoot, "solo");
+            var bindingsFilePath = await WriteOneStepBindingsAsync(testRoot, SleepThenWriteCommand("plan", seconds: 5));
+            var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+
+            var runTask = RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+            try
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(20);
+                string? rawJson = null;
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (Directory.Exists(roomDirectory))
+                    {
+                        using var stdout = new StringWriter();
+                        try
+                        {
+                            await StatusCommand.ExecuteAsync(
+                                new StatusOptions(roomDirectory, Json: true), stdout, TestContext.Current.CancellationToken);
+                            var candidate = stdout.ToString();
+                            if (candidate.Contains("\"Running\"", StringComparison.Ordinal))
+                            {
+                                rawJson = candidate;
+                                break;
+                            }
+                        }
+                        catch (SnapshotLoadException)
+                        {
+                            // Not persisted yet -- keep polling.
+                        }
+                    }
+
+                    // wait-ok: re-check cadence while waiting for the step to show Running; capped by the 20s deadline above.
+                    await Task.Delay(50, TestContext.Current.CancellationToken);
+                }
+
+                Assert.NotNull(rawJson);
+                Assert.DoesNotContain("\"usage\"", rawJson, StringComparison.Ordinal);
+                Assert.DoesNotContain("\"linkedFromUsage\"", rawJson, StringComparison.Ordinal);
+            }
+            finally
+            {
+                await runTask;
+            }
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task A_failed_room_reports_state_Failed_with_the_step_failure_reason_as_the_top_level_error()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-fail-{Guid.NewGuid():N}");

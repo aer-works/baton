@@ -21,16 +21,23 @@ public sealed record WorkflowStatusStepView(
     // #1360: Execution's own usage -- absent (not present as a whole) when that execution has no
     // recorded start/exit pair to derive wall-clock from (still running, or Flow crashed before Core
     // recorded either lifecycle event). See ExecutionUsageProjector.
-    [property: JsonPropertyName("usage")] ExecutionUsageView? Usage = null,
+    [property: JsonPropertyName("usage")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ExecutionUsageView? Usage = null,
     // #1360: LinkedFrom's own usage, kept separate from Usage rather than merged -- a resumed step's
     // two executions are two distinct cost entries, not one to be added or overwritten.
-    [property: JsonPropertyName("linkedFromUsage")] ExecutionUsageView? LinkedFromUsage = null);
+    [property: JsonPropertyName("linkedFromUsage")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ExecutionUsageView? LinkedFromUsage = null);
 
 /// <summary>
 /// The one JSON object <c>aer status --json</c> writes to stdout (#1356's machine completion
-/// contract): <c>{state, steps:[{id, state, execution, linkedFrom}], outputs:[...], error, try}</c>.
+/// contract): <c>{state, steps:[{id, state, execution, linkedFrom, usage, linkedFromUsage}],
+/// outputs:[...], error, try}</c> — the canonical statement of this shape (see
+/// <c>docs/agents/invoking-baton.md</c>'s <c>record-once-ok</c> marker, which points here).
 /// <c>linkedFrom</c> (#1359) is additive to #1356's shape, same as <c>Try</c> below — see
-/// <see cref="WorkflowStatusStepView.LinkedFrom"/>. Also what the terminal sentinel
+/// <see cref="WorkflowStatusStepView.LinkedFrom"/>. <c>usage</c>/<c>linkedFromUsage</c> (#1360) are
+/// likewise additive — see <see cref="WorkflowStatusStepView.Usage"/>. Also what the terminal sentinel
 /// (<c>terminal.json</c>, <see cref="TerminalSentinelWriter"/>) serializes, so a file-watching agent
 /// and a polling <c>status --json</c> caller read the identical shape.
 /// <c>Try</c> (#1382 F3) is additive to #1356's shape: the corrected-invocation text an
