@@ -22,6 +22,7 @@ jobs:
     outputs:
       dotnet: ${{ steps.filter.outputs.dotnet }}
       mobile: ${{ steps.filter.outputs.mobile }}
+      sidecar: ${{ steps.filter.outputs.sidecar }}
     steps:
       - uses: dorny/paths-filter@v3
         id: filter
@@ -46,6 +47,8 @@ jobs:
             mobile:
               - 'src/Aer.Mobile/**'
               - '.github/workflows/mobile.yml'
+            sidecar:
+              - 'src/Aer.Sidecar/**'
 
   test:
     needs: changes
@@ -140,13 +143,6 @@ jobs:
           cache: true
           cache-dependency-path: "**/packages.lock.json"
 
-      # M21 Phase 5 (#242): src/Aer.Sidecar's Go toolchain. Explicit setup rather than assuming a
-      # runner image already has one -- unlike Rust/.NET, that assumption turned out false for
-      # macos-latest (`go: command not found` in CI, found live on PR #244's first run).
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-          cache-dependency-path: src/Aer.Sidecar/go.sum
 
 
       # Isolation guard (#318). The suite redirects AER_HOME to a throwaway temp root
@@ -283,6 +279,9 @@ jobs:
 
       - name: Lint
         run: pixi run lint
+
+      - name: Test sidecar
+        run: pixi run test-sidecar
 
       - name: Shutdown dotnet build server
         run: pixi run dotnet build-server shutdown
@@ -454,6 +453,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.x"
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
       - name: Build the CLI the selfcheck reads the catalog through
         run: pixi run build-cli
       # The checkers' own checker (#630). Same job on purpose: it reads the same registers as
