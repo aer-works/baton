@@ -178,7 +178,8 @@ public static class DispatchCommand
             }
 
             throw new CliArgumentException(
-                $"No worker role or workflow template named '{options.Name}'.");
+                $"No worker role or workflow template named '{options.Name}'.",
+                "run 'aer templates' to list available built-ins.");
         }
         catch (Exception ex) when (ex is FileNotFoundException or JsonException or InvalidOperationException or KeyNotFoundException)
         {
@@ -204,7 +205,8 @@ public static class DispatchCommand
         {
             throw new CliArgumentException(
                 $"'{options.Name}' is a workflow template — its phases each declare their own outputs, so "
-                + "--output does not apply. Pass --output only when dispatching a role.");
+                + "--output does not apply. Pass --output only when dispatching a role.",
+                "remove the --output flag, or dispatch a single role instead of a template.");
         }
 
         var template = WorkflowTemplateCatalog.For(options.Name);
@@ -222,7 +224,8 @@ public static class DispatchCommand
         if (options.SpecFilePath is null)
         {
             throw new CliArgumentException(
-                $"'{options.Name}' is a worker role, which runs against a task spec. Pass --spec <spec-file>.");
+                $"'{options.Name}' is a worker role, which runs against a task spec. Pass --spec <spec-file>.",
+                $"aer dispatch {options.Name} --spec <spec-file>");
         }
 
         if (!File.Exists(options.SpecFilePath))
@@ -234,7 +237,7 @@ public static class DispatchCommand
 
         if (options.OutputPath is not null)
         {
-            ValidateOutputOverride(options.OutputPath, role);
+            ValidateOutputOverride(options, role);
         }
 
         var spec = await File.ReadAllTextAsync(options.SpecFilePath, cancellationToken).ConfigureAwait(false);
@@ -259,19 +262,28 @@ public static class DispatchCommand
     /// (<see cref="Aer.Flow.Artifacts.ArtifactManager.PromptFileName"/>), or another output the same
     /// role already declares.
     /// </summary>
-    private static void ValidateOutputOverride(string outputPath, WorkerRole role)
+    private static void ValidateOutputOverride(DispatchOptions options, WorkerRole role)
     {
+        var outputPath = options.OutputPath!;
         var customName = Path.GetFileName(outputPath);
         if (string.IsNullOrEmpty(customName))
         {
             throw new CliArgumentException(
                 $"'--output {outputPath}' names no file — a path ending in a directory separator has no "
-                + "filename. Pass a file path, e.g. --output report.md.");
+                + "filename. Pass a file path, e.g. --output report.md.",
+                "pass a file path instead of a directory, e.g. --output report.md");
         }
+
+        // #1382 F6: "choose a different file name for --output" restated the message with no
+        // invocation in it. The rest of the corrected command is already in scope here -- only the
+        // replacement file name is genuinely unknowable, so that alone stays a placeholder.
+        var retryInvocation = $"aer dispatch {options.Name} --spec {options.SpecFilePath} --output <different-file-name>";
 
         if (ReservedOutputNames.IsReserved(customName))
         {
-            throw new CliArgumentException($"'--output {customName}' is invalid: {ReservedOutputNames.RejectionClause}.");
+            throw new CliArgumentException(
+                $"'--output {customName}' is invalid: {ReservedOutputNames.RejectionClause}.",
+                retryInvocation);
         }
 
         if (string.Equals(customName, Aer.Flow.Artifacts.ArtifactManager.PromptFileName, StringComparison.Ordinal))
@@ -279,13 +291,15 @@ public static class DispatchCommand
             throw new CliArgumentException(
                 $"'--output {customName}' collides with '{Aer.Flow.Artifacts.ArtifactManager.PromptFileName}', "
                 + "the durable prompt capture the engine writes into every execution's own output directory. "
-                + "Choose a different name.");
+                + "Choose a different name.",
+                retryInvocation);
         }
 
         if (role.Outputs.Skip(1).Any(o => string.Equals(o.Name, customName, StringComparison.Ordinal)))
         {
             throw new CliArgumentException(
-                $"'--output {customName}' collides with role '{role.Id}''s own declared output of the same name.");
+                $"'--output {customName}' collides with role '{role.Id}''s own declared output of the same name.",
+                retryInvocation);
         }
     }
 

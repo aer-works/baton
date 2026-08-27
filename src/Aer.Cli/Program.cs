@@ -197,7 +197,7 @@ try
         ? 0
         : 1;
 }
-catch (Exception ex) when (ex is Aer.Flow.Concurrency.WorkflowLockedException or Aer.Flow.Store.FlowJournalHeldException)
+catch (AerFlowException ex) when (ex is Aer.Flow.Concurrency.WorkflowLockedException or Aer.Flow.Store.FlowJournalHeldException)
 {
     // #1374 F1: this room is held by another Flow instance -- most often a live 'aer run' pump on
     // a perfectly healthy room, sometimes a background component's brief lock. Neither is a
@@ -205,7 +205,7 @@ catch (Exception ex) when (ex is Aer.Flow.Concurrency.WorkflowLockedException or
     // Failed sentinel here would tell a file-watcher a running room just died, and it would
     // contradict 'aer status --json' reading the very same room's ledger as Running at the same
     // moment. The room is left exactly as it was; the exit code alone says "retry later".
-    Console.Error.WriteLine(ex.Message);
+    WriteErrorWithTry(ex);
     return args[0] is "run" or "dispatch" ? (int)RunExitCode.RoomHeld : 1;
 }
 catch (AerFlowException ex)
@@ -213,7 +213,7 @@ catch (AerFlowException ex)
     // The typed-exception boundary CLAUDE.md's error-handling rules require: every malformed
     // workflow/bindings/argument failure surfaces as one of these further up the call stack, so
     // this is the one place that turns it into a clean CLI failure instead of a raw stack trace.
-    Console.Error.WriteLine(ex.Message);
+    WriteErrorWithTry(ex);
 
     // #1356 points 2+3: for `run`/`dispatch` specifically, this is the provisioning/validation
     // failure class — distinct from a worker that actually ran and failed — and the room (which
@@ -232,11 +232,22 @@ catch (AerFlowException ex)
         if (!RoomLedgerProbe.HasLedger(roomDirectoryPathForFailureSentinel))
         {
             await TerminalSentinelWriter.WriteValidationRefusedAsync(
-                roomDirectoryPathForFailureSentinel, ex.Message, CancellationToken.None).ConfigureAwait(false);
+                roomDirectoryPathForFailureSentinel, ex.Message, CancellationToken.None, ex.TryInvocation).ConfigureAwait(false);
         }
 
         return (int)RunExitCode.ValidationRefused;
     }
 
     return 1;
+}
+
+// #1382 F8: the one place either AerFlowException catch above prints an error, so a Try line set on
+// a future WorkflowLockedException/FlowJournalHeldException is never silently dropped again.
+static void WriteErrorWithTry(AerFlowException ex)
+{
+    Console.Error.WriteLine(ex.Message);
+    if (ex.TryInvocation is not null)
+    {
+        Console.Error.WriteLine($"Try: {ex.TryInvocation}");
+    }
 }

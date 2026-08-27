@@ -62,5 +62,15 @@ public class StatusOptionsParserTests
     {
         var exception = Assert.Throws<CliArgumentException>(() => StatusOptionsParser.Parse(["task", "--follow", "--json"]));
         Assert.Contains("incompatible", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("aer status task --json", exception.TryInvocation);
+    }
+
+    [Fact]
+    public void The_suggested_json_only_invocation_round_trips_through_this_parser()
+    {
+        var options = StatusOptionsParser.Parse(["task", "--json"]);
+
+        Assert.True(options.Json);
+        Assert.False(options.Follow);
     }
 }

@@ -58,8 +58,9 @@ public class DecideOptionsParserTests
     [Fact]
     public void An_unknown_decision_type_throws()
     {
-        Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
+        var ex = Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
             ["task", "--execution", "exec-1", "--type", "nope", "--bindings", "bindings.json"]));
+        Assert.Contains("--type resume", ex.TryInvocation, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -72,29 +73,33 @@ public class DecideOptionsParserTests
     [Fact]
     public void A_missing_execution_option_throws()
     {
-        Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
+        var ex = Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
             ["task", "--type", "resume", "--bindings", "bindings.json"]));
+        Assert.Contains("aer status", ex.TryInvocation, StringComparison.Ordinal);
     }
 
     [Fact]
     public void A_missing_type_option_throws()
     {
-        Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
+        var ex = Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
             ["task", "--execution", "exec-1", "--bindings", "bindings.json"]));
+        Assert.Contains("--type resume", ex.TryInvocation, StringComparison.Ordinal);
     }
 
     [Fact]
     public void A_missing_bindings_option_throws()
     {
-        Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
+        var ex = Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
             ["task", "--execution", "exec-1", "--type", "resume"]));
+        Assert.Contains("--bindings", ex.TryInvocation, StringComparison.Ordinal);
     }
 
     [Fact]
     public void An_option_missing_its_value_throws()
     {
-        Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
+        var ex = Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
             ["task", "--execution", "exec-1", "--type"]));
+        Assert.Contains("--type", ex.TryInvocation, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -109,5 +114,16 @@ public class DecideOptionsParserTests
     {
         Assert.Throws<CliArgumentException>(() => DecideOptionsParser.Parse(
             ["task", "extra", "--execution", "exec-1", "--type", "resume", "--bindings", "bindings.json"]));
+    }
+
+    [Fact]
+    public void The_suggested_execution_type_and_bindings_flags_round_trip_through_this_parser()
+    {
+        var options = DecideOptionsParser.Parse(
+            ["task", "--execution", "<execution-id>", "--type", "resume", "--bindings", "<path-to-bindings.json>"]);
+
+        Assert.Equal("<execution-id>", options.ExecutionId);
+        Assert.Equal(DecisionType.Resume, options.DecisionType);
+        Assert.Equal("<path-to-bindings.json>", options.BindingsFilePath);
     }
 }

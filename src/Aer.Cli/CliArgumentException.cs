@@ -14,4 +14,10 @@ public sealed class CliArgumentException : AerFlowException
         : base(message)
     {
     }
+
+    public CliArgumentException(string message, string tryInvocation)
+        : base(message)
+    {
+        TryInvocation = tryInvocation;
+    }
 }

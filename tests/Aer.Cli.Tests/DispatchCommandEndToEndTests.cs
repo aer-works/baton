@@ -117,6 +117,27 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             var ex = await Assert.ThrowsAsync<CliArgumentException>(
                 () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
             Assert.Contains("no-such-role", ex.Message);
+            Assert.Contains("run 'aer templates'", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_a_role_without_a_spec_is_a_typed_argument_error_naming_the_fix()
+    {
+        // #1382 F2: the highest-traffic dispatch rejection -- 'aer dispatch <role>' with no --spec --
+        // must carry a Try line an invoking agent can follow literally.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var options = new DispatchOptions("advise", SpecFilePath: null, Path.Combine(testRoot, "task"));
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+            Assert.Equal("aer dispatch advise --spec <spec-file>", ex.TryInvocation);
         }
         finally
         {
@@ -295,6 +316,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             Console.SetOut(originalOut);
 
             Assert.Contains("names no file", ex.Message);
+            Assert.Contains("pass a file path instead of a directory", ex.TryInvocation, StringComparison.Ordinal);
             Assert.Empty(consoleOutput.ToString());
             Assert.False(Directory.Exists(roomDirectory), "a refused dispatch must not have created the room directory");
         }
@@ -322,7 +344,44 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
                 () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
 
             Assert.Contains("--output", ex.Message);
+            Assert.Contains("remove the --output flag", ex.TryInvocation, StringComparison.Ordinal);
             Assert.False(Directory.Exists(roomDirectory), "a refused dispatch must not have created the room directory");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task The_suggested_output_rename_actually_clears_the_collision_it_follows_from()
+    {
+        // #1382 F10.1 (see DispatchOptionsParserTests for what this class of test guards): the
+        // --output-collides-with-declared-output refusal's suggested
+        // "aer dispatch <role> --spec <spec-file> --output <different-file-name>" shape, proven to
+        // actually clear the check it follows from.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Review the diff.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            // "review" declares report.md (primary, --output's target) and verdict.json (secondary) --
+            // renaming the primary onto the secondary's own name is the Skip(1) collision this refusal
+            // guards.
+            var collidingOptions = new DispatchOptions(
+                "review", specPath, roomDirectory, Adapter: "fake", OutputPath: Path.Combine(testRoot, "verdict.json"));
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(collidingOptions, Adapters, TestContext.Current.CancellationToken));
+            Assert.Contains("collides with role 'review'", ex.Message, StringComparison.Ordinal);
+            Assert.Equal($"aer dispatch review --spec {specPath} --output <different-file-name>", ex.TryInvocation);
+
+            var correctedRoomDirectory = Path.Combine(testRoot, "task-corrected");
+            var correctedOptions = new DispatchOptions(
+                "review", specPath, correctedRoomDirectory, Adapter: "fake", OutputPath: Path.Combine(testRoot, "renamed-report.md"));
+
+            var state = (await DispatchCommand.ExecuteAsync(correctedOptions, Adapters, TestContext.Current.CancellationToken)).State;
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
         }
         finally
         {

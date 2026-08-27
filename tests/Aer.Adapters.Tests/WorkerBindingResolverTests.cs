@@ -225,6 +225,16 @@ public class WorkerBindingResolverTests
 
         var ex = Assert.Throws<UnknownWorkerAdapterException>(() => WorkerBindingResolver.Resolve(config, adapters));
         Assert.Equal("claude", ex.AdapterName);
+        Assert.Contains("\"Adapter\": \"echo\"", ex.TryInvocation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_empty_adapter_registry_leaves_TryInvocation_null_rather_than_an_empty_example()
+    {
+        // #1382 F7 (see the exception's own constructor comment for the defect this guards).
+        var ex = new UnknownWorkerAdapterException("claude", []);
+
+        Assert.Null(ex.TryInvocation);
     }
 
     [Fact]
@@ -851,6 +861,7 @@ public class WorkerBindingResolverTests
         var ex = Assert.Throws<UnisolatedGrantAuditException>(() => WorkerBindingResolver.Resolve(config, adapters));
         Assert.Equal("review", ex.WorkerName);
         Assert.Contains("workspace isolation", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("use 'aer dispatch <role>' to auto-provision an isolated workspace", ex.TryInvocation, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -887,6 +898,7 @@ public class WorkerBindingResolverTests
         var ex = Assert.Throws<UnisolatedGrantAuditException>(
             () => WorkerBindingResolver.Resolve(declaredButUnprovisioned, adapters));
         Assert.Equal("review", ex.WorkerName);
+        Assert.Contains("use 'aer dispatch <role>' to auto-provision an isolated workspace", ex.TryInvocation, StringComparison.Ordinal);
     }
 
     [Fact]

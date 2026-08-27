@@ -66,6 +66,30 @@ public class DispatchOptionsParserTests
     {
         var ex = Assert.Throws<CliArgumentException>(() => DispatchOptionsParser.Parse(["--spec", "task.md"]));
         Assert.Contains("<name>", ex.Message);
+        Assert.Equal("run 'aer templates' to see available role and template names.", ex.TryInvocation);
+    }
+
+    [Fact]
+    public void An_option_missing_its_value_names_the_option_in_the_Try_line()
+    {
+        var ex = Assert.Throws<CliArgumentException>(() => DispatchOptionsParser.Parse(["review", "--spec"]));
+        Assert.NotNull(ex.TryInvocation);
+        Assert.Contains("--spec", ex.TryInvocation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1382 F10.1: DispatchCommand's missing-<c>--spec</c> refusal suggests
+    /// <c>aer dispatch &lt;role&gt; --spec &lt;spec-file&gt;</c> -- feed that shape back through the
+    /// real parser rather than only pinning that the string was set (this is what would have caught
+    /// F5's stale worktree suggestion).
+    /// </summary>
+    [Fact]
+    public void The_suggested_missing_spec_invocation_round_trips_through_this_parser()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--spec", "<spec-file>"]);
+
+        Assert.Equal("review", options.Name);
+        Assert.Equal("<spec-file>", options.SpecFilePath);
     }
 
     [Fact]

@@ -107,7 +107,7 @@ public static class WorkerBindingResolver
     {
         if (!adapters.TryGetValue(entry.Adapter, out var adapter))
         {
-            throw new UnknownWorkerAdapterException(entry.Adapter);
+            throw new UnknownWorkerAdapterException(entry.Adapter, adapters.Keys);
         }
 
         // #1101: the runtime permission gate is daemon-managed. Only the daemon's own chat-worker

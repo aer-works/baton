@@ -75,7 +75,9 @@ public static class DispatchOptionsParser
 
         if (name is null)
         {
-            throw new CliArgumentException($"Missing required <name> argument. {Usage}");
+            throw new CliArgumentException(
+                $"Missing required <name> argument. {Usage}",
+                "run 'aer templates' to see available role and template names.");
         }
 
         // Fresh and unique per invocation unless pinned: a dispatch is one-shot, and deriving a stable
@@ -105,7 +107,9 @@ public static class DispatchOptionsParser
     {
         if (index + 1 >= args.Count)
         {
-            throw new CliArgumentException($"Option '{optionName}' requires a value. {Usage}");
+            throw new CliArgumentException(
+                $"Option '{optionName}' requires a value. {Usage}",
+                $"pass a value after '{optionName}', e.g. {optionName} <value>.");
         }
 
         var value = args[index + 1];

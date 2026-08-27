@@ -76,17 +76,23 @@ public static class DecideOptionsParser
 
         if (executionId is null)
         {
-            throw new CliArgumentException($"Missing required option '--execution <execution-id>'. {Usage}");
+            throw new CliArgumentException(
+                $"Missing required option '--execution <execution-id>'. {Usage}",
+                $"run 'aer status {roomDirectoryPath}' to find the paused execution's id, then pass --execution <execution-id>.");
         }
 
         if (typeText is null)
         {
-            throw new CliArgumentException($"Missing required option '--type <decision-type>'. {Usage}");
+            throw new CliArgumentException(
+                $"Missing required option '--type <decision-type>'. {Usage}",
+                "pass --type resume (or reject, retry-with-revision, supersede).");
         }
 
         if (bindingsFilePath is null)
         {
-            throw new CliArgumentException($"Missing required option '--bindings <bindings-file>'. {Usage}");
+            throw new CliArgumentException(
+                $"Missing required option '--bindings <bindings-file>'. {Usage}",
+                "pass --bindings <path-to-bindings.json> naming the same bindings the paused room was dispatched with.");
         }
 
         var decisionType = ParseDecisionType(typeText);
@@ -108,14 +114,17 @@ public static class DecideOptionsParser
         "retry-with-revision" => DecisionType.RetryWithRevision,
         "supersede" => DecisionType.Supersede,
         _ => throw new CliArgumentException(
-            $"Unknown decision type '{typeText}'. Must be one of: resume, reject, retry-with-revision, supersede. {Usage}"),
+            $"Unknown decision type '{typeText}'. Must be one of: resume, reject, retry-with-revision, supersede. {Usage}",
+            "pass --type resume (or reject, retry-with-revision, supersede)."),
     };
 
     private static string RequireValue(IReadOnlyList<string> args, ref int index, string optionName)
     {
         if (index + 1 >= args.Count)
         {
-            throw new CliArgumentException($"Option '{optionName}' requires a value. {Usage}");
+            throw new CliArgumentException(
+                $"Option '{optionName}' requires a value. {Usage}",
+                $"pass a value after '{optionName}', e.g. {optionName} <value>.");
         }
 
         var value = args[index + 1];
