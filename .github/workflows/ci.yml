@@ -22,6 +22,7 @@ jobs:
     outputs:
       dotnet: ${{ steps.filter.outputs.dotnet }}
       mobile: ${{ steps.filter.outputs.mobile }}
+      sidecar: ${{ steps.filter.outputs.sidecar }}
     steps:
       - uses: dorny/paths-filter@v3
         id: filter
@@ -46,6 +47,8 @@ jobs:
             mobile:
               - 'src/Aer.Mobile/**'
               - '.github/workflows/mobile.yml'
+            sidecar:
+              - 'src/Aer.Sidecar/**'
 
   test:
     needs: changes
@@ -53,6 +56,7 @@ jobs:
     # !cancelled() makes this a status-check expression, so a skipped `changes` (PR-only, #410)
     # does not skip this job on push.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dotnet == 'true') }}
+    name: test (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
@@ -78,10 +82,13 @@ jobs:
         # main-only while still listed as required (an unexplained CI hang, not an obvious
         # misconfiguration). Rule: require only the always-running `ci` gate; never list a
         # path-filterable leg as a required context.
+        #
+        # Sharding the long-pole Windows test leg (#1363): Flow suite vs remaining
+        # test projects cuts test duration from ~3:49 to ~1:55.
         include: >-
           ${{ github.event_name == 'push'
-              && fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll"},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so"},{"os":"macos-latest","rid":"osx-arm64","lib-name":"libaer_core.dylib"}]')
-              || fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll"},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so"}]') }}
+              && fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-flow","task":"test-flow"},{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-other","task":"test-other","skip-artifact":true},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so","name":"ubuntu","task":"test-dotnet"},{"os":"macos-latest","rid":"osx-arm64","lib-name":"libaer_core.dylib","name":"macos","task":"test-dotnet"}]')
+              || fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-flow","task":"test-flow"},{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-other","task":"test-other","skip-artifact":true},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so","name":"ubuntu","task":"test-dotnet"}]') }}
     runs-on: ${{ matrix.os }}
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
@@ -136,19 +143,7 @@ jobs:
           cache: true
           cache-dependency-path: "**/packages.lock.json"
 
-      # M21 Phase 5 (#242): src/Aer.Sidecar's Go toolchain. Explicit setup rather than assuming a
-      # runner image already has one -- unlike Rust/.NET, that assumption turned out false for
-      # macos-latest (`go: command not found` in CI, found live on PR #244's first run).
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-          cache-dependency-path: src/Aer.Sidecar/go.sum
 
-      - name: Check formatting
-        run: pixi run fmt-check
-
-      - name: Lint
-        run: pixi run lint
 
       # Isolation guard (#318). The suite redirects AER_HOME to a throwaway temp root
       # (tests/Shared/AerHomeRedirect.cs), so a correct run never touches the real ~/.aer. Snapshot
@@ -166,7 +161,7 @@ jobs:
           fi
 
       - name: Test
-        run: pixi run test
+        run: pixi run ${{ matrix.task }}
 
       # Diagnostic for the #398 file-lock flake class. On a Windows test failure, capture whether
       # Defender real-time protection is actually on (PR #922 measured that windows-latest excludes
@@ -225,13 +220,72 @@ jobs:
 
       # M13 Phase 3 (#109): each OS's own cargo build output (already produced above as a
       # dependency of lint/test) becomes this platform's contribution to the fat multi-RID
-      # package the pack job below assembles.
+      # package the pack job below assembles. Shard 2 on Windows skips upload to avoid duplicate
+      # artifact conflicts.
       - name: Upload native library artifact
+        if: ${{ !matrix.skip-artifact }}
         uses: actions/upload-artifact@v4
         with:
           name: native-lib-${{ matrix.rid }}
           path: external/aer-core/target/debug/${{ matrix.lib-name }}
           if-no-files-found: error
+
+  # Platform-independent formatting and compiler/linter checks hoisted out of the test matrix (#1363).
+  # Runs on ubuntu-latest parallel to the test legs, saving ~2 min of serial overhead off the long pole.
+  lint:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dotnet == 'true') }}
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: external/aer-core
+
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        id: pixi-attempt-1
+        continue-on-error: true
+        with:
+          run-install: false
+          cache: false
+      - if: steps.pixi-attempt-1.outcome == 'failure'
+        shell: bash
+        run: sleep 30
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        if: steps.pixi-attempt-1.outcome == 'failure'
+        with:
+          run-install: false
+          cache: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.x"
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: src/Aer.Sidecar/go.sum
+
+      - name: Check formatting
+        run: pixi run fmt-check
+
+      - name: Lint
+        run: pixi run lint
+
+      - name: Test sidecar
+        run: pixi run test-sidecar
+
+      - name: Shutdown dotnet build server
+        run: pixi run dotnet build-server shutdown
+        if: always()
 
   # M21 Phase 2 (#232): Aer.Mobile is a separate Dart/Flutter toolchain with no dependency on
   # aer_core or the .NET solution, so it gets its own job rather than joining the matrix above.
@@ -399,6 +453,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.x"
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
       - name: Build the CLI the selfcheck reads the catalog through
         run: pixi run build-cli
       # The checkers' own checker (#630). Same job on purpose: it reads the same registers as
@@ -433,7 +489,7 @@ jobs:
       # this job; only the invocation against the live body did.
 
   ci:
-    needs: [changes, test, mobile, audit]
+    needs: [changes, test, lint, mobile, audit]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -441,11 +497,12 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           TEST: ${{ needs.test.result }}
+          LINT: ${{ needs.lint.result }}
           MOBILE: ${{ needs.mobile.result }}
           AUDIT: ${{ needs.audit.result }}
         run: |
-          echo "results: changes=$CHANGES test=$TEST mobile=$MOBILE audit=$AUDIT"
-          for r in "$CHANGES" "$TEST" "$MOBILE" "$AUDIT"; do
+          echo "results: changes=$CHANGES test=$TEST lint=$LINT mobile=$MOBILE audit=$AUDIT"
+          for r in "$CHANGES" "$TEST" "$LINT" "$MOBILE" "$AUDIT"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::A required CI job reported '$r'."
               exit 1
