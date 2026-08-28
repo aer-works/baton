@@ -3,6 +3,7 @@ using Aer.Adapters;
 using Aer.Cli;
 using Aer.Flow;
 using Aer.Flow.Domain;
+using Aer.Flow.Status;
 using Aer.Flow.Store;
 
 if (args.Length == 1 && args[0] == "--version")

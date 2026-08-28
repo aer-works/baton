@@ -4,6 +4,7 @@ using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
 using Aer.Flow.Outcomes;
 using Aer.Flow.Projection;
+using Aer.Flow.Status;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;
 
@@ -116,7 +117,7 @@ public static class StatusCommand
                 // #1356 point 1: the SAME state just projected above, not a second read of the
                 // ledger — one derivation, two renderings. Nothing else reaches stdout in this mode.
                 // #1360: entries is the same list already read above, not a second ledger read.
-                var view = WorkflowStatusProjector.Project(state, snapshot, options.RoomDirectoryPath, entries);
+                var view = WorkflowStatusProjector.Project(state, snapshot, options.RoomDirectoryPath, entries, WorkerAdapterRegistry.Default);
                 output.WriteLine(JsonSerializer.Serialize(view));
                 return;
             }
@@ -426,7 +427,7 @@ public static class StatusCommand
         output.WriteLine($"Workflow status: {state.Status}");
         output.WriteLine($"Log last updated: {ResolveLogUpdatedAt(logPath)}");
 
-        var eventTimestamps = ExtractEventTimestamps(entries);
+        var eventTimestamps = WorkflowStatusProjector.ExtractEventTimestamps(entries);
 
         foreach (var step in state.Steps)
         {
@@ -504,49 +505,6 @@ public static class StatusCommand
 
         var total = reporting.Sum(u => selector(u)!.Value);
         parts.Add($"{total} {label} ({reporting.Count}/{usageByExecutionId.Count} reporting)");
-    }
-
-    private static Dictionary<string, DateTime> ExtractEventTimestamps(IReadOnlyList<LogEntry> entries)
-    {
-        var timestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
-        foreach (var entry in entries)
-        {
-            string? execId = null;
-            DateTime? timestamp = null;
-
-            // Latest-wins by file order, so a terminal event's stamp supersedes the start's --
-            // "per-step times from the latest event per step" (#745's recorded design). Reading
-            // only accepted/started froze every finished step at its start time (review finding).
-            switch (entry)
-            {
-                case LogEntry.FlowLogEntry flowEntry:
-                    timestamp = flowEntry.WriterUtcTimestamp;
-                    execId = flowEntry.Event switch
-                    {
-                        FlowEvent.ExecutionRequestAccepted accepted => accepted.Request.ExecutionId.Value,
-                        FlowEvent.ExecutionSucceeded succeeded => succeeded.ExecutionId.Value,
-                        FlowEvent.ExecutionFailed failed => failed.ExecutionId.Value,
-                        _ => null,
-                    };
-                    break;
-                case LogEntry.CoreLogEntry coreEntry:
-                    timestamp = coreEntry.WriterUtcTimestamp;
-                    execId = coreEntry.Event switch
-                    {
-                        CoreEvent.ExecutionStarted started => started.ExecutionId.Value,
-                        CoreEvent.ExecutionExited exited => exited.ExecutionId.Value,
-                        _ => null,
-                    };
-                    break;
-            }
-
-            if (execId is not null && timestamp.HasValue)
-            {
-                timestamps[execId] = timestamp.Value;
-            }
-        }
-
-        return timestamps;
     }
 
     public static string FormatStepStatus(StepState step, IReadOnlyList<FlowEvent> events)

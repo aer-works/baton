@@ -3,6 +3,7 @@ using Aer.Cli.Tests.TestSupport;
 using Aer.Flow.Artifacts;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
+using Aer.Flow.Status;
 
 namespace Aer.Cli.Tests;
 

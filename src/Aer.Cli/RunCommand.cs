@@ -4,6 +4,7 @@ using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
 using Aer.Flow.Projection;
+using Aer.Flow.Status;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;
 using Aer.Flow.Workspaces;

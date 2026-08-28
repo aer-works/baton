@@ -1,10 +1,10 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
-using Aer.Adapters;
 using Aer.Flow.Artifacts;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 
-namespace Aer.Cli;
+namespace Aer.Flow.Status;
 
 /// <summary>
 /// One execution's usage, per <c>aer status --json</c>'s additive shape (issue #1360):
@@ -35,39 +35,34 @@ public sealed record ExecutionUsageView(
 /// <para>
 /// Token/turn counts are read from the execution's already-captured <c>.stdout.log</c>
 /// (<see cref="ExecutionStreamLogger"/>) — never a new ledger event, per the issue's own preference
-/// for deriving over recording twice. <c>aer status</c> has no worker-binding context of its own (by
-/// design — see <c>StatusCommand</c>'s own remarks), so this projector reconstructs just enough of it
-/// from what it is already handed: <see cref="FlowEvent.ExecutionRequestAccepted"/> in
-/// <paramref name="entries"/><!-- --> names the execution's worker role, and (when
-/// <paramref name="roomDirectoryPath"/> is supplied and the room's <c>bindings.json</c> still exists)
-/// that role's own config entry names the adapter it was actually dispatched through. Only that one
-/// adapter's <see cref="IWorkerAdapter.TryParseFinalUsage"/> is tried, and only against the last
-/// non-blank line of the captured stream — the terminal frame <see cref="IWorkerAdapter.TryParseFinalUsage"/>'s
-/// own contract promises callers, never a content-sniff across every line for every registered
-/// adapter. A worker whose stdout happens to contain a vendor-shaped usage line it did not itself
-/// produce (an operator-supplied <c>command</c> step echoing a captured transcript, for instance)
-/// therefore contributes no token/turn fields — attribution failing (no accepted-request record, no
-/// bindings file, an adapter name the caller's <paramref name="adapters"/> does not carry) fails
-/// closed the same way an unrecognized line does: absent, never fabricated.
+/// for deriving over recording twice. Reconstructs just enough worker-binding context:
+/// <see cref="FlowEvent.ExecutionRequestAccepted"/> in <paramref name="entries"/> names the execution's
+/// worker role, and (when <paramref name="roomDirectoryPath"/> is supplied and the room's <c>bindings.json</c>
+/// still exists) that role's own config entry names the adapter it was actually dispatched through. Only that one
+/// adapter's <see cref="IWorkerUsageParser.TryParseFinalUsage"/> is tried, and only against the last
+/// non-blank line of the captured stream.
 /// </para>
 /// </summary>
 public static class ExecutionUsageProjector
 {
-    /// <param name="roomDirectoryPath">
-    /// The room whose <c>bindings.json</c> attributes each execution to the adapter that actually
-    /// dispatched it (issue #1360 F1) — omitted (the default) when a caller has no room path to offer,
-    /// in which case no execution can be attributed and every result carries wall-clock only, the same
-    /// fail-closed outcome as a room whose bindings file no longer exists.
-    /// </param>
+    private const string RoomBindingsFileName = "bindings.json";
+
     public static IReadOnlyDictionary<string, ExecutionUsageView> BuildByExecutionId(
         IReadOnlyList<LogEntry> entries,
         string artifactsRootPath,
-        IReadOnlyDictionary<string, IWorkerAdapter> adapters,
+        IReadOnlyDictionary<string, IWorkerUsageParser>? adapters = null,
+        string? roomDirectoryPath = null) =>
+        BuildByExecutionId<IWorkerUsageParser>(entries, artifactsRootPath, adapters, roomDirectoryPath);
+
+    public static IReadOnlyDictionary<string, ExecutionUsageView> BuildByExecutionId<TParser>(
+        IReadOnlyList<LogEntry> entries,
+        string artifactsRootPath,
+        IReadOnlyDictionary<string, TParser>? adapters = null,
         string? roomDirectoryPath = null)
+        where TParser : IWorkerUsageParser
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentException.ThrowIfNullOrEmpty(artifactsRootPath);
-        ArgumentNullException.ThrowIfNull(adapters);
 
         var startedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var exitedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
@@ -125,21 +120,14 @@ public static class ExecutionUsageProjector
         return result;
     }
 
-    /// <summary>
-    /// Reads <paramref name="roomDirectoryPath"/>'s <c>bindings.json</c> for attribution (issue #1360
-    /// F1). Fails closed rather than throwing: a missing file, a missing room path, or a malformed
-    /// config all yield an empty map, which <see cref="TryReadWorkerUsage"/> reads as "cannot
-    /// attribute this execution" — a status read must never fail because a bindings file it has no
-    /// stake in ownership of moved or changed shape since dispatch.
-    /// </summary>
-    private static IReadOnlyDictionary<string, WorkerBindingConfigEntry> TryLoadBindings(string? roomDirectoryPath)
+    private static IReadOnlyDictionary<string, string> TryLoadBindings(string? roomDirectoryPath)
     {
         if (roomDirectoryPath is null)
         {
             return EmptyBindings;
         }
 
-        var bindingsPath = AerPaths.RoomBindingsFile(roomDirectoryPath);
+        var bindingsPath = Path.Combine(roomDirectoryPath, RoomBindingsFileName);
         if (!File.Exists(bindingsPath))
         {
             return EmptyBindings;
@@ -147,36 +135,49 @@ public static class ExecutionUsageProjector
 
         try
         {
-            var json = File.ReadAllText(bindingsPath);
-            return WorkerBindingConfigParser.Parse(json, bindingsPath);
+            using var stream = File.OpenRead(bindingsPath);
+            using var doc = JsonDocument.Parse(stream);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return EmptyBindings;
+            }
+
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.Object
+                    && prop.Value.TryGetProperty("Adapter", out var adapterProp)
+                    && adapterProp.ValueKind == JsonValueKind.String
+                    && adapterProp.GetString() is { } adapterName
+                    && !string.IsNullOrWhiteSpace(adapterName))
+                {
+                    result[prop.Name] = adapterName;
+                }
+            }
+
+            return result;
         }
-        catch (Exception ex) when (ex is WorkerBindingConfigException or IOException)
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
             return EmptyBindings;
         }
     }
 
-    private static readonly IReadOnlyDictionary<string, WorkerBindingConfigEntry> EmptyBindings =
-        new Dictionary<string, WorkerBindingConfigEntry>(StringComparer.Ordinal);
+    private static readonly IReadOnlyDictionary<string, string> EmptyBindings =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 
-    /// <summary>
-    /// Reads the execution's captured stdout and, only when the execution's worker role is attributed
-    /// to a registered adapter via <paramref name="bindings"/>, tries that one adapter's
-    /// <see cref="IWorkerAdapter.TryParseFinalUsage"/> against the last non-blank line — the terminal
-    /// frame, per that method's own contract. No attribution (no accepted-request record for this
-    /// execution, no bindings entry for its worker role, or an adapter name <paramref name="adapters"/>
-    /// does not carry) means no line is ever inspected: absent, never a content-sniffed guess.
-    /// </summary>
-    private static WorkerUsage? TryReadWorkerUsage(
+    private static WorkerUsage? TryReadWorkerUsage<TParser>(
         string artifactsRootPath,
         string executionId,
         string? workerName,
-        IReadOnlyDictionary<string, WorkerBindingConfigEntry> bindings,
-        IReadOnlyDictionary<string, IWorkerAdapter> adapters)
+        IReadOnlyDictionary<string, string> bindings,
+        IReadOnlyDictionary<string, TParser>? adapters)
+        where TParser : IWorkerUsageParser
     {
         if (workerName is null
-            || !bindings.TryGetValue(workerName, out var bindingEntry)
-            || !adapters.TryGetValue(bindingEntry.Adapter, out var adapter))
+            || adapters is null
+            || !bindings.TryGetValue(workerName, out var adapterName)
+            || !adapters.TryGetValue(adapterName, out var adapter))
         {
             return null;
         }

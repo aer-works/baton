@@ -1,4 +1,5 @@
 using Aer.Flow.Domain;
+using Aer.Flow.Status;
 
 namespace Aer.Cli.Tests;
 

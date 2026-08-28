@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Aer.Adapters;
 using Aer.Flow.Domain;
+using Aer.Flow.Status;
 using Aer.Flow.Templates;
 
 namespace Aer.Cli;
