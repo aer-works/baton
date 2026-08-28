@@ -20,9 +20,6 @@ src/Aer.Adapters/CHANGELOG.md
 src/Aer.Cli/CHANGELOG.md
 src/Aer.Daemon/CHANGELOG.md
 src/Aer.Flow/CHANGELOG.md
-src/Aer.Ui.Core/CHANGELOG.md
-src/Aer.Ui/CHANGELOG.md
 tools/aer-agy-loop/README.md
 tools/aer-agy-loop/janitor-prompt.md
-tools/ui-harness/README.md
 tools/vendor-verify/README.md

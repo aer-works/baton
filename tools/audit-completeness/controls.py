@@ -705,15 +705,6 @@ def _recordonce_pin_is_vacuous():
         yield
 
 
-VOCABULARY = "the vocabulary checker flags engine terms in user-facing string literals"
-
-
-@control(VOCABULARY, "the checker stops finding banned terms, so planted vocabulary leaks ship green")
-def _vocabulary_checker_blind():
-    with swap(selfcheck.vocabulary, "BANNED_PATTERNS", {}):
-        yield
-
-
 PERMISSIONRANK = "the permissionrank checker flags permissive-primary controls paired with un-primaried deny controls"
 
 

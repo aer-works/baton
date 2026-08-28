@@ -26,10 +26,9 @@ aer-flow/
 │   │                          memory proposals). PermissionGateTool/PermissionReturnShape (the
 │   │                          mid-lane ask machinery) are ARCHIVE — spec/baton.md §5
 │   ├── Aer.RoomSession/       The room read-model (RoomProjection + projectors) and the daemon's
-│   │                          in-process RoomClient — extracted from Aer.Ui.Core (#1412) so the
-│   │                          daemon survives the Ui archive
-│   ├── Aer.Ui.Core/           Avalonia-free UI core — retired — archive PRs of #1396 in flight
-│   ├── Aer.Ui/                Avalonia desktop app — retired — archive PRs of #1396 in flight
+│   │                          in-process RoomClient — extracted from Aer.Ui.Core (#1412 Part 1) so
+│   │                          the daemon survived the Ui archive (Aer.Ui/Aer.Ui.Core deleted,
+│   │                          #1412 Part 2)
 │   └── Aer.Sidecar/           Go tsnet sidecar the daemon supervises for zero-config Tailscale
 ├── tests/                     Unit/integration tests; live-smoke test projects (Aer.Cli.SmokeTests)
 │                              live outside AerFlow.slnx (default CI skips them) — see docs/runbooks/
@@ -42,11 +41,10 @@ aer-flow/
 │                              dispatch.md. No decision or design register — spec/baton.md §11
 ├── external/
 │   └── aer-core/              git submodule — aer-core's M5 .NET binding, P/Invoked by the Core Dispatcher
-├── tools/                     ui-harness (UI driving harness), vendor-verify (re-runnable vendor
-│                              checks; `--sentinels` runs only the ones a design rests on),
-│                              vendor-survey, Aer.VendorProbe, smoke-preflight (free gate on the
-│                              smoke tasks), Aer.DesignTokens, audit-completeness (standing check,
-│                              gate `record-once` below).
+├── tools/                     vendor-verify (re-runnable vendor checks; `--sentinels` runs only the
+│                              ones a design rests on), vendor-survey, Aer.VendorProbe,
+│                              smoke-preflight (free gate on the smoke tasks), audit-completeness
+│                              (standing check, gate `record-once` below).
 │                              `ls tools/` is the authority — this line is a map, not a register
 ├── .github/workflows/
 │   ├── ci.yml                 lint + fmt + test on win/linux/mac
