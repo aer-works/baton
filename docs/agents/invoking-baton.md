@@ -192,7 +192,7 @@ available two other ways, and both give you the same set of paths without parsin
 
 The room directory also holds `snapshot.json` (the workflow this room is bound to), `flow.jsonl` (the
 append-only event ledger), and `flow.lock`. The authoritative room layout is
-[`spec/aer-room-spec-v1.0.md`](../../spec/aer-room-spec-v1.0.md).
+[`spec/baton.md`](../../spec/baton.md) §2–§3.
 
 ---
 

@@ -123,7 +123,7 @@ schedule background work or wait for a wake-up, because nothing resumes the turn
 
 The room directory accumulates the materialised workflow definition and its worker bindings, the
 `flow.jsonl` event ledger (the append-only record of what the engine did), and an `artifacts/` tree
-holding each step's declared outputs. The authoritative room layout is `spec/aer-room-spec-v1.0.md`;
+holding each step's declared outputs. The authoritative room layout is `spec/baton.md` §2;
 `aer status <dir>` — the room directory is positional there, not a flag — reads the ledger and
 reports where each step stands.
 

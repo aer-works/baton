@@ -295,7 +295,7 @@ AppContainer sandbox on Windows · the daemon↔credential coupling ·
    are clean, only that nobody has looked comprehensively.
 
 3. **Every decision's disposition against measured vendor reality is tracked, and current** — see
-   [`decision-audit.md`](decision-audit.md), which covers all decisions on disk and is enforced by
+   the decision-audit sweep (retired 2026-08-28 with the decision registers it read — #1397), formerly enforced by
    `pixi run audit-completeness` rather than restated here.
 
 4. **Vendor drift during a run is unhandled.** Both CLIs have shipped a new version mid-session
