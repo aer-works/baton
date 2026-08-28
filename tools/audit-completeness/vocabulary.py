@@ -3,8 +3,8 @@
 The banned list is the complement of the product's own user-facing nouns -- one vocabulary, code and
 UI alike, no translation map (CLAUDE.md gate `record-once`).
 
-Walks user-facing surfaces (.axaml markup, C# ViewModels string literals, Dart lib string literals)
-and fails when banned terms appear without an inline allowlist comment `vocabulary-ok: <reason>`.
+Walks user-facing surfaces (.axaml markup, C# ViewModels string literals) and fails when banned
+terms appear without an inline allowlist comment `vocabulary-ok: <reason>`.
 """
 from __future__ import annotations
 
@@ -36,12 +36,10 @@ BANNED_PATTERNS = {
     for term in BANNED_TERMS
 }
 
-# Only the verbatim forms can span lines in C#; Dart's triple-quoted strings likewise. The
-# per-line pass cannot see into a literal that starts on one line and leaks on the next
-# (found by #315's second reader), so these run over the whole file text.
+# Only the verbatim forms can span lines. The per-line pass cannot see into a literal that starts
+# on one line and leaks on the next (found by #315's second reader), so this runs over the whole
+# file text.
 CS_MULTILINE_STRING_RE = re.compile(r'(?:\$@"|@\$"|@")(?:[^"]|"")*"')
-
-DART_MULTILINE_STRING_RE = re.compile(r'r?"""[\s\S]*?"""|r?\'\'\'[\s\S]*?\'\'\'')
 
 CS_STRING_RE = re.compile(
     r"(?:"
@@ -50,15 +48,6 @@ CS_STRING_RE = re.compile(
     r'|@"(?:[^"]|"")*"'
     r'|\$"(?:[^"\\]|\\.)*"'
     r'|"(?:[^"\\]|\\.)*"'
-    r")"
-)
-
-DART_STRING_RE = re.compile(
-    r"(?:"
-    r'r?"""[\s\S]*?"""'
-    r"|r?'''[\s\S]*?'''"
-    r'|r?"(?:[^"\\]|\\.)*"'
-    r"|r?'(?:[^'\\]|\\.)*'"
     r")"
 )
 
@@ -99,11 +88,6 @@ def get_cs_literals(line: str) -> list[str]:
     return [m.group(0) for m in CS_STRING_RE.finditer(clean_line)]
 
 
-def get_dart_literals(line: str) -> list[str]:
-    clean_line = strip_cs_comment(line)
-    return [m.group(0) for m in DART_STRING_RE.finditer(clean_line)]
-
-
 def scan_multiline_literals(
     rel_path: str,
     text: str,
@@ -130,7 +114,7 @@ def scan_multiline_literals(
 
 
 def scan_tree(root_dir: Path) -> tuple[int, list[tuple[str, int, str, str]]]:
-    """Scan AXAML, C#, and Dart populations under root_dir.
+    """Scan AXAML and C# populations under root_dir.
 
     Returns (total_files_scanned, list_of_violations).
     Each violation is (relative_path, line_number, term, line_content).
@@ -191,25 +175,6 @@ def scan_tree(root_dir: Path) -> tuple[int, list[tuple[str, int, str, str]]]:
                 if "vocabulary-ok:" in line or "vocabulary-ok:" in prev_line:
                     continue
                 literals = get_cs_literals(line)
-                for lit in literals:
-                    for term, pat in BANNED_PATTERNS.items():
-                        if pat.search(lit):
-                            violations.append((rel_path, idx, term, line.strip()))
-
-    # Population 3: src/Aer.Mobile/lib/**/*.dart
-    mobile_dir = root_dir / "src" / "Aer.Mobile" / "lib"
-    if mobile_dir.exists():
-        for path in mobile_dir.rglob("*.dart"):
-            total_files += 1
-            rel_path = path.relative_to(root_dir).as_posix()
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            lines = text.splitlines()
-            scan_multiline_literals(rel_path, text, lines, DART_MULTILINE_STRING_RE, violations)
-            for idx, line in enumerate(lines, 1):
-                prev_line = lines[idx - 2] if idx >= 2 else ""
-                if "vocabulary-ok:" in line or "vocabulary-ok:" in prev_line:
-                    continue
-                literals = get_dart_literals(line)
                 for lit in literals:
                     for term, pat in BANNED_PATTERNS.items():
                         if pat.search(lit):

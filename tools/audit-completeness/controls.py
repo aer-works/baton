@@ -527,57 +527,6 @@ def replacing(mod, name, value):
     setattr(mod, name, value)
 
 
-MOBILE_FILTER = "the mobile job's steps live where its path filter can see them"
-
-
-def _ci_workflow_where(mutate):
-    """Hands the check a mutated copy of ci.yml's parsed form. The tree itself is untouched --
-    `mutated_tree` copies only tools/ and CLAUDE.md, and .github/ is read at an absolute path."""
-    def patched():
-        ci = selfcheck.ci_workflow()
-        mutate(ci)
-        return ci
-    return swap(selfcheck, "ci_workflow", patched)
-
-
-def _mobile_filters(ci):
-    step = next(s for s in ci["jobs"]["changes"]["steps"] if "with" in s)
-    import yaml
-    parsed = yaml.safe_load(step["with"]["filters"])
-    return step, parsed
-
-
-@control(MOBILE_FILTER, "the mobile steps move back inline, where a path filter cannot see them")
-def _mobile_job_is_inline():
-    def inline(ci):
-        ci["jobs"]["mobile"].pop("uses")
-        ci["jobs"]["mobile"]["steps"] = [{"run": "flutter build apk --debug"}]
-    with _ci_workflow_where(inline):
-        yield
-
-
-@control(MOBILE_FILTER, "the filter matches every workflow file again, so any CI edit builds an APK")
-def _mobile_filter_is_broad():
-    def broaden(ci):
-        import yaml
-        step, parsed = _mobile_filters(ci)
-        parsed["mobile"] = ["src/Aer.Mobile/**", ".github/workflows/**"]
-        step["with"]["filters"] = yaml.safe_dump(parsed)
-    with _ci_workflow_where(broaden):
-        yield
-
-
-@control(MOBILE_FILTER, "the filter stops naming the file the job actually runs")
-def _mobile_filter_misses_its_file():
-    def drop(ci):
-        import yaml
-        step, parsed = _mobile_filters(ci)
-        parsed["mobile"] = ["src/Aer.Mobile/**"]
-        step["with"]["filters"] = yaml.safe_dump(parsed)
-    with _ci_workflow_where(drop):
-        yield
-
-
 BUDGET = "every dispatch tells the worker the budget it is actually given"
 
 

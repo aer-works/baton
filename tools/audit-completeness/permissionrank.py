@@ -1,9 +1,9 @@
 """Audit UI markup and screens for equal-weight permission controls (0028 §2, #1124).
 
-Scans `src/**/*.axaml` and `src/Aer.Mobile/lib/**/*.dart` for permissive-primary pairings:
-a control whose label/content matches a permissive word (Allow, Apply, Overwrite, Grant) carrying
-a primary visual marker (`Classes="accent"` in AXAML; `FilledButton` or `ElevatedButton` in Dart)
-while a sibling deny/cancel control (Deny, Cancel) in the same file is un-primaried.
+Scans `src/**/*.axaml` for permissive-primary pairings: a control whose label/content matches a
+permissive word (Allow, Apply, Overwrite, Grant) carrying a primary visual marker
+(`Classes="accent"`) while a sibling deny/cancel control (Deny, Cancel) in the same file is
+un-primaried.
 
 What it CAN see:
 - File-local pairings of primary permissive controls alongside non-primary deny/cancel controls.
@@ -11,12 +11,11 @@ What it CAN see:
   class) on controls whose permissive label sits on the same line OR on a following line inside
   the same element (the repo's own AccessText mnemonic idiom, #1124 review finding A) — the
   lookahead is bounded at the element's close.
-- Dart `FilledButton` or `ElevatedButton` constructors containing permissive text.
 
 What it CANNOT see:
 - Pairings split across multiple files or dynamic templates.
 - Dynamic control styles applied exclusively in code-behind logic.
-- Custom wrapped button components that don't use standard AXAML/Flutter button names/classes.
+- Custom wrapped button components that don't use standard AXAML button names/classes.
 
 Known coarseness, disclosed rather than solved (#1124 review finding C): the deny half is
 file-scoped, not DOM-proximity-scoped — a legitimate accent permissive control sharing a FILE with
@@ -40,8 +39,6 @@ PERMISSIVE_RE = re.compile(PERMISSIVE_PAT, re.IGNORECASE)
 DENY_RE = re.compile(DENY_PAT, re.IGNORECASE)
 
 AXAML_ACCENT_RE = re.compile(r'Classes="[^"]*\baccent\b[^"]*"|Classes\.accent\s*=')
-DART_PRIMARY_RE = re.compile(r'\b(FilledButton|ElevatedButton)\b')
-DART_NON_PRIMARY_RE = re.compile(r'\b(OutlinedButton|TextButton)\b')
 
 
 def scan_axaml_text(text: str, rel_path: str) -> list[tuple[str, int, str, str]]:
@@ -82,36 +79,8 @@ def scan_axaml_text(text: str, rel_path: str) -> list[tuple[str, int, str, str]]
     return violations
 
 
-def scan_dart_text(text: str, rel_path: str) -> list[tuple[str, int, str, str]]:
-    """Scan Dart content for permissive-primary buttons paired with un-primaried deny buttons."""
-    lines = text.splitlines()
-
-    # Find un-primaried deny buttons in Dart
-    has_unprimaried_deny = False
-    for idx, line in enumerate(lines):
-        if DENY_RE.search(line):
-            # Check window around the line for non-primary button
-            window = "\n".join(lines[max(0, idx - 4) : min(len(lines), idx + 5)])
-            if DART_NON_PRIMARY_RE.search(window) or not DART_PRIMARY_RE.search(window):
-                has_unprimaried_deny = True
-                break
-
-    if not has_unprimaried_deny:
-        return []
-
-    violations = []
-    for idx, line in enumerate(lines, 1):
-        if DART_PRIMARY_RE.search(line):
-            # Inspect button block window
-            window = "\n".join(lines[idx - 1 : min(len(lines), idx + 6)])
-            if PERMISSIVE_RE.search(window):
-                violations.append((rel_path, idx, "permissive-primary-dart", line.strip()))
-
-    return violations
-
-
 def scan_tree(root_dir: Path) -> tuple[int, list[tuple[str, int, str, str]]]:
-    """Scan AXAML and Dart populations under root_dir.
+    """Scan the AXAML population under root_dir.
 
     Returns (total_files_scanned, list_of_violations).
     Each violation is (relative_path, line_number, rule, line_content).
@@ -127,16 +96,6 @@ def scan_tree(root_dir: Path) -> tuple[int, list[tuple[str, int, str, str]]]:
             rel_path = path.relative_to(root_dir).as_posix()
             text = path.read_text(encoding="utf-8", errors="ignore")
             file_violations = scan_axaml_text(text, rel_path)
-            violations.extend(file_violations)
-
-    # Population 2: src/Aer.Mobile/lib/**/*.dart
-    mobile_dir = root_dir / "src" / "Aer.Mobile" / "lib"
-    if mobile_dir.exists():
-        for path in mobile_dir.rglob("*.dart"):
-            total_files += 1
-            rel_path = path.relative_to(root_dir).as_posix()
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            file_violations = scan_dart_text(text, rel_path)
             violations.extend(file_violations)
 
     return total_files, violations
