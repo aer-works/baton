@@ -112,23 +112,6 @@ namespace Aer.Adapters;
 /// is an opt-in per #801's scope, not a default every worker now carries the way the mandatory
 /// <c>PreToolUse</c> hook is (0029).
 /// </param>
-/// <param name="EnablePermissionGate">
-/// <see langword="true"/> to give this dispatch the runtime conversational permission gate (#445) --
-/// the seam by which a capability the operator did not pre-grant PAUSES for a human answer instead of
-/// hard-failing. <see cref="ClaudeWorkerAdapter"/> registers the <c>aerpermission</c> MCP server,
-/// routes the CLI's prompts to it with <c>--permission-prompt-tool</c>, and moves the withheld
-/// categories off <c>--disallowedTools</c> onto the <c>PreToolUse</c> hook's "ask" band;
-/// <see cref="AgyWorkerAdapter"/>, which has no prompt-tool flag, materializes a workspace carrying
-/// the same server and grants it via an extra <c>--add-dir</c> so the gate is worker-elected there
-/// (0015/0029).
-/// <para>
-/// Default <see langword="false"/> is what keeps today's exact argv, environment and hook output for
-/// every dispatch that does not opt in -- including the one-shot pipeline, which has no human to ask
-/// and must keep failing closed on an ungranted capability. The interactive chat turn is the one
-/// binding that sets it (see <c>Aer.Daemon</c>'s per-turn <c>WorkerBindingConfigEntry</c>); a worker
-/// whose binding does not set it has no runtime ask path at all.
-/// </para>
-/// </param>
 public sealed record WorkerInvocation(
     string PromptTemplate,
     string? Model = null,
@@ -142,6 +125,5 @@ public sealed record WorkerInvocation(
     string? LogFilePath = null,
     string? Effort = null,
     TimeSpan? Timeout = null,
-    bool EnableMemoryProposalTool = false,
-    bool EnablePermissionGate = false);
+    bool EnableMemoryProposalTool = false);
 

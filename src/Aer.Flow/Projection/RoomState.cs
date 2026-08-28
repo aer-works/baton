@@ -21,7 +21,6 @@ public sealed record RoomState(
     IReadOnlyDictionary<GrantId, GrantState>? ActiveGrants = null,
     IReadOnlyList<RoomEvent.EscalationRaised>? OpenEscalations = null,
     bool IsDormant = false,
-    PendingPermission? PendingPermission = null,
     IReadOnlyList<PermissionAnswer>? PermissionAnswers = null,
     IReadOnlyList<DormancyTransition>? DormancyTransitions = null,
     bool IsWorkflowOff = false)
@@ -64,7 +63,6 @@ public sealed record RoomState(
             OpenEscalations.Count != other.OpenEscalations.Count ||
             IsDormant != other.IsDormant ||
             IsWorkflowOff != other.IsWorkflowOff ||
-            !Equals(PendingPermission, other.PendingPermission) ||
             !UnmatchedEntries.SequenceEqual(other.UnmatchedEntries) ||
             !OpenEscalations.SequenceEqual(other.OpenEscalations) ||
             !PermissionAnswers.SequenceEqual(other.PermissionAnswers) ||
@@ -97,7 +95,6 @@ public sealed record RoomState(
         var hash = new HashCode();
         hash.Add(IsDormant);
         hash.Add(IsWorkflowOff);
-        hash.Add(PendingPermission);
 
         foreach (var (key, value) in HeldWork.OrderBy(kv => kv.Key.Value))
         {

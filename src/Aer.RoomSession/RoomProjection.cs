@@ -21,19 +21,9 @@ namespace Aer.RoomSession;
 /// <see cref="History"/>, following the same "derived from the same events, owned by the
 /// presentation layer" shape <see cref="History"/> established (Phase 2).
 /// </param>
-/// <param name="PendingPermission">
-/// The runtime conversational gate a worker is currently blocked on (#445/#390), projected from the
-/// room's <c>room.jsonl</c> journal (a DIFFERENT event store from the <see cref="State"/>'s
-/// <c>flow.jsonl</c>) via <see cref="RoomProjector"/>. <see langword="null"/> when no gate is open —
-/// the common case. A fifth read-model surface, defaulted so the many existing construction sites
-/// (e.g. the fleet-status loader) that carry no gate stay source-compatible. This is the one field
-/// that lets the daemon's projection push carry a pending permission to a screen: without it the
-/// mid-turn ask is journaled but never rendered (<see cref="RoomProjectionLoader.LoadAsync"/> reads
-/// only <c>flow.jsonl</c> otherwise).
-/// </param>
 /// <param name="IsWorkflowOff">
 /// The UI-side carrier of <see cref="Aer.Flow.Projection.RoomState.IsWorkflowOff"/> (#1216), which
-/// defines it — projected from <c>room.jsonl</c> alongside <paramref name="PendingPermission"/>. A
+/// defines it — projected from <c>room.jsonl</c> alongside <paramref name="PermissionAnswers"/>. A
 /// plain bool rather than a transitions list (unlike <paramref name="DormancyTransitions"/>, whose
 /// history is shown to the person): the switch is a "non-event" and nothing reads its past.
 /// </param>
@@ -52,7 +42,6 @@ namespace Aer.RoomSession;
 /// </param>
 public sealed record RoomProjection(
     WorkflowDefinitionSnapshot Snapshot, FlowState State, ExecutionHistory History, ArtifactLineage Lineage,
-    PendingPermission? PendingPermission = null,
     IReadOnlyList<PermissionAnswer>? PermissionAnswers = null,
     IReadOnlyList<DormancyTransition>? DormancyTransitions = null,
     IReadOnlyList<StepPauseMoment>? StepPauseMoments = null,

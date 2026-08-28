@@ -18,13 +18,14 @@ aer-flow/
 │   ├── Aer.Daemon/            ASP.NET background runner — PORTED, drastically: narrows to the
 │   │                          room-watcher (serving fleet_status/the registry), the snapshot push
 │   │                          loop, the quota-runway ledger, RoomRetentionSweep, and fleet-wide
-│   │                          concurrency caps (spec/baton.md §7). Pairing, WebSocket broadcast,
-│   │                          sidecar supervision, and the permission-ask REST answerer are
-│   │                          retired — archive PRs of #1396 in flight
+│   │                          concurrency caps (spec/baton.md §7). The permission-ask REST answerer
+│   │                          (and its DoorbellMonitor/PendingGateRegistry/crash-reconciliation
+│   │                          plumbing) is deleted (#1417). Pairing, WebSocket broadcast, and
+│   │                          sidecar supervision remain — archive PRs of #1396 in flight
 │   ├── Aer.Mcp/               MCP server library — IMcpTool + the stdio host plumbing
 │   ├── Aer.Mcp.Host/          The MCP executable workers connect to (fleet_status, aer yield,
 │   │                          memory proposals). PermissionGateTool/PermissionReturnShape (the
-│   │                          mid-lane ask machinery) are ARCHIVE — spec/baton.md §5
+│   │                          mid-lane ask machinery) are deleted (#1417, spec/baton.md §5)
 │   ├── Aer.RoomSession/       The room read-model (RoomProjection + projectors) and the daemon's
 │   │                          in-process RoomClient — extracted from Aer.Ui.Core (#1412 Part 1) so
 │   │                          the daemon survived the Ui archive (Aer.Ui and Aer.Ui.Core deleted,

@@ -1,8 +1,7 @@
 namespace Aer.Adapters;
 
 /// <summary>
-/// What <see cref="RuntimePermissionGrantAmender.RevokeAsync"/> did, with the same honesty
-/// <see cref="PermissionAmendOutcome"/> applies to the other direction: a bool would conflate "taken
+/// What <see cref="RuntimePermissionGrantAmender.RevokeAsync"/> did: a bool would conflate "taken
 /// back" with "there was nothing to take back" with "there was, and it could not be written".
 /// </summary>
 public enum PermissionRevokeOutcome
@@ -20,9 +19,8 @@ public enum PermissionRevokeOutcome
     /// <summary>
     /// The permission is held but could NOT be taken back — no <c>bindings.json</c>, or no such
     /// worker in it. The operator asked to withdraw something and it is still granted, so the caller
-    /// must surface this rather than report a revocation that did not happen. The asymmetry with
-    /// <see cref="PermissionAmendOutcome.CouldNotPersist"/> is deliberate: failing to grant leaves
-    /// the person with less authority than they asked for, failing to revoke leaves them with more.
+    /// must surface this rather than report a revocation that did not happen: failing to revoke
+    /// leaves the person with more authority than they asked to leave them with.
     /// </summary>
     CouldNotPersist,
 }

@@ -428,41 +428,6 @@ public class WorkerBindingResolverTests
         Assert.Equal(TimeSpan.FromMinutes(20), Assert.IsType<WorkerBinding.Process>(bindings["architect"]).Timeout);
     }
 
-    /// <summary>
-    /// #445: the same shape for <c>EnablePermissionGate</c>. The entry is the only place the opt-in is
-    /// declared, so an adapter that cannot see it has no runtime ask path at all — and the failure is
-    /// silent, because a gate that is never installed looks exactly like one nobody triggered.
-    /// </summary>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void Resolve_hands_the_entrys_EnablePermissionGate_to_the_adapter(bool enabled)
-    {
-        // The true arm rides the chat-worker name: since #1101 that is the ONLY entry allowed to
-        // carry the flag (any other worker is refused — covered by its own test above), so the
-        // pass-through contract this test pins is now specifically the daemon-owned entry's.
-        var workerName = enabled ? InteractiveSessionMaterializer.DefaultWorkerName : "architect";
-        var config = new Dictionary<string, WorkerBindingConfigEntry>
-        {
-            [workerName] = new WorkerBindingConfigEntry(
-                "capture", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(20),
-                EnablePermissionGate: enabled),
-        };
-        var adapter = new CapturingWorkerAdapter();
-        var adapters = new Dictionary<string, IWorkerAdapter> { ["capture"] = adapter };
-
-        WorkerBindingResolver.Resolve(config, adapters);
-
-        // Both polarities, because a threading bug that hardcodes either constant passes a
-        // one-directional check.
-        Assert.Equal(enabled, adapter.LastInvocation!.EnablePermissionGate);
-
-        // The named-argument discipline this rests on: EnableMemoryProposalTool sits between Timeout
-        // and EnablePermissionGate in the ctor and is deliberately NOT threaded from the entry, so a
-        // positional call here would have set the wrong one.
-        Assert.False(adapter.LastInvocation!.EnableMemoryProposalTool);
-    }
-
     /// <summary>Records the <see cref="WorkerInvocation"/> it was handed, and nothing else.</summary>
     private sealed class CapturingWorkerAdapter : IWorkerAdapter
     {
@@ -892,39 +857,5 @@ public class WorkerBindingResolverTests
         Assert.Throws<UnsatisfiableOutputContractException>(() => WorkerBindingResolver.Resolve(config, adapters));
     }
 
-    /// <summary>
-    /// #1101: <c>enablePermissionGate</c> is daemon-managed — only the interactive chat-worker
-    /// binding may carry it. A hand-authored <c>true</c> on any other worker would block on a gate
-    /// nobody observes and self-deny at timeout, so the resolver fails loud instead.
-    /// </summary>
-    [Fact]
-    public void A_hand_authored_permission_gate_flag_is_refused_for_any_worker_but_the_chat_worker()
-    {
-        var grant = InteractiveSessionMaterializer.GrantForMode(InteractiveSessionMaterializer.KnownModes.First());
-        Assert.NotNull(grant);
-        var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
-
-        var config = new Dictionary<string, WorkerBindingConfigEntry>
-        {
-            ["architect"] = new WorkerBindingConfigEntry(
-                "echo", InteractiveSessionMaterializer.ChatWorkerContract, "Say hello.",
-                TimeSpan.FromMinutes(5), Model: null, PermissionScope: null, PermissionGrant: grant,
-                EnablePermissionGate: true),
-        };
-        var ex = Assert.Throws<WorkerBindingConfigException>(() => WorkerBindingResolver.Resolve(config, adapters));
-        Assert.Contains("enablePermissionGate", ex.Message);
-
-        // POSITIVE CONTROL (polarity): the daemon-owned chat-worker entry carries the same flag and
-        // resolves — this arm is what keeps the refusal from breaking every room with chat history.
-        var chatConfig = new Dictionary<string, WorkerBindingConfigEntry>
-        {
-            [InteractiveSessionMaterializer.DefaultWorkerName] = new WorkerBindingConfigEntry(
-                "echo", InteractiveSessionMaterializer.ChatWorkerContract, "Say hello.",
-                TimeSpan.FromMinutes(5), Model: null, PermissionScope: null, PermissionGrant: grant,
-                EnablePermissionGate: true),
-        };
-        var bindings = WorkerBindingResolver.Resolve(chatConfig, adapters);
-        Assert.True(bindings.ContainsKey(InteractiveSessionMaterializer.DefaultWorkerName));
-    }
 }
 

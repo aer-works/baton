@@ -46,10 +46,6 @@ namespace Aer.Adapters;
 /// claims isolation that does not exist, and the post-run audit then fails closed against the
 /// shared directory's unrelated dirt (loud, not silent — but still a lie the run pays for).
 /// </param>
-/// <param name="EnablePermissionGate">
-/// Forwarded verbatim into the resolved <see cref="WorkerInvocation"/> — see its docs for what the
-/// gate is and why the default is <see langword="false"/> (#445).
-/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -66,8 +62,7 @@ public sealed record WorkerBindingConfigEntry(
     string? Effort = null,
     WorktreeWorkspace? Worktree = null,
     GrantAuditMode GrantAuditMode = GrantAuditMode.Enforced,
-    bool IsWorktree = false,
-    bool EnablePermissionGate = false);
+    bool IsWorktree = false);
 
 
 /// <summary>

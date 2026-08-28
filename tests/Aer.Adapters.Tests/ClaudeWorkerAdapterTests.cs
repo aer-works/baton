@@ -653,10 +653,8 @@ public class ClaudeWorkerAdapterTests
         {
             Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.AerClaudeConfigRootVariable, null);
             var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
-            var gate = ClaudeWorkerAdapter.BuildGate(null);
 
             Assert.DoesNotContain(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable);
-            Assert.False(gate.Environment.ContainsKey(ClaudeWorkerAdapter.ClaudeConfigDirVariable));
         }
         finally
         {
@@ -675,10 +673,8 @@ public class ClaudeWorkerAdapterTests
 
             var target = new ClaudeWorkerAdapter().Resolve(
                 new WorkerInvocation("Draft a plan.", SessionId: "session-123", ResumeSession: true), ArchitectContract);
-            var gate = ClaudeWorkerAdapter.BuildGate(null);
 
             Assert.Contains(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable && e.Value == testPath);
-            Assert.Equal(testPath, gate.Environment[ClaudeWorkerAdapter.ClaudeConfigDirVariable]);
         }
         finally
         {

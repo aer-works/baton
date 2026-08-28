@@ -359,22 +359,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         // so a real workspace directory carrying .agents/mcp_config.json has to exist on disk for
         // --add-dir to point at. Opt-in only, so a dispatch that does not ask for it keeps today's
         // exact argv.
-        //
-        // #445 rides the same lever. agy has no `--permission-prompt-tool` and its PreToolUse hook is
-        // exit-0/2 only, so there is no band for the CLI itself to route to a human -- on this vendor
-        // the gate is WORKER-ELECTED (0015/0029): the tool is simply reachable, and the worker calls it
-        // when it wants an answer. Which is why nothing here touches AgyHookCheckCommand or sets
-        // AER_HOOK_ASK_TOOLS: an ask list the hook cannot express would be a mechanism that looks
-        // installed and does nothing.
-        if (invocation.EnablePermissionGate)
-        {
-            // One workspace, composing both servers when both are on: `.agents/mcp_config.json` is one
-            // file per directory, and whether agy merges the file across several --add-dir'd
-            // directories is not something AER has measured. Composing rests on nothing unmeasured.
-            args.Add("--add-dir");
-            args.Add(EnsurePermissionGateWorkspace(invocation.EnableMemoryProposalTool));
-        }
-        else if (invocation.EnableMemoryProposalTool)
+        if (invocation.EnableMemoryProposalTool)
         {
             args.Add("--add-dir");
             args.Add(EnsureMemoryProposalWorkspace());
@@ -445,10 +430,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         // agy home redirect (#442): non-shell bindings get HOME and USERPROFILE redirected to an
         // AER-owned state directory. Shell-granted workers (grant.RunShellCommands == true) are
-        // deliberately NOT redirected so worker git commit can see the user's .gitconfig. Dispatch
-        // path ONLY, deliberately absent from BuildGate -- ADR 0050 records why BuildGate's own
-        // caller (the now-retired dialogue worker, #1408) could not carry it; that remainder lives
-        // on #1019.
+        // deliberately NOT redirected so worker git commit can see the user's .gitconfig.
         string? agyHome = null;
         if (invocation.PermissionGrant is { RunShellCommands: false })
         {
@@ -545,33 +527,6 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         }
     }
 
-    /// <summary>The agy <see cref="VendorGate"/>.</summary>
-    /// <remarks>
-    /// <c>--add-dir</c> IS the gate on this vendor: agy discovers hooks only from a directory handed
-    /// to it that way (<c>agy.hooks-load-from-add-dir-not-only-cwd</c>), so dropping the pair yields
-    /// an ungated worker rather than a narrower one. <c>VendorGateMatchesResolveTests</c> holds this
-    /// and <see cref="Resolve"/> in step.
-    /// </remarks>
-    internal static VendorGate BuildGate(PermissionGrant? grant, string? workspace = null)
-    {
-        var environment = new Dictionary<string, string>
-        {
-            [DeniedToolsVariable] = $"{DeniedToolsVendorTag}:{BuildDeniedTools(grant)}",
-            [ShellPatternsVariable] = $"{ShellPatternsVendorTag}:{BuildShellPatterns(grant)}",
-            [DeniedShellPatternsVariable] = $"{ShellPatternsVendorTag}:{BuildDeniedShellPatterns(grant)}",
-        };
-
-        // Must mirror Resolve's own workspace clause. Load-bearing on this vendor rather than merely
-        // useful, for the reason AgyHookCheckCommand's own bound gives -- and omitting it narrows a
-        // granted write to the outbox rather than failing loudly. See VendorGate.For.
-        if (workspace is not null)
-        {
-            environment[WorkerEnvironment.WorkspaceVariable] = workspace;
-        }
-
-        return new VendorGate(["--add-dir", EnsureAgyWorkspace()], environment);
-    }
-
     /// <summary>
     /// Creates the AER-owned agy workspace and rewrites its <c>.agents/hooks.json</c> with canonical
     /// content, returning the directory to hand to <c>--add-dir</c>.
@@ -642,62 +597,6 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         });
 
         AtomicLaunchConfigWriter.Write(Path.Combine(workspace, ".agents", "mcp_config.json"), json);
-        return workspace;
-    }
-
-    /// <summary>
-    /// The workspace directory names AER points a gate-enabled agy worker at (#445) — one per
-    /// composition, so a concurrent resolve of the other shape never rewrites this one's config.
-    /// Separate from <see cref="AgyWorkspaceDirectoryName"/> for the reason
-    /// <see cref="MemoryProposalWorkspaceDirectoryName"/> gives (canonical): <c>--add-dir</c> grants
-    /// file access to whatever it names, and an opt-in tool's workspace should not be reachable on a
-    /// dispatch that never asked for it.
-    /// </summary>
-    public const string PermissionGateWorkspaceDirectoryName = "agy-permission-gate-workspace";
-
-    /// <inheritdoc cref="PermissionGateWorkspaceDirectoryName"/>
-    public const string PermissionGateAndMemoryProposalWorkspaceDirectoryName =
-        "agy-permission-gate-memory-proposal-workspace";
-
-    /// <summary>
-    /// Creates the AER-owned workspace a gate-enabled agy dispatch is granted, carrying the
-    /// <c>.agents/mcp_config.json</c> that names the permission-gate MCP server (#445) — the
-    /// worker-elected half of the runtime conversational gate. Same left-holding-canonical-content
-    /// convention, and the same no-baked-capture-path reason, as
-    /// <see cref="EnsureMemoryProposalWorkspace"/>.
-    /// </summary>
-    /// <param name="alsoMemoryProposal">Folds the memory-proposal server in beside the gate rather than into a second config; see <see cref="Resolve"/>'s own clause for why one file rather than two directories.</param>
-    private static string EnsurePermissionGateWorkspace(bool alsoMemoryProposal)
-    {
-        var workspace = Path.Combine(
-            AerPaths.WorkerLaunchConfig,
-            alsoMemoryProposal
-                ? PermissionGateAndMemoryProposalWorkspaceDirectoryName
-                : PermissionGateWorkspaceDirectoryName);
-        Directory.CreateDirectory(Path.Combine(workspace, ".agents"));
-
-        var hostDllPath = Path.Combine(AppContext.BaseDirectory, "Aer.Mcp.Host.dll");
-        var servers = new Dictionary<string, object>
-        {
-            [ClaudeWorkerAdapter.PermissionGateMcpServerName] = new
-            {
-                command = "dotnet",
-                args = new[] { hostDllPath, "--permission-gate-tool", "agy" },
-            },
-        };
-
-        if (alsoMemoryProposal)
-        {
-            servers["aer-memory-proposal"] = new
-            {
-                command = "dotnet",
-                args = new[] { hostDllPath, "--memory-proposal-tool" },
-            };
-        }
-
-        AtomicLaunchConfigWriter.Write(
-            Path.Combine(workspace, ".agents", "mcp_config.json"),
-            JsonSerializer.Serialize(new { mcpServers = servers }));
         return workspace;
     }
 

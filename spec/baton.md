@@ -268,16 +268,16 @@ only by `aer decide`.** The harness answers it programmatically via `aer decide`
 for the verb shape). The decision vocabulary (`resume|reject|retry-with-revision|supersede`) is the
 whole of it.
 
-**The mid-lane permission-ask mechanism is archived.** `src/Aer.Mcp.Host/PermissionGateTool.cs` (the
-`aer_permission_ask` MCP tool — writes an `ask-<id>.json` file and blocks up to 180s for an
-`answer-<id>.json` to appear, denying via a `revoked-<id>.json` on timeout,
-`PermissionGateTool.cs:9-25,101-160`) and `PermissionReturnShape.cs` are ARCHIVE. I confirmed the
-`answer-<id>.json` filename is written from exactly two places in the whole tree: the daemon's REST
-answerer and its own crash-reconciliation heal path (both `src/Aer.Daemon/Program.cs`) — `Aer.Cli`
-writes none. Under this spec's harness-only surface, that tool has no answerer left; keeping it would
-mean a worker blocking on a rendezvous file no code writes. **A lane is dispatched fully pre-cleared**:
-every capability a worker will need is granted in `bindings.json` before `aer run`/`aer dispatch` is
-called (§9). There is no mid-lane ask.
+**The mid-lane permission-ask mechanism is deleted (#1417).** `PermissionGateTool.cs`
+(the `aer_permission_ask` MCP tool, formerly `Aer.Mcp.Host` — wrote an `ask-<id>.json` file and blocked
+up to 180s for an `answer-<id>.json` to appear, denying via a `revoked-<id>.json` on timeout) and
+`PermissionReturnShape.cs` are gone, along with the daemon's `/api/rooms/permissions/answer` REST
+answerer and its own
+crash-reconciliation heal path (both previously in `src/Aer.Daemon/Program.cs`) — the two places that
+ever wrote an `answer-<id>.json` file; `Aer.Cli` wrote none. Under this spec's harness-only surface,
+that tool had no answerer left; keeping it would have meant a worker blocking on a rendezvous file no
+code writes. **A lane is dispatched fully pre-cleared**: every capability a worker will need is
+granted in `bindings.json` before `aer run`/`aer dispatch` is called (§9). There is no mid-lane ask.
 
 **A worker that hits a capability it was not pre-cleared for is denied, fail-closed, by the
 `PreToolUse`/`agy-hook-check` enforcement in §9** — the same mechanism that already exists for every
@@ -316,12 +316,12 @@ there is no separate diagnostic UI, dev or otherwise. Fleet Glass **is** the dia
 second level is scoped work against the same MCP tool, not a new surface.
 
 The outbound push mailbox — the mechanism that would notify a harness of a state-change event without
-polling — is **(new build)**. I did not find `push`, `mailbox`, or an outbound-webhook-shaped
-component anywhere under `src/Aer.Mcp*` or `src/Aer.Daemon` at HEAD. `src/Aer.Daemon` does contain an
-inbound-facing notification pump with a backup poll (`DoorbellMonitor.cs:51-146`) and a client
-fan-out (`DaemonBroadcast`) — neither is an *outbound, harness-facing* mailbox, so the "unbuilt"
-ruling survives, but state it precisely: the search was scoped to outbound/webhook shape, not "no
-notification code of any kind." Quota data (§7) and gate-pending visibility both ride this mailbox
+polling — is **(new build)**. There is no `push`, `mailbox`, or outbound-webhook-shaped
+component anywhere under `src/Aer.Mcp*` or `src/Aer.Daemon` at HEAD. `src/Aer.Daemon`'s client
+fan-out (`DaemonBroadcast`) is not an *outbound, harness-facing* mailbox, so the "unbuilt"
+ruling survives. (The inbound-facing notification pump this passage once also cited,
+`DoorbellMonitor`, was part of the mid-lane ask machinery and is DELETED, #1417 — see the
+Appendix.) Quota data (§7) and gate-pending visibility both ride this mailbox
 once it exists; its transport (webhook, log-append, something else) is unspecified here — that is
 design work for the build.
 
@@ -479,18 +479,12 @@ Baton ships one on every
 spawned worker, on both vendors, via `hook-check`/`agy-hook-check`
 (`Program.cs:15-59`, `src/Aer.Cli/HookCheckCommand.cs`, `src/Aer.Cli/AgyHookCheckCommand.cs`).
 
-**The hook is ternary, not binary, and only when Baton says so.** With
-`HookCheckCommand.AskToolsEnvironmentVariable` (`AER_HOOK_ASK_TOOLS`) present, the claude-side hook
-decides allow / **ask** / deny rather than allow / deny: a category the operator never granted routes
-to a human via a `permissionDecision: "ask"` STDOUT envelope, rather than hard-failing
-(`HookCheckCommand.cs:32-38,94-95,293-306`). A tool in both the denied list and the ask list is
-**denied** — a standing "never" is not reopened by an ask band being present. **With the variable
-absent — every one-shot harness dispatch, per this section's own "fully pre-cleared" rule — none of
-that exists, and an ungranted capability exits 2 exactly as if the ask band did not exist**
-(`HookCheckCommand.cs:67-72`). The measured headless outcome for the ask band, when it *is* enabled:
-under `-p` the forced prompt fails closed and the operation does not happen
-(`HookCheckCommand.cs:88-92`). A denial surfaces as `FailureClassification.ToolDenied` (§5, §7) —
-that is the vocabulary a harness reads, whichever band produced it.
+**The hook is binary: allow / deny, nothing else.** The ask band that once made it ternary
+(`AER_HOOK_ASK_TOOLS`, the `permissionDecision: "ask"` STDOUT envelope) was part of the mid-lane
+ask machinery and is DELETED (#1417) — lanes are fully pre-cleared, so an ungranted capability
+fails closed (exit 2 on claude) with no human routing, and a tool on the denied list is denied
+regardless of anything else. A denial surfaces as `FailureClassification.ToolDenied` (§5, §7) —
+that is the vocabulary a harness reads.
 
 **"Denied" at runtime means:** the hook exits non-zero on claude, or returns a `decision` field
 refusing the call on agy — the worker is told it was refused and continues rather than dying.
@@ -561,8 +555,8 @@ reach backward to reconstruct a numbering scheme that no longer exists.
 | `Aer.Flow` | **KEEP** | Engine core; vendor/UI-agnostic; untouched by this reset except that `room.jsonl`'s machinery (§2, §5) is now dead code from the harness surface's perspective — kept in place, not exercised. |
 | `Aer.Adapters` (incl. `BuiltInWorkflowTemplates`) | **KEEP** | The cross-vendor seam; the template catalog narrows to built-in only. |
 | `Aer.Cli` | **KEEP**, verb set narrows | `run`/`dispatch`/`decide`/`cancel`/`supply`/`resume`/`status` stay; `templates` narrows to the built-in catalog. |
-| `Aer.Mcp` / `Aer.Mcp.Host` | **KEEP**, grows | `fleet_status` is the anchor and gains the §6 drill-down levels; `YieldTool`, `MemoryProposalTool` stay, orthogonal to this reset. `PermissionGateTool` and `PermissionReturnShape` — the ask machinery — are **ARCHIVE** (§5); I confirmed `PermissionReturnShape` has no other consumer in the tree. |
-| `Aer.Daemon` | **PORT, drastically** | Narrows to the room-watcher (serving `fleet_status`/the registry, §8), the snapshot push loop (§6, new build), the quota-runway ledger (§7, partly new build), `RoomRetentionSweep`, and the fleet-wide concurrency caps (`DaemonSettingsStore`/`ConcurrencySlotGate`) — homes stated in §7. Pairing, WebSocket broadcast, sidecar supervision, template-picker endpoints, orchestrator reassignment, and the permission REST answerer are ARCHIVE. **Breaking dependency the narrowing must resolve:** `Aer.Daemon.csproj:12` holds a hard `ProjectReference` to `Aer.Ui.Core.csproj`, and it is not incidental — `Program.cs` uses `MainWindowViewModel` (`:172`) and constructs `RoomClient` (`:199-231`), which the WebSocket endpoint, `/api/version`, the reconcile loop, and essentially every kept `/api/rooms/*`/`/api/sessions/*` handler in the file consume as a DI parameter. A daemon that narrows to room-watcher + push loop + quota ledger needs its own room-reading path that does **not** go through `RoomClient`/`MainWindowViewModel` — both of which are `Aer.Ui.Core` types this table ARCHIVEs below. This is new engineering work the narrowing creates, not a rename. |
+| `Aer.Mcp` / `Aer.Mcp.Host` | **KEEP**, grows | `fleet_status` is the anchor and gains the §6 drill-down levels; `YieldTool`, `MemoryProposalTool` stay, orthogonal to this reset. `PermissionGateTool` and `PermissionReturnShape` — the ask machinery — are **DELETED** (#1417, §5); confirmed `PermissionReturnShape` had no other consumer in the tree. |
+| `Aer.Daemon` | **PORT, drastically** | Narrows to the room-watcher (serving `fleet_status`/the registry, §8), the snapshot push loop (§6, new build), the quota-runway ledger (§7, partly new build), `RoomRetentionSweep`, and the fleet-wide concurrency caps (`DaemonSettingsStore`/`ConcurrencySlotGate`) — homes stated in §7. The permission REST answerer (`/api/rooms/permissions/answer`) and its `DoorbellMonitor`/`PendingGateRegistry`/crash-reconciliation plumbing are **DELETED** (#1417). Pairing, WebSocket broadcast, sidecar supervision, template-picker endpoints, and orchestrator reassignment remain ARCHIVE, not yet done. **Breaking dependency the narrowing must resolve:** `Aer.Daemon.csproj:12` holds a hard `ProjectReference` to `Aer.Ui.Core.csproj`, and it is not incidental — `Program.cs` uses `MainWindowViewModel` (`:172`) and constructs `RoomClient` (`:199-231`), which the WebSocket endpoint, `/api/version`, the reconcile loop, and essentially every kept `/api/rooms/*`/`/api/sessions/*` handler in the file consume as a DI parameter. A daemon that narrows to room-watcher + push loop + quota ledger needs its own room-reading path that does **not** go through `RoomClient`/`MainWindowViewModel` — both of which are `Aer.Ui.Core` types this table ARCHIVEs below. This is new engineering work the narrowing creates, not a rename. |
 | `Aer.Ui` | **DELETED** (#1412 Part 2) | Not a description of the existing Avalonia app with features removed — a full archive, then deletion. Fleet Glass (§6) is the diagnostic surface, built as MCP-tool levels, never a UI app. |
 | `Aer.Ui.Core` | **DELETED** (#1412 Part 2) | `RoomClient` and `MainWindowViewModel` were named explicitly here because `Aer.Daemon`'s PORT row above depended on both and the narrowing had to break that dependency, not carry it forward silently — resolved by extracting the salvageable read-model surface into `Aer.RoomSession` (#1412 Part 1) before deleting the rest. The bulk (`ChatViewModel`, `RoomsViewModel`, `RemoteViewModel`, `TemplateEditorViewModel`, `StandingPermissionsViewModel`) was UI-surface logic for the retired product and is gone with it. `RoomProjection.cs`, `RoomFilesProjector.cs`/`RoomFilesViewModels.cs`, and `ExecutionHistoryProjector.cs`'s equivalents now live in `Aer.RoomSession`, confirmed Avalonia-free (that project's `.csproj` references only `Aer.Flow`/`Aer.Cli`/`Aer.Adapters`) — the "Uncertain" section's salvage-candidate entry below is resolved. |
 | `Aer.Mobile` | **DELETED** (#1407) | No harness-driven use case; deleted along with its dedicated build machinery (CI job, pixi tasks, scripts) rather than left archived. |

@@ -21,8 +21,6 @@ public static class RoomCardViewModel
     /// the same surfaces that made #458's marks disagree across toolkits would make two copies of
     /// this disagree across views — Home would say "Cancelled" while the switcher said "Finished",
     /// which is the exact defect #461 had just fixed in one place.
-    /// Extended (#1112): receives <paramref name="pendingPermission"/> projected from <c>room.jsonl</c>
-    /// so a live permission ask derives <see cref="RoomCardStatus.NeedsYou"/> and "Permission requested".
     /// Extended (#1116, 0026 §1/§3/§5): an exhausted step must NOT rank the room NeedsYou (0026 §1).
     /// A room whose ONLY failures are exhaustion carries the 0026 sentence shape ("Out of plan —
     /// resumes ...", latest instant across exhausted steps, honest unknown if any is unknown) as
@@ -52,7 +50,7 @@ public static class RoomCardViewModel
     /// arm runs first.
     /// </param>
     public static (string StatusText, RoomCardStatus Status) DeriveStatus(
-        RoomProjection projection, PendingPermission? pendingPermission, bool isFlowLockHeld,
+        RoomProjection projection, bool isFlowLockHeld,
         bool isWaitingToStart)
     {
         if (isWaitingToStart)
@@ -73,19 +71,9 @@ public static class RoomCardViewModel
 
         return projection.State.Status switch
         {
-            // Running-scoped on purpose (#1112 review): a live answerable gate only exists while a
-            // turn is executing. Revocation (#1102) is best-effort and reconcile is a single startup
-            // pass (#1113), so an orphaned ask CAN sit in room.jsonl beside a Paused/Terminal flow
-            // state — and headlining "Permission requested" there would mask the room's true status
-            // with a gate no worker is left to be released by.
             // #1219, and deliberately the FIRST Running arm — every one below it assumes something is
             // actually running, and for a room whose process died none of them is true:
             //
-            //  - It beats the permission arm below, whose own comment already names this hazard for
-            //    the Paused/Terminal case: an orphaned ask must not "mask the room's true status with
-            //    a gate no worker is left to be released by". A dead room is exactly that, and until
-            //    the lock was consulted there was no way to know. A LIVE gate still wins, because the
-            //    lock is held while its turn executes, so this arm cannot fire.
             //  - It beats the out-of-plan arms, which would otherwise promise "resumes 14:32" for a
             //    room where nothing is left to do the resuming — the misleading-optimistic timestamp
             //    0026 §5 is written against, arrived at from the other direction.
@@ -94,9 +82,9 @@ public static class RoomCardViewModel
             // the whole workflow Running, so a crashed room with a live gate on a sibling branch would
             // slip past a status test and get a Stopped label beside a decision the person can answer.
             //
-            // A genuine failure still outranks it, which is the third consequence of this ordering and
-            // the one a second reader had to find (the two above were reasoned about; this was not).
-            // The two above each replace an optimistic "still in progress" reading with an honest one.
+            // A genuine failure still outranks it, which is the second consequence of this ordering and
+            // the one a second reader had to find (the one above was reasoned about; this was not).
+            // The one above replaces an optimistic "still in progress" reading with an honest one.
             // This one would replace an already-conclusive verdict: a room mixing an exhausted step
             // with a separately, permanently failed one reaches WorkflowStatus.Running with nothing
             // actually Running, so a crash mid-park frees the lock and "Stopped" would drop the
@@ -107,7 +95,6 @@ public static class RoomCardViewModel
                 && !projection.State.Steps.Any(s => s.Status == StepStatus.Paused)
                 && (failedOrRejectedSteps.Count == 0 || isOnlyBlockerExhaustion)
                 => ("Stopped", RoomCardStatus.Stopped),
-            WorkflowStatus.Running when pendingPermission != null => ("Permission requested", RoomCardStatus.NeedsYou),
             WorkflowStatus.Paused => (PausedCardStatusText(projection), RoomCardStatus.NeedsYou),
             WorkflowStatus.Running when projection.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Running) is { } runningStep
                 => ($"Working — {runningStep.StepId.Value}", RoomCardStatus.Running),

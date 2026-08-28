@@ -21,7 +21,7 @@ public static class WireFixtureGenerator
         // is the reading DeriveStatus' own parameter doc calls the conservative one — it never
         // invents a Stopped room. What the fixture pins is the wire NAMES and casing of the pair.
         var (roomCardStatusText, roomCardStatus) =
-            RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld: true, isWaitingToStart: false);
+            RoomCardViewModel.DeriveStatus(projection, isFlowLockHeld: true, isWaitingToStart: false);
 
         // 1. RoomProjection REST (camelCase)
         var restNode = JsonSerializer.SerializeToNode(projection, DaemonSerializerOptions.Rest)!.AsObject();
