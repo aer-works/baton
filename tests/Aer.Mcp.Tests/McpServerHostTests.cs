@@ -184,7 +184,7 @@ public class McpServerHostTests
         var input = new StringReader("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n");
         var output = new StringWriter();
 
-        await host.RunAsync(input, output);
+        await host.RunAsync(input, output, TestContext.Current.CancellationToken);
 
         var response = System.Text.Json.Nodes.JsonNode.Parse(output.ToString().Trim())!.AsObject();
         var tools = response["result"]!["tools"]!.AsArray();
@@ -214,7 +214,7 @@ public class McpServerHostTests
             + "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n");
         var output = new StringWriter();
 
-        await host.RunAsync(input, output);
+        await host.RunAsync(input, output, TestContext.Current.CancellationToken);
 
         var lines = output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         Assert.Equal(2, lines.Length);
