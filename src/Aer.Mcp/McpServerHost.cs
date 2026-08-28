@@ -116,7 +116,15 @@ public sealed class McpServerHost(string serverName, string serverVersion, IRead
             };
             if (tool.AnnotationsJson is { } annotations)
             {
-                entry["annotations"] = JsonNode.Parse(annotations);
+                try
+                {
+                    entry["annotations"] = JsonNode.Parse(annotations);
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    // A tool's malformed annotations literal must degrade to
+                    // "no annotations advertised" — never take down the host.
+                }
             }
 
             array.Add(entry);

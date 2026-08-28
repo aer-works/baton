@@ -195,7 +195,10 @@ public sealed class FleetStatusTool : IMcpTool
             }
 
             var outcome = WorkflowOutcome.Describe(state);
-            var view = WorkflowStatusProjector.Project(state, snapshot, roomDir, entries);
+            // Without a parser registry the usage projector returns null for every
+            // execution, so the tool would advertise usage it never populates.
+            var view = WorkflowStatusProjector.Project(
+                state, snapshot, roomDir, entries, StandardWorkerUsageParsers.Default);
             var eventTimestamps = WorkflowStatusProjector.ExtractEventTimestamps(entries);
 
             var steps = new List<FleetStepStatusView>(view.Steps.Count);
@@ -224,8 +227,11 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: view.Error,
                 Try: view.Try);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // Per-room isolation: one unreadable room becomes its own error entry.
+            // Cancellation is NOT a room defect — it propagates so the scan stops
+            // instead of running to completion accumulating spurious errors.
             return new FleetRoomStatusView(
                 Name: roomName,
                 Path: roomDir,
