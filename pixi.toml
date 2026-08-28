@@ -41,7 +41,19 @@ lint-sidecar = { cmd = "go vet ./...", cwd = "src/Aer.Sidecar" }
 fmt-sidecar = { cmd = "gofmt -w .", cwd = "src/Aer.Sidecar" }
 fmt-check-sidecar = { cmd = "test -z \"$(gofmt -l .)\"", cwd = "src/Aer.Sidecar" }
 
-build = { cmd = "dotnet build", depends-on = ["build-core", "build-sidecar"] }
+# Every `dotnet` invocation that starts MSBuild goes through tools/buildlock.py (#1402): a
+# host-global lock serializing builds across worktrees, so concurrent lanes queue at the build
+# instead of the whole-lane level. The wrapper's docstring owns the mechanism (OS-released region
+# lock, nesting marker, loud timeout); its selftest is gated (buildlock-selftest below). `dotnet
+# run` tasks count as MSBuild owners too (implicit build) -- `tokens` and `vendor-check` are
+# wrapped for that reason. Not wrapped: the Go/cargo/flutter tasks (not MSBuild, and each worktree
+# owns its output dir), `dotnet tool restore`/`dotnet reportgenerator`/`dotnet tool install` legs
+# (tool-manifest and standalone-tool commands, not MSBuild), the LIVE smoke-*/vendor-probe tasks
+# (human-run, never concurrent with a lane by construction), and
+# `gates`/`gates-fast` themselves -- they hold no MSBuild directly; their MSBuild-owning legs
+# (fmt-check, lint, test-no-build, build-cli) are each wrapped, which serializes exactly the
+# dangerous fraction and lets the python audit legs of two gates runs still overlap.
+build = { cmd = "python tools/buildlock.py dotnet build", depends-on = ["build-core", "build-sidecar"] }
 # The rebuild is FORCED and then the test run is told not to build again (#688). MSBuild skips a
 # project whose source is older than the assembly built from it, so a plain `dotnet test` can run the
 # suite against an assembly that does not correspond to the checkout -- every assertion passing or
@@ -59,32 +71,32 @@ build = { cmd = "dotnet build", depends-on = ["build-core", "build-sidecar"] }
 # 66s test), so about +19s or 29% per run. Paid on every iteration deliberately: `pixi run gates`
 # already forced a rebuild via `lint`, so the protection existed where the risk was lowest and was
 # absent from the inner loop, where a session runs this dozens of times.
-test = { cmd = "dotnet build --no-incremental && dotnet test --no-build", depends-on = ["build-core", "test-sidecar"] }
-test-dotnet = { cmd = "dotnet build --no-incremental && dotnet test --no-build", depends-on = ["build-core"] }
+test = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build", depends-on = ["build-core", "test-sidecar"] }
+test-dotnet = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build", depends-on = ["build-core"] }
 # Sharded test tasks for CI (#1363) — see .github/workflows/ci.yml
-test-flow = { cmd = "dotnet build --no-incremental && dotnet test --no-build --filter \"FullyQualifiedName~Aer.Flow.Tests\"", depends-on = ["build-core"] }
-test-other = { cmd = "dotnet build --no-incremental && dotnet test --no-build --filter \"FullyQualifiedName!~Aer.Flow.Tests\"", depends-on = ["build-core"] }
+test-flow = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName~Aer.Flow.Tests\"", depends-on = ["build-core"] }
+test-other = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName!~Aer.Flow.Tests\"", depends-on = ["build-core"] }
 # The gates-only test leg (#986): `gates` sequences this after `lint`, whose forced
 # `--no-incremental` build is the same protection `test`'s own build step buys (the "partial
 # cover" note under `lint` below) -- so building again inside the same run was pure duplication.
 # Standalone use is EXPOSED to the #688 stale-assembly trap `test` exists to close: outside a
 # gates run, use `pixi run test`.
-test-no-build = { cmd = "dotnet test --no-build", depends-on = ["build-core", "test-sidecar"] }
+test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build", depends-on = ["build-core", "test-sidecar"] }
 # Coverage report (#199): collects per-test-project Cobertura via coverlet, merges into an HTML
 # report + text summary at artifacts/coverage/report/ (open index.html, or read Summary.txt).
 # Results are wiped first so stale collections never skew the merge. Excludes source-generated
 # code by attribute (coverage.runsettings); external/aer-core's Rust library is invisible to .NET
 # coverage by nature — its own `pixi run coverage` (cargo-llvm-cov) lives in the aer-core repo.
-coverage = { cmd = "rm -rf artifacts/coverage && dotnet tool restore && dotnet test --collect:\"XPlat Code Coverage\" --settings coverage.runsettings --results-directory artifacts/coverage && dotnet reportgenerator -reports:artifacts/coverage/**/coverage.cobertura.xml -targetdir:artifacts/coverage/report \"-reporttypes:Html;TextSummary\" \"-assemblyfilters:+Aer.*\"", depends-on = ["build-core"] }
+coverage = { cmd = "rm -rf artifacts/coverage && dotnet tool restore && python tools/buildlock.py dotnet test --collect:\"XPlat Code Coverage\" --settings coverage.runsettings --results-directory artifacts/coverage && dotnet reportgenerator -reports:artifacts/coverage/**/coverage.cobertura.xml -targetdir:artifacts/coverage/report \"-reporttypes:Html;TextSummary\" \"-assemblyfilters:+Aer.*\"", depends-on = ["build-core"] }
 
-fmt = "dotnet format"
-fmt-check = { cmd = "dotnet format --verify-no-changes", depends-on = ["fmt-check-sidecar"] }
+fmt = "python tools/buildlock.py dotnet format"
+fmt-check = { cmd = "python tools/buildlock.py dotnet format --verify-no-changes", depends-on = ["fmt-check-sidecar"] }
 
 # M25 (#345): regenerates both toolkits' theme resources from design/tokens.json. Not wired into
 # build — generated artifacts are checked in, and Aer.Architecture.Tests fails if they drift from the
 # token file, so running this is a deliberate act after editing tokens rather than a build side
 # effect that rewrites tracked files under everyone.
-tokens = "dotnet run --project tools/Aer.DesignTokens"
+tokens = "python tools/buildlock.py dotnet run --project tools/Aer.DesignTokens"
 # --no-incremental is load-bearing, not a purity knob (#687). MSBuild decides a project is up to date
 # by comparing timestamps, so a source file OLDER than the assembly built from it is silently skipped
 # and `dotnet build -warnaserror` prints "Build succeeded. 0 Error(s)" for code that does not compile.
@@ -97,7 +109,7 @@ tokens = "dotnet run --project tools/Aer.DesignTokens"
 #
 # Partial cover for `test` too, when run through `gates`: lint precedes it and forces the rebuild, so
 # the suite then runs against fresh assemblies. `pixi run test` on its own is still exposed.
-lint = { cmd = "dotnet build -warnaserror --no-incremental", depends-on = ["build-core", "lint-sidecar"] }
+lint = { cmd = "python tools/buildlock.py dotnet build -warnaserror --no-incremental", depends-on = ["build-core", "lint-sidecar"] }
 
 # M21 Phase 2 (#232): mobile-build produces a debug APK only — Aer.Mobile is sideload-only for this
 # milestone (no Play Store signing/release config exists).
@@ -129,7 +141,7 @@ mobile-patch = { cmd = "bash scripts/patch-tailscale-dart.sh" }
 # native aer_core library for the current host OS. Not part of `build`/`test`/`lint` — packing
 # isn't needed for everyday development, only for the install round trip this phase's runbook-style
 # verification exercises (`dotnet tool install --global --add-source bin/pack <PackageId>`).
-pack = { cmd = "dotnet pack src/Aer.Cli/Aer.Cli.csproj -o bin/pack", depends-on = ["build-core"] }
+pack = { cmd = "python tools/buildlock.py dotnet pack src/Aer.Cli/Aer.Cli.csproj -o bin/pack", depends-on = ["build-core"] }
 
 # Validates what a live smoke run ASSUMES, before it is allowed to spend anything. Free: reads
 # files and queries `agy models` / `claude auth status`, and starts no billable session. Every
@@ -246,7 +258,7 @@ audit-completeness = { cmd = "python -u tools/audit-completeness/completeness.py
 # touches no P/Invoke — but it DOES need the submodule checked out: Aer.Flow hard-references
 # the submodule's managed binding project (Aer.Core.csproj), which is source, not a build
 # product. Deliberately no build-core dependency: rust-free is what keeps the leg ~a minute.
-build-cli = { cmd = "dotnet build src/Aer.Cli" }
+build-cli = { cmd = "python tools/buildlock.py dotnet build src/Aer.Cli" }
 audit-selfcheck = { cmd = "python -u tools/audit-completeness/selfcheck.py" }
 audit-controls = { cmd = "python -u tools/audit-completeness/controls.py" }
 audit-vocabulary = { cmd = "python -u tools/audit-completeness/vocabulary.py" }
@@ -283,6 +295,11 @@ audit-retiredphrases-selftest = { cmd = "python -u tools/audit-completeness/reti
 audit-docsbudget = { cmd = "python -u tools/audit-completeness/docsbudget.py" }
 audit-docsbudget-selftest = { cmd = "python -u tools/audit-completeness/docsbudget.py --selftest" }
 
+# #1402: proves the build lock discriminates -- two wrapped commands serialize, a dead holder's
+# lock is released by the OS, and a blocked waiter times out loudly. Real subprocesses against an
+# isolated lock file; never touches the real one, so it is safe to overlap with anything.
+buildlock-selftest = { cmd = "python -u tools/buildlock.py --selftest" }
+
 # #1206: the flake-watch reporter's control arm. The reporter itself only ever runs in the scheduled
 # flake-watch workflow, which is exactly why its selftest belongs in the local gates — a reporter that
 # has quietly stopped being able to report is indistinguishable, from the outside, from a quiet suite.
@@ -303,7 +320,7 @@ setup-hooks = { cmd = "git config core.hooksPath .githooks" }
 # so it runs in the ordinary dev loop — `pixi run test` runs the same comparison via
 # Aer.Architecture.Tests, which is what actually makes a vendor self-update surface. Exits non-zero
 # when a CLI has moved; says so plainly, and does not pass, when no vendor CLI is present to inspect.
-vendor-check = { cmd = "dotnet run --project tools/Aer.VendorProbe -- --check" }
+vendor-check = { cmd = "python tools/buildlock.py dotnet run --project tools/Aer.VendorProbe -- --check" }
 
 # Dispatches one AER workflow step to a worker via a real `aer run` and prints its output -- the
 # scaffolding an ad-hoc Node one-liner stood in for three times during the #513 cross-vendor
