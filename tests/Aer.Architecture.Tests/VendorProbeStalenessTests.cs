@@ -92,7 +92,7 @@ public class VendorProbeStalenessTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            if (File.Exists(Path.Combine(dir.FullName, "docs", "plan.md")))
+            if (File.Exists(Path.Combine(dir.FullName, "AerFlow.slnx")))
             {
                 return dir.FullName;
             }
@@ -100,6 +100,6 @@ public class VendorProbeStalenessTests
             dir = dir.Parent;
         }
 
-        throw new InvalidOperationException("Could not locate the repository root from " + AppContext.BaseDirectory);
+        throw new InvalidOperationException("Could not locate the repository root (no AerFlow.slnx found) from " + AppContext.BaseDirectory);
     }
 }

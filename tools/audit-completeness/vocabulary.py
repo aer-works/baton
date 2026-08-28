@@ -1,6 +1,7 @@
 """Audit user-facing strings for banned engine vocabulary.
 
-Cites `docs/design/01-definition.md` § The nouns as the positive register the banned list is the complement of.
+The banned list is the complement of the product's own user-facing nouns -- one vocabulary, code and
+UI alike, no translation map (CLAUDE.md gate `record-once`).
 
 Walks user-facing surfaces (.axaml markup, C# ViewModels string literals, Dart lib string literals)
 and fails when banned terms appear without an inline allowlist comment `vocabulary-ok: <reason>`.

@@ -2,8 +2,9 @@
 
 WHY THIS EXISTS
 ---------------
-`docs/documentation-lessons.md` rule 15 says any claim of completeness ships with the artifact that
-lets someone check it. This is that artifact for the #527 audit chain.
+A claim of completeness ships with the artifact that lets someone check it -- prose alone enforces
+nothing (CLAUDE.md, "PROSE THAT NOBODY READS IS USELESS"). This is that artifact for the #527 audit
+chain.
 
 Each step takes a population that can be ENUMERATED and asserts every member carries a disposition.
 `main()` is the list of them; do not restate it here -- a restated count is one `selfcheck.py`
@@ -18,19 +19,19 @@ blind spots is the thing it exists to prevent.
 SCOPE
 -----
 A standing check, wired into CI: `.github/workflows/ci.yml`'s `audit` job runs it, and `audit` is a
-required leg of the aggregate `ci` gate. Run it locally too before a PR touching `docs/decisions/`,
+required leg of the aggregate `ci` gate. Run it locally too before a PR touching `spec/baton.md`,
 `docs/vendor-*.md`, or `tools/vendor-verify/verify.py` -- a local run has the mirrored corpus CI
 does not, so step 2 checks strictly more there.
 
 It is standing because it was once scoped as a one-time instrument, then run cold nine days later
 and failed: 11 decisions and 2 vendor-verify checks had accumulated with no disposition, invisible
-because nothing was re-running it. A completeness check whose population keeps growing cannot be
-frozen at the population it was born with.
+because nothing was re-running it (back when decision records existed as a separate register --
+spec v2.0, #1397, folded their content into spec/baton.md itself). A completeness check whose
+population keeps growing cannot be frozen at the population it was born with.
 
 Every check verifies that a REASON WAS WRITTEN DOWN -- never that the reason is any good. It catches
-an omission, not a wrong judgement. Extend it when a population grows (a new decision file, a new
-vendor-verify check, a new step worth enumerating) -- not for open-ended rigour with no named
-failure behind it.
+an omission, not a wrong judgement. Extend it when a population grows (a new vendor-verify check, a
+new step worth enumerating) -- not for open-ended rigour with no named failure behind it.
 """
 from __future__ import annotations
 
@@ -151,10 +152,7 @@ def step2_corpus():
     return ok
 
 
-AUDIT_PROSE = ["docs/vendor-doc-audit.md", "docs/vendor-capabilities.md", "docs/vendor-coverage.md",
-               "docs/decisions/0029-the-gate-is-three-mechanisms.md",
-               "docs/decisions/0030-aer-is-its-own-notifier.md",
-               "docs/decisions/0015-three-kinds-of-needs-you.md"]
+AUDIT_PROSE = ["docs/vendor-doc-audit.md", "docs/vendor-capabilities.md", "docs/vendor-coverage.md"]
 _prose = None
 
 
@@ -191,7 +189,15 @@ def page_is_cited(name, vendor):
 
 
 def step3_gaps():
-    rule("STEP 3 -- every registered check is reachable from the backlog")
+    """The reverse-traceability half of this step (every check -> the documented gap it closes) was
+    dropped in the spec v2.0 reset (#1397): it rested entirely on docs/architecture-impact.md, now
+    deleted, and neither surviving vendor register (`vendor-coverage.md`, `vendor-doc-audit.md`) ever
+    carried a check name literally -- measured directly, zero hits for any of ~30 checks that had
+    relied on the impact register alone. Recreating that traceability would mean authoring ~30 new
+    citations into the vendor registers, a content rewrite this reset does not scope. What remains is
+    the population counts below, still free and still real.
+    """
+    rule("STEP 3 -- vendor-verify backlog population counts")
     coverage = read("docs/vendor-coverage.md")
     verify = read("tools/vendor-verify/verify.py")
     checks = re.findall(r'^@check\("([^"]+)"', verify, re.M)
@@ -200,77 +206,8 @@ def step3_gaps():
     line("vendor-verify checks registered", len(checks))
     line("backlog rows struck (verified/corrected)", struck)
     line("rows explicitly marked open", open_rows)
-
-    # Every registered check must be findable in the audit prose. A check nobody can trace back to
-    # the gap it closes is an orphan -- it still runs, but no reader can tell what question it
-    # answers, which is how a check outlives the claim it was written for.
-    prose = coverage + read("docs/vendor-doc-audit.md") + read("docs/architecture-impact.md")
-    orphans = [c for c in checks if c not in prose]
-    ok = line("checks traceable to a documented gap", len(checks) - len(orphans), len(checks),
-              "a check no document references is an orphan")
-    for c in sorted(orphans):
-        print(f"      ORPHAN: {c}")
     print("\n Still NOT auto-checkable: that a struck row was struck for the RIGHT reason.")
-    print(" This proves the mapping exists in both directions, never that the finding is correct.")
-    return ok
-
-
-# A sweep row must land on one of these words. Free prose is not a disposition: "0015 was
-# considered" passes a substring test while saying nothing. Fixed vocabulary makes the sweep
-# answerable -- and makes a decision that got no real look impossible to hide.
-DISPOSITIONS = ("unaffected", "amended", "superseded", "rewritten")
-
-# `Rests on` became mandatory for every decision dated on or after this day (#527, decisions/README.md).
-# A hardcoded file list here is exactly the bug an independent reviewer found: the first version of
-# this constant named only 0029/0030 (the two records that INTRODUCED the rule), so the checker could
-# never notice a later decision -- 0027, then 0031-0041 -- shipping without one. The population is
-# now derived from each file's own `Date:` header, which is the only source that can't go stale by
-# omission: a new decision either has a date past the cutoff or it doesn't.
-RESTS_ON_CUTOFF = (2026, 7, 25)
-
-
-def decisions_requiring_rests_on():
-    """Every decision file dated on or after RESTS_ON_CUTOFF, by parsing its own Date: header --
-    not a maintained list. A file with no parseable date is treated as requiring it (fail loud, not
-    silently exempt) rather than skipped.
-    """
-    d = os.path.join(ROOT, "docs", "decisions")
-    files = sorted(f for f in os.listdir(d) if re.match(r"^\d{4}-", f)) if os.path.isdir(d) else []
-    required = []
-    for f in files:
-        m = re.search(r"^Date:\s*(\d{4})-(\d{2})-(\d{2})", read(f"docs/decisions/{f}"), re.M)
-        if m is None or tuple(int(x) for x in m.groups()) >= RESTS_ON_CUTOFF:
-            required.append(f)
-    return required
-
-
-def step5_impact():
-    rule("STEP 5 -- every measured check has a recorded architectural impact")
-    verify = read("tools/vendor-verify/verify.py")
-    checks = re.findall(r'^@check\("([^"]+)"', verify, re.M)
-    impact = read("docs/architecture-impact.md")
-    if not impact.strip():
-        print("    !! docs/architecture-impact.md not written yet -- step 5 incomplete")
-        return False
-    # A check counts only if the impact doc names it AND says something after it. The row format is
-    # `| `check.name` | result | impact |`, so the name must appear in a table row with two more
-    # populated cells -- the same rule step 6 applies to decisions, for the same reason: a bare
-    # mention is not a disposition.
-    missing = []
-    for c in checks:
-        row = next((ln for ln in impact.splitlines()
-                    if ln.strip().startswith("|") and c in ln), None)
-        if row is None:
-            missing.append((c, "no row"))
-            continue
-        cells = [x.strip() for x in row.strip().strip("|").split("|")]
-        if len(cells) < 3 or len(cells[2]) < 25:
-            missing.append((c, "row has no impact stated"))
-    ok = line("checks with an impact row", len(checks) - len(missing), len(checks),
-              "including 'no impact' + why, which is a real disposition")
-    for c, why in missing:
-        print(f"      MISSING: {c:<48} {why}")
-    return ok
+    return True
 
 
 def step8_cited_checks_exist():
@@ -565,97 +502,16 @@ def step9_pinned_models_exist():
     return bool(ok)
 
 
-def step7_milestones():
-    rule("STEP 7 -- the milestone approach re-verified against the audit")
-    plan = read("docs/plan.md")
-    marker = "What the vendor audit (#527) changes about this sequence"
-    ok = line("plan.md carries the audit's milestone amendment",
-              "yes" if marker in plan else "NO", "yes")
-    # The amendment is only real if it names milestones. A section that says "nothing changed"
-    # without naming what it checked is the assertion this whole exercise exists to replace.
-    named = [m for m in ("M26", "M27", "M28") if plan.count(m) and marker in plan]
-    ok &= line("milestones named in the amendment", len(named), 3)
-    return ok
-
-
-def step6_decisions():
-    rule("STEP 6 -- every pre-audit decision record has a disposition in the audit sweep")
-    d = os.path.join(ROOT, "docs", "decisions")
-    all_files = sorted(f for f in os.listdir(d) if re.match(r"^\d{4}-", f)) if os.path.isdir(d) else []
-
-    # #952: the required population is the records that existed to be audited -- dated before
-    # RESTS_ON_CUTOFF (the audit's date); the why lives in docs/decision-audit.md's own header.
-    # Post-audit records are covered by the `Rests on` requirement below, over exactly the
-    # complementary population. A file with no parseable date is required here too (fail loud, not
-    # silently exempt), matching decisions_requiring_rests_on's own posture.
-    def predates_audit(f):
-        m = re.search(r"^Date:\s*(\d{4})-(\d{2})-(\d{2})", read(f"docs/decisions/{f}"), re.M)
-        return m is None or tuple(int(x) for x in m.groups()) < RESTS_ON_CUTOFF
-
-    files = [f for f in all_files if predates_audit(f)]
-    sweep = read("docs/decision-audit.md")
-    line("decision records on disk", len(all_files))
-    line("of which pre-date the #527 audit (disposition required)", len(files))
-    if not sweep.strip():
-        print("    !! docs/decision-audit.md not written yet -- step 6 incomplete")
-        return False
-
-    # A row is only a disposition if it names the decision AND one of the vocabulary words AND
-    # gives a reason. Mentioning "0015" somewhere in a table is not a disposition.
-    #
-    # The reason is read from a FIXED COLUMN, not from "whatever prose is left in the row".
-    # Measuring the whole row would let any wide column satisfy it -- a title column alone
-    # ("A pause asks for one of three things") clears any length bar while saying nothing about
-    # why the decision survived the audit. Required shape, three columns exactly:
-    #
-    #     | 0015 | rewritten | <why, in the auditor's own words> |
-    rows = {}
-    for raw in sweep.splitlines():
-        cells = [c.strip() for c in raw.strip().strip("|").split("|")]
-        if len(cells) < 3 or not re.fullmatch(r"\[?(\d{4})\]?.*", cells[0]):
-            continue
-        num = re.match(r"\[?(\d{4})", cells[0]).group(1)
-        verb = next((v for v in DISPOSITIONS if v == cells[1].strip("* ").lower()), None)
-        rows[num] = (verb, len(cells[2]) >= 25)
-
-    bad = []
-    for f in files:
-        num = f[:4]
-        verb, reason = rows.get(num, (None, False))
-        if verb is None:
-            bad.append((f, "no disposition row" if num not in rows
-                        else f"row names none of {'/'.join(DISPOSITIONS)}"))
-        elif not reason:
-            bad.append((f, f"'{verb}' asserted with no reason given"))
-    line("pre-audit decisions with a vocabulary disposition + reason", len(files) - len(bad), len(files))
-    for f, why in bad:
-        print(f"      INCOMPLETE: {f:<52} {why}")
-
-    ok = not bad
-    required = decisions_requiring_rests_on()
-    missing_rests_on = [f for f in required
-                        if not re.search(r"^## Rests on", read(f"docs/decisions/{f}"), re.M)]
-    ok &= line("decisions dated >= 2026-07-25 carrying `Rests on`",
-              len(required) - len(missing_rests_on), len(required),
-              "population derived from each file's own Date: header, not a maintained list")
-    for f in missing_rests_on:
-        print(f"      MISSING `Rests on`: {f}")
-    return ok
-
-
 # Multi-word phrases only, and matched with word boundaries -- a first version used bare "open" and
-# "unknown" and got 43 hits, nearly all false: "reopened", "opened", milestone-history.md's routine
-# "M25 (closed)... which opened..." prose. A single word is too common in ordinary English to signal
-# staleness; these phrases are specific enough that a false hit is itself worth a look.
+# "unknown" and got 43 hits, nearly all false: "reopened", "opened", etc. A single word is too common
+# in ordinary English to signal staleness; these phrases are specific enough that a false hit is
+# itself worth a look.
 STALENESS_PHRASES = (
     "still open", "still unknown", "remains open", "not yet landed", "not yet resolved",
     "not yet probed", "unprobed", "highest-value open", "no issue owns", "TODO",
 )
-# Excluded: archive/ is explicitly superseded material (docs/archive/README.md); milestone-history.md
-# is explicitly provenance ("what a past milestone did," README.md) and routinely narrates closed
-# issues in prose that legitimately contains words like "open" -- neither is drift.
 CITATION_DIRS = ("docs", "spec")
-CITATION_EXCLUDE = ("docs/archive/", "docs/decisions/README.md", "docs/milestone-history.md")
+CITATION_EXCLUDE = ()
 ISSUE_RE = re.compile(r"#(\d{2,5})\b")
 
 
@@ -755,7 +611,7 @@ NUMERIC_GATE = re.compile(r"\bgates?\s+\d+", re.I)
 CITED_SLUG = re.compile(r"(?i:\bgates?)\s+`([a-z][a-z-]+)`")
 GATE_SCAN_DIRS = ("docs", "spec", "src", "tools", "tests", ".github")
 GATE_SCAN_FILES = ("CLAUDE.md", "README.md", "pixi.toml")
-GATE_SCAN_EXCLUDE = ("docs/archive",)
+GATE_SCAN_EXCLUDE = ()
 GATE_SCAN_SUFFIXES = (".md", ".py", ".cs", ".toml", ".yml", ".yaml", ".rs", ".go")
 
 
@@ -973,14 +829,12 @@ def step13_structural_claims():
     - CLAUDE.md's repo-structure map names exactly the src/* projects on disk, both directions.
       First live catch, before this step even ran in CI: Aer.Mcp and Aer.Mcp.Host had shipped
       without the map noticing.
-    - Every src/... path cited by spec/*.md or docs/plan.md resolves in the tree.
+    - Every src/... path cited by spec/*.md resolves in the tree.
     - Every docs/runbooks/*.md referenced from pixi.toml exists.
 
     Deliberately absent, recorded here and on #314: the reverse runbook direction (three runbooks
     are procedure records with no pixi task on purpose); navigation destinations (the redesign
-    deletes that shell); template ids (no live doc restates them -- the only mention is
-    milestone-history.md, which is provenance, never authority, and excluded from staleness
-    checks for exactly that reason).
+    deletes that shell); template ids (no live doc restates them).
     """
     rule("STEP 13 -- structural claims: repo map, cited src paths, runbook references")
     ok = True
@@ -1005,8 +859,12 @@ def step13_structural_claims():
 
     bad_paths = []
     spec_files = [f"spec/{f}" for f in os.listdir(os.path.join(ROOT, "spec")) if f.endswith(".md")]
-    for doc in spec_files + ["docs/plan.md"]:
-        for cited in sorted(set(re.findall(r"src/[A-Za-z0-9._/-]+[A-Za-z0-9]", read(doc)))):
+    for doc in spec_files:
+        # A doc's own "## Naming note (transitional)" tail (spec/baton.md's rename plan, e.g.
+        # `src/Baton`) cites paths a FUTURE PR creates, not the current tree -- excluded the same
+        # way `aer-uncatalogued-on-purpose` excludes a deliberately-invalid probe input above.
+        text = read(doc).split("## Naming note (transitional)")[0]
+        for cited in sorted(set(re.findall(r"src/[A-Za-z0-9._/-]+[A-Za-z0-9]", text))):
             if not os.path.exists(os.path.join(ROOT, cited)):
                 bad_paths.append((doc, cited))
     ok &= line("cited src/ paths that do not resolve", len(bad_paths), 0,
@@ -1022,46 +880,19 @@ def step13_structural_claims():
     return ok
 
 
-def step12_generated_index():
-    """#952: the decisions index is generated from the records, so there is no hand copy to drift.
-
-    The write half is `pixi run gen-register`; this runs the check half in gates and CI. A stale
-    region -- or a record whose heading/Status line no longer parses -- fails the build with the
-    regeneration command in the message.
+def step12_vendor_pin_wellformed():
+    """The one arm of retired STEP 11 whose threat survived #952: the vendor-capabilities.md pin's
+    CANONICAL copy. vendor-doc-audit.md and vendor-coverage.md point at vendor-capabilities.md's
+    dated history table instead of restating it, so cross-file disagreement is structurally gone --
+    but a reshaped/emptied history table would leave those pointers dangling with nothing noticing.
+    Well-formedness only, not currency: re-measuring is what refreshes pins.
     """
-    rule("STEP 12 -- the generated decisions index matches the records")
-    import genregister
-    try:
-        ok = genregister.main(["--check"]) == 0
-    except SystemExit as e:
-        print(f"    !! {e}")
-        ok = False
-
-    # The one arm of retired STEP 11 whose threat survived #952: the pin's CANONICAL copy.
-    # vendor-doc-audit.md and vendor-coverage.md now point at vendor-capabilities.md's dated
-    # history table instead of restating it, so cross-file disagreement is structurally gone --
-    # but a reshaped/emptied history table would leave those pointers dangling with nothing
-    # noticing. Well-formedness only, not currency: re-measuring is what refreshes pins.
+    rule("STEP 12 -- vendor-capabilities.md's dated history pin is well-formed")
     head = read("docs/vendor-capabilities.md")
     pin = re.search(r"^\| \d{4}-\d{2}-\d{2}.*`(?:agy|claude)`.*\d+\.\d+", head, re.M)
-    ok &= line("vendor-capabilities.md carries a dated, versioned history row",
-               "yes" if pin else "MISSING", "yes",
-               "the canonical pin two other headers point at (#952)")
-    return ok
-
-
-def step14_generated_states():
-    """#616: the interaction-state table in 03-interaction-depth.md is generated from the
-    register (design/interaction-states.json), so there is no hand copy to drift — the same
-    shape as STEP 12. The write half is `pixi run gen-states`."""
-    rule("STEP 14 -- the generated interaction-state table matches the register")
-    import genstates
-    try:
-        ok = genstates.main(["--check"]) == 0
-    except SystemExit as e:
-        print(f"    !! {e}")
-        ok = False
-    return ok
+    return line("vendor-capabilities.md carries a dated, versioned history row",
+                "yes" if pin else "MISSING", "yes",
+                "the canonical pin two other headers point at (#952)")
 
 
 def _shutil_which(name):
@@ -1210,20 +1041,16 @@ def main() -> int:
         return pr_body_mode()
     print(__doc__.split("USAGE")[0].strip().splitlines()[0])
     results = [step1_sources(), step2_corpus(), step3_gaps(), step4_stale_citations(),
-               step5_impact(), step6_decisions(), step7_milestones(), step8_cited_checks_exist(),
-               step9_pinned_models_exist(), step10_gate_citations(), step12_generated_index(),
-               step13_structural_claims(), step14_generated_states()]
+               step8_cited_checks_exist(), step9_pinned_models_exist(), step10_gate_citations(),
+               step12_vendor_pin_wellformed(), step13_structural_claims()]
     git_state()
     rule("WHAT THIS SCRIPT CANNOT CHECK")
     for x in [
-        "That a finding's architectural implication is CORRECT -- only that one was recorded.",
         "The BUILD PLAN -- every design decision -> a sequenced piece of work -- is not checked",
         "  at all: its completeness is a judgement, not a join. (Step 8 is the CITATION",
         "  check; this list previously mislabelled it as the build plan.)",
         "That the vendor-verify checks still pass -- run `pixi run vendor-verify` for that.",
         "Whether a source nobody thought of exists. Enumeration cannot find its own blind spot.",
-        "Whether a 'no impact' or 'unaffected' call was the RIGHT call. It checks that a reason",
-        "  was given, never that the reason is good.",
         "Step 9 checks the AGY pins only. `opus`/`haiku` are claude CLI aliases with no",
         "  vendor catalogue to join against, so nothing HERE validates them --",
         "  smoke-preflight does check claude alias/shape, but only for tests/.",

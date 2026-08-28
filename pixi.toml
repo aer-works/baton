@@ -177,21 +177,13 @@ smoke-dialogue = { cmd = "dotnet test tests/Aer.Cli.SmokeTests --filter FullyQua
 # sessions have no `aer` CLI command. docs/runbooks/live-session-smoke.md
 smoke-session = { cmd = "dotnet test tests/Aer.Cli.SmokeTests --filter FullyQualifiedName~LiveSessionSmokeTest", depends-on = ["build-core", "smoke-preflight"] }
 
-# Journey tests (#313): the product-journey harness (spec/journeys.md). Two in-process runners —
-# desktop legs via Avalonia view-mounted headless, phone legs via Flutter widget tests — plus a
-# reconcile gate. Aer.Journeys.Tests is deliberately absent from AerFlow.slnx (same exclusion as
-# smoke-* above) so `pixi run test` stays all-green: journey tests are red-specs — a promise the
-# product does not keep yet fails its journey test on purpose, so journey-desktop / journey-mobile
-# exit non-zero until that capability lands. That red IS the honest status; it is not a broken
-# build. Filter to one journey with `--filter Journey=J6` (desktop). See docs/runbooks/journey-tests.md.
-journey-desktop = { cmd = "dotnet test tests/Aer.Journeys.Tests", depends-on = ["build-core"] }
+# Journey tests (#313): the phone leg of the product-journey harness, via Flutter widget tests. The
+# .NET half (Aer.Journeys.Tests, the desktop/engine legs, and the reconcile gate) was deleted with
+# spec/journeys.md in the spec v2.0 reset (#1397) -- see CLAUDE.md's `right-instrument` gate for why.
+# This mobile leg is a red-spec — a promise the product does not keep yet fails
+# its journey test on purpose, so `journey-mobile` exits non-zero until that capability lands. That
+# red IS the honest status; it is not a broken build. See dart_test.yaml.
 journey-mobile = { cmd = "flutter test --tags journey", cwd = "src/Aer.Mobile" }
-journey-all = { depends-on = ["journey-desktop", "journey-mobile"] }
-# The reconcile gate's structural half: asserts spec/journeys.md and the code-side Journeys registry
-# never drift (same set of journeys, byte-identical status lines). Unlike journey-desktop this is
-# meant to pass — #314 grows it into a required CI gate that also compares declared status against
-# the journey tests' actual pass/fail.
-journey-reconcile = { cmd = "dotnet test tests/Aer.Journeys.Tests --filter Category=Reconcile", depends-on = ["build-core"] }
 
 # Vendor probe (#504): establishes what each vendor CLI can actually do, and writes both the
 # findings matrix and docs/vendor-probe.lock.json (the versions those findings were established
@@ -243,16 +235,10 @@ vendor-verify = { cmd = "python -u tools/vendor-verify/verify.py" }
 #
 # STANDING CHECK (re-scoped 2026-07-26 -- see the SCOPE note in the script; it was run cold nine
 # days after #527 and caught 11 undispositioned decisions and 2 orphaned vendor-verify checks).
-# Run before a PR touching docs/decisions/, docs/vendor-*.md, or tools/vendor-verify/verify.py
-# ships -- CLAUDE.md gate `record-once`. Free except step 4 (closed-issue citation check), which
-# needs `gh` and the network and skips loudly rather than failing when neither is available.
+# Run it before the PRs CLAUDE.md gate `record-once` names. Free except step 4 (closed-issue
+# citation check), which needs `gh` and the network and skips loudly rather than failing when
+# neither is available.
 audit-completeness = { cmd = "python -u tools/audit-completeness/completeness.py" }
-# #952: rewrites docs/decisions/README.md's generated index from the records. The check half runs
-# inside audit-completeness (STEP 12); this is the write half a dev runs after adding a record.
-gen-register = { cmd = "python -u tools/audit-completeness/genregister.py" }
-# #616: rewrites 03-interaction-depth.md's state table from design/interaction-states.json. The
-# check half runs inside audit-completeness (STEP 13); this is the write half after a register edit.
-gen-states = { cmd = "python -u tools/audit-completeness/genstates.py" }
 
 # CLI-only build for the CI audit job (#887): audit-selfcheck's catalog checks read the role
 # catalog through `aer templates --json`, so the audit leg needs a built Aer.Cli. It does NOT
@@ -292,6 +278,10 @@ audit-waitceiling-selftest = { cmd = "python -u tools/audit-completeness/waitcei
 # bans only the phrase that has no legitimate remaining use.
 audit-retiredphrases = { cmd = "python -u tools/audit-completeness/retiredphrases.py" }
 audit-retiredphrases-selftest = { cmd = "python -u tools/audit-completeness/retiredphrases.py --selftest" }
+
+# #1397: the docs-budget tripwire -- see docsbudget.py's own docstring for what it enforces.
+audit-docsbudget = { cmd = "python -u tools/audit-completeness/docsbudget.py" }
+audit-docsbudget-selftest = { cmd = "python -u tools/audit-completeness/docsbudget.py --selftest" }
 
 # #1206: the flake-watch reporter's control arm. The reporter itself only ever runs in the scheduled
 # flake-watch workflow, which is exactly why its selftest belongs in the local gates — a reporter that
