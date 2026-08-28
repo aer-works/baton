@@ -31,13 +31,7 @@ public sealed class FleetStatusToolTests : IDisposable
         Environment.SetEnvironmentVariable(AerPaths.HomeEnvironmentVariable, _originalAerHome);
         if (Directory.Exists(_tempHome))
         {
-            try
-            {
-                Directory.Delete(_tempHome, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            DirectoryCleanup.DeleteRecursively(_tempHome);
         }
     }
 
@@ -76,13 +70,7 @@ public sealed class FleetStatusToolTests : IDisposable
         {
             if (Directory.Exists(extraRoot))
             {
-                try
-                {
-                    Directory.Delete(extraRoot, recursive: true);
-                }
-                catch (IOException)
-                {
-                }
+                DirectoryCleanup.DeleteRecursively(extraRoot);
             }
         }
     }
