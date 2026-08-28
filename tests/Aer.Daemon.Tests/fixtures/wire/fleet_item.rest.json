@@ -1,0 +1,13 @@
+{
+  "roomDirectoryPath": "C:/Users/pbree/.aer/tasks/foo",
+  "friendlyName": "foo",
+  "typeLabel": "solo-run-template",
+  "statusText": "Waiting for your review",
+  "pausedStepCount": 2,
+  "isArchived": false,
+  "created": "2026-08-03T12:00:00+00:00",
+  "updated": "2026-08-03T15:00:00+00:00",
+  "isSession": false,
+  "lastActivityAt": "2026-08-03T15:00:00+00:00",
+  "status": "NeedsYou"
+}

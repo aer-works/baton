@@ -1,0 +1,259 @@
+{
+  "snapshot": {
+    "workflowDefinitionSnapshotId": "snap-953",
+    "workflowTemplateId": "golden-wire-contract",
+    "workflowTemplateVersion": 1,
+    "steps": [
+      {
+        "stepId": "planner",
+        "worker": "agy",
+        "inputs": [],
+        "outputs": [
+          "plan.md"
+        ],
+        "dependsOn": [],
+        "retryPolicy": {
+          "maxAttempts": 3,
+          "backoff": "steady"
+        }
+      },
+      {
+        "stepId": "critic",
+        "worker": "agy",
+        "inputs": [
+          "plan.md"
+        ],
+        "outputs": [
+          "review.md"
+        ],
+        "dependsOn": [
+          "planner"
+        ],
+        "retryPolicy": {
+          "maxAttempts": 3,
+          "backoff": "steady"
+        },
+        "pausePoint": {
+          "supersedeTargets": [
+            "architect"
+          ],
+          "kind": "ReadyForReview"
+        }
+      },
+      {
+        "stepId": "coder",
+        "worker": "agy",
+        "inputs": [
+          "review.md"
+        ],
+        "outputs": [
+          "code.py"
+        ],
+        "dependsOn": [
+          "critic"
+        ],
+        "retryPolicy": {
+          "maxAttempts": 3,
+          "backoff": "steady"
+        }
+      }
+    ]
+  },
+  "state": {
+    "workflowDefinitionSnapshotId": "snap-953",
+    "steps": [
+      {
+        "stepId": "planner",
+        "status": "Running",
+        "latestExecutionId": "exec-1",
+        "upstreamExecutionIds": {},
+        "consecutiveFailureCount": 0,
+        "pauseRecordedForLatestExecution": false,
+        "isPendingSupersedeTarget": false
+      },
+      {
+        "stepId": "critic",
+        "status": "Paused",
+        "latestExecutionId": "exec-2",
+        "upstreamExecutionIds": {
+          "planner": "exec-1"
+        },
+        "consecutiveFailureCount": 0,
+        "pauseRecordedForLatestExecution": true,
+        "isPendingSupersedeTarget": false
+      },
+      {
+        "stepId": "coder",
+        "status": "Failed",
+        "latestExecutionId": "exec-3",
+        "upstreamExecutionIds": {
+          "critic": "exec-2"
+        },
+        "consecutiveFailureCount": 1,
+        "latestFailureClassification": "Permanent",
+        "latestFailureReason": "Syntax error on line 42",
+        "pauseRecordedForLatestExecution": false,
+        "isPendingSupersedeTarget": false
+      }
+    ],
+    "status": "Paused",
+    "stepLessExecutions": [],
+    "cancellationRequestedExecutionIds": []
+  },
+  "history": {
+    "attemptsByStepId": {
+      "planner": [
+        {
+          "executionId": "exec-1",
+          "worker": "agy",
+          "status": "Running",
+          "isNonProcess": false
+        }
+      ],
+      "critic": [
+        {
+          "executionId": "exec-2",
+          "worker": "agy",
+          "status": "Paused",
+          "isNonProcess": false
+        }
+      ],
+      "coder": [
+        {
+          "executionId": "exec-3",
+          "worker": "agy",
+          "status": "Failed",
+          "failureClassification": "Permanent",
+          "isNonProcess": false,
+          "reason": "Syntax error on line 42"
+        }
+      ]
+    },
+    "stepLessExecutions": [],
+    "decisions": []
+  },
+  "lineage": {
+    "executions": [
+      {
+        "executionId": "exec-1",
+        "stepId": "planner",
+        "worker": "agy",
+        "outputFiles": [
+          "plan.md"
+        ],
+        "inputs": [],
+        "declaredOutputs": [
+          "plan.md"
+        ]
+      },
+      {
+        "executionId": "exec-2",
+        "stepId": "critic",
+        "worker": "agy",
+        "outputFiles": [
+          "review.md"
+        ],
+        "inputs": [
+          {
+            "inputName": "plan.md",
+            "producerStepId": "planner",
+            "producerExecutionId": "exec-1"
+          }
+        ],
+        "declaredOutputs": [
+          "review.md"
+        ]
+      },
+      {
+        "executionId": "exec-3",
+        "stepId": "coder",
+        "worker": "agy",
+        "outputFiles": [
+          "code.py"
+        ],
+        "inputs": [
+          {
+            "inputName": "review.md",
+            "producerStepId": "critic",
+            "producerExecutionId": "exec-2"
+          }
+        ],
+        "declaredOutputs": [
+          "code.py"
+        ]
+      }
+    ]
+  },
+  "isWorkflowOff": false,
+  "permissionAnswers": [
+    {
+      "permissionRequestId": "perm-1",
+      "toolName": "Bash",
+      "category": "run_command",
+      "decisionKind": "AllowOnce",
+      "deciderIdentity": "operator",
+      "answeredAt": "2026-08-03T13:00:00\u002B00:00",
+      "wasRevoked": false
+    },
+    {
+      "permissionRequestId": "perm-2",
+      "toolName": "Bash",
+      "category": "run_command",
+      "decisionKind": "",
+      "reason": "turn_ended",
+      "deciderIdentity": "",
+      "answeredAt": "2026-08-03T14:00:00\u002B00:00",
+      "wasRevoked": true
+    }
+  ],
+  "dormancyTransitions": [
+    {
+      "isEntered": true,
+      "consecutiveFailures": 3,
+      "detail": "The last three turns tried to fix build",
+      "timestamp": "2026-08-03T14:30:00\u002B00:00"
+    },
+    {
+      "isEntered": false,
+      "consecutiveFailures": 0,
+      "clearedBy": "operator",
+      "timestamp": "2026-08-03T15:00:00\u002B00:00"
+    }
+  ],
+  "stepPauseMoments": [
+    {
+      "executionId": "exec-2",
+      "stepId": "critic",
+      "pausedAt": "2026-08-03T15:30:00\u002B00:00"
+    }
+  ],
+  "recordedDecisionMoments": [
+    {
+      "decisionId": "dec-1",
+      "referencedExecutionId": "exec-2",
+      "decisionType": "Resume",
+      "decider": {
+        "kind": "Human"
+      },
+      "recordedAt": "2026-08-03T15:45:00\u002B00:00"
+    }
+  ],
+  "participants": [],
+  "files": {
+    "files": []
+  },
+  "isDormant": false,
+  "directoryPath": "C:/tasks/foo",
+  "sessionId": "session-123",
+  "workerAdapters": {
+    "critic": "agy"
+  },
+  "workerEffortTiers": {
+    "critic": "careful"
+  },
+  "workerDepthTiers": {
+    "planner": "deep"
+  },
+  "roomCardStatus": "NeedsYou",
+  "roomCardStatusText": "Waiting for your review"
+}
