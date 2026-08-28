@@ -1,5 +1,4 @@
 using Aer.Adapters;
-using Aer.Cli.SmokeTests.TestSupport;
 using Aer.Flow.Domain;
 
 namespace Aer.Cli.SmokeTests;

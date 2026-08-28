@@ -123,7 +123,7 @@ pack = { cmd = "python tools/buildlock.py dotnet pack src/Aer.Cli/Aer.Cli.csproj
 # prints what it CANNOT check as well as what it did, so passing it is never read as "all clear".
 smoke-preflight = { cmd = "python -u tools/smoke-preflight/preflight.py" }
 
-# LIVE AND PAID -- smoke-claude, smoke-mixed-vendor, smoke-session, vendor-probe and
+# LIVE AND PAID -- smoke-claude, smoke-mixed-vendor, vendor-probe and
 # vendor-verify drive real authenticated vendor CLIs and spend real subscription usage. They never
 # run in CI and are permanently a human action item; an agent session cannot close one. CLAUDE.md's
 # "Live-vendor smoke tests" section owns that rule and the reasoning; each task below adds only what
@@ -147,11 +147,6 @@ smoke-readonly = { cmd = "dotnet test tests/Aer.Cli.SmokeTests --filter FullyQua
 # workflow, paused at review's declared PausePoint and resumed via `aer decide`. Needs BOTH vendors.
 # docs/runbooks/live-mixed-vendor-smoke.md
 smoke-mixed-vendor = { cmd = "dotnet test tests/Aer.Cli.SmokeTests --filter FullyQualifiedName~LiveMixedVendorPausedRunSmokeTest", depends-on = ["build-core", "smoke-preflight"] }
-
-# M24 Phase 1/2 (#262/#263) completion gate, added retroactively: a ~50-turn interactive-session
-# stress run plus a compact round trip, driven directly against Aer.Daemon's real HTTP surface --
-# sessions have no `aer` CLI command. docs/runbooks/live-session-smoke.md
-smoke-session = { cmd = "dotnet test tests/Aer.Cli.SmokeTests --filter FullyQualifiedName~LiveSessionSmokeTest", depends-on = ["build-core", "smoke-preflight"] }
 
 # Vendor probe (#504): establishes what each vendor CLI can actually do, and writes both the
 # findings matrix and docs/vendor-probe.lock.json (the versions those findings were established

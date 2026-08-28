@@ -281,9 +281,10 @@ a vendor CLI is the first kind, settled: do not relitigate it, and never install
 path to make it closable by an agent. Running a live-vendor gate against a CLI already authenticated
 on the machine is not — see the owner ruling under "Live-vendor smoke tests" above — but it still
 spends real, disclosed budget, which is what this section is about either way.
-*One smoke test spent top-tier model budget per run — the per-turn figure is in
-`tests/Aer.Cli.SmokeTests/LiveSessionSmokeTest.cs`, not here. Two issues were filed as permanently
-human when one needed a browser for a single question and the other needed a better probe.*
+*One smoke test spent top-tier model budget per run — the per-turn figure was in
+`tests/Aer.Cli.SmokeTests/LiveSessionSmokeTest.cs` (deleted with the daemon's session-chat surface,
+#1420), not here. Two issues were filed as permanently human when one needed a browser for a single
+question and the other needed a better probe.*
 
 ---
 
