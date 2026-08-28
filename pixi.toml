@@ -179,8 +179,8 @@ smoke-session = { cmd = "dotnet test tests/Aer.Cli.SmokeTests --filter FullyQual
 
 # Journey tests (#313): the phone leg of the product-journey harness, via Flutter widget tests. The
 # .NET half (Aer.Journeys.Tests, the desktop/engine legs, and the reconcile gate) was deleted with
-# spec/journeys.md in the spec v2.0 reset (#1397) — harness-facing journeys are future work that will
-# bring its own checks. This mobile leg is a red-spec — a promise the product does not keep yet fails
+# spec/journeys.md in the spec v2.0 reset (#1397) -- see CLAUDE.md's `right-instrument` gate for why.
+# This mobile leg is a red-spec — a promise the product does not keep yet fails
 # its journey test on purpose, so `journey-mobile` exits non-zero until that capability lands. That
 # red IS the honest status; it is not a broken build. See dart_test.yaml.
 journey-mobile = { cmd = "flutter test --tags journey", cwd = "src/Aer.Mobile" }
