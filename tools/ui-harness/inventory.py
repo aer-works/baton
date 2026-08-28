@@ -1,6 +1,6 @@
-"""Enumerates every interactive control in the desktop (AXAML) and mobile (Dart) UI.
+"""Enumerates every interactive control in the desktop (AXAML) UI.
 
-Ad-hoc clicking missed three real capabilities this session because they sat behind
+Ad-hoc clicking missed real capabilities this session because they sat behind
 collapsed expanders, non-default tabs, or state-gated sections. A source-derived
 inventory turns "did we look everywhere" into a checklist that can be walked and ticked.
 """
@@ -32,24 +32,6 @@ AXAML_KINDS = [
     ("ListBox", r"<ListBox\b[^>]*"),
 ]
 
-# Mobile: Flutter widgets that carry an onPressed/onTap, plus the disclosure containers.
-DART_KINDS = [
-    ("ExpansionTile", r"ExpansionTile\("),
-    ("PopupMenuItem", r"PopupMenuItem\b"),
-    ("ElevatedButton", r"ElevatedButton(?:\.icon)?\("),
-    ("FilledButton", r"FilledButton(?:\.icon|\.tonal)?\("),
-    ("OutlinedButton", r"OutlinedButton(?:\.icon)?\("),
-    ("TextButton", r"TextButton(?:\.icon)?\("),
-    ("IconButton", r"IconButton\("),
-    ("FloatingActionButton", r"FloatingActionButton(?:\.extended)?\("),
-    ("ListTile", r"ListTile\("),
-    ("Switch", r"Switch(?:\.adaptive)?\("),
-    ("Checkbox", r"Checkbox\("),
-    ("DropdownButton", r"DropdownButton(?:FormField)?<"),
-    ("RadioListTile", r"RadioListTile<"),
-    ("TabBar", r"TabBar\("),
-]
-
 LABEL_PATTERNS = [
     re.compile(r'\bContent\s*=\s*"([^"]+)"'),
     re.compile(r'\bHeader\s*=\s*"([^"]+)"'),
@@ -61,7 +43,7 @@ LABEL_PATTERNS = [
 
 def walk(exts):
     for base, _dirs, files in os.walk(ROOT):
-        if any(seg in base for seg in ("\\bin\\", "\\obj\\", "\\build\\", "\\.dart_tool\\")):
+        if any(seg in base for seg in ("\\bin\\", "\\obj\\", "\\build\\")):
             continue
         for f in files:
             if f.endswith(exts):
@@ -76,7 +58,7 @@ def label_for(fragment):
     return ""
 
 
-def scan(files, kinds, is_xaml):
+def scan(files, kinds):
     rows = []
     for path in files:
         try:
@@ -87,13 +69,7 @@ def scan(files, kinds, is_xaml):
         for kind, pattern in kinds:
             for m in re.finditer(pattern, text):
                 line = text.count("\n", 0, m.start()) + 1
-                if is_xaml:
-                    label = label_for(m.group(0))
-                else:
-                    # look ahead a little for a Text('...') label
-                    window = text[m.start(): m.start() + 400]
-                    lm = re.search(r"""Text\(\s*['"]([^'"]{1,60})['"]""", window)
-                    label = lm.group(1) if lm else ""
+                label = label_for(m.group(0))
                 rows.append((rel, line, kind, label))
     return rows
 
@@ -119,19 +95,17 @@ def report(title, rows):
 
 
 def main():
-    xaml_rows = scan(list(walk((".axaml",))), AXAML_KINDS, True)
-    dart_rows = scan(list(walk((".dart",))), DART_KINDS, False)
+    xaml_rows = scan(list(walk((".axaml",))), AXAML_KINDS)
     d_total, _ = report("DESKTOP (Avalonia .axaml)", xaml_rows)
-    m_total, _ = report("MOBILE (Flutter .dart)", dart_rows)
 
     print("\n" + "=" * 78)
     print("DISCLOSURE CONTAINERS — where capability hides")
     print("=" * 78)
-    for rel, line, kind, label in sorted(xaml_rows + dart_rows):
-        if kind in ("Expander", "TabItem", "ExpansionTile", "TabBar", "PopupMenuItem"):
+    for rel, line, kind, label in sorted(xaml_rows):
+        if kind in ("Expander", "TabItem"):
             print("  %-46s :%-5s %-14s %s" % (rel, line, kind, label))
 
-    print("\nGRAND TOTAL: %d" % (d_total + m_total))
+    print("\nGRAND TOTAL: %d" % d_total)
 
 
 main()

@@ -1,16 +1,15 @@
 # UI driving harness
 
 Tooling for verifying UI behaviour against the **running** product — the desktop app driven by
-window handle, and `Aer.Mobile` driven on an Android emulator over `adb`.
+window handle.
 
-It exists because a UX evaluation produced three confidently-wrong findings that were only
-corrected by actually driving the UI: the reviewed output *was* rendered (under a non-default tab),
-Author *does* draw a live DAG (inside a collapsed expander), and a paused run *can* be approved from
-the phone (when the daemon's open task happens to be that one). Reading source and clicking around
-was not enough for any of them.
+It exists because a UX evaluation produced confidently-wrong findings that were only corrected by
+actually driving the UI: the reviewed output *was* rendered (under a non-default tab), and Author
+*does* draw a live DAG (inside a collapsed expander). Reading source and clicking around was not
+enough for either.
 
-Not wired into `pixi run` or CI: these drive a real desktop session and a real emulator, so they are
-a deliberate manual tool. Issue #313 builds automated journeys on top of them.
+Not wired into `pixi run` or CI: these drive a real desktop session, so they are a deliberate
+manual tool. Issue #313 builds automated journeys on top of them.
 
 ## Desktop (Windows, Avalonia)
 
@@ -63,32 +62,15 @@ Four things that are not obvious and cost real time to discover:
 
 Alt-mnemonics only respond after clicking into the view *and* navigating away from Home.
 
-## Mobile (Android emulator)
-
-Driven directly with `adb`; no wrapper scripts. The non-obvious parts:
-
-- `adb shell input text` **splits on spaces** — escape them as `%s`:
-  `adb shell input text 'two%swords'`
-- The composer moves when the soft keyboard is up, so tap coordinates differ between keyboard-up and
-  keyboard-down states. Screenshot between steps rather than assuming a layout.
-- Capture with `adb exec-out screencap -p > out.png`.
-- Pairing: the desktop advertises only its Tailscale address once tsnet is ready, and that address
-  is unreachable from a device not enrolled in the tailnet. Type the **LAN** address into the Host
-  field by hand. Pairing codes expire in 60 seconds, so mint and enter in one pass:
-  `curl -H "Authorization: Bearer $(cat ~/.aer/daemon.token)" http://127.0.0.1:5000/api/pairing/code`
-
-Running the app on an x86_64 emulator at all depends on the `tailscale` package patch (#303) —
-without it the process is killed by seccomp before Flutter renders. See `scripts/patch-tailscale-dart.sh`.
-
 ## Coverage inventory
 
 ```
 python tools/ui-harness/inventory.py
 ```
 
-Parses `src/**/*.axaml` and `src/**/*.dart` for interactive controls, and reports **disclosure
-containers** separately — expanders, tabs and popup menus, the places capability hides. Every
-finding the evaluation initially got wrong was behind one of those.
+Parses `src/**/*.axaml` for interactive controls, and reports **disclosure containers**
+separately — expanders, tabs and popup menus, the places capability hides. Every finding the
+evaluation initially got wrong was behind one of those.
 
 The point is that coverage becomes a checklist rather than a memory of where someone clicked. The
 current walked/unwalked state is tracked on #313.
