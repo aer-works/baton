@@ -17,19 +17,4 @@
     </AssemblyAttribute>
   </ItemGroup>
 
-  <!-- M21 Phase 5 (#242): copy the Go tsnet sidecar into the output directory, same copy-if-exists
-       pattern as Aer.Core's native library (external/aer-core/bindings/dotnet/Aer.Core/Aer.Core.csproj).
-       `pixi run build-sidecar` builds it first. Absent entirely if Go isn't installed/built; the
-       remote flag falls back to plain LAN in that case (DaemonHost.RunDaemonAsync checks File.Exists
-       before spawning). -->
-  <PropertyGroup>
-    <_SidecarExeName Condition="$([MSBuild]::IsOSPlatform('Windows'))">aer-sidecar.exe</_SidecarExeName>
-    <_SidecarExeName Condition="!$([MSBuild]::IsOSPlatform('Windows'))">aer-sidecar</_SidecarExeName>
-    <_SidecarExePath>$(MSBuildProjectDirectory)/../Aer.Sidecar/bin/$(_SidecarExeName)</_SidecarExePath>
-  </PropertyGroup>
-
-  <ItemGroup Condition="Exists('$(_SidecarExePath)')">
-    <Content Include="$(_SidecarExePath)" Link="$(_SidecarExeName)" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
 </Project>
