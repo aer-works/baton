@@ -113,7 +113,7 @@ return audits.filter(Boolean)
 **Directly relevant to our decisions:**
 
 - *"No mid-run user input… For sign-off between stages, run each stage as its own workflow"* is the
-  vendor hitting the same wall [0015](decisions/0015-three-kinds-of-needs-you.md) and the gate model
+  vendor hitting the same wall decision 0015 and the gate model
   are built around — and choosing the opposite trade-off. Worth understanding before we commit.
 - The four-way comparison table (subagents / skills / agent teams / workflows) is organised around
   **who holds the plan**, which is precisely the axis the fan-out decision (#503 items 4–5) argues
@@ -199,7 +199,7 @@ and:
 > "Conflicting rules are strictly evaluated in priority order: **Deny > Ask > Allow**."
 
 So `agy` has the same allow / ask / deny shape as `claude`'s `auto-mode` classifier and as
-[0022](decisions/0022-permission-ladder-and-denial-is-an-answer.md)'s ladder. Three independent
+decision 0022's ladder. Three independent
 designs, one shape. 0022 should be reconciled against both rather than either.
 
 Also documented and not recorded by us:
@@ -226,7 +226,7 @@ restrictions"* when enabled, *"Yes, and run in sandbox"* when disabled.
 asymmetry, it is platform-dependent, and neither of the two previous versions of the 0004 claim said
 so.
 
-### 4. `agy` does report quota — just not headlessly
+### 4. `agy` does report quota, headlessly as of a CLI update (superseded 2026-08-28)
 
 - **`/usage`** (alias **`/quota`**) — "Display model quota usage"; shows "your usage limits and
   remaining requests/tokens for each supported model (e.g. Gemini 3.5 Flash, Gemini 3.1 Pro)", and
@@ -234,9 +234,13 @@ so.
 - **`/credits`** — "View remaining G1 credits and purchase links", with a `useG1Credits` setting to
   spend personal credits once quotas are exhausted.
 
-**Both open an interactive TUI panel.** `agy -p "/usage"` genuinely produces no report headless, but
-the data exists and reaches a backend — what's missing is a non-interactive path to it. #479 needs a
-different route on `agy`, not a different conclusion.
+**Both once opened only an interactive TUI panel; `/usage` no longer does.** This section originally
+read "`agy -p "/usage"` genuinely produces no report headless, but the data exists and reaches a
+backend — what's missing is a non-interactive path to it" — true when measured, superseded by a CLI
+update rather than corrected. **Measured live 2026-08-28** (print mode, no model turn): `agy -p
+"/usage"` now returns structured, tab-separated rows per quota family (percent remaining + a real
+reset instant) — see `vendor-capabilities.md`'s "Usage, cost and quota" section for the exact shape.
+`/credits` was not re-probed by this measurement.
 
 ### 5. `toolPermission` has four values
 
@@ -453,7 +457,7 @@ The SDK hooks page lists events nothing in our records mentions. Four land direc
 | event | why it matters |
 |---|---|
 | **`PermissionDenied`** | *"The auto mode classifier denies a tool call"* — a hook for exactly the #514 hole, so AER can observe classifier denials it would otherwise never see |
-| **`Notification`** | fires with `permission_prompt` when Claude needs permission and `idle_prompt` when it is waiting for input — [0018](decisions/0018-attention-is-the-primary-signal.md)'s attention signal, as an event |
+| **`Notification`** | fires with `permission_prompt` when Claude needs permission and `idle_prompt` when it is waiting for input — decision 0018's attention signal, as an event |
 | **`Elicitation`** / `ElicitationResult` | *"An MCP server requests user input mid-task"* — a second, MCP-side path for "needs you" |
 | **`SubagentStart`** / `SubagentStop` | carries `agent_transcript_path`, so fan-out progress is readable without parsing output |
 
@@ -502,7 +506,7 @@ documented:
 > every other step, and a hook deny applies even in `bypassPermissions` mode."
 
 **So AER's gate should be a `PreToolUse` hook, not only a permission-prompt tool.** That is a
-materially better mechanism than the one [0015](decisions/0015-three-kinds-of-needs-you.md) chose, it
+materially better mechanism than the one decision 0015 chose, it
 closes the hole recorded in #514, and it was documented the whole time. An `ask` rule is the second
 always-fires instrument.
 
@@ -523,7 +527,7 @@ build our own.
 > "You can also use the `PermissionRequest` hook to send external notifications (Slack, email, push)
 > when Claude is waiting for approval."
 
-[0018](decisions/0018-attention-is-the-primary-signal.md)'s attention signal has a vendor-side hook.
+decision 0018's attention signal has a vendor-side hook.
 
 ### `AskUserQuestion` — the "decision" kind, with a wire format
 
@@ -549,7 +553,7 @@ found: **`updatedPermissions`**, echoing back a suggested `PermissionUpdate` fro
 That is **"approve and remember"** as a first-class concept, and the documented response vocabulary is
 richer than approve/reject: *approve · approve with changes · approve and remember · reject · suggest
 alternative · redirect entirely*. Worth comparing against
-[0022](decisions/0022-permission-ladder-and-denial-is-an-answer.md) before designing our own set.
+decision 0022 before designing our own set.
 
 ## Agent teams — the blockers model, shipping
 
@@ -1729,7 +1733,7 @@ agy: "Executed both control_tool and elicit_tool successfully"
 Worker asks, call stays open, human answers somewhere else entirely, worker resumes — the shape M28's
 demonstration needs, with a real person and a real browser.
 
-This promotes [0029](decisions/0029-the-gate-is-three-mechanisms.md)'s central claim from reasoned to
+This promotes decision 0029's central claim from reasoned to
 measured. Its two `Rests on` rows were amended to match in `fd1aa00` (#528), not here — the
 url-surfacing row resolves **measured false**, with exactly the consequence it predicted.
 

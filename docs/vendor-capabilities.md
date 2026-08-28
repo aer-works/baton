@@ -70,7 +70,7 @@ env $STRIP claude -p --output-format stream-json --verbose "..."
 | Permission policy engine | **`claude auto-mode`** — allow / soft_deny / hard_deny | not found on: `--help`, subcommand list |
 | Always-fires gate hook | **`PreToolUse` hook — first of six evaluation steps, applies even in `bypassPermissions`** | **`PreToolUse` hook — the vendor mechanism denies; what AER shipped never ran on Windows until #710 (the only platform measured — `sh` would have stripped the quotes `cmd` chokes on)** |
 | Model enumeration | not found on: `--help`, subcommand list | **`agy models`** |
-| Plan usage & reset | **`/usage` (and `/cost`) — works headlessly, see below** | **none** — `/usage` is not a real command |
+| Plan usage & reset | **`/usage` (and `/cost`) — works headlessly, see below** | **`/usage` — works headlessly, per-family rows, measured 2026-08-28, see below** |
 | Per-turn cost | **`total_cost_usd` in every `stream-json` result** | no **dollar** figure (no `total_cost_usd`) — but the `stream-json` `result` carries per-turn **token** usage (`usage`: input/output/thinking/cache_read/total), #1088 |
 | Other | `--agents <json>` | `--remote-control`, `--agent`, `--project` |
 
@@ -128,7 +128,7 @@ Less structured, but it names the remedy.
 ## `--permission-prompt-tool` — honoured by `claude`, and 0015 assumed it absent
 
 **Corrected 2026-07-24.** This document recorded the flag as **absent on both vendors**, established
-from `--help` alone. [0015](decisions/0015-three-kinds-of-needs-you.md) inverted its entire mechanism
+from `--help` alone. decision 0015 inverted its entire mechanism
 to a blocking MCP tool on that premise. The premise does not hold for `claude`.
 
 The flag is genuinely undocumented in `claude --help`, so the original reading was not careless — it
@@ -169,7 +169,7 @@ measurement rather than an inference. Without the flag, the identical prompt is 
 call lands in `permission_denials`.
 
 **So `--permission-prompt-tool` routes permission decisions to an MCP tool** — the same mechanism
-[0015](decisions/0015-three-kinds-of-needs-you.md) already chose, but as the vendor's designated entry
+decision 0015 already chose, but as the vendor's designated entry
 point, consulted for *every* decision, rather than a tool the model must elect to call. That
 difference is not cosmetic: a gate the model chooses to invoke is discipline resting on model
 behaviour, which is what Architecture Rule 1 exists to forbid. This one is structural.
@@ -203,7 +203,7 @@ Both replies were exercised in a clean environment where `claude -p` otherwise d
 Two properties worth designing around: **`updatedInput` lets an answer modify the call**, not merely
 permit it; and **the denial message is acted on by the worker** — on deny it reported stopping *"rather
 than routing around it with a shell write."* A denial can therefore carry a reason, which is what
-[0022](decisions/0022-permission-ladder-and-denial-is-an-answer.md) means by "denial is an answer".
+decision 0022 means by "denial is an answer".
 
 `agy` has no equivalent flag, so on that vendor the same MCP server must be reached by the model
 electing to call it — a weaker guarantee, and one the surface should not hide.
@@ -230,7 +230,7 @@ its rule text reads — worth knowing before treating the classifier as a ceilin
 **Consequence: `auto` and a permission callback are mutually exclusive. Pick one.** AER must never
 set `auto` on a worker whose gate it relies on, and if a user's own settings turn it on, AER has to
 know its gate is dead rather than reporting a permission surface it no longer has. This is a
-[0028](decisions/0028-no-permissive-control-is-the-default.md) question as much as a mechanism one:
+decision 0028 question as much as a mechanism one:
 the more convenient mode is the one that removes the control.
 
 **This callback is not the gate's primary mechanism — a `PreToolUse` hook is.** A hook resolves at
@@ -243,7 +243,7 @@ chokes on, so a Unix worker is expected to have been fine and has not been measu
 measurement and its consequences are in
 [`vendor-doc-audit.md`](vendor-doc-audit.md). The full mechanism table, the measurements
 behind it, and why the hook is mandatory on every spawned worker live in
-[0029](decisions/0029-the-gate-is-three-mechanisms.md) — read that, not this section, before
+decision 0029 — read that, not this section, before
 building the gate.
 
 ## The subcommand surface — three `claude` subcommands nobody had opened
@@ -274,7 +274,7 @@ the vendor already models *waiting on a human* as a first-class state, which is 
 `claude agents` also accepts `--permission-mode`, `--effort`, `--model`, `--mcp-config`, `--add-dir`
 and `--settings` as **defaults for dispatched sessions**, plus `--allow-dangerously-skip-permissions`
 ("make bypass available without defaulting to it") — which is precisely
-[0028](decisions/0028-no-permissive-control-is-the-default.md)'s shape, already expressible.
+decision 0028's shape, already expressible.
 
 This is the fan-out surface. It deserves a real feasibility read before AER builds its own.
 
@@ -373,7 +373,7 @@ Two things the design assumed otherwise:
   canonical home, which is the drift gate `record-once` exists to stop.
 - **The grid has holes.** `gemini-3.1-pro` has `high` and `low` but **no `medium`**. A UI offering
   model × effort as a matrix would offer combinations the CLI rejects. This sharpens
-  [0023](decisions/0023-effort-and-models-are-named-by-behaviour.md): naming by behaviour is right,
+  decision 0023: naming by behaviour is right,
   but the available set is per-model, so it has to be *enumerated*, not assumed.
 - `agy` serves **Anthropic and OpenAI models too**, not only Gemini. "The Gemini worker" is the wrong
   mental model for it.
@@ -444,7 +444,7 @@ dispatch-tier system, unrelated to this one, and never rendered to a person.
 **`claude` — fully placed, no collapse.** `claude` ships no model-list subcommand: `claude models` is
 answered as a prompt and spends usage rather than enumerating anything
 ([`vendor-doc-audit.md`](vendor-doc-audit.md) item 2 under "Three behaviours found after this audit
-closed", restated in [0023](decisions/0023-effort-and-models-are-named-by-behaviour.md) §4). What the
+closed", restated in decision 0023 §4). What the
 CLI *does* expose, and what `ClaudeWorkerAdapter.ModelAliases` already commits to as the stable
 interface, is three named aliases — `sonnet`, `opus`, `haiku` — each always resolving to that tier's
 current model. Three aliases, three canonical purposes, and the assignment is not new: it is the
@@ -470,7 +470,7 @@ models`" above) with the purpose axis this table is about.
 
 ## A blocking MCP tool holds a turn open — on both vendors
 
-The mechanism [0015](decisions/0015-three-kinds-of-needs-you.md) depends on. A dependency-free stdio
+The mechanism decision 0015 depends on. A dependency-free stdio
 MCP server exposed one tool whose handler did not reply until an out-of-band answer file appeared. A
 watcher minted a random token **after** observing the call start, so a correct answer proves the turn
 genuinely waited.
@@ -488,12 +488,15 @@ Two implementation constraints fall out:
 - **`agy` hands us the resume key at gate time.** `antigravity.google/conversation_id` is exactly what
   `agy --conversation <id>` resumes. A gate persisted with that id survives a host crash.
 
-## Usage, cost and quota — the asymmetry that matters most
+## Usage, cost and quota
 
-**Probed 2026-07-24.** An earlier pass concluded *"neither vendor exposes remaining quota or a reset
-time."* **That was wrong, and it was wrong for a methodological reason worth recording: it probed the
-CLI's `--help` and subcommand list, not the in-session slash commands.** Those are different surfaces,
-and the answer lives in the second one.
+**Probed 2026-07-24, re-measured 2026-08-28.** An earlier pass concluded *"neither vendor exposes
+remaining quota or a reset time."* **That was wrong, and it was wrong for a methodological reason
+worth recording: it probed the CLI's `--help` and subcommand list, not the in-session slash
+commands.** Those are different surfaces, and the answer lives in the second one. The asymmetry this
+section's title once named — `claude` headless, `agy` not — has since narrowed: a CLI update made
+`agy -p "/usage"` answer headlessly too (see the `agy` section below), so both vendors now report
+plan usage without a model turn.
 
 > **Probe both surfaces.** A capability absent from `--help` may still exist as a slash command, and
 > a slash command may still work under `-p`. Checking one and concluding about the other is how the
@@ -517,8 +520,8 @@ Last 24h · 1811 requests · 21 sessions
   82% of your usage was at >150k context
 ```
 
-So all four things [0026](decisions/0026-running-out-of-plan-is-a-state-not-a-failure.md) and `#479`
-needed are available: **percent consumed, a real reset instant, a per-model breakdown, and request
+So all four things decision 0026 and `#479` needed
+are available: **percent consumed, a real reset instant, a per-model breakdown, and request
 counts** — plus behavioural attribution (*what* is spending the plan), which nothing in the design
 anticipated and which is more actionable than the percentage alone.
 
@@ -536,19 +539,28 @@ drift to chase. Observed on a trivial *"reply with ok"* turn: **$0.2463**, of wh
 24,619 cache-creation tokens. Cache writes dominate, which is worth knowing before designing a
 per-turn cost display.
 
-### `agy` — nothing
+### `agy` — works headlessly too, as of a CLI update
 
-`agy -p "/usage"` is **not a built-in command**. Headless, it tried to run a shell tool and was denied;
-re-run sandboxed with permissions bypassed, the model simply answered *conversationally* — active
-model, config path, telemetry state. No quota percentage or reset, and no token count on *this*
-surface — but per-turn **token** usage does live in the `--output-format stream-json` `result` event
-(#1088); what stays absent here is *plan-level* usage against a subscription's limit. `agy -p "/cost"` likewise
-produced prose claiming the status bar shows it, which is an interactive-only surface and, being the
-model talking rather than the CLI, is not evidence of anything.
+**Superseded 2026-08-28.** The prior measurement on this row — `agy -p "/usage"` **not a built-in
+command**, headless print mode denied it or produced only conversational prose — is superseded by a
+CLI update, not corrected: `/usage` genuinely did not answer under `-p` when that measurement was
+taken. **Measured live 2026-08-28** (both CLIs in print mode, no model turn spent):
+`agy -p "/usage"` now returns structured, tab-separated rows, one per quota family:
 
-Not found on the surfaces checked: `--help`, the subcommand list, the slash surface, `--log-file`
-(13 KB, **zero** token keys), and `~/.gemini/antigravity-cli/cache/conversation_metadata.json`
-(`NumSteps`, `Title`, `UpdatedAt` — no usage of any kind).
+```
+Gemini Models	Weekly Limit Remaining	72%	2026-08-29T19:34:12Z
+Gemini Models	Five Hour Limit Remaining	42%	2026-08-28T16:36:17Z
+Claude and GPT models	Weekly Limit Remaining	<pct>	<reset instant>
+Claude and GPT models	Five Hour Limit Remaining	<pct>	<reset instant>
+```
+
+Percent remaining and a real reset instant, per family, headlessly — the thing #479 needed and this
+row previously recorded as absent on `agy`. Per-turn **token** usage separately lives in the
+`--output-format stream-json` `result` event (#1088), unaffected by this update.
+
+Not re-verified by this update: `--help`, the subcommand list, `--log-file`, and
+`~/.gemini/antigravity-cli/cache/conversation_metadata.json` — the prior "not found" measurements on
+those surfaces stand until someone re-probes them.
 
 **One surface remains unchecked** — `agy`'s local RPC server (below), to which no usage query has been
 put. It is no longer the *only* place structured data could live, though: stdout carries it (#1088).
@@ -596,7 +608,7 @@ reports per-turn **token** usage (the `stream-json` `result`'s `usage` object, #
 figure and no plan-level quota/reset. The asymmetry is now token-vs-dollar and per-turn-vs-plan, not
 "everything vs nothing" — but it still has to be visible in the interface rather than smoothed into a
 single half-trustworthy number, the same rule
-[0023](decisions/0023-effort-and-models-are-named-by-behaviour.md) applies to effort levels, where a
+decision 0023 applies to effort levels, where a
 collapse is disclosed rather than silently faked.
 
 **And design the surface for "not measured", not for "does not exist" — the predicted figure arrived.**
@@ -854,7 +866,7 @@ granted `command(...)` — two independent gates, not one. Internally it is a `s
 policy enforcer, blocked-request handling and OAuth2 credential brokering; vendor docs describe
 `enableTerminalSandbox` as restricting execution to "OS containment rings".
 
-This matters for [0004](decisions/0004-permission-scopes.md), though **not in the direction this
+This matters for decision 0004, though **not in the direction this
 document originally claimed.** The earlier reading here — *"a project-level ceiling is enforceable on
 `agy` and only advisory on `claude`"* — was drawn from the sandbox alone, before anyone tested
 `claude`'s grant patterns. It is wrong as a summary: `claude` expresses and **enforces** a family
@@ -988,4 +1000,4 @@ forever — a pass meaning only "the vendors were never here". That green would 
 because it looks like coverage. The check therefore *skips* where it cannot know, and says so.
 
 Related: `#472` (the first probe), `#504` (the probe suite), `#445` (the permission-request mechanism),
-[0004](decisions/0004-permission-scopes.md), [0015](decisions/0015-three-kinds-of-needs-you.md).
+decision 0004, decision 0015.

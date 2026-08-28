@@ -118,7 +118,7 @@ Index: `https://antigravity.google/llms.txt` + `sitemap.xml` — **77 doc pages,
 | R | `cli/reference` | slash commands, keybindings, `settings.json` keys |
 | R | `cli/permissions` | `action(target)`, **three lists incl. `ask`**, `Deny > Ask > Allow`, regex claim |
 | R | `cli/sandbox` | `enableTerminalSandbox`; **AppContainer on Windows** |
-| R | `cli/commands/usage` | `/usage`, `/quota` — TUI only |
+| R | `cli/commands/usage` | `/usage`, `/quota` — TUI only per this page; superseded by a CLI update measured live 2026-08-28 (headless now works, see `vendor-capabilities.md`) — the page itself was not re-read |
 
 ### Not read — Tier 1, load-bearing
 
@@ -235,8 +235,9 @@ background session unrecoverably · `cleanupPeriodDays` retention · `--no-sessi
 `·` Still documented-only: the four `toolPermission` presets (`request-review`,
 `proceed-in-sandbox`, `always-proceed`, `strict`) · "permission rules govern `run_command` across
 **all** execution modes" · subagents starting from a clean slate and being unre-awakenable ·
-AppContainer sandbox on Windows · the daemon↔credential coupling · `/usage` TUI-only · implicit
-read-on-write · Windows path normalisation
+AppContainer sandbox on Windows · the daemon↔credential coupling ·
+`/usage` TUI-only per the docs page (superseded by a CLI update, measured 2026-08-28 —
+`vendor-capabilities.md`) · implicit read-on-write · Windows path normalisation
 
 #### E. Flags
 
