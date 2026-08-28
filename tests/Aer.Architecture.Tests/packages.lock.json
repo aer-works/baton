@@ -169,9 +169,6 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
-      "aer.designtokens": {
-        "type": "Project"
-      },
       "aer.vendorprobe": {
         "type": "Project"
       }
