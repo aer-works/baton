@@ -888,8 +888,12 @@ teammates make the lead a single point of failure — while `--bg` sessions surv
 
 ### 7. The vendor's changelog is a test plan for AER's own supervisor
 
-`Aer.Daemon` supervises workers and survives restarts; the vendor built the same thing and shipped
-the bugs. Stale lock **whose PID the OS reused**; auto-upgrade **silently killing all live sessions**;
+This applied to `Aer.Daemon` while it supervised workers and survived restarts; #1420 deleted that
+surface, and today no resident process supervises a worker turn — the harness (`aer` CLI, via
+`aer run`) dispatches and drives each turn directly, with no daemon to restart. The lessons below
+stay live as a test plan for whenever a resident process is built again (spec/baton.md §7/§8's
+room-watcher): the vendor built the same thing and shipped the bugs. Stale lock **whose PID the OS
+reused**; auto-upgrade **silently killing all live sessions**;
 sleep/wake needing **clock-jump detection** rather than elapsed-idle; workers inheriting a **stale
 `PATH`** and a **stale model** from the daemon rather than the dispatching shell and `settings.json`;
 daemon handover judged by **embedded build timestamp**, not version string.
@@ -1324,10 +1328,12 @@ The third arm is what makes this readable. Without it, "the concurrent pair was 
 cannot be reused at all" are the same observation — and here the concurrent pair *wasn't* refused,
 which only means something because sequential reuse *was*.
 
-**Consequence for `Aer.Daemon`: there is no vendor-side mutex.** Two workers handed the same
-session id will both run and both write. If AER needs single-writer semantics on a session, it has
-to enforce them itself — the vendor's guard will not lose loudly, it will lose silently, and only
-under the concurrency that makes it matter.
+**Consequence: there is no vendor-side mutex.** Two workers handed the same session id will both
+run and both write. This was `Aer.Daemon`'s obligation to enforce while it hosted interactive
+sessions; that surface is deleted (#1420), and no component in this repo runs a session against
+this vendor behavior today. If a future resident process needs single-writer semantics on a
+session, it has to enforce them itself — the vendor's guard will not lose loudly, it will lose
+silently, and only under the concurrency that makes it matter.
 
 ### Group C — `CLAUDE_CONFIG_DIR` costs the subscription login (2026-07-25)
 
