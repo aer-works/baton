@@ -1531,9 +1531,9 @@ namespace Aer.Daemon
                 PermissionRevokeOutcome revokeOutcome;
                 try
                 {
-                    // The same room-events guard the answer path's amend takes, for the same reason:
-                    // this is a read-modify-write of bindings.json, and a turn's own per-turn write can
-                    // race it. AcquireWithin, not Acquire — that holder releases in milliseconds.
+                    // Room-events guard because this is a read-modify-write of bindings.json, and a
+                    // turn's own per-turn write can race it (the deleted answer path's amend took the
+                    // same guard for the same reason, #1417). AcquireWithin, not Acquire — that holder releases in milliseconds.
                     using var revokeGuard = ConcurrencyGuard.AcquireRoomEventsWithin(
                         request.DirectoryPath, TimeSpan.FromSeconds(2), "permission revoke");
                     revokeOutcome = await RuntimePermissionGrantAmender.RevokeAsync(
@@ -1583,9 +1583,7 @@ namespace Aer.Daemon
                 }
                 catch (WorkflowLockedException ex)
                 {
-                    // Refused, not reported as done. The asymmetry with the answer path is deliberate:
-                    // there, losing the lock narrows an answer that was already recorded, and the honest
-                    // thing is to say so and carry on. Here, nothing has been recorded at all, and a 200
+                    // Refused, not reported as done: nothing has been recorded at all, and a 200
                     // would tell the person a permission is gone while it is still in force.
                     return Results.Problem(
                         $"Could not take back that permission: the room was busy ({ex.Message}). Try again.",
@@ -3440,9 +3438,9 @@ namespace Aer.Daemon
     public record ReassignOrchestratorRequest(string RoomDirectoryPath, string WorkerId);
 
     /// <summary>
-    /// #1238's request shape. <c>WorkerName</c> is optional and defaults to the chat worker, matching
-    /// the answer path's own assumption — the ladder is only ever answered for that worker today, and
-    /// requiring callers to name it would invite them to guess.
+    /// #1238's request shape. <c>WorkerName</c> is optional and defaults to the chat worker — grants
+    /// were only ever recorded for that worker, and requiring callers to name it would invite them
+    /// to guess.
     /// </summary>
     public record RevokePermissionRequest(
         string DirectoryPath,

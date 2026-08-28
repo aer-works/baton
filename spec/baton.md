@@ -316,12 +316,12 @@ there is no separate diagnostic UI, dev or otherwise. Fleet Glass **is** the dia
 second level is scoped work against the same MCP tool, not a new surface.
 
 The outbound push mailbox — the mechanism that would notify a harness of a state-change event without
-polling — is **(new build)**. I did not find `push`, `mailbox`, or an outbound-webhook-shaped
-component anywhere under `src/Aer.Mcp*` or `src/Aer.Daemon` at HEAD. `src/Aer.Daemon` does contain an
-inbound-facing notification pump with a backup poll (`DoorbellMonitor.cs:51-146`) and a client
-fan-out (`DaemonBroadcast`) — neither is an *outbound, harness-facing* mailbox, so the "unbuilt"
-ruling survives, but state it precisely: the search was scoped to outbound/webhook shape, not "no
-notification code of any kind." Quota data (§7) and gate-pending visibility both ride this mailbox
+polling — is **(new build)**. There is no `push`, `mailbox`, or outbound-webhook-shaped
+component anywhere under `src/Aer.Mcp*` or `src/Aer.Daemon` at HEAD. `src/Aer.Daemon`'s client
+fan-out (`DaemonBroadcast`) is not an *outbound, harness-facing* mailbox, so the "unbuilt"
+ruling survives. (The inbound-facing notification pump this passage once also cited,
+`DoorbellMonitor`, was part of the mid-lane ask machinery and is DELETED, #1417 — see the
+Appendix.) Quota data (§7) and gate-pending visibility both ride this mailbox
 once it exists; its transport (webhook, log-append, something else) is unspecified here — that is
 design work for the build.
 
@@ -479,18 +479,12 @@ Baton ships one on every
 spawned worker, on both vendors, via `hook-check`/`agy-hook-check`
 (`Program.cs:15-59`, `src/Aer.Cli/HookCheckCommand.cs`, `src/Aer.Cli/AgyHookCheckCommand.cs`).
 
-**The hook is ternary, not binary, and only when Baton says so.** With
-`HookCheckCommand.AskToolsEnvironmentVariable` (`AER_HOOK_ASK_TOOLS`) present, the claude-side hook
-decides allow / **ask** / deny rather than allow / deny: a category the operator never granted routes
-to a human via a `permissionDecision: "ask"` STDOUT envelope, rather than hard-failing
-(`HookCheckCommand.cs:32-38,94-95,293-306`). A tool in both the denied list and the ask list is
-**denied** — a standing "never" is not reopened by an ask band being present. **With the variable
-absent — every one-shot harness dispatch, per this section's own "fully pre-cleared" rule — none of
-that exists, and an ungranted capability exits 2 exactly as if the ask band did not exist**
-(`HookCheckCommand.cs:67-72`). The measured headless outcome for the ask band, when it *is* enabled:
-under `-p` the forced prompt fails closed and the operation does not happen
-(`HookCheckCommand.cs:88-92`). A denial surfaces as `FailureClassification.ToolDenied` (§5, §7) —
-that is the vocabulary a harness reads, whichever band produced it.
+**The hook is binary: allow / deny, nothing else.** The ask band that once made it ternary
+(`AER_HOOK_ASK_TOOLS`, the `permissionDecision: "ask"` STDOUT envelope) was part of the mid-lane
+ask machinery and is DELETED (#1417) — lanes are fully pre-cleared, so an ungranted capability
+fails closed (exit 2 on claude) with no human routing, and a tool on the denied list is denied
+regardless of anything else. A denial surfaces as `FailureClassification.ToolDenied` (§5, §7) —
+that is the vocabulary a harness reads.
 
 **"Denied" at runtime means:** the hook exits non-zero on claude, or returns a `decision` field
 refusing the call on agy — the worker is told it was refused and continues rather than dying.

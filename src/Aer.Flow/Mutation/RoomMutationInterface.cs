@@ -503,7 +503,7 @@ public static class RoomMutationInterface
     /// while still inside that same <c>using</c> scope, never standalone.
     /// </para>
     /// <para>
-    /// No dedup check against prior events: unlike the ask/answer pair above, a standing permission
+    /// No dedup check against prior events: a standing permission
     /// has no single id to key one against, and the caller only reaches here on
     /// <c>PermissionRevokeOutcome.Revoked</c>, which is itself idempotent-at-the-register — a
     /// repeat revoke of an already-gone permission resolves to <c>NothingToRevoke</c> before this
