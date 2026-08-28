@@ -450,11 +450,14 @@ jobs:
       # audit-selfcheck below is no longer .NET-free: since #887 the role catalog's one source
       # is the engine (`aer templates --json`), and selfcheck's catalog checks consume it. This
       # builds ONLY Aer.Cli -- no native lib, no sidecar, no cargo (see pixi.toml's build-cli).
+      # cache is OFF here (#1398): this one-project restore can complete entirely from the runner
+      # image's preinstalled package fallback, leaving ~/.nuget/packages nonexistent -- and then
+      # setup-dotnet's post-job cache save fails the job after every audit step passed. A cache
+      # saves nothing on a ~1s restore; the heavy test/pack jobs keep theirs.
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.x"
-          cache: true
-          cache-dependency-path: "**/packages.lock.json"
+          cache: false
       - name: Build the CLI the selfcheck reads the catalog through
         run: pixi run build-cli
       # The checkers' own checker (#630). Same job on purpose: it reads the same registers as
