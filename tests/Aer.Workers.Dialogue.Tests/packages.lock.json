@@ -169,12 +169,22 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
+      "aer.core": {
+        "type": "Project"
+      },
+      "aer.flow": {
+        "type": "Project",
+        "dependencies": {
+          "Aer.Core": "[1.0.0, )"
+        }
+      },
       "aer.mcp": {
         "type": "Project"
       },
       "aer.mcp.host": {
         "type": "Project",
         "dependencies": {
+          "Aer.Flow": "[0.14.0, )",
           "Aer.Mcp": "[0.14.0, )"
         }
       },

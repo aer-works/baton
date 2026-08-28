@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Aer.Mcp\Aer.Mcp.csproj" />
+    <ProjectReference Include="..\Aer.Flow\Aer.Flow.csproj" />
   </ItemGroup>
 
 </Project>

@@ -108,12 +108,26 @@ public sealed class McpServerHost(string serverName, string serverVersion, IRead
         var array = new JsonArray();
         foreach (var tool in tools)
         {
-            array.Add(new JsonObject
+            var entry = new JsonObject
             {
                 ["name"] = tool.Name,
                 ["description"] = tool.Description,
                 ["inputSchema"] = JsonNode.Parse(tool.InputSchemaJson),
-            });
+            };
+            if (tool.AnnotationsJson is { } annotations)
+            {
+                try
+                {
+                    entry["annotations"] = JsonNode.Parse(annotations);
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    // A tool's malformed annotations literal must degrade to
+                    // "no annotations advertised" — never take down the host.
+                }
+            }
+
+            array.Add(entry);
         }
 
         return new JsonObject { ["tools"] = array };

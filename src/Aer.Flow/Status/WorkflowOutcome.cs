@@ -1,6 +1,6 @@
 using Aer.Flow.Domain;
 
-namespace Aer.Cli;
+namespace Aer.Flow.Status;
 
 /// <summary>
 /// The single coarse outcome word for a <see cref="FlowState"/> — "Running", "Paused", or, once

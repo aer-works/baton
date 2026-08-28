@@ -1,3 +1,6 @@
+// DELIBERATE namespace/assembly split (#1392): this file moved to Aer.Flow so Aer.Mcp.Host can
+// resolve paths without an Aer.Adapters project reference, but the namespace stays Aer.Adapters
+// because ~130 files import it there — the rename is its own mechanical sweep, tracked separately.
 namespace Aer.Adapters;
 
 /// <summary>

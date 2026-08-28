@@ -6,6 +6,7 @@ var captureFilePath = ParseArgValue(args, "--capture-file");
 // EnsureMemoryProposalMcpConfig for why (canonical: the resolve-once-per-binding seam and the
 // env-inheritance mechanism this flag rests on). This flag only says whether to enable the tool.
 var enableMemoryProposalTool = args.Contains("--memory-proposal-tool");
+var enableFleetStatusTool = args.Contains("--fleet-status-tool");
 var permissionGateShapeRaw = ParseArgValue(args, "--permission-gate-tool");
 
 PermissionReturnShape? permissionReturnShape = permissionGateShapeRaw?.ToLowerInvariant() switch
@@ -26,6 +27,11 @@ List<IMcpTool> tools = [];
 if (captureFilePath is not null)
 {
     tools.Add(new YieldTool(captureFilePath));
+}
+
+if (enableFleetStatusTool)
+{
+    tools.Add(new FleetStatusTool());
 }
 
 if (enableMemoryProposalTool || permissionReturnShape is not null)
@@ -53,7 +59,7 @@ if (enableMemoryProposalTool || permissionReturnShape is not null)
 
 if (tools.Count == 0)
 {
-    Console.Error.WriteLine("Usage: Aer.Mcp.Host [--capture-file <path>] [--memory-proposal-tool] [--permission-gate-tool <claude|agy>]");
+    Console.Error.WriteLine("Usage: Aer.Mcp.Host [--capture-file <path>] [--memory-proposal-tool] [--permission-gate-tool <claude|agy>] [--fleet-status-tool]");
     return 1;
 }
 

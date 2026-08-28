@@ -62,7 +62,7 @@ public sealed record WorkerProgressEvent(string Kind, string Text, bool IsPartia
 /// <c>AER_INPUT_&lt;n&gt;</c>/<c>AER_OUTPUT_DIR</c>) lives behind an implementation of this
 /// interface; <c>Aer.Flow</c> never learns a vendor exists.
 /// </summary>
-public interface IWorkerAdapter : Aer.Flow.Outcomes.IFailureClassifier
+public interface IWorkerAdapter : Aer.Flow.Outcomes.IFailureClassifier, Aer.Flow.Status.IWorkerUsageParser
 {
     /// <summary>
     /// Resolves <paramref name="invocation"/> and <paramref name="contract"/> into the concrete
@@ -96,21 +96,6 @@ public interface IWorkerAdapter : Aer.Flow.Outcomes.IFailureClassifier
         return false;
     }
 
-    /// <summary>
-    /// Attempts to interpret one raw stdout line — the last non-blank line of a completed execution's
-    /// captured stream — as this vendor's terminal usage report (issue #1360). Distinct from
-    /// <see cref="TryParseProgressEvent"/>: that reads in-turn progress from a live dispatch, this
-    /// reads a finished execution's own accounting after the fact. A caller tries only the ONE adapter
-    /// the execution's own <c>bindings.json</c> entry names it was actually dispatched through (#1360
-    /// F1's review) — never every registered adapter against a line, since a worker's stdout can
-    /// contain a vendor-shaped line it did not itself produce. Default false: an adapter with no
-    /// structured usage report of its own contributes nothing rather than a fabricated figure.
-    /// </summary>
-    bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage)
-    {
-        usage = null;
-        return false;
-    }
 
     /// <summary>
     /// True when a worker this adapter spawns with <see cref="PermissionGrant.WriteFiles"/> withheld

@@ -1,9 +1,8 @@
 using System.Text.Json.Serialization;
-using Aer.Adapters;
 using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
 
-namespace Aer.Cli;
+namespace Aer.Flow.Status;
 
 /// <summary>
 /// One step's machine-readable state, per <c>aer status --json</c>'s shape (#1356): a bare
@@ -73,14 +72,23 @@ public static class WorkflowStatusProjector
     /// Registered adapters (#1360) an execution's own dispatched worker is attributed to via
     /// <paramref name="roomDirectoryPath"/>'s <c>bindings.json</c> — see
     /// <see cref="ExecutionUsageProjector"/>'s remarks for how attribution works and what happens
-    /// without it. Defaults to <see cref="WorkerAdapterRegistry.Default"/>.
+    /// without it.
     /// </param>
     public static WorkflowStatusView Project(
         FlowState state,
         WorkflowDefinitionSnapshot snapshot,
         string roomDirectoryPath,
         IReadOnlyList<LogEntry>? entries = null,
-        IReadOnlyDictionary<string, IWorkerAdapter>? adapters = null)
+        IReadOnlyDictionary<string, IWorkerUsageParser>? adapters = null) =>
+        Project<IWorkerUsageParser>(state, snapshot, roomDirectoryPath, entries, adapters);
+
+    public static WorkflowStatusView Project<TParser>(
+        FlowState state,
+        WorkflowDefinitionSnapshot snapshot,
+        string roomDirectoryPath,
+        IReadOnlyList<LogEntry>? entries = null,
+        IReadOnlyDictionary<string, TParser>? adapters = null)
+        where TParser : IWorkerUsageParser
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -90,7 +98,7 @@ public static class WorkflowStatusProjector
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
 
         var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
-            entries ?? [], artifactsRootPath, adapters ?? WorkerAdapterRegistry.Default, roomDirectoryPath);
+            entries ?? [], artifactsRootPath, adapters, roomDirectoryPath);
 
         var steps = new List<WorkflowStatusStepView>(state.Steps.Count);
         var outputs = new List<string>();
@@ -124,5 +132,49 @@ public static class WorkflowStatusProjector
         }
 
         return new WorkflowStatusView(WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason);
+    }
+
+    /// <summary>
+    /// Extracts UTC timestamps for each execution from log entries (Flow and Core lifecycle events),
+    /// with latest event winning per execution ID.
+    /// </summary>
+    public static Dictionary<string, DateTime> ExtractEventTimestamps(IReadOnlyList<LogEntry> entries)
+    {
+        var timestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        foreach (var entry in entries)
+        {
+            string? execId = null;
+            DateTime? timestamp = null;
+
+            switch (entry)
+            {
+                case LogEntry.FlowLogEntry flowEntry:
+                    timestamp = flowEntry.WriterUtcTimestamp;
+                    execId = flowEntry.Event switch
+                    {
+                        FlowEvent.ExecutionRequestAccepted accepted => accepted.Request.ExecutionId.Value,
+                        FlowEvent.ExecutionSucceeded succeeded => succeeded.ExecutionId.Value,
+                        FlowEvent.ExecutionFailed failed => failed.ExecutionId.Value,
+                        _ => null,
+                    };
+                    break;
+                case LogEntry.CoreLogEntry coreEntry:
+                    timestamp = coreEntry.WriterUtcTimestamp;
+                    execId = coreEntry.Event switch
+                    {
+                        CoreEvent.ExecutionStarted started => started.ExecutionId.Value,
+                        CoreEvent.ExecutionExited exited => exited.ExecutionId.Value,
+                        _ => null,
+                    };
+                    break;
+            }
+
+            if (execId is not null && timestamp.HasValue)
+            {
+                timestamps[execId] = timestamp.Value;
+            }
+        }
+
+        return timestamps;
     }
 }

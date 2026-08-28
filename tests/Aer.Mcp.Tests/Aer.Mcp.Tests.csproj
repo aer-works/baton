@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Aer.Mcp\Aer.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Aer.Mcp.Host\Aer.Mcp.Host.csproj" />
+    <ProjectReference Include="..\..\src\Aer.Flow\Aer.Flow.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Aer.Cli;
+namespace Aer.Flow.Status;
 
 /// <summary>
 /// <c>terminal.json</c> (#1356): written into a room directory the moment its workflow reaches a

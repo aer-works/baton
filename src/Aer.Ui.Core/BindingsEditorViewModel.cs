@@ -622,7 +622,7 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
         string[] roomEvidenceFiles =
         [
             "room.jsonl", "flow.jsonl", "snapshot.json", ConcurrencyGuard.FlowLockFileName,
-            Aer.Cli.TerminalSentinelWriter.TerminalSentinelFileName,
+            Aer.Flow.Status.TerminalSentinelWriter.TerminalSentinelFileName,
         ];
         foreach (var evidenceFile in roomEvidenceFiles)
         {

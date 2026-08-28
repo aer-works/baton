@@ -4,6 +4,7 @@ using Aer.Adapters;
 using Aer.Cli.Tests.TestSupport;
 using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
+using Aer.Flow.Status;
 using Aer.Flow.Templates;
 
 namespace Aer.Cli.Tests;

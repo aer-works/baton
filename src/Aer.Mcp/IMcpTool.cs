@@ -21,6 +21,14 @@ public interface IMcpTool
     string InputSchemaJson { get; }
 
     /// <summary>
+    /// MCP tool annotations (as raw JSON text) advertised from <c>tools/list</c>, or null to omit
+    /// the field. A read-only tool should declare <c>{"readOnlyHint": true}</c> — MCP clients treat
+    /// unannotated tools as possibly-writing and may interpose a per-call confirmation, which a
+    /// polled display consumer cannot afford (#1392).
+    /// </summary>
+    string? AnnotationsJson => null;
+
+    /// <summary>
     /// Executes the tool for one <c>tools/call</c> request. <paramref name="arguments"/> is the
     /// request's <c>arguments</c> object, unparsed — each tool owns its own argument shape.
     /// </summary>
