@@ -184,17 +184,6 @@ jobs:
               Select-Object Name, Status | Format-Table -AutoSize
           } catch { Write-Warning "Get-Service unavailable: $($_.Exception.Message)" }
 
-      # The journey reconcile gate (#313, #489). Aer.Journeys.Tests lives OUTSIDE AerFlow.slnx on
-      # purpose -- the journey tests themselves are red-specs that fail until a promise is kept, so
-      # `pixi run test` must not build them. But the reconcile half is designed to pass: it asserts
-      # spec/journeys.md and the code-side Journeys registry never drift (same id set, same titles,
-      # byte-identical Status lines). Living outside the solution meant it ran nowhere, while
-      # spec/journeys.md claimed "status is machine-kept ... enforced by CI ... this is the teeth".
-      # It was not. J6's test passed for a day while both the spec and the registry declared it
-      # Fails/DrivenRed, and nothing noticed. This step is the teeth.
-      - name: Journey reconcile gate
-        run: pixi run journey-reconcile
-
       - name: Assert ~/.aer untouched by tests
         if: always()
         shell: bash

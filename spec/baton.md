@@ -445,7 +445,7 @@ to the registry) is unspecified here — that is design work for the build.
 
 ## §9 Bindings and permissions
 
-**`bindings.json` is the room's standing grant for the room ∩ step scopes.** For a harness, "answer
+**`bindings.json` is the room's standing permission for the room ∩ step scopes.** For a harness, "answer
 once" means: the bindings file is the pre-answered ladder, written once at dispatch/run time and
 consulted on every subsequent decision against that room. **Re-prompting a headless lane for a
 permission it already carries in its bindings is a spec violation**, not a defensible conservative
@@ -473,8 +473,9 @@ about what "dispatch succeeded" implies about enforceability.
 
 **The `PreToolUse`/`agy-hook-check` hook stays the enforcement mechanism** — the only enforcement
 point over the toolset a worker actually has, since `--allowedTools` pre-approves rather than
-restricting (measured directly: `PermissionGrant.cs:69-73`, citing the `gate.allowedtools-is-
-preapproval-not-ceiling` sentinel check in `tools/vendor-verify/verify.py`). Baton ships one on every
+restricting (measured directly: `PermissionGrant.cs:69-73`, citing the
+`gate.allowedtools-is-preapproval-not-ceiling` sentinel check in `tools/vendor-verify/verify.py`).
+Baton ships one on every
 spawned worker, on both vendors, via `hook-check`/`agy-hook-check`
 (`Program.cs:15-59`, `src/Aer.Cli/HookCheckCommand.cs`, `src/Aer.Cli/AgyHookCheckCommand.cs`).
 
