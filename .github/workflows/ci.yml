@@ -474,6 +474,11 @@ jobs:
       # No build, no vendor -- reads like the audits above, so it blocks the same aggregate gate.
       - name: mobile-build WSL guard discriminates
         run: pixi run test-scripts
+      # #1397: the docs-budget tripwire -- tracked markdown must not grow past
+      # tools/audit-completeness/docs-allowlist.txt. No build, no vendor -- same job as the other
+      # free audits above.
+      - name: Tracked markdown stays within the docs budget
+        run: pixi run audit-docsbudget
       # The live PR-body guard moved to its own workflow, .github/workflows/pr-body-lint.yml (#862),
       # so that fixing a bad body CLEARS it (it runs on `edited`; this job does not). Its logic is
       # still tested here -- `negated_close_faults`'s polarity arms run in audit-selfcheck above,
