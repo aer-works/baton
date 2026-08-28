@@ -6,6 +6,7 @@
     <Project Path="src/Aer.Flow/Aer.Flow.csproj" />
     <Project Path="src/Aer.Mcp/Aer.Mcp.csproj" />
     <Project Path="src/Aer.Mcp.Host/Aer.Mcp.Host.csproj" />
+    <Project Path="src/Aer.RoomSession/Aer.RoomSession.csproj" />
     <Project Path="src/Aer.Ui.Core/Aer.Ui.Core.csproj" />
     <Project Path="src/Aer.Ui/Aer.Ui.csproj" />
   </Folder>
