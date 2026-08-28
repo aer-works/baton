@@ -554,16 +554,14 @@ public class AgyWorkerAdapterTests
         // AER_HOOK_DENIED_SHELL_PATTERNS. Its absence is fail-closed at the hook, so a missing emission
         // would silently deny every run_command — this pins that the channel is actually sent.
         // The meaningful case: the shell is granted (agy expresses that only as the network-bundled
-        // --dangerously-skip-permissions) and a standing "never" carves rm back out via the hook. Under
-        // the runtime gate (EnablePermissionGate: true) — the only shape DenyAlways is issued from — the
-        // channel must still be emitted, unlike claude's --disallowedTools which the gate suppresses.
+        // --dangerously-skip-permissions) and a standing "never" carves rm back out via the hook.
         var adapter = new AgyWorkerAdapter();
         var grant = new PermissionGrant(
             ReadFiles: true, RunShellCommands: true, NetworkAccess: true,
             DeniedShellCommandPatterns: ["rm *"]);
 
         var target = adapter.Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, EnablePermissionGate: true),
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant),
             ArchitectContract);
 
         Assert.Contains(
@@ -1387,20 +1385,6 @@ public class AgyWorkerAdapterTests
         {
             DirectoryCleanup.DeleteRecursively(tempSessionDir);
         }
-    }
-
-    /// <summary>
-    /// The redirect rides the dispatch path only -- the reason lives at Resolve's own redirect
-    /// clause, and <see cref="VendorGateMatchesResolveTests"/> carries the matching mirror carve-out.
-    /// </summary>
-    [Fact]
-    public void Gate_does_not_carry_the_home_redirect()
-    {
-        var nonShellGrant = new PermissionGrant(ReadFiles: true, WriteFiles: false, RunShellCommands: false, NetworkAccess: false);
-        var gate = AgyWorkerAdapter.BuildGate(nonShellGrant);
-
-        Assert.False(gate.Environment.ContainsKey("HOME"));
-        Assert.False(gate.Environment.ContainsKey("USERPROFILE"));
     }
 
     // #1084: the three arms below pin the seed AgyWorkerAdapter emits -- present for the write-granted

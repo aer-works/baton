@@ -22,8 +22,8 @@ namespace Aer.Architecture.Tests;
 /// <item>An approved site spawning something that itself spawns a vendor CLI — a shell script, the
 /// Go sidecar — is a grandchild this cannot see.</item>
 /// <item>Native spawns inside <c>external/aer-core</c>: that is Rust, and out of this scan.</item>
-/// <item>An approved site silently dropping its gate arguments. <c>VendorGateMatchesResolveTests</c>
-/// covers the two adapters; nothing covers a third that has not been written.</item>
+/// <item>An approved site silently dropping its gate arguments — each adapter's own <c>Resolve</c>
+/// tests cover the two shipped adapters; nothing covers a third that has not been written.</item>
 /// </list>
 /// <para>
 /// Pure file reading over the repo, no project references, matching <see cref="ReferenceDirectionTests"/>.
@@ -34,8 +34,9 @@ public class VendorSpawnGateTests
     /// <summary>
     /// Every file permitted to start a process, with why it is not an ungated vendor spawn. Adding a
     /// line here is the deliberate act this test exists to force — and it is a review prompt, not a
-    /// formality: if the new site spawns <c>claude</c> or <c>agy</c>, it needs a
-    /// <c>VendorGate</c> before it belongs on this list.
+    /// formality: if the new site spawns <c>claude</c> or <c>agy</c>, it needs the mandatory
+    /// <c>PreToolUse</c> hook (decision 0029) wired the way each adapter's own <c>Resolve</c> wires it
+    /// before it belongs on this list.
     /// </summary>
     private static readonly Dictionary<string, string> ApprovedSpawnSites = new()
     {
@@ -64,8 +65,8 @@ public class VendorSpawnGateTests
         Assert.True(
             unreviewed.Count == 0,
             "A new process-spawn site appeared in src/:\n  " + string.Join("\n  ", unreviewed)
-            + "\n\nIf it can spawn a vendor CLI it needs a VendorGate first — decision 0029 makes the "
-            + "PreToolUse hook mandatory on every worker AER spawns, and #703 is what happens when a "
+            + "\n\nIf it can spawn a vendor CLI it needs the mandatory PreToolUse hook first — decision "
+            + "0029 makes that hook mandatory on every worker AER spawns, and #703 is what happens when a "
             + "path skips it. Then add it to ApprovedSpawnSites with the reason it is safe.");
 
         // The other direction, so the list cannot rot into naming files that no longer spawn anything
