@@ -16,7 +16,7 @@ namespace Aer.Adapters;
 /// persisted a scoped grant from a mid-lane runtime-permission answer. That half was cut with the
 /// mid-lane ask/answer/revoke machinery it served (#1417, spec/baton.md §5): a lane is now dispatched
 /// fully pre-cleared, so nothing answers a ladder rung at runtime anymore. What remains is the
-/// pre-cleared side only — reading and revoking a standing grant already written to
+/// pre-cleared side only — reading and revoking a standing permission already written to
 /// <c>bindings.json</c> before dispatch.
 /// </para>
 /// </remarks>

@@ -4,11 +4,11 @@ namespace Aer.Adapters;
 /// The permission-ladder rungs 04:82-94 defines (decision 0022) — the vocabulary a historical
 /// <c>RoomEvent.RuntimePermissionAnswered</c>/<see cref="Aer.Flow.Projection.PermissionAnswer"/>'s
 /// <c>decisionKind</c> string was drawn from, back when a mid-lane runtime ask could be answered.
-/// That mid-lane ask/answer/revoke machinery was retired (#1417, spec/baton.md §5): a lane is now
-/// dispatched fully pre-cleared, so nothing constructs a new <c>decisionKind</c> value anymore. This
-/// vocabulary survives only to make sense of the historical string values already recorded in an
-/// existing room's journal, and as the constants <see cref="PermissionRevokeKind"/> cross-references
-/// to explain why some rungs have no revoke counterpart.
+/// That machinery was retired (#1417) — see <see cref="RuntimePermissionGrantAmender"/> for what
+/// replaced it and spec/baton.md §5 for the ruling. This vocabulary survives only to make sense of
+/// the historical string values already recorded in an existing room's journal, and as the constants
+/// <see cref="PermissionRevokeKind"/> cross-references to explain why some rungs have no revoke
+/// counterpart.
 /// </summary>
 public static class PermissionDecisionKind
 {

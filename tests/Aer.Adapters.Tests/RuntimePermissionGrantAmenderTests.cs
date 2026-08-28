@@ -85,7 +85,7 @@ public class RuntimePermissionGrantAmenderTests
         {
             // Seeded with the widest rung already granted -- the shape answering the ladder used to
             // produce (unscoped RunShellCommands, empty pattern list) -- so what is revoked is the
-            // same shape a real standing grant takes.
+            // same shape a real standing permission takes.
             var bindingsPath = await WriteSeedRoomAsync(
                 roomDir, new PermissionGrant(ReadFiles: true, RunShellCommands: true, ShellCommandPatterns: []), ct);
 
