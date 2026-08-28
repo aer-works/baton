@@ -23,6 +23,12 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Avalonia.Win32;
+// Aliased, not a blanket `using Aer.RoomSession;`: this file also uses Aer.Ui.Core's own
+// (untouched, #1412 Part 1 doesn't move it) RoomClient, and both namespaces now declare a type by
+// that name -- a blanket using here would make every bare `RoomClient` reference ambiguous.
+using ExecutionAttempt = Aer.RoomSession.ExecutionAttempt;
+using LocalUiConfigurationStore = Aer.RoomSession.LocalUiConfigurationStore;
+using RoomProjection = Aer.RoomSession.RoomProjection;
 
 
 

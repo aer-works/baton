@@ -226,7 +226,7 @@
         "dependencies": {
           "Aer.Adapters": "[0.14.0, )",
           "Aer.Flow": "[0.14.0, )",
-          "Aer.Ui.Core": "[0.14.0, )"
+          "Aer.RoomSession": "[0.14.0, )"
         }
       },
       "aer.flow": {

@@ -1,5 +1,6 @@
 using System.Globalization;
 using Aer.Flow.Domain;
+using Aer.RoomSession;
 using Aer.Ui.Core;
 using Avalonia;
 using Avalonia.Controls;

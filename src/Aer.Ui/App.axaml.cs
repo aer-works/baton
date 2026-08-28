@@ -1,3 +1,4 @@
+using Aer.RoomSession;
 using Aer.Ui.Core;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
