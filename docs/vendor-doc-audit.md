@@ -237,9 +237,8 @@ so.
 **Both once opened only an interactive TUI panel; `/usage` no longer does.** This section originally
 read "`agy -p "/usage"` genuinely produces no report headless, but the data exists and reaches a
 backend — what's missing is a non-interactive path to it" — true when measured, superseded by a CLI
-update rather than corrected. **Measured live 2026-08-28** (print mode, no model turn): `agy -p
-"/usage"` now returns structured, tab-separated rows per quota family (percent remaining + a real
-reset instant) — see `vendor-capabilities.md`'s "Usage, cost and quota" section for the exact shape.
+update rather than corrected, per the live 2026-08-28 re-measurement `vendor-capabilities.md`'s
+"Usage, cost and quota" section records — see it for the exact shape.
 `/credits` was not re-probed by this measurement.
 
 ### 5. `toolPermission` has four values

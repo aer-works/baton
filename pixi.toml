@@ -235,9 +235,9 @@ vendor-verify = { cmd = "python -u tools/vendor-verify/verify.py" }
 #
 # STANDING CHECK (re-scoped 2026-07-26 -- see the SCOPE note in the script; it was run cold nine
 # days after #527 and caught 11 undispositioned decisions and 2 orphaned vendor-verify checks).
-# Run before a PR touching spec/baton.md, docs/vendor-*.md, or tools/vendor-verify/verify.py
-# ships -- CLAUDE.md gate `record-once`. Free except step 4 (closed-issue citation check), which
-# needs `gh` and the network and skips loudly rather than failing when neither is available.
+# Run it before the PRs CLAUDE.md gate `record-once` names. Free except step 4 (closed-issue
+# citation check), which needs `gh` and the network and skips loudly rather than failing when
+# neither is available.
 audit-completeness = { cmd = "python -u tools/audit-completeness/completeness.py" }
 
 # CLI-only build for the CI audit job (#887): audit-selfcheck's catalog checks read the role
@@ -279,10 +279,7 @@ audit-waitceiling-selftest = { cmd = "python -u tools/audit-completeness/waitcei
 audit-retiredphrases = { cmd = "python -u tools/audit-completeness/retiredphrases.py" }
 audit-retiredphrases-selftest = { cmd = "python -u tools/audit-completeness/retiredphrases.py --selftest" }
 
-# #1397: the docs-budget tripwire -- the tracked-markdown population must not grow past
-# tools/audit-completeness/docs-allowlist.txt (an exact, one-per-line path list). A file the
-# allowlist does not name fails, named. The spec v2.0 reset's whole point was shrinkage; this is
-# what stops the count silently growing back.
+# #1397: the docs-budget tripwire -- see docsbudget.py's own docstring for what it enforces.
 audit-docsbudget = { cmd = "python -u tools/audit-completeness/docsbudget.py" }
 audit-docsbudget-selftest = { cmd = "python -u tools/audit-completeness/docsbudget.py --selftest" }
 
