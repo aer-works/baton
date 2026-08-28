@@ -57,7 +57,7 @@ public class ProjectionPushFanOutTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            if (File.Exists(Path.Combine(dir.FullName, "docs", "plan.md")))
+            if (File.Exists(Path.Combine(dir.FullName, "AerFlow.slnx")))
             {
                 return dir.FullName;
             }
@@ -65,6 +65,6 @@ public class ProjectionPushFanOutTests
             dir = dir.Parent;
         }
 
-        throw new FileNotFoundException("Could not locate the repository root (no docs/plan.md found above the test binary).");
+        throw new FileNotFoundException("Could not locate the repository root (no AerFlow.slnx found above the test binary).");
     }
 }

@@ -150,7 +150,7 @@ public class VendorCredentialIsolationTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            if (File.Exists(Path.Combine(dir.FullName, "docs", "plan.md")))
+            if (File.Exists(Path.Combine(dir.FullName, "AerFlow.slnx")))
             {
                 return dir.FullName;
             }
@@ -159,6 +159,6 @@ public class VendorCredentialIsolationTests
         }
 
         throw new FileNotFoundException(
-            "Could not locate the repo root (docs/plan.md) by walking up from " + AppContext.BaseDirectory);
+            "Could not locate the repo root (AerFlow.slnx) by walking up from " + AppContext.BaseDirectory);
     }
 }
