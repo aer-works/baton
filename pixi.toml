@@ -44,9 +44,12 @@ fmt-check-sidecar = { cmd = "test -z \"$(gofmt -l .)\"", cwd = "src/Aer.Sidecar"
 # Every `dotnet` invocation that starts MSBuild goes through tools/buildlock.py (#1402): a
 # host-global lock serializing builds across worktrees, so concurrent lanes queue at the build
 # instead of the whole-lane level. The wrapper's docstring owns the mechanism (OS-released region
-# lock, nesting marker, loud timeout); its selftest is gated (buildlock-selftest below). Not
-# wrapped: the Go/cargo/flutter tasks (not MSBuild, and each worktree owns its output dir), the
-# LIVE smoke-*/vendor-probe tasks (human-run, never concurrent with a lane by construction), and
+# lock, nesting marker, loud timeout); its selftest is gated (buildlock-selftest below). `dotnet
+# run` tasks count as MSBuild owners too (implicit build) -- `tokens` and `vendor-check` are
+# wrapped for that reason. Not wrapped: the Go/cargo/flutter tasks (not MSBuild, and each worktree
+# owns its output dir), `dotnet tool restore`/`dotnet reportgenerator`/`dotnet tool install` legs
+# (tool-manifest and standalone-tool commands, not MSBuild), the LIVE smoke-*/vendor-probe tasks
+# (human-run, never concurrent with a lane by construction), and
 # `gates`/`gates-fast` themselves -- they hold no MSBuild directly; their MSBuild-owning legs
 # (fmt-check, lint, test-no-build, build-cli) are each wrapped, which serializes exactly the
 # dangerous fraction and lets the python audit legs of two gates runs still overlap.
@@ -93,7 +96,7 @@ fmt-check = { cmd = "python tools/buildlock.py dotnet format --verify-no-changes
 # build — generated artifacts are checked in, and Aer.Architecture.Tests fails if they drift from the
 # token file, so running this is a deliberate act after editing tokens rather than a build side
 # effect that rewrites tracked files under everyone.
-tokens = "dotnet run --project tools/Aer.DesignTokens"
+tokens = "python tools/buildlock.py dotnet run --project tools/Aer.DesignTokens"
 # --no-incremental is load-bearing, not a purity knob (#687). MSBuild decides a project is up to date
 # by comparing timestamps, so a source file OLDER than the assembly built from it is silently skipped
 # and `dotnet build -warnaserror` prints "Build succeeded. 0 Error(s)" for code that does not compile.
@@ -317,7 +320,7 @@ setup-hooks = { cmd = "git config core.hooksPath .githooks" }
 # so it runs in the ordinary dev loop — `pixi run test` runs the same comparison via
 # Aer.Architecture.Tests, which is what actually makes a vendor self-update surface. Exits non-zero
 # when a CLI has moved; says so plainly, and does not pass, when no vendor CLI is present to inspect.
-vendor-check = { cmd = "dotnet run --project tools/Aer.VendorProbe -- --check" }
+vendor-check = { cmd = "python tools/buildlock.py dotnet run --project tools/Aer.VendorProbe -- --check" }
 
 # Dispatches one AER workflow step to a worker via a real `aer run` and prints its output -- the
 # scaffolding an ad-hoc Node one-liner stood in for three times during the #513 cross-vendor

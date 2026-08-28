@@ -1,4 +1,7 @@
-"""Host-global build lock: one MSBuild-heavy command at a time, across every worktree (#1402).
+"""User-global build lock: one MSBuild-heavy command at a time, across every worktree (#1402).
+
+("User" rather than "host": the lock file lives in the per-user temp dir. One user on one
+Windows box is the whole deployment (#1405), so the distinction is academic here.)
 
 Two concurrent MSBuild runs on this machine kill each other (MSB4166, zero-test test legs,
 vanished obj/ -- the 2026-08-04 mutual-kill catalogue). The old protection was doctrine: "one
@@ -16,12 +19,19 @@ Usage:            python tools/buildlock.py <command> [args...]
 Diagnostics:      a sidecar .info file (never locked) names the holder -- PID, command, start
                   time -- so the wait message can say WHO it is waiting on.
 Nesting:          a wrapped command that itself runs wrapped tasks would deadlock on its own
-                  lock; the wrapper exports BATON_BUILDLOCK_HELD=<pid> to its child, and skips
-                  acquisition when it inherits that marker. (Child processes of the holder are
-                  inside the holder's exclusion by definition.)
+                  lock; the wrapper exports BATON_BUILDLOCK_HELD=<pid> to its child. The marker
+                  is only an env var and can outlive its setter (a detached grandchild, a
+                  debugging shell that exported it by hand), so it is treated as a HINT, not a
+                  grant: an inheritor probes the lock with one non-blocking acquire. Free lock
+                  means the marker was stale -- take the lock properly. Held lock means the
+                  holder is overwhelmingly the ancestor that set the marker -- run directly.
+                  Residual risk, accepted: a process carrying a stale marker while an UNRELATED
+                  build holds the lock skips the queue; that needs the marker to leak AND the
+                  race to land in the same window, strictly narrower than trusting the marker.
 Timeout:          BATON_BUILDLOCK_TIMEOUT_S (default 1800) -- fails LOUDLY on expiry rather than
-                  hanging past a lane's budget. BATON_BUILDLOCK_FILE overrides the lock path
-                  (selftest isolation only).
+                  hanging past a lane's budget. BATON_BUILDLOCK_FILE overrides the lock path;
+                  anyone may set it, but its intended use is selftest isolation -- overriding it
+                  elsewhere opts that process out of the shared exclusion.
 """
 import json
 import os
@@ -63,6 +73,21 @@ def write_holder_info(path: str, command: list[str]) -> None:
             json.dump(info, f)
     except OSError:
         pass  # diagnostics only; never a reason to fail the build
+
+
+def try_acquire_once(path: str, command: list[str]) -> "BinaryIO | None":
+    """One non-blocking acquire: the handle if the lock was free, None if someone holds it."""
+    import msvcrt
+
+    handle = open(path, "a+b")  # noqa: SIM115 -- on success, held for the process lifetime
+    try:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return None
+    write_holder_info(path, command)
+    return handle
 
 
 def acquire(path: str, command: list[str], timeout_s: float) -> BinaryIO:
@@ -110,14 +135,21 @@ def main() -> int:
         return 2
 
     env = dict(os.environ)
-    if env.get(HELD_MARKER) or os.name != "nt":
-        # Child of the current holder (already inside the exclusion), or a non-Windows host:
-        # run directly. The non-Windows arm exists only for CI's ubuntu shard until #1405
-        # deletes it -- a CI runner is single-lane, so it never needed the lock anyway.
+    if os.name != "nt":
+        # Transitional arm for CI's ubuntu shard until #1405 deletes it -- a CI runner is
+        # single-lane, so it never needed the lock anyway.
         return subprocess.run(command, env=env, check=False).returncode
 
-    timeout_s = float(env.get("BATON_BUILDLOCK_TIMEOUT_S", "1800"))
-    handle = acquire(lock_path(), command, timeout_s)
+    if env.get(HELD_MARKER):
+        # Marker inherited: probe, don't trust (see the module docstring's Nesting section).
+        handle = try_acquire_once(lock_path(), command)
+        if handle is None:
+            # Lock held -- by our ancestor, per the docstring's stated residual. Run inside
+            # its exclusion.
+            return subprocess.run(command, env=env, check=False).returncode
+    else:
+        timeout_s = float(env.get("BATON_BUILDLOCK_TIMEOUT_S", "1800"))
+        handle = acquire(lock_path(), command, timeout_s)
     env[HELD_MARKER] = str(os.getpid())
     try:
         return subprocess.run(command, env=env, check=False).returncode
@@ -185,7 +217,10 @@ def selftest() -> int:
         # 1. Two wrapped commands started together must serialize (no interval overlap).
         a = _spawn_selftest_child(_CHILD_HOLD_AND_STAMP, lock_file, stamps)
         b = _spawn_selftest_child(_CHILD_HOLD_AND_STAMP, lock_file, stamps)
-        a.communicate(), b.communicate()
+        # Every wait below is bounded: a regression that makes the mechanism HANG (the exact
+        # anti-pattern the timeout exists to prevent) must fail this selftest loudly, not hang
+        # the gate that runs it.
+        a.communicate(timeout=30), b.communicate(timeout=30)
         if a.returncode != 0 or b.returncode != 0:
             print(f"  control FAILED: wrapped commands exited {a.returncode}/{b.returncode}")
             ok = False
@@ -205,14 +240,14 @@ def selftest() -> int:
 
         # 2. A holder that dies without releasing must free the lock (OS-level release).
         crasher = _spawn_selftest_child(_CHILD_ACQUIRE_AND_DIE, lock_file)
-        crasher.communicate()
+        crasher.communicate(timeout=30)
         env = dict(os.environ)
         env["BATON_BUILDLOCK_FILE"] = lock_file
         env["BATON_BUILDLOCK_TIMEOUT_S"] = "3"
         env.pop(HELD_MARKER, None)
         after = subprocess.run(
             [sys.executable, os.path.abspath(__file__), sys.executable, "-c", "pass"],
-            env=env, capture_output=True, text=True, check=False,
+            env=env, capture_output=True, text=True, check=False, timeout=30,
         )
         if after.returncode != 0:
             print(f"  control FAILED: lock survived its holder's death -- {after.stdout}")
@@ -225,13 +260,34 @@ def selftest() -> int:
         env["BATON_BUILDLOCK_TIMEOUT_S"] = "1"
         waiter = subprocess.run(
             [sys.executable, os.path.abspath(__file__), sys.executable, "-c", "pass"],
-            env=env, capture_output=True, text=True, check=False,
+            env=env, capture_output=True, text=True, check=False, timeout=30,
         )
-        holder.communicate()
+        holder.communicate(timeout=30)
         if waiter.returncode == 0 or "TIMED OUT" not in waiter.stdout:
             print(
                 f"  control FAILED: timeout path exited {waiter.returncode} "
                 f"without a loud message -- {waiter.stdout!r}"
+            )
+            ok = False
+
+        # 4. A stale inherited marker with a FREE lock must be probed, not trusted: the run
+        #    must take the lock properly (visible via the .info sidecar it writes) rather than
+        #    skipping acquisition.
+        try:
+            os.remove(lock_file + ".info")
+        except OSError:
+            pass
+        env[HELD_MARKER] = "999999"  # nobody's pid; simulates a marker that outlived its setter
+        env["BATON_BUILDLOCK_TIMEOUT_S"] = "5"
+        stale = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), sys.executable, "-c", "pass"],
+            env=env, capture_output=True, text=True, check=False, timeout=30,
+        )
+        if stale.returncode != 0 or not os.path.exists(lock_file + ".info"):
+            print(
+                f"  control FAILED: stale marker + free lock exited {stale.returncode}; "
+                f".info written: {os.path.exists(lock_file + '.info')} -- the probe path "
+                f"trusted the marker instead of taking the free lock"
             )
             ok = False
 
