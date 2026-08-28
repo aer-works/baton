@@ -371,13 +371,13 @@ What the daemon narrows **to**: a **room-watcher serving `fleet_status`/the regi
 and the **quota-runway ledger** (below). Two more live responsibilities need a stated home rather
 than silently dropping out when the rest of `Aer.Daemon` is archived:
 
-- **`RoomRetentionSweep`** (`Program.cs:187`, a hosted service) — it prunes execution directories, and
+- **`RoomRetentionSweep`** (`Program.cs:43`, a hosted service) — it prunes execution directories, and
   `ExecutionUsageProjector` has an explicit pruned-path fallback specifically because the sweep moves
   them (`src/Aer.Flow/Status/ExecutionUsageView.cs`). It is engine-adjacent housekeeping, not a UI
   concern, and belongs in the narrowed daemon's kept surface alongside the room-watcher.
 - **Fleet-wide concurrency caps** — `DaemonSettingsStore` (`src/Aer.Adapters/DaemonSettingsStore.cs`,
   reading/writing `AerPaths.SettingsFile`, i.e. `{Root}/settings.json`) plus `ConcurrencySlotGate.SetCaps`,
-  applied at daemon startup (`Program.cs:65-66`). At HEAD this settings file holds only
+  applied at daemon startup (`Program.cs:37-38`). At HEAD this settings file holds only
   `GlobalConcurrencyCap`/`PerVendorConcurrencyCap` (`DaemonSettingsStore.cs:8-15`) — it is machine-wide,
   not per-room, so it belongs in the narrowed daemon too.
 

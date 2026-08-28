@@ -1,7 +1,7 @@
 using System.Threading;
 using Aer.Adapters;
 using Aer.Flow.Concurrency;
-using Aer.Flow.Status;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Aer.Daemon.Tests")]

@@ -114,8 +114,9 @@ nothing between this code and the CLI interprets the arguments. On Windows, prob
 about that path — which reads exactly like "the command does not exist."
 
 **Strip every `^CLAUDE` variable, not just `^CLAUDE_CODE_`.** A nested `claude` launched from inside a
-Claude Code session inherits the parent's tool set and MCP servers, which no daemon-spawned worker
-ever has. An earlier probe missed `CLAUDECODE`, `CLAUDE_EFFORT`, `CLAUDE_PID` and `CLAUDE_JOB_DIR`
+Claude Code session inherits the parent's tool set and MCP servers, which no harness-spawned worker
+ever has (the harness — `aer run`/`aer dispatch` — spawns workers; since #1420 the daemon spawns
+nothing). An earlier probe missed `CLAUDECODE`, `CLAUDE_EFFORT`, `CLAUDE_PID` and `CLAUDE_JOB_DIR`
 and produced a result we nearly wrote down as fact. `Cli.Invoke` does this for you.
 
 ## A third hazard: the tool that isn't installed
