@@ -27,7 +27,6 @@ aer-flow/
 │   │                          mid-lane ask machinery) are ARCHIVE — spec/baton.md §5
 │   ├── Aer.Ui.Core/           Avalonia-free UI core — retired — archive PRs of #1396 in flight
 │   ├── Aer.Ui/                Avalonia desktop app — retired — archive PRs of #1396 in flight
-│   ├── Aer.Workers.Dialogue/  The dialogue worker executable — retired — archive PRs of #1396 in flight
 │   └── Aer.Sidecar/           Go tsnet sidecar the daemon supervises for zero-config Tailscale
 ├── tests/                     Unit/integration tests; live-smoke test projects (Aer.Cli.SmokeTests)
 │                              live outside AerFlow.slnx (default CI skips them) — see docs/runbooks/

@@ -52,8 +52,8 @@ public class RuntimePermissionGrantAmenderTests
     }
 
     // The actual --disallowedTools value the claude adapter spawns for a grant, through the REAL
-    // interactive dispatch path (Resolve with EnablePermissionGate: true) — not BuildGate, which the
-    // dialogue worker uses and which has no gate conditional. This distinction is load-bearing: the gate
+    // interactive dispatch path (Resolve with EnablePermissionGate: true) — not BuildGate (see
+    // VendorGate.For), which has no gate conditional. This distinction is load-bearing: the gate
     // path suppresses the withheld-category disallowed list, so a DenyAlways standing refusal must still
     // reach --disallowedTools here or it is unenforced on every interactive turn.
     private static string ClaudeDisallowedToolsFor(PermissionGrant grant, bool enablePermissionGate = true)

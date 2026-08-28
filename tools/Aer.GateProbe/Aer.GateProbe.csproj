@@ -14,10 +14,10 @@
          That dependency is why this is NOT part of tools/Aer.VendorProbe, which deliberately
          references nothing so it can interrogate a vendor CLI without depending on AER's build. -->
     <ProjectReference Include="../../src/Aer.Adapters/Aer.Adapters.csproj" />
-    <!-- Referenced purely so MSBuild copies Aer.Cli.dll alongside this binary, the same mechanism
-         DialogueWorkerAdapter relies on. ClaudeWorkerAdapter REFUSES to resolve without it: the
-         PreToolUse hook command names that path, and a hook naming a missing file fails open and
-         silently (#530). Being subject to that refusal is part of exercising the real path. -->
+    <!-- Referenced purely so MSBuild copies Aer.Cli.dll alongside this binary. ClaudeWorkerAdapter
+         REFUSES to resolve without it: the PreToolUse hook command names that path, and a hook
+         naming a missing file fails open and silently (#530). Being subject to that refusal is part
+         of exercising the real path. -->
     <ProjectReference Include="../../src/Aer.Cli/Aer.Cli.csproj" />
   </ItemGroup>
 

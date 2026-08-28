@@ -19,9 +19,10 @@ namespace Aer.Mcp;
 /// One request in, one line out: this host is a per-invocation stdio server, matching how a vendor
 /// CLI itself spawns an MCP server subprocess for the lifetime of one <c>-p</c> turn — it does not
 /// hold connections open across turns, and exits when its input stream closes.
-/// <c>Aer.Workers.Dialogue.DialogueYieldWiring</c> spawns this host per participant: claude
-/// participants reach it via <c>--mcp-config</c>/<c>--strict-mcp-config</c>, agy participants via a
-/// per-run workspace's <c>.agents/mcp_config.json</c> + <c>--add-dir</c> (#585, decision 0035). This
+/// The dialogue worker's own per-participant wiring (#585, decision 0035) spawned one instance of
+/// this host per participant — claude participants reached it via
+/// <c>--mcp-config</c>/<c>--strict-mcp-config</c>, agy participants via a per-run workspace's
+/// <c>.agents/mcp_config.json</c> + <c>--add-dir</c> — before that worker was archived (#1408). This
 /// class itself has no dependency on that wiring — it is usable standalone the moment a caller
 /// supplies an <c>input</c>/<c>output</c> pair and a tool list.
 /// </para>

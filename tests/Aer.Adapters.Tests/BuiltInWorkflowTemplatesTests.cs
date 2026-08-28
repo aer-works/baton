@@ -1,7 +1,6 @@
 using Aer.Adapters.Tests.TestSupport;
 using Aer.Flow.Domain;
 using Aer.Flow.Templates;
-using Aer.Workers.Dialogue;
 
 namespace Aer.Adapters.Tests;
 
@@ -11,10 +10,9 @@ public class BuiltInWorkflowTemplatesTests
     public void Catalog_ContainsSoloAndReviewRunTemplates()
     {
         var catalog = BuiltInWorkflowTemplates.Catalog;
-        Assert.Equal(5, catalog.Count);
+        Assert.Equal(4, catalog.Count);
         Assert.Contains(catalog, t => t.Id == "chat-session");
         Assert.Contains(catalog, t => t.Id == "codebase-session");
-        Assert.Contains(catalog, t => t.Id == "two-vendor-dialogue");
         Assert.Contains(catalog, t => t.Id == "solo-run");
         Assert.Contains(catalog, t => t.Id == "review-run");
         // The dispatch roles deliberately stay OUT of Catalog (they'd land in the start
@@ -166,41 +164,6 @@ public class BuiltInWorkflowTemplatesTests
         Assert.Equal(role.Timeout, reviewBinding.Timeout);
         Assert.Null(reviewBinding.Model);
         Assert.Null(reviewBinding.Effort);
-    }
-
-    [Fact]
-    public void Materialize_TwoVendorDialogue_BindsRealDialogueWorkerNotHandRolledDraftReview()
-    {
-        var tempDir = Path.Combine(Path.GetTempPath(), "aer_dialogue_template_test_" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var (definition, bindings) = BuiltInWorkflowTemplates.Materialize(
-                "two-vendor-dialogue", "claude", "agy", "Debate the topic", "Push back on the initiator", tempDir);
-
-            Assert.Equal("two-vendor-dialogue-template", definition.WorkflowTemplateId.Value);
-            Assert.Single(definition.Steps);
-            Assert.Equal("dialogue", definition.Steps[0].StepId.Value);
-            Assert.Null(definition.Steps[0].PausePoint);
-
-            Assert.Single(bindings);
-            var entry = bindings["dialogue-worker"];
-            Assert.Equal("dialogue", entry.Adapter);
-            Assert.True(File.Exists(entry.PromptTemplate));
-
-            var config = DialogueWorkerConfigParser.Parse(File.ReadAllText(entry.PromptTemplate));
-            Assert.Equal("Debate the topic", config.SeedPrompt);
-            Assert.Equal(2, config.Participants.Count);
-            Assert.Equal("claude", config.Participants[0].Vendor);
-            Assert.Equal("agy", config.Participants[1].Vendor);
-            Assert.Equal("Push back on the initiator", config.Participants[1].Preamble);
-        }
-        finally
-        {
-            if (Directory.Exists(tempDir))
-            {
-                DirectoryCleanup.DeleteRecursively(tempDir);
-            }
-        }
     }
 
     [Fact]

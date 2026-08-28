@@ -322,8 +322,7 @@ public class WorkerBindingResolverTests
         Assert.Contains(("critic", "line from critic"), received);
     }
 
-    // M23 Phase 3 (#272): WorkingDirectory profile resolution and the dialogue PromptTemplate
-    // portability fix.
+    // M23 Phase 3 (#272): WorkingDirectory profile resolution.
 
     [Fact]
     public void A_rooted_WorkingDirectory_passes_through_unchanged_with_no_profiles_needed()
@@ -401,29 +400,6 @@ public class WorkerBindingResolverTests
 
         var binding = (WorkerBinding.Process)bindings["architect"];
         Assert.Null(binding.Target.WorkingDirectory);
-    }
-
-    /// <summary>
-    /// The portability fix proven through a real adapter, not just the echo fake: a relative
-    /// dialogue-sidecar PromptTemplate resolves against the supplied bindingsFileDirectory, the same
-    /// end-to-end path <c>DialogueWorkerAdapterTests</c> proves at the adapter level alone.
-    /// </summary>
-    [Fact]
-    public void BindingsFileDirectory_is_forwarded_so_a_relative_dialogue_PromptTemplate_resolves_portably()
-    {
-        var debateContract = new WorkerContract("debate", [], [new ProducedOutput("verdict.md")], []);
-        var config = new Dictionary<string, WorkerBindingConfigEntry>
-        {
-            ["debate"] = new WorkerBindingConfigEntry(
-                "dialogue", debateContract, "dialogue-debate.json", TimeSpan.FromMinutes(5)),
-        };
-        var adapters = new Dictionary<string, IWorkerAdapter> { ["dialogue"] = new DialogueWorkerAdapter() };
-
-        var bindings = WorkerBindingResolver.Resolve(config, adapters, bindingsFileDirectory: "/configs");
-
-        var binding = (WorkerBinding.Process)bindings["debate"];
-        var expected = Path.GetFullPath(Path.Combine("/configs", "dialogue-debate.json"));
-        Assert.Equal(expected, binding.Target.Args[2]);
     }
 
     /// <summary>

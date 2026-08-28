@@ -25,9 +25,6 @@
     <ProjectReference Include="..\..\src\Aer.Cli\Aer.Cli.csproj" />
     <ProjectReference Include="..\..\src\Aer.Adapters\Aer.Adapters.csproj" />
     <ProjectReference Include="..\..\src\Aer.Flow\Aer.Flow.csproj" />
-    <!-- M17 Phase 4 (#167): DialogueDispatchEndToEndTests builds a real DialogueWorkerConfig to drive
-         a dialogue step through the real WorkerAdapterRegistry.Default. -->
-    <ProjectReference Include="..\..\src\Aer.Workers.Dialogue\Aer.Workers.Dialogue.csproj" />
   </ItemGroup>
 
 </Project>

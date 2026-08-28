@@ -28,8 +28,7 @@
           <!-- M21 Phase 1 follow-up: permissions are set once per workflow, not once per step — a
                builder on every step card doesn't scale, and burying it in the Advanced bindings
                editor made it invisible to anyone on the guided (primary) path. Applies to every
-               Claude/Gemini step at Save; dialogue steps are unaffected (their participants' own
-               permissions come from DialogueParticipantPresets). -->
+               Claude/Gemini step at Save. -->
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="Permissions (applies to every Claude/agy step):" VerticalAlignment="Center" Classes="secondary" />
             <CheckBox Content="Read files" IsChecked="{Binding NewWorkflow.GrantReadFiles}" />
@@ -74,22 +73,9 @@
                         </ItemsControl.ItemTemplate>
                       </ItemsControl>
                     </StackPanel>
-                    <TextBlock Text="Prompt:" IsVisible="{Binding !IsDialogue}" />
+                    <TextBlock Text="Prompt:" />
                     <TextBox Text="{Binding Prompt}" AcceptsReturn="True" TextWrapping="Wrap" Height="52"
-                             PlaceholderText="What should this step's runner do?" IsVisible="{Binding !IsDialogue}" />
-                    <StackPanel Spacing="4" IsVisible="{Binding IsDialogue}">
-                      <TextBlock Text="Opening prompt:" />
-                      <TextBox Text="{Binding SeedPrompt}" AcceptsReturn="True" TextWrapping="Wrap" Height="40"
-                               PlaceholderText="What the conversation is about" />
-                      <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock Text="Turns:" VerticalAlignment="Center" />
-                        <TextBox Text="{Binding TurnBudgetText}" Width="80" />
-                        <TextBlock Text="Claude's instructions:" VerticalAlignment="Center" />
-                        <TextBox Text="{Binding InitiatorPreamble}" Width="260" />
-                        <TextBlock Text="agy's instructions:" VerticalAlignment="Center" />
-                        <TextBox Text="{Binding ResponderPreamble}" Width="260" />
-                      </StackPanel>
-                    </StackPanel>
+                             PlaceholderText="What should this step's runner do?" />
                   </StackPanel>
                 </Border>
               </DataTemplate>
@@ -293,49 +279,11 @@
                 </StackPanel>
                 <TextBlock Text="{Binding PermissionGrantGapWarning}" TextWrapping="Wrap"
                            Foreground="{DynamicResource Status.Failed}" IsVisible="{Binding HasPermissionGrantGapWarning}" />
-                <TextBlock Text="Prompt template (dialogue: the config sidecar's path — leave blank to auto-name it):"
-                           IsVisible="{Binding !IsDialogueAdapter}" />
-                <TextBox Text="{Binding PromptTemplate}" AcceptsReturn="True" TextWrapping="Wrap" Height="60"
-                         IsVisible="{Binding !IsDialogueAdapter}" />
-                <TextBlock Text="Produced outputs (raw JSON array):" IsVisible="{Binding !IsDialogueAdapter}" />
+                <TextBlock Text="Prompt template (leave blank to auto-name it):" />
+                <TextBox Text="{Binding PromptTemplate}" AcceptsReturn="True" TextWrapping="Wrap" Height="60" />
+                <TextBlock Text="Produced outputs (raw JSON array):" />
                 <TextBox Text="{Binding ProducedOutputsJson}" AcceptsReturn="True" TextWrapping="Wrap" Height="60"
-                         Classes="mono" IsVisible="{Binding !IsDialogueAdapter}" />
-
-                <!-- M23 Phase 1 (#270): the dialogue worker's own config, authored structurally here
-                     instead of only through the guided New Workflow wizard or a hand-edited sidecar
-                     file — N participants, round-robin in list order. -->
-                <StackPanel Spacing="4" IsVisible="{Binding IsDialogueAdapter}">
-                  <TextBlock Classes="heading" Text="Dialogue exchange:" />
-                  <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBlock Text="Turn budget:" VerticalAlignment="Center" />
-                    <TextBox Text="{Binding DialogueTurnBudgetText}" Width="60" />
-                    <TextBlock Text="Final output file:" VerticalAlignment="Center" />
-                    <TextBox Text="{Binding DialogueFinalOutputNameText}" Width="150" />
-                  </StackPanel>
-                  <TextBlock Text="Seed prompt:" />
-                  <TextBox Text="{Binding DialogueSeedPromptText}" AcceptsReturn="True" TextWrapping="Wrap" Height="50" />
-                  <TextBlock Text="Participants (speak in this order, wrapping back to the first):" />
-                  <ItemsControl ItemsSource="{Binding DialogueParticipants}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:DialogueParticipantEditorViewModel">
-                        <Border Classes="card" Margin="0,0,0,4">
-                          <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="Role:" VerticalAlignment="Center" />
-                            <TextBox Text="{Binding Role}" Width="100" />
-                            <TextBlock Text="Vendor:" VerticalAlignment="Center" />
-                            <ComboBox ItemsSource="{Binding VendorCandidates}" SelectedItem="{Binding Vendor}" Width="100" />
-                            <TextBlock Text="Model:" VerticalAlignment="Center" />
-                            <TextBox Text="{Binding Model}" Width="150" PlaceholderText="(optional)" />
-                            <TextBlock Text="Preamble:" VerticalAlignment="Center" />
-                            <TextBox Text="{Binding Preamble}" Width="260" AcceptsReturn="True" TextWrapping="Wrap" />
-                            <Button Content="Remove" Command="{Binding RemoveCommand}" />
-                          </StackPanel>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                  <Button Content="Add participant" Command="{Binding AddDialogueParticipantCommand}" HorizontalAlignment="Left" />
-                </StackPanel>
+                         Classes="mono" />
               </StackPanel>
             </Border>
           </DataTemplate>

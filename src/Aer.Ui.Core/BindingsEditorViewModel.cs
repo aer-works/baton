@@ -1,9 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
-using System.Text.Json;
 using Aer.Adapters;
 using Aer.Flow.Concurrency;
-using Aer.Workers.Dialogue;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Aer.Ui.Core;
@@ -30,17 +28,6 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
 {
     /// <summary>The state the current <see cref="Entries"/> are compared against for dirty tracking — what was last loaded from or saved to disk, or the empty config <see cref="StartNew"/> minted. <see langword="null"/> until an editing session starts.</summary>
     internal IReadOnlyDictionary<string, WorkerBindingConfigEntry>? Baseline { get; private set; }
-
-    /// <summary>
-    /// The dialogue sidecar content <see cref="Entries"/>' structured dialogue fields are compared
-    /// against for dirty tracking (M23 Phase 1, #270) — keyed by worker name, populated alongside
-    /// <see cref="Baseline"/> by <see cref="LoadFrom"/>. A <c>"dialogue"</c> entry's own
-    /// <see cref="WorkerBindingConfigEntry"/> never changes when only its sidecar's *content*
-    /// changes (the entry only carries the sidecar's *path*, in <see cref="WorkerBindingConfigEntry.PromptTemplate"/>),
-    /// so <see cref="Baseline"/> comparison alone would miss that edit — this sits alongside it as a
-    /// second, sibling baseline for the second, sibling artifact <see cref="SaveToFileAsync"/> writes.
-    /// </summary>
-    private IReadOnlyDictionary<string, DialogueWorkerConfig?> _dialogueBaseline = new Dictionary<string, DialogueWorkerConfig?>();
 
     /// <summary>Whether <see cref="Baseline"/> reflects a state that exists on disk — mirrors <see cref="TemplateEditorViewModel.BaselineIsPersisted"/>, though bindings have no version field to distinguish a first save on.</summary>
     internal bool BaselineIsPersisted { get; private set; }
@@ -100,7 +87,6 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
     {
         UnsubscribeAll();
         Baseline = new Dictionary<string, WorkerBindingConfigEntry>();
-        _dialogueBaseline = new Dictionary<string, DialogueWorkerConfig?>();
         BaselineIsPersisted = false;
         Entries.Clear();
         IsOpen = true;
@@ -111,15 +97,8 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
     /// <summary>
     /// (Re)anchors the session to <paramref name="config"/> as the on-disk state — called by
     /// Open-in-editor after a parse, and by Save after a successful write. <paramref name="bindingsFilePath"/>
-    /// resolves a <c>"dialogue"</c> entry's <see cref="WorkerBindingConfigEntry.PromptTemplate"/>
-    /// sidecar path (relative paths resolve against the bindings file's own directory, the natural
-    /// reading of "relative to this file") so its content can be loaded into
-    /// <see cref="WorkerBindingEntryViewModel.DialogueParticipants"/> et al. for a true structured
-    /// round trip (M23 Phase 1, #270); null when there is no bindings file yet (<see cref="StartNew"/>
-    /// never calls this overload) or the caller has no path to resolve against. A sidecar that fails
-    /// to load (missing file, malformed JSON) is not a load failure for the whole session — the
-    /// affected row just falls back to <see cref="WorkerBindingEntryViewModel.FromEntry"/>'s default
-    /// two-party seed, the same as a freshly-switched-to-dialogue row.
+    /// is null when there is no bindings file yet (<see cref="StartNew"/> never calls this overload)
+    /// or the caller has no path to resolve against.
     /// </summary>
     public void LoadFrom(IReadOnlyDictionary<string, WorkerBindingConfigEntry> config, string? bindingsFilePath = null)
     {
@@ -128,46 +107,13 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
         BaselineIsPersisted = true;
         Entries.Clear();
 
-        var dialogueBaseline = new Dictionary<string, DialogueWorkerConfig?>();
         foreach (var (workerName, entry) in config)
         {
-            DialogueWorkerConfig? dialogueConfig = null;
-            if (entry.Adapter == "dialogue")
-            {
-                dialogueConfig = TryLoadDialogueSidecar(entry.PromptTemplate, bindingsFilePath);
-                dialogueBaseline[workerName] = dialogueConfig;
-            }
-
-            Entries.Add(WorkerBindingEntryViewModel.FromEntry(workerName, entry, _adapterCandidates, _adapterRegistry, RemoveEntry, dialogueConfig));
+            Entries.Add(WorkerBindingEntryViewModel.FromEntry(workerName, entry, _adapterCandidates, _adapterRegistry, RemoveEntry));
         }
 
-        _dialogueBaseline = dialogueBaseline;
         IsOpen = true;
         RecomputeIsDirty();
-    }
-
-    /// <summary>Resolves <paramref name="sidecarPath"/> against <paramref name="bindingsFilePath"/>'s directory when relative — the shared path convention <see cref="LoadFrom"/>/<see cref="SaveToFileAsync"/> both use for a dialogue entry's sidecar.</summary>
-    private static string ResolveSidecarPath(string sidecarPath, string? bindingsFilePath) =>
-        Path.IsPathRooted(sidecarPath) || string.IsNullOrEmpty(bindingsFilePath)
-            ? sidecarPath
-            : Path.Combine(Path.GetDirectoryName(bindingsFilePath) ?? string.Empty, sidecarPath);
-
-    private static DialogueWorkerConfig? TryLoadDialogueSidecar(string sidecarPath, string? bindingsFilePath)
-    {
-        if (string.IsNullOrWhiteSpace(sidecarPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            var resolvedPath = ResolveSidecarPath(sidecarPath, bindingsFilePath);
-            return DialogueWorkerConfigParser.Parse(File.ReadAllText(resolvedPath));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DialogueWorkerConfigException)
-        {
-            return null;
-        }
     }
 
     /// <summary>Starts a fresh session with its user-facing status line — the New-bindings action's whole behavior, moved here from <c>MainWindow</c> when the file half of authoring moved into this type (M19 Phase 2, #187).</summary>
@@ -232,17 +178,6 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
             return;
         }
 
-        // A dialogue row with no PromptTemplate yet gets an owned default sidecar file name (the
-        // same "dialogue-<step>.json" convention the guided wizard already uses) — so authoring a
-        // dialogue step through the structured fields never requires typing a path by hand either.
-        foreach (var entryVm in Entries)
-        {
-            if (entryVm.IsDialogueAdapter && string.IsNullOrWhiteSpace(entryVm.PromptTemplate) && !string.IsNullOrWhiteSpace(entryVm.WorkerName))
-            {
-                entryVm.PromptTemplate = $"dialogue-{entryVm.WorkerName}.json";
-            }
-        }
-
         if (!TryBuildConfig(out var config, out var buildError))
         {
             StatusText = buildError!;
@@ -257,29 +192,8 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
             return;
         }
 
-        if (!TryBuildDialogueConfigs(out var dialogueConfigs, out var dialogueError))
-        {
-            StatusText = dialogueError!;
-            return;
-        }
-
         try
         {
-            foreach (var (workerName, dialogueConfig) in dialogueConfigs!)
-            {
-                var sidecarPath = ResolveSidecarPath(config![workerName].PromptTemplate, bindingsFilePath);
-                var sidecarDirectory = Path.GetDirectoryName(sidecarPath);
-                if (!string.IsNullOrEmpty(sidecarDirectory))
-                {
-                    Directory.CreateDirectory(sidecarDirectory);
-                }
-
-                await File.WriteAllTextAsync(
-                    sidecarPath,
-                    JsonSerializer.Serialize(dialogueConfig, new JsonSerializerOptions { WriteIndented = true }),
-                    cancellationToken).ConfigureAwait(true);
-            }
-
             await WorkerBindingConfigWriter.SaveToFileAsync(config!, bindingsFilePath, cancellationToken).ConfigureAwait(true);
         }
         catch (Exception ex) when (ex is Aer.Flow.AerFlowException or IOException or UnauthorizedAccessException)
@@ -290,40 +204,9 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
             return;
         }
 
-        // Re-anchor dirty tracking to what the file (and every dialogue sidecar) now actually
-        // contains.
+        // Re-anchor dirty tracking to what the file now actually contains.
         LoadFrom(config!, bindingsFilePath);
         StatusText = $"Saved '{bindingsFilePath}' ({config!.Count} entr{(config.Count == 1 ? "y" : "ies")}).";
-    }
-
-    /// <summary>
-    /// Builds every <c>"dialogue"</c> entry's sidecar <see cref="DialogueWorkerConfig"/> from its
-    /// structured fields (M23 Phase 1, #270) — <see cref="SaveToFileAsync"/>'s pre-write validation
-    /// pass for the second, sibling artifact alongside <see cref="TryBuildConfig"/>'s own.
-    /// </summary>
-    private bool TryBuildDialogueConfigs(out Dictionary<string, DialogueWorkerConfig>? configs, out string? error)
-    {
-        var built = new Dictionary<string, DialogueWorkerConfig>();
-        foreach (var entryVm in Entries)
-        {
-            if (!entryVm.IsDialogueAdapter)
-            {
-                continue;
-            }
-
-            if (!entryVm.TryBuildDialogueConfig(out var dialogueConfig, out var dialogueError))
-            {
-                configs = null;
-                error = dialogueError;
-                return false;
-            }
-
-            built[entryVm.WorkerName] = dialogueConfig!;
-        }
-
-        configs = built;
-        error = null;
-        return true;
     }
 
     /// <summary>
@@ -357,7 +240,6 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
     {
         UnsubscribeAll();
         Baseline = null;
-        _dialogueBaseline = new Dictionary<string, DialogueWorkerConfig?>();
         BaselineIsPersisted = false;
         Entries.Clear();
         IsOpen = false;
@@ -456,74 +338,8 @@ public sealed partial class BindingsEditorViewModel : ObservableObject
         }
 
         IsDirty = !TryBuildConfig(out var current, out _)
-            || !ConfigEquals(current!, baseline)
-            || !DialogueBaselineEquals();
+            || !ConfigEquals(current!, baseline);
     }
-
-    /// <summary>
-    /// Whether every current dialogue row's structured content still matches
-    /// <see cref="_dialogueBaseline"/> (M23 Phase 1, #270) — the dirty check
-    /// <see cref="ConfigEquals"/> alone can't make, since a dialogue sidecar's content is invisible
-    /// to <see cref="WorkerBindingConfigEntry"/> equality (see <see cref="_dialogueBaseline"/>'s own
-    /// remarks). A row whose structured fields don't yet build a valid <see cref="DialogueWorkerConfig"/>
-    /// counts as dirty rather than throwing here — <see cref="SaveToFileAsync"/> is where an
-    /// in-progress edit's validation error actually surfaces.
-    /// </summary>
-    private bool DialogueBaselineEquals()
-    {
-        foreach (var entryVm in Entries)
-        {
-            if (!entryVm.IsDialogueAdapter)
-            {
-                continue;
-            }
-
-            _dialogueBaseline.TryGetValue(entryVm.WorkerName, out var baselineConfig);
-
-            if (!entryVm.TryBuildDialogueConfig(out var currentConfig, out _))
-            {
-                return false;
-            }
-
-            if (!DialogueConfigEquals(currentConfig, baselineConfig))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Manual field-by-field comparison, not <see cref="DialogueWorkerConfig"/>'s own record
-    /// <c>==</c> — the same reason <see cref="EntryEquals"/> hand-compares <see cref="WorkerContract"/>'s
-    /// list-typed members instead of trusting record equality: <see cref="DialogueWorkerConfig.Participants"/>
-    /// (and each entry's own <see cref="DialogueParticipant.Args"/>) breaks structural equality the
-    /// identical way.
-    /// </summary>
-    private static bool DialogueConfigEquals(DialogueWorkerConfig? a, DialogueWorkerConfig? b)
-    {
-        if (a is null || b is null)
-        {
-            return a is null && b is null;
-        }
-
-        return a.SeedPrompt == b.SeedPrompt
-            && a.TurnBudget == b.TurnBudget
-            && a.FinalOutputName == b.FinalOutputName
-            && a.TurnTimeout == b.TurnTimeout
-            && a.FinalOutputMode == b.FinalOutputMode
-            && a.Participants.Count == b.Participants.Count
-            && a.Participants.Zip(b.Participants, DialogueParticipantEquals).All(equal => equal);
-    }
-
-    private static bool DialogueParticipantEquals(DialogueParticipant a, DialogueParticipant b) =>
-        a.Role == b.Role
-        && a.Vendor == b.Vendor
-        && a.Model == b.Model
-        && a.Preamble == b.Preamble
-        && a.Command == b.Command
-        && a.Args.SequenceEqual(b.Args);
 
     private static bool ConfigEquals(
         IReadOnlyDictionary<string, WorkerBindingConfigEntry> a,

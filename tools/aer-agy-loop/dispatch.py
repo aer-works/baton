@@ -507,203 +507,6 @@ def build_workflow(
     }
 
 
-# --dialogue mode (#813): assembles a dialogue run's three JSONs from one seed file plus flags,
-# instead of hand-rolling them from DialogueDispatchEndToEndTests/live-dialogue-smoke.md each time.
-
-DIALOGUE_PROMPT_PLACEHOLDER = "{PROMPT}"
-
-# #836: the shared preset-shapes JSON, canonically documented on DialogueParticipantPresets'
-# own doc comment (C#), which this tool reads by repo-relative path. Overridable
-# via env var so a fault-injection control (tools/audit-completeness/controls.py) can point a
-# mutated copy of this tool at a mutated copy of the JSON without touching the tracked file; the
-# repo-relative default is __file__-resolved so it works regardless of the caller's cwd, the same
-# convention resolve()'s own repo_root already uses below.
-DIALOGUE_PRESETS_PATH = Path(
-    os.environ.get("AER_DIALOGUE_PRESETS_PATH")
-    or Path(__file__).resolve().parents[2] / "src" / "Aer.Workers.Dialogue" / "DialogueParticipantPresets.json"
-)
-
-
-def _load_dialogue_presets() -> dict:
-    """Vendor -> preset shape, straight off the shared JSON -- no hand-typed Command/Args copy."""
-    raw = json.loads(DIALOGUE_PRESETS_PATH.read_text(encoding="utf-8"))
-    return {entry["Vendor"]: entry for entry in raw}
-
-
-DIALOGUE_PRESETS = _load_dialogue_presets()
-
-# The dialogue worker's own default per-turn timeout (DialogueWorkerConfig.DefaultTurnTimeout,
-# TimeSpan.FromMinutes(5)) -- mirrored here, not read from the assembly, because this tool never
-# loads .NET types. The formula below relies on this staying in sync with that constant; a drift
-# would only widen the step Timeout, never tighten it, so a stale copy fails safe.
-DIALOGUE_DEFAULT_TURN_TIMEOUT_MINUTES = 5
-
-# Slack over the worst-case turn-budget * per-turn-timeout product, for the dialogue worker's own
-# bookkeeping (writing transcript.jsonl / the final output) between turns.
-DIALOGUE_TIMEOUT_SLACK_MINUTES = 5
-
-
-def dialogue_timeout_minutes(turn_budget: int) -> int:
-    """Timeout formula: turn_budget * the worker's own default per-turn timeout, plus slack.
-
-    This tool never sets DialogueWorkerConfig.TurnTimeout, so every turn runs under the worker's
-    5-minute default (DIALOGUE_DEFAULT_TURN_TIMEOUT_MINUTES) -- the step-level Timeout in
-    bindings.json must cover TurnBudget turns at that ceiling or the engine can kill a dialogue
-    that is still making legitimate progress on its last turn.
-    """
-    return turn_budget * DIALOGUE_DEFAULT_TURN_TIMEOUT_MINUTES + DIALOGUE_TIMEOUT_SLACK_MINUTES
-
-
-def build_dialogue_participant(vendor: str, role: str, preamble: str, model: str) -> dict:
-    """One participant's Command/Args, built from DIALOGUE_PRESETS -- the same
-    DialogueParticipantPresets.json that Aer.Workers.Dialogue.DialogueParticipantPresets.For (C#)
-    embeds and reads (#836). This tool owns no hand-typed Command/Args copy of its own; every
-    dialogue participant this tool builds goes through this function rather than re-deriving flags
-    at each call site, and this function derives them from the shared JSON rather than a literal.
-    """
-    preset = DIALOGUE_PRESETS.get(vendor)
-    if preset is None:
-        raise ValueError(f"no participant preset exists for vendor '{vendor}'")
-
-    command = preset["Command"]
-    args = list(preset["Args"])
-    if model:
-        args += [a.replace("{MODEL}", model) for a in preset["ModelArgs"]]
-
-    return {
-        "Role": role,
-        "Vendor": vendor,
-        "Model": model,
-        "Preamble": preamble,
-        "Command": command,
-        "Args": args,
-        "Environment": None,
-    }
-
-
-# The only vendors build_dialogue_participant has a preset for -- what --participant validates
-# against, and what an unknown-vendor error names, so the two never drift apart. Derived from
-# DIALOGUE_PRESETS (the shared JSON's own key order), not a separate literal.
-DIALOGUE_KNOWN_VENDORS = tuple(DIALOGUE_PRESETS.keys())
-
-
-def parse_dialogue_participant_spec(spec: str, index: int) -> dict:
-    """Parses one `--participant VENDOR:MODEL[:ROLE]` flag value.
-
-    Role defaults to `participant-<n>` (1-based, in flag order) when omitted -- the issue's own
-    "roles default to participant-1/participant-2" acceptance shape.
-    """
-    parts = spec.split(":")
-    if len(parts) == 2:
-        vendor, model = parts
-        role = f"participant-{index + 1}"
-    elif len(parts) == 3:
-        vendor, model, role = parts
-    else:
-        raise ValueError(
-            f"--participant '{spec}' must be VENDOR:MODEL or VENDOR:MODEL:ROLE (1 or 2 colons, got {len(parts) - 1}).")
-
-    if vendor not in DIALOGUE_KNOWN_VENDORS:
-        raise ValueError(
-            f"--participant '{spec}' names unknown vendor '{vendor}' -- known vendors: "
-            f"{', '.join(DIALOGUE_KNOWN_VENDORS)}.")
-    if not model:
-        raise ValueError(f"--participant '{spec}' is missing a model.")
-    if not role:
-        raise ValueError(f"--participant '{spec}' is missing a role.")
-
-    return {"vendor": vendor, "model": model, "role": role}
-
-
-def parse_dialogue_preamble_files(entries: list[str]) -> dict[str, Path]:
-    """Parses `--preamble-file ROLE=PATH` flags into a role -> path map."""
-    mapping: dict[str, Path] = {}
-    for entry in entries:
-        role, sep, path_str = entry.partition("=")
-        if not sep or not role or not path_str:
-            raise ValueError(f"--preamble-file '{entry}' must be ROLE=PATH.")
-        path = Path(path_str)
-        # Preamble is a required non-empty field on the participant record; an empty file would
-        # pass silently here and fail (or worse, not fail) engine-side instead.
-        if not path.is_file() or not path.read_text(encoding="utf-8").strip():
-            raise ValueError(f"--preamble-file '{entry}': file is missing or has no non-whitespace content.")
-        mapping[role] = path
-    return mapping
-
-
-def dialogue_default_preamble(role: str) -> str:
-    """A participant's Preamble is a required, non-empty field (DialogueParticipantPresets.For
-    throws on empty) -- this is the mechanical fallback when the author supplies no --preamble-file
-    for a role, not authored content. It says nothing about the exchange's substance; the seed
-    prompt is the author's own text and stays untouched (#813: "not templating the content").
-    """
-    return f"You are the '{role}' participant in this dialogue. Follow the seed prompt's instructions."
-
-
-def build_dialogue_config(
-    seed_prompt: str,
-    turn_budget: int,
-    final_output_name: str,
-    participant_specs: list[dict],
-    preamble_files: dict[str, Path],
-) -> tuple[dict, list[dict]]:
-    """Builds the DialogueWorkerConfig sidecar dict and the resolved participant list (for the
-    pre-dispatch announce banner). Preambles and the seed prompt are copied verbatim from their
-    source files when provided -- this function never edits author-owned text.
-    """
-    participants = []
-    for i, spec in enumerate(participant_specs):
-        role = spec["role"]
-        preamble_path = preamble_files.get(role)
-        preamble = preamble_path.read_text(encoding="utf-8") if preamble_path else dialogue_default_preamble(role)
-        participants.append(build_dialogue_participant(spec["vendor"], role, preamble, spec["model"]))
-
-    config = {
-        "SeedPrompt": seed_prompt,
-        "TurnBudget": turn_budget,
-        "FinalOutputName": final_output_name,
-        "Participants": participants,
-    }
-    return config, participants
-
-
-def build_dialogue_bindings(worker_name: str, final_output_name: str, prompt_template_path: str, timeout_minutes: int) -> dict:
-    """The dialogue step's bindings.json entry -- deliberately minimal, matching the shape every
-    real call site uses (DialogueDispatchEndToEndTests.cs, LiveDialogueSmokeTest.cs): no
-    PermissionGrant, no WorkingDirectory. `PromptTemplate` carries the sidecar config's path per
-    DialogueWorkerAdapter's own doc comment ("carries the dialogue-worker config file's static
-    path, not instructional text").
-    """
-    return {
-        worker_name: {
-            "Adapter": "dialogue",
-            "Contract": {
-                "WorkerName": worker_name,
-                "RequiredInputs": [],
-                "ProducedOutputs": [{"Name": final_output_name}],
-                "OptionalMetadata": [],
-            },
-            "PromptTemplate": prompt_template_path,
-            "Timeout": "{:02d}:{:02d}:00".format(*divmod(timeout_minutes, 60)),
-        }
-    }
-
-
-def build_dialogue_workflow(worker_name: str, final_output_name: str) -> dict:
-    return {
-        "WorkflowTemplateId": f"aer-agy-loop-dialogue-{uuid.uuid4().hex[:8]}",
-        "WorkflowTemplateVersion": 1,
-        "Steps": [{
-            "StepId": worker_name,
-            "Worker": worker_name,
-            "Inputs": [],
-            "Outputs": [final_output_name],
-            "DependsOn": [],
-            "RetryPolicy": {"MaxAttempts": 1},
-        }],
-    }
-
-
 # One name, used by the contract, the workflow, and the prompt below -- a drifted copy here would
 # make the engine demand a file the prompt never asked the worker to write. #898: this is also the
 # `review` role's output name in the catalog (src/Aer.Adapters/WorkerRoles.json), checked against it
@@ -1195,15 +998,6 @@ def build_parser(argv=None) -> argparse.ArgumentParser:
     parser.add_argument("--cli-path", type=Path, default=None, help="Path to Aer.Cli.exe. Default: a published COPY of the repo bin (refreshed when the repo bin is newer) so the engine never holds the repo's own binaries -- #717. Passing this flag skips the copy entirely.")
     parser.add_argument("--worktree", metavar="BRANCH", default=None, help="Provision (or reuse) a sibling git worktree of --working-directory on this existing branch -- submodules initialised, native lib built -- and dispatch there instead. #717: a worker that builds or tests never works in the live repo.")
     parser.add_argument("--review-ref", metavar="REF", default=None, help="Review a ref without checking it out: the ENGINE provisions a read-only worktree of --working-directory (defaults to the current directory) at REF and tears it down on completion (#669). No native build -- for reviews, which do not build. Mutually exclusive with --worktree; --working-directory becomes optional.")
-    parser.add_argument("--dialogue", action="store_true",
-                        help="Assemble and run a multi-participant dialogue (workflow.json + bindings.json + the DialogueWorkerConfig sidecar) from one seed file plus flags, instead of hand-rolling the three JSONs. See #813.")
-    parser.add_argument("--seed-file", default=None, type=Path, help="Path to the dialogue's opening prompt, copied verbatim as DialogueWorkerConfig.SeedPrompt. --dialogue only.")
-    parser.add_argument("--participant", dest="participants", action="append", default=[], metavar="VENDOR:MODEL[:ROLE]",
-                        help="One dialogue side, in speaking order. VENDOR is 'claude' or 'agy'. ROLE defaults to participant-1/participant-2/... in flag order. Repeatable; at least 2 required. --dialogue only.")
-    parser.add_argument("--turn-budget", type=int, default=None, help="DialogueWorkerConfig.TurnBudget. --dialogue only.")
-    parser.add_argument("--final-output", default=None, help="DialogueWorkerConfig.FinalOutputName -- the contract output name lane tooling reads back. --dialogue only.")
-    parser.add_argument("--preamble-file", dest="preamble_files", action="append", default=[], metavar="ROLE=PATH",
-                        help="Per-role preamble file, copied verbatim as that participant's Preamble. Repeatable. Omitted roles get a mechanical placeholder (see dialogue_default_preamble), never authored content. --dialogue only.")
     return parser
 
 
@@ -1283,10 +1077,6 @@ def main() -> int:
         print("dispatch nothing. There is no template for that, deliberately.")
         return 0
 
-    if args.lane and args.dialogue:
-        print("error: --lane cannot be combined with --dialogue", file=sys.stderr)
-        return 2
-
     if args.lane:
         if args.template is not None:
             print("error: --lane cannot be combined with --template", file=sys.stderr)
@@ -1317,63 +1107,6 @@ def main() -> int:
             return 2
         if args.working_directory is None:
             print("error: the following arguments are required: --working-directory", file=sys.stderr)
-            return 2
-    elif args.dialogue:
-        if args.template is not None:
-            print("error: --dialogue cannot be combined with --template", file=sys.stderr)
-            return 2
-        if args.review_ref is not None:
-            print("error: --dialogue cannot be combined with --review-ref", file=sys.stderr)
-            return 2
-
-        # --dialogue builds its own bindings from --seed-file/--participant/etc; a single-dispatch
-        # flag here would look accepted and silently do nothing, same reasoning as --lane's refusal
-        # above.
-        for flag_name in ("adapter", "model", "effort", "timeout_minutes", "read_files",
-                          "write_files", "run_shell_commands", "network_access", "verdict_schema",
-                          "worker_name", "output_name", "prompt_file"):
-            if getattr(args, flag_name) is not None:
-                print(f"error: --dialogue builds its own bindings from --seed-file/--participant/"
-                      f"--turn-budget/--final-output; an explicit --{flag_name.replace('_', '-')} "
-                      f"would be silently ignored, so it is refused.", file=sys.stderr)
-                return 2
-        if args.seed_file is None:
-            print("error: the following arguments are required: --seed-file", file=sys.stderr)
-            return 2
-        if args.turn_budget is None:
-            print("error: the following arguments are required: --turn-budget", file=sys.stderr)
-            return 2
-        if args.turn_budget < 1:
-            print(f"error: --turn-budget must be a positive integer (got {args.turn_budget}); "
-                  f"a non-positive budget would produce a malformed dialogue Timeout.", file=sys.stderr)
-            return 2
-        if args.worktree is not None:
-            # The worktree flag belongs to the single-dispatch/lane path; --dialogue runs against
-            # the live repo's built engine and accepting it here would look honored and be ignored.
-            print("error: --dialogue cannot be combined with --worktree.", file=sys.stderr)
-            return 2
-        if args.final_output is None:
-            print("error: the following arguments are required: --final-output", file=sys.stderr)
-            return 2
-        if len(args.participants) < 2:
-            print(f"error: --dialogue requires at least two --participant entries (got {len(args.participants)}).",
-                  file=sys.stderr)
-            return 2
-
-        try:
-            participant_specs = [parse_dialogue_participant_spec(spec, i) for i, spec in enumerate(args.participants)]
-            preamble_files = parse_dialogue_preamble_files(args.preamble_files)
-        except ValueError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
-
-        unknown_preamble_roles = set(preamble_files) - {s["role"] for s in participant_specs}
-        if unknown_preamble_roles:
-            print(f"error: --preamble-file names role(s) not in --participant: {', '.join(sorted(unknown_preamble_roles))}",
-                  file=sys.stderr)
-            return 2
-        if not args.seed_file.exists():
-            print(f"error: --seed-file not found: {args.seed_file}", file=sys.stderr)
             return 2
     else:
         if args.review_ref is not None:
@@ -1410,11 +1143,7 @@ def main() -> int:
         print(f"error: Aer.Cli.exe not found at {cli_path} -- build it first (pixi run build).", file=sys.stderr)
         return 2
 
-    # Dialogue steps carry no WorkingDirectory (#813's research finding: every real
-    # DialogueWorkerConfig/bindings call site -- DialogueDispatchEndToEndTests.cs,
-    # LiveDialogueSmokeTest.cs -- omits it; participants are direct vendor-CLI spawns, not repo
-    # work) -- --working-directory/--worktree are not exposed under --dialogue.
-    working_directory = args.working_directory.resolve() if not args.dialogue else None
+    working_directory = args.working_directory.resolve()
     # Not under --dry-run: provisioning creates a real worktree and runs a real build, and the dry
     # run's whole promise is that nothing is mutated or spent (#639).
     if args.worktree and not args.dry_run:
@@ -1425,16 +1154,10 @@ def main() -> int:
     # before any step is built: the lane bakes this concrete base SHA into the janitor's diff
     # command (#789), and the workspace-truth block below reads the same value (record-once). Safe
     # to take now -- nothing between here and the engine run moves HEAD, so it equals what a capture
-    # right before dispatch would give. Dialogue carries no WorkingDirectory / repo to diff.
-    head_before, head_before_err = (None, None) if args.dialogue else _git_head(working_directory)
+    # right before dispatch would give.
+    head_before, head_before_err = _git_head(working_directory)
 
-    if args.dialogue:
-        seed_prompt = args.seed_file.read_text(encoding="utf-8")
-        dialogue_worker_name = "dialogue"
-        dialogue_timeout = dialogue_timeout_minutes(args.turn_budget)
-        dialogue_config, dialogue_participants = build_dialogue_config(
-            seed_prompt, args.turn_budget, args.final_output, participant_specs, preamble_files)
-    elif not args.lane:
+    if not args.lane:
         refusal = grant_refusal(vars(args))
         if refusal:
             print(f"error: {refusal}", file=sys.stderr)
@@ -1533,32 +1256,15 @@ def main() -> int:
     scratch_root.mkdir(parents=True, exist_ok=True)
     room_dir = scratch_root / "room-dir"
 
-    if args.dialogue:
-        dialogue_config_path = scratch_root / "dialogue-config.json"
-        dialogue_config_path.write_text(json.dumps(dialogue_config, indent=2), encoding="utf-8")
-        workflow = build_dialogue_workflow(dialogue_worker_name, args.final_output)
-        bindings = build_dialogue_bindings(
-            dialogue_worker_name, args.final_output, _forward_slashes(dialogue_config_path), dialogue_timeout)
-    else:
-        workflow = build_workflow(steps=step_specs)
-        bindings = build_bindings(steps=step_specs, vendor_log_dir=_forward_slashes(room_dir))
+    workflow = build_workflow(steps=step_specs)
+    bindings = build_bindings(steps=step_specs, vendor_log_dir=_forward_slashes(room_dir))
 
     workflow_path = scratch_root / "workflow.json"
     bindings_path = scratch_root / "bindings.json"
     workflow_path.write_text(json.dumps(workflow, indent=2), encoding="utf-8")
     bindings_path.write_text(json.dumps(bindings, indent=2), encoding="utf-8")
 
-    if args.dialogue:
-        print(
-            "[dispatch.py] {verb}: dialogue, {n} participants, turn-budget={tb}, timeout={to}m".format(
-                verb="WOULD dispatch" if args.dry_run else "about to dispatch",
-                n=len(dialogue_participants), tb=args.turn_budget, to=dialogue_timeout,
-            ),
-            file=sys.stderr,
-        )
-        for p in dialogue_participants:
-            print(f"    participant '{p['Role']}': vendor={p['Vendor']} model={p['Model']}", file=sys.stderr)
-    elif args.lane:
+    if args.lane:
         print(
             "[dispatch.py] {verb}: lane 3 steps (implement -> janitor -> review)".format(
                 verb="WOULD dispatch" if args.dry_run else "about to dispatch",
@@ -1599,11 +1305,7 @@ def main() -> int:
         print(f"    room-dir:   {_forward_slashes(room_dir)}")
         print(f"    Aer.Cli:    {cli_path}"
               f"{'' if cli_path.exists() else '   <-- NOT BUILT; a real run would fail here'}")
-        if args.dialogue:
-            print(f"    dialogue:   seed-file={args.seed_file} turn-budget={args.turn_budget} "
-                  f"final-output={args.final_output}")
-            print(f"    dialogue-config: {dialogue_config_path}")
-        elif not args.lane:
+        if not args.lane:
             print("    grant:      " + " ".join(
                 f"{k}={getattr(args, k)}" for k in
                 ("read_files", "write_files", "run_shell_commands", "network_access")))
@@ -1627,7 +1329,7 @@ def main() -> int:
     # lane could bake the base SHA into the janitor's diff command (#789). HEAD has not moved since
     # (nothing here commits), so the value is what a capture at this point would have given.
 
-    outer_deadline_minutes = dialogue_timeout + 5 if args.dialogue else sum(s["timeout_minutes"] for s in step_specs) + 5
+    outer_deadline_minutes = sum(s["timeout_minutes"] for s in step_specs) + 5
     outer_deadline_seconds = outer_deadline_minutes * 60
 
     # Popen + two-stage communicate rather than subprocess.run(timeout=...), and the difference IS
@@ -1681,9 +1383,7 @@ def main() -> int:
         # Return value deliberately unused: this path already exits 1. Passing the HEAD error
         # keeps the rendering honest -- without it a failed HEAD probe reads as a clean tree,
         # the exact #780 defect, on the one path where the tree is most likely to be mid-work.
-        # Skipped for --dialogue, which carries no WorkingDirectory / repo to diff.
-        if not args.dialogue:
-            _print_workspace_truth(working_directory, head_before, head_before_err)
+        _print_workspace_truth(working_directory, head_before, head_before_err)
         if engine_stderr:
             print(engine_stderr, file=sys.stderr, end="")
         _print_flow_log(log_path, log_bytes_before, log_mtime_before, room_dir)
@@ -1693,8 +1393,7 @@ def main() -> int:
     result = subprocess.CompletedProcess(engine.args, engine.returncode, engine_stdout, engine_stderr)
 
     print(result.stdout, end="")
-    # Skipped for --dialogue: no WorkingDirectory means no repo to diff (see head_before above).
-    truth_ok = True if args.dialogue else _print_workspace_truth(working_directory, head_before, head_before_err)
+    truth_ok = _print_workspace_truth(working_directory, head_before, head_before_err)
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr, end="")
         _print_flow_log(log_path, log_bytes_before, log_mtime_before, room_dir)
@@ -1705,7 +1404,7 @@ def main() -> int:
         print("error: workspace truth could not be established", file=sys.stderr)
         return 1
 
-    primary_output_name = args.final_output if args.dialogue else ("report.md" if args.lane else args.output_name)
+    primary_output_name = "report.md" if args.lane else args.output_name
     artifacts_dir = room_dir / "artifacts"
     output_files = list(artifacts_dir.glob(f"*/{primary_output_name}")) if artifacts_dir.exists() else []
     if not output_files:

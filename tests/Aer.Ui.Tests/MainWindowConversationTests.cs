@@ -15,7 +15,8 @@ namespace Aer.Ui.Tests;
 /// <c>MainWindow*Tests</c> class uses, on the same real-<c>MutationInterface</c>-pump fixture as
 /// <see cref="MainWindowArtifactLineageAndDiffTests"/>. Transcripts are written by hand to UI spec
 /// §10.1's reader contract — which worker produced them is irrelevant by design (discovery is by
-/// durable content alone), and the full dialogue-worker round trip is Phase 3's gate (#179).
+/// durable content alone). Phase 3's producer/consumer agreement gate (#179) exercised this against
+/// the dialogue worker's own writer before that worker was archived (#1408).
 /// </summary>
 public class MainWindowConversationTests
 {

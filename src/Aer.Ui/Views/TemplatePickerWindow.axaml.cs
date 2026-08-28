@@ -55,7 +55,7 @@ public partial class TemplatePickerWindow : Window
     {
         if (SecondaryVendorPanel != null)
         {
-            SecondaryVendorPanel.IsVisible = ReviewRunRadio.IsChecked == true || TwoVendorDialogueRadio.IsChecked == true;
+            SecondaryVendorPanel.IsVisible = ReviewRunRadio.IsChecked == true;
         }
         if (ProjectDirectoryPanel != null)
         {
@@ -73,12 +73,11 @@ public partial class TemplatePickerWindow : Window
         string templateId;
         if (ChatSessionRadio.IsChecked == true) templateId = "chat-session"; // vocabulary-ok: template id key
         else if (CodebaseSessionRadio.IsChecked == true) templateId = "codebase-session"; // vocabulary-ok: template id key
-        else if (TwoVendorDialogueRadio.IsChecked == true) templateId = "two-vendor-dialogue";
         else if (ReviewRunRadio.IsChecked == true) templateId = "review-run";
         else templateId = "solo-run";
 
         var primaryVendor = PrimaryVendorCombo.SelectedItem?.ToString() ?? "claude";
-        var secondaryVendor = (ReviewRunRadio.IsChecked == true || TwoVendorDialogueRadio.IsChecked == true)
+        var secondaryVendor = ReviewRunRadio.IsChecked == true
             ? (SecondaryVendorCombo.SelectedItem?.ToString() ?? primaryVendor)
             : null;
         var roomName = string.IsNullOrWhiteSpace(RoomNameBox.Text) ? $"room-{DateTime.UtcNow:yyyyMMddHHmmss}" : RoomNameBox.Text.Trim();

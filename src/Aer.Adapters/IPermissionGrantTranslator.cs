@@ -7,7 +7,7 @@ namespace Aer.Adapters;
 /// (<c>'{adapter}' has no structured permission builder support</c>) and the Save guard that blocks
 /// persisting a grant the adapter refuses. It does <em>not</em> gate the checkbox builder itself —
 /// the checkboxes render for every adapter, and a grant built on one that does not implement this
-/// (e.g. <see cref="DialogueWorkerAdapter"/>, which never shells out to a permission-gated vendor
+/// (e.g. <see cref="CommandWorkerAdapter"/>, which never shells out to a permission-gated vendor
 /// CLI at all) is persisted with only that advisory warning. Corrected after measurement: the
 /// earlier wording here claimed the interface gated the builder, and was copied onward on the
 /// strength of it. Kept separate from <see cref="IWorkerAdapter"/> itself rather

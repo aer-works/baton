@@ -198,12 +198,11 @@ public static class OutcomeClassifier
     /// stderr silently swallowing the contract diagnostic, or vice versa.
     /// </para>
     /// <para>
-    /// The <c>stderr:</c> separator deliberately matches <c>DialogueRunner</c>'s, which has appended a
-    /// failed vendor turn's stderr to its own message the same way since M17 Phase 3 (#166), on the
-    /// same reasoning. That is one layer down — the dialogue worker's inner vendor calls, versus
-    /// Flow's outer worker dispatch — so the two are genuinely separate mechanisms rather than a
-    /// duplicated one; keeping the rendering identical is what stops an operator having to learn two
-    /// spellings of the same fact. Change one and change both.
+    /// The <c>stderr:</c> separator deliberately matched the now-retired dialogue worker's own
+    /// <c>DialogueRunner</c>, which appended a failed vendor turn's stderr to its own message the
+    /// same way since M17 Phase 3 (#166), on the same reasoning: an operator should not have to
+    /// learn two spellings of the same fact. That worker was archived in #1408; this rendering
+    /// stands on its own now.
     /// </para>
     /// </remarks>
     private static string WithStderr(string reason, string? stderrTail)

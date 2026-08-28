@@ -179,8 +179,7 @@
       "aer.adapters": {
         "type": "Project",
         "dependencies": {
-          "Aer.Flow": "[0.14.0, )",
-          "Aer.Workers.Dialogue": "[0.14.0, )"
+          "Aer.Flow": "[0.14.0, )"
         }
       },
       "aer.core": {
@@ -190,22 +189,6 @@
         "type": "Project",
         "dependencies": {
           "Aer.Core": "[1.0.0, )"
-        }
-      },
-      "aer.mcp": {
-        "type": "Project"
-      },
-      "aer.mcp.host": {
-        "type": "Project",
-        "dependencies": {
-          "Aer.Flow": "[0.14.0, )",
-          "Aer.Mcp": "[0.14.0, )"
-        }
-      },
-      "aer.workers.dialogue": {
-        "type": "Project",
-        "dependencies": {
-          "Aer.Mcp.Host": "[0.14.0, )"
         }
       }
     }

@@ -2,8 +2,8 @@
 
   <!-- release-please linked-versions migration: Aer.Cli is the "core" group's shipped artifact (the
        `aer` dotnet tool, M13), so it carries the real, release-please-patched Version — the same role
-       the root Directory.Build.props used to play before the split. Aer.Flow/Aer.Adapters/
-       Aer.Workers.Dialogue stay on the root file's static Version; nothing reads their own assembly
+       the root Directory.Build.props used to play before the split. Aer.Flow/Aer.Adapters stay on
+       the root file's static Version; nothing reads their own assembly
        version independently. Imports the root file first for shared settings
        (IncludeSourceRevisionInInformationalVersion etc.), then overrides just Version. -->
   <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))"/>

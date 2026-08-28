@@ -41,7 +41,6 @@ public class VendorSpawnGateTests
     {
         ["src/Aer.Flow/Dispatch/CoreDispatcher.cs"] = "The gated dispatch path. Adapters build the gate into the target.",
         ["src/Aer.Adapters/AgyWorkerAdapter.cs"] = "Read-only agy registry queries (models/agent/plugin list) — no -p, no tool execution.",
-        ["src/Aer.Workers.Dialogue/ProcessVendorTurnClient.cs"] = "Spawns participants DialogueWorkerAdapter has already gated (#703).",
         ["src/Aer.Daemon/Program.cs"] = "The Go sidecar, not a vendor CLI.",
         ["src/Aer.Ui.Core/RoomClient.Connection.cs"] = "The daemon itself, not a vendor CLI.",
         ["src/Aer.Ui/MainWindow.axaml.cs"] = "Hands a URL to the OS browser.",

@@ -12,7 +12,7 @@ namespace Aer.Flow.Artifacts;
 public static class ArtifactManager
 {
     /// <summary>
-    /// The durable filename an ordinary (non-dialogue) step's fully-resolved prompt is written under,
+    /// The durable filename a step's fully-resolved prompt is written under,
     /// inside its own execution's output directory (issue #292) — <see cref="Dispatch.CoreDispatcher"/>
     /// writes it, before the CLI call, whenever <see cref="Dispatch.CoreDispatchTarget.PromptText"/> is
     /// set; the UI layer's step projector reads it back the same way it reads any other output file,

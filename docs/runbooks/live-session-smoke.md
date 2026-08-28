@@ -57,7 +57,7 @@ This runs `dotnet test tests/Aer.Cli.SmokeTests` filtered to `LiveSessionSmokeTe
 as `smoke-claude`, still **not** part of `AerFlow.slnx`, so it never builds or runs as a side effect
 of `pixi run build`/`test`/`lint`.
 
-Unlike `smoke-claude`/`smoke-mixed-vendor`/`smoke-dialogue`, this test doesn't call
+Unlike `smoke-claude`/`smoke-mixed-vendor`, this test doesn't call
 `RunCommand.ExecuteAsync` — interactive sessions have no `aer` CLI command at all, so it starts a
 real `Aer.Daemon` instance (`DaemonHost.RunDaemonAsync`, real `WorkerAdapterRegistry.Default`, not a
 stub) on a dynamically OS-assigned port (issue #296 — avoids colliding with another concurrent test

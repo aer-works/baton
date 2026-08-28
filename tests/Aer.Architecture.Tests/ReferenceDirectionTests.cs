@@ -27,7 +27,7 @@ public class ReferenceDirectionTests
     public void Aer_Flow_depends_on_nothing_above_the_engine()
         => AssertNoForbiddenReferences(
             project: "Aer.Flow",
-            forbiddenProjects: ["Aer.Adapters", "Aer.Ui", "Aer.Ui.Core", "Aer.Daemon", "Aer.Cli", "Aer.Workers.Dialogue"],
+            forbiddenProjects: ["Aer.Adapters", "Aer.Ui", "Aer.Ui.Core", "Aer.Daemon", "Aer.Cli"],
             forbiddenPackagePrefixes: ["Avalonia", "Microsoft.AspNetCore"]);
 
     // Aer.Ui.Core is the Avalonia-free, remote-ready MVVM seam (M19). A reference to Aer.Ui (the

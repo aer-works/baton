@@ -52,7 +52,7 @@ internal static class InheritedEnvironment
         // fails before any vendor question arises.
         "PATH",
         "LANG", "LC_ALL", "LC_CTYPE", "TZ",
-        // DOTNET_ROOT locates the host itself, so the dialogue worker (`dotnet exec`) cannot start
+        // DOTNET_ROOT locates the host itself, so a `dotnet exec <dll>`-spawned worker cannot start
         // without it on a machine where dotnet is not on PATH by absolute path.
         "DOTNET_ROOT", "DOTNET_ROOT(x86)",
         // NOT the .NET first-run suppressors, and their absence is measured rather than assumed.
@@ -92,8 +92,8 @@ internal static class InheritedEnvironment
         "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "ALLUSERSPROFILE",
         "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
         "COMSPEC", "PATHEXT", "TEMP", "TMP",
-        // powershell.exe resolves its own modules through this; the dialogue worker's participants
-        // are powershell on Windows.
+        // powershell.exe resolves its own modules through this; a declared worker command can be
+        // powershell on Windows.
         "PSMODULEPATH",
         "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
     ];

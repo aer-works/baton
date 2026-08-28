@@ -5,10 +5,9 @@ using Aer.Flow.Templates;
 namespace Aer.Adapters.Tests;
 
 /// <summary>
-/// #651: a <see cref="PermissionGrant"/> only constrains a worker whose adapter reads it. Two of the
-/// four registered adapters never do — <see cref="NoOpWorkerAdapter"/> writes its output through a
-/// dispatch target AER constructs itself, and <see cref="DialogueWorkerAdapter"/> never shells out to
-/// a permission-gated vendor CLI at all — so a grant attached to one of their bindings is inert.
+/// #651: a <see cref="PermissionGrant"/> only constrains a worker whose adapter reads it. Several
+/// registered adapters never do — <see cref="NoOpWorkerAdapter"/> writes its output through a
+/// dispatch target AER constructs itself, for one — so a grant attached to one of their bindings is inert.
 /// </summary>
 /// <remarks>
 /// <para>

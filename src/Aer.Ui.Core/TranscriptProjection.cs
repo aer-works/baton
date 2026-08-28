@@ -6,7 +6,7 @@ namespace Aer.Ui.Core;
 /// actually happened, so no reordering (by <see cref="TranscriptLine.Turn.Sequence"/> or anything
 /// else) is ever applied. Built exclusively from the durable artifact directory
 /// (<see cref="TranscriptProjectionLoader"/>), never from worker types: the contract lives in the
-/// spec, and <c>Aer.Ui</c> deliberately does not reference <c>Aer.Workers.Dialogue</c>.
+/// spec.
 /// </summary>
 public sealed record TranscriptProjection(IReadOnlyList<TranscriptLine> Lines);
 
