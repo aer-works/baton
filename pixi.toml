@@ -17,7 +17,7 @@ version = "0.1.0"
 MSBUILDDISABLENODEREUSE = "1"
 
 [tasks]
-# Every toolchain below (Rust, Go, Flutter/Dart, .NET) is installed separately and is NOT
+# Every toolchain below (Rust, Go, .NET) is installed separately and is NOT
 # pixi-managed. CLAUDE.md's "Running tasks" section owns that fact and the install instructions;
 # stated here once rather than re-explained per task.
 #
@@ -111,32 +111,6 @@ tokens = "python tools/buildlock.py dotnet run --project tools/Aer.DesignTokens"
 # the suite then runs against fresh assemblies. `pixi run test` on its own is still exposed.
 lint = { cmd = "python tools/buildlock.py dotnet build -warnaserror --no-incremental", depends-on = ["build-core", "lint-sidecar"] }
 
-# M21 Phase 2 (#232): mobile-build produces a debug APK only — Aer.Mobile is sideload-only for this
-# milestone (no Play Store signing/release config exists).
-# `pub get` first, matching CI's mobile job: the analyzer needs resolved packages, and a fresh
-# worktree (the self-dispatched-worker pattern above) has no .dart_tool yet — without this, its
-# first `gates` run fails with import-resolution noise instead of resolving itself (#1138 review).
-# Near-free when already resolved.
-mobile-analyze = { cmd = "flutter pub get && flutter analyze", cwd = "src/Aer.Mobile" }
-# Excludes the `journey` tag: journey tests (#313) are red-specs run separately via
-# `pixi run journey-mobile`, so the default suite stays green (see dart_test.yaml).
-# Routed through a script for the same reason mobile-build is — the script's header says why (#958).
-mobile-test = { cmd = "bash scripts/mobile-test.sh" }
-# Wrapped rather than a plain `flutter build apk`: Flutter's native-asset hook runner strips the
-# environment before invoking Go, so the build cache can't be located and the tailscale native
-# asset fails to compile. scripts/mobile-build.sh restores it via a PATH shim (see #303).
-mobile-build = { cmd = "bash scripts/mobile-build.sh" }
-mobile-run = { cmd = "flutter run --debug", cwd = "src/Aer.Mobile" }
-mobile-install = { cmd = "flutter install --debug", cwd = "src/Aer.Mobile" }
-
-# #303: patches the `tailscale` package in the local pub cache so Aer.Mobile survives startup on an
-# x86_64 Android emulator — without it the process is killed by seccomp (SIGSYS on epoll_wait)
-# before Flutter renders anything, making emulator and CI-based mobile testing impossible. Not a
-# dependency of mobile-build: it mutates a shared, machine-global cache, so it stays an explicit
-# opt-in rather than something an ordinary build silently does. Idempotent; run once per machine
-# (and again after `flutter pub cache repair`). Retire once upstream ships the fix.
-mobile-patch = { cmd = "bash scripts/patch-tailscale-dart.sh" }
-
 # M13 Phase 1 (#107): packs Aer.Cli as an installable global dotnet tool (nupkg), embedding the
 # native aer_core library for the current host OS. Not part of `build`/`test`/`lint` — packing
 # isn't needed for everyday development, only for the install round trip this phase's runbook-style
@@ -188,14 +162,6 @@ smoke-dialogue = { cmd = "dotnet test tests/Aer.Cli.SmokeTests --filter FullyQua
 # stress run plus a compact round trip, driven directly against Aer.Daemon's real HTTP surface --
 # sessions have no `aer` CLI command. docs/runbooks/live-session-smoke.md
 smoke-session = { cmd = "dotnet test tests/Aer.Cli.SmokeTests --filter FullyQualifiedName~LiveSessionSmokeTest", depends-on = ["build-core", "smoke-preflight"] }
-
-# Journey tests (#313): the phone leg of the product-journey harness, via Flutter widget tests. The
-# .NET half (Aer.Journeys.Tests, the desktop/engine legs, and the reconcile gate) was deleted with
-# spec/journeys.md in the spec v2.0 reset (#1397) -- see CLAUDE.md's `right-instrument` gate for why.
-# This mobile leg is a red-spec — a promise the product does not keep yet fails
-# its journey test on purpose, so `journey-mobile` exits non-zero until that capability lands. That
-# red IS the honest status; it is not a broken build. See dart_test.yaml.
-journey-mobile = { cmd = "flutter test --tags journey", cwd = "src/Aer.Mobile" }
 
 # Vendor probe (#504): establishes what each vendor CLI can actually do, and writes both the
 # findings matrix and docs/vendor-probe.lock.json (the versions those findings were established
@@ -266,10 +232,6 @@ audit-permissionrank = { cmd = "python -u tools/audit-completeness/permissionran
 
 # Needs full history: it diffs against origin/main. See recordonce.py (#671).
 audit-recordonce = { cmd = "python -u tools/audit-completeness/recordonce.py" }
-
-# #469: verifies scripts/lib/wsl-capture.sh discriminates. Fixture-driven, so it runs anywhere the
-# guard's real WSL trigger cannot. bash is present on all three CI hosts (Git Bash on Windows).
-test-scripts = { cmd = "bash scripts/tests/mobile-build-wsl-guard.test.sh" }
 
 # #636: mechanized staleness checks over GitHub-hosted facts (open issue citing a closed one as
 # unresolved; a doc's "not wired into CI" claim contradicted by ci.yml). DELIBERATELY UNWIRED --
