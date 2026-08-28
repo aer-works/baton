@@ -1,6 +1,6 @@
 # Baton — Claude Code Instructions
 
-The product is **Baton** (decision 0045); "AER" stays the name of the ecosystem around it, and `aer-flow` stays this repo's engine layer. Built in .NET, that layer reads structured workflow definitions, dispatches them to Workers (via `aer-core`), and bridges outputs back to the engine.
+The product is **Baton**; "AER" stays the name of the ecosystem around it, and `aer-flow` stays this repo's engine layer. Built in .NET, that layer reads structured workflow definitions, dispatches them to Workers (via `aer-core`), and bridges outputs back to the engine. `spec/baton.md` is the system's sole behavioral register — read it first; its rulings govern everything below.
 
 **This file is for developing Baton.** If your job is instead to *invoke* Baton — run a lane against
 some other repo and collect its output — read `docs/agents/invoking-baton.md` and stop there.
@@ -14,28 +14,31 @@ aer-flow/
 ├── src/
 │   ├── Aer.Flow/              The core execution engine and routing state machine
 │   ├── Aer.Adapters/          Vendor adapters (Claude/Gemini) + the built-in template catalog
-│   ├── Aer.Cli/               Command-line interface (aer run/decide/cancel/supply)
-│   ├── Aer.Daemon/            ASP.NET background runner: REST/WebSocket host + client pairing (M20+)
+│   ├── Aer.Cli/               Command-line interface (aer run/dispatch/decide/cancel/supply/resume/status)
+│   ├── Aer.Daemon/            ASP.NET background runner — PORTED, drastically: narrows to the
+│   │                          room-watcher (serving fleet_status/the registry), the snapshot push
+│   │                          loop, the quota-runway ledger, RoomRetentionSweep, and fleet-wide
+│   │                          concurrency caps (spec/baton.md §7). Pairing, WebSocket broadcast,
+│   │                          sidecar supervision, and the permission-ask REST answerer are
+│   │                          retired — archive PRs of #1396 in flight
 │   ├── Aer.Mcp/               MCP server library — IMcpTool + the stdio host plumbing
-│   ├── Aer.Mcp.Host/          The MCP executable workers connect to (aer yield, memory proposals)
-│   ├── Aer.Ui.Core/           Avalonia-free UI core — MVVM ViewModels shared by the desktop app
-│   ├── Aer.Ui/                Avalonia desktop app (projection, control surface, authoring, chat)
-│   ├── Aer.Workers.Dialogue/  The dialogue worker executable (a Case 2 multi-model worker)
-│   ├── Aer.Mobile/            Flutter/Android remote client (pairing, decision inbox, chat)
+│   ├── Aer.Mcp.Host/          The MCP executable workers connect to (fleet_status, aer yield,
+│   │                          memory proposals). PermissionGateTool/PermissionReturnShape (the
+│   │                          mid-lane ask machinery) are ARCHIVE — spec/baton.md §5
+│   ├── Aer.Ui.Core/           Avalonia-free UI core — retired — archive PRs of #1396 in flight
+│   ├── Aer.Ui/                Avalonia desktop app — retired — archive PRs of #1396 in flight
+│   ├── Aer.Workers.Dialogue/  The dialogue worker executable — retired — archive PRs of #1396 in flight
+│   ├── Aer.Mobile/            Flutter/Android remote client — retired — archive PRs of #1396 in flight
 │   └── Aer.Sidecar/           Go tsnet sidecar the daemon supervises for zero-config Tailscale
-├── tests/                     Unit/integration tests + the Aer.Plan.Tests doc gate; journey and
-│                              live-smoke test projects live outside AerFlow.slnx (default CI skips them)
-├── spec/                      Behavioral specs (source of truth) + product journeys
-│   ├── aer-room-spec-v1.0.md              the system — current, room worldview
-│   ├── aer-flow-behavioral-spec-v1.0.md   the engine — its scheduling chapter
-│   ├── journeys.md
-│   └── AER Overview.md
-├── docs/                      plan.md (the living, gated plan), decisions/ (numbered ADRs),
-│   │                          milestone-history.md (provenance, never authority),
-│   │                          vendor-capabilities.md, runbooks/
-│   └── archive/               superseded docs — the M19 UX set, the walkthroughs, and the UI
-│                              behavioural spec. A doc in the live tree is current; a doc that
-│                              is not gets fixed or moved here. See archive/README.md
+├── tests/                     Unit/integration tests; live-smoke test projects (Aer.Cli.SmokeTests)
+│                              live outside AerFlow.slnx (default CI skips them) — see docs/runbooks/
+├── spec/
+│   └── baton.md                the sole register (§11) — system identity, dispatch contract,
+│                              gates, bindings/permissions, what's out of scope. Read it first;
+│                              its rulings govern judgment calls everywhere else in this tree
+├── docs/                      vendor-capabilities.md / vendor-doc-audit.md / vendor-coverage.md
+│                              (the vendor registers), runbooks/, agents/ (harness-facing docs),
+│                              dispatch.md. No decision or design register — spec/baton.md §11
 ├── external/
 │   └── aer-core/              git submodule — aer-core's M5 .NET binding, P/Invoked by the Core Dispatcher
 ├── tools/                     ui-harness (UI driving harness), vendor-verify (re-runnable vendor
@@ -94,13 +97,15 @@ Some milestones' completion gates are real, live runs against a vendor CLI (`pix
 smoke-claude`, `pixi run smoke-mixed-vendor`, …) — see `docs/runbooks/`. These live outside
 `AerFlow.slnx` and default CI on purpose.
 
-**These gates are permanently a human action item, not something an agent session can close.**
-`ClaudeWorkerAdapter`/`GeminiWorkerAdapter` deliberately own no key-handling code (Adapter
-Isolation) — they shell out to whatever vendor CLI is already authenticated on the host, because
-the project's whole point is working against **subscriptions**, not API keys. There is no headless
-or non-interactive way to provision that from inside an agent session, and there should not be one:
-dropping in an API key to make a gate pass would test a different auth path than the one the
-project exists to support.
+**Owner ruling, 2026-08-28.** Live-vendor gates may be run by an agent session when the vendor CLIs
+are **already authenticated on the machine** — disclose the expected spend before running one (see
+"Cost and reversibility are the operator's call" below). Auth provisioning itself stays a human
+action item: there is no headless or non-interactive way to sign a vendor CLI in from inside an
+agent session, and there should not be one — dropping in an API key to make a gate pass would test
+a different auth path than the one the project exists to support (Adapter Isolation:
+`ClaudeWorkerAdapter`/`GeminiWorkerAdapter` deliberately own no key-handling code and shell out to
+whatever vendor CLI is already authenticated on the host, because the project's whole point is
+working against **subscriptions**, not API keys).
 
 If a session's host happens to already carry a subscription login for one vendor (e.g. a Claude
 Code session's own `claude` CLI), that is a coincidence of the host, not a capability — it does not
@@ -108,9 +113,10 @@ extend to any other vendor's CLI, and a future session should not assume it will
 work around its absence (installing a different auth mode, requesting API keys, stubbing the
 adapter, etc.). When implementing a phase gated by one of these tests: build the test, fixtures,
 `pixi run` task, and runbook exactly like the pattern in `docs/runbooks/`, run everything that
-*can* run locally (`build`, `test`, `lint`, `fmt-check`), leave the live smoke task itself un-run if
-its vendor isn't authenticated on this host, and say so plainly in the PR body and the phase's
-tracking issue — don't mark a live-run item done on anything short of an actual recorded run.
+*can* run locally (`build`, `test`, `lint`, `fmt-check`), and either run the live smoke task itself
+(when its vendor is authenticated here, spend disclosed first) or leave it un-run and say so plainly
+in the PR body and the phase's tracking issue — don't mark a live-run item done on anything short of
+an actual recorded run.
 
 ---
 
@@ -154,8 +160,10 @@ verified rather than substituting a cheaper one and reporting it as coverage.
 on the primary path; then a milestone green **including a live vendor smoke test** whose chat was
 fundamentally unusable when a person actually drove it. Both suites were written by the same reasoning
 that produced the gap, and both asked "does this do what I designed" rather than "did I design the
-right thing". `spec/journeys.md` is the structural answer for product claims, and its red is the
-status.*
+right thing". The product-journey harness that once caught this (`spec/journeys.md`,
+`Aer.Journeys.Tests`) was deleted in the spec v2.0 reset along with the interactive product it tested
+(#1397) — harness-facing journeys are future work that will bring its own checks (`spec/baton.md`
+§10); until it lands, this gate has no structural instrument and rests on judgment alone.*
 
 **3. V&V that actually verifies — `v-and-v`.** Red before green, *proven* — never a test written against
 already-fixed code. A **control arm that discriminates**, read first: if the control fails, the result
@@ -183,17 +191,18 @@ sandbox observation became a product-wide capability claim.*
 canonical record; every other location links to it with at most a one-clause gloss, never a
 restatement — restating a fact in three places is how a stale one drifts silently in two of them.
 Anything discovered that outlives the change gets a durable home *before* the change ships — an
-issue, `vendor-doc-audit.md`, a decision record. A comment saying "tracked separately" with no issue
-behind it is not a record. Never transcribe a value that lives somewhere authoritative — cite the
-command that computes it. A comment that describes code is a claim about that code: when the code
-changes, the comment is part of the change.
+issue, `vendor-doc-audit.md`, or a new, freshly-written decision record (`spec/baton.md` §11: never
+retroactive, never reaching back into the register the reset deleted). A comment saying "tracked
+separately" with no issue behind it is not a record. Never transcribe a value that lives somewhere
+authoritative — cite the command that computes it. A comment that describes code is a claim about
+that code: when the code changes, the comment is part of the change.
 
-Before editing anything milestone-shaped, check `spec/journeys.md` first: it is the actual list of
-required outcomes, not whichever artifact happened to prompt the edit. Before changing a decision,
-check it against every other decision touching the same object, not only the ones it already cites.
-Before citing an open issue as evidence that something is still unresolved, check its actual state —
-a closed issue cited as "not yet landed" is stale the moment it closes. And before closing a PR
-touching `docs/decisions/`, `docs/vendor-*.md`, or `tools/vendor-verify/verify.py`, run
+Before editing anything spec-shaped, check `spec/baton.md` first: it is the sole register of what's
+settled, not whichever artifact happened to prompt the edit. Before changing a decision, check it
+against every other decision touching the same object, not only the ones it already cites. Before
+citing an open issue as evidence that something is still unresolved, check its actual state — a
+closed issue cited as "not yet landed" is stale the moment it closes. And before closing a PR
+touching `spec/baton.md`, `docs/vendor-*.md`, or `tools/vendor-verify/verify.py`, run
 `pixi run audit-completeness` **and read its exit code, not its output** — a pass that fixes drift
 while leaving a format violation behind has only relocated the problem.
 *This gate was itself two gates saying one thing — "record once" and "docs and decisions are one
@@ -247,10 +256,11 @@ the frontier rate was paid for the grep half too (#548).*
 **The question underneath all seven: name the user-visible behaviour this change improves.** If you
 cannot, it may be ceremony — and rigour that is not buying correctness is what this project keeps
 having to cut back out. `tools/audit-completeness` is a standing check for exactly that reason —
-extend its population when `decisions/` or `tools/vendor-verify/verify.py` grows, never for
-open-ended rigour with no named failure behind it. These other gates stay deliberately without a
-checker of their own; this one earned one because its population (decision files, vendor-verify
-checks) is enumerable and its omissions are otherwise invisible.
+extend its population when `tools/vendor-verify/verify.py` or the tracked-markdown allowlist
+(`tools/audit-completeness/docs-allowlist.txt`) grows, never for open-ended rigour with no named
+failure behind it. These other gates stay deliberately without a checker of their own; this one
+earned one because its population (vendor-verify checks, tracked markdown) is enumerable and its
+omissions are otherwise invisible.
 
 **A broken check is fixed in the change that found it, not filed** — until it is, every later change
 ships past it. The single exception to "a second defect becomes its own issue", which is about
@@ -268,9 +278,11 @@ than inside it.
 
 Say what a live run spends and what an
 irreversible step could break, then let them decide. Before calling something a human action item,
-separate *"only a person can do this"* from *"this needs a better instrument."* One exception, already
-settled: the live-vendor smoke gates above are the first kind. Do not relitigate them, and never
-install an alternate auth path to make one closable by an agent.
+separate *"only a person can do this"* from *"this needs a better instrument."* Auth provisioning for
+a vendor CLI is the first kind, settled: do not relitigate it, and never install an alternate auth
+path to make it closable by an agent. Running a live-vendor gate against a CLI already authenticated
+on the machine is not — see the owner ruling under "Live-vendor smoke tests" above — but it still
+spends real, disclosed budget, which is what this section is about either way.
 *One smoke test spent top-tier model budget per run — the per-turn figure is in
 `tests/Aer.Cli.SmokeTests/LiveSessionSmokeTest.cs`, not here. Two issues were filed as permanently
 human when one needed a browser for a single question and the other needed a better probe.*
@@ -287,19 +299,16 @@ human when one needed a browser for a single question and the other needed a bet
 
 ---
 
----
-
 ## Writing documentation
 
-`docs/documentation-lessons.md` turns what surprised us while reading ~380 pages of vendor
-documentation into rules for our own — outward-facing (README, CLI help, error messages) and
-inward-facing (decisions, specs, registers). Read it before writing docs that others will rely on.
-
-The one that generalises furthest: **a reader's wrong conclusion is a documentation defect, even
-when every sentence is true.** Most of the entries are cases where the vendor's docs were accurate
-and the reader still ended up wrong — so accuracy is the floor, not the goal. In particular, state
-the negative where a reader's prior will otherwise fill the gap, say which execution modes a
-feature exists in, and never let a mechanism read as a guarantee it doesn't provide.
+The rule that generalises furthest, distilled from ~380 pages of vendor documentation read for the
+#527 audit: **a reader's wrong conclusion is a documentation defect, even when every sentence is
+true.** Most of the failures found there were cases where the vendor's docs were accurate and the
+reader still ended up wrong — so accuracy is the floor, not the goal. In particular, state the
+negative where a reader's prior will otherwise fill the gap, say which execution modes a feature
+exists in, and never let a mechanism read as a guarantee it doesn't provide. Applies both
+outward-facing (README, CLI help, error messages) and inward-facing (`spec/baton.md`, the vendor
+registers).
 
 ---
 
@@ -354,13 +363,15 @@ The five canonical roles, un-namespaced, and none of them exists on GitHub yet. 
 
 ### Domain docs
 
-Single-context. **This repo's decision records live in `docs/decisions/` — do not create
-`docs/adr/`.** Two skills hardcode that path in their own text — `/domain-modeling` (which will
-create it lazily) and `/improve-codebase-architecture` — and it is wrong here: a second ADR
-directory would split a 42-file register in two, which the `record-once` gate exists to stop.
-`/tdd` and `/diagnosing-bugs` say "ADRs" without naming a path, so they need no correction.
+Single-context. **This repo has no standing decision-record directory — do not create `docs/adr/`
+or restore `docs/decisions/`.** The spec v2.0 reset (#1397) folded every prior decision into
+`spec/baton.md` and deleted the register; per its §11, a new decision record is created fresh only
+when a genuinely new decision is made, never retroactively. Two skills hardcode `docs/decisions/` or
+`docs/adr/` in their own text — `/domain-modeling` (which will create one lazily) and
+`/improve-codebase-architecture` — and both are wrong here until a first fresh record actually
+exists. `/tdd` and `/diagnosing-bugs` say "ADRs" without naming a path, so they need no correction.
 
 There is no `CONTEXT.md`, and four skills look for one by name (the two above, plus `/tdd` and
-`/diagnosing-bugs`). The vocabulary they want is in `docs/decisions/0002-one-vocabulary.md` — code
-and UI use the same words, no translation map. Read that instead, and don't create a `CONTEXT.md`
-that would become a second place the same nouns are defined.
+`/diagnosing-bugs`). The vocabulary they want is one vocabulary, code and UI alike, no translation
+map — stated inline here rather than in a dedicated doc. Don't create a `CONTEXT.md` that would
+become a second place the same nouns are defined.
