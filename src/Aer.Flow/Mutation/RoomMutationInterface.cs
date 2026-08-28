@@ -352,9 +352,10 @@ public static class RoomMutationInterface
     /// step actually <see cref="Domain.StepStatus.Paused"/> awaiting a person.
     /// </para>
     /// <para>
-    /// This is not a second copy of <c>Aer.RoomSession</c>'s <c>RoomCardViewModel.DeriveStatus</c> —
-    /// <c>Aer.Flow</c> sits below that assembly and does not need it, since both read the same
-    /// two primitives. In that vocabulary the refusal is exactly "Running or NeedsYou": a room parked
+    /// This was not a second copy of <c>Aer.RoomSession</c>'s <c>RoomCardViewModel.DeriveStatus</c>
+    /// (that project is deleted, #1420) — <c>Aer.Flow</c> sat below that assembly and did not need
+    /// it, since both read the same two primitives. In that vocabulary the refusal is exactly
+    /// "Running or NeedsYou": a room parked
     /// on a vendor quota is refused because its pump is alive and holding the lock, while a dead one
     /// is permitted.
     /// </para>

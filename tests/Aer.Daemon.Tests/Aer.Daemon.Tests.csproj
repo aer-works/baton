@@ -17,12 +17,10 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
-    <Using Include="Aer.RoomSession" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Aer.Daemon\Aer.Daemon.csproj" />
-    <ProjectReference Include="..\..\src\Aer.RoomSession\Aer.RoomSession.csproj" />
     <ProjectReference Include="..\..\src\Aer.Flow\Aer.Flow.csproj" />
   </ItemGroup>
 

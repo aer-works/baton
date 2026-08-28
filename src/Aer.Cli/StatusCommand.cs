@@ -14,10 +14,9 @@ namespace Aer.Cli;
 /// <c>aer status</c> (#730): a read-only projection of a room directory's recorded events —
 /// "this session's workaround was hand-rolled monitors polling PIDs and tailing <c>flow.jsonl</c>
 /// by path", which this replaces with the product's own register. Every field printed comes from
-/// <see cref="StateProjector.Project"/> — the same projection <see cref="RunCommand"/>,
-/// <see cref="CancelCommand"/> and <see cref="Aer.RoomSession.RoomProjectionLoader"/> already call — so
-/// there is exactly one place "what does this event log mean" is computed, never a second reader of
-/// the format here.
+/// <see cref="StateProjector.Project"/> — the same projection <see cref="RunCommand"/> and
+/// <see cref="CancelCommand"/> already call — so there is exactly one place "what does this event
+/// log mean" is computed, never a second reader of the format here.
 /// <para>
 /// Deliberately never takes <see cref="Aer.Flow.Concurrency.ConcurrencyGuard"/>'s lock and never
 /// constructs a <see cref="FlowEventLogWriter"/>: this is the one command in <c>Aer.Cli</c> that can

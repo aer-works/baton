@@ -39,68 +39,13 @@ public class ReferenceDirectionTests
             forbiddenProjects: ["Aer.Daemon", "Aer.Cli"],
             forbiddenPackagePrefixes: []);
 
-    // #543: ClaudeWorkerAdapter.BuildSettingsJson writes the mandatory PreToolUse hook's command as
-    // Aer.Cli.dll's own path next to AppContext.BaseDirectory — silently wrong (a dangling command,
-    // #530's fail-open-and-silent failure) unless Aer.Cli.dll actually gets copied into every real
-    // entry point's own output directory. For Aer.Daemon that happens only because it references
-    // Aer.RoomSession, which in turn references Aer.Cli (#1412 rerouted this path; it originally
-    // ran through Aer.Ui.Core) — a transitive path, not a direct one, and
-    // exactly the kind of reference that erodes silently if a future refactor drops it. This is a
-    // positive-inclusion check (the graph *must* reach Aer.Cli), the deliberate opposite of every
-    // forbidden-reference check above.
-    //
-    // Review pass on #543: a plain Include-only walk stays green even if a reference is retagged
-    // ReferenceOutputAssembly="false" (or the legacy Private="false") -- either stops the dll from
-    // being copied at all while the graph edge, and this test, still "reaches" Aer.Cli. So this
-    // walks the raw <ProjectReference> elements directly rather than reusing ReadReferences (whose
-    // Include-only contract the forbidden-reference tests above still want unchanged), and only
-    // follows an edge that actually copies output.
-    [Fact]
-    public void Aer_Daemon_transitively_references_Aer_Cli_so_its_own_output_carries_the_hook_target()
-    {
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var toVisit = new Queue<string>();
-        toVisit.Enqueue("Aer.Daemon");
-
-        while (toVisit.Count > 0)
-        {
-            var project = toVisit.Dequeue();
-            if (!visited.Add(project))
-            {
-                continue;
-            }
-
-            // Aer.Core is a git submodule under external/, not src/ -- resolution below is the
-            // src/<project>/<project>.csproj convention only. It has no path back to Aer.Cli, so
-            // treating it (and anything else this convention can't resolve) as a leaf is correct,
-            // not a silently-swallowed gap: the one project this test needs to reach IS under src/.
-            var path = Path.Combine(RepoRoot(), "src", project, project + ".csproj");
-            if (!File.Exists(path))
-            {
-                continue;
-            }
-
-            foreach (var reference in ReadOutputCopyingReferences(path))
-            {
-                toVisit.Enqueue(reference);
-            }
-        }
-
-        Assert.Contains("Aer.Cli", visited);
-    }
-
-    private static IEnumerable<string> ReadOutputCopyingReferences(string csprojPath)
-    {
-        var doc = XDocument.Load(csprojPath);
-
-        return doc.Descendants("ProjectReference")
-            .Where(element =>
-                !string.Equals((string?)element.Attribute("ReferenceOutputAssembly"), "false", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals((string?)element.Attribute("Private"), "false", StringComparison.OrdinalIgnoreCase))
-            .Select(element => (string?)element.Attribute("Include"))
-            .Where(include => !string.IsNullOrWhiteSpace(include))
-            .Select(include => Path.GetFileNameWithoutExtension(include!.Replace('\\', '/')));
-    }
+    // #543 added a positive-inclusion check here: Aer.Daemon transitively reached Aer.Cli (through
+    // Aer.RoomSession) so ClaudeWorkerAdapter.BuildSettingsJson's PreToolUse hook path resolved
+    // inside the daemon's own output directory. #1420 deleted Aer.RoomSession and, with it, every
+    // worker-turn-running surface the daemon had (RoomTurnHost, RoomClient, the session-turn
+    // endpoints) — the daemon no longer spawns a worker or calls BuildSettingsJson, so it has no
+    // remaining reason to carry Aer.Cli.dll in its output, and the check above removed with this
+    // comment (it would now fail truthfully: the daemon's build graph no longer reaches Aer.Cli).
 
     private static void AssertNoForbiddenReferences(
         string project, string[] forbiddenProjects, string[] forbiddenPackagePrefixes)
