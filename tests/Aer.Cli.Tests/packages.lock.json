@@ -198,6 +198,7 @@
       "aer.mcp.host": {
         "type": "Project",
         "dependencies": {
+          "Aer.Flow": "[0.14.0, )",
           "Aer.Mcp": "[0.14.0, )"
         }
       },

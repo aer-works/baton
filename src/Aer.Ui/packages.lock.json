@@ -242,6 +242,7 @@
       "aer.mcp.host": {
         "type": "Project",
         "dependencies": {
+          "Aer.Flow": "[0.14.0, )",
           "Aer.Mcp": "[0.14.0, )"
         }
       },
@@ -253,7 +254,7 @@
           "Aer.Workers.Dialogue": "[0.14.0, )",
           "CommunityToolkit.Mvvm": "[8.4.2, )",
           "QRCoder": "[1.6.0, )",
-          "aer": "[0.19.0, )"
+          "aer": "[0.21.0, )"
         }
       },
       "aer.workers.dialogue": {
