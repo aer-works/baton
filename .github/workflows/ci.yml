@@ -6,8 +6,7 @@ on:
     branches: [main]
 
 jobs:
-  # Detects which areas a PR touched, so the heavy jobs below can skip when irrelevant (a
-  # sidecar-only PR shouldn't run the .NET legs, and vice versa).
+  # Detects which areas a PR touched, so the heavy jobs below can skip when irrelevant.
   # pull_request ONLY: paths-filter uses the API there (no checkout needed), but on push it shells
   # out to `git` and dies without a checkout (#410). On push the heavy jobs ignore this job entirely
   # -- their `!cancelled()` if: runs them unconditionally, so main is always validated in full. (A
@@ -21,7 +20,6 @@ jobs:
       pull-requests: read
     outputs:
       dotnet: ${{ steps.filter.outputs.dotnet }}
-      sidecar: ${{ steps.filter.outputs.sidecar }}
     steps:
       - uses: dorny/paths-filter@v3
         id: filter
@@ -39,8 +37,6 @@ jobs:
               - 'pixi.lock'
               - '**/packages.lock.json'
               - '.github/workflows/**'
-            sidecar:
-              - 'src/Aer.Sidecar/**'
 
   test:
     needs: changes
@@ -250,19 +246,11 @@ jobs:
           cache: true
           cache-dependency-path: "**/packages.lock.json"
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-          cache-dependency-path: src/Aer.Sidecar/go.sum
-
       - name: Check formatting
         run: pixi run fmt-check
 
       - name: Lint
         run: pixi run lint
-
-      - name: Test sidecar
-        run: pixi run test-sidecar
 
       - name: Shutdown dotnet build server
         run: pixi run dotnet build-server shutdown
@@ -415,7 +403,7 @@ jobs:
         run: pixi run audit-completeness
       # audit-selfcheck below is no longer .NET-free: since #887 the role catalog's one source
       # is the engine (`aer templates --json`), and selfcheck's catalog checks consume it. This
-      # builds ONLY Aer.Cli -- no native lib, no sidecar, no cargo (see pixi.toml's build-cli).
+      # builds ONLY Aer.Cli -- no native lib, no cargo (see pixi.toml's build-cli).
       # cache is OFF here (#1398): Aer.Cli's project graph has zero PackageReferences (framework
       # refs resolve from SDK runtime packs, outside NuGet's restore graph), so restore never
       # creates ~/.nuget/packages -- and then setup-dotnet's post-job cache save fails the job
