@@ -568,7 +568,8 @@ reach backward to reconstruct a numbering scheme that no longer exists.
 | `Aer.Mobile` | **ARCHIVE** | No harness-driven use case. |
 | `Aer.Sidecar` | **ARCHIVE** | `src/Aer.Sidecar/` (a tracked Go module) and `Aer.Daemon.csproj`'s optional binary copy step both go. Remote dispatch is closed, orchestrator-only (§10); no resurrection case remains. (An earlier draft claimed the project was absent from the tree; corrected — it exists and is archived deliberately.) |
 | `Aer.Workers.Dialogue` | **ARCHIVE** | Vendor-neutral multi-model machinery that served the retired interactive/chat product; no harness-facing use case survives this reset. |
-| `Aer.Flow.CrashTestHost`, `Aer.Architecture.Tests`, `Aer.Journeys.Tests`, `Aer.Plan.Tests` | **KEEP infra, rewrite content** | The gate mechanisms stay; the journeys content needs a near-total rewrite against harness-facing promises — out of scope for this document. |
+| `Aer.Flow.CrashTestHost`, `Aer.Architecture.Tests` | **KEEP** | The gate mechanisms stay untouched. |
+| `Aer.Journeys.Tests`, `Aer.Plan.Tests` | **DELETED** (by this spec's own landing PR) | Both existed solely to cross-check `docs/plan.md` and `spec/journeys.md`, deleted with them; harness-facing journeys are future work that brings its own checks when it exists. |
 | `docs/design/*` | **DELETE** | Per §11 — not archived, deleted. Its methodology (settle definition before screens) is worth reusing as a technique; its content does not survive and there is nowhere left for it to live. |
 
 ---
