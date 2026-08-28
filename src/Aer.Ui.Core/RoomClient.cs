@@ -56,11 +56,6 @@ public record CancelRoomRequest(string DirectoryPath, string? ExecutionId = null
 public record RoomDirectoryRequest(string DirectoryPath);
 public record DaemonVersionInfo(string Version, bool HasRunningRooms, bool IsRemote = false);
 
-public class BindingsPathHolder
-{
-    public string? BindingsFilePath { get; set; }
-}
-
 /// <summary>
 /// One room's orchestration (M19 Phase 2, issue #187), updated in M20 Phase 2/3 to
 /// support client-first daemonization: connects to Aer.Daemon background host process via REST/WebSockets
