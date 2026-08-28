@@ -5,7 +5,7 @@ namespace Aer.Adapters;
 /// vendor's raw <c>--effort</c> value at dispatch (decision 0058's #1318 scope ruling 4). See
 /// <see cref="WorkerInvocation.Effort"/> for what this field now carries and why; this is the only
 /// place that resolves it to a vendor flag value (0023 constraint 1, CLAUDE.md Architecture Rule 2).
-/// <c>Aer.Flow</c>, <c>Aer.Ui</c> and <c>Aer.Mobile</c> never see a raw vendor effort string; the
+/// <c>Aer.Flow</c> and <c>Aer.Ui</c> never see a raw vendor effort string; the
 /// mapping itself lives only here and is stated once, in <c>docs/vendor-capabilities.md</c>'s "The
 /// canonical effort mapping" table — restated in this file's data, never in prose elsewhere.
 /// </summary>
