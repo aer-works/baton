@@ -21,13 +21,6 @@ src/Aer.Sidecar/go.sum text eol=lf
 # silently is not there. Git warned about exactly this conversion when .githooks/pre-push was added.
 .githooks/* text eol=lf
 
-# tools/ui-harness is Windows-only by construction (user32/dwmapi P/Invoke against a running
-# Avalonia window), so CRLF is the native convention here. Pinned explicitly rather than left to
-# core.autocrlf so the checkout is identical regardless of a contributor's git config -- same
-# reasoning as the LF pins above, which were both added after a line-ending difference broke a
-# build that passed locally.
-*.ps1 text eol=crlf
-
 # The committed vendor-survey index (#589). Generated on whichever machine ran the survey and
 # read by `audit-completeness` in CI on Linux -- pin LF so the file does not churn per platform.
 .vendor-survey/ledger.tsv text eol=lf
