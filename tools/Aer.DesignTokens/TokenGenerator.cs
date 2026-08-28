@@ -5,14 +5,14 @@ using System.Text.Json;
 namespace Aer.DesignTokens;
 
 /// <summary>
-/// Renders <c>design/tokens.json</c> into each toolkit's theme resources (#345).
+/// Renders <c>design/tokens.json</c> into the desktop toolkit's theme resources (#345).
 /// </summary>
 /// <remarks>
 /// <para>
-/// Desktop is Avalonia and mobile is Flutter, and they share no styling primitive — so "one brand
-/// across both" maintained by hand is two sources of truth that drift on the first change, the same
-/// failure mode as the vocabulary map (#315) expressed in pixels. Generating both from one file makes
-/// the drift a build failure instead of something a reviewer has to notice.
+/// One token file is the single source of truth for Avalonia's theme resources, so a colour or
+/// scalar hand-edited only in <c>Tokens.axaml</c> drifts from the source the moment it changes —
+/// the same failure mode as the vocabulary map (#315) expressed in pixels. Generating from one file
+/// makes the drift a build failure instead of something a reviewer has to notice.
 /// </para>
 /// <para>
 /// <b>Pure by design.</b> Generation is a string function of the parsed token file — no clock, no
@@ -43,7 +43,6 @@ public static class TokenGenerator
         return new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [AvaloniaOutputPath] = GenerateAvalonia(root),
-            [FlutterOutputPath] = GenerateFlutter(root),
             [UiCoreOutputPath] = GenerateUiCore(root),
             [InteractionStatesOutputPath] = GenerateInteractionStates(statesDocument.RootElement),
         };
@@ -68,7 +67,6 @@ public static class TokenGenerator
     /// </summary>
     public const string InteractionStatesOutputPath = "src/Aer.Ui.Core/GeneratedInteractionStates.cs";
     public const string AvaloniaOutputPath = "src/Aer.Ui/Theme/GeneratedTokens.axaml";
-    public const string FlutterOutputPath = "src/Aer.Mobile/lib/theme/tokens.dart";
 
     /// <summary>
     /// The five states as a C# type (#458). Flutter has had a generated <c>AerStatus</c> enum since
@@ -86,9 +84,6 @@ public static class TokenGenerator
     /// would be a blank space where a status marker belongs.
     /// </summary>
     public const string AvaloniaIconsPath = "src/Aer.Ui/Theme/Icons.axaml";
-
-    /// <inheritdoc cref="AvaloniaIconsPath"/>
-    public const string FlutterStatusMarkPath = "src/Aer.Mobile/lib/theme/status_mark.dart";
 
     /// <summary>
     /// Every status's mark, as (status name, shape name, Avalonia geometry key). Exposed so the gate
@@ -111,16 +106,12 @@ public static class TokenGenerator
     /// <summary>
     /// Every status's mark PARTS (#511), as (status name, part geometry name, Avalonia geometry key)
     /// — one row per status for a plain mark, one row per <c>{geometry, filled}</c> entry for a
-    /// composite. <see cref="StatusMarks"/> only sees the primary part, which is enough for the two
-    /// toolkits' generated switch dispatch: Flutter's hand-written <c>status_mark.dart</c> composites a
-    /// whole mark under one switch case rather than reading per-part data (see its <c>'eye'</c> case),
-    /// so it needs no additional generated dispatch key — but that also means a composite part's own
-    /// <c>filled</c> value (<c>eyePupil</c>'s <c>true</c>) reaches Avalonia through this method and the
-    /// drift gate below, and reaches Flutter only by the hand-written case happening to agree, not
-    /// through anything generated. This is what the drift gate uses to require every non-primary
-    /// part's own Avalonia geometry to exist, so a composite mark cannot ship with its detail shape
-    /// undrawn the way the eye's pupil did before this — it does not, and cannot, verify the Flutter
-    /// side agrees on a per-part basis.
+    /// composite. <see cref="StatusMarks"/> only sees the primary part, which is enough for the
+    /// generated switch dispatch — but that also means a composite part's own <c>filled</c> value
+    /// (<c>eyePupil</c>'s <c>true</c>) reaches Avalonia only through this method and the drift gate
+    /// below, not through anything <see cref="StatusMarks"/> emits. This is what the drift gate uses
+    /// to require every non-primary part's own Avalonia geometry to exist, so a composite mark cannot
+    /// ship with its detail shape undrawn the way the eye's pupil did before this.
     /// </summary>
     public static IEnumerable<(string Status, string PartName, string GeometryKey)> AllMarkParts(string tokensJson)
     {
@@ -139,7 +130,7 @@ public static class TokenGenerator
     /// The meter families #1318 added beside 'status' -- depth (model tier, #1330 owns its
     /// producer) and effort (wired live, 0023). Both are "how many of N steps are lit", not a
     /// per-tier silhouette, which is why a family name is all a generator-side check needs; the
-    /// per-position geometry is hand-drawn (see <see cref="AvaloniaIconsPath"/> / <see cref="FlutterStatusMarkPath"/>).
+    /// per-position geometry is hand-drawn (see <see cref="AvaloniaIconsPath"/>).
     /// </summary>
     public static readonly IReadOnlyList<string> MeterFamilies = ["depth", "effort"];
 
@@ -184,9 +175,6 @@ public static class TokenGenerator
     /// </summary>
     private const string AvaloniaFontAssetPath = "avares://Aer.Ui/Assets/Fonts";
 
-    /// <summary>The same fonts' location in the Flutter project, as declared in <c>pubspec.yaml</c>.</summary>
-    private const string FlutterFontAssetPath = "assets/fonts";
-
     private const string BannerLine1 = "GENERATED FILE — DO NOT EDIT.";
 
     private static readonly string[] BannerBody =
@@ -200,9 +188,9 @@ public static class TokenGenerator
     ];
 
     /// <summary>
-    /// The do-not-edit header in the target language's comment syntax. Dart has no block comment in
-    /// idiomatic use, so <paramref name="commentClose"/> being null selects per-line comments —
-    /// emitting a block form into Dart would produce a file that does not parse.
+    /// The do-not-edit header in the target language's comment syntax. <paramref name="commentClose"/>
+    /// being null selects per-line comments (C#'s <c>//</c>); a non-null value wraps the body in a
+    /// block comment (Avalonia's <c>&lt;!-- --&gt;</c>).
     /// </summary>
     private static string Banner(string commentOpen, string? commentClose)
         => BannerFor(BannerBody, commentOpen, commentClose);
@@ -352,12 +340,6 @@ public static class TokenGenerator
     /// as an outline on desktop and a solid on mobile.
     /// </summary>
     private static bool MarkFilled(JsonElement statusToken) => MarkParts(statusToken)[0].Filled;
-
-    /// <summary>
-    /// <c>#RRGGBB</c> as Dart's <c>0xFFRRGGBB</c>. Flutter has no hex-string colour literal, so the
-    /// alpha channel has to be made explicit here rather than at every call site.
-    /// </summary>
-    private static string DartColor(string hex) => "0xFF" + hex.TrimStart('#').ToUpperInvariant();
 
     // ---- Avalonia -------------------------------------------------------------------------
 
@@ -513,230 +495,12 @@ public static class TokenGenerator
         """.ReplaceLineEndings("\n");
     }
 
-    // ---- Flutter --------------------------------------------------------------------------
-
-    private static string GenerateFlutter(JsonElement root)
-    {
-        var colors = new StringBuilder();
-
-        void EmitColorGroup(string groupName, string prefix)
-        {
-            foreach (var (name, token) in Entries(root.GetProperty(groupName)))
-            {
-                var (light, dark) = Variants(token, $"{groupName}.{name}");
-                colors.AppendLine($"  static const Color {prefix}{Pascal(name)}Light = Color({DartColor(light)});");
-                colors.AppendLine($"  static const Color {prefix}{Pascal(name)}Dark = Color({DartColor(dark)});");
-            }
-        }
-
-        EmitColorGroup("brand", "brand");
-        EmitColorGroup("surface", "surface");
-        EmitColorGroup("text", "text");
-        EmitColorGroup("status", "status");
-
-        var scalars = new StringBuilder();
-        foreach (var (name, value) in Entries(root.GetProperty("radius")))
-        {
-            scalars.AppendLine($"  static const double radius{Pascal(name)} = {Number(value.GetDouble())};");
-        }
-
-        foreach (var (name, value) in Entries(root.GetProperty("spacing")))
-        {
-            scalars.AppendLine($"  static const double spacing{Pascal(name)} = {Number(value.GetDouble())};");
-        }
-
-        foreach (var (name, role) in Entries(root.GetProperty("type").GetProperty("role")))
-        {
-            scalars.AppendLine($"  static const double fontSize{Pascal(name)} = {Number(role.GetProperty("size").GetDouble())};");
-        }
-
-        // Safe as bare family names here only because pubspec.yaml declares each one against a file
-        // under FlutterFontAssetPath; a family Flutter cannot find falls back to Roboto silently,
-        // which is the per-device resolution decision 0006 rules out.
-        var fontFamily = root.GetProperty("type").GetProperty("fontFamily");
-        foreach (var (role, family) in Entries(fontFamily))
-        {
-            scalars.AppendLine($"  static const String font{Pascal(role)} = '{family.GetString()}';");
-        }
-
-        var mobile = root.GetProperty("density").GetProperty("mobile");
-        foreach (var (name, value) in DensityNumbers(mobile))
-        {
-            scalars.AppendLine($"  static const double density{name} = {Number(value)};");
-        }
-
-        var statusEnum = new StringBuilder();
-        var statusGlyph = new StringBuilder();
-        var statusLabel = new StringBuilder();
-        var statusLight = new StringBuilder();
-        var statusDark = new StringBuilder();
-        var statusFilled = new StringBuilder();
-
-        foreach (var (name, token) in Entries(root.GetProperty("status")))
-        {
-            statusEnum.AppendLine($"  {name},");
-            statusFilled.AppendLine($"        AerStatus.{name} => {(MarkFilled(token) ? "true" : "false")},");
-            statusGlyph.AppendLine($"        AerStatus.{name} => '{MarkName(token)}',");
-            statusLabel.AppendLine($"        AerStatus.{name} => '{token.GetProperty("label").GetString()}',");
-            statusLight.AppendLine($"        AerStatus.{name} => AerTokens.status{Pascal(name)}Light,");
-            statusDark.AppendLine($"        AerStatus.{name} => AerTokens.status{Pascal(name)}Dark,");
-        }
-
-        var motion = root.GetProperty("motion");
-
-        var meterEnums = new StringBuilder();
-        foreach (var family in MeterFamilies)
-        {
-            meterEnums.Append(GenerateMeterEnumFlutter(root, family));
-        }
-
-        return $$"""
-        {{Banner("//", null)}}
-        import 'package:flutter/material.dart';
-
-        /// Raw token values. Prefer [aerTheme] over reaching for these directly.
-        class AerTokens {
-        {{colors.ToString().TrimEnd()}}
-
-        {{scalars.ToString().TrimEnd()}}
-
-          static const Duration durationQuick = Duration(milliseconds: {{Number(motion.GetProperty("durationQuickMs").GetDouble())}});
-          static const Duration durationStandard = Duration(milliseconds: {{Number(motion.GetProperty("durationStandardMs").GetDouble())}});
-        }
-
-        /// The five states from #334's split.
-        enum AerStatus {
-        {{statusEnum.ToString().TrimEnd()}}
-        }
-
-        /// Decision 0006: a status must never be conveyed by hue alone, so every state carries a
-        /// mark and a word. Render [mark] and [label] together - colour is the third channel, not
-        /// the only one.
-        ///
-        /// [mark] names a shape, not a character (#458): the shipped faces do not cover the
-        /// codepoints this originally used, and between them have no checkmark and no cross at all.
-        /// `StatusMark` in status_mark.dart draws it; desktop draws the same shape from a
-        /// StreamGeometry of the matching name.
-        extension AerStatusPresentation on AerStatus {
-          String get mark => switch (this) {
-        {{statusGlyph.ToString().TrimEnd()}}
-              };
-
-          /// Whether [mark]'s shape is painted solid rather than stroked. Stated in the token file so
-          /// both toolkits obey one instruction - Avalonia's call sites once set only Stroke while this
-          /// painter filled the same closed path, drawing one status two different ways (#461).
-          bool get markFilled => switch (this) {
-        {{statusFilled.ToString().TrimEnd()}}
-              };
-
-          String get label => switch (this) {
-        {{statusLabel.ToString().TrimEnd()}}
-              };
-
-          Color color(Brightness brightness) => brightness == Brightness.dark
-              ? switch (this) {
-        {{statusDark.ToString().TrimEnd()}}
-                }
-              : switch (this) {
-        {{statusLight.ToString().TrimEnd()}}
-                };
-        }
-
-        /// Builds [ThemeData] for one brightness. Pass both to `MaterialApp(theme:, darkTheme:)` with
-        /// `themeMode: ThemeMode.system` - that is the whole of "system" support; Flutter resolves the
-        /// OS preference itself once both are supplied.
-        ThemeData aerTheme(Brightness brightness) {
-          final isDark = brightness == Brightness.dark;
-          final accent = isDark ? AerTokens.brandAccentDark : AerTokens.brandAccentLight;
-          final onAccent = isDark ? AerTokens.brandOnAccentDark : AerTokens.brandOnAccentLight;
-          final ground = isDark ? AerTokens.surfaceGroundDark : AerTokens.surfaceGroundLight;
-          final raised = isDark ? AerTokens.surfaceRaisedDark : AerTokens.surfaceRaisedLight;
-          final rule = isDark ? AerTokens.surfaceRuleDark : AerTokens.surfaceRuleLight;
-          final primary = isDark ? AerTokens.textPrimaryDark : AerTokens.textPrimaryLight;
-          final secondary = isDark ? AerTokens.textSecondaryDark : AerTokens.textSecondaryLight;
-
-          return ThemeData(
-            brightness: brightness,
-            fontFamily: AerTokens.fontSans,
-            scaffoldBackgroundColor: ground,
-            colorScheme: ColorScheme.fromSeed(
-              seedColor: accent,
-              brightness: brightness,
-            ).copyWith(
-              primary: accent,
-              onPrimary: onAccent,
-              surface: raised,
-              onSurface: primary,
-              outline: rule,
-            ),
-            dividerColor: rule,
-            textTheme: TextTheme(
-              titleMedium: TextStyle(
-                fontSize: AerTokens.densityTypeScaleTitle,
-                fontWeight: FontWeight.w600,
-                color: primary,
-              ),
-              bodyMedium: TextStyle(fontSize: AerTokens.fontSizeBody, color: primary),
-              bodySmall: TextStyle(
-                fontSize: AerTokens.densityTypeScaleSecondary,
-                color: secondary,
-              ),
-            ),
-          );
-        }
-
-        {{meterEnums.ToString().TrimEnd()}}
-        """.ReplaceLineEndings(Lf);
-    }
-
-    /// <summary>Dart twin of <see cref="GenerateMeterEnumUiCore"/> — same vocabulary, same reasoning.</summary>
-    private static string GenerateMeterEnumFlutter(JsonElement root, string family)
-    {
-        var enumName = "Aer" + Pascal(family) + "Tier";
-        var tiers = MeterTiers(root, family);
-        var totalSteps = tiers[0].TotalSteps;
-
-        var members = new StringBuilder();
-        var filled = new StringBuilder();
-        var labels = new StringBuilder();
-        foreach (var (_, tier, tierFilled, _, label) in tiers)
-        {
-            members.AppendLine($"  {tier},");
-            filled.AppendLine($"""        {enumName}.{tier} => {tierFilled},""");
-            labels.AppendLine($"""        {enumName}.{tier} => '{label}',""");
-        }
-
-        return $$"""
-
-        /// #1318's {{family}} meter tiers.
-        /// record-once-ok: #1318 design/tokens.json
-        enum {{enumName}} {
-        {{members.ToString().TrimEnd()}}
-        }
-
-        /// Fill count and label per tier.
-        extension {{enumName}}Presentation on {{enumName}} {
-          static const int totalSteps = {{totalSteps}};
-
-          int get filledSteps => switch (this) {
-        {{filled.ToString().TrimEnd()}}
-              };
-
-          String get label => switch (this) {
-        {{labels.ToString().TrimEnd()}}
-              };
-        }
-
-        """;
-    }
-
     // ---- Aer.Ui.Core ----------------------------------------------------------------------
 
     /// <summary>
-    /// The five states, their marks and their labels as ordinary C#, so the desktop side reaches
-    /// them the same way Flutter already does. Deliberately emitted into the Avalonia-free core
-    /// project: nothing here is a toolkit type, and putting it in <c>Aer.Ui</c> would make the
-    /// remote/mobile-facing ViewModels unable to name a status.
+    /// The five states, their marks and their labels as ordinary C#. Deliberately emitted into the
+    /// Avalonia-free core project: nothing here is a toolkit type, and putting it in <c>Aer.Ui</c>
+    /// would make remote-facing ViewModels unable to name a status.
     /// </summary>
     private static string GenerateUiCore(JsonElement root)
     {
@@ -834,8 +598,8 @@ public static class TokenGenerator
     /// giving each tier its fill count, total step count and label — the same "vocabulary as a
     /// closed type" pattern <see cref="GenerateUiCore"/> already uses for <c>AerStatus</c>, so a
     /// consumer can quantify over every tier rather than trusting a raw string. Vector geometry for
-    /// the meter itself is hand-drawn per toolkit (see <see cref="AvaloniaIconsPath"/> and
-    /// <see cref="FlutterStatusMarkPath"/>'s own notes) — this only emits the vocabulary.
+    /// the meter itself is hand-drawn (see <see cref="AvaloniaIconsPath"/>'s own notes) — this only
+    /// emits the vocabulary.
     /// </summary>
     private static string GenerateMeterEnumUiCore(JsonElement root, string family)
     {
