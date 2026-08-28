@@ -155,7 +155,7 @@ That prose is for a person watching. For a machine caller (#1356), the same info
 available two other ways, and both give you the same set of paths without parsing a sentence:
 
 - **`aer status <room-dir> --json`** — one JSON object to stdout, nothing else:
-  <!-- record-once-ok: #1359 src/Aer.Cli/WorkflowStatusView.cs -->
+  <!-- record-once-ok: #1359 src/Aer.Flow/Status/WorkflowStatusView.cs -->
   `{state, steps:[{id, state, execution, linkedFrom, usage, linkedFromUsage}], outputs:[...], error, try}`.
   `outputs` is the
   flat list of absolute paths every succeeded step's declared outputs resolved to — the same paths
