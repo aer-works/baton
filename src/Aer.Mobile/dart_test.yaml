@@ -1,8 +1,0 @@
-# Test configuration for Aer.Mobile.
-#
-# The `journey` tag marks product-journey tests (#313) — cross-surface promises, often red-specs
-# that fail on purpose until a capability lands. They are excluded from the default `flutter test`
-# suite (which must stay green) via `--exclude-tags journey`. Run them on demand with
-# `pixi run journey-mobile` (see pixi.toml).
-tags:
-  journey:
