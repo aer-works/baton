@@ -23,9 +23,6 @@ src/Aer.Adapters/CHANGELOG.md
 src/Aer.Cli/CHANGELOG.md
 src/Aer.Daemon/CHANGELOG.md
 src/Aer.Flow/CHANGELOG.md
-src/Aer.Mobile/CHANGELOG.md
-src/Aer.Mobile/README.md
-src/Aer.Mobile/test/fixtures/wire/README.md
 src/Aer.Ui.Core/CHANGELOG.md
 src/Aer.Ui/CHANGELOG.md
 src/Aer.Workers.Dialogue/CHANGELOG.md

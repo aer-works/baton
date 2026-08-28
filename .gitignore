@@ -37,9 +37,6 @@ bld/
 # under .claude/ (agents/, commands/, settings.json) stays committable without `git add -f`.
 .claude/worktrees/
 
-# M21 Phase 2 (#232): the [Dd]ebug/ .NET build-output pattern above also matches Flutter's real,
-# committed debug-manifest-override source directory -- un-ignore it specifically.
-!src/Aer.Mobile/android/app/src/debug/
 
 # Vendor documentation survey output (#527): a mirrored copy of both vendors public docs plus
 # the derived index. Regenerate with `pixi run vendor-survey`; never commit ~7MB of vendor text.

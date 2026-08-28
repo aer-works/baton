@@ -28,7 +28,6 @@ aer-flow/
 │   ├── Aer.Ui.Core/           Avalonia-free UI core — retired — archive PRs of #1396 in flight
 │   ├── Aer.Ui/                Avalonia desktop app — retired — archive PRs of #1396 in flight
 │   ├── Aer.Workers.Dialogue/  The dialogue worker executable — retired — archive PRs of #1396 in flight
-│   ├── Aer.Mobile/            Flutter/Android remote client — retired — archive PRs of #1396 in flight
 │   └── Aer.Sidecar/           Go tsnet sidecar the daemon supervises for zero-config Tailscale
 ├── tests/                     Unit/integration tests; live-smoke test projects (Aer.Cli.SmokeTests)
 │                              live outside AerFlow.slnx (default CI skips them) — see docs/runbooks/
@@ -48,7 +47,7 @@ aer-flow/
 │                              gate `record-once` below).
 │                              `ls tools/` is the authority — this line is a map, not a register
 ├── .github/workflows/
-│   ├── ci.yml                 lint + fmt + test on win/linux/mac, plus the mobile job
+│   ├── ci.yml                 lint + fmt + test on win/linux/mac
 │   └── release-please.yml     versioning and changelog
 └── pixi.toml                  task runner and toolchain manager
 ```
@@ -83,9 +82,7 @@ The hook is in the repo but git does not use it until that command has been run 
 
 **Rust toolchain** is required to build `external/aer-core`'s native library (`pixi run build-core`) — also installed separately, not pixi-managed, same convention as the .NET SDK above. GitHub Actions' standard runner images (`windows-latest`, `ubuntu-latest`) already have one; for local dev, install via [rustup](https://rustup.rs).
 
-**Go 1.26+ and, on Windows, a mingw-w64 gcc** (e.g. `winget install BrechtSanders.WinLibs.POSIX.UCRT`) are required for the mobile tasks — `mobile-build`/`mobile-test` compile the tailscale native asset via cgo, and on Windows the host build additionally needs the #958 pub-cache patch: run `pixi run mobile-patch` once after any fresh `flutter pub get`. Same separately-installed convention as above.
-
-**Flutter SDK (stable channel)** is required on every dev machine, not just for mobile work: `gates`/`gates-fast` — and therefore the pre-push hook — include `mobile-analyze` (#1138), which runs its own `flutter pub get` so a fresh clone or worktree self-resolves. Same separately-installed convention as above.
+**Go 1.26+** is required to build/test `Aer.Sidecar` (`build-sidecar`/`test-sidecar`, part of `build`/`gates`) — also installed separately, not pixi-managed, same convention as above.
 
 **aer-core** (`external/aer-core`) is a git submodule, not a package — there is no NuGet feed for it yet (a single-developer project doesn't need the auth/RID-packaging overhead a real feed would add; see AER Overview §6). `pixi run build-core` builds its native library from source via `cargo build`.
 
