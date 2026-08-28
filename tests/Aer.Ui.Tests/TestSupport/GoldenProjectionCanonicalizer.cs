@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Aer.Flow.Domain;
+using Aer.RoomSession;
 using Aer.Ui;
 
 namespace Aer.Ui.Tests.TestSupport;

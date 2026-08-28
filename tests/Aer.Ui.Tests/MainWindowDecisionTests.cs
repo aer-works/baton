@@ -4,6 +4,12 @@ using Aer.Flow.Domain;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+// Aliased, not `using Aer.RoomSession;`: this file also uses the global-using-supplied
+// Aer.Ui.Core.RoomClient, and Aer.RoomSession now declares its own RoomClient -- a blanket using
+// would make every bare RoomClient reference ambiguous.
+using LocalUiConfigurationStore = Aer.RoomSession.LocalUiConfigurationStore;
+using RoomCardStatus = Aer.RoomSession.RoomCardStatus;
+using RoomFleetItem = Aer.RoomSession.RoomFleetItem;
 
 namespace Aer.Ui.Tests;
 
@@ -169,9 +175,9 @@ public class MainWindowDecisionTests
     // that does). That call site is verified by review + build — there is no RoomClient/daemon-fleet
     // double to drive it end-to-end here, the same limit #1069 recorded; this pair verifies the retire
     // method itself, in both polarities.
-    private static Aer.Ui.Core.RoomFleetItem NeedsYouFleetItem(string roomPath, string name, int pausedSteps) =>
+    private static RoomFleetItem NeedsYouFleetItem(string roomPath, string name, int pausedSteps) =>
         new(roomPath, name, "Workflow", "Waiting for your review", pausedSteps, false,
-            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, Status: Aer.Ui.Core.RoomCardStatus.NeedsYou);
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, Status: RoomCardStatus.NeedsYou);
 
     private static Aer.Ui.Core.InboxItemViewModel PausedStep(string roomPath, string name, string step, string exec) =>
         new(roomPath, name, step, "Waiting for your review", "Preview",

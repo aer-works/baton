@@ -1,5 +1,6 @@
 using Aer.Flow.Domain;
 using Aer.Flow.Templates;
+using Aer.RoomSession;
 using Aer.Ui.Core;
 
 namespace Aer.Ui.Tests;
