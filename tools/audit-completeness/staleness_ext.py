@@ -121,7 +121,7 @@ def pixi_task_names() -> set[str]:
 
 CI_WIRING_CLAIM = re.compile(r"\bnot\s+(?:yet\s+)?(?:wired into|run by|in)\s+CI\b", re.IGNORECASE)
 CI_CLAIM_SCAN_DIRS = ("docs", "tools")
-CI_CLAIM_SCAN_EXCLUDE = ("docs/archive/",)
+CI_CLAIM_SCAN_EXCLUDE = ()
 
 
 def ci_wiring_claim_faults(pixi_tasks: set[str], ci_yml_text: str, files: dict) -> list:
