@@ -27,7 +27,7 @@ aer-flow/
 │   │                          mid-lane ask machinery) are ARCHIVE — spec/baton.md §5
 │   ├── Aer.RoomSession/       The room read-model (RoomProjection + projectors) and the daemon's
 │   │                          in-process RoomClient — extracted from Aer.Ui.Core (#1412 Part 1) so
-│   │                          the daemon survived the Ui archive (Aer.Ui/Aer.Ui.Core deleted,
+│   │                          the daemon survived the Ui archive (Aer.Ui and Aer.Ui.Core deleted,
 │   │                          #1412 Part 2)
 │   └── Aer.Sidecar/           Go tsnet sidecar the daemon supervises for zero-config Tailscale
 ├── tests/                     Unit/integration tests; live-smoke test projects (Aer.Cli.SmokeTests)

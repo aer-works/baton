@@ -413,8 +413,6 @@ jobs:
       # registry as text. The exit code is the verdict -- never the output.
       - name: Audit register completeness
         run: pixi run audit-completeness
-      - name: Audit permission rank equality
-        run: pixi run audit-permissionrank
       # audit-selfcheck below is no longer .NET-free: since #887 the role catalog's one source
       # is the engine (`aer templates --json`), and selfcheck's catalog checks consume it. This
       # builds ONLY Aer.Cli -- no native lib, no sidecar, no cargo (see pixi.toml's build-cli).

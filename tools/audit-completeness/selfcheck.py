@@ -77,7 +77,6 @@ LINT_DIRS = (ROOT / "tools" / "audit-completeness", ROOT / "tools" / "aer-agy-lo
 
 dispatch = load(DISPATCH_PY, "_selfcheck_dispatch")
 completeness = load(ROOT / "tools" / "audit-completeness" / "completeness.py", "_selfcheck_audit")
-permissionrank = load(ROOT / "tools" / "audit-completeness" / "permissionrank.py", "_selfcheck_permissionrank")
 
 
 
@@ -1355,69 +1354,6 @@ def _recordonce_still_fires_on_real_data():
     assert ok, "record-once no longer finds what it found in " + rec.PROVEN_SHA[:7] + ":\n  " \
         + "\n  ".join(detail)
     return detail[0]
-
-
-@check("the permissionrank checker flags permissive-primary controls paired with un-primaried deny controls")
-def _permissionrank_discriminates():
-    rec = permissionrank
-    total_files, violations = rec.scan_tree(ROOT)
-    assert len(violations) == 0, f"real tree has permissionrank violations: {violations}"
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        files_scanned, violations = rec.scan_tree(tmp_path)
-        assert len(violations) == 0, f"empty tree produced violations: {violations}"
-
-        ui_dir = tmp_path / "src" / "Aer.Ui"
-        ui_dir.mkdir(parents=True)
-        (ui_dir / "TestView.axaml").write_text(
-            '<StackPanel>\n'
-            '  <Button Classes="accent" Content="Allow once" />\n'
-            '  <Button Content="Deny once" />\n'
-            '</StackPanel>',
-            encoding="utf-8"
-        )
-        files_scanned, violations = rec.scan_tree(tmp_path)
-        assert len(violations) == 1, f"planted AXAML permissive-primary violation not caught: {violations}"
-
-        (ui_dir / "TestView.axaml").write_text(
-            '<StackPanel>\n'
-            '  <Button Content="Allow once" />\n'
-            '  <Button Content="Deny once" />\n'
-            '</StackPanel>',
-            encoding="utf-8"
-        )
-        files_scanned, violations = rec.scan_tree(tmp_path)
-        assert len(violations) == 0, f"equal-weight AXAML flagged unexpectedly: {violations}"
-
-        # #1124 review finding A: the repo's own AccessText mnemonic idiom puts the permissive
-        # label on a LATER line of the same element — a same-line-only scan ships that violation
-        # green.
-        (ui_dir / "TestView.axaml").write_text(
-            '<StackPanel>\n'
-            '  <Button Classes="accent" Command="{Binding AllowCommand}">\n'
-            '    <AccessText Text="A_llow once" VerticalAlignment="Center" />\n'
-            '  </Button>\n'
-            '  <Button Content="Deny once" />\n'
-            '</StackPanel>',
-            encoding="utf-8"
-        )
-        files_scanned, violations = rec.scan_tree(tmp_path)
-        assert len(violations) == 1, f"multi-line AccessText permissive-primary not caught: {violations}"
-
-        # #1124 review finding B: Avalonia's attached-property conditional-class syntax,
-        # already used in this tree (SettingsView.axaml), must be as visible as the list form.
-        (ui_dir / "TestView.axaml").write_text(
-            '<StackPanel>\n'
-            '  <Button Classes.accent="{Binding IsPrimary}" Content="Allow once" />\n'
-            '  <Button Content="Deny once" />\n'
-            '</StackPanel>',
-            encoding="utf-8"
-        )
-        files_scanned, violations = rec.scan_tree(tmp_path)
-        assert len(violations) == 1, f"Classes.accent conditional-class violation not caught: {violations}"
-
-    return "AXAML (same-line, AccessText multi-line, Classes.accent) permissive-primary controls + real tree verification"
 
 
 def main() -> int:
