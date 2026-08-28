@@ -2,13 +2,6 @@ using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Flow.Templates;
 using Aer.Ui.Core;
-// Aliased, not `using Aer.RoomSession;`: this file also uses Aer.Ui.Core.RoomClient, and
-// Aer.RoomSession now declares its own RoomClient -- a blanket using would make every bare
-// RoomClient reference ambiguous.
-using ArtifactLineage = Aer.RoomSession.ArtifactLineage;
-using ExecutionAttempt = Aer.RoomSession.ExecutionAttempt;
-using ExecutionHistory = Aer.RoomSession.ExecutionHistory;
-using RoomProjection = Aer.RoomSession.RoomProjection;
 
 namespace Aer.Ui.Tests;
 

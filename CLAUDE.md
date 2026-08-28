@@ -25,6 +25,9 @@ aer-flow/
 │   ├── Aer.Mcp.Host/          The MCP executable workers connect to (fleet_status, aer yield,
 │   │                          memory proposals). PermissionGateTool/PermissionReturnShape (the
 │   │                          mid-lane ask machinery) are ARCHIVE — spec/baton.md §5
+│   ├── Aer.RoomSession/       The room read-model (RoomProjection + projectors) and the daemon's
+│   │                          in-process RoomClient — extracted from Aer.Ui.Core (#1412) so the
+│   │                          daemon survives the Ui archive
 │   ├── Aer.Ui.Core/           Avalonia-free UI core — retired — archive PRs of #1396 in flight
 │   ├── Aer.Ui/                Avalonia desktop app — retired — archive PRs of #1396 in flight
 │   └── Aer.Sidecar/           Go tsnet sidecar the daemon supervises for zero-config Tailscale

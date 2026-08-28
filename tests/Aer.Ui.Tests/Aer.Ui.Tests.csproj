@@ -25,6 +25,30 @@
          the Aer.Ui.Core namespace now; a global using keeps every existing test's bare type names
          resolving exactly as they did when the types sat in Aer.Ui. -->
     <Using Include="Aer.Ui.Core" />
+    <!-- #1412: the room read-model moved again, into Aer.RoomSession. Aliased per type rather than
+         a second namespace-wide using because BOTH namespaces now declare a RoomClient (the daemon's
+         extracted one and the desktop's original) and this suite has ~80 bare RoomClient references
+         that must keep meaning Aer.Ui.Core.RoomClient until the Ui archive deletes it. -->
+    <Using Include="Aer.RoomSession.RoomProjection" Alias="RoomProjection" />
+    <Using Include="Aer.RoomSession.RoomProjectionLoader" Alias="RoomProjectionLoader" />
+    <Using Include="Aer.RoomSession.RoomFleetItem" Alias="RoomFleetItem" />
+    <Using Include="Aer.RoomSession.ExecutionHistory" Alias="ExecutionHistory" />
+    <Using Include="Aer.RoomSession.ExecutionAttempt" Alias="ExecutionAttempt" />
+    <Using Include="Aer.RoomSession.DecisionRecord" Alias="DecisionRecord" />
+    <Using Include="Aer.RoomSession.ExecutionHistoryProjector" Alias="ExecutionHistoryProjector" />
+    <Using Include="Aer.RoomSession.ArtifactLineage" Alias="ArtifactLineage" />
+    <Using Include="Aer.RoomSession.ExecutionArtifacts" Alias="ExecutionArtifacts" />
+    <Using Include="Aer.RoomSession.ArtifactInputLink" Alias="ArtifactInputLink" />
+    <Using Include="Aer.RoomSession.ArtifactLineageProjector" Alias="ArtifactLineageProjector" />
+    <Using Include="Aer.RoomSession.RoomFiles" Alias="RoomFiles" />
+    <Using Include="Aer.RoomSession.RoomFile" Alias="RoomFile" />
+    <Using Include="Aer.RoomSession.FileVersion" Alias="FileVersion" />
+    <Using Include="Aer.RoomSession.RoomFilesProjector" Alias="RoomFilesProjector" />
+    <Using Include="Aer.RoomSession.InvalidRoomDirectoryException" Alias="InvalidRoomDirectoryException" />
+    <Using Include="Aer.RoomSession.LocalUiConfigurationStore" Alias="LocalUiConfigurationStore" />
+    <Using Include="Aer.RoomSession.RoomCardStatus" Alias="RoomCardStatus" />
+    <Using Include="Aer.RoomSession.RoomCardViewModel" Alias="RoomCardViewModel" />
+    <Using Include="Aer.RoomSession.BindingsPathHolder" Alias="BindingsPathHolder" />
   </ItemGroup>
 
   <ItemGroup>

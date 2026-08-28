@@ -4,12 +4,6 @@ using Aer.Flow.Domain;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
-// Aliased, not `using Aer.RoomSession;`: this file also uses the global-using-supplied
-// Aer.Ui.Core.RoomClient, and Aer.RoomSession now declares its own RoomClient -- a blanket using
-// would make every bare RoomClient reference ambiguous.
-using LocalUiConfigurationStore = Aer.RoomSession.LocalUiConfigurationStore;
-using RoomCardStatus = Aer.RoomSession.RoomCardStatus;
-using RoomFleetItem = Aer.RoomSession.RoomFleetItem;
 
 namespace Aer.Ui.Tests;
 
