@@ -1,6 +1,6 @@
-| | `claude` 2.1.231 (Claude Code) | `agy` 1.1.12 |
+| | `claude` 2.1.247 (Claude Code) | `agy` 1.1.22 |
 |---|---|---|
-| plan usage & reset | **`/usage` — 19% used, with reset times** | not found on: --help, subcommand list, in-session slash command |
+| plan usage & reset | **`/usage` — 6% used, with reset times** | not found on: --help, subcommand list, in-session slash command |
 | per-turn cost | **`total_cost_usd` in every result event** | not found on: structured output stream, --help |
 | structured output | **`--output-format stream-json --verbose`** | **`--output-format stream-json`** |
 | --permission-prompt-tool | **`--permission-prompt-tool <mcp-tool>` — consulted for permission decisions** | not found on: --help, stderr, flag acceptance vs. a control flag, structured output stream |
