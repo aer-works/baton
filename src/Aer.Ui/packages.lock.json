@@ -226,7 +226,7 @@
         "dependencies": {
           "Aer.Adapters": "[0.14.0, )",
           "Aer.Flow": "[0.14.0, )",
-          "Aer.Ui.Core": "[0.14.0, )"
+          "Aer.RoomSession": "[0.14.0, )"
         }
       },
       "aer.flow": {
@@ -235,11 +235,20 @@
           "Aer.Core": "[1.0.0, )"
         }
       },
+      "aer.roomsession": {
+        "type": "Project",
+        "dependencies": {
+          "Aer.Adapters": "[0.14.0, )",
+          "Aer.Flow": "[0.14.0, )",
+          "aer": "[0.21.0, )"
+        }
+      },
       "aer.ui.core": {
         "type": "Project",
         "dependencies": {
           "Aer.Adapters": "[0.14.0, )",
           "Aer.Flow": "[0.14.0, )",
+          "Aer.RoomSession": "[0.14.0, )",
           "CommunityToolkit.Mvvm": "[8.4.2, )",
           "QRCoder": "[1.6.0, )",
           "aer": "[0.21.0, )"

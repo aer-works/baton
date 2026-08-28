@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
+using Aer.RoomSession;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 

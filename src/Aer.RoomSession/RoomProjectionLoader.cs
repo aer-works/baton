@@ -5,7 +5,7 @@ using Aer.Flow.Projection;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;
 
-namespace Aer.Ui.Core;
+namespace Aer.RoomSession;
 
 /// <summary>
 /// One room directory's lightweight status (M24 Phase 5, #278's fleet list) — friendly

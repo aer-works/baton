@@ -46,7 +46,7 @@
       "name": "Folder gone",
       "behaviour": "The room is greyed and marked unavailable, never an error dialog, and never silently dropped from the list.",
       "provenance": "M25 design pass, 2026-07-24",
-      "coverage": { "renderedBy": ["src/Aer.Ui.Core/HomeViewModel.cs", "src/Aer.Ui.Core/RoomProjectionLoader.cs"] }
+      "coverage": { "renderedBy": ["src/Aer.Ui.Core/HomeViewModel.cs", "src/Aer.RoomSession/RoomProjectionLoader.cs"] }
     },
     "cancelled": {
       "name": "Cancelled",
@@ -64,7 +64,7 @@
       "name": "Archived",
       "behaviour": "Out of the default list, still searchable, restorable in one action.",
       "provenance": "M25 design pass, 2026-07-24",
-      "coverage": { "renderedBy": ["src/Aer.Ui.Core/RoomProjectionLoader.cs", "src/Aer.Ui.Core/RoomsViewModel.cs"] }
+      "coverage": { "renderedBy": ["src/Aer.RoomSession/RoomProjectionLoader.cs", "src/Aer.Ui.Core/RoomsViewModel.cs"] }
     },
     "longOutput": {
       "name": "Long output",

@@ -13,6 +13,7 @@ using Aer.Flow;
 using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
+using Aer.RoomSession;
 
 namespace Aer.Ui.Core;
 
@@ -54,11 +55,6 @@ public record CancelRoomRequest(string DirectoryPath, string? ExecutionId = null
 /// <summary>M24 Phase 5 (#278): the request body shape shared by <c>/api/rooms/archive</c>, <c>/api/rooms/unarchive</c>, and <c>/api/rooms/delete</c>.</summary>
 public record RoomDirectoryRequest(string DirectoryPath);
 public record DaemonVersionInfo(string Version, bool HasRunningRooms, bool IsRemote = false);
-
-public class BindingsPathHolder
-{
-    public string? BindingsFilePath { get; set; }
-}
 
 /// <summary>
 /// One room's orchestration (M19 Phase 2, issue #187), updated in M20 Phase 2/3 to

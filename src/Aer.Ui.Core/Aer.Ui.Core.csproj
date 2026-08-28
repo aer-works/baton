@@ -13,6 +13,7 @@
     <ProjectReference Include="..\Aer.Flow\Aer.Flow.csproj" />
     <ProjectReference Include="..\Aer.Cli\Aer.Cli.csproj" />
     <ProjectReference Include="..\Aer.Adapters\Aer.Adapters.csproj" />
+    <ProjectReference Include="..\Aer.RoomSession\Aer.RoomSession.csproj" />
   </ItemGroup>
 
   <ItemGroup>

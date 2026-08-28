@@ -65,7 +65,8 @@ public class ReferenceDirectionTests
     // Aer.Cli.dll's own path next to AppContext.BaseDirectory — silently wrong (a dangling command,
     // #530's fail-open-and-silent failure) unless Aer.Cli.dll actually gets copied into every real
     // entry point's own output directory. For Aer.Daemon that happens only because it references
-    // Aer.Ui.Core, which in turn references Aer.Cli — a transitive path, not a direct one, and
+    // Aer.RoomSession, which in turn references Aer.Cli (#1412 rerouted this path; it originally
+    // ran through Aer.Ui.Core) — a transitive path, not a direct one, and
     // exactly the kind of reference that erodes silently if a future refactor drops it. This is a
     // positive-inclusion check (the graph *must* reach Aer.Cli), the deliberate opposite of every
     // forbidden-reference check above.

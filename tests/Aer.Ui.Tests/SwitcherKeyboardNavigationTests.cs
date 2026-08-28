@@ -1,5 +1,6 @@
 using Aer.Adapters;
 using Aer.Flow.Domain;
+using Aer.RoomSession;
 using Aer.Ui.Core;
 using Aer.Ui.Tests.TestSupport;
 using Avalonia.Controls;

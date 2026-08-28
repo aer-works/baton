@@ -2,7 +2,7 @@ using Aer.Flow.Artifacts;
 using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 
-namespace Aer.Ui.Core;
+namespace Aer.RoomSession;
 
 /// <summary>
 /// Reconstructs <see cref="ArtifactLineage"/> from event history plus the artifacts directory

@@ -1,3 +1,5 @@
+using Aer.RoomSession;
+
 namespace Aer.Ui.Core;
 
 /// <summary>

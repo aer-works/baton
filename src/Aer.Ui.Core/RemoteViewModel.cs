@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Aer.RoomSession;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using QRCoder;

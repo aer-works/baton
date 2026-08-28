@@ -1,7 +1,7 @@
 using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
 
-namespace Aer.Ui.Core;
+namespace Aer.RoomSession;
 
 /// <summary>
 /// Reconstructs <see cref="RoomFiles"/> from <see cref="ArtifactLineage"/> — never a second

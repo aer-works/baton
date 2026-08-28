@@ -18,7 +18,7 @@ using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
 using Aer.Flow.Projection;
 using Aer.Flow.Store;
-using Aer.Ui.Core;
+using Aer.RoomSession;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -169,7 +169,6 @@ namespace Aer.Daemon
             // Register singletons
             builder.Services.AddSingleton(LocalUiConfigurationStore.CreateDefault());
             builder.Services.AddSingleton(adapters ?? WorkerAdapterRegistry.Default);
-            builder.Services.AddSingleton<MainWindowViewModel>();
             builder.Services.AddSingleton<PairedClientsStore>();
 
             // #799: the room wake-bridge — pure derivation of the wake set plus a read-only workflow
@@ -200,7 +199,6 @@ namespace Aer.Daemon
             {
                 var configStore = sp.GetRequiredService<LocalUiConfigurationStore>();
                 var adapters = sp.GetRequiredService<IReadOnlyDictionary<string, IWorkerAdapter>>();
-                var viewModel = sp.GetRequiredService<MainWindowViewModel>();
                 var pathHolder = sp.GetRequiredService<BindingsPathHolder>();
 
                 RoomClient? session = null;
@@ -220,10 +218,7 @@ namespace Aer.Daemon
                 session = new RoomClient(
                     configStore,
                     adapters,
-                    viewModel,
                     bindingsFilePathProvider: () => pathHolder.BindingsFilePath,
-                    mutationStarted: () => { },
-                    mutationFailed: () => { },
                     reopenRoomAsync: reopenRoomAsync
                 );
 
@@ -1432,7 +1427,6 @@ namespace Aer.Daemon
                         // a race to ExternalDecisionValidator) is observable.
                         var outcome = await session.DecideAsync(
                             request.DirectoryPath,
-                            new StepId(request.StepId),
                             new ExecutionId(request.ExecutionId),
                             request.DecisionType,
                             request.TargetStepId != null ? new StepId(request.TargetStepId) : null,
@@ -3165,7 +3159,6 @@ namespace Aer.Daemon
 
                         var decideOutcome = await session.DecideAsync(
                             directoryPath,
-                            new StepId(InteractiveSessionMaterializer.AnchorStepId),
                             anchorExecutionId,
                             DecisionType.Supersede,
                             targetStepId: new StepId(InteractiveSessionMaterializer.DefaultStepId),

@@ -1,3 +1,4 @@
+using Aer.RoomSession;
 using Aer.Ui.Converters;
 using Aer.Ui.Core;
 

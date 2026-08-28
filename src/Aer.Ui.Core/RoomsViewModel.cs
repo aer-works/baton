@@ -5,6 +5,7 @@ using Aer.Adapters;
 using Aer.Flow;
 using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
+using Aer.RoomSession;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 

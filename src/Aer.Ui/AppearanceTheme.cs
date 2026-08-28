@@ -7,7 +7,7 @@ namespace Aer.Ui;
 /// <summary>
 /// The Settings → Appearance theme choice (#1068), mapped to an Avalonia <see cref="ThemeVariant"/>.
 /// The stored value is one of <see cref="ThemeNames"/> (persisted by
-/// <see cref="Aer.Ui.Core.LocalUiConfigurationStore"/>); <see cref="ThemeNames.System"/> — and any
+/// <see cref="Aer.RoomSession.LocalUiConfigurationStore"/>); <see cref="ThemeNames.System"/> — and any
 /// unrecognised or missing value — resolves to <see cref="ThemeVariant.Default"/>, which is what makes
 /// the app follow the OS, exactly as it did before an in-app control existed.
 /// </summary>
