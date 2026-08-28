@@ -15,14 +15,14 @@ public class MainWindowBindingsEditorTests
     // "claude"/"agy" carry the real adapters (M21 Phase 1): none of these tests ever dispatch
     // (Resolve is never called), so this is safe, and it lets the permission-grant-builder tests
     // exercise the real ClaudeWorkerAdapter/AgyWorkerAdapter IPermissionGrantTranslator
-    // implementations rather than a stub. "dialogue" stays a NoopWorkerAdapter specifically to cover
-    // the "adapter has no structured builder support at all" gap path.
+    // implementations rather than a stub. "stub-adapter" stays a NoopWorkerAdapter specifically to
+    // cover the "adapter has no structured builder support at all" gap path.
     private static readonly IReadOnlyDictionary<string, IWorkerAdapter> Adapters =
         new Dictionary<string, IWorkerAdapter>
         {
             ["claude"] = new ClaudeWorkerAdapter(),
             ["agy"] = new AgyWorkerAdapter(),
-            ["dialogue"] = new NoopWorkerAdapter(),
+            ["stub-adapter"] = new NoopWorkerAdapter(),
         };
 
     private static string FixturePath(string fileName) => Path.Combine(AppContext.BaseDirectory, "Fixtures", fileName);
@@ -89,7 +89,7 @@ public class MainWindowBindingsEditorTests
         window.ViewModel.BindingsEditor.AddEntry();
         var entry = Assert.Single(window.ViewModel.BindingsEditor.Entries);
 
-        Assert.Equal(["agy", "claude", "dialogue"], entry.AdapterCandidates);
+        Assert.Equal(["agy", "claude", "stub-adapter"], entry.AdapterCandidates);
     }
 
     [AvaloniaFact]
@@ -578,7 +578,7 @@ public class MainWindowBindingsEditorTests
         window.NewBindings();
         window.ViewModel.BindingsEditor.AddEntry();
         var entry = window.ViewModel.BindingsEditor.Entries[0];
-        entry.Adapter = "dialogue";
+        entry.Adapter = "stub-adapter";
 
         entry.GrantReadFiles = true;
 
@@ -636,8 +636,8 @@ public class MainWindowBindingsEditorTests
             window.ViewModel.BindingsEditor.AddEntry();
             var entry = window.ViewModel.BindingsEditor.Entries[0];
             entry.WorkerName = "debate";
-            entry.Adapter = "dialogue";
-            entry.PromptTemplate = "dialogue-config.json";
+            entry.Adapter = "stub-adapter";
+            entry.PromptTemplate = "stub-config.json";
             entry.TimeoutText = "00:05:00";
             entry.GrantReadFiles = true;
 

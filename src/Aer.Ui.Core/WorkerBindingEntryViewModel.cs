@@ -1,8 +1,6 @@
-using System.Collections.ObjectModel;
 using System.Text.Json;
 using Aer.Adapters;
 using Aer.Flow.Domain;
-using Aer.Workers.Dialogue;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -43,23 +41,6 @@ namespace Aer.Ui.Core;
 /// <see cref="PermissionScope"/> round-trips into Advanced mode unchanged. If a hand-edited file
 /// somehow has both set, loading lands in Builder mode (structured wins, matching the resolver) and
 /// a subsequent Save normalizes the entry to that interpretation.
-/// </para>
-/// <para>
-/// <b>The dialogue worker as a first-class step type (M23 Phase 1, #270):</b> before this, a
-/// <c>"dialogue"</c>-adapter row's actual behavior (participants, seed prompt, turn budget) lived in
-/// a config sidecar file only <see cref="NewWorkflowViewModel"/>'s guided wizard knew how to author —
-/// opening one here showed only the opaque <see cref="PromptTemplate"/> path pointing at it, no
-/// different from any other adapter's prompt text. <see cref="DialogueParticipants"/>
-/// plus <see cref="DialogueSeedPromptText"/>/<see cref="DialogueTurnBudgetText"/>/
-/// <see cref="DialogueFinalOutputNameText"/> give this row the
-/// same structured editing the wizard already had, N participants and all (the wizard itself stays
-/// fixed at two — Claude initiator, Gemini responder — since it optimizes for the common case, not
-/// full generality). <see cref="TryBuildDialogueConfig"/> is deliberately not folded into
-/// <see cref="TryBuildEntry"/>: this row's <see cref="PromptTemplate"/> is still just the sidecar's
-/// *path* (an ordinary field of the built <see cref="WorkerBindingConfigEntry"/>), while the
-/// sidecar's *content* is a second, sibling artifact <see cref="BindingsEditorViewModel.SaveToFileAsync"/>
-/// writes separately — the same "structured fields, opaque pointer" split
-/// <see cref="ProducedOutputsJson"/>'s own remarks already draw for a different field.
 /// </para>
 /// </summary>
 public sealed partial class WorkerBindingEntryViewModel : ObservableObject
@@ -143,7 +124,7 @@ public sealed partial class WorkerBindingEntryViewModel : ObservableObject
     [ObservableProperty]
     private string permissionGrantGapWarning = string.Empty;
 
-    /// <summary>The AuthorView visibility switch for the gap-warning line — matches this file's own established "expose a bool, don't bind on string length" convention (e.g. <c>!IsDialogue</c> elsewhere in AuthorView.axaml).</summary>
+    /// <summary>The AuthorView visibility switch for the gap-warning line — matches this file's own established "expose a bool, don't bind on string length" convention (e.g. <see cref="IsAdvancedPermissionScope"/> elsewhere in AuthorView.axaml).</summary>
     public bool HasPermissionGrantGapWarning => !string.IsNullOrEmpty(PermissionGrantGapWarning);
 
     /// <summary>
@@ -154,40 +135,6 @@ public sealed partial class WorkerBindingEntryViewModel : ObservableObject
     /// </summary>
     public bool ShowShellCommandPatterns => !IsAdvancedPermissionScope && GrantRunShellCommands;
 
-    /// <summary>Whether this row is bound to the <c>"dialogue"</c> adapter — the AuthorView visibility switch for the structured dialogue section below.</summary>
-    public bool IsDialogueAdapter => Adapter == "dialogue";
-
-    [ObservableProperty]
-    private string dialogueSeedPromptText = string.Empty;
-
-    [ObservableProperty]
-    private string dialogueTurnBudgetText = "4";
-
-    /// <summary>The dialogue config's own declared final output — kept as its own field rather than derived from <see cref="ProducedOutputsJson"/>, the same opaque-vs-structured split this file already draws for that field.</summary>
-    [ObservableProperty]
-    private string dialogueFinalOutputNameText = string.Empty;
-
-    /// <summary>
-    /// Round-trips <see cref="DialogueWorkerConfig.FinalOutputMode"/> (#736) through this row's
-    /// load/save cycle without giving it a bindable control — #736 deliberately has no UI half for
-    /// *authoring* the mode, but a value an existing config already carries must still survive an
-    /// unrelated edit and save (found while implementing #736, filed as #743). Plain field, not an
-    /// <c>[ObservableProperty]</c>: nothing in AuthorView binds to it, so it raises no change
-    /// notification and needs none.
-    /// </summary>
-    private FinalOutputMode? _dialogueFinalOutputMode;
-
-    /// <summary>
-    /// Round-trips <see cref="DialogueWorkerConfig.TurnTimeout"/> (#609) — the identical defect one
-    /// field over from <see cref="_dialogueFinalOutputMode"/>'s, found by the #736 review and filed
-    /// as its own issue: an unrelated edit-and-save silently reset a hand-authored ceiling to the
-    /// 5-minute default. Same shape for the same reason as the field above.
-    /// </summary>
-    private TimeSpan? _dialogueTurnTimeout;
-
-    /// <summary>This row's exchange sides, in speaking order (M23 Phase 1, #270's N-party generalization) — at least two required to build a valid <see cref="DialogueWorkerConfig"/>, no upper bound.</summary>
-    public ObservableCollection<DialogueParticipantEditorViewModel> DialogueParticipants { get; } = [];
-
     private WorkerBindingEntryViewModel(
         IReadOnlyList<string> adapterCandidates,
         IReadOnlyDictionary<string, IWorkerAdapter> adapterRegistry,
@@ -196,44 +143,6 @@ public sealed partial class WorkerBindingEntryViewModel : ObservableObject
         AdapterCandidates = adapterCandidates;
         _adapterRegistry = adapterRegistry;
         _onRemove = onRemove;
-        DialogueParticipants.CollectionChanged += (_, _) => NotifyDialogueParticipantsChanged();
-    }
-
-    /// <summary>
-    /// Raises a change notification on <see cref="DialogueParticipants"/> itself — the collection's
-    /// own membership changing (add/remove) or one participant row's fields changing both need to
-    /// reach <see cref="BindingsEditorViewModel.OnEntryPropertyChanged"/>, which listens to this
-    /// entry's <see cref="ObservableObject.PropertyChanged"/> broadly to recompute dirty state; an
-    /// <c>ObservableCollection&lt;T&gt;</c>'s own <c>CollectionChanged</c> is a different event that
-    /// bubbling would otherwise miss.
-    /// </summary>
-    internal void NotifyDialogueParticipantsChanged() => OnPropertyChanged(nameof(DialogueParticipants));
-
-    [RelayCommand]
-    private void AddDialogueParticipant() =>
-        DialogueParticipants.Add(new DialogueParticipantEditorViewModel(NotifyDialogueParticipantsChanged, RemoveDialogueParticipant));
-
-    private void RemoveDialogueParticipant(DialogueParticipantEditorViewModel participant) =>
-        DialogueParticipants.Remove(participant);
-
-    /// <summary>Seeds the two-party default (Claude initiator / Gemini responder) the guided wizard also uses — only when switching into dialogue mode with no participants authored yet, never overwriting an in-progress edit.</summary>
-    private void SeedDefaultDialogueParticipantsIfEmpty()
-    {
-        if (DialogueParticipants.Count > 0)
-        {
-            return;
-        }
-
-        DialogueParticipants.Add(new DialogueParticipantEditorViewModel(NotifyDialogueParticipantsChanged, RemoveDialogueParticipant)
-        {
-            Role = "initiator",
-            Vendor = "claude",
-        });
-        DialogueParticipants.Add(new DialogueParticipantEditorViewModel(NotifyDialogueParticipantsChanged, RemoveDialogueParticipant)
-        {
-            Role = "responder",
-            Vendor = "agy", // vocabulary-ok: engine key
-        });
     }
 
     /// <summary>A freshly-added blank row (<c>BindingsEditorViewModel.AddEntry</c>) — nothing loaded from any file yet.</summary>
@@ -250,21 +159,14 @@ public sealed partial class WorkerBindingEntryViewModel : ObservableObject
 
     /// <summary>
     /// Reconstructs one row from an already-parsed <see cref="WorkerBindingConfigEntry"/> —
-    /// <c>BindingsEditorViewModel.LoadFrom</c>'s per-entry step. <paramref name="dialogueConfig"/> is
-    /// the sidecar <see cref="DialogueWorkerConfig"/> <c>BindingsEditorViewModel</c> already loaded
-    /// from <see cref="WorkerBindingConfigEntry.PromptTemplate"/> when <paramref name="entry"/>'s
-    /// <see cref="WorkerBindingConfigEntry.Adapter"/> is <c>"dialogue"</c> — null for every other
-    /// adapter, and also null for a dialogue entry whose sidecar failed to load (missing file,
-    /// malformed JSON), in which case this row falls back to the same two-party default a brand new
-    /// dialogue row gets, rather than losing the ability to author the step at all.
+    /// <c>BindingsEditorViewModel.LoadFrom</c>'s per-entry step.
     /// </summary>
     public static WorkerBindingEntryViewModel FromEntry(
         string workerName,
         WorkerBindingConfigEntry entry,
         IReadOnlyList<string> adapterCandidates,
         IReadOnlyDictionary<string, IWorkerAdapter> adapterRegistry,
-        Action<WorkerBindingEntryViewModel> onRemove,
-        DialogueWorkerConfig? dialogueConfig = null)
+        Action<WorkerBindingEntryViewModel> onRemove)
     {
         var vm = new WorkerBindingEntryViewModel(adapterCandidates, adapterRegistry, onRemove)
         {
@@ -289,41 +191,13 @@ public sealed partial class WorkerBindingEntryViewModel : ObservableObject
             GrantNetworkAccess = entry.PermissionGrant?.NetworkAccess ?? false,
         };
 
-        if (dialogueConfig is not null)
-        {
-            vm.DialogueParticipants.Clear();
-            vm.DialogueSeedPromptText = dialogueConfig.SeedPrompt;
-            vm.DialogueTurnBudgetText = dialogueConfig.TurnBudget.ToString();
-            vm.DialogueFinalOutputNameText = dialogueConfig.FinalOutputName;
-            vm._dialogueFinalOutputMode = dialogueConfig.FinalOutputMode;
-            vm._dialogueTurnTimeout = dialogueConfig.TurnTimeout;
-            foreach (var participant in dialogueConfig.Participants)
-            {
-                vm.DialogueParticipants.Add(new DialogueParticipantEditorViewModel(vm.NotifyDialogueParticipantsChanged, vm.RemoveDialogueParticipant)
-                {
-                    Role = participant.Role,
-                    Vendor = participant.Vendor,
-                    Model = participant.Model ?? string.Empty,
-                    Preamble = participant.Preamble,
-                });
-            }
-        }
-
         return vm;
     }
 
     [RelayCommand]
     private void Remove() => _onRemove(this);
 
-    partial void OnAdapterChanged(string value)
-    {
-        RecomputePermissionGrantGapWarning();
-        OnPropertyChanged(nameof(IsDialogueAdapter));
-        if (IsDialogueAdapter)
-        {
-            SeedDefaultDialogueParticipantsIfEmpty();
-        }
-    }
+    partial void OnAdapterChanged(string value) => RecomputePermissionGrantGapWarning();
 
     partial void OnIsAdvancedPermissionScopeChanged(bool value)
     {
@@ -379,7 +253,7 @@ public sealed partial class WorkerBindingEntryViewModel : ObservableObject
         {
             // #657: the old wording — "no structured permission builder support, use Advanced
             // instead" — read as a note about the EDITOR, so an operator who ticked four boxes on a
-            // dialogue or noop worker had been told nothing that reads as "these will not apply".
+            // noop worker had been told nothing that reads as "these will not apply".
             // They do not: neither adapter reads WorkerInvocation.PermissionGrant at all, and
             // WorkerAdapterRegistryTests (#651) holds that population to IPermissionGrantTranslator.
             PermissionGrantGapWarning =
@@ -525,86 +399,6 @@ public sealed partial class WorkerBindingEntryViewModel : ObservableObject
             permissionScope,
             permissionGrant,
             string.IsNullOrWhiteSpace(WorkingDirectoryText) ? null : WorkingDirectoryText);
-        error = null;
-        return true;
-    }
-
-    /// <summary>
-    /// Builds this row's sidecar <see cref="DialogueWorkerConfig"/> from the structured dialogue
-    /// fields (M23 Phase 1, #270) — the counterpart of <see cref="TryBuildEntry"/> for the second,
-    /// sibling artifact <see cref="BindingsEditorViewModel.SaveToFileAsync"/> writes to
-    /// <see cref="PromptTemplate"/>'s path. Only meaningful when <see cref="IsDialogueAdapter"/>;
-    /// callers are expected to check that first (the same "caller already knows which branch it's
-    /// in" shape <see cref="TryBuildEntry"/> itself doesn't need since it's unconditional).
-    /// </summary>
-    internal bool TryBuildDialogueConfig(out DialogueWorkerConfig? config, out string? error)
-    {
-        if (string.IsNullOrWhiteSpace(DialogueSeedPromptText))
-        {
-            config = null;
-            error = $"'{WorkerName}' needs the dialogue's opening seed prompt.";
-            return false;
-        }
-
-        if (!int.TryParse(DialogueTurnBudgetText, out var turnBudget) || turnBudget <= 0)
-        {
-            config = null;
-            error = $"'{WorkerName}' needs a whole positive number of dialogue turns.";
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(DialogueFinalOutputNameText))
-        {
-            config = null;
-            error = $"'{WorkerName}' needs the dialogue's declared final output file name.";
-            return false;
-        }
-
-        if (DialogueParticipants.Count < 2)
-        {
-            config = null;
-            error = $"'{WorkerName}' needs at least two dialogue participants.";
-            return false;
-        }
-
-        var participants = new List<DialogueParticipant>(DialogueParticipants.Count);
-        foreach (var participantVm in DialogueParticipants)
-        {
-            if (string.IsNullOrWhiteSpace(participantVm.Role))
-            {
-                config = null;
-                error = $"'{WorkerName}' has a dialogue participant with no role.";
-                return false;
-            }
-
-            if (!DialogueParticipantPresets.KnownVendors.Contains(participantVm.Vendor))
-            {
-                config = null;
-                error = $"'{WorkerName}' participant '{participantVm.Role}' has an unknown vendor '{participantVm.Vendor}'.";
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(participantVm.Preamble))
-            {
-                config = null;
-                error = $"'{WorkerName}' participant '{participantVm.Role}' needs its own preamble.";
-                return false;
-            }
-
-            participants.Add(DialogueParticipantPresets.For(
-                participantVm.Vendor,
-                participantVm.Role,
-                participantVm.Preamble,
-                string.IsNullOrWhiteSpace(participantVm.Model) ? null : participantVm.Model));
-        }
-
-        config = new DialogueWorkerConfig(
-            DialogueSeedPromptText,
-            turnBudget,
-            DialogueFinalOutputNameText,
-            participants,
-            TurnTimeout: _dialogueTurnTimeout,
-            FinalOutputMode: _dialogueFinalOutputMode);
         error = null;
         return true;
     }

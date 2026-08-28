@@ -13,9 +13,6 @@
     <ProjectReference Include="..\Aer.Flow\Aer.Flow.csproj" />
     <ProjectReference Include="..\Aer.Cli\Aer.Cli.csproj" />
     <ProjectReference Include="..\Aer.Adapters\Aer.Adapters.csproj" />
-    <!-- M19 Phase 4 (#189): guided authoring writes the dialogue worker's config sidecar in-app
-         (UI spec §4 amendment) — the typed config record, not a hand-built JSON string. -->
-    <ProjectReference Include="..\Aer.Workers.Dialogue\Aer.Workers.Dialogue.csproj" />
   </ItemGroup>
 
   <ItemGroup>

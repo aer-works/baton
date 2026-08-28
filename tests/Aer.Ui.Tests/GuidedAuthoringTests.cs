@@ -1,14 +1,12 @@
 using Aer.Ui.Tests.TestSupport;
-using System.Text.Json;
 using Aer.Adapters;
 using Aer.Flow.Domain;
-using Aer.Workers.Dialogue;
 
 namespace Aer.Ui.Tests;
 
 /// <summary>
 /// M19 Phase 4 (issue #189): the guided New Workflow flow — form-first authoring whose Save
-/// writes the same durable files (workflow definition, bindings, dialogue config sidecars) every
+/// writes the same durable files (workflow definition, bindings) every
 /// existing loader consumes, verified by loading them back through those exact loaders. Plain
 /// ViewModel tests, no window: the flow's state and file I/O live entirely in
 /// <see cref="NewWorkflowViewModel"/> (Aer.Ui.Core), which is the point of the seam.
@@ -77,58 +75,6 @@ public class GuidedAuthoringTests
             Assert.Null(reviewBinding.PermissionGrant);
             Assert.Equal(["draft.md"], reviewBinding.Contract.RequiredInputs);
             Assert.Equal("review.md", Assert.Single(reviewBinding.Contract.ProducedOutputs).Name);
-        }
-        finally
-        {
-            if (Directory.Exists(workspacePath))
-            {
-                DirectoryCleanup.DeleteRecursively(workspacePath);
-            }
-        }
-    }
-
-    [Fact]
-    public async Task A_dialogue_step_writes_its_config_sidecar_with_the_vendor_preset_participants()
-    {
-        var workspacePath = NewWorkspacePath();
-        try
-        {
-            var flow = new NewWorkflowViewModel
-            {
-                WorkflowName = "debate",
-                WorkspaceOverridePath = workspacePath,
-            };
-            flow.AddStepCommand.Execute(null);
-            var debate = flow.Steps[0];
-            debate.Name = "debate";
-            debate.Kind = GuidedStepKind.Dialogue;
-            debate.ProducesFileName = "verdict.md";
-            debate.SeedPrompt = "Open with your position.";
-            debate.TurnBudgetText = "2";
-            debate.InitiatorPreamble = "Argue for.";
-            debate.ResponderPreamble = "Argue against.";
-
-            var paths = await flow.SaveAsync(TestContext.Current.CancellationToken);
-
-            Assert.NotNull(paths);
-            var bindings = await BindingsProjectionLoader.LoadAsync(
-                paths.Value.BindingsFilePath, TestContext.Current.CancellationToken);
-            var entry = bindings["debate"];
-            Assert.Equal("dialogue", entry.Adapter);
-
-            // The §4-amendment sidecar: the bindings entry references it; the user never opened it.
-            var sidecarPath = entry.PromptTemplate;
-            Assert.Equal(Path.Combine(workspacePath, "dialogue-debate.json"), sidecarPath);
-            var config = JsonSerializer.Deserialize<DialogueWorkerConfig>(
-                await File.ReadAllTextAsync(sidecarPath, TestContext.Current.CancellationToken))!;
-            Assert.Equal("Open with your position.", config.SeedPrompt);
-            Assert.Equal(2, config.TurnBudget);
-            Assert.Equal("verdict.md", config.FinalOutputName);
-            Assert.Equal(2, config.Participants.Count);
-            Assert.Equal("claude", config.Participants[0].Command);
-            Assert.Equal("agy", config.Participants[1].Command);
-            Assert.Contains(config.Participants[0].Args, a => a == DialogueParticipant.PromptPlaceholder);
-            Assert.Contains(config.Participants[1].Args, a => a == DialogueParticipant.PromptPlaceholder);
         }
         finally
         {
@@ -211,10 +157,10 @@ public class GuidedAuthoringTests
     }
 
     // M21 Phase 1 follow-up (owner feedback on the initial per-entry-only builder): permissions are
-    // set once per workflow and applied to every non-dialogue step at Save, not configured per step.
+    // set once per workflow and applied to every step at Save, not configured per step.
 
     [Fact]
-    public async Task A_shared_permission_grant_applies_to_every_non_dialogue_step()
+    public async Task A_shared_permission_grant_applies_to_every_step()
     {
         var workspacePath = NewWorkspacePath();
         try
@@ -241,42 +187,6 @@ public class GuidedAuthoringTests
                 Assert.True(grant.WriteFiles);
                 Assert.Null(bindings[stepName].PermissionScope);
             }
-        }
-        finally
-        {
-            if (Directory.Exists(workspacePath))
-            {
-                DirectoryCleanup.DeleteRecursively(workspacePath);
-            }
-        }
-    }
-
-    [Fact]
-    public async Task A_dialogue_steps_binding_entry_is_unaffected_by_the_shared_permission_grant()
-    {
-        var workspacePath = NewWorkspacePath();
-        try
-        {
-            var flow = new NewWorkflowViewModel { WorkflowName = "debate", WorkspaceOverridePath = workspacePath };
-            flow.AddStepCommand.Execute(null);
-            var debate = flow.Steps[0];
-            debate.Name = "debate";
-            debate.Kind = GuidedStepKind.Dialogue;
-            debate.ProducesFileName = "verdict.md";
-            debate.SeedPrompt = "Open with your position.";
-            debate.TurnBudgetText = "2";
-            debate.InitiatorPreamble = "Argue for.";
-            debate.ResponderPreamble = "Argue against.";
-            flow.GrantReadFiles = true;
-            flow.GrantNetworkAccess = true;
-
-            var paths = await flow.SaveAsync(TestContext.Current.CancellationToken);
-
-            Assert.NotNull(paths);
-            var bindings = await BindingsProjectionLoader.LoadAsync(
-                paths.Value.BindingsFilePath, TestContext.Current.CancellationToken);
-            Assert.Null(bindings["debate"].PermissionGrant);
-            Assert.Null(bindings["debate"].PermissionScope);
         }
         finally
         {
@@ -540,27 +450,6 @@ public class GuidedAuthoringTests
         Assert.True(flow.CanSave);
     }
 
-    [Fact]
-    public void Dialogue_step_is_unaffected_by_adapter_grant_refusal()
-    {
-        var flow = new NewWorkflowViewModel { WorkflowName = "wf", WorkspaceOverridePath = NewWorkspacePath() };
-        flow.AddStepCommand.Execute(null);
-        flow.Steps[0].Name = "draft";
-        flow.Steps[0].Kind = GuidedStepKind.Dialogue;
-        flow.Steps[0].ProducesFileName = "draft.md";
-        flow.Steps[0].SeedPrompt = "Opening prompt.";
-        flow.Steps[0].InitiatorPreamble = "Preamble 1";
-        flow.Steps[0].ResponderPreamble = "Preamble 2";
-
-        flow.GrantRunShellCommands = true;
-        flow.GrantReadFiles = true;
-        flow.GrantWriteFiles = true;
-        flow.GrantNetworkAccess = true;
-        flow.ShellCommandPatternsText = "git:*";
-
-        Assert.DoesNotContain(flow.GuidanceMessages, m => m.Contains("can't be granted to", StringComparison.Ordinal));
-        Assert.True(flow.CanSave);
-    }
 }
 
 /// <summary>An adapter that never implements <see cref="IPermissionGrantTranslator"/> — the "no structured permission builder support" guidance path.</summary>

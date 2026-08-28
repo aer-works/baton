@@ -31,7 +31,6 @@
           <TextBlock Classes="body-strong" Text="Room Type:" />
           <RadioButton x:Name="ChatSessionRadio" Content="Chat — Interactive 1-on-1 Room (Claude or agy)" IsChecked="True" GroupName="TemplateGroup" IsCheckedChanged="OnTemplateChanged" />
           <RadioButton x:Name="CodebaseSessionRadio" Content="Codebase Room — AI Agent bound to a Project Directory" GroupName="TemplateGroup" IsCheckedChanged="OnTemplateChanged" />
-          <RadioButton x:Name="TwoVendorDialogueRadio" Content="Two-Vendor Dialogue — Draft &amp; Review exchange (Claude + agy)" GroupName="TemplateGroup" IsCheckedChanged="OnTemplateChanged" />
           <RadioButton x:Name="SoloRunRadio" Content="Solo Run (Advanced) — Single-step execution" GroupName="TemplateGroup" IsCheckedChanged="OnTemplateChanged" />
           <RadioButton x:Name="ReviewRunRadio" Content="Review Run (Advanced) — Two-step Draft → Human Review" GroupName="TemplateGroup" IsCheckedChanged="OnTemplateChanged" />
         </StackPanel>

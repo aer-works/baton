@@ -1,28 +1,24 @@
 using System.Collections.ObjectModel;
-using System.Text.Json;
 using Aer.Adapters;
 using Aer.Flow.Domain;
 using Aer.Flow.Templates;
-using Aer.Workers.Dialogue;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
 namespace Aer.Ui.Core;
 
-/// <summary>The step kinds the guided flow authors — the two vendor runners plus the dialogue worker as a first-class authored type (M17; UI spec §18.2 Case 2).</summary>
+/// <summary>The step kinds the guided flow authors — the two vendor runners (M17; UI spec §18.2).</summary>
 public enum GuidedStepKind
 {
     Claude,
     Agy,
-    Dialogue,
 }
 
 /// <summary>
 /// The guided New Workflow flow (M19 Phase 4, issue #189): author a workflow and who runs each
 /// step form-first — no typed paths, no raw JSON — then run it without leaving the flow. Saving
-/// writes the same durable files everything else already consumes (workflow definition, bindings,
-/// and each dialogue step's config sidecar per the §4 amendment): the files remain the durable
-/// format; the user just never opens them.
+/// writes the same durable files everything else already consumes (workflow definition and
+/// bindings): the files remain the durable format; the user just never opens them.
 /// <para>
 /// <b>Workspace decision of record (the phase's named open question):</b> authored files live in
 /// a UI-managed default workspace (<c>Documents/Baton/&lt;workflow-name&gt;</c>) — visible in
@@ -55,9 +51,7 @@ public sealed partial class NewWorkflowViewModel : ObservableObject
     // every step card doesn't scale (most workflows want one policy, not N to fiddle with), and
     // per-step controls only ever lived in the Advanced bindings editor anyway, invisible to anyone
     // on the guided (primary) path. This shared grant is translated per adapter and applied to every
-    // non-dialogue step's binding entry at Save (see GuidedStepViewModel.BuildBindingEntryAsync);
-    // dialogue steps are untouched — their participants' permissions come from
-    // DialogueParticipantPresets, unrelated to this workflow-level grant.
+    // step's binding entry at Save (see GuidedStepViewModel.BuildBindingEntryAsync).
     [ObservableProperty]
     private bool grantReadFiles;
 
@@ -200,7 +194,7 @@ public sealed partial class NewWorkflowViewModel : ObservableObject
 
             var ignoredSteps = new List<(string AdapterName, string Label)>();
             var refusedSteps = new List<(string AdapterName, string? Reason, string Label)>();
-            foreach (var step in Steps.Where(s => !s.IsDialogue))
+            foreach (var step in Steps)
             {
                 var adapterName = step.Kind == GuidedStepKind.Claude ? "claude" : "agy"; // vocabulary-ok: technical adapter key
                 if (!_adapterRegistry.TryGetValue(adapterName, out var adapter))
@@ -243,10 +237,9 @@ public sealed partial class NewWorkflowViewModel : ObservableObject
     public bool CanSave => !Validate().Any();
 
     /// <summary>
-    /// Writes the workspace: <c>workflow.json</c>, <c>bindings.json</c>, and one
-    /// <c>dialogue-&lt;step&gt;.json</c> sidecar per dialogue step — through the same writers the
-    /// file editors use, so guided output and hand-authored files can never diverge in format.
-    /// Returns the two paths a run needs, or null when guidance is outstanding.
+    /// Writes the workspace: <c>workflow.json</c> and <c>bindings.json</c> — through the same
+    /// writers the file editors use, so guided output and hand-authored files can never diverge in
+    /// format. Returns the two paths a run needs, or null when guidance is outstanding.
     /// </summary>
     public async Task<(string WorkflowFilePath, string BindingsFilePath)?> SaveAsync(CancellationToken cancellationToken = default)
     {
@@ -302,9 +295,9 @@ public sealed partial class NewWorkflowViewModel : ObservableObject
 /// One authored step in the guided flow. Field names speak the vocabulary map ("what it
 /// produces", "review gate", "who runs it"); <see cref="BuildStepDefinition"/>/
 /// <see cref="BuildBindingEntryAsync"/> translate to the durable spec shapes. Vendor presets fill
-/// the invocation side (timeout, dialogue participants) from the layers that own that knowledge —
-/// <see cref="VendorCliPresence"/>'s adapters and <see cref="DialogueParticipantPresets"/> — never
-/// re-encoded here. Permissions are the one exception: they're set once per workflow, not per
+/// the invocation side (timeout) from the layer that owns that knowledge —
+/// <see cref="VendorCliPresence"/>'s adapters — never re-encoded here. Permissions are the one
+/// exception: they're set once per workflow, not per
 /// step (<see cref="NewWorkflowViewModel.BuildPermissionGrant"/>), and applied here at
 /// <see cref="BuildBindingEntryAsync"/> time.
 /// </summary>
@@ -324,7 +317,6 @@ public sealed partial class GuidedStepViewModel : ObservableObject
     private string name = string.Empty;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsDialogue))]
     private GuidedStepKind kind = GuidedStepKind.Claude;
 
     /// <summary>The instruction for a single-vendor step — prose, so a text box is the right control (the "no raw JSON textareas" rule is about structure, not words).</summary>
@@ -334,30 +326,15 @@ public sealed partial class GuidedStepViewModel : ObservableObject
     [ObservableProperty]
     private string model = string.Empty;
 
-    /// <summary>What this step produces — one file name; the contract's produced output and, for a dialogue step, its final output.</summary>
+    /// <summary>What this step produces — one file name, the contract's produced output.</summary>
     [ObservableProperty]
     private string producesFileName = string.Empty;
 
     [ObservableProperty]
     private bool hasReviewGate;
 
-    // Dialogue-specific fields (§18.2 Case 2), visible only when Kind is Dialogue.
-    [ObservableProperty]
-    private string seedPrompt = string.Empty;
-
-    [ObservableProperty]
-    private string turnBudgetText = "4";
-
-    [ObservableProperty]
-    private string initiatorPreamble = string.Empty;
-
-    [ObservableProperty]
-    private string responderPreamble = string.Empty;
-
-    public bool IsDialogue => Kind == GuidedStepKind.Dialogue;
-
     public IReadOnlyList<GuidedStepKind> KindOptions { get; } =
-        [GuidedStepKind.Claude, GuidedStepKind.Agy, GuidedStepKind.Dialogue];
+        [GuidedStepKind.Claude, GuidedStepKind.Agy];
 
     public ObservableCollection<GuidedDependsOnOptionViewModel> DependsOnOptions { get; } = [];
 
@@ -398,24 +375,7 @@ public sealed partial class GuidedStepViewModel : ObservableObject
             yield return $"Say what {label} produces — the file name later steps and your review read.";
         }
 
-        if (IsDialogue)
-        {
-            if (SeedPrompt.Length == 0)
-            {
-                yield return $"Give {label}'s conversation its opening prompt.";
-            }
-
-            if (!int.TryParse(TurnBudgetText, out var turns) || turns < 2)
-            {
-                yield return $"Give {label} a whole number of turns, at least 2 (one per side).";
-            }
-
-            if (InitiatorPreamble.Length == 0 || ResponderPreamble.Length == 0)
-            {
-                yield return $"Give both sides of {label}'s conversation their instructions.";
-            }
-        }
-        else if (Prompt.Length == 0)
+        if (Prompt.Length == 0)
         {
             yield return $"Tell {label}'s runner what to do — the prompt is the step's instruction.";
         }
@@ -444,7 +404,7 @@ public sealed partial class GuidedStepViewModel : ObservableObject
             PausePoint: HasReviewGate ? new PausePoint(SupersedeTargets: dependsOn) : null);
     }
 
-    internal async Task<WorkerBindingConfigEntry> BuildBindingEntryAsync(string workspacePath, CancellationToken cancellationToken)
+    internal Task<WorkerBindingConfigEntry> BuildBindingEntryAsync(string workspacePath, CancellationToken cancellationToken)
     {
         var requiredInputs = DependsOnOptions
             .Where(option => option.IsSelected)
@@ -454,36 +414,15 @@ public sealed partial class GuidedStepViewModel : ObservableObject
             .ToList();
         var contract = new WorkerContract(Name, requiredInputs, [new ProducedOutput(ProducesFileName)], []);
 
-        if (!IsDialogue)
-        {
-            var grant = _owner.BuildPermissionGrant();
-            return new WorkerBindingConfigEntry(
-                Kind == GuidedStepKind.Claude ? "claude" : "agy", // vocabulary-ok: technical adapter key
-                contract,
-                Prompt,
-                DefaultTimeout,
-                Model.Length > 0 ? Model : null,
-                PermissionScope: null,
-                PermissionGrant: grant.IsEmpty ? null : grant);
-        }
-
-        var dialogueConfig = new DialogueWorkerConfig(
-            SeedPrompt,
-            int.Parse(TurnBudgetText),
-            ProducesFileName,
-            Participants:
-            [
-                DialogueParticipantPresets.For("claude", "initiator", InitiatorPreamble, Model.Length > 0 ? Model : null),
-                DialogueParticipantPresets.For("agy", "responder", ResponderPreamble, model: null), // vocabulary-ok: internal vendor key
-            ]);
-
-        var sidecarPath = Path.Combine(workspacePath, $"dialogue-{Name}.json");
-        await File.WriteAllTextAsync(
-            sidecarPath,
-            JsonSerializer.Serialize(dialogueConfig, new JsonSerializerOptions { WriteIndented = true }),
-            cancellationToken).ConfigureAwait(true);
-
-        return new WorkerBindingConfigEntry("dialogue", contract, sidecarPath, DefaultTimeout);
+        var grant = _owner.BuildPermissionGrant();
+        return Task.FromResult(new WorkerBindingConfigEntry(
+            Kind == GuidedStepKind.Claude ? "claude" : "agy", // vocabulary-ok: technical adapter key
+            contract,
+            Prompt,
+            DefaultTimeout,
+            Model.Length > 0 ? Model : null,
+            PermissionScope: null,
+            PermissionGrant: grant.IsEmpty ? null : grant));
     }
 }
 

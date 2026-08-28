@@ -9,21 +9,21 @@ namespace Aer.Ui.Tests;
 
 /// <summary>
 /// M19's completion gate (Phase 6, issue #191): the whole non-expert path, headless, through the
-/// new UI's actual controls — author a workflow (including a dialogue step) in the guided flow
-/// with zero hand-authored config files, run to the review gate over stub CLIs, read the
-/// conversation at the gate, send back with a feedback file, and approve to terminal. Vendor
-/// adapters are stubbed exactly like every M15 round trip (<see cref="ShellCommandWorkerAdapter"/>
-/// for the single-vendor step; a script-backed stub for the dialogue step that produces a real
-/// durable transcript, since §10.1 discovery is by artifact content alone — the live dialogue
-/// execution itself is M18's already-proven gate, not this one's).
+/// new UI's actual controls — author a workflow in the guided flow with zero hand-authored config
+/// files, run to the review gate over stub CLIs, read the conversation at the gate, send back with
+/// a feedback file, and approve to terminal. Vendor adapters are stubbed exactly like every M15
+/// round trip (<see cref="ShellCommandWorkerAdapter"/> for the first step; a script-backed stub for
+/// the second step that produces a real durable transcript, since §10.1 discovery is by artifact
+/// content alone — this proves the conversation drill-in over a second, transcript-producing step,
+/// not any one vendor's own execution).
 /// </summary>
 public class NonExpertPathGateTests
 {
     private static string NewConfigFilePath() =>
         Path.Combine(Path.GetTempPath(), $"aer-ui-gate-config-{Guid.NewGuid():N}", "recent-room-directories.json");
 
-    /// <summary>A stub "dialogue" adapter dispatching a local script that writes a schema-valid transcript plus the declared final output — the worker boundary's shape, none of its vendors.</summary>
-    private sealed class StubDialogueScriptAdapter(string scriptPath) : IWorkerAdapter
+    /// <summary>A stub adapter dispatching a local script that writes a schema-valid transcript plus the declared final output — the worker boundary's shape, none of its vendors.</summary>
+    private sealed class StubTranscriptScriptAdapter(string scriptPath) : IWorkerAdapter
     {
         public CoreDispatchTarget Resolve(WorkerInvocation invocation, WorkerContract contract) => OperatingSystem.IsWindows()
             ? new CoreDispatchTarget(
@@ -31,7 +31,7 @@ public class NonExpertPathGateTests
             : new CoreDispatchTarget("sh", [scriptPath]);
     }
 
-    private static string WriteDialogueStubScript(string directory)
+    private static string WriteTranscriptStubScript(string directory)
     {
         Directory.CreateDirectory(directory);
         const string turnOne = "{\"Sequence\":1,\"Role\":\"initiator\",\"Vendor\":\"claude\",\"Prompt\":\"p1\",\"Text\":\"For.\"}";
@@ -41,7 +41,7 @@ public class NonExpertPathGateTests
         {
             // Single-quoted PowerShell strings take " literally — no escaping needed for JSON content
             // that (like this fixture's) contains no embedded '.
-            var scriptPath = Path.Combine(directory, "dialogue-stub.ps1");
+            var scriptPath = Path.Combine(directory, "transcript-stub.ps1");
             File.WriteAllText(
                 scriptPath,
                 "$out = $env:AER_OUTPUT_DIR\r\n" +
@@ -50,7 +50,7 @@ public class NonExpertPathGateTests
             return scriptPath;
         }
 
-        var shPath = Path.Combine(directory, "dialogue-stub.sh");
+        var shPath = Path.Combine(directory, "transcript-stub.sh");
         File.WriteAllText(
             shPath,
             "#!/bin/sh\n" +
@@ -67,11 +67,11 @@ public class NonExpertPathGateTests
         var roomDirectory = Path.Combine(testRoot, "task");
         try
         {
-            var dialogueScriptPath = WriteDialogueStubScript(Path.Combine(testRoot, "scripts"));
+            var transcriptScriptPath = WriteTranscriptStubScript(Path.Combine(testRoot, "scripts"));
             var adapters = new Dictionary<string, IWorkerAdapter>
             {
                 ["claude"] = new ShellCommandWorkerAdapter(),
-                ["dialogue"] = new StubDialogueScriptAdapter(dialogueScriptPath),
+                ["agy"] = new StubTranscriptScriptAdapter(transcriptScriptPath),
             };
             var window = new MainWindow(new LocalUiConfigurationStore(NewConfigFilePath()), adapters);
 
@@ -91,18 +91,14 @@ public class NonExpertPathGateTests
             flow.AddStepCommand.Execute(null);
             var debate = flow.Steps[1];
             debate.Name = "debate";
-            debate.Kind = GuidedStepKind.Dialogue;
+            debate.Kind = GuidedStepKind.Agy;
             debate.ProducesFileName = "verdict.md";
-            debate.SeedPrompt = "Debate the draft.";
-            debate.TurnBudgetText = "2";
-            debate.InitiatorPreamble = "Argue for.";
-            debate.ResponderPreamble = "Argue against.";
+            debate.Prompt = "Debate the draft.";
             debate.HasReviewGate = true;
             debate.DependsOnOptions.Single(option => option.StepName == "draft").IsSelected = true;
 
             var paths = await flow.SaveAsync(TestContext.Current.CancellationToken);
             Assert.NotNull(paths);
-            Assert.True(File.Exists(Path.Combine(workspacePath, "dialogue-debate.json")));
 
             // 2. Run to the review gate over the stubs.
             await window.RunAsync(

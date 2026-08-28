@@ -7,9 +7,9 @@ namespace Aer.Ui.Tests;
 /// Unit-level coverage for <see cref="TranscriptProjectionLoader"/> (M18 Phase 1, #177), against
 /// real temp directories like <see cref="ArtifactLineageProjectorTests"/> — the loader's whole job
 /// is reading the durable artifact directory (UI spec §10.1). Fixture lines are written by hand to
-/// the spec's reader contract, deliberately not via <c>Aer.Workers.Dialogue</c>'s writer: the
-/// contract under test is the spec's, and producer/consumer agreement end to end is Phase 3's gate
-/// (#179), not this class's concern.
+/// the spec's reader contract, deliberately not via a real worker's writer: the contract under test
+/// is the spec's, and producer/consumer agreement end to end was Phase 3's gate (#179, against the
+/// dialogue worker before it was archived, #1408), not this class's concern.
 /// </summary>
 public class TranscriptProjectionLoaderTests
 {
