@@ -531,9 +531,7 @@ copy) and decide time (reads only the room's copy, per this section's own rule a
   which keeps one set of hands on the workers. A direct phone-to-worker control path would be a
   second interaction surface outside the orchestrator, which the one-surface design retires.
   `Aer.Sidecar` — the Go tsnet component that existed solely to give a paired remote client
-  zero-config Tailscale reach to the daemon's REST/WS API — stays archived; I confirmed there is no
-  `src/Aer.Sidecar` project in this tree at HEAD, only an optional binary artifact path
-  `Aer.Daemon.csproj` references if one happens to be built (`src/Aer.Daemon/Aer.Daemon.csproj:21-34`).
+  zero-config Tailscale reach to the daemon's REST/WS API — is ARCHIVE: `src/Aer.Sidecar/` is a real, tracked Go module (an earlier draft claimed otherwise; a lane verified it exists — corrected), and it goes with the pairing surface it served, along with `Aer.Daemon.csproj`'s optional copy step for its binary.
   **The harness seam is vendor-neutral, deliberately:** any agent that can run `aer` CLI verbs and
   read `terminal.json`/`fleet_status` can be the orchestrator. Claude Code is the current occupant of
   that seam, not a requirement of it.
@@ -568,7 +566,7 @@ reach backward to reconstruct a numbering scheme that no longer exists.
 | `Aer.Ui` | **ARCHIVE** | Not a description of the existing Avalonia app with features removed — a full archive. Fleet Glass (§6) is the diagnostic surface, built as MCP-tool levels, never a UI app. |
 | `Aer.Ui.Core` | **ARCHIVE** | Including `RoomClient` and `MainWindowViewModel` — named explicitly here because `Aer.Daemon`'s PORT row above depends on both and the narrowing must break that dependency, not carry it forward silently. The bulk (`ChatViewModel`, `RoomsViewModel`, `RemoteViewModel`, `TemplateEditorViewModel`, `StandingPermissionsViewModel`) is UI-surface logic for the retired product. `RoomProjection.cs`, `RoomFilesProjector.cs`, `ExecutionHistoryProjector.cs` exist in the tree and are plausible salvage candidates for a future read model, but I did not read them and cannot confirm they are Avalonia-free — `UNVERIFIED — fill from code`. |
 | `Aer.Mobile` | **ARCHIVE** | No harness-driven use case. |
-| `Aer.Sidecar` | **ARCHIVE** | No `src/Aer.Sidecar` project exists in this tree at HEAD (confirmed by search) — only an optional prebuilt-binary copy step in `Aer.Daemon.csproj`. Remote dispatch is closed, orchestrator-only (§10); this has no resurrection case left to gesture at. |
+| `Aer.Sidecar` | **ARCHIVE** | `src/Aer.Sidecar/` (a tracked Go module) and `Aer.Daemon.csproj`'s optional binary copy step both go. Remote dispatch is closed, orchestrator-only (§10); no resurrection case remains. (An earlier draft claimed the project was absent from the tree; corrected — it exists and is archived deliberately.) |
 | `Aer.Workers.Dialogue` | **ARCHIVE** | Vendor-neutral multi-model machinery that served the retired interactive/chat product; no harness-facing use case survives this reset. |
 | `Aer.Flow.CrashTestHost`, `Aer.Architecture.Tests`, `Aer.Journeys.Tests`, `Aer.Plan.Tests` | **KEEP infra, rewrite content** | The gate mechanisms stay; the journeys content needs a near-total rewrite against harness-facing promises — out of scope for this document. |
 | `docs/design/*` | **DELETE** | Per §11 — not archived, deleted. Its methodology (settle definition before screens) is worth reusing as a technique; its content does not survive and there is nowhere left for it to live. |
