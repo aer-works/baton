@@ -52,7 +52,8 @@ public record RoomDirectoryRequest(string DirectoryPath);
 /// passes). No HTTP client-mode branch, no WebSocket listening, no ViewModel: this is exactly the
 /// surface <c>Aer.Daemon</c>'s ~35 call sites actually exercise. <c>Aer.Ui.Core.RoomClient</c> and
 /// its <c>Connection</c>/<c>Fleet</c>/<c>Sessions</c>/<c>Remote</c>/<c>Permissions</c>/<c>TurnHost</c>
-/// siblings are untouched by this extraction — they keep serving <c>Aer.Ui</c> until #1396 retires it.
+/// siblings were untouched by that extraction and were deleted with the rest of <c>Aer.Ui.Core</c>
+/// (#1412 Part 2) rather than carried forward.
 /// </summary>
 public sealed class RoomClient
 {

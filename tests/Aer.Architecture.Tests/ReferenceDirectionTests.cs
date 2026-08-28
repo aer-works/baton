@@ -27,18 +27,8 @@ public class ReferenceDirectionTests
     public void Aer_Flow_depends_on_nothing_above_the_engine()
         => AssertNoForbiddenReferences(
             project: "Aer.Flow",
-            forbiddenProjects: ["Aer.Adapters", "Aer.Ui", "Aer.Ui.Core", "Aer.Daemon", "Aer.Cli"],
+            forbiddenProjects: ["Aer.Adapters", "Aer.Daemon", "Aer.Cli"],
             forbiddenPackagePrefixes: ["Avalonia", "Microsoft.AspNetCore"]);
-
-    // Aer.Ui.Core is the Avalonia-free, remote-ready MVVM seam (M19). A reference to Aer.Ui (the
-    // Avalonia app) or to Avalonia itself collapses the seam the multi-task/remote work rides on —
-    // the whole point of the split is that a client's view models carry no toolkit.
-    [Fact]
-    public void Aer_Ui_Core_stays_toolkit_and_daemon_free()
-        => AssertNoForbiddenReferences(
-            project: "Aer.Ui.Core",
-            forbiddenProjects: ["Aer.Ui", "Aer.Daemon"],
-            forbiddenPackagePrefixes: ["Avalonia"]);
 
     // Adapter isolation (CLAUDE.md rule 2): vendor quirks live in Aer.Adapters, which depends only
     // downward on the engine — never up into a client or the daemon.
@@ -46,20 +36,8 @@ public class ReferenceDirectionTests
     public void Aer_Adapters_does_not_depend_on_clients_or_the_daemon()
         => AssertNoForbiddenReferences(
             project: "Aer.Adapters",
-            forbiddenProjects: ["Aer.Ui", "Aer.Ui.Core", "Aer.Daemon", "Aer.Cli"],
+            forbiddenProjects: ["Aer.Daemon", "Aer.Cli"],
             forbiddenPackagePrefixes: []);
-
-    // A guard that reads an empty reference set passes vacuously — the exact stale-and-unchecked
-    // failure this milestone exists to kill (a csproj-schema change that broke parsing would silently
-    // disarm every assertion above). Anchor on a reference known to exist so that failure is loud.
-    [Fact]
-    public void The_reference_reader_is_not_silently_returning_nothing()
-    {
-        var (projectRefs, packageRefs) = ReadReferences("Aer.Ui.Core");
-
-        Assert.Contains("Aer.Flow", projectRefs);
-        Assert.Contains("CommunityToolkit.Mvvm", packageRefs);
-    }
 
     // #543: ClaudeWorkerAdapter.BuildSettingsJson writes the mandatory PreToolUse hook's command as
     // Aer.Cli.dll's own path next to AppContext.BaseDirectory — silently wrong (a dangling command,

@@ -589,7 +589,8 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// version of this method named <c>Aer.Cli.exe</c>/<c>Aer.Cli</c> directly, resolved via
     /// <see cref="AppContext.BaseDirectory"/>. That works for a raw build output (confirmed for both
     /// `Aer.Cli.exe` standalone and `Aer.Daemon.exe`, which references `Aer.Cli` through
-    /// `Aer.Ui.Core` and so carries a copy in its own output directory) but is wrong for `aer`'s
+    /// `Aer.RoomSession` (#1412 rerouted this path; it originally ran through `Aer.Ui.Core`) and so
+    /// carries a copy in its own output directory) but is wrong for `aer`'s
     /// other real, exercised deployment shape: <c>Aer.Cli.csproj</c> sets <c>PackAsTool</c>, and a
     /// packed global tool's <c>DotnetToolSettings.xml</c> runs <c>Aer.Cli.dll</c> via the <c>dotnet</c>
     /// muxer with **no apphost at all** (confirmed by packing the tool and inspecting the nupkg) --

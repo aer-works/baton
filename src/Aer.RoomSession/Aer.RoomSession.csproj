@@ -3,8 +3,8 @@
   <!-- Issue #1412 Part 1: broke Aer.Daemon's dependency on Aer.Ui.Core (and its Avalonia/
        CommunityToolkit.Mvvm-adjacent surface) by lifting the room read-model (RoomProjection and
        everything it projects from) plus the minimal room-mutation orchestration Aer.Daemon actually
-       exercises into this project. Not UI-specific, not daemon-specific: Aer.Ui.Core still
-       references this project for the same types (Aer.Ui is not touched by this issue). -->
+       exercises into this project. Not UI-specific, not daemon-specific: Aer.Ui.Core referenced this
+       project for the same types until Aer.Ui.Core itself was deleted (#1412 Part 2). -->
   <ItemGroup>
     <ProjectReference Include="..\Aer.Flow\Aer.Flow.csproj" />
     <ProjectReference Include="..\Aer.Cli\Aer.Cli.csproj" />

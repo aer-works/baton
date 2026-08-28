@@ -83,10 +83,9 @@ public static class ArtifactLineageProjector
             // recorded once, on IsStreamLogFileName; this is the chokepoint that applies it.
             //
             // Filtered HERE rather than per-view because this list feeds every surface at once: the
-            // desktop chips and Files section, the wire (and so the phone's card preview), the
-            // Details lineage panel, and HomeViewModel's latest-artifact fallback. It is also, as of
-            // #1345, the ONLY place an execution output directory is enumerated — which is what
-            // makes one filter sufficient, and what a second enumerator would quietly undo.
+            // wire and the Details lineage panel. It is also, as of #1345, the ONLY place an
+            // execution output directory is enumerated — which is what makes one filter sufficient,
+            // and what a second enumerator would quietly undo.
             var outputFiles = Directory.Exists(outputDirectory)
                 ? Directory.GetFiles(outputDirectory)
                     .Select(Path.GetFileName)

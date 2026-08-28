@@ -7,12 +7,6 @@
     it must run in default CI (`pixi run test`) so a forbidden dependency fails the build the moment
     it is added. Mostly pure file reading over the repo, and no network — so it runs identically on
     every CI platform, the same shape as Aer.Plan.Tests.
-
-    The one project reference is Aer.DesignTokens, the #345 token generator, so the drift gate can
-    regenerate in memory and compare against the checked-in artifacts. Sharing the generator rather
-    than reimplementing the comparison is the whole point: a gate with its own idea of correct output
-    would drift from the generator and pass while the artifacts were wrong. The tool is pure managed
-    code with no package or native dependencies, so the cross-platform property above still holds.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -30,7 +24,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\tools\Aer.DesignTokens\Aer.DesignTokens.csproj" />
     <!--
       #504's staleness check reuses the probe suite's own version comparison rather than
       reimplementing it, for the same reason the token gate reuses the generator above: a second

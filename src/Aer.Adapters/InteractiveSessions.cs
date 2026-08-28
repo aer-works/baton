@@ -361,10 +361,11 @@ public static class InteractiveSessionMaterializer
                     Inputs: [],
                     Outputs: [],
                     DependsOn: [],
-                    // SessionTurnStubAdapter.ExhaustionSentinel's two-call classifier design
-                    // (tests/Aer.Ui.Tests/TestSupport) assumes exactly one pump attempt per chat
-                    // turn -- raising this MaxAttempts changes which consultation is "call #2"
-                    // there; read its remarks before touching this (#1180 review).
+                    // SessionTurnStubAdapter.ExhaustionSentinel's two-call classifier design (formerly
+                    // tests/Aer.Ui.Tests/TestSupport, deleted #1412) assumed exactly one pump attempt
+                    // per chat turn -- raising this MaxAttempts would have changed which consultation
+                    // was "call #2" there (#1180 review); no surviving test enforces that constraint,
+                    // so a future MaxAttempts change here has nothing pinning it.
                     RetryPolicy: new RetryPolicy(1)),
                 new WorkflowStepDefinition(
                     StepId: new StepId(AnchorStepId),

@@ -6,9 +6,9 @@ namespace Aer.Flow.Concurrency;
 /// The rationale (why in-memory, why the numbers are a guess, why a restart dropping the queue is
 /// correct) lives in decisions/0020's 2026-08-16 amendment, not restated here.
 /// <para>
-/// Desktop and the daemon share this type's static state because desktop hosts the daemon
-/// in-process (<c>Aer.Ui</c> references <c>Aer.Daemon</c> directly) — the same reason
-/// <see cref="ConcurrencyGuard.IsHeld"/> is safe for both to probe.
+/// This type's state is process-static rather than per-instance because, until #1412 archived it,
+/// desktop hosted the daemon in-process (<c>Aer.Ui</c> referenced <c>Aer.Daemon</c> directly) and
+/// needed to share it — the same reason <see cref="ConcurrencyGuard.IsHeld"/> is safe to probe.
 /// </para>
 /// </summary>
 public static class ConcurrencySlotGate
@@ -60,7 +60,7 @@ public static class ConcurrencySlotGate
         public required TaskCompletionSource Tcs { get; init; }
     }
 
-    /// <summary>True while <paramref name="directoryPath"/> sits FIFO-queued behind the cap — the input Aer.Ui.Core's <c>RoomCardStatus.WaitingToStart</c>/<c>DeriveStatus</c> needs (this project does not reference Aer.Ui.Core, hence plain text here rather than a cref).</summary>
+    /// <summary>True while <paramref name="directoryPath"/> sits FIFO-queued behind the cap — the input Aer.RoomSession's <c>RoomCardViewModel.DeriveStatus</c> needs to derive <c>RoomCardStatus.WaitingToStart</c> (this project does not reference Aer.RoomSession, hence plain text here rather than a cref).</summary>
     public static bool IsWaiting(string directoryPath)
     {
         lock (Lock)
