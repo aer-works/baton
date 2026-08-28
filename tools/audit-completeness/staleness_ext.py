@@ -18,7 +18,7 @@ WHAT THIS CHECKS
 1. An OPEN issue's body cites a now-CLOSED issue with language that reads as "still blocking /
    unresolved" (`STALENESS_PHRASES`, the same list STEP 4 uses, applied here to GitHub issue bodies
    instead of repo docs).
-2. A repo doc/script claims a task is "not wired into CI" while `ci.yml` (or `mobile.yml`) actually
+2. A repo doc/script claims a task is "not wired into CI" while `ci.yml` actually
    invokes it directly (`pixi run <task>`).
 
 WHAT THIS DELIBERATELY DOES NOT CHECK
@@ -245,9 +245,9 @@ def main() -> int:
           "prior-art references, not live blockers. A human decides which, per #636.")
 
     print()
-    print("-- CI-wiring claims contradicted by ci.yml/mobile.yml --")
+    print("-- CI-wiring claims contradicted by ci.yml --")
     pixi_tasks = pixi_task_names()
-    ci_yml_text = read(".github/workflows/ci.yml") + read(".github/workflows/mobile.yml")
+    ci_yml_text = read(".github/workflows/ci.yml")
     files = _repo_files(CI_CLAIM_SCAN_DIRS)
     ci_findings = ci_wiring_claim_faults(pixi_tasks, ci_yml_text, files)
     if not ci_findings:

@@ -1362,7 +1362,7 @@ def _recordonce_discriminates():
              "[0003](0003-templates-collapse-to-three-shapes.md).")},
          False),
         ("a regenerated banner in two generated files",
-         {"src/Aer.Ui.Core/Generated.cs": [banner], "src/Aer.Mobile/lib/tokens.dart": [banner]}, False),
+         {"src/Aer.Ui.Core/Generated.cs": [banner], "src/Aer.Ui/Theme/Tokens.axaml.cs": [banner]}, False),
         ("the same command block fenced in two runbooks",
          {"docs/runbooks/a.md": [fenced], "docs/runbooks/b.md": [fenced]}, False),
         # A file with no extension is still a file with comments, and the per-language table read it

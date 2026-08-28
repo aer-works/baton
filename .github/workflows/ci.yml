@@ -6,8 +6,8 @@ on:
     branches: [main]
 
 jobs:
-  # Detects which areas a PR touched, so the heavy jobs below can skip when irrelevant (a .NET-only
-  # PR shouldn't wait ~9 min for the Android APK, and a Dart-only PR shouldn't run the .NET legs).
+  # Detects which areas a PR touched, so the heavy jobs below can skip when irrelevant (a
+  # sidecar-only PR shouldn't run the .NET legs, and vice versa).
   # pull_request ONLY: paths-filter uses the API there (no checkout needed), but on push it shells
   # out to `git` and dies without a checkout (#410). On push the heavy jobs ignore this job entirely
   # -- their `!cancelled()` if: runs them unconditionally, so main is always validated in full. (A

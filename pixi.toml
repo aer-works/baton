@@ -46,7 +46,7 @@ fmt-check-sidecar = { cmd = "test -z \"$(gofmt -l .)\"", cwd = "src/Aer.Sidecar"
 # instead of the whole-lane level. The wrapper's docstring owns the mechanism (OS-released region
 # lock, nesting marker, loud timeout); its selftest is gated (buildlock-selftest below). `dotnet
 # run` tasks count as MSBuild owners too (implicit build) -- `tokens` and `vendor-check` are
-# wrapped for that reason. Not wrapped: the Go/cargo/flutter tasks (not MSBuild, and each worktree
+# wrapped for that reason. Not wrapped: the Go/cargo tasks (not MSBuild, and each worktree
 # owns its output dir), `dotnet tool restore`/`dotnet reportgenerator`/`dotnet tool install` legs
 # (tool-manifest and standalone-tool commands, not MSBuild), the LIVE smoke-*/vendor-probe tasks
 # (human-run, never concurrent with a lane by construction), and

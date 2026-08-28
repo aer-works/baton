@@ -261,8 +261,9 @@ namespace Aer.Daemon
 
             // M21 Phase 5 (#242): the Go tsnet sidecar, spawned only in --remote mode. This is
             // additive on top of the existing plain-LAN Kestrel bind above, not a replacement for
-            // it -- the tsnet path is not yet proven live (no cross-network run has exercised it,
-            // see docs/runbooks/tailscale-cross-network-proof.md), so Kestrel keeps listening on
+            // it -- the tsnet path is not yet proven live (no cross-network run has exercised it;
+            // the manual proof runbook depended on Aer.Mobile and was retired with it, #1407), so
+            // Kestrel keeps listening on
             // IPAddress.Any exactly as it did before. Retiring that proven path in favor of an
             // unproven one in the same change would be a regression, not a hardening step -- Phase
             // 6's loopback-only rebind is deliberately deferred until the sidecar path has an
