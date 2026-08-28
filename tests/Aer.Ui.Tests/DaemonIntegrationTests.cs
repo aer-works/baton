@@ -704,7 +704,7 @@ public class DaemonIntegrationTests : IAsyncLifetime
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: TestContext.Current.CancellationToken);
         var hasTemplates = body.TryGetProperty("templates", out var templates) || body.TryGetProperty("Templates", out templates);
         Assert.True(hasTemplates);
-        Assert.Equal(5, templates.GetArrayLength());
+        Assert.Equal(4, templates.GetArrayLength());
 
         var hasVendors = body.TryGetProperty("availableVendors", out var vendors) || body.TryGetProperty("AvailableVendors", out vendors);
         Assert.True(hasVendors);
