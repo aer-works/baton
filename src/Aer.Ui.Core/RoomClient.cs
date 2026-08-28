@@ -13,6 +13,7 @@ using Aer.Flow;
 using Aer.Flow.Concurrency;
 using Aer.Flow.Domain;
 using Aer.Flow.Mutation;
+using Aer.RoomSession;
 
 namespace Aer.Ui.Core;
 

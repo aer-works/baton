@@ -3,6 +3,7 @@ using Aer.Flow.Dispatch;
 using Aer.Flow.Domain;
 using Aer.Flow.Outcomes;
 using Aer.Flow.Projection;
+using Aer.RoomSession;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 

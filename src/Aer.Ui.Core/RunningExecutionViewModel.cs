@@ -1,4 +1,5 @@
 using Aer.Flow.Domain;
+using Aer.RoomSession;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 

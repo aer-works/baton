@@ -175,7 +175,7 @@ public static class RoomCardViewModel
 /// for any step lacking a pause point, so a pause persisted before the kind existed keeps the
 /// approval-gate meaning every pause historically carried.
 /// </summary>
-internal static class PauseKind
+public static class PauseKind
 {
     public static PausePointKind ForStep(RoomProjection projection, StepId stepId)
         => projection.Snapshot.Steps.FirstOrDefault(step => step.StepId == stepId)?.PausePoint?.Kind

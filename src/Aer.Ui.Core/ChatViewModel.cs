@@ -3,6 +3,7 @@ using System.Linq;
 using Aer.Adapters;
 using Aer.Flow.Domain;
 using Aer.Flow.Projection;
+using Aer.RoomSession;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 

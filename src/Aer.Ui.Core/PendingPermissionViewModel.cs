@@ -1,5 +1,6 @@
 using Aer.Adapters;
 using Aer.Flow.Projection;
+using Aer.RoomSession;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
