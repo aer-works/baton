@@ -8,8 +8,8 @@ namespace Aer.Adapters;
 /// Deterministic worker adapter that executes a declared command without shell interpretation
 /// (Architecture Rule 1: the argv comes from structured workflow config, never from AI output, and
 /// no shell ever parses it). The argv rides in <see cref="WorkerInvocation.PromptTemplate"/> as a
-/// JSON string array — the same field <see cref="DialogueWorkerAdapter"/> and
-/// <see cref="CaptureWorkerAdapter"/> already repurpose for non-prose per-step data. A bare
+/// JSON string array — the same field <see cref="CaptureWorkerAdapter"/> already repurposes for
+/// non-prose per-step data. A bare
 /// non-array value is treated as a single-element argv (just the executable).
 /// <para>
 /// <b>Stdout becomes the FIRST declared output</b> in <see cref="WorkerContract.ProducedOutputs"/>

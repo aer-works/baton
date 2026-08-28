@@ -12,7 +12,7 @@ public sealed record VendorCliStatus(string AdapterName, string BinaryName, bool
 /// </summary>
 public static class VendorCliPresence
 {
-    /// <summary>The vendor CLIs the default registry's adapters shell out to. The <c>"dialogue"</c> adapter has no binary of its own — its participants use these same two vendors.</summary>
+    /// <summary>The vendor CLIs the default registry's adapters shell out to.</summary>
     private static readonly IReadOnlyList<(string AdapterName, string BinaryName)> KnownBinaries =
     [
         ("claude", "claude"),

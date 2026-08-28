@@ -5,10 +5,10 @@ namespace Aer.Mcp.Host;
 
 /// <summary>
 /// The <c>yield</c> tool (#585, decision 0035): a participant calls this when it believes a
-/// dialogue exchange should end. <c>DialogueRunner</c>'s old text-sentinel match
-/// (<c>TryStripStopSentinel</c>) has been deleted in favor of this — see
-/// <c>Aer.Workers.Dialogue.DialogueYieldWiring</c> for how each participant's vendor CLI is wired to
-/// its own instance of this tool's host. Composed into a runnable server here, in the
+/// multi-turn exchange should end. The dialogue worker's old text-sentinel match
+/// (<c>DialogueRunner.TryStripStopSentinel</c>) was deleted in favor of this before that worker was
+/// itself archived (#1408); its <c>DialogueYieldWiring</c> was the wiring that spawned one instance
+/// of this tool's host per participant. Composed into a runnable server here, in the
 /// composition-root project — <see cref="Aer.Mcp.McpServerHost"/> itself has no idea this tool
 /// exists, per that class's own remarks.
 /// <para>
@@ -46,7 +46,7 @@ public sealed class YieldTool(string captureFilePath) : IMcpTool
         {
             // "Captures exactly one call" is enforced here, not just documented: a second tools/call
             // for 'yield' in the same turn must not silently replace the first participant's recorded
-            // outcome with a later one DialogueRunner never asked for.
+            // outcome with a later one the caller never asked for.
             return new McpToolCallResult("yield was already called once for this turn.", IsError: true);
         }
 
@@ -69,8 +69,8 @@ public sealed class YieldTool(string captureFilePath) : IMcpTool
         var captured = new YieldCapture(outcome, note);
         var json = JsonSerializer.Serialize(captured);
 
-        // Written to a temp file then moved into place so a reader (DialogueRunner, polling for this
-        // file after the turn's process exits) never observes a partially written file.
+        // Written to a temp file then moved into place so a reader (polling for this file after the
+        // turn's process exits) never observes a partially written file.
         var tempPath = $"{captureFilePath}.{Guid.NewGuid():N}.tmp";
         File.WriteAllText(tempPath, json);
         File.Move(tempPath, captureFilePath, overwrite: true);
@@ -79,5 +79,5 @@ public sealed class YieldTool(string captureFilePath) : IMcpTool
     }
 }
 
-/// <summary>The structured shape <see cref="YieldTool"/> writes to its capture file, read back by <c>DialogueRunner</c>.</summary>
+/// <summary>The structured shape <see cref="YieldTool"/> writes to its capture file, read back by its caller.</summary>
 public sealed record YieldCapture(string Outcome, string? Note);

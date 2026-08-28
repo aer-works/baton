@@ -357,8 +357,8 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         // #801: agy has no per-invocation flag equivalent to claude's --mcp-config (decision 0035),
         // so a real workspace directory carrying .agents/mcp_config.json has to exist on disk for
-        // --add-dir to point at, same as DialogueYieldWiring's agy branch. Opt-in only, so a
-        // dispatch that does not ask for it keeps today's exact argv.
+        // --add-dir to point at. Opt-in only, so a dispatch that does not ask for it keeps today's
+        // exact argv.
         //
         // #445 rides the same lever. agy has no `--permission-prompt-tool` and its PreToolUse hook is
         // exit-0/2 only, so there is no band for the CLI itself to route to a human -- on this vendor
@@ -446,8 +446,9 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         // agy home redirect (#442): non-shell bindings get HOME and USERPROFILE redirected to an
         // AER-owned state directory. Shell-granted workers (grant.RunShellCommands == true) are
         // deliberately NOT redirected so worker git commit can see the user's .gitconfig. Dispatch
-        // path ONLY, deliberately absent from BuildGate -- ADR 0050 records why the gate's one
-        // consumer (the dialogue worker) cannot carry it; that remainder lives on #1019.
+        // path ONLY, deliberately absent from BuildGate -- ADR 0050 records why BuildGate's own
+        // caller (the now-retired dialogue worker, #1408) could not carry it; that remainder lives
+        // on #1019.
         string? agyHome = null;
         if (invocation.PermissionGrant is { RunShellCommands: false })
         {

@@ -5,10 +5,8 @@ docs/agents/invoking-baton.md
 docs/agents/issue-tracker.md
 docs/agents/triage-labels.md
 docs/dispatch.md
-docs/runbooks/aer-yield-mcp-wiring.md
 docs/runbooks/claude-shared-config-root.md
 docs/runbooks/live-claude-smoke.md
-docs/runbooks/live-dialogue-smoke.md
 docs/runbooks/live-mixed-vendor-smoke.md
 docs/runbooks/live-session-smoke.md
 docs/runbooks/sep-1036-url-elicitation.md
@@ -24,7 +22,6 @@ src/Aer.Daemon/CHANGELOG.md
 src/Aer.Flow/CHANGELOG.md
 src/Aer.Ui.Core/CHANGELOG.md
 src/Aer.Ui/CHANGELOG.md
-src/Aer.Workers.Dialogue/CHANGELOG.md
 tools/aer-agy-loop/README.md
 tools/aer-agy-loop/janitor-prompt.md
 tools/ui-harness/README.md

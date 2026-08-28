@@ -28,8 +28,8 @@ namespace Aer.Flow.Dispatch;
 /// expands it the same way before durably writing it to <c>{outputDirectory}/prompt.txt</c>
 /// (<see cref="ArtifactManager.PromptFileName"/>), so this record still carries no execution-specific
 /// resolved path, matching every other field here. <see langword="null"/> means this adapter has
-/// nothing worth capturing this way — <c>DialogueWorkerAdapter</c> leaves this null since its own
-/// worker process already durably records each turn's prompt in <c>transcript.jsonl</c>. Archival
+/// nothing worth capturing this way — <c>CommandWorkerAdapter</c> leaves this null since its
+/// declared argv carries no prose prompt to capture. Archival
 /// capture only, for UI/audit display (CLAUDE.md Architecture Rule 1) — never read back by Flow to
 /// make a routing decision.
 /// </param>
@@ -711,13 +711,11 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         // cannot be honest without the environment in hand at guard time.
         var childEnvironment = AssembleChildEnvironment(request, target);
 
-        // Issue #292: durably capture the resolved prompt an ordinary (non-dialogue) step's worker
-        // was actually invoked with — the same UI/audit transparency a dialogue step's transcript.jsonl
-        // already gives its per-turn prompts (CLAUDE.md Architecture Rule 1: archival capture for UI
-        // display, never read back to make a routing decision). Written before AerTask ever spawns
-        // (below), so it is present even if the execution later fails or times out. Null PromptText
-        // (DialogueWorkerAdapter; a future adapter with nothing to capture) is a deliberate no-op, not
-        // a missing-data condition.
+        // Issue #292: durably capture the resolved prompt a step's worker was actually invoked with
+        // (CLAUDE.md Architecture Rule 1: archival capture for UI display, never read back to make a
+        // routing decision). Written before AerTask ever spawns (below), so it is present even if
+        // the execution later fails or times out. Null PromptText (an adapter with nothing to
+        // capture) is a deliberate no-op, not a missing-data condition.
         if (target.PromptText is { } promptText && pathVariables.TryGetValue("AER_OUTPUT_DIR", out var outputDirectory))
         {
             var promptFilePath = Path.Combine(outputDirectory, ArtifactManager.PromptFileName);
@@ -805,7 +803,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         }
 
         // Unconditional since #563. This used to be gated on `target.OnStdoutLine is not null`, i.e.
-        // the dialogue/chat path only, which meant an ordinary `aer run` never captured — and
+        // the live-streaming path only, which meant an ordinary `aer run` never captured — and
         // aer-core's no-sink drain runs `io::copy(&mut reader, &mut io::sink())` (os/mod.rs:121), so
         // every byte the worker wrote explaining its own failure was read and thrown away.
         //

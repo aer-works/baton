@@ -936,14 +936,6 @@ Scoped precisely: this settles that **flag**. Whether `claude` applies an intern
 under some other name, or none at all, is still unmeasured — nothing here establishes an absence of
 timeouts in general.
 
-**The fix covers adapter-dispatched workers only — a dialogue participant is still exposed (`#609`).**
-`Aer.Workers.Dialogue` spawns its vendor CLIs from `DialogueParticipant.Command`/`Args`, an
-operator-authored literal argument list that the worker deliberately does no flag-shaping on. There is
-no timeout anywhere in that config to derive a value from, so `#588`'s fix cannot reach it and does
-not try. **If you configure an `agy` dialogue participant for turns that may run past five minutes,
-put `--print-timeout` in its `Args` yourself** — otherwise that turn hits agy's default, returns
-empty on a clean exit 0, and is recorded as a turn the model simply had nothing to say for.
-
 ## `--remote-control` — not yet characterised
 
 Present in the binary and undocumented publicly. Static reading only: it flips a **persisted** setting

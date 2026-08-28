@@ -27,8 +27,8 @@ public static class WorkerBindingResolver
     /// <param name="bindingsFileDirectory">
     /// The directory <paramref name="config"/> was loaded from, if known (M23 Phase 3, #272) —
     /// forwarded verbatim into every resolved <see cref="WorkerInvocation.BindingsFileDirectory"/>.
-    /// Only <see cref="DialogueWorkerAdapter"/> uses it (to resolve its config sidecar's path
-    /// portably); every other adapter ignores it.
+    /// No shipped adapter currently reads it — the one that did (a config-sidecar path resolver) was
+    /// retired with the dialogue worker (#1408) — every adapter today ignores it.
     /// </param>
     /// <param name="onWorkerStdoutLine">
     /// M24 Phase 1's live in-turn streaming seam: when supplied, every resolved

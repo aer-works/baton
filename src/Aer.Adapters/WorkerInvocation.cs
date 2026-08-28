@@ -56,11 +56,11 @@ namespace Aer.Adapters;
 /// <param name="BindingsFileDirectory">
 /// The directory the worker-bindings config file this invocation was resolved from lives in, if
 /// known (M23 Phase 3, #272) — plain context, not an instruction: most adapters ignore it entirely
-/// (<paramref name="PromptTemplate"/> is prose to them). <see cref="DialogueWorkerAdapter"/> is the
-/// one adapter that repurposes <paramref name="PromptTemplate"/> as a file path (its config
-/// sidecar's), so it alone resolves a non-rooted <paramref name="PromptTemplate"/> against this
-/// directory — the fix for the sidecar-path portability bug a bindings file copied to a new machine
-/// (or a different directory on the same one) otherwise hits.
+/// (<paramref name="PromptTemplate"/> is prose to them). No shipped adapter currently repurposes
+/// <paramref name="PromptTemplate"/> as a file path to resolve against this directory — the adapter
+/// that once did was retired with the dialogue worker (#1408) — but the field stays available for a
+/// future adapter that needs the same sidecar-path portability fix (a bindings file copied to a new
+/// machine, or a different directory on the same one).
 /// </param>
 /// <param name="SessionId">
 /// The native vendor session identifier or session Guid for interactive sessions (M24 Phase 1).

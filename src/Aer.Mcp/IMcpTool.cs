@@ -5,8 +5,8 @@ namespace Aer.Mcp;
 /// <summary>
 /// One tool a <see cref="McpServerHost"/> exposes over the Model Context Protocol (#585). Deliberately
 /// the only extension point this library defines — the host (this project) never names a concrete
-/// tool; composing a specific tool (e.g. dialogue's <c>yield</c>) into a runnable server is a
-/// composition root's job, kept out of here so the host stays reusable for whatever MCP tool AER
+/// tool; composing a specific tool (e.g. <c>yield</c>, in <c>Aer.Mcp.Host</c>) into a runnable server
+/// is a composition root's job, kept out of here so the host stays reusable for whatever MCP tool AER
 /// builds next (0029's own eventual blocking <c>tools/call</c> mechanism is the next known consumer).
 /// </summary>
 public interface IMcpTool

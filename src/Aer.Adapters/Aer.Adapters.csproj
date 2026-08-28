@@ -2,13 +2,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Aer.Flow\Aer.Flow.csproj" />
-    <!-- M17 Phase 4 (#167): DialogueWorkerAdapter locates and spawns the Aer.Workers.Dialogue
-         executable via `dotnet exec <dll>`, not a vendor CLI on PATH; this reference exists purely
-         so MSBuild copies its build output next to every consumer of this project (Aer.Cli, Aer.Ui,
-         their test hosts), and so `dotnet pack`'s Aer.Cli nupkg (M13) bundles it for free. It carries
-         no other coupling: Aer.Workers.Dialogue still references neither Aer.Flow nor Aer.Adapters
-         (M17 Phase 2's decision of record), so this edge is one-directional. -->
-    <ProjectReference Include="..\Aer.Workers.Dialogue\Aer.Workers.Dialogue.csproj" />
 
     <!-- #667: AtomicLaunchConfigWriter is internal and had no direct tests, so its drift-correction
          behaviour could only be reached through ClaudeWorkerAdapter.Resolve. That meant a test had

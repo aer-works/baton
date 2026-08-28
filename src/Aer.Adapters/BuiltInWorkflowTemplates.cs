@@ -1,8 +1,6 @@
-using System.Text.Json;
 using System.Text.Json.Serialization;
 using Aer.Flow.Domain;
 using Aer.Flow.Templates;
-using Aer.Workers.Dialogue;
 
 namespace Aer.Adapters;
 
@@ -52,12 +50,6 @@ public static class BuiltInWorkflowTemplates
         Description: "Interactive AI agent session bound to a project directory with conservative file/command permissions.",
         RequiresSecondaryVendor: false);
 
-    public static readonly BuiltInTemplateInfo TwoVendorDialogue = new(
-        Id: "two-vendor-dialogue",
-        Title: "Two-Vendor Dialogue",
-        Description: "Multi-vendor dialogue exchange between Claude and agy with turn-by-turn context synthesis.",
-        RequiresSecondaryVendor: true);
-
     public static readonly BuiltInTemplateInfo SoloRun = new(
         Id: "solo-run",
         Title: "Solo Run (Advanced)",
@@ -75,7 +67,7 @@ public static class BuiltInWorkflowTemplates
     // desktop and mobile start pickers, and putting roles in front of a person is a UI-arc
     // decision, not a #887-stage-1 side effect. They are exported to machine consumers via
     // GetRoleTemplates() below.
-    public static IReadOnlyList<BuiltInTemplateInfo> Catalog { get; } = [ChatSession, CodebaseSession, TwoVendorDialogue, SoloRun, ReviewRun];
+    public static IReadOnlyList<BuiltInTemplateInfo> Catalog { get; } = [ChatSession, CodebaseSession, SoloRun, ReviewRun];
 
     public static IReadOnlyDictionary<string, RoleTemplateExport> GetRoleTemplates()
     {
@@ -130,69 +122,6 @@ public static class BuiltInWorkflowTemplates
                 adapter: normalizedPrimary,
                 initialMessage: customPrompt);
             return (def, bindings);
-        }
-
-        if (string.Equals(templateId, TwoVendorDialogue.Id, StringComparison.OrdinalIgnoreCase))
-        {
-            // M23 Phase 1's real N-party dialogue worker (Aer.Workers.Dialogue), not a hand-rolled
-            // draft/review DAG: a two-vendor dialogue is a single bounded exchange the worker itself
-            // round-robins through DialogueWorkerConfig.Participants, so this is one step, one
-            // binding, dispatched through the "dialogue" adapter -- exactly the shape
-            // NewWorkflowViewModel's guided authoring already produces (Aer.Ui.Core/NewWorkflowViewModel.cs).
-            const string finalOutputName = "transcript.md";
-
-            var dialogueConfig = new DialogueWorkerConfig(
-                SeedPrompt: string.IsNullOrWhiteSpace(customPrompt) ? "Discuss the topic thoroughly, considering multiple angles." : customPrompt,
-                TurnBudget: 6,
-                FinalOutputName: finalOutputName,
-                Participants:
-                [
-                    DialogueParticipantPresets.For(
-                        normalizedPrimary,
-                        "initiator",
-                        string.IsNullOrWhiteSpace(customPrompt) ? "You are the initiator of this dialogue. Open with your position and respond to the other side's points." : customPrompt,
-                        model: null),
-                    DialogueParticipantPresets.For(
-                        normalizedSecondary,
-                        "responder",
-                        string.IsNullOrWhiteSpace(secondaryCustomPrompt) ? "You are the responder in this dialogue. Engage constructively with the initiator's points." : secondaryCustomPrompt,
-                        model: null),
-                ]);
-
-            var sidecarDirectory = string.IsNullOrWhiteSpace(roomDirectoryPath) ? Path.GetTempPath() : roomDirectoryPath;
-            Directory.CreateDirectory(sidecarDirectory);
-            var sidecarPath = Path.Combine(sidecarDirectory, "dialogue-config.json");
-            File.WriteAllText(sidecarPath, JsonSerializer.Serialize(dialogueConfig, new JsonSerializerOptions { WriteIndented = true }));
-
-            var definition = new WorkflowDefinition(
-                WorkflowTemplateId: new WorkflowTemplateId("two-vendor-dialogue-template"),
-                WorkflowTemplateVersion: 1,
-                Steps:
-                [
-                    new WorkflowStepDefinition(
-                        StepId: new StepId("dialogue"),
-                        Worker: "dialogue-worker",
-                        Inputs: [],
-                        Outputs: [finalOutputName],
-                        DependsOn: [],
-                        RetryPolicy: new RetryPolicy(3),
-                        PausePoint: null)
-                ]);
-
-            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
-            {
-                ["dialogue-worker"] = new WorkerBindingConfigEntry(
-                    Adapter: "dialogue",
-                    Contract: new WorkerContract(
-                        WorkerName: "dialogue-worker",
-                        RequiredInputs: [],
-                        ProducedOutputs: [new ProducedOutput(finalOutputName)],
-                        OptionalMetadata: []),
-                    PromptTemplate: sidecarPath,
-                    Timeout: TimeSpan.FromMinutes(20))
-            };
-
-            return (definition, bindings);
         }
 
         if (string.Equals(templateId, SoloRun.Id, StringComparison.OrdinalIgnoreCase))

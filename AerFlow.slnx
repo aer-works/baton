@@ -8,7 +8,6 @@
     <Project Path="src/Aer.Mcp.Host/Aer.Mcp.Host.csproj" />
     <Project Path="src/Aer.Ui.Core/Aer.Ui.Core.csproj" />
     <Project Path="src/Aer.Ui/Aer.Ui.csproj" />
-    <Project Path="src/Aer.Workers.Dialogue/Aer.Workers.Dialogue.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/Aer.GateProbe/Aer.GateProbe.csproj" />
@@ -24,6 +23,5 @@
     <Project Path="tests/Aer.Mcp.Tests/Aer.Mcp.Tests.csproj" />
     <Project Path="tests/Aer.VendorProbe.Tests/Aer.VendorProbe.Tests.csproj" />
     <Project Path="tests/Aer.Ui.Tests/Aer.Ui.Tests.csproj" />
-    <Project Path="tests/Aer.Workers.Dialogue.Tests/Aer.Workers.Dialogue.Tests.csproj" />
   </Folder>
 </Solution>

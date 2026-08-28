@@ -37,7 +37,7 @@ public sealed record VendorGate(
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Keyed on the same vendor names <c>DialogueParticipantPresets.KnownVendors</c> offers. An
+    /// Keyed on the known vendor names (<c>"claude"</c>, <c>"agy"</c>). An
     /// unknown vendor returning null rather than an empty gate is the fail-closed direction: an empty
     /// <see cref="VendorGate"/> is indistinguishable from a real one that happened to need no
     /// arguments, and would let a caller believe it had installed something.
