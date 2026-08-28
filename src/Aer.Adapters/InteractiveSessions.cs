@@ -276,8 +276,9 @@ public static class InteractiveSessionMaterializer
             // Field by field, NOT record equality. PermissionGrant is a record whose
             // ShellCommandPatterns is a collection, and the compiler-generated Equals uses the
             // member's own equality -- which for a list is REFERENCE equality, so two empty lists
-            // never match and every grant read as `custom`. Caught by
-            // DaemonIntegrationTests.SetSessionMode_ThenGetSessionMode_ReflectsTheChange.
+            // never match and every grant read as `custom`. Originally caught by a session-mode
+            // round-trip test that died with the Ui archive (#1412) -- #1416 restores that
+            // coverage class post-narrowing; until then this comment is the record of the trap.
             if (known.ReadFiles == grant.ReadFiles
                 && known.WriteFiles == grant.WriteFiles
                 && known.RunShellCommands == grant.RunShellCommands

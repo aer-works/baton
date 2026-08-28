@@ -9,14 +9,14 @@ namespace Aer.Flow.Templates;
 /// <see cref="WorkflowDefinitionParser"/>.
 /// <para>
 /// <b>Placement decision of record:</b> the writer lives here, beside its parser in
-/// <c>Aer.Flow.Templates</c>, not inside <c>Aer.Ui</c> — even though UI spec §4 makes template
-/// files a UI-owned write. Round-trip fidelity (save → parse → validate through the exact code
+/// <c>Aer.Flow.Templates</c>, not in a caller's assembly (the desktop app that originally owned
+/// this write is deleted, #1412). Round-trip fidelity (save → parse → validate through the exact code
 /// every other consumer uses) is a domain-layer property, guaranteed by construction only when
 /// serialization and deserialization share the same <see cref="JsonSerializer"/> converters; and
 /// <see cref="SnapshotBinder.PersistAsync"/> already established that file-writing helpers live in
 /// this namespace when what they persist is a domain record. Flow's engine still never writes a
-/// template on any execution path — this type has no caller inside <c>Aer.Flow</c> itself; the UI
-/// (and any future authoring surface) is the caller, exactly as §4 assigns.
+/// template on any execution path — this type has no caller inside <c>Aer.Flow</c> itself; today's
+/// callers are DispatchCommand and the built-in templates (any future authoring surface joins them).
 /// </para>
 /// <para>
 /// Output is indented: a template is a human-editable file (spec §11.1 explicitly contemplates "a

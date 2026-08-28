@@ -8,12 +8,13 @@ namespace Aer.Adapters;
 /// <see cref="WorkerBindingConfigParser"/>.
 /// <para>
 /// <b>Placement decision of record:</b> the writer lives here, beside its parser in
-/// <c>Aer.Adapters</c>, not inside <c>Aer.Ui</c> or <c>Aer.Flow.Templates</c> — the bindings shape
+/// <c>Aer.Adapters</c>, not in a caller's assembly — the bindings shape
 /// (adapter names, <see cref="Aer.Flow.Domain.WorkerContract"/>, prompt/timeout/model/permission
 /// scope) lives entirely in this assembly (Adapter Isolation, the repo's own architecture rule),
 /// exactly mirroring <c>Aer.Flow.Templates.WorkflowDefinitionWriter</c>'s placement reasoning
-/// beside <c>WorkflowDefinitionParser</c> for templates (M16 Phase 1). <c>Aer.Ui</c> is the
-/// writer's only caller, exactly as UI spec §4 assigns.
+/// beside <c>WorkflowDefinitionParser</c> for templates (M16 Phase 1). Originally written for the
+/// desktop authoring surface (deleted, #1412); today's callers are the daemon, DispatchCommand,
+/// RuntimePermissionGrantAmender, and the built-in templates.
 /// </para>
 /// <para>
 /// <b>Validation decision of record:</b> there is no separate <c>WorkerBindingConfigValidator</c> —

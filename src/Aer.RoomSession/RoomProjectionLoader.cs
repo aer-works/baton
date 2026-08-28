@@ -201,7 +201,8 @@ public static class RoomProjectionLoader
         if (!File.Exists(snapshotPath))
         {
             // A materialized interactive session with no initial message never actually runs (a
-            // known quirk, not an error -- see DaemonIntegrationTests' WebSocketSnapshot_* remarks).
+            // known quirk, not an error; the round-trip suite that recorded it died with the Ui
+            // archive -- #1416 restores that coverage class post-narrowing).
             // A DAG room directory with no snapshot yet shouldn't exist by construction, but is
             // represented the same defensive way rather than thrown on.
             // For a room with no journal/snapshot yet, LastActivityAt falls back to created timestamp

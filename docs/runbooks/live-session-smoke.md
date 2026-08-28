@@ -91,9 +91,12 @@ gate.
   from before compact> "/compact ..."` by hand to isolate CLI-vs-engine issues, matching the fresh
   native-session-id `ExecuteSessionTurnAsync`'s handoff branch issues (a brand-new session id, not a
   resume — check `.aer/session.json`'s `CurrentVendorSessionId` before and after).
-- **Everything else**: the daemon HTTP surface itself is proven in CI via `DaemonIntegrationTests`
-  and `SessionTurnBranchingTests` (stub-adapter coverage of the same branching logic) — if those are
-  green but this isn't, the fault is in the live `claude` CLI invocation, not the engine or daemon.
+- **Everything else**: the daemon-side HTTP round-trip suites (`DaemonIntegrationTests`,
+  `SessionTurnBranchingTests`) were deleted with `Aer.Ui.Tests` in the #1412 archive — they hosted
+  daemon coverage in the desktop test project. Until #1416 restores coverage for whatever session
+  surface survives the daemon narrowing, an engine/daemon fault and a live-CLI fault must be
+  separated by hand (unit suites in `Aer.Daemon.Tests` cover the components, not the HTTP round
+  trip).
 
 ## Recording a green run
 
