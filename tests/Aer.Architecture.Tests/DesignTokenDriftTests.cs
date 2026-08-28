@@ -104,7 +104,6 @@ public class DesignTokenDriftTests
         var tokensJson = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.TokensPath));
 
         var avaloniaIcons = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.AvaloniaIconsPath));
-        var flutterMarks = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.FlutterStatusMarkPath));
 
         var marks = TokenGenerator.StatusMarks(tokensJson).ToList();
         Assert.NotEmpty(marks);
@@ -116,13 +115,6 @@ public class DesignTokenDriftTests
                 $"""
                 Status '{status}' names the mark '{mark}', but {TokenGenerator.AvaloniaIconsPath} defines
                 no geometry with the key '{geometryKey}'. Desktop would render that status as a blank space.
-                """);
-
-            Assert.True(
-                flutterMarks.Contains($"case '{mark}':", StringComparison.Ordinal),
-                $"""
-                Status '{status}' names the mark '{mark}', but {TokenGenerator.FlutterStatusMarkPath} has
-                no case for it. Mobile would throw when asked to draw that status.
                 """);
         }
     }
@@ -349,7 +341,6 @@ public class DesignTokenDriftTests
         var repositoryRoot = FindRepositoryRoot();
         var tokensJson = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.TokensPath));
         var avaloniaIcons = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.AvaloniaIconsPath));
-        var flutterMarks = File.ReadAllText(Path.Combine(repositoryRoot, TokenGenerator.FlutterStatusMarkPath));
 
         foreach (var family in TokenGenerator.MeterFamilies)
         {
@@ -370,17 +361,9 @@ public class DesignTokenDriftTests
                     """);
             }
 
-            var markWidget = $"class {pascalFamily}Mark";
-            Assert.True(
-                flutterMarks.Contains(markWidget, StringComparison.Ordinal),
-                $"""
-                design/tokens.json names the '{family}' meter, but {TokenGenerator.FlutterStatusMarkPath}
-                defines no '{markWidget}' widget. Mobile would have nothing to draw it.
-                """);
-
             // Every tier's own fill count must actually fit within the family's step budget -- a
-            // tier claiming more filled steps than the family has would ask both toolkits' repeaters
-            // to fill a position that does not exist.
+            // tier claiming more filled steps than the family has would ask the repeater to fill a
+            // position that does not exist.
             foreach (var (_, _, filled, familyTotalSteps, _) in tiers)
             {
                 Assert.InRange(filled, 1, familyTotalSteps);

@@ -6,8 +6,8 @@ on:
     branches: [main]
 
 jobs:
-  # Detects which areas a PR touched, so the heavy jobs below can skip when irrelevant (a .NET-only
-  # PR shouldn't wait ~9 min for the Android APK, and a Dart-only PR shouldn't run the .NET legs).
+  # Detects which areas a PR touched, so the heavy jobs below can skip when irrelevant (a
+  # sidecar-only PR shouldn't run the .NET legs, and vice versa).
   # pull_request ONLY: paths-filter uses the API there (no checkout needed), but on push it shells
   # out to `git` and dies without a checkout (#410). On push the heavy jobs ignore this job entirely
   # -- their `!cancelled()` if: runs them unconditionally, so main is always validated in full. (A
@@ -21,7 +21,6 @@ jobs:
       pull-requests: read
     outputs:
       dotnet: ${{ steps.filter.outputs.dotnet }}
-      mobile: ${{ steps.filter.outputs.mobile }}
       sidecar: ${{ steps.filter.outputs.sidecar }}
     steps:
       - uses: dorny/paths-filter@v3
@@ -30,7 +29,6 @@ jobs:
           filters: |
             dotnet:
               - 'src/**'
-              - '!src/Aer.Mobile/**'
               - 'tests/**'
               - 'external/**'
               - '.gitmodules'
@@ -41,12 +39,6 @@ jobs:
               - 'pixi.lock'
               - '**/packages.lock.json'
               - '.github/workflows/**'
-            # Deliberately NOT '.github/workflows/**': every job shares ci.yml, so that glob ran
-            # the 9-minute Android build for a one-line edit to an unrelated job (#677). The mobile
-            # steps live in their own file precisely so this filter can name them.
-            mobile:
-              - 'src/Aer.Mobile/**'
-              - '.github/workflows/mobile.yml'
             sidecar:
               - 'src/Aer.Sidecar/**'
 
@@ -75,7 +67,7 @@ jobs:
         # artifact.
         #
         # These leg names are NO LONGER branch-protection required contexts on their own -- the
-        # single `ci` gate job at the bottom of this file is (it aggregates these legs + `mobile`).
+        # single `ci` gate job at the bottom of this file is (it aggregates these legs).
         # That indirection is deliberate: the heavy jobs are path-filtered, so a leg that
         # legitimately skips on a given PR would, if it were still a required context, sit at
         # "Expected" forever and block the PR -- exactly what happened when the macOS leg moved to
@@ -276,19 +268,6 @@ jobs:
         run: pixi run dotnet build-server shutdown
         if: always()
 
-  # M21 Phase 2 (#232): Aer.Mobile is a separate Dart/Flutter toolchain with no dependency on
-  # aer_core or the .NET solution, so it gets its own job rather than joining the matrix above.
-  # ubuntu-latest's GitHub-hosted image ships the Android SDK already, so `flutter build apk
-  # --debug` catches Android toolchain breaks in CI even though the dev machine that wrote this
-  # doesn't have the Android SDK installed locally (see docs/runbooks, or #232's own discussion).
-  mobile:
-    needs: changes
-    # PR: run only when mobile files changed. Push to main: always run (main stays green).
-    # !cancelled() makes this a status-check expression, so a skipped `changes` (PR-only, #410)
-    # does not skip this job on push.
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true') }}
-    uses: ./.github/workflows/mobile.yml
-
   # M13 Phase 3 (#109): gathers the native libs the test matrix above built on all three OSes into
   # one fat nupkg — the same install command (`dotnet tool install --global aer`) then works
   # regardless of host OS. Runs after `test` so it only packs libraries that already passed lint
@@ -470,10 +449,6 @@ jobs:
       # exit-code discipline as the audits above.
       - name: One vocabulary, code and UI alike
         run: pixi run audit-vocabulary
-      # #469: the mobile-build WSL guard's decision, driven by fixtures so it runs off a WSL host.
-      # No build, no vendor -- reads like the audits above, so it blocks the same aggregate gate.
-      - name: mobile-build WSL guard discriminates
-        run: pixi run test-scripts
       # #1397: the docs-budget tripwire (see docsbudget.py). No build, no vendor -- same job as
       # the other free audits above.
       - name: Tracked markdown stays within the docs budget
@@ -485,7 +460,7 @@ jobs:
       # this job; only the invocation against the live body did.
 
   ci:
-    needs: [changes, test, lint, mobile, audit]
+    needs: [changes, test, lint, audit]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -494,11 +469,10 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           TEST: ${{ needs.test.result }}
           LINT: ${{ needs.lint.result }}
-          MOBILE: ${{ needs.mobile.result }}
           AUDIT: ${{ needs.audit.result }}
         run: |
-          echo "results: changes=$CHANGES test=$TEST lint=$LINT mobile=$MOBILE audit=$AUDIT"
-          for r in "$CHANGES" "$TEST" "$LINT" "$MOBILE" "$AUDIT"; do
+          echo "results: changes=$CHANGES test=$TEST lint=$LINT audit=$AUDIT"
+          for r in "$CHANGES" "$TEST" "$LINT" "$AUDIT"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::A required CI job reported '$r'."
               exit 1

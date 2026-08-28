@@ -204,84 +204,6 @@ def is_citation(src, m):
     return any(a < rel < b for a, b in zip(quotes[0::2], quotes[1::2]))
 
 
-# ---------------------------------------------------------------------------------------------
-# The enumerable surfaces
-# ---------------------------------------------------------------------------------------------
-
-def glob_matches(pattern: str, path: str) -> bool:
-    """Does one `dorny/paths-filter` pattern select one repo-relative path?
-
-    Models the pattern forms this workflow uses -- `a/b/**`, `**/c`, a literal path -- rather than
-    emulating picomatch. `*` does not cross a separator; `**` does.
-    """
-    rx, i = "", 0
-    while i < len(pattern):
-        if pattern.startswith("**/", i):
-            rx, i = rx + "(?:.*/)?", i + 3
-        elif pattern.startswith("/**", i):
-            rx, i = rx + "(?:/.*)?", i + 3
-        elif pattern[i] == "*":
-            rx, i = rx + "[^/]*", i + 1
-        elif pattern[i] == "?":
-            rx, i = rx + "[^/]", i + 1
-        else:
-            rx, i = rx + re.escape(pattern[i]), i + 1
-    return re.fullmatch(rx, path) is not None
-
-
-def ci_workflow() -> dict:
-    """CI's workflow as parsed data. A seam, so a control can hand back a mutated one."""
-    import yaml
-    return yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
-
-
-@check("the mobile job's steps live where its path filter can see them")
-def _mobile_filter_covers_its_job():
-    """A path filter matches files, so it can only be exact if the job is a file.
-
-    While every job shared `ci.yml` the filter had to list `.github/workflows/**`, and a one-line
-    edit to an unrelated job bought a nine-minute Android build (#677). Moving the steps out made
-    the filter exact -- and moving them back, or adding a second file the job depends on, would
-    silently make it wrong again in the expensive direction or the unvalidated one.
-    """
-    ci = ci_workflow()
-    job = ci["jobs"]["mobile"]
-    called = job.get("uses")
-    assert called, ("ci.yml's mobile job defines its steps inline again. The filter cannot see "
-                    "inside a file, so it now either misses edits to those steps or runs the "
-                    "Android build for every workflow change.")
-    assert "steps" not in job, "a called workflow cannot also carry steps"
-
-    # `on: pull_request` gives the filter no default, so an unlisted file is simply never a trigger.
-    import yaml
-    patterns = next(f["with"]["filters"] for f in ci["jobs"]["changes"]["steps"] if "with" in f)
-    mobile = yaml.safe_load(patterns)["mobile"]
-    target = called.removeprefix("./")
-    assert (ROOT / target).is_file(), f"{target} does not exist"
-
-    # The membership question, asserted in both directions against concrete paths. `target in mobile`
-    # would only have caught the exact spelling that regressed; what matters is which files select
-    # the job. The negative arms are the point -- the expensive direction is silent by construction,
-    # because a job that runs when it needn't looks identical to one that had to.
-    selected = [
-        (".github/workflows/ci.yml", False),
-        ("tools/audit-completeness/selfcheck.py", False),
-        ("src/Aer.Ui/App.axaml.cs", False),
-        (target, True),
-        ("src/Aer.Mobile/lib/main.dart", True),
-    ]
-    assert not any(p.startswith("!") for p in mobile), (
-        f"the mobile filter uses an exclusion ({mobile}), which `glob_matches` does not model -- it "
-        "would read as a literal and silently never match, so the arms below would mean nothing")
-    for path, wanted in selected:
-        hit = [p for p in mobile if glob_matches(p, path)]
-        assert bool(hit) == wanted, (
-            f"changing {path} {'does not run' if wanted else 'runs'} the mobile job. "
-            f"Filter: {mobile}" + (f", matched by {hit}" if hit else ""))
-    return (f"mobile -> {target}; {len(selected)} paths x the filter's {len(mobile)} pattern(s), "
-            f"{sum(1 for _, w in selected if not w)} of which must NOT select it")
-
-
 @check("every dispatch tells the worker the budget it is actually given")
 def _dispatch_states_its_budget():
     """A worker that does not know it is being timed spends the budget as if it were unbounded.
@@ -1440,7 +1362,7 @@ def _recordonce_discriminates():
              "[0003](0003-templates-collapse-to-three-shapes.md).")},
          False),
         ("a regenerated banner in two generated files",
-         {"src/Aer.Ui.Core/Generated.cs": [banner], "src/Aer.Mobile/lib/tokens.dart": [banner]}, False),
+         {"src/Aer.Ui.Core/Generated.cs": [banner], "src/Aer.Ui/Theme/Tokens.axaml.cs": [banner]}, False),
         ("the same command block fenced in two runbooks",
          {"docs/runbooks/a.md": [fenced], "docs/runbooks/b.md": [fenced]}, False),
         # A file with no extension is still a file with comments, and the per-language table read it
@@ -1637,15 +1559,8 @@ def _vocabulary_discriminates():
         files_scanned, violations = rec.scan_tree(tmp_path)
         assert len(violations) == 0, f"allowlist comment failed to suppress C#: {violations}"
 
-        mobile_dir = tmp_path / "src" / "Aer.Mobile" / "lib"
-        mobile_dir.mkdir(parents=True)
-        (mobile_dir / "screen.dart").write_text("var x = 'Aer.Daemon';", encoding="utf-8")
-        files_scanned, violations = rec.scan_tree(tmp_path)
-        assert len(violations) == 1, f"planted Dart violation not caught: {violations}"
-
         # Literals that span lines — the per-line pass is blind inside them (#315's second
         # reader), so the full-text pass must catch a leak on a continuation line.
-        (mobile_dir / "screen.dart").write_text("var x = 'clean';", encoding="utf-8")
         (core_dir / "TestViewModel.cs").write_text(
             'var x = @"line one\nthe Session leaks here";', encoding="utf-8"
         )
@@ -1660,14 +1575,7 @@ def _vocabulary_discriminates():
         files_scanned, violations = rec.scan_tree(tmp_path)
         assert len(violations) == 0, f"allowlist failed to suppress multiline C#: {violations}"
 
-        (core_dir / "TestViewModel.cs").write_text("var x = 1;", encoding="utf-8")
-        (mobile_dir / "screen.dart").write_text(
-            "var x = '''line one\nthe lane leaks here''';", encoding="utf-8"
-        )
-        files_scanned, violations = rec.scan_tree(tmp_path)
-        assert len(violations) == 1, f"multiline Dart triple-quoted leak not caught: {violations}"
-
-    return "AXAML, C#, Dart populations + allowlist suppression + multiline literal leaks"
+    return "AXAML, C# populations + allowlist suppression + multiline literal leaks"
 
 
 @check("the permissionrank checker flags permissive-primary controls paired with un-primaried deny controls")
@@ -1703,32 +1611,9 @@ def _permissionrank_discriminates():
         files_scanned, violations = rec.scan_tree(tmp_path)
         assert len(violations) == 0, f"equal-weight AXAML flagged unexpectedly: {violations}"
 
-        mobile_dir = tmp_path / "src" / "Aer.Mobile" / "lib"
-        mobile_dir.mkdir(parents=True)
-        (mobile_dir / "screen.dart").write_text(
-            'Column(children: [\n'
-            '  FilledButton(onPressed: () {}, child: Text("Allow once")),\n'
-            '  OutlinedButton(onPressed: () {}, child: Text("Deny once")),\n'
-            '])',
-            encoding="utf-8"
-        )
-        files_scanned, violations = rec.scan_tree(tmp_path)
-        assert len(violations) == 1, f"planted Dart permissive-primary violation not caught: {violations}"
-
-        (mobile_dir / "screen.dart").write_text(
-            'Column(children: [\n'
-            '  OutlinedButton(onPressed: () {}, child: Text("Allow once")),\n'
-            '  OutlinedButton(onPressed: () {}, child: Text("Deny once")),\n'
-            '])',
-            encoding="utf-8"
-        )
-        files_scanned, violations = rec.scan_tree(tmp_path)
-        assert len(violations) == 0, f"equal-weight Dart flagged unexpectedly: {violations}"
-
         # #1124 review finding A: the repo's own AccessText mnemonic idiom puts the permissive
         # label on a LATER line of the same element — a same-line-only scan ships that violation
         # green.
-        (mobile_dir / "screen.dart").unlink()
         (ui_dir / "TestView.axaml").write_text(
             '<StackPanel>\n'
             '  <Button Classes="accent" Command="{Binding AllowCommand}">\n'
@@ -1753,7 +1638,7 @@ def _permissionrank_discriminates():
         files_scanned, violations = rec.scan_tree(tmp_path)
         assert len(violations) == 1, f"Classes.accent conditional-class violation not caught: {violations}"
 
-    return "AXAML (same-line, AccessText multi-line, Classes.accent) and Dart permissive-primary controls + real tree verification"
+    return "AXAML (same-line, AccessText multi-line, Classes.accent) permissive-primary controls + real tree verification"
 
 
 def main() -> int:

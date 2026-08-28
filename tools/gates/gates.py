@@ -33,7 +33,6 @@ OVERLAP = [
     "audit-vocabulary",
     "audit-permissionrank",
     "audit-recordonce",
-    "test-scripts",
     "audit-staleness-ext-selftest",
     "audit-waitceiling",
     "audit-waitceiling-selftest",
@@ -45,10 +44,6 @@ OVERLAP = [
     # #1402: pure python against an isolated temp lock file -- starts no MSBuild and never touches
     # the real build lock, so it cannot interfere with the build phase it overlaps.
     "buildlock-selftest",
-    # #1138: the Dart analyzer, which CI's mobile job already gates — without it here, an
-    # analyzer-only defect passes every local gate and fails CI a round trip later. Overlap-safe:
-    # the Dart analysis server reads files and never touches MSBuild or the built CLI binary.
-    "mobile-analyze",
 ]
 
 # The MSBuild owners, strictly sequential: one MSBuild at a time.

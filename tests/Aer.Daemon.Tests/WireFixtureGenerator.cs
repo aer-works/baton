@@ -8,7 +8,7 @@ namespace Aer.Daemon.Tests;
 
 public static class WireFixtureGenerator
 {
-    public const string RelativeFixturesPath = "src/Aer.Mobile/test/fixtures/wire";
+    public const string RelativeFixturesPath = "tests/Aer.Daemon.Tests/fixtures/wire";
 
     public static Dictionary<string, string> GenerateAll()
     {
@@ -19,9 +19,7 @@ public static class WireFixtureGenerator
         // #1240's derived-status siblings. The lock reading is passed as `true` rather than probed:
         // a fixture must not depend on the filesystem of whatever machine regenerates it, and `true`
         // is the reading DeriveStatus' own parameter doc calls the conservative one — it never
-        // invents a Stopped room. What the fixture pins is the wire NAMES and casing of the pair;
-        // the terminal-card wording each value produces is pinned phone-side, in
-        // src/Aer.Mobile/test/chat_screen_workflow_room_test.dart.
+        // invents a Stopped room. What the fixture pins is the wire NAMES and casing of the pair.
         var (roomCardStatusText, roomCardStatus) =
             RoomCardViewModel.DeriveStatus(projection, projection.PendingPermission, isFlowLockHeld: true, isWaitingToStart: false);
 
@@ -50,9 +48,9 @@ public static class WireFixtureGenerator
         fixtures[Path.Combine(RelativeFixturesPath, "room_projection.ws.json")] = FormatJson(wsNode, DaemonSerializerOptions.WebSocket);
 
         // 3. RoomFleetItem REST (camelCase). A needs-you row: Status pins the RoomCardStatus enum's
-        // wire name ("NeedsYou"), which the mobile switcher's waiting-on-you-first sort keys on
-        // literally (#1049) — a rename of the enum member reddens this fixture and the Dart parse test
-        // rather than silently breaking the sort. StatusText and Status are independent wire fields.
+        // wire name ("NeedsYou"), which a client's waiting-on-you-first sort would key on literally
+        // (#1049) — a rename of the enum member reddens this fixture rather than silently breaking
+        // the sort. StatusText and Status are independent wire fields.
         var fleetItem = new RoomFleetItem(
             "C:/Users/pbree/.aer/tasks/foo",
             "foo",
@@ -158,8 +156,8 @@ public static class WireFixtureGenerator
 
         var lineage = new ArtifactLineage(executions);
 
-        // #1142: one answered and one expired entry, so the fixture (and the Dart parse test that
-        // reads it) exercises both PermissionAnswer shapes rather than an always-empty list.
+        // #1142: one answered and one expired entry, so the fixture exercises both PermissionAnswer
+        // shapes rather than an always-empty list.
         var permissionAnswers = new List<Aer.Flow.Projection.PermissionAnswer>
         {
             new("perm-1", "Bash", "run_command", "AllowOnce", null, "operator",
