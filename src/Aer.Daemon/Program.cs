@@ -1427,7 +1427,6 @@ namespace Aer.Daemon
                         // a race to ExternalDecisionValidator) is observable.
                         var outcome = await session.DecideAsync(
                             request.DirectoryPath,
-                            new StepId(request.StepId),
                             new ExecutionId(request.ExecutionId),
                             request.DecisionType,
                             request.TargetStepId != null ? new StepId(request.TargetStepId) : null,
@@ -3160,7 +3159,6 @@ namespace Aer.Daemon
 
                         var decideOutcome = await session.DecideAsync(
                             directoryPath,
-                            new StepId(InteractiveSessionMaterializer.AnchorStepId),
                             anchorExecutionId,
                             DecisionType.Supersede,
                             targetStepId: new StepId(InteractiveSessionMaterializer.DefaultStepId),

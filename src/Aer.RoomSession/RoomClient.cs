@@ -235,7 +235,6 @@ public sealed class RoomClient
     /// <param name="onWorkerStdoutLine">M24 Phase 1's live in-turn streaming — see <see cref="RunAsync"/>'s remarks on the same parameter.</param>
     public async Task<MutationOutcome> DecideAsync(
         string roomDirectoryPath,
-        StepId stepId,
         ExecutionId executionId,
         DecisionType decisionType,
         StepId? targetStepId,
