@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Aer.Daemon;
 using Aer.Flow.Domain;
-using Aer.Ui.Core;
+using Aer.RoomSession;
 
 namespace Aer.Daemon.Tests;
 

@@ -4,7 +4,7 @@ using Aer.Flow.Domain;
 using Aer.Flow.Store;
 using Aer.Flow.Templates;
 using Aer.Tests.Shared;
-using Aer.Ui.Core;
+using Aer.RoomSession;
 using Xunit;
 
 namespace Aer.Daemon.Tests;
