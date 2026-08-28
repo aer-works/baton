@@ -92,11 +92,6 @@ coverage = { cmd = "rm -rf artifacts/coverage && dotnet tool restore && python t
 fmt = "python tools/buildlock.py dotnet format"
 fmt-check = { cmd = "python tools/buildlock.py dotnet format --verify-no-changes", depends-on = ["fmt-check-sidecar"] }
 
-# M25 (#345): regenerates both toolkits' theme resources from design/tokens.json. Not wired into
-# build — generated artifacts are checked in, and Aer.Architecture.Tests fails if they drift from the
-# token file, so running this is a deliberate act after editing tokens rather than a build side
-# effect that rewrites tracked files under everyone.
-tokens = "python tools/buildlock.py dotnet run --project tools/Aer.DesignTokens"
 # --no-incremental is load-bearing, not a purity knob (#687). MSBuild decides a project is up to date
 # by comparing timestamps, so a source file OLDER than the assembly built from it is silently skipped
 # and `dotnet build -warnaserror` prints "Build succeeded. 0 Error(s)" for code that does not compile.
@@ -222,8 +217,6 @@ audit-completeness = { cmd = "python -u tools/audit-completeness/completeness.py
 build-cli = { cmd = "python tools/buildlock.py dotnet build src/Aer.Cli" }
 audit-selfcheck = { cmd = "python -u tools/audit-completeness/selfcheck.py" }
 audit-controls = { cmd = "python -u tools/audit-completeness/controls.py" }
-audit-vocabulary = { cmd = "python -u tools/audit-completeness/vocabulary.py" }
-audit-permissionrank = { cmd = "python -u tools/audit-completeness/permissionrank.py" }
 
 # Needs full history: it diffs against origin/main. See recordonce.py (#671).
 audit-recordonce = { cmd = "python -u tools/audit-completeness/recordonce.py" }

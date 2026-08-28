@@ -9,13 +9,6 @@
          Aer.Adapters.Tests suite to be serialised. Testing the writer against a throwaway path
          instead removes the shared state rather than scheduling around it. -->
     <InternalsVisibleTo Include="Aer.Adapters.Tests" />
-    <!-- #1319: SaveMetadataAsync is internal (the raw, RMW-unsafe primitive) so Aer.Daemon's endpoint
-         code cannot reach it directly; production writes must go through
-         InteractiveSessionMaterializer.UpdateMetadataAsync. Aer.Ui.Tests hosts the daemon in-proc for
-         its endpoint integration tests and still needs the raw primitive to seed exact fixture state
-         (a concern distinct from production RMW safety), which is why it gets this grant and
-         Aer.Daemon deliberately does not. -->
-    <InternalsVisibleTo Include="Aer.Ui.Tests" />
   </ItemGroup>
 
   <ItemGroup>

@@ -30,8 +30,6 @@ import sys
 # 2026-08-04 mutual-kill catalogue were paid for.
 OVERLAP = [
     "audit-completeness",
-    "audit-vocabulary",
-    "audit-permissionrank",
     "audit-recordonce",
     "audit-staleness-ext-selftest",
     "audit-waitceiling",

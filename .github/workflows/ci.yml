@@ -413,8 +413,6 @@ jobs:
       # registry as text. The exit code is the verdict -- never the output.
       - name: Audit register completeness
         run: pixi run audit-completeness
-      - name: Audit permission rank equality
-        run: pixi run audit-permissionrank
       # audit-selfcheck below is no longer .NET-free: since #887 the role catalog's one source
       # is the engine (`aer templates --json`), and selfcheck's catalog checks consume it. This
       # builds ONLY Aer.Cli -- no native lib, no sidecar, no cargo (see pixi.toml's build-cli).
@@ -444,11 +442,6 @@ jobs:
       # real data runs inside audit-selfcheck above, where audit-controls can reach it.
       - name: No fact is explained in more than one place
         run: pixi run audit-recordonce -- origin/${{ github.base_ref || 'main' }}
-      # #1126: this ran only in the pre-push hook's gates-fast — a clone without setup-hooks, a
-      # web-UI edit, or any hook-bypassing push reached CI unvocabulary-checked. Same job, same
-      # exit-code discipline as the audits above.
-      - name: One vocabulary, code and UI alike
-        run: pixi run audit-vocabulary
       # #1397: the docs-budget tripwire (see docsbudget.py). No build, no vendor -- same job as
       # the other free audits above.
       - name: Tracked markdown stays within the docs budget

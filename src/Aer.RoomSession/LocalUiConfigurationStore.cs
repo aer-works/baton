@@ -3,9 +3,8 @@ using System.Text.Json;
 namespace Aer.RoomSession;
 
 /// <summary>
-/// Local UI Configuration (UI spec §3.1, §4): a remembered list of recently opened room
+/// Local configuration: a remembered list of recently opened room
 /// directories, plus (M15 Phase 1, issue #137) the last worker-bindings file and workflow template
-/// record-once-ok: #443 src/Aer.Ui.Core/BindingsEditorViewModel.cs
 /// file a Run action used — Run still asks for a bindings file and records the answer in the room
 /// directory (0056), so the value remembered here pre-fills that ask.
 /// Deliberately never authoritative — a room directory's own contents are (§3.1's
@@ -25,6 +24,9 @@ public sealed class LocalUiConfigurationStore(string configFilePath)
     /// The production location: a per-user config directory, never a path a test could collide
     /// with — tests construct this store directly against a temp file instead of calling this.
     /// </summary>
+    // The "Aer.Ui" folder name is DELIBERATE, not an oversight from the Ui archive (#1412): the
+    // operator's existing recent-directories data lives there, and renaming the folder belongs to
+    // the Baton rename window (one migration event), not a deletion PR.
     public static LocalUiConfigurationStore CreateDefault() => new(Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData, Environment.SpecialFolderOption.Create),
         "Aer.Ui",
@@ -79,7 +81,6 @@ public sealed class LocalUiConfigurationStore(string configFilePath)
     }
 
     /// <summary>
-    /// record-once-ok: #443 src/Aer.Ui.Core/BindingsEditorViewModel.cs
     /// The bindings file (M15 Phase 1, issue #137): a room carries its own copy (0056), so a Run
     /// action asks the user for it and records the answer — this is only the remembered default that
     /// pre-fills the ask, exactly the same non-authoritative convenience the recents list already is

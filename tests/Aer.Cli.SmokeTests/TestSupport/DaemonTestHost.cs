@@ -20,9 +20,9 @@ namespace Aer.Cli.SmokeTests.TestSupport;
 /// </summary>
 internal static class DaemonTestHost
 {
-    // Raised from 10s to 60s for #846 (a healthy daemon that binds slowly under full-suite CI load was
-    // being called a failure); the Aer.Ui.Tests copy of this file documents why a larger backstop loses
-    // no failure detection. These two DaemonTestHost copies are duplicated across the two test projects.
+    // Raised from 10s to 60s for #846: a healthy daemon that binds slowly under full-suite CI load was
+    // being called a failure, and a larger backstop loses no failure detection. (Until #1412 deleted
+    // it, Aer.Ui.Tests carried its own duplicate copy of this file with the same rationale.)
     private static readonly TimeSpan DefaultBindTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(20);
 

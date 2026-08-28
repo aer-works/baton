@@ -23,7 +23,6 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 
-[assembly: InternalsVisibleTo("Aer.Ui.Tests")]
 [assembly: InternalsVisibleTo("Aer.Daemon.Tests")]
 
 await Aer.Daemon.DaemonHost.RunDaemonAsync(args);

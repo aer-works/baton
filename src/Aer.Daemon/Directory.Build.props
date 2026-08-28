@@ -1,10 +1,12 @@
 <Project>
 
-  <!-- release-please linked-versions migration: Aer.Daemon is one of "desktop" group's two shipped,
-       version-checked-against-each-other artifacts (alongside Aer.Ui — RoomClient compares the
-       daemon's reported /api/version assembly version against the UI's to detect a stale spawned
-       daemon and force a respawn on skew), so it carries the real, release-please-patched Version.
-       Imports the root file first for shared settings, then overrides just Version. -->
+  <!-- release-please linked-versions migration: Aer.Daemon is an independently shipped artifact, so
+       it carries the real, release-please-patched Version rather than inheriting the root file's
+       static default. (Until #1412 archived it, this Version fed a desktop-spawned-daemon
+       respawn-on-skew check — Aer.Ui.Core's RoomClient compared its own version against the
+       daemon's own reported /api/version to detect a stale subprocess. The endpoint survives for
+       other callers; that comparison does not.) Imports the root file first for shared settings,
+       then overrides just Version. -->
   <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))"/>
 
   <PropertyGroup>

@@ -52,10 +52,11 @@ public static class RunCommand
     /// <param name="inFlightExecutions">
     /// M15 Phase 4's (issue #140) additive caller-retained delivery point — forwarded, unchanged, to
     /// <see cref="MutationInterface.StartWorkflowAsync"/>. <c>null</c> for every caller (the CLI
-    /// included) that has no need to reach a live execution mid-pump; <c>Aer.Ui</c>'s
-    /// <c>MainWindow</c> is the first caller that retains one, so a targeted Cancel from the UI can
-    /// signal a specific in-flight execution this same call dispatched, without a second
-    /// mutation-surface call racing §15's guard.
+    /// included) that has no need to reach a live execution mid-pump; <c>Aer.RoomSession</c>'s
+    /// <c>RoomClient</c> (originally <c>Aer.Ui</c>'s <c>MainWindow</c>, before #1412 archived it) is
+    /// the caller that retains one, so a targeted Cancel reaching the daemon can signal a specific
+    /// in-flight execution this same call dispatched, without a second mutation-surface call racing
+    /// §15's guard.
     /// </param>
     /// <param name="onWorkerStdoutLine">
     /// M24 Phase 1's live in-turn streaming — forwarded verbatim to <see cref="WorkerBindingResolver.Resolve"/>.

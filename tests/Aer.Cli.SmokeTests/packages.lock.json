@@ -33,11 +33,6 @@
           "xunit.v3.mtp-v1": "[3.2.2]"
         }
       },
-      "CommunityToolkit.Mvvm": {
-        "type": "Transitive",
-        "resolved": "8.4.2",
-        "contentHash": "WadCzGEc2U+3e20avRLng4qNtt4zoOGWrdUISqJWrHe3/FSnrYjuM5Sb4yQb09LhkBXrrI4Zt3dLKgRMbItsrg=="
-      },
       "Microsoft.ApplicationInsights": {
         "type": "Transitive",
         "resolved": "2.23.0",
@@ -106,11 +101,6 @@
         "type": "Transitive",
         "resolved": "13.0.3",
         "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ=="
-      },
-      "QRCoder": {
-        "type": "Transitive",
-        "resolved": "1.6.0",
-        "contentHash": "XmPA81eo+oRxBuyVdswsSkTGTE1d3thfF11Z1PdD7oB56A6HU4G4AAOdySmGRMb/cljwlFTMWUtosGEnwpS6GA=="
       },
       "xunit.analyzers": {
         "type": "Transitive",
@@ -200,7 +190,7 @@
         "dependencies": {
           "Aer.Adapters": "[0.14.0, )",
           "Aer.Flow": "[0.14.0, )",
-          "Aer.Ui.Core": "[0.14.0, )"
+          "Aer.RoomSession": "[0.14.0, )"
         }
       },
       "aer.flow": {
@@ -209,13 +199,11 @@
           "Aer.Core": "[1.0.0, )"
         }
       },
-      "aer.ui.core": {
+      "aer.roomsession": {
         "type": "Project",
         "dependencies": {
           "Aer.Adapters": "[0.14.0, )",
           "Aer.Flow": "[0.14.0, )",
-          "CommunityToolkit.Mvvm": "[8.4.2, )",
-          "QRCoder": "[1.6.0, )",
           "aer": "[0.21.0, )"
         }
       }
