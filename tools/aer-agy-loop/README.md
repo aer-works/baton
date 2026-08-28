@@ -84,40 +84,6 @@ ignored** — a flag that looks accepted and does nothing would be the worse beh
 composes with it as usual. Outputs land per step: `implement-report.md`, `janitor.md` (the filename
 the canonical brief itself instructs), `report.md` + `verdict.json`.
 
-## `--dialogue` — a multi-participant exchange from one seed file plus flags
-
-```
-pixi run aer-dispatch -- --dialogue \
-    --seed-file <path.md> \
-    --participant <vendor>:<model>[:<role>] --participant <vendor>:<model>[:<role>] \
-    --turn-budget N --final-output <name> \
-    [--preamble-file <role>=<path> ...] [--dry-run]
-```
-
-Assembles all three files a dialogue run needs — `workflow.json`, `bindings.json`, and the
-`DialogueWorkerConfig` sidecar (`dialogue-config.json`) — replacing what used to be hand-rolled from
-`DialogueDispatchEndToEndTests` fixtures and `docs/runbooks/live-dialogue-smoke.md` each time
-([#813](https://github.com/aer-works/baton/issues/813)).
-
-`<vendor>` is `claude` or `agy` (mirrors `Aer.Workers.Dialogue.DialogueParticipantPresets.KnownVendors`
-— `agy` resolves to the `agy` binary). `<role>` defaults to `participant-1`/`participant-2`/... in
-flag order when omitted. At least two `--participant` entries are required. The seed prompt and any
-`--preamble-file` are copied verbatim — this mode never edits or templates author-owned text; an
-unpreambled role gets a mechanical non-empty placeholder instead (`DialogueParticipant.Preamble` must
-be non-empty).
-
-Every participant's `Command`/`Args` is built in one place (`build_dialogue_participant`), mirroring
-`DialogueParticipantPresets.For` exactly rather than re-deriving vendor flags per call site — the same
-"ONE place" discipline `--lane`'s templates already apply to settings. The step `Timeout` is
-`TurnBudget * 5 + 5` minutes: 5 is `DialogueWorkerConfig.DefaultTurnTimeout` (this mode never overrides
-`TurnTimeout`, so every turn runs under that default), plus a flat 5-minute slack for the worker's own
-bookkeeping between turns.
-
-`--working-directory`/`--worktree`/`--template` are not exposed under `--dialogue`: dialogue steps carry
-no `WorkingDirectory` (every real bindings entry omits it — participants are direct vendor-CLI spawns
-inside the worker's own process, not repo work), and it composes with `--dry-run` the same as every
-other mode.
-
 ## `--dry-run` — resolve, guard, generate, stop
 
 Applies flag precedence, runs every guard, writes `workflow.json`/`bindings.json`, prints the

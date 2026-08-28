@@ -86,22 +86,6 @@ def env_override(name: str, value: str):
 
 
 @contextlib.contextmanager
-def mutated_presets_json(edit):
-    """#836: DialogueParticipantPresets.json (`src/Aer.Workers.Dialogue/`) is outside `tools/`, so
-    `mutated_tree`'s copytree of `tools/` alone can't reach it. dispatch.py reads the file via
-    AER_DIALOGUE_PRESETS_PATH when set (falling back to the repo-relative default otherwise) for
-    exactly this: point it at an edited copy in its own temp dir, no tracked file touched.
-    """
-    original = (ROOT / "src" / "Aer.Workers.Dialogue" / "DialogueParticipantPresets.json").read_text(encoding="utf-8")
-    edited = edit(original)
-    assert edited != original, "the edit to DialogueParticipantPresets.json did not apply -- this arm measures nothing"
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "DialogueParticipantPresets.json"
-        path.write_text(edited, encoding="utf-8")
-        yield path
-
-
-@contextlib.contextmanager
 def mutated_tree(relative: str, edit):
     """A copy of the repo's tools/ at the same depth, with one file edited. Yields the new path.
 
@@ -719,60 +703,6 @@ def _recordonce_reads_index_rows():
 def _recordonce_pin_is_vacuous():
     with _loading_recordonce_as(lambda m: replacing(m, "PROVEN_GROUPS", ())):
         yield
-
-
-DIALOGUE_DRY_RUN = "--dialogue dry-runs a two-participant cross-vendor exchange into byte-shape-correct JSONs"
-DIALOGUE_ARG_VALIDATION = "--dialogue refuses fewer than two participants and an unknown vendor, naming the known ones"
-DIALOGUE_EXCLUSIVITY = "--dialogue refuses combination with --lane and --template, matching their own mutual refusal"
-
-
-@control(DIALOGUE_DRY_RUN, "the claude participant preset reverts to the stale runbook shape (--allowedTools Write, not Write,Read)")
-def _dialogue_preset_reverts_to_stale_shape():
-    # The exact discrepancy #813's own research found between live-dialogue-smoke.md's prose and
-    # Aer.Workers.Dialogue.DialogueParticipantPresets.For's real code -- proving the golden test
-    # would actually notice the Python mirror drifting from the measured C# shape, not just from
-    # itself.
-    #
-    # #836: the shape moved from a dispatch.py literal into DialogueParticipantPresets.json (the
-    # single source dispatch.py now reads instead of hand-mirroring), so the fault is injected
-    # there instead, via AER_DIALOGUE_PRESETS_PATH -- see mutated_presets_json's own docstring.
-    with mutated_presets_json(
-        lambda s: s.replace('"Write,Read"', '"Write"')
-    ) as path:
-        with env_override("AER_DIALOGUE_PRESETS_PATH", str(path)):
-            yield
-
-
-@control(DIALOGUE_ARG_VALIDATION, "the two-participant floor drops to one, so a single --participant dry-runs clean")
-def _dialogue_minimum_participants_weakened():
-    with mutated_tree(
-        "tools/aer-agy-loop/dispatch.py",
-        lambda s: s.replace("if len(args.participants) < 2:", "if len(args.participants) < 1:")
-    ) as path:
-        with swap(selfcheck, "DISPATCH_PY", path):
-            yield
-
-
-@control(DIALOGUE_ARG_VALIDATION, "an unknown vendor is no longer refused, so it reaches the generated config unrejected")
-def _dialogue_vendor_validation_dropped():
-    with mutated_tree(
-        "tools/aer-agy-loop/dispatch.py",
-        lambda s: s.replace("if vendor not in DIALOGUE_KNOWN_VENDORS:", "if False:")
-    ) as path:
-        with swap(selfcheck, "DISPATCH_PY", path):
-            yield
-
-
-@control(DIALOGUE_EXCLUSIVITY, "the symmetric --lane+--dialogue guard is dropped, so --lane --dialogue no longer refuses")
-def _dialogue_lane_symmetry_dropped():
-    with mutated_tree(
-        "tools/aer-agy-loop/dispatch.py",
-        lambda s: s.replace(
-            'if args.lane and args.dialogue:\n        print("error: --lane cannot be combined with --dialogue", file=sys.stderr)\n        return 2\n\n    if args.lane:',
-            "if args.lane:")
-    ) as path:
-        with swap(selfcheck, "DISPATCH_PY", path):
-            yield
 
 
 VOCABULARY = "the vocabulary checker flags engine terms in user-facing string literals"
