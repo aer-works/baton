@@ -52,7 +52,7 @@ public static class ExecutionUsageProjector
         string artifactsRootPath,
         IReadOnlyDictionary<string, IWorkerUsageParser>? adapters = null,
         string? roomDirectoryPath = null) =>
-        BuildByExecutionId<IWorkerUsageParser>(entries, artifactsRootPath, adapters, roomDirectoryPath);
+        BuildByExecutionId<IWorkerUsageParser>(entries, artifactsRootPath, adapters ?? StandardWorkerUsageParsers.Default, roomDirectoryPath);
 
     public static IReadOnlyDictionary<string, ExecutionUsageView> BuildByExecutionId<TParser>(
         IReadOnlyList<LogEntry> entries,
