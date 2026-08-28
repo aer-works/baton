@@ -177,6 +177,34 @@ public class McpServerHostTests
             throw new InvalidOperationException("boom exploded");
     }
 
+    [Fact]
+    public async Task ToolsList_CarriesAnnotationsOnlyWhenDeclared()
+    {
+        var host = new McpServerHost("aer-mcp-host-test", "1.0.0", [new AnnotatedTool(), new ThrowingTool()]);
+        var input = new StringReader("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n");
+        var output = new StringWriter();
+
+        await host.RunAsync(input, output);
+
+        var response = System.Text.Json.Nodes.JsonNode.Parse(output.ToString().Trim())!.AsObject();
+        var tools = response["result"]!["tools"]!.AsArray();
+        var annotated = tools.Single(t => (string)t!["name"]! == "annotated");
+        var bare = tools.Single(t => (string)t!["name"]! == "boom");
+        Assert.True((bool)annotated!["annotations"]!["readOnlyHint"]!);
+        Assert.Null(bare!["annotations"]);
+    }
+
+    private sealed class AnnotatedTool : IMcpTool
+    {
+        public string Name => "annotated";
+        public string Description => "Declares itself read-only.";
+        public string InputSchemaJson => "{\"type\":\"object\"}";
+        public string? AnnotationsJson => "{\"readOnlyHint\": true}";
+
+        public McpToolCallResult Call(System.Text.Json.JsonElement arguments) =>
+            new("{}");
+    }
+
     private static async Task<List<System.Text.Json.Nodes.JsonObject>> RunAsync(string requestLine)
     {
         // Path.GetTempFileName() would create the file up front, which YieldTool would then read as

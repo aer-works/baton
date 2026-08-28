@@ -27,6 +27,8 @@ public sealed class FleetStatusTool : IMcpTool
     public string Description =>
         "Read-only snapshot of room statuses across the fleet, including state, timestamps, usage, and outputs.";
 
+    public string? AnnotationsJson => """{"readOnlyHint": true}""";
+
     public string InputSchemaJson => """
         {
           "type": "object",
