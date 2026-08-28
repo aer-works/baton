@@ -4,9 +4,9 @@
        it carries the real, release-please-patched Version rather than inheriting the root file's
        static default. (Until #1412 archived it, this Version fed a desktop-spawned-daemon
        respawn-on-skew check — Aer.Ui.Core's RoomClient compared its own version against the
-       daemon's own reported /api/version to detect a stale subprocess. The endpoint survives for
-       other callers; that comparison does not.) Imports the root file first for shared settings,
-       then overrides just Version. -->
+       daemon's own reported /api/version to detect a stale subprocess. Both that comparison and
+       the /api/version endpoint itself are gone now — #1420 deleted the daemon's entire HTTP
+       surface.) Imports the root file first for shared settings, then overrides just Version. -->
   <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))"/>
 
   <PropertyGroup>
