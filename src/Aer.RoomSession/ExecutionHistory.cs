@@ -7,8 +7,9 @@ namespace Aer.RoomSession;
 /// execution a step has ever gone through (not just its latest, per <c>StepState.LatestExecutionId</c>),
 /// plus every recorded external decision. Walked directly from the same Flow Event Store
 /// <see cref="RoomProjectionLoader"/> already reads (spec §5.1), never a new stored fact — this is
-/// presentation-layer history, not an execution-authority concern, so it is owned by <c>Aer.Ui</c>
-/// rather than <c>Aer.Flow</c>, the same boundary M14 Phase 1's <see cref="RoomProjection"/> already
+/// presentation-layer history, not an execution-authority concern, so it is owned by the
+/// presentation layer (<c>Aer.Ui.Core</c> originally, this project since #1412 archived it) rather
+/// than <c>Aer.Flow</c>, the same boundary M14 Phase 1's <see cref="RoomProjection"/> already
 /// drew (UI spec §2).
 /// </summary>
 public sealed record ExecutionHistory(
