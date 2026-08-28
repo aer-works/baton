@@ -1,6 +1,6 @@
 using Aer.Flow;
 
-namespace Aer.Ui.Core;
+namespace Aer.RoomSession;
 
 /// <summary>
 /// Raised when a directory the UI is pointed at is not a valid room directory. UI spec §3.1: a

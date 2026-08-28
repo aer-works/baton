@@ -1,7 +1,7 @@
 using Aer.Flow.Domain;
 using Aer.Flow.Projection;
 
-namespace Aer.Ui.Core;
+namespace Aer.RoomSession;
 
 /// <summary>
 /// A room directory's projected state, reconstructed purely from durable data (UI spec §3, §11):

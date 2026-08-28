@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Aer.Ui.Core;
+namespace Aer.RoomSession;
 
 /// <summary>
 /// Local UI Configuration (UI spec §3.1, §4): a remembered list of recently opened room

@@ -1,6 +1,6 @@
 using Aer.Flow.Domain;
 
-namespace Aer.Ui.Core;
+namespace Aer.RoomSession;
 
 /// <summary>
 /// The room's files as one list (0021 §2; #1340, slice 1 of the plan the issue names) — a

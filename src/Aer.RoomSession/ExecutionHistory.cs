@@ -1,6 +1,6 @@
 using Aer.Flow.Domain;
 
-namespace Aer.Ui.Core;
+namespace Aer.RoomSession;
 
 /// <summary>
 /// The read-model surface <see cref="Aer.Flow.Domain.FlowState"/> deliberately omits: every
