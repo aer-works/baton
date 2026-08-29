@@ -673,10 +673,11 @@ def _recordonce_hostile_codec_decodes_git():
     # reason this arm is written this way.
     #
     # What shipped was `text=True` with no `encoding`, which decodes with the LOCALE codec. Emptying
-    # GIT_TEXT restores that call exactly -- and on a UTF-8 host it injects nothing at all, because
-    # the locale codec then decodes the bytes fine. CI runs `audit-controls` on ubuntu-latest, where
-    # that is the case, so the faithful injection is a no-op there and this arm would report STAYED
-    # GREEN: a control failing for a reason with nothing to do with the defect it names.
+    # GIT_TEXT restores that call exactly -- and on a host whose locale codec happens to decode the
+    # bytes fine, that injection is a no-op, so this arm would report STAYED GREEN: a control failing
+    # for a reason with nothing to do with the defect it names. Which host codec that is varies by
+    # machine (CI runs `audit-controls` on windows-latest, #1405, but the point holds regardless of
+    # which host runs it), which is exactly why relying on it would be unportable.
     #
     # Pinning cp1252 models the general fault the shipped one was an instance of -- git output
     # decoded by a codec that cannot represent it -- and does so identically on every platform. The

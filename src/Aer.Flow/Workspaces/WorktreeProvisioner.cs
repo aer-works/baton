@@ -365,9 +365,11 @@ public static class WorktreeProvisioner
     /// temp roots (<c>/var</c>, <c>/tmp</c>, <c>/etc</c>) are symlinks into <c>/private</c> — git
     /// prints the resolved spelling in <c>worktree list</c>, so a caller-supplied <c>/var/...</c>
     /// path must compare equal to git's <c>/private/var/...</c> or the idempotence check (#1023)
-    /// can never recognise its own worktree there (#1103, the standing macos CI failure).
+    /// can never recognise its own worktree there (#1103, fixing what was then a macOS CI failure;
+    /// no longer exercised on any CI leg now that the matrix is Windows-only, #1405, but harmless to
+    /// keep -- a Windows path never starts with <c>/private/</c>, so this is a no-op there).
     /// Accepted edge: on non-macOS, a literal <c>/private/</c>-rooted directory would compare
-    /// equal to its stripped twin — a layout nothing here produces, priced below the CI fix.
+    /// equal to its stripped twin — a layout nothing here produces, priced below the original fix.
     /// </summary>
     internal static string NormalizeForComparison(string fullPath)
     {

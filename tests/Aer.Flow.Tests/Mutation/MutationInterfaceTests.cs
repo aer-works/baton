@@ -285,8 +285,8 @@ public class MutationInterfaceTests
     {
         public Task<CoreDispatchResult> DispatchAsync(ExecutionRequest request, CoreDispatchTarget target, CancellationToken cancellationToken = default)
         {
-            // The binding's own exception type, the shape a missing binary or an unguarded
-            // over-long POSIX command line actually surfaces as (#747's review, finding 3).
+            // The binding's own exception type, the shape a missing binary or a bad working
+            // directory actually surfaces as (#747's review, finding 3).
             throw new Aer.Core.AerException(Aer.Core.AerErrorCode.SpawnFailed);
         }
     }
