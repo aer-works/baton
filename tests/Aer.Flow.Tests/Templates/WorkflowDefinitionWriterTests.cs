@@ -136,7 +136,7 @@ public class WorkflowDefinitionWriterTests
     [Fact]
     public void Serialize_emits_indented_human_editable_json()
     {
-        // A template is a hand-editable file (spec §11.1's own framing) — indented like the repo's
+        // A template is a hand-editable file — indented like the repo's
         // hand-authored fixtures, not SnapshotBinder's compact machine-only form.
         var json = WorkflowDefinitionWriter.Serialize(ThreeStepLinearDefinition());
 

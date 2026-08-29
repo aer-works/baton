@@ -7,7 +7,7 @@ using Aer.Flow.Tests.TestSupport;
 namespace Aer.Flow.Tests.Mutation;
 
 /// <summary>
-/// M9 Phase 3 (§17.2's <c>RetryWithRevision</c>/<c>Supersede</c> consequences and §17.5's
+/// M9 Phase 3 (<c>RetryWithRevision</c>/<c>Supersede</c> consequences and the
 /// invalidation cascade): mutation-level tests against a <see cref="StubCoreDispatcher"/>. Proves
 /// the two decision types that mint new work actually dispatch it, that the supplementary artifact
 /// reaches the new dispatch as <c>AER_SUPPLEMENTARY_INPUT</c>, that the cascade needs no mechanism
@@ -63,7 +63,7 @@ public class MutationInterfaceRevisionTests
             var finalState = await resumedTask;
 
             // Architect's PausePoint pauses on every settled round, including a successful retry —
-            // the fresh ExecutionId has never itself been paused (§17.1).
+            // the fresh ExecutionId has never itself been paused.
             Assert.Equal(WorkflowStatus.Paused, finalState.Status);
             var architect = Assert.Single(finalState.Steps);
             Assert.Equal(StepStatus.Paused, architect.Status);
@@ -176,7 +176,7 @@ public class MutationInterfaceRevisionTests
             attempt2.SetResult(Succeeded);
             var finalState = await recoveredTask;
 
-            // Architect's PausePoint pauses again once the reopened round settles (§17.1) — what
+            // Architect's PausePoint pauses again once the reopened round settles — what
             // matters here is that the consequence dispatched at all, on a fresh ExecutionId.
             var architect = Assert.Single(finalState.Steps);
             Assert.Equal(StepStatus.Paused, architect.Status);
@@ -249,7 +249,7 @@ public class MutationInterfaceRevisionTests
     [Fact]
     public async Task Supersede_drives_the_full_architect_critic_cascade_to_a_second_pause_then_Resume()
     {
-        // §17.5's own example, reproduced end to end: Architect succeeds, Critic succeeds and
+        // The Supersede example, reproduced end to end: Architect succeeds, Critic succeeds and
         // pauses with SupersedeTargets: [Architect], a Supersede naming Critic's own execution as
         // the supplement reruns Architect, Architect's success makes Critic stale via condition 2
         // and Critic reruns automatically with no separate cascade mechanism, Critic pauses again
@@ -305,7 +305,7 @@ public class MutationInterfaceRevisionTests
             Assert.NotEqual(architectExecutionId1, architectExecutionId2);
             Assert.NotEqual(criticExecutionId1, criticExecutionId2);
 
-            // A1's artifact directory is untouched — history is never cleaned up (§10, §16).
+            // A1's artifact directory is untouched — history is never cleaned up.
             Assert.True(Directory.Exists(architectOutputDirectory1));
 
             var criticAccepted = (await reader.ReadAllAsync(TestContext.Current.CancellationToken))

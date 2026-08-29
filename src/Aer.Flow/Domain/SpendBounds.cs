@@ -1,7 +1,7 @@
 namespace Aer.Flow.Domain;
 
 /// <summary>
-/// Spend bounds recorded in a grant (§C defaults). Exceeding any raises a Spend escalation.
+/// Spend bounds recorded in a grant. Exceeding any raises a Spend escalation.
 /// </summary>
 public sealed record SpendBounds(
     int MaxPerRunMinutes = 20,

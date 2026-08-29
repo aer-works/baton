@@ -4,7 +4,7 @@ namespace Aer.Flow.Domain;
 
 /// <summary>
 /// A logical execution target (e.g. <c>claude</c>, <c>agy</c>, <c>git</c>) bound to a typed
-/// contract, not a vendor name (spec §4). A <see cref="WorkflowStepDefinition"/> declares which
+/// contract, not a vendor name. A <see cref="WorkflowStepDefinition"/> declares which
 /// contract it requires; the concrete binary is resolved via configuration external to the
 /// workflow.
 /// </summary>
@@ -43,9 +43,9 @@ public static class ReservedOutputNames
         "a declared output cannot start with '.' — that namespace is reserved for engine-written files, such as ExecutionStreamLogger's stream logs";
 }
 
-/// <summary>A named output file role a <see cref="WorkerContract"/> requires (spec §4).</summary>
+/// <summary>A named output file role a <see cref="WorkerContract"/> requires.</summary>
 /// <param name="Schema">
-/// A declared document shape the file must parse as (spec §4.2, decision 0043) — the structural
+/// A declared document shape the file must parse as (decision 0043) — the structural
 /// sibling of <paramref name="Condition"/>. Serialized only when set, so contracts that predate
 /// the field round-trip byte-identically.
 /// </param>
@@ -74,7 +74,7 @@ public sealed record ProducedOutput
 }
 
 /// <summary>
-/// The closed set of shapes a <see cref="ProducedOutput"/> can declare (spec §4.2). Validation is
+/// The closed set of shapes a <see cref="ProducedOutput"/> can declare. Validation is
 /// parse-only in every case: the engine checks the file <i>is</i> the shape, and never reads its
 /// content to route (Architecture Rule 1; decision 0043's boundary).
 /// </summary>
@@ -93,7 +93,7 @@ public enum OutputSchema
 
 /// <summary>
 /// Extends a <see cref="ProducedOutput"/>'s contract from "this file must exist" to "this file
-/// must exist and say this" (spec §4.1). Satisfied only when the file exists, parses as JSON, the
+/// must exist and say this". Satisfied only when the file exists, parses as JSON, the
 /// <paramref name="Path"/> JSON Pointer resolves, and the resolved value equals
 /// <paramref name="EqualsValue"/>.
 /// </summary>

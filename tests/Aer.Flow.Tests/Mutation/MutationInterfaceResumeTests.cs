@@ -204,7 +204,7 @@ public class MutationInterfaceResumeTests
             var workflowId = new WorkflowId("wf");
 
             // A request accepted with no terminal event: the same shape a genuinely-live dispatch
-            // and a crashed-mid-flight one are indistinguishable as (spec §6) -- both project Running.
+            // and a crashed-mid-flight one are indistinguishable -- both project Running.
             var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
             var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
             var request = new ExecutionRequest(

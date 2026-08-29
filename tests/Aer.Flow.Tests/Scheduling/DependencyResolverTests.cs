@@ -132,7 +132,7 @@ public class DependencyResolverTests
     [Fact]
     public void A_step_already_succeeded_whose_dependency_was_since_superseded_becomes_ready_again()
     {
-        // §17.5: Architect's original success was A1; Critic ran against A1. Architect was
+        // Architect's original success was A1; Critic ran against A1. Architect was
         // superseded and now has a newer success A2 — Critic's recorded upstream (A1) no longer
         // matches Architect's current latest success, so Critic is stale and ready to rerun.
         var supersededArchitectExecutionId = new ExecutionId("A1");
@@ -273,7 +273,7 @@ public class DependencyResolverTests
     public void A_pending_Supersede_target_is_ready_even_though_it_already_succeeded_with_no_stale_dependency()
     {
         // Architect has no DependsOn, so nothing about it could ever be "stale" via condition 2 —
-        // the only reason it is ready again is IsPendingSupersedeTarget (§17.5's direct consequence).
+        // the only reason it is ready again is IsPendingSupersedeTarget (Supersede's direct consequence).
         var state = new FlowState(
             new WorkflowDefinitionSnapshotId("snapshot-1"),
             [

@@ -49,7 +49,7 @@ internal sealed class StubCoreDispatcher : ICoreDispatcher
         CoreDispatchTarget target,
         CancellationToken cancellationToken = default)
     {
-        // Only ever dispatched for a step-tied, process-bound request (§17.3) — StepId is always
+        // Only ever dispatched for a step-tied, process-bound request — StepId is always
         // set here.
         var stepId = request.StepId!.Value;
 

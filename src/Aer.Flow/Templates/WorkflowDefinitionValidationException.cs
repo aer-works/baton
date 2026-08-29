@@ -4,9 +4,9 @@ namespace Aer.Flow.Templates;
 
 /// <summary>
 /// Raised when a candidate <see cref="WorkflowDefinition"/> fails to parse or fails structural
-/// validation (spec §11.1): malformed JSON, duplicate <see cref="StepId"/>s, a <c>DependsOn</c>
+/// validation: malformed JSON, duplicate <see cref="StepId"/>s, a <c>DependsOn</c>
 /// reference to an undeclared <see cref="StepId"/>, a cyclic <c>DependsOn</c> graph, or a
-/// <c>SupersedeTargets</c> entry that is not a transitive ancestor of the declaring step (§17.1).
+/// <c>SupersedeTargets</c> entry that is not a transitive ancestor of the declaring step.
 /// Carries every violation found, not just the first, so a caller can fix a template in one pass.
 /// </summary>
 public sealed class WorkflowDefinitionValidationException : AerFlowException

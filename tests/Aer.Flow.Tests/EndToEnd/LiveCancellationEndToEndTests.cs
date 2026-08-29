@@ -9,7 +9,7 @@ using static Aer.Flow.Tests.TestSupport.ShellWorkerCommands;
 namespace Aer.Flow.Tests.EndToEnd;
 
 /// <summary>
-/// M10 Phase 4 (issue #72): §9's live-cancellation delivery and §9 step 4's too-late no-op, proved
+/// M10 Phase 4 (issue #72): live-cancellation delivery and the too-late no-op on step 4, proved
 /// against real, genuinely long-running processes on a real filesystem — no stub dispatcher, unlike
 /// <c>MutationInterfaceLiveCancellationTests</c> (M10 Phase 2's own mutation-level suite), which this
 /// file is the real-process counterpart to. Every "is it actually still running" wait below polls
@@ -76,7 +76,7 @@ public class LiveCancellationEndToEndTests
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
 
-            // No retry despite B's remaining budget (§10): still exactly one attempt for it.
+            // No retry despite B's remaining budget: still exactly one attempt for it.
             Assert.Single(events.OfType<FlowEvent.ExecutionRequestAccepted>(), e => e.Request.StepId == B);
             Assert.DoesNotContain(events.OfType<FlowEvent.ExecutionRequestAccepted>(), e => e.Request.StepId == D);
 

@@ -6,7 +6,7 @@ namespace Aer.Flow.Outcomes;
 
 /// <summary>
 /// Walks a <see cref="WorkerContract"/>'s <c>ProducedOutputs</c> and asserts each is satisfied on
-/// disk (spec §8, §4.1): the file must exist and, if it declares an <see cref="OutputCondition"/>,
+/// disk: the file must exist and, if it declares an <see cref="OutputCondition"/>,
 /// the JSON Pointer in that condition must resolve to a value equal to the condition's literal.
 /// Exit code 0 is necessary but not sufficient for <c>ExecutionSucceeded</c> — this is the
 /// "sufficient" half the <see cref="OutcomeClassifier"/> consults.
@@ -112,7 +112,7 @@ public static class ContractValidator
     }
 
     /// <summary>
-    /// Evaluates a declared <see cref="OutputSchema"/> (spec §4.2): parse-only, per decision 0043 —
+    /// Evaluates a declared <see cref="OutputSchema"/>: parse-only, per decision 0043 —
     /// the file either is the declared shape or the output is unsatisfied with the parser's own
     /// sentence as detail. Content is never interpreted beyond parsing.
     /// </summary>
@@ -141,7 +141,7 @@ public static class ContractValidator
         }
         catch (JsonException)
         {
-            // §4.1 clause 2: a condition may only be declared on a JSON output. A file that fails
+            // A condition may only be declared on a JSON output. A file that fails
             // to parse as JSON fails the condition, exactly like a missing file — but distinguishably so.
             return new UnsatisfiedOutput(outputName, UnsatisfiedOutputReason.NotJson);
         }
@@ -373,7 +373,7 @@ public enum UnsatisfiedOutputReason
     MalformedCondition,
 
     /// <summary>
-    /// The file exists but does not parse as its declared <see cref="OutputSchema"/> (spec §4.2).
+    /// The file exists but does not parse as its declared <see cref="OutputSchema"/>.
     /// <see cref="UnsatisfiedOutput.Detail"/> carries the parser's one-sentence why.
     /// </summary>
     SchemaViolation,

@@ -4,7 +4,7 @@ namespace Aer.Flow.Domain;
 
 /// <summary>
 /// The physical line union for the single combined <c>flow.jsonl</c> file (M7 Phase 6's dual-log
-/// ownership decision — spec §5.1 defines two logical logs but leaves the storage backend
+/// ownership decision — spec/baton.md §2 defines two logical logs but leaves the storage backend
 /// implementation-defined; a later merge into one physical store is explicitly permitted as long
 /// as "each log has exactly one writer role" still holds per event type). Wrapping
 /// <see cref="FlowEvent"/> and <see cref="CoreEvent"/> in distinct, non-interchangeable
@@ -22,16 +22,16 @@ public abstract record LogEntry
     {
     }
 
-    /// <summary>A line written by Flow's own mutation logic (spec §5.1's <c>flow.jsonl</c> owner).</summary>
+    /// <summary>A line written by Flow's own mutation logic (spec/baton.md §2's <c>flow.jsonl</c> owner).</summary>
     public sealed record FlowLogEntry(FlowEvent Event, DateTime? WriterUtcTimestamp = null) : LogEntry;
 
     /// <summary>
-    /// A line written by the Core Dispatcher on Core's behalf (spec §5.1's <c>events.jsonl</c>
-    /// owner) — Flow never originates these, it only durably records what Core reported.
+    /// A line written by the Core Dispatcher on Core's behalf — Flow never originates these, it
+    /// only durably records what Core reported.
     /// </summary>
     public sealed record CoreLogEntry(CoreEvent Event, DateTime? WriterUtcTimestamp = null) : LogEntry;
 
-    /// <summary>A line written by the holding room's engine (spec §5.1's <c>room.jsonl</c> owner).</summary>
+    /// <summary>A line wrapping a room event (spec/baton.md §2's <c>room.jsonl</c> log).</summary>
     public sealed record RoomLogEntry(RoomEvent Event, DateTime? WriterUtcTimestamp = null) : LogEntry;
 }
 

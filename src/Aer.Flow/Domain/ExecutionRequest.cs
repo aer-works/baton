@@ -2,22 +2,22 @@ namespace Aer.Flow.Domain;
 
 /// <summary>
 /// The immutable unit of execution, shared by identity across Flow's and Core's halves of the
-/// Event Store (spec §3). Immutable once emitted — never mutated, never reused; a retry is a
-/// brand-new <see cref="ExecutionRequest"/> with a brand-new <see cref="ExecutionId"/> (§10).
+/// Event Store. Immutable once emitted — never mutated, never reused; a retry is a
+/// brand-new <see cref="ExecutionRequest"/> with a brand-new <see cref="ExecutionId"/>.
 /// </summary>
 /// <param name="StepId">
 /// <c>null</c> for a step-less supplementary execution minted outside the DAG during a pause
-/// (spec §17.3) — never associated with any <see cref="WorkflowStepDefinition"/>, and therefore
-/// never perturbing any step's latest-attempt projection (§12).
+/// — never associated with any <see cref="WorkflowStepDefinition"/>, and therefore
+/// never perturbing any step's latest-attempt projection.
 /// </param>
 /// <param name="Timeout">
 /// <c>null</c> for a <see cref="Mutation.WorkerBinding.NonProcess"/> dispatch — nothing runs as a
-/// Core process, so nothing can time out (§17.3).
+/// Core process, so nothing can time out.
 /// </param>
 /// <param name="UpstreamExecutionIds">
 /// For each <see cref="StepId"/> this step depends on, exactly which of that dependency's
 /// <see cref="ExecutionId"/>s this request's <paramref name="Inputs"/> were derived from. This is
-/// what makes staleness (§11.3, §17.5) derivable purely by reading the log.
+/// what makes staleness derivable purely by reading the log.
 /// </param>
 /// <param name="LinkedFromExecutionId">
 /// The prior execution this one continues (issue #1359's <c>aer resume</c>): the same step's own

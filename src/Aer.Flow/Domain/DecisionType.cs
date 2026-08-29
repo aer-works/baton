@@ -1,7 +1,7 @@
 namespace Aer.Flow.Domain;
 
 /// <summary>
-/// The kind of external decision recorded in response to a paused workflow (spec §17.2). A small,
+/// The kind of external decision recorded in response to a paused workflow (spec/baton.md §5). A small,
 /// closed set Flow itself acts on differently — not an open string.
 /// </summary>
 public enum DecisionType

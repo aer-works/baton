@@ -27,8 +27,8 @@ public abstract class StringIdJsonConverter<T> : JsonConverter<T>
 }
 
 /// <summary>
-/// Globally unique, generated once by Flow (spec §3). The sole join key between Flow-owned and
-/// Core-owned events for a given execution — never associated by timestamp or file order (§6).
+/// Globally unique, generated once by Flow. The sole join key between Flow-owned and
+/// Core-owned events for a given execution — never associated by timestamp or file order.
 /// </summary>
 [JsonConverter(typeof(Converter))]
 public readonly record struct ExecutionId(string Value)
@@ -42,7 +42,7 @@ public readonly record struct ExecutionId(string Value)
     }
 }
 
-/// <summary>Identifies the workflow task an <see cref="ExecutionRequest"/> belongs to (spec §3).</summary>
+/// <summary>Identifies the workflow task an <see cref="ExecutionRequest"/> belongs to.</summary>
 [JsonConverter(typeof(Converter))]
 public readonly record struct WorkflowId(string Value)
 {
@@ -57,7 +57,7 @@ public readonly record struct WorkflowId(string Value)
 
 /// <summary>
 /// Identifies a step within a <see cref="WorkflowDefinition"/>. <c>DependsOn</c> references
-/// <see cref="StepId"/>, never <see cref="ExecutionId"/> (spec §11.3).
+/// <see cref="StepId"/>, never <see cref="ExecutionId"/>.
 /// </summary>
 [JsonConverter(typeof(Converter))]
 public readonly record struct StepId(string Value)
@@ -71,7 +71,7 @@ public readonly record struct StepId(string Value)
     }
 }
 
-/// <summary>Identifies a <see cref="WorkflowDefinition"/> template, stable across versions (spec §11.1).</summary>
+/// <summary>Identifies a <see cref="WorkflowDefinition"/> template, stable across versions.</summary>
 [JsonConverter(typeof(Converter))]
 public readonly record struct WorkflowTemplateId(string Value)
 {
@@ -84,7 +84,7 @@ public readonly record struct WorkflowTemplateId(string Value)
     }
 }
 
-/// <summary>Globally unique, generated once by Flow when a template is bound to a task (spec §11.2).</summary>
+/// <summary>Globally unique, generated once by Flow when a template is bound to a task.</summary>
 [JsonConverter(typeof(Converter))]
 public readonly record struct WorkflowDefinitionSnapshotId(string Value)
 {
@@ -97,7 +97,7 @@ public readonly record struct WorkflowDefinitionSnapshotId(string Value)
     }
 }
 
-/// <summary>Identifies an <see cref="FlowEvent.ExternalDecisionRecorded"/> event (spec §17.2).</summary>
+/// <summary>Identifies an <see cref="FlowEvent.ExternalDecisionRecorded"/> event (spec/baton.md §5).</summary>
 [JsonConverter(typeof(Converter))]
 public readonly record struct DecisionId(string Value)
 {
@@ -124,7 +124,7 @@ public readonly record struct HeldWorkRef(string Value)
     }
 }
 
-/// <summary>Identifies a grant issued to a worker (§D).</summary>
+/// <summary>Identifies a grant issued to a worker.</summary>
 [JsonConverter(typeof(Converter))]
 public readonly record struct GrantId(string Value)
 {
@@ -137,7 +137,7 @@ public readonly record struct GrantId(string Value)
     }
 }
 
-/// <summary>Identifies a worker instance (§D).</summary>
+/// <summary>Identifies a worker instance.</summary>
 [JsonConverter(typeof(Converter))]
 public readonly record struct WorkerId(string Value)
 {

@@ -3,7 +3,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Store;
 
 /// <summary>
-/// Appends room events to <c>room.jsonl</c> (spec §5.1 / #798).
+/// Appends room events to <c>room.jsonl</c> (#798).
 /// Owner tag is <c>"owner": "room"</c> on the <see cref="LogEntry"/> envelope.
 /// </summary>
 public interface IRoomEventLogWriter

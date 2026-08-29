@@ -46,8 +46,8 @@ internal static class ShellWorkerCommands
 
     /// <summary>
     /// Fails its first invocation and succeeds every one after, keyed off a marker file at a fixed
-    /// path outside <c>AER_OUTPUT_DIR</c> — each attempt's output directory is fresh by design
-    /// (§16), so durable state across attempts has to live somewhere else.
+    /// path outside <c>AER_OUTPUT_DIR</c> — each attempt's output directory is fresh by design,
+    /// so durable state across attempts has to live somewhere else.
     /// </summary>
     public static CoreDispatchTarget FailOnFirstAttemptThenSucceed(string markerFilePath, string outputName, string content) => OperatingSystem.IsWindows()
         ? new CoreDispatchTarget(
@@ -82,10 +82,10 @@ internal static class ShellWorkerCommands
     }
 
     /// <summary>
-    /// Spec §10.1's bounded self-iteration pattern: writes <paramref name="verdictFileName"/> with
+    /// The bounded self-iteration pattern: writes <paramref name="verdictFileName"/> with
     /// <c>{"status":"needs_revision"}</c> on its first invocation and <c>{"status":"approved"}</c>
     /// on every one after, keyed off a marker file outside <c>AER_OUTPUT_DIR</c> — each attempt's
-    /// output directory is fresh by design (§16), so durable state across attempts has to live
+    /// output directory is fresh by design, so durable state across attempts has to live
     /// elsewhere, same as <see cref="FailOnFirstAttemptThenSucceed"/>. Exits 0 both times: only the
     /// caller's declared <c>OutputCondition</c> on the produced output distinguishes the two attempts.
     /// </summary>
@@ -116,7 +116,7 @@ internal static class ShellWorkerCommands
     }
 
     /// <summary>
-    /// Spec §8.1's worker-reported short-circuit: always fails, self-reporting
+    /// The worker-reported short-circuit: always fails, self-reporting
     /// <see cref="Domain.FailureClassification.Permanent"/> through <paramref name="metadataFileName"/>
     /// regardless of remaining retry budget.
     /// </summary>
@@ -138,11 +138,11 @@ internal static class ShellWorkerCommands
     }
 
     /// <summary>
-    /// §17.2/§17.5's supplement convention (<c>AER_SUPPLEMENTARY_INPUT</c>): copies
+    /// The supplement convention (<c>AER_SUPPLEMENTARY_INPUT</c>): copies
     /// <paramref name="supplementaryFileName"/> from the supplementary execution's output directory
     /// to <paramref name="outputName"/> when a <see cref="Domain.DecisionType.RetryWithRevision"/>
     /// consequence attached one; exits non-zero otherwise, standing in for a worker with nothing to
-    /// retry against — exercises the §10 ↔ §17.2 seam end to end (M9 Phase 5, issue #61).
+    /// retry against — exercises the retry-vs-decision seam end to end (M9 Phase 5, issue #61).
     /// </summary>
     public static CoreDispatchTarget ConsumeSupplementaryInputElseFail(
         string scriptDirectory, string outputName, string supplementaryFileName)
@@ -174,7 +174,7 @@ internal static class ShellWorkerCommands
     /// <summary>
     /// Copies <c>AER_SUPPLEMENTARY_INPUT</c>'s <paramref name="supplementaryFileName"/> to
     /// <paramref name="outputName"/> when present (a <see cref="Domain.DecisionType.Supersede"/>
-    /// consequence, §17.5); otherwise writes <paramref name="baseContent"/>. The architect–critic
+    /// consequence); otherwise writes <paramref name="baseContent"/>. The architect–critic
     /// loop's Architect: its second run must consume the critic's feedback rather than repeat its
     /// first run's output, so the cascade is observably driven by the supplement, not coincidence.
     /// </summary>

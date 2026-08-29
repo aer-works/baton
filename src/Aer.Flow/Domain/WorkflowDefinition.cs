@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Aer.Flow.Domain;
 
 /// <summary>
-/// Declarative structure only — no loops, no conditionals, no runtime logic (spec §11.1). Editable
+/// Declarative structure only — no loops, no conditionals, no runtime logic. Editable
 /// and versionable; not itself bound to any running task. <see cref="WorkflowTemplateVersion"/>
 /// increments on every edit that is instantiated from.
 /// </summary>
@@ -12,7 +12,7 @@ public sealed record WorkflowDefinition(
     int WorkflowTemplateVersion,
     IReadOnlyList<WorkflowStepDefinition> Steps);
 
-/// <summary>A single step in a <see cref="WorkflowDefinition"/> template (spec §11.1).</summary>
+/// <summary>A single step in a <see cref="WorkflowDefinition"/> template.</summary>
 public sealed record WorkflowStepDefinition(
     StepId StepId,
     string Worker,
@@ -22,7 +22,7 @@ public sealed record WorkflowStepDefinition(
     RetryPolicy RetryPolicy,
     PausePoint? PausePoint = null);
 
-/// <summary>Governs whether a failure triggers a new <see cref="ExecutionRequest"/> (spec §10).</summary>
+/// <summary>Governs whether a failure triggers a new <see cref="ExecutionRequest"/>.</summary>
 [method: JsonConstructor]
 public sealed record RetryPolicy(int MaxAttempts, BackoffPolicy Backoff)
 {
@@ -33,7 +33,7 @@ public sealed record RetryPolicy(int MaxAttempts, BackoffPolicy Backoff)
     public RetryPolicy(int MaxAttempts) : this(MaxAttempts, BackoffPolicy.Default) { }
 }
 
-/// <summary>Controls the random jitter applied to retry backoff delays (#712; spec §10).</summary>
+/// <summary>Controls the random jitter applied to retry backoff delays (#712).</summary>
 public enum JitterMode
 {
     /// <summary>No jitter is applied; delays are deterministic exponential intervals.</summary>
@@ -43,7 +43,7 @@ public enum JitterMode
     Half
 }
 
-/// <summary>Configures backoff growth, cap, and jitter strategy for retry delays (#712; spec §10).</summary>
+/// <summary>Configures backoff growth, cap, and jitter strategy for retry delays (#712).</summary>
 [JsonConverter(typeof(BackoffPolicyJsonConverter))]
 public sealed record BackoffPolicy(TimeSpan Initial, double Multiplier, TimeSpan Cap, JitterMode Jitter)
 {
@@ -90,7 +90,7 @@ public sealed record BackoffPolicy(TimeSpan Initial, double Multiplier, TimeSpan
 /// <summary>
 /// Distinguishes <em>why</em> a <see cref="PausePoint"/> stopped the DAG, so the two human acts a
 /// pause can demand — answering a question versus approving finished work — render and filter as the
-/// separate states they are (spec §17.1, issue #334). A pause's kind is a static property of the step
+/// separate states they are (issue #334). A pause's kind is a static property of the step
 /// that declares the pause point: it is invariant per declaration, never a per-execution worker
 /// signal (execution outcomes carry no done/needs-input flag — see <see cref="FlowEvent.ExecutionSucceeded"/>).
 /// It is therefore derived from the bound <see cref="WorkflowDefinitionSnapshot"/> at projection time
@@ -119,7 +119,7 @@ public enum PausePointKind
 
 /// <summary>
 /// Declared on a step to have Flow append <see cref="FlowEvent.WorkflowPaused"/> instead of immediately
-/// evaluating downstream readiness when the step reaches a terminal outcome (spec §17.1).
+/// evaluating downstream readiness when the step reaches a terminal outcome.
 /// </summary>
 /// <param name="SupersedeTargets">
 /// The set of earlier <see cref="StepId"/>s a <see cref="DecisionType.Supersede"/> decision made at

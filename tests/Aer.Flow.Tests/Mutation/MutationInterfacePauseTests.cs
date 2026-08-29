@@ -7,10 +7,10 @@ using Aer.Flow.Tests.TestSupport;
 namespace Aer.Flow.Tests.Mutation;
 
 /// <summary>
-/// M9 Phase 1 (Pause Engine, §17.1): mutation-level tests against a
+/// M9 Phase 1 (Pause Engine): mutation-level tests against a
 /// <see cref="StubCoreDispatcher"/> proving <see cref="MutationInterface.StartWorkflowAsync"/>
 /// appends <see cref="FlowEvent.WorkflowPaused"/> as a derived obligation at the right moment,
-/// blocks downstream readiness while paused, retries a failing <c>PausePoint</c> step per §10
+/// blocks downstream readiness while paused, retries a failing <c>PausePoint</c> step per the retry policy
 /// before pausing, and never re-pauses on a second call against an already-paused log.
 /// </summary>
 public class MutationInterfacePauseTests
@@ -86,7 +86,7 @@ public class MutationInterfacePauseTests
             Assert.Equal(A, await ReadNextDispatchAsync(stub));
             attempt1.SetResult(Failed);
 
-            // §10 runs first: budget remains, so the first failure must not pause — a second attempt
+            // The retry policy runs first: budget remains, so the first failure must not pause — a second attempt
             // dispatches instead.
             Assert.Equal(A, await ReadNextDispatchAsync(stub));
             attempt2.SetResult(Failed);

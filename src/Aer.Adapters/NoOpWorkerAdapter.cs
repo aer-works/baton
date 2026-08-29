@@ -6,8 +6,8 @@ namespace Aer.Adapters;
 /// <summary>
 /// Production worker for bookkeeping-only DAG steps that do no real work (M24 Phase 5.2, #285):
 /// <see cref="InteractiveSessionMaterializer"/>'s chat continuation needs a downstream anchor step
-/// purely to give a repeated-turn <c>Supersede</c> (spec §17.5) a legal, non-self-referencing target
-/// -- <c>Supersede</c>'s target must be a distinct transitive ancestor (§17.1), and a single "chat"
+/// purely to give a repeated-turn <c>Supersede</c> a legal, non-self-referencing target
+/// -- <c>Supersede</c>'s target must be a distinct transitive ancestor, and a single "chat"
 /// step has none. This adapter ignores <see cref="WorkerInvocation.PromptTemplate"/> entirely and
 /// writes its declared output instantly via a trivial shell invocation -- no vendor CLI, no network,
 /// no meaningful cost or latency (Adapter Isolation, CLAUDE.md: this is not a vendor, so it carries

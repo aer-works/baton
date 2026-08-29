@@ -57,7 +57,7 @@ public class WorkflowOutcomeAndExitCodeTests
     public void A_step_whose_only_failure_was_a_dispatch_timeout_resolves_to_exit_3_not_the_generic_Failed_bucket()
     {
         // The exact sentence OutcomeClassifier.Classify writes for CoreExitReason.TimedOut -- the
-        // only signal this distinction has (spec §8.1 has no structural Timeout classification).
+        // only signal this distinction has (there is no structural Timeout classification).
         var state = TerminalState([Step("a", StepStatus.Failed, reason: "Execution timed out. stderr: …")]);
 
         // The JSON/human-facing outcome word stays the coarse "Failed" -- #1356 point 1's shape

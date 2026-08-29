@@ -4,16 +4,16 @@ using Aer.Flow.Mutation;
 namespace Aer.Flow.Outcomes;
 
 /// <summary>
-/// Capability 11's non-process cancellation half (spec §9 steps 2-3, vacuous with no process):
+/// Capability 11's non-process cancellation half (vacuous with no process):
 /// finds every unfulfilled <see cref="FlowEvent.CancellationRequested"/> — <see cref="FlowState.CancellationRequestedExecutionIds"/>
 /// — that names a still-<see cref="StepStatus.Running"/> execution with no live Core process behind
 /// it, either a step bound to a <see cref="WorkerBinding.NonProcess"/> worker or a step-less
-/// supplementary execution (which is always non-process by construction, §17.3). With nothing to
+/// supplementary execution (which is always non-process by construction). With nothing to
 /// forward to Core, Flow is already the outcome authority for this tier (M9 Phase 4), so the same
 /// round's derived obligation finalizes these directly. Consulted at the top of every scheduling
 /// round, exactly like <see cref="NonProcessCompletionDetector"/>'s derived obligation, so a crash
 /// between the intent and this finalization simply re-evaluates the identical projected fact on the
-/// next mutation call (§7, §13). A <see cref="WorkerBinding.Process"/> target's unfulfilled request
+/// next mutation call. A <see cref="WorkerBinding.Process"/> target's unfulfilled request
 /// is left untouched here — delivering it to a live Core execution is Phase 2's machinery.
 /// </summary>
 public static class NonProcessCancellationDetector

@@ -10,8 +10,8 @@ using Aer.Flow.Workspaces;
 namespace Aer.Cli;
 
 /// <summary>
-/// <c>aer decide</c> (M12 Phase 3): exposes <see cref="MutationInterface.RecordDecisionAsync"/> on
-/// the CLI — UI spec §7's reference mapping made real. The vocabulary is exactly §17.2's closed set
+/// <c>aer decide</c>: exposes <see cref="MutationInterface.RecordDecisionAsync"/> on
+/// the CLI. The vocabulary is exactly the closed set
 /// (<see cref="Domain.DecisionType"/>); every validity rule (which options a given type requires or
 /// forbids) stays <c>ExternalDecisionValidator</c>'s, never re-implemented here. Like
 /// <see cref="CancelCommand"/>, this never binds a fresh snapshot, and recording a decision resumes
@@ -32,7 +32,7 @@ public static class DecideCommand
     /// <exception cref="UnknownWorkerAdapterException">
     /// The worker-binding config names an adapter not present in <paramref name="adapters"/>.
     /// </exception>
-    /// <exception cref="InvalidExternalDecisionException">The decision violates one of §17.2's rules.</exception>
+    /// <exception cref="InvalidExternalDecisionException">The decision violates one of the closed set's rules.</exception>
     /// <exception cref="Aer.Flow.Concurrency.WorkflowLockedException">
     /// record-once-ok: #443 src/Aer.Cli/RunCommand.cs
     /// Another Flow instance already holds this room directory's lock.

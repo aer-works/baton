@@ -5,16 +5,16 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Store;
 
 /// <summary>
-/// Appends <see cref="LogEntry"/> lines to the combined <c>flow.jsonl</c> (spec §5.1) with the
-/// crash-durability guarantees required by §5.3 and §7:
+/// Appends <see cref="LogEntry"/> lines to the combined <c>flow.jsonl</c> with the
+/// crash-durability guarantees required:
 /// <list type="bullet">
 /// <item>Each entry is serialized to one newline-terminated line and written in a single call,
-/// so a reader tailing the file can only ever observe a complete line or nothing yet (§5.3) —
+/// so a reader tailing the file can only ever observe a complete line or nothing yet —
 /// never a torn one.</item>
 /// <item>Every write is fsync'd (or the equivalent durable flush) before either
 /// <c>AppendAsync</c> overload returns, so a caller cannot proceed to the next write-sequence
 /// step — e.g. dispatching an <see cref="ExecutionRequest"/> to Core — before the preceding
-/// intent is durable (§7).</item>
+/// intent is durable.</item>
 /// </list>
 /// Implements both <see cref="IEventLogWriter"/> (Flow's own events) and
 /// <see cref="ICoreEventLogWriter"/> (Core-originated lifecycle events, M7 Phase 6) over one

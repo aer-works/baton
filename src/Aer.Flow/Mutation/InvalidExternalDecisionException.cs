@@ -1,8 +1,8 @@
 namespace Aer.Flow.Mutation;
 
 /// <summary>
-/// Raised when a candidate <see cref="Domain.FlowEvent.ExternalDecisionRecorded"/> violates spec
-/// §17.2's closed-set validation rules: the referenced execution is not currently paused,
+/// Raised when a candidate <see cref="Domain.FlowEvent.ExternalDecisionRecorded"/> violates one of the
+/// closed-set validation rules: the referenced execution is not currently paused,
 /// <c>TargetStepId</c> is present without <see cref="Domain.DecisionType.Supersede"/> (or absent
 /// with it, or outside the pause point's declared <c>SupersedeTargets</c>), a
 /// <see cref="Domain.DecisionType.Supersede"/> target has not itself succeeded,

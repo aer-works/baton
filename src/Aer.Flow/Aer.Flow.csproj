@@ -7,9 +7,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- aer-core M5 .NET binding (P/Invoke wrapper over the M4 FFI boundary), pulled in via the
+    <!-- aer-core .NET binding (P/Invoke wrapper over the FFI boundary), pulled in via the
          external/aer-core submodule per CLAUDE.md's P/Invoke Layer rule. No package feed exists
-         for this yet — a single-developer project (AER Overview §6) doesn't need one; `pixi run
+         for this yet — a single-developer project doesn't need one; `pixi run
          build-core` builds the native lib the ProjectReference below expects. -->
     <ProjectReference Include="..\..\external\aer-core\bindings\dotnet\Aer.Core\Aer.Core.csproj" />
   </ItemGroup>

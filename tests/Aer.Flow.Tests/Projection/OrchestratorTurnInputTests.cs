@@ -206,7 +206,7 @@ public class OrchestratorTurnInputTests
             var turn = await OrchestratorTurnInput.AssembleAsync(roomDir, [wake], TestContext.Current.CancellationToken);
 
             // Assembly alone must leave NO cursor on disk -- only an explicit CommitTurn does,
-            // which is what makes a crashed turn re-schedulable (§E).
+            // which is what makes a crashed turn re-schedulable.
             var cursorAfterAssembleNoCommit = OrchestratorSessionStore.Load(roomDir);
             Assert.Null(cursorAfterAssembleNoCommit);
         }

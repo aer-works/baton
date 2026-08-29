@@ -4,7 +4,7 @@ using Aer.Flow.Mutation;
 namespace Aer.Flow.Tests.Mutation;
 
 /// <summary>
-/// M10 Phase 1 (§9): the validation matrix for <see cref="CancellationValidator.Validate"/> — a
+/// M10 Phase 1: the validation matrix for <see cref="CancellationValidator.Validate"/> — a
 /// pure function, no I/O — mirroring <see cref="ExternalDecisionValidatorTests"/>'s style.
 /// </summary>
 public class CancellationValidatorTests
@@ -25,7 +25,7 @@ public class CancellationValidatorTests
     [Fact]
     public void A_known_but_already_terminal_ExecutionId_is_still_valid()
     {
-        // §9 step 4: the too-late request is recorded, not rejected — validity here has nothing to
+        // The too-late request is recorded, not rejected — validity here has nothing to
         // do with whether the target has already reached a terminal outcome.
         var exception = Record.Exception(() => CancellationValidator.Validate(KnownSet, Known));
 

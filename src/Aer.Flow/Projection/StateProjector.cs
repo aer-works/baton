@@ -3,9 +3,9 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Projection;
 
 /// <summary>
-/// Reconstructs <see cref="FlowState"/> from event history (spec §12):
+/// Reconstructs <see cref="FlowState"/> from event history:
 /// <c>FlowState = Project(EventStore, WorkflowDefinitionSnapshot)</c>. A pure function — no I/O, no
-/// wall-clock time, no live process state (§13) — so identical inputs always produce an identical
+/// wall-clock time, no live process state — so identical inputs always produce an identical
 /// result. Supports incremental projection via <see cref="ProjectionCheckpoint"/> (#903 Scope 1).
 /// </summary>
 public static class StateProjector

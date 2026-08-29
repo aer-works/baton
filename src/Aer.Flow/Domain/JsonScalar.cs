@@ -5,7 +5,7 @@ namespace Aer.Flow.Domain;
 
 /// <summary>
 /// A scalar JSON literal — string, number, boolean, or null — used as the comparison value in an
-/// <see cref="OutputCondition"/> (spec §4.1). This is the entire condition language; it is
+/// <see cref="OutputCondition"/>. This is the entire condition language; it is
 /// deliberately tiny and excludes composition, ranges, and regex.
 /// </summary>
 [JsonConverter(typeof(JsonScalarConverter))]

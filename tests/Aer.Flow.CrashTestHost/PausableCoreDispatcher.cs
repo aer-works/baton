@@ -10,7 +10,7 @@ public enum DispatchPausePoint
     None,
 
     /// <summary>
-    /// Blocks before ever calling the inner dispatcher — manufactures §7's "intent recorded, no
+    /// Blocks before ever calling the inner dispatcher — manufactures the "intent recorded, no
     /// execution trace" crash window against a real dispatch: by the time this decorator is
     /// invoked, <c>ExecutionRequestAccepted</c> is already fsync'd (<c>MutationInterface</c>
     /// appends and awaits it before starting any dispatch), so killing the host while blocked here
@@ -22,7 +22,7 @@ public enum DispatchPausePoint
     /// Calls the inner dispatcher through to completion — a real process really spawns, runs, and
     /// exits, and <see cref="CoreDispatcher.DispatchAsync"/> does not return until both
     /// <c>ExecutionStarted</c> and <c>ExecutionExited</c> are durably appended — then blocks before
-    /// returning to the caller. Manufactures §6's "ran while Flow was down" window: killing the host
+    /// returning to the caller. Manufactures the "ran while Flow was down" window: killing the host
     /// while blocked here leaves a durable exit recorded with no Flow-side outcome ever appended.
     /// </summary>
     AfterDispatch,

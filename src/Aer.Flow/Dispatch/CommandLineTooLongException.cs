@@ -13,19 +13,18 @@ namespace Aer.Flow.Dispatch;
 /// the limit it crossed. <c>Aer.Cli</c>'s top-level <c>catch (AerFlowException)</c> renders this one
 /// as an ordinary AER error instead.
 /// </para>
-/// </para>
 /// <para>
 /// <b>A recorded outcome since #747, reversing this doc's earlier position.</b> Caught in
 /// <c>MutationInterface.DispatchAndRecordOutcomeAsync</c> and recorded as <c>ExecutionFailed</c>
 /// with <c>FailureClassification.Permanent</c>, carrying the refusal message. The earlier doc
-/// extended spec §7's safe crash state (intent recorded, nothing ran, recover by re-submission)
-/// to this refusal — but §7's re-submission story only operates across a restart, and a
+/// extended the safe crash state (intent recorded, nothing ran, recover by re-submission)
+/// to this refusal — but that re-submission story only operates across a restart, and a
 /// deterministic refusal re-refuses on every re-submission, so "recoverable" could never
 /// complete. The measurement behind this — four live refusals, each leaving a log ending at
 /// <c>ExecutionRequestAccepted</c>, indistinguishable from a healthy run — is recorded on #747.
-/// §7's crash state itself is unchanged and still safe — the distinction now lives in §7's own
-/// text, and the generic-refusal arm (<c>AerException</c>, Retryable) is the same treatment for
-/// the family members no typed guard names.
+/// The crash state itself is unchanged and still safe, and the generic-refusal arm
+/// (<c>AerException</c>, Retryable) is the same treatment for the family members no typed guard
+/// names.
 /// </para>
 /// </summary>
 public sealed class CommandLineTooLongException : AerFlowException

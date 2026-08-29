@@ -11,8 +11,8 @@ using Aer.Flow.Store;
 namespace Aer.Flow.Mutation;
 
 /// <summary>
-/// The single external entry point for all Flow state mutation (spec §14) — no other code path may
-/// append to <c>flow.jsonl</c>. <see cref="StartWorkflowAsync"/> is the "pump" §21 decided on: it
+/// The single external entry point for all Flow state mutation — no other code path may
+/// append to <c>flow.jsonl</c>. <see cref="StartWorkflowAsync"/> is the "pump" design decided on: it
 /// blocks until the workflow reaches a fixed point. From M8 Phase 3 on, every step ready in a given
 /// scheduling round dispatches concurrently rather than one at a time — a diamond's B and C run
 /// simultaneously, and a slow step never delays unrelated ready work.
@@ -20,22 +20,22 @@ namespace Aer.Flow.Mutation;
 public static class MutationInterface
 {
     /// <summary>
-    /// Acquires the room's §15 concurrency guard, then repeatedly projects <see cref="FlowState"/>,
-    /// resolves every ready step (§11.3, retry-aware per §10), and dispatches all of them to Core
+    /// Acquires the room's concurrency guard, then repeatedly projects <see cref="FlowState"/>,
+    /// resolves every ready step (retry-aware), and dispatches all of them to Core
     /// concurrently. Each completion (<c>Task.WhenAny</c>) triggers a fresh round — re-projecting
     /// and dispatching any newly-ready work — while the rest stay in flight. Returns once nothing is
     /// ready and nothing remains in flight.
     /// </summary>
     /// <param name="inFlightExecutions">
-    /// M10 Phase 2's live-cancellation delivery point (§9 steps 1-3): populated with every
+    /// M10 Phase 2's live-cancellation delivery point: populated with every
     /// process-bound dispatch this call has in flight, so a caller retaining this instance can
     /// cancel one of them via <see cref="InFlightExecutionRegistry.RequestCancellationAsync"/> while
-    /// this call is still running — the only way a live execution is reachable at all, since §15's
-    /// guard blocks any second mutation-surface call for the same room until this one returns.
+    /// this call is still running — the only way a live execution is reachable at all, since the
+    /// concurrency guard blocks any second mutation-surface call for the same room until this one returns.
     /// Defaults to a fresh, unshared instance when the caller has no need to interact with it.
     /// </param>
     /// <param name="cancellationToken">
-    /// A host-initiated stop (§9): when cancelled, every execution this call currently has in flight
+    /// A host-initiated stop: when cancelled, every execution this call currently has in flight
     /// gets a <see cref="FlowEvent.CancellationRequested"/> recorded and fsync'd, then is signalled —
     /// never the reverse, and never signalled directly without a recorded intent first.
     /// </param>
@@ -83,16 +83,16 @@ public static class MutationInterface
     }
 
     /// <summary>
-    /// A second mutation-surface entry point (spec §14, §17.2): records an external decision
+    /// A second mutation-surface entry point: records an external decision
     /// against a currently paused execution, resumes the workflow, and drives the consequences to
     /// the next fixed point through the same pump <see cref="StartWorkflowAsync"/> uses. Validates
-    /// every <see cref="DecisionType"/> against projected state (§17.2's closed-set rules) before
+    /// every <see cref="DecisionType"/> against projected state (the closed-set rules) before
     /// appending anything — an invalid decision throws and leaves the log untouched.
     /// </summary>
     /// <exception cref="WorkflowLockedException">
     /// Another Flow instance already holds <paramref name="roomDirectoryPath"/>'s lock.
     /// </exception>
-    /// <exception cref="InvalidExternalDecisionException">The decision violates one of §17.2's rules.</exception>
+    /// <exception cref="InvalidExternalDecisionException">The decision violates one of the validation rules.</exception>
     public static async Task<FlowState> RecordDecisionAsync(
         WorkflowId workflowId,
         string roomDirectoryPath,
@@ -137,7 +137,7 @@ public static class MutationInterface
 
         var decisionId = new DecisionId(Guid.NewGuid().ToString("n"));
 
-        // Both fsync'd — lifecycle events, same write-sequence discipline as any other append (§7).
+        // Both fsync'd — lifecycle events, same write-sequence discipline as any other append.
         await eventLogWriter.AppendAsync(
                 new FlowEvent.ExternalDecisionRecorded(
                     decisionId, referencedExecutionId, decisionType, targetStepId, supplementaryExecutionId),
@@ -154,12 +154,12 @@ public static class MutationInterface
     }
 
     /// <summary>
-    /// A third mutation-surface entry point (spec §14, §17.3): mints a step-less supplementary
+    /// A third mutation-surface entry point: mints a step-less supplementary
     /// execution — a human, or any other non-process party, producing a new artifact outside the
     /// DAG during a pause. Appends <see cref="FlowEvent.ExecutionRequestAccepted"/> with
-    /// <c>StepId: null</c> and pre-allocates the output directory exactly like any other worker
-    /// (§16), but does not run the pump: minting one changes no step's readiness by itself, and
-    /// nothing here needs driving to a fixed point (§20, no daemon). The returned
+    /// <c>StepId: null</c> and pre-allocates the output directory exactly like any other worker,
+    /// but does not run the pump: minting one changes no step's readiness by itself, and
+    /// nothing here needs driving to a fixed point (no daemon). The returned
     /// <see cref="ExecutionId"/> becomes usable as a <see cref="DecisionType.RetryWithRevision"/> or
     /// <see cref="DecisionType.Supersede"/> decision's <c>SupplementaryExecutionId</c> once
     /// completion — <see cref="NonProcessCompletionDetector"/>, consulted by a later
@@ -171,8 +171,8 @@ public static class MutationInterface
     /// </exception>
     /// <exception cref="UnresolvedWorkerException">
     /// <paramref name="worker"/> has no corresponding <see cref="WorkerBinding.NonProcess"/> among
-    /// <paramref name="workerBindings"/> — a supplementary execution is non-process by definition
-    /// (§17.3), so naming a <see cref="WorkerBinding.Process"/> role (or no role at all) is invalid.
+    /// <paramref name="workerBindings"/> — a supplementary execution is non-process by definition,
+    /// so naming a <see cref="WorkerBinding.Process"/> role (or no role at all) is invalid.
     /// </exception>
     public static async Task<(FlowState State, ExecutionId ExecutionId)> RecordSupplementaryExecutionAsync(
         WorkflowId workflowId,
@@ -221,8 +221,8 @@ public static class MutationInterface
             GrantAuditMode: nonProcess.GrantAuditMode);
 
 
-        // §7's write-sequence discipline still applies: appended and fsync'd before this method
-        // returns, even though no Core process ever follows it (§17.3).
+        // The write-sequence discipline still applies: appended and fsync'd before this method
+        // returns, even though no Core process ever follows it.
         await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken)
             .ConfigureAwait(false);
 
@@ -238,9 +238,9 @@ public static class MutationInterface
     }
 
     /// <summary>
-    /// A fourth mutation-surface entry point (spec §14, §9 steps 1 and 4): records an on-demand
+    /// A fourth mutation-surface entry point: records an on-demand
     /// cancellation intent — fsync'd before anything else happens, even when the target has already
-    /// reached a terminal outcome (§9 step 4's too-late no-op; §7's intent-first ordering) — then
+    /// reached a terminal outcome (a too-late no-op; intent-first ordering) — then
     /// drives the consequences to the next fixed point through the same pump
     /// <see cref="StartWorkflowAsync"/> uses. Phase 1 finalizes only targets with no live Core
     /// process to signal: a pending non-process execution's obligation is fulfilled directly, in the
@@ -291,9 +291,9 @@ public static class MutationInterface
 
         CancellationValidator.Validate(knownExecutionIds, targetExecutionId);
 
-        // §7's write-sequence discipline: recorded and fsync'd before anything else, whether the
+        // The write-sequence discipline: recorded and fsync'd before anything else, whether the
         // target turns out to be a live process, a pending non-process execution, or already
-        // terminal (§9 step 4 — the record itself is the too-late outcome; nothing else changes).
+        // terminal (the record itself is the too-late outcome; nothing else changes).
         await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(targetExecutionId), cancellationToken)
             .ConfigureAwait(false);
 
@@ -420,7 +420,7 @@ public static class MutationInterface
 
         if (stepState.Status == StepStatus.Running)
         {
-            // §1359 F3: room-says-Running is not the same fact as "the engine dispatching it is still
+            // #1359 F3: room-says-Running is not the same fact as "the engine dispatching it is still
             // alive" — reuse the same probe `aer status`'s human rendering already consults rather than
             // inventing a second liveness mechanism (StatusCommand.FormatStepStatus).
             var allEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
@@ -441,7 +441,7 @@ public static class MutationInterface
                 };
             }
 
-            // STALLED (§1359 F3): the room projects Running, but the engine that accepted this
+            // STALLED (#1359 F3): the room projects Running, but the engine that accepted this
             // execution is provably dead — the crash-recovery case this verb exists to rescue.
             // Record the takeover before dispatching the resume's own linked execution, so the
             // orphaned attempt is never left with an accepted request and no resolution.
@@ -510,7 +510,7 @@ public static class MutationInterface
             LinkedFromExecutionId: previousExecutionId,
             SessionId: sessionId);
 
-        // §7's write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
+        // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
         await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken).ConfigureAwait(false);
 
         var inFlightExecutions = new InFlightExecutionRegistry();
@@ -543,14 +543,14 @@ public static class MutationInterface
     /// <see cref="FlowEvent.WorkflowPaused"/> obligations, resolves every ready step, and dispatches
     /// all of them concurrently — to Core, or, for a <see cref="WorkerBinding.NonProcess"/> step,
     /// nowhere at all — until nothing is ready and nothing remains in flight. Assumes the caller
-    /// already holds the §15 concurrency guard.
+    /// already holds the concurrency guard.
     /// </summary>
     /// <remarks>
     /// M10 Phase 2: every process-bound dispatch this loop starts is registered with
     /// <paramref name="inFlightExecutions"/> under its own <see cref="CancellationTokenSource"/> —
     /// never the ambient <paramref name="cancellationToken"/> directly, so a cancellation of that
     /// host token can never reach Core without <see cref="FlowEvent.CancellationRequested"/> being
-    /// recorded first (§7, §9 step 1). While dispatches are in flight, this loop also races
+    /// recorded first. While dispatches are in flight, this loop also races
     /// <paramref name="cancellationToken"/> itself: the instant it is cancelled, every execution
     /// still registered gets its intent recorded and is then signalled via
     /// <see cref="InFlightExecutionRegistry.RequestStopAsync"/> — the host-initiated stop.
@@ -620,8 +620,8 @@ public static class MutationInterface
 
                 var acceptedRequestByExecutionId = latestCheckpoint.State.AcceptedRequestByExecutionId;
 
-                // M10 Phase 3 (§7 full robustness): joins Core's half of the log — read back here for
-                // the first time since M7 Phase 6 wrote it — to Flow's own intents by ExecutionId (§6),
+                // M10 Phase 3 (full robustness): joins Core's half of the log — read back here for
+                // the first time since M7 Phase 6 wrote it — to Flow's own intents by ExecutionId,
                 // distinguishing a process-bound step's "genuinely still Running" from "a prior pump
                 // crashed before recording its outcome" (until now indistinguishable, per StateProjector's
                 // own comment). A dispatch this very call still has registered is excluded — that pump is
@@ -653,10 +653,10 @@ public static class MutationInterface
                 var crashRecovery = ProcessCrashRecoveryDetector.GetObligations(
                     state, snapshot, workerBindings, mergedStarted, mergedExited, registeredExecutionIds);
 
-                // Ran while Flow was down (§6): classify now from the recorded exit and the contract on
-                // disk, exactly as if the completion had just arrived — regardless of any unfulfilled
-                // cancellation request, which simply derives as too late unless the recorded exit reason
-                // was itself CancelRequested (§9's crash clause).
+                // ToClassify: the recorded exit and the contract on disk decide, exactly as if the
+                // completion had just arrived — see ProcessCrashRecoveryDetector's remarks for the
+                // obligation taxonomy; an unfulfilled cancellation request simply derives as too late
+                // unless the recorded exit reason was itself CancelRequested (the crash clause).
                 if (crashRecovery.ToClassify.Count > 0)
                 {
                     foreach (var (executionId, exit) in crashRecovery.ToClassify)
@@ -698,7 +698,7 @@ public static class MutationInterface
                     continue;
                 }
 
-                // No ExecutionStarted was ever recorded for this target (§9's crash clause): the cancel
+                // No ExecutionStarted was ever recorded for this target (the crash clause): the cancel
                 // wins, finalized directly — there was never anything to forward to Core in the first
                 // place, and re-dispatching now would race the intent that already decided this attempt
                 // is not to run.
@@ -713,14 +713,14 @@ public static class MutationInterface
                     continue;
                 }
 
-                // The orphan (§7's third crash state): ExecutionStarted with no ExecutionExited, this
+                // The orphan (the third crash state): ExecutionStarted with no ExecutionExited, this
                 // call's own registry proving it is not still genuinely in flight here. Nothing can
-                // re-attach (§20 no daemon; the binding is spawn-and-await) and §15 forbids a second
-                // execution for the same request, so the attempt is finalized from recorded facts alone
-                // as abandoned — a real, chargeable failed attempt (§10) — regardless of whether a
+                // re-attach (no daemon; the binding is spawn-and-await) and a second
+                // execution for the same request is forbidden, so the attempt is finalized from recorded facts alone
+                // as abandoned — a real, chargeable failed attempt — regardless of whether a
                 // cancellation was also pending for it. There is no live handle left to re-issue a
                 // cancellation toward (this pump is not the one that dispatched it); the best-effort
-                // re-issue spec §7 allows for is therefore a documented no-op given aer-core's binding
+                // re-issue the spec allows for is therefore a documented no-op given aer-core's binding
                 // has no cross-process re-attach capability, not a new mechanism this phase introduces.
                 if (crashRecovery.ToFinalizeAsAbandoned.Count > 0)
                 {
@@ -738,10 +738,10 @@ public static class MutationInterface
                     continue;
                 }
 
-                // A derived obligation (§17.3), re-evaluated from projected state on every round for
+                // A derived obligation, re-evaluated from projected state on every round for
                 // the same crash-safety reason the pause obligation below is: the filesystem is read
                 // only here, at classification time, and the resulting ExecutionSucceeded is the
-                // durable truth from then on (§13). Must run before pause obligations, so a step that
+                // durable truth from then on. Must run before pause obligations, so a step that
                 // just settled this way can still owe a WorkflowPaused append in the same pass.
                 var settledNonProcessExecutionIds = NonProcessCompletionDetector.GetSettledExecutions(
                     state, snapshot, workerBindings, artifactsRootPath);
@@ -756,7 +756,7 @@ public static class MutationInterface
                     continue;
                 }
 
-                // A derived obligation (§9 steps 2-3, vacuous with no process), re-evaluated from
+                // A derived obligation (vacuous with no process), re-evaluated from
                 // projected state on every round for the same crash-safety reason as the settlement
                 // check above. Must run before pause obligations, so a step just cancelled this way can
                 // still owe a WorkflowPaused append in the same pass.
@@ -773,9 +773,9 @@ public static class MutationInterface
                     continue;
                 }
 
-                // A derived obligation (§17.1), re-evaluated from projected state on every round rather
+                // A derived obligation, re-evaluated from projected state on every round rather
                 // than welded into the dispatch continuation, so a crash between the outcome event and
-                // this append loses nothing (§7, §13). Appending changes a paused step's projected
+                // this append loses nothing. Appending changes a paused step's projected
                 // status from its terminal outcome to Paused, which must be reflected before readiness
                 // is resolved — re-reading and re-projecting the freshly appended events is simpler than
                 // threading that one status change through by hand.
@@ -791,7 +791,7 @@ public static class MutationInterface
                     continue;
                 }
 
-                // A derived obligation (#712; spec §10), re-evaluated from projected state on every round for
+                // A derived obligation (#712), re-evaluated from projected state on every round for
                 // the same crash-safety reason the pause obligation above is: evaluated after pause obligations
                 // and before readiness.
                 var retryObligations = GetRetryObligations(state, snapshot, timeProvider, jitterSource, settleOnVendorExhaustion);
@@ -822,7 +822,7 @@ public static class MutationInterface
                 var toResubmit = hostStopRequested ? (IReadOnlyList<ExecutionId>)[] : crashRecovery.ToResubmit;
 
                 // Snapshot declaration order, not the ready set's (unordered) iteration order, so a
-                // round's intents are always emitted in the same sequence for the same FlowState (§13)
+                // round's intents are always emitted in the same sequence for the same FlowState
                 // regardless of how concurrent dispatches later complete.
                 foreach (var stepDefinition in snapshot.Steps)
                 {
@@ -837,20 +837,20 @@ public static class MutationInterface
                             $"No WorkerBinding registered for Worker '{stepDefinition.Worker}' (step '{stepDefinition.StepId}').");
                     }
 
-                    // §7's write-sequence rule, extended to a concurrent round: each intent is appended
+                    // The write-sequence rule, extended to a concurrent round: each intent is appended
                     // and fsync'd here — awaited sequentially, in declaration order — before that step's
                     // own dispatch is even started, and before the next step's intent is written.
                     var prepared = await PrepareExecutionAsync(
                             workflowId, stepDefinition, snapshot, state, binding, artifactsRootPath, eventLogWriter, ioCancellationToken)
                         .ConfigureAwait(false);
 
-                    // A non-process worker (§17.3) is fully handled by the append above: no Core
+                    // A non-process worker is fully handled by the append above: no Core
                     // process to spawn, so nothing joins the in-flight set. The pump reaches its fixed
-                    // point with the step awaiting external completion (no daemon, §20); a later round's
+                    // point with the step awaiting external completion (no daemon); a later round's
                     // NonProcessCompletionDetector call is what eventually finalizes it.
                     if (binding is WorkerBinding.Process processBinding)
                     {
-                        // Registered under its own token (§9 steps 1-3, M10 Phase 2) — never the ambient
+                        // Registered under its own token (M10 Phase 2) — never the ambient
                         // cancellationToken directly — so this specific execution, and only this one, can
                         // be signalled without touching a sibling dispatched in the same round.
                         var executionId = prepared.Request.ExecutionId;
@@ -863,7 +863,7 @@ public static class MutationInterface
                     }
                 }
 
-                // M10 Phase 3's re-submission crash state (§7): the same attempt, not a retry — the
+                // M10 Phase 3's re-submission crash state: the same attempt, not a retry — the
                 // intent is already durably recorded (ExecutionRequestAccepted), so this re-dispatches
                 // the existing request as-is rather than calling PrepareExecutionAsync, which would
                 // append a new one and charge a fresh ExecutionId against nothing.
@@ -1034,8 +1034,8 @@ public static class MutationInterface
                     // remarks above).
                     ioCancellationToken = CancellationToken.None;
 
-                    // Intent-first, for every execution still in flight, before any of them is signalled
-                    // (§7, §9 step 1) — RequestStopAsync itself enforces that ordering.
+                    // Intent-first, for every execution still in flight, before any of them is signalled —
+                    // RequestStopAsync itself enforces that ordering.
                     await inFlightExecutions.RequestStopAsync(CancellationToken.None).ConfigureAwait(false);
                     continue;
                 }
@@ -1077,9 +1077,9 @@ public static class MutationInterface
         var inputPaths = ArtifactManager.ResolveInputPaths(step, snapshot, state, artifactsRootPath);
         var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRootPath, executionId);
 
-        // A RetryWithRevision/Supersede consequence still owed to this step (§17.5) carries its
+        // A RetryWithRevision/Supersede consequence still owed to this step carries its
         // supplement into this dispatch — a projected fact, so this holds whether this round is the
-        // decision's immediate consequence or a replay resuming after a crash between the two (§13).
+        // decision's immediate consequence or a replay resuming after a crash between the two.
         var supplementaryInputPath = stateByStepId[step.StepId].PendingSupplementaryExecutionId is { } supplementaryExecutionId
             ? ArtifactManager.ResolveSupplementaryInputPath(artifactsRootPath, supplementaryExecutionId)
             : null;
@@ -1106,7 +1106,7 @@ public static class MutationInterface
             GrantAuditMode: binding.GrantAuditMode);
 
 
-        // §7's write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
+        // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
         await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken)
             .ConfigureAwait(false);
 
@@ -1149,8 +1149,8 @@ public static class MutationInterface
 
             // Never gated on dispatchCancellationToken: that token having fired is exactly what
             // produced this outcome (Cancelled) in the first place, so recording it must not itself
-            // be cancellable by the same signal (§7 — the outcome append always completes once
-            // dispatch has returned).
+            // be cancellable by the same signal — the outcome append always completes once
+            // dispatch has returned.
             await eventLogWriter.AppendAsync(ToOutcomeEvent(prepared.Request.ExecutionId, classification), CancellationToken.None)
                 .ConfigureAwait(false);
         }
@@ -1192,7 +1192,7 @@ public static class MutationInterface
     }
 
     /// <summary>
-    /// Maps a classified outcome to the terminal <see cref="FlowEvent"/> it owes (spec §8), shared by
+    /// Maps a classified outcome to the terminal <see cref="FlowEvent"/> it owes, shared by
     /// a fresh dispatch's own completion (<see cref="DispatchAndRecordOutcomeAsync"/>) and M10 Phase
     /// 3's from-the-log classification of a recorded exit — the same mapping either way.
     /// </summary>
@@ -1237,7 +1237,7 @@ public static class MutationInterface
             }
 
             // A Failed step whose ConsecutiveFailureCount is zero with no live classification is
-            // one an operator just reopened via RetryWithRevision (§17.2) — StateProjector resets
+            // one an operator just reopened via RetryWithRevision — StateProjector resets
             // both for exactly that decision. Backoff exists to pace the machine's own retries; a
             // person's explicit "retry now" is not paced, so no obligation is scheduled for it.
             // An ExhaustedUntil step also sits at zero (quota hits consume no budget, 0026) but is
@@ -1259,7 +1259,7 @@ public static class MutationInterface
             // (ConsecutiveFailureCount is frozen at 0 for quota hits, so the delay never grew),
             // auto-retrying a claude dispatch against a known-dead quota forever while the
             // status surfaced the fabricated time as a vendor reset. A person resumes this step
-            // (§17.2 RetryWithRevision), or a later failure carries a real instant.
+            // (RetryWithRevision), or a later failure carries a real instant.
             // 0026 §4 attended/unattended discriminator (#1184): when settleOnVendorExhaustion is true
             // (an attended interactive session turn), an ExhaustedUntil step ALSO gets NO retry obligation
             // even if a reset instant is known — the turn settles immediately and the operator re-sends after reset.

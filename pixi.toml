@@ -229,6 +229,10 @@ audit-retiredphrases-selftest = { cmd = "python -u tools/audit-completeness/reti
 audit-speccitations = { cmd = "python -u tools/audit-completeness/speccitations.py" }
 audit-speccitations-selftest = { cmd = "python -u tools/audit-completeness/speccitations.py --selftest" }
 
+# #1430: see commentspecrefs.py's own docstring for what it enforces on § refs in code comments.
+audit-commentspecrefs = { cmd = "python -u tools/audit-completeness/commentspecrefs.py" }
+audit-commentspecrefs-selftest = { cmd = "python -u tools/audit-completeness/commentspecrefs.py --selftest" }
+
 # #1397: the docs-budget tripwire -- see docsbudget.py's own docstring for what it enforces.
 audit-docsbudget = { cmd = "python -u tools/audit-completeness/docsbudget.py" }
 audit-docsbudget-selftest = { cmd = "python -u tools/audit-completeness/docsbudget.py --selftest" }

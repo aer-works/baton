@@ -6,7 +6,7 @@ namespace Aer.Flow.Templates;
 
 /// <summary>
 /// Freezes a validated <see cref="WorkflowDefinition"/> template into an immutable
-/// <see cref="WorkflowDefinitionSnapshot"/> at room creation (spec §11.2), and persists it
+/// <see cref="WorkflowDefinitionSnapshot"/> at room creation, and persists it
 /// alongside the room's log directory. Once bound and persisted, later edits to the source
 /// template file — or even the file being deleted — have no effect on the snapshot: binding
 /// copies every field the snapshot needs out of the in-memory <see cref="WorkflowDefinition"/>
@@ -147,7 +147,7 @@ public static class SnapshotBinder
 
     /// <summary>
     /// Reads back a snapshot persisted by <see cref="PersistAsync"/> — how a resumed <c>aer run</c>
-    /// (§21) re-derives the exact frozen template a room was created from, rather than re-parsing
+    /// re-derives the exact frozen template a room was created from, rather than re-parsing
     /// and re-binding the source workflow file a second time (which would mint a new, unrelated
     /// <see cref="WorkflowDefinitionSnapshotId"/> and, per this type's own remarks, be unaffected by
     /// what binding already froze anyway).

@@ -1,7 +1,7 @@
 namespace Aer.Flow.Projection;
 
 /// <summary>
-/// Source of a turn wake (§778 design addendum).
+/// Source of a turn wake (#778 design addendum).
 /// </summary>
 public enum TurnWakeSource
 {
@@ -10,7 +10,7 @@ public enum TurnWakeSource
 }
 
 /// <summary>
-/// Specific throttle cap that refused a turn (§778 design addendum).
+/// Specific throttle cap that refused a turn (#778 design addendum).
 /// </summary>
 public enum TurnRefusalReason
 {

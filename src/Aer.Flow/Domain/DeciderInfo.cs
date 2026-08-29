@@ -10,7 +10,7 @@ public enum DeciderKind
 }
 
 /// <summary>
-/// Decider attribution recorded on external decisions (§D). Default = Human with no IDs.
+/// Decider attribution recorded on external decisions. Default = Human with no IDs.
 /// </summary>
 public sealed record DeciderInfo(
     DeciderKind Kind = DeciderKind.Human,

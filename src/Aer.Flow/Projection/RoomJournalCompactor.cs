@@ -5,7 +5,7 @@ using Aer.Flow.Store;
 namespace Aer.Flow.Projection;
 
 /// <summary>
-/// Compacts a room's journal (<c>room.jsonl</c>) by dropping events belonging to COMPLETED runs (§972).
+/// Compacts a room's journal (<c>room.jsonl</c>) by dropping events belonging to COMPLETED runs (#972).
 /// Follows existing seams (<see cref="RoomEventLogReader"/> and <see cref="RoomProjector"/>).
 /// <para>
 /// <b>Crash-Safe:</b> Rewrites retained entries to a temp file and atomically moves via <see cref="RetryingFileMove.Move"/>.

@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Aer.Flow.Domain;
 
 /// <summary>
-/// Subject of an escalation (§D): a decisionId, a proposedOrigination, or a hostCondition.
+/// Subject of an escalation: a decisionId, a proposedOrigination, or a hostCondition.
 /// The union exists because some escalations precede any engine decision object — an
 /// origination proposal, or (#992) a host-observed condition like a turn watchdog timeout or
 /// the dormancy breaker, which has no decision and no origination to cite. A subject must

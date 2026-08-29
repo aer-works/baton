@@ -7,7 +7,7 @@ using Aer.Flow.Tests.TestSupport;
 namespace Aer.Flow.Tests.Mutation;
 
 /// <summary>
-/// M9 Phase 2 (External Decision Handler, §17.2): mutation-level tests against a
+/// M9 Phase 2 (External Decision Handler): mutation-level tests against a
 /// <see cref="StubCoreDispatcher"/> proving <see cref="MutationInterface.RecordDecisionAsync"/>
 /// resumes a paused workflow through the unchanged pump for <c>Resume</c>, forecloses a step
 /// terminally for <c>Reject</c> even against a successful outcome, and rejects an invalid decision

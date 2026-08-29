@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace Aer.Adapters;
 
 /// <summary>
-/// Writes a worker-binding config to a file (UI spec §9; M16 Phase 4, issue #153) — the first
+/// Writes a worker-binding config to a file (#153) — the first
 /// bindings write path anywhere in the stack, and the counterpart to
 /// <see cref="WorkerBindingConfigParser"/>.
 /// <para>
@@ -27,9 +27,8 @@ namespace Aer.Adapters;
 /// step, since this format has no separate one.
 /// </para>
 /// <para>
-/// Output is indented for the same reason a template's is: a hand-editable file (spec §11.1's
-/// framing extends naturally to this sidecar config). The round-trip bar is parse-level fidelity,
-/// never byte-level.
+/// Output is indented for the same reason a template's is: a hand-editable file. The round-trip
+/// bar is parse-level fidelity, never byte-level.
 /// </para>
 /// </summary>
 public static class WorkerBindingConfigWriter

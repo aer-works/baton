@@ -72,7 +72,7 @@ public static class StatusCommand
         // then the only queryable answer, and it wins over the ledger precisely because there is no
         // ledger to be authoritative instead — once the room has a REAL ledger (RoomLedgerProbe,
         // #1374 F1 -- a zero-byte flow.jsonl left by a room-held refusal does not count), this branch
-        // never runs again and the ledger (spec §7's system of record) is read below as usual.
+        // never runs again and the ledger (the system of record) is read below as usual.
         if (!RoomLedgerProbe.HasLedger(options.RoomDirectoryPath))
         {
             var sentinel = await TerminalSentinelWriter.TryReadAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);

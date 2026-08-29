@@ -4,7 +4,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Templates;
 
 /// <summary>
-/// Writes a <see cref="WorkflowDefinition"/> template to a file (spec §11.1) — the first template
+/// Writes a <see cref="WorkflowDefinition"/> template to a file — the first template
 /// write path anywhere in the stack (M16 Phase 1, issue #150), and the counterpart to
 /// <see cref="WorkflowDefinitionParser"/>.
 /// <para>
@@ -19,7 +19,7 @@ namespace Aer.Flow.Templates;
 /// callers are DispatchCommand and the built-in templates (any future authoring surface joins them).
 /// </para>
 /// <para>
-/// Output is indented: a template is a human-editable file (spec §11.1 explicitly contemplates "a
+/// Output is indented: a template is a human-editable file (the spec explicitly contemplates "a
 /// human editing the file by hand"), so the saved form matches the hand-authored fixtures already
 /// in the repo rather than <see cref="SnapshotBinder"/>'s compact machine-only form. The
 /// round-trip bar is parse-level fidelity through the shared converters, never byte-level.

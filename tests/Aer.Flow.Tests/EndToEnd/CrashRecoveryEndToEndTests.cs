@@ -12,7 +12,7 @@ using static Aer.Flow.Tests.TestSupport.CrashTestHostLauncher;
 namespace Aer.Flow.Tests.EndToEnd;
 
 /// <summary>
-/// M10 Phase 4 (issue #72): the real-process half of §7's crash-durability guarantee. Every fixture
+/// M10 Phase 4 (issue #72): the real-process half of the crash-durability guarantee. Every fixture
 /// here launches <c>Aer.Flow.CrashTestHost</c> — a small, test-only pump host standing in for
 /// <c>Aer.Cli</c>, still a stub — as a genuinely separate OS process, waits for the exact durable
 /// fact that defines one of <see cref="Outcomes.ProcessCrashRecoveryDetector"/>'s four crash states
@@ -34,7 +34,7 @@ public class CrashRecoveryEndToEndTests
             var host = Launch("before-dispatch", roomDirectory, artifactsRoot, logPath, pauseSignal, cancelSignal);
             try
             {
-                // Durable proof the safe pre-spawn crash state (§7) has been reached: the intent is
+                // Durable proof the safe pre-spawn crash state has been reached: the intent is
                 // fsync'd, and — because this run's dispatcher is paused before ever calling the
                 // real one — no CoreEvent has been or ever will be written for it by this process.
                 await WaitForLogConditionAsync(logPath, s => s.FlowEvents.OfType<FlowEvent.ExecutionRequestAccepted>().Any());
@@ -125,7 +125,7 @@ public class CrashRecoveryEndToEndTests
             var host = Launch("after-dispatch", roomDirectory, artifactsRoot, logPath, pauseSignal, cancelSignal);
             try
             {
-                // Durable proof the real process really ran and really exited (§6's "ran while Flow
+                // Durable proof the real process really ran and really exited (the "ran while Flow
                 // was down" window): CoreDispatcher.DispatchAsync does not return — and so this
                 // run's decorator cannot yet be paused after it — until both ExecutionStarted and
                 // ExecutionExited are themselves durably appended.
@@ -172,7 +172,7 @@ public class CrashRecoveryEndToEndTests
             var host = Launch("none", roomDirectory, artifactsRoot, logPath, pauseSignal, cancelSignal);
             try
             {
-                // Durable proof of a real, still-executing child (§7's third crash state, the
+                // Durable proof of a real, still-executing child (the third crash state, the
                 // orphan): the worker sleeps for two minutes, so ExecutionStarted appearing proves
                 // it is genuinely running right now, not that it has already exited.
                 await WaitForLogConditionAsync(logPath, s => s.CoreEvents.OfType<CoreEvent.ExecutionStarted>().Any());
@@ -193,7 +193,7 @@ public class CrashRecoveryEndToEndTests
 
             var orphanExecutionId = await GetAcceptedExecutionIdAsync(logPath);
 
-            // A fresh, fast binding for the retry (§16's fresh-output-directory-per-attempt is what
+            // A fresh, fast binding for the retry (the fresh-output-directory-per-attempt rule is what
             // actually protects correctness here, not the still-possibly-alive orphan going away) —
             // the operator recovering from this crash has no reason to repeat the same 2-minute
             // sleep, and this test would otherwise block for it.
@@ -217,7 +217,7 @@ public class CrashRecoveryEndToEndTests
             Assert.NotNull(abandoned.Reason);
             Assert.Contains("crash recovery", abandoned.Reason, StringComparison.OrdinalIgnoreCase);
 
-            // §16: the orphaned attempt's own directory is untouched — the retry got its own.
+            // The orphaned attempt's own directory is untouched — the retry got its own.
             Assert.True(Directory.Exists(ArtifactManager.ResolveOutputDirectory(artifactsRoot, orphanExecutionId)));
         }
         finally
@@ -246,7 +246,7 @@ public class CrashRecoveryEndToEndTests
         var reader = new FlowEventLogReader(logPath);
         var dispatcher = new CoreDispatcher(writer);
 
-        // #891: retry the recovery pump's §15 lock acquisition on WorkflowLockedException for a short
+        // #891: retry the recovery pump's lock acquisition on WorkflowLockedException for a short
         // window — the same killed-process teardown gap OpenWriterWithRetryAsync (above) handles for the
         // log. On Windows a killed host's flow.lock handle is not always released by the instant
         // Process.WaitForExit returns, so the recovery pump can transiently lose the lock to a holder

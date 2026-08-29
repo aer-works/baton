@@ -3,11 +3,11 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Mutation;
 
 /// <summary>
-/// Capability 11's validation half for on-demand cancellation (spec §9): a pure function — no I/O —
+/// Capability 11's validation half for on-demand cancellation: a pure function — no I/O —
 /// deciding whether a candidate <see cref="FlowEvent.CancellationRequested"/> is admissible. The
 /// only rule Phase 1 enforces is admission: the target must have been accepted at some point in the
-/// log. A target that has already reached a terminal outcome is not rejected here — §9 step 4's
-/// too-late request is still recorded, and the projector (not this validator) derives that it
+/// log. A target that has already reached a terminal outcome is not rejected here — the too-late
+/// request is still recorded, and the projector (not this validator) derives that it
 /// changes nothing.
 /// </summary>
 public static class CancellationValidator

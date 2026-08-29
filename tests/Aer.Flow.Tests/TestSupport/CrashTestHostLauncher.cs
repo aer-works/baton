@@ -48,7 +48,7 @@ internal static class CrashTestHostLauncher
 
     /// <summary>
     /// Kills <paramref name="process"/> outright — never a graceful shutdown — and waits for the OS
-    /// to finish tearing it down, so the §15 concurrency guard it held is reliably released (the
+    /// to finish tearing it down, so the concurrency guard it held is reliably released (the
     /// guard is a kernel-held file lock the OS releases the instant its owning process exits,
     /// crashed or not) before a caller tries to acquire it again.
     /// </summary>
@@ -63,7 +63,7 @@ internal static class CrashTestHostLauncher
     /// fresh read of it, or throws once <paramref name="timeout"/> (defaulting to 15s) elapses.
     /// Reads concurrently with the host process still writing to the same file — safe, since
     /// <see cref="FlowEventLogReader"/> already tolerates a torn trailing line and only ever
-    /// reports what is completely and durably written (spec §5.3).
+    /// reports what is completely and durably written.
     /// </summary>
     public static async Task WaitForLogConditionAsync(
         string logPath, Func<EventLogSnapshot, bool> predicate, TimeSpan? timeout = null)
@@ -98,7 +98,7 @@ internal static class CrashTestHostLauncher
     /// <paramref name="processId"/> itself would leave that grandchild running. Killing the whole
     /// process group (a negative PID in POSIX <c>kill</c>) takes down the leader and every
     /// descendant sharing its group in one call, mirroring aer-core's own <c>killpg</c>-based
-    /// cleanup (AER Core spec §5–§6) rather than reimplementing tree discovery here.
+    /// cleanup rather than reimplementing tree discovery here.
     /// </summary>
     public static void TryKillOrphanedChild(int processId)
     {

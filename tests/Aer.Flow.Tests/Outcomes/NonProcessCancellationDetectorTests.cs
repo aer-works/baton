@@ -6,7 +6,7 @@ using Aer.Flow.Outcomes;
 namespace Aer.Flow.Tests.Outcomes;
 
 /// <summary>
-/// M10 Phase 1 (§9 steps 2-3, vacuous with no process): unit tests proving
+/// M10 Phase 1 (vacuous with no process): unit tests proving
 /// <see cref="NonProcessCancellationDetector.GetCancelledExecutions"/> finalizes only a pending
 /// execution with an unfulfilled cancellation request that has no live Core process behind it — a
 /// <see cref="WorkerBinding.NonProcess"/> step or a step-less supplementary execution — and leaves

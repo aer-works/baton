@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Aer.Flow.Domain;
 
 /// <summary>
-/// Preset levels for worker grants (§C). Memory adoption is carved out of EVERY level:
+/// Preset levels for worker grants. Memory adoption is carved out of EVERY level:
 /// memory proposals always escalate to the human per decision 0016/0021 (producer ≠ decider
 /// does not cover it).
 /// </summary>

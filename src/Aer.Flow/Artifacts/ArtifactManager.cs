@@ -3,7 +3,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Artifacts;
 
 /// <summary>
-/// Pre-allocates artifact directories and computes the paths a worker is invoked with (spec §16).
+/// Pre-allocates artifact directories and computes the paths a worker is invoked with.
 /// Workers are blind to versioning, lineage, and path topology — they receive only an input set of
 /// paths and one output directory, and Flow computes and assigns all of it before dispatch.
 /// M7 Phase 6 resolves the open question of how paths are passed: as environment variables,
@@ -23,7 +23,7 @@ public static class ArtifactManager
     public const string PromptFileName = "prompt.txt";
 
     /// <summary>
-    /// The directory under a room directory that every artifact root is built from (§16) — the same
+    /// The directory under a room directory that every artifact root is built from — the same
     /// shared-constant reasoning as <see cref="PromptFileName"/>: every layer that composes
     /// <c>{roomDirectory}/artifacts</c> must agree on the segment exactly (#773). Tests deliberately
     /// keep restating the literal instead of reading this back: they pin the on-disk contract, which
@@ -32,14 +32,14 @@ public static class ArtifactManager
     public const string ArtifactsDirectoryName = "artifacts";
 
     /// <summary>
-    /// The directory under <c>artifactsRootPath</c> where pruned execution output directories are moved (§973, ADR 0009).
+    /// The directory under <c>artifactsRootPath</c> where pruned execution output directories are moved (#973, ADR 0009).
     /// </summary>
     public const string PrunedDirectoryName = "pruned";
 
 
     /// <summary>
     /// Creates (if needed) and returns <c>{artifactsRootPath}/execution_{executionId}</c> — the
-    /// immutable directory this execution's outputs will be written into (§16). Addressing the
+    /// immutable directory this execution's outputs will be written into. Addressing the
     /// directory by <see cref="ExecutionId"/> rather than a separately tracked sequence number is
     /// what makes every artifact's provenance derivable from the Event Store alone.
     /// </summary>
@@ -54,8 +54,8 @@ public static class ArtifactManager
 
     /// <summary>
     /// The supplementary artifact a <see cref="Domain.DecisionType.RetryWithRevision"/> or
-    /// <see cref="Domain.DecisionType.Supersede"/> decision attaches to its consequence's dispatch
-    /// (§17.2, §17.5): <paramref name="supplementaryExecutionId"/>'s already-completed output
+    /// <see cref="Domain.DecisionType.Supersede"/> decision attaches to its consequence's dispatch:
+    /// <paramref name="supplementaryExecutionId"/>'s already-completed output
     /// directory, addressed the same way as any other execution's — no new path convention needed.
     /// </summary>
     public static string ResolveSupplementaryInputPath(string artifactsRootPath, ExecutionId supplementaryExecutionId)
@@ -68,7 +68,7 @@ public static class ArtifactManager
     /// <summary>
     /// The same addressing <see cref="AllocateOutputDirectory"/> uses, without creating anything —
     /// for a caller that only needs to read an execution's already-allocated output directory (e.g.
-    /// <see cref="Outcomes.NonProcessCompletionDetector"/> checking contract satisfaction, §17.3).
+    /// <see cref="Outcomes.NonProcessCompletionDetector"/> checking contract satisfaction).
     /// </summary>
     public static string ResolveOutputDirectory(string artifactsRootPath, ExecutionId executionId)
     {
@@ -79,7 +79,7 @@ public static class ArtifactManager
 
     /// <summary>
     /// Resolves the recoverable, pruned output directory path for <paramref name="executionId"/>:
-    /// <c>{artifactsRootPath}/pruned/execution_{executionId}</c> (§973, ADR 0009).
+    /// <c>{artifactsRootPath}/pruned/execution_{executionId}</c> (#973, ADR 0009).
     /// </summary>
     public static string ResolvePrunedOutputDirectory(string artifactsRootPath, ExecutionId executionId)
     {
@@ -120,9 +120,9 @@ public static class ArtifactManager
     /// declaration order, by locating — among <paramref name="step"/>'s direct
     /// <c>DependsOn</c> — the one dependency whose declared <c>Outputs</c> contains that input's
     /// name, then combining that dependency's most recent successful execution's output directory
-    /// (§16) with the name itself. Requires every dependency to already have a successful
-    /// execution recorded in <paramref name="state"/> — true for any step the Dependency Resolver
-    /// (§11.3 condition 1) has already deemed ready.
+    /// with the name itself. Requires every dependency to already have a successful
+    /// execution recorded in <paramref name="state"/> — true for any step the Dependency Resolver's
+    /// condition 1 has already deemed ready.
     /// </summary>
     public static IReadOnlyList<string> ResolveInputPaths(
         WorkflowStepDefinition step,
@@ -159,15 +159,15 @@ public static class ArtifactManager
     }
 
     /// <summary>
-    /// Builds the AER-computed environment variables (§3, §16) a worker is invoked with:
+    /// Builds the AER-computed environment variables a worker is invoked with:
     /// <c>AER_INPUT_0</c>.. for each resolved input path, in order, <c>AER_OUTPUT_DIR</c> for
     /// the pre-allocated output directory, <c>AER_ARTIFACTS_ROOT</c> for <paramref name="artifactsRootPath"/>
     /// itself, and — only when this dispatch is a <see cref="Domain.DecisionType.RetryWithRevision"/>
-    /// or <see cref="Domain.DecisionType.Supersede"/> consequence carrying a supplement (§17.2, §17.5)
+    /// or <see cref="Domain.DecisionType.Supersede"/> consequence carrying a supplement
     /// — <c>AER_SUPPLEMENTARY_INPUT</c> for <paramref name="supplementaryInputPath"/>. A dedicated
     /// variable, not a declared input name, so it can never collide with a step's own declared
     /// <c>Inputs</c>. Pass-through variables (secrets, vendor settings) are not this method's concern
-    /// — they carry no derived value and are resolved separately, immediately before dispatch (§3).
+    /// — they carry no derived value and are resolved separately, immediately before dispatch.
     /// </summary>
     /// <remarks>
     /// <c>AER_ARTIFACTS_ROOT</c> (M12 Phase 1, #95) exists because a step's own output directory and

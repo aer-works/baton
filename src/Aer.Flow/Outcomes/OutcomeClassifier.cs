@@ -4,7 +4,7 @@ using Aer.Flow.Domain;
 
 namespace Aer.Flow.Outcomes;
 
-/// <summary>The three terminal outcomes spec §8 classifies a completed dispatch into.</summary>
+/// <summary>The three terminal outcomes a completed dispatch is classified into.</summary>
 public enum OutcomeVerdict
 {
     Succeeded,
@@ -40,7 +40,7 @@ public sealed record OutcomeClassification(
 
 /// <summary>
 /// Maps a <see cref="CoreDispatchResult"/> plus a step's <see cref="WorkerContract"/> into one of
-/// the three terminal classifications spec §8 defines. Flow alone interprets Core's purely
+/// the three terminal classifications. Flow alone interprets Core's purely
 /// mechanical report (exit code + reason) — Core itself has no notion of "success" beyond that.
 /// </summary>
 public static class OutcomeClassifier
@@ -79,7 +79,7 @@ public static class OutcomeClassifier
     internal const int MaxStderrTailInReason = 350;
 
     /// <summary>
-    /// Classifies <paramref name="result"/> per spec §8's table:
+    /// Classifies <paramref name="result"/> per this table:
     /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied</c> → Succeeded;
     /// <c>NaturalExit</c> otherwise, or <c>TimedOut</c> → Failed;
     /// <c>CancelRequested</c> → Cancelled.
@@ -99,15 +99,15 @@ public static class OutcomeClassifier
 
         if (result.Reason == CoreExitReason.CancelRequested)
         {
-            // §9: a cancellation is never classified as a failure, and (§10) never retried.
+            // A cancellation is never classified as a failure, and is never retried.
             return new OutcomeClassification(OutcomeVerdict.Cancelled);
         }
 
         if (result.Reason == CoreExitReason.TimedOut)
         {
             // #1089: a worker can finish its declared work and then hang at process teardown (agy holds a
-            // scratch handle and never exits), which WithTimeout kills and reads as TimedOut. Spec §8
-            // otherwise fails every timeout regardless of outputs -- deliberately, because a bare timeout
+            // scratch handle and never exits), which WithTimeout kills and reads as TimedOut. A timeout
+            // otherwise fails regardless of outputs -- deliberately, because a bare timeout
             // cannot tell "finished then hung" from "killed mid-write with a half-written output". The
             // worker's own terminal success marker (CoreDispatchResult.TerminalSuccessObserved) IS that
             // discriminator: when it was observed AND every declared output is present, the contract is
@@ -378,8 +378,8 @@ public static class OutcomeClassifier
     }
 
     /// <summary>
-    /// Looks for a worker's optional self-reported <see cref="Domain.FailureClassification"/>
-    /// (spec §8.1), reported through one of the contract's declared <c>OptionalMetadata</c> file
+    /// Looks for a worker's optional self-reported <see cref="Domain.FailureClassification"/>,
+    /// reported through one of the contract's declared <c>OptionalMetadata</c> file
     /// roles as a top-level <c>FailureClassification</c> JSON field. Checked in declaration order;
     /// the first metadata file that exists, parses as JSON, and carries a recognized value wins.
     /// Absent or unrecognized — including no <c>OptionalMetadata</c> file at all — is null, which

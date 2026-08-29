@@ -5,7 +5,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Store;
 
 /// <summary>
-/// Appends <see cref="RoomEvent"/> lines to <c>room.jsonl</c> (spec §5.1 / #798) with single-writer
+/// Appends <see cref="RoomEvent"/> lines to <c>room.jsonl</c> (#798) with single-writer
 /// discipline and fsync crash durability.
 /// </summary>
 public sealed class RoomEventLogWriter : IRoomEventLogWriter, IAsyncDisposable

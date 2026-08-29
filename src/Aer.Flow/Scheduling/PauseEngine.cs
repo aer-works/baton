@@ -3,11 +3,11 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Scheduling;
 
 /// <summary>
-/// Capability 13 (spec §17.1): decides which steps owe a <see cref="FlowEvent.WorkflowPaused"/>
+/// Capability 13: decides which steps owe a <see cref="FlowEvent.WorkflowPaused"/>
 /// append. A pure function over <see cref="FlowState"/> and <see cref="WorkflowDefinitionSnapshot"/>
 /// — no I/O, no dispatch — evaluated as a derived obligation at the top of every scheduling round,
 /// so a crash between an outcome event and its pause event re-derives the identical obligation on
-/// the next mutation call (§7, §13).
+/// the next mutation call.
 /// </summary>
 public static class PauseEngine
 {
@@ -17,7 +17,7 @@ public static class PauseEngine
     /// its latest attempt has an <see cref="ExecutionId"/>, that attempt's round has settled
     /// (<see cref="StepStatus.Succeeded"/>, <see cref="StepStatus.Cancelled"/>, or
     /// <see cref="StepStatus.Failed"/> with <see cref="RetryEngine.MayRetry"/> false — automatic
-    /// retry per §10 runs first), and no <see cref="FlowEvent.WorkflowPaused"/> has been recorded for
+    /// retry runs first), and no <see cref="FlowEvent.WorkflowPaused"/> has been recorded for
     /// that attempt yet (<see cref="StepState.PauseRecordedForLatestExecution"/>) — so a resumed
     /// execution is never re-paused.
     /// </summary>
@@ -31,7 +31,7 @@ public static class PauseEngine
         var obligations = new List<(StepId, ExecutionId)>();
 
         // Snapshot declaration order, not the projected list's order, for the same determinism
-        // reason MutationInterface emits a round's ExecutionRequestAccepted events that way (§13).
+        // reason MutationInterface emits a round's ExecutionRequestAccepted events that way.
         foreach (var stepDefinition in snapshot.Steps)
         {
             if (stepDefinition.PausePoint is null)

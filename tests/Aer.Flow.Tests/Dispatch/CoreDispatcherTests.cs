@@ -208,7 +208,7 @@ public class CoreDispatcherTests
     [Fact]
     public async Task DispatchAsync_does_not_resolve_pass_through_variable_values()
     {
-        // Pass-through env var *values* are a future worker-adapter concern (spec §3) — the Core
+        // Pass-through env var *values* are a future worker-adapter concern — the Core
         // Dispatcher must not accidentally leak a name-only declaration through as a literal value.
         var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
         try
@@ -539,7 +539,7 @@ public class CoreDispatcherTests
     }
 
     /// <summary>
-    /// Written before the worker spawns (§7-style intent-first ordering), so the prompt stays
+    /// Written before the worker spawns (intent-first ordering), so the prompt stays
     /// available for audit even when the worker itself exits nonzero -- exactly the "present even if
     /// the execution later fails" guarantee issue #292 asks for.
     /// </summary>

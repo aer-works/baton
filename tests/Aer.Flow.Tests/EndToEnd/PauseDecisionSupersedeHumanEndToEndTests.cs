@@ -9,10 +9,10 @@ using static Aer.Flow.Tests.TestSupport.ShellWorkerCommands;
 namespace Aer.Flow.Tests.EndToEnd;
 
 /// <summary>
-/// M9's completion gate (issue #61), playing #14's and #48's role for the §17 machinery: every
-/// pause/decision/supersede/human behavior proved against real processes on a real filesystem, the
+/// M9's completion gate (issue #61), playing #14's and #48's role for the pause/decision/supersede/
+/// human machinery: every such behavior proved against real processes on a real filesystem, the
 /// test acting as the human throughout — dropping files into pre-allocated output directories
-/// across separate mutation-interface calls is exactly §17.3's model of a non-process party. No
+/// across separate mutation-interface calls is exactly the model of a non-process party. No
 /// mocking of Aer.Core itself, same discipline <see cref="WorkflowEndToEndTests"/> follows.
 /// </summary>
 public class PauseDecisionSupersedeHumanEndToEndTests
@@ -111,7 +111,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
                 pausedExecutionId, DecisionType.Reject, cancellationToken: TestContext.Current.CancellationToken);
 
             // A's ExecutionSucceeded stands in the log, yet it projects terminally failed — the
-            // approval-gate "no" (§17.2).
+            // approval-gate "no".
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
             Assert.Equal(StepStatus.Rejected, finalState.Steps.Single(s => s.StepId == A).Status);
             Assert.Equal(StepStatus.Pending, finalState.Steps.Single(s => s.StepId == B).Status);
@@ -193,7 +193,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
             Assert.NotEqual(pausedExecutionId, flakyAfterRetry.LatestExecutionId);
             await AssertOutputExistsAsync(artifactsRoot, flakyAfterRetry, "result", "revised-result");
 
-            // Flaky's PausePoint pauses again on this settled (successful) round too (§17.1) — a
+            // Flaky's PausePoint pauses again on this settled (successful) round too — a
             // second Resume is needed before downstream, which only cares about Succeeded, can run.
             var finalState = await MutationInterface.RecordDecisionAsync(
                 workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher,
@@ -205,7 +205,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
             await AssertOutputExistsAsync(artifactsRoot, finalState.Steps.Single(s => s.StepId == Downstream), "final", "revised-result");
 
             // Every attempt's artifact directory — both exhausted, the supplementary, and the
-            // eventual success — persists untouched (§10, §16).
+            // eventual success — persists untouched.
             Assert.True(Directory.Exists(Path.Combine(artifactsRoot, $"execution_{flakyExecutionIds[0]}")));
             Assert.True(Directory.Exists(Path.Combine(artifactsRoot, $"execution_{flakyExecutionIds[1]}")));
             Assert.True(Directory.Exists(revisionOutputDirectory));
@@ -251,7 +251,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
             await AssertOutputExistsAsync(artifactsRoot, firstPauseState.Steps.Single(s => s.StepId == Critic), "feedback", "original-plan-feedback");
             var architectOutputDirectory1 = Path.Combine(artifactsRoot, $"execution_{architectExecutionId1}");
 
-            // §17.5's own example: Critic's feedback artifact is its own successful execution,
+            // Critic's feedback artifact is its own successful execution,
             // naming Architect (its declared SupersedeTargets entry) as the target.
             var secondPauseState = await MutationInterface.RecordDecisionAsync(
                 workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher,
@@ -267,7 +267,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
             // default output again.
             await AssertOutputExistsAsync(artifactsRoot, secondPauseState.Steps.Single(s => s.StepId == Architect), "plan", "original-plan-feedback");
 
-            // Critic reran automatically through §11.3 condition 2 — nothing explicitly told Flow
+            // Critic reran automatically — nothing explicitly told Flow
             // to go back — against Architect's new plan, and paused again at the same PausePoint.
             await AssertOutputExistsAsync(
                 artifactsRoot, secondPauseState.Steps.Single(s => s.StepId == Critic), "feedback", "original-plan-feedback-feedback");
@@ -278,7 +278,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
                 .Single(e => e.Request.ExecutionId == criticExecutionId2);
             Assert.Equal(architectExecutionId2, criticAccepted2.Request.UpstreamExecutionIds[Architect]);
 
-            // A1's artifact directory is untouched on disk (§10, §16).
+            // A1's artifact directory is untouched on disk.
             Assert.True(Directory.Exists(architectOutputDirectory1));
             Assert.Equal("original-plan", (await File.ReadAllTextAsync(Path.Combine(architectOutputDirectory1, "plan"), TestContext.Current.CancellationToken)).Trim());
 
@@ -372,7 +372,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
             await AssertOutputExistsAsync(
                 artifactsRoot, thirdPauseState.Steps.Single(s => s.StepId == Critic), "feedback", "original-plan-feedback-feedback-feedback");
 
-            // Every prior cycle's artifact directory persists untouched (§10, §16) — cycle 2 didn't
+            // Every prior cycle's artifact directory persists untouched — cycle 2 didn't
             // erase or reuse cycle 1's.
             Assert.True(Directory.Exists(architectOutputDirectory1));
             Assert.Equal("original-plan", (await File.ReadAllTextAsync(Path.Combine(architectOutputDirectory1, "plan"), TestContext.Current.CancellationToken)).Trim());
@@ -422,7 +422,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
             var firstState = await MutationInterface.StartWorkflowAsync(
                 workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
 
-            // H was admitted but no Core process was ever asked for it (§17.3) — CoreDispatcher
+            // H was admitted without any Core process being requested — CoreDispatcher
             // would otherwise have spawned a real process for the "human" worker, which has no
             // Target to spawn at all; C never dispatches since H hasn't completed.
             Assert.Equal(StepStatus.Running, firstState.Steps.Single(s => s.StepId == H).Status);

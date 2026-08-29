@@ -7,7 +7,7 @@ using Aer.Flow.Tests.TestSupport;
 namespace Aer.Flow.Tests.Mutation;
 
 /// <summary>
-/// M10 Phase 1 (§9 steps 1 and 4, §14): mutation-level tests against a
+/// M10 Phase 1: mutation-level tests against a
 /// <see cref="StubCoreDispatcher"/> proving <see cref="MutationInterface.RequestCancellationAsync"/>
 /// cancels a pending non-process execution end-to-end (intent, then finalization; downstream never
 /// dispatched; no retry despite remaining budget), records a too-late request against an
@@ -67,7 +67,7 @@ public class MutationInterfaceCancellationTests
             Assert.Single(events, e => e is FlowEvent.CancellationRequested cr && cr.ExecutionId == hExecutionId);
             Assert.Single(events, e => e is FlowEvent.ExecutionCancelled ec && ec.ExecutionId == hExecutionId);
 
-            // No retry despite H's remaining budget (§10): Cancelled is never retried, and the
+            // No retry despite H's remaining budget: Cancelled is never retried, and the
             // pump above already ran to its fixed point without re-dispatching H.
             Assert.Equal(hExecutionId, cancelledState.Steps.Single(s => s.StepId == H).LatestExecutionId);
         }

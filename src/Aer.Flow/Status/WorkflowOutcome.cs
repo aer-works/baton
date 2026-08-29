@@ -6,7 +6,7 @@ namespace Aer.Flow.Status;
 /// The single coarse outcome word for a <see cref="FlowState"/> — "Running", "Paused", or, once
 /// <see cref="WorkflowStatus.Terminal"/> is reached, which of "Succeeded" / "Failed" / "Cancelled" it
 /// settled into. <see cref="WorkflowStatus"/> itself only says the pump reached its fixed point, not
-/// which one (spec §12) — every other terminal-outcome consumer (<c>StatusCommand</c>'s <c>--json</c>,
+/// which one — every other terminal-outcome consumer (<c>StatusCommand</c>'s <c>--json</c>,
 /// <c>RunExitCodeResolver</c>, the terminal sentinel) needs this same word, so it is computed here
 /// once rather than re-derived per caller (#1356).
 /// </summary>
@@ -34,7 +34,7 @@ public static class WorkflowOutcome
     /// <summary>
     /// A step whose reason names a dispatch timeout (<see cref="Aer.Flow.Outcomes.OutcomeClassifier"/>'s
     /// fixed "Execution timed out." sentence) — the only signal available for that distinction today.
-    /// There is no structural <see cref="FailureClassification"/> value for it (spec §8.1's vocabulary
+    /// There is no structural <see cref="FailureClassification"/> value for it (its vocabulary
     /// is <c>Retryable</c>/<c>Permanent</c>/<c>ExhaustedUntil</c>/<c>ToolDenied</c> only), so this reads
     /// the same fixed diagnostic sentence a person already reads in <c>FlowStateReporter</c>'s output
     /// rather than adding a second, parallel classification the event log does not carry.
