@@ -258,7 +258,7 @@ public class RoomProjectorTests
     }
 
     /// <summary>
-    /// The event order here is the one production actually writes: RoomTurnHost journals
+    /// The event order here is the writer protocol: a dormancy breaker journals
     /// TurnHostDormancyEntered FIRST, then raises the breaker escalation carrying the detail
     /// (the #1178 review refuted a backward-looking pairing that only worked on the reversed,
     /// never-produced order). The detail must land on the entered transition via backfill.

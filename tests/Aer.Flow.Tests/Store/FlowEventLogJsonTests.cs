@@ -168,6 +168,21 @@ public class FlowEventLogJsonTests
         Assert.Null(accepted.EngineStartTime);
     }
 
+    /// <summary>
+    /// <see cref="FlowEventLogJson"/>'s remarks forbid setting <c>DefaultIgnoreCondition</c>, and
+    /// until now that rule lived only in prose. <c>WhenWritingNull</c> is the natural (and correct)
+    /// choice for wire-frame options elsewhere in the tree, so copy-pasting it here is a live
+    /// hazard — and it would make the writer omit a null required member the reader then rejects: a
+    /// store that cannot read its own output. The round-trip theory above catches that for the
+    /// variants that happen to carry a null; this pins the setting itself so the mistake fails by
+    /// name.
+    /// </summary>
+    [Fact]
+    public void The_options_never_omit_a_null_member_the_reader_requires()
+    {
+        Assert.Equal(JsonIgnoreCondition.Never, FlowEventLogJson.Options.DefaultIgnoreCondition);
+    }
+
     [Fact]
     public void Enums_persist_by_name_so_reordering_a_declaration_cannot_reinterpret_the_journal()
     {

@@ -225,6 +225,10 @@ audit-waitceiling-selftest = { cmd = "python -u tools/audit-completeness/waitcei
 audit-retiredphrases = { cmd = "python -u tools/audit-completeness/retiredphrases.py" }
 audit-retiredphrases-selftest = { cmd = "python -u tools/audit-completeness/retiredphrases.py --selftest" }
 
+# #1428: see speccitations.py's own docstring for what it enforces.
+audit-speccitations = { cmd = "python -u tools/audit-completeness/speccitations.py" }
+audit-speccitations-selftest = { cmd = "python -u tools/audit-completeness/speccitations.py --selftest" }
+
 # #1397: the docs-budget tripwire -- see docsbudget.py's own docstring for what it enforces.
 audit-docsbudget = { cmd = "python -u tools/audit-completeness/docsbudget.py" }
 audit-docsbudget-selftest = { cmd = "python -u tools/audit-completeness/docsbudget.py --selftest" }

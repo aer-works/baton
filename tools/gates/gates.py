@@ -38,6 +38,8 @@ OVERLAP = [
     "audit-retiredphrases-selftest",
     "audit-docsbudget",
     "audit-docsbudget-selftest",
+    "audit-speccitations",
+    "audit-speccitations-selftest",
     "flake-watch-selftest",
     # #1402: pure python against an isolated temp lock file -- starts no MSBuild and never touches
     # the real build lock, so it cannot interfere with the build phase it overlaps.
