@@ -13,7 +13,7 @@ namespace Aer.Adapters;
 /// this worker role across the whole run, so nothing here may carry a resolved, execution-specific
 /// file path. Per-execution dynamism (which files exist at <c>AER_INPUT_&lt;n&gt;</c>/
 /// <c>AER_OUTPUT_DIR</c> right now) is carried entirely by the environment variables
-/// <c>Aer.Flow.Artifacts.ArtifactManager</c> already resolves per dispatch (spec §16) — an adapter
+/// <c>Aer.Flow.Artifacts.ArtifactManager</c> already resolves per dispatch — an adapter
 /// references those variables by name (shell-expanded at dispatch time, e.g. via a shell-wrapped
 /// <see cref="Aer.Flow.Dispatch.CoreDispatchTarget"/>), the same convention the shell-stub workers
 /// already use.

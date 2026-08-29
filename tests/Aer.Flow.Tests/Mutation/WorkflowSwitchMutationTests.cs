@@ -13,10 +13,10 @@ namespace Aer.Flow.Tests.Mutation;
 /// </summary>
 /// <remarks>
 /// The refusal's two arms are tested against the primitives the rule is actually written on — the
-/// §15 flow lock and a genuinely <see cref="StepStatus.Paused"/> step — with the opposite polarity
+/// flow lock and a genuinely <see cref="StepStatus.Paused"/> step — with the opposite polarity
 /// beside each. The polarity matters more than usual here: the obvious wrong implementation (refuse
 /// on <see cref="StepStatus.Running"/>) passes every refusal arm and fails only the permitting one,
-/// because a room whose process died is <see cref="WorkflowStatus.Running"/> by definition (§6).
+/// because a room whose process died is <see cref="WorkflowStatus.Running"/> by definition.
 /// </remarks>
 public class WorkflowSwitchMutationTests : IDisposable
 {
@@ -54,7 +54,7 @@ public class WorkflowSwitchMutationTests : IDisposable
         Environment: [],
         UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
 
-    /// <summary>A step accepted and never concluded — <see cref="WorkflowStatus.Running"/>, which §6 says is a live attempt OR a crash.</summary>
+    /// <summary>A step accepted and never concluded — <see cref="WorkflowStatus.Running"/>, which covers a live attempt OR a crash.</summary>
     private static FlowEvent[] StillRunning() =>
         [new FlowEvent.ExecutionRequestAccepted(Request(new ExecutionId("exec-1"), Architect))];
 

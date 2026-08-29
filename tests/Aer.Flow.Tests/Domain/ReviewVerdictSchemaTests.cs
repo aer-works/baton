@@ -5,7 +5,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Tests.Domain;
 
 /// <summary>
-/// The parse floor of spec §4.2's <c>ReviewVerdict</c> schema (#732, decision 0043): what must be
+/// The parse floor of the <c>ReviewVerdict</c> schema (#732, decision 0043): what must be
 /// present, what casing is forgiven, and what extra content is tolerated. One definition of "valid
 /// verdict" exists (<see cref="ReviewVerdictSchema.TryParse"/>); these pin its edges.
 /// </summary>

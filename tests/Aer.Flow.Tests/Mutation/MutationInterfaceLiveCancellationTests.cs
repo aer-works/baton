@@ -7,7 +7,7 @@ using Aer.Flow.Tests.TestSupport;
 namespace Aer.Flow.Tests.Mutation;
 
 /// <summary>
-/// M10 Phase 2 (§9 steps 1-3, §14): mutation-level tests against a
+/// M10 Phase 2: mutation-level tests against a
 /// <see cref="StubCoreDispatcher"/> proving <see cref="InFlightExecutionRegistry"/> delivers an
 /// on-demand cancellation to one specific in-flight <see cref="WorkerBinding.Process"/> execution
 /// without touching a concurrently-dispatched sibling, that a host-initiated stop
@@ -70,7 +70,7 @@ public class MutationInterfaceLiveCancellationTests
             Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == C).Status);
             Assert.Equal(StepStatus.Pending, finalState.Steps.Single(s => s.StepId == D).Status);
 
-            // No retry despite B's remaining budget (§10): Cancelled is never retried, so exactly one
+            // No retry despite B's remaining budget: Cancelled is never retried, so exactly one
             // ExecutionRequestAccepted for B exists, and it's still the projected latest.
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             Assert.Single(events, e => e is FlowEvent.ExecutionRequestAccepted era && era.Request.StepId == B);
@@ -81,7 +81,7 @@ public class MutationInterfaceLiveCancellationTests
             Assert.DoesNotContain(events, e => e is FlowEvent.CancellationRequested cr && cr.ExecutionId != bExecutionId);
             Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionCancelled ec && ec.ExecutionId != bExecutionId);
 
-            // Intent-first (§7, §9 step 1): the recorded request precedes the classified outcome.
+            // Intent-first: the recorded request precedes the classified outcome.
             var requestIndex = events.ToList().FindIndex(e => e is FlowEvent.CancellationRequested cr && cr.ExecutionId == bExecutionId);
             var outcomeIndex = events.ToList().FindIndex(e => e is FlowEvent.ExecutionCancelled ec && ec.ExecutionId == bExecutionId);
             Assert.True(requestIndex >= 0);

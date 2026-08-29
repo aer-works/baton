@@ -11,10 +11,10 @@ namespace Aer.Cli;
 
 /// <summary>
 /// <c>aer cancel</c> (M12 Phase 2): exposes <see cref="MutationInterface.RequestCancellationAsync"/>
-/// on the CLI. Unlike <see cref="RunCommand"/>, this never binds a fresh snapshot — §11.2's rule that
-/// mutation commands only ever act against a room <c>aer run</c> has already started — and, like
+/// on the CLI. Unlike <see cref="RunCommand"/>, this never binds a fresh snapshot — mutation commands
+/// only ever act against a room <c>aer run</c> has already started — and, like
 /// every mutation entry point, is itself a pump: recording the cancellation intent resumes driving
-/// the rest of the workflow to its next fixed point (§21).
+/// the rest of the workflow to its next fixed point.
 /// </summary>
 public static class CancelCommand
 {

@@ -81,7 +81,7 @@ public class OutcomeClassifierTests
             var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
 
             // Outputs present, but the worker streamed no terminal success marker -- this could be a
-            // mid-write kill, not a finished-then-hung run, so spec §8's default holds: TimedOut -> Failed.
+            // mid-write kill, not a finished-then-hung run, so the default holds: TimedOut -> Failed.
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.TimedOut, TerminalSuccessObserved: false), contract, directory);
 

@@ -27,7 +27,7 @@ public class FlowEventSerializationTests
             ],
             UpstreamExecutionIds: new Dictionary<StepId, ExecutionId> { [new StepId("architect")] = new ExecutionId("exec-0") });
 
-        // A step-less supplementary execution (§17.3): StepId and Timeout are both null.
+        // A step-less supplementary execution: StepId and Timeout are both null.
         var stepLessRequest = new ExecutionRequest(
             new ExecutionId("exec-supplement"),
             new WorkflowId("wf-1"),

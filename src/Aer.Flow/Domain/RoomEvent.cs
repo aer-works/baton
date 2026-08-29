@@ -47,7 +47,7 @@ public abstract record RoomEvent
         HeldWorkRef Ref,
         HeldWorkCitation Citation) : RoomEvent;
 
-    /// <summary>Records a grant given to a worker (§D).</summary>
+    /// <summary>Records a grant given to a worker.</summary>
     public sealed record GrantRecorded(
         GrantId GrantId,
         WorkerId WorkerId,
@@ -57,7 +57,7 @@ public abstract record RoomEvent
         string Grantor,
         DateTimeOffset Timestamp) : RoomEvent;
 
-    /// <summary>Records an amendment to a grant (§D).</summary>
+    /// <summary>Records an amendment to a grant.</summary>
     public sealed record GrantAmended(
         GrantId GrantId,
         GrantId AmendsGrantId,
@@ -68,14 +68,14 @@ public abstract record RoomEvent
         string Grantor,
         DateTimeOffset Timestamp) : RoomEvent;
 
-    /// <summary>Records revocation of a grant (§D).</summary>
+    /// <summary>Records revocation of a grant.</summary>
     public sealed record GrantRevoked(
         GrantId GrantId,
         string Revoker,
         DateTimeOffset Timestamp,
         string Reason) : RoomEvent;
 
-    /// <summary>Records an escalation raised by a worker (§D).</summary>
+    /// <summary>Records an escalation raised by a worker.</summary>
     public sealed record EscalationRaised(
         WorkerId FromWorkerId,
         EscalationTrigger Trigger,

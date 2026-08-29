@@ -71,10 +71,10 @@ public sealed record CoreDispatchTarget(
 public sealed record CoreDispatchSeedFile(string PathTemplate, string Content);
 
 /// <summary>
-/// The raw, unclassified facts of a completed dispatch (spec §8's <c>NaturalExit</c> |
+/// The raw, unclassified facts of a completed dispatch (<c>NaturalExit</c> |
 /// <c>TimedOut</c> | <c>CancelRequested</c> vocabulary). M7 Phase 6 explicitly excludes outcome
 /// classification — mapping this into <c>ExecutionSucceeded</c>/<c>ExecutionFailed</c>/
-/// <c>ExecutionCancelled</c> is the Outcome Classifier's job (Phase 7, spec §8).
+/// <c>ExecutionCancelled</c> is the Outcome Classifier's job (Phase 7).
 /// </summary>
 /// <param name="StderrTail">
 /// The last <see cref="CoreDispatcher.MaxRetainedStderrLength"/> characters the worker wrote to
@@ -120,7 +120,7 @@ public sealed record CoreDispatchResult(
 
 
 /// <summary>
-/// What <c>MutationInterface</c> needs from a dispatcher (spec §12's "Flow never executes a
+/// What <c>MutationInterface</c> needs from a dispatcher ("Flow never executes a
 /// process; it only ever reads the Event Store and emits requests" — this is the seam through
 /// which it emits them). Extracted from <see cref="CoreDispatcher"/> so mutation-level tests can
 /// substitute a stub with <see cref="System.Threading.Tasks.TaskCompletionSource{TResult}"/>-controlled
@@ -556,7 +556,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         foreach (var environmentVariable in request.Environment)
         {
             // PassThrough variable *values* are resolved by whatever wires a concrete worker adapter
-            // (spec §3) — out of scope here. Only AER-computed variables (paths the Artifact Manager
+            // — out of scope here. Only AER-computed variables (paths the Artifact Manager
             // already resolved) are set.
             if (environmentVariable is EnvironmentVariable.AerComputed aerComputed)
             {
@@ -581,9 +581,10 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
     /// <summary>
     /// Spawns <paramref name="target"/> with <paramref name="request"/>'s AER-computed environment
     /// variables and timeout, and returns once the process has exited, timed out, or been
-    /// cancelled. Never throws for any of those three outcomes — each is a normal result §8 must
-    /// later classify, not an error condition — but does not suppress genuine dispatch failures
-    /// (e.g. the binary could not be spawned at all), which propagate as <see cref="AerException"/>.
+    /// cancelled. Never throws for any of those three outcomes — each is a normal result the
+    /// Outcome Classifier must later classify, not an error condition — but does not suppress
+    /// genuine dispatch failures (e.g. the binary could not be spawned at all), which propagate as
+    /// <see cref="AerException"/>.
     /// </summary>
     public async Task<CoreDispatchResult> DispatchAsync(
         ExecutionRequest request,
@@ -665,7 +666,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         GuardCommandLineLength(target.Program, expandedArgs, PlatformCommandLineCeiling);
 
         // Only ever invoked for a WorkerBinding.Process dispatch (MutationInterface never calls a
-        // dispatcher for a NonProcess execution, §17.3) — Timeout is therefore always set.
+        // dispatcher for a NonProcess execution) — Timeout is therefore always set.
         using var task = new AerTask(target.Program, [.. expandedArgs]).WithTimeout(request.Timeout!.Value);
 
         if (target.WorkingDirectory is { } workingDirectory)
@@ -773,7 +774,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             {
                 case AerTaskEventKind.Started:
                     // CancellationToken.None, not cancellationToken: a cancellation firing is
-                    // exactly what makes this record worth having (§7, §9's crash clause depends on
+                    // exactly what makes this record worth having (the crash clause depends on
                     // Started actually landing before a cancel/timeout/host-stop can be attributed
                     // to it), so recording it must not itself be cancellable by that same signal —
                     // the same reasoning DispatchAndRecordOutcomeAsync's outcome append already

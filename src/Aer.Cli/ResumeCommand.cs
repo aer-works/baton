@@ -13,7 +13,7 @@ namespace Aer.Cli;
 /// The CLI surface for <see cref="ResumeOptions"/> (see that type's own doc for what <c>aer resume</c>
 /// is) — exposes <see cref="MutationInterface.RecordResumeAsync"/>. Like <see cref="DecideCommand"/>
 /// and <see cref="SupplyCommand"/>, this never binds a fresh snapshot — a mutation command only ever
-/// acts against a room <c>aer run</c> has already started (§11.2).
+/// acts against a room <c>aer run</c> has already started.
 /// <para>
 /// Runs the SAME two-call sequence <see cref="SupplyCommand"/> established for a single-execution
 /// mutation: <see cref="MutationInterface.RecordResumeAsync"/> mints and dispatches the one linked

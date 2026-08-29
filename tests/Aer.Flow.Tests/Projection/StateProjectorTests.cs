@@ -196,7 +196,7 @@ public class StateProjectorTests
     [Fact]
     public void Rejecting_a_paused_execution_that_had_failed_projects_it_as_Rejected_not_Failed()
     {
-        // "Equivalent in effect to exhausting RetryPolicy, but externally triggered" (§17.2):
+        // Equivalent in effect to exhausting RetryPolicy, but externally triggered:
         // Rejected is a distinct terminal status from Failed so the Retry Engine never reconsiders it.
         var executionId = new ExecutionId("exec-1");
         var decisionId = new DecisionId("decision-1");
@@ -263,9 +263,9 @@ public class StateProjectorTests
     [Fact]
     public void PauseRecordedForLatestExecution_stays_true_after_resume_even_though_Status_reverts()
     {
-        // §17.2's "one resolving decision per pause": Resume clears the transient Paused status,
+        // "One resolving decision per pause": Resume clears the transient Paused status,
         // but the fact that this exact ExecutionId was once paused must survive so the Pause Engine
-        // never re-pauses it (§17.1).
+        // never re-pauses it.
         var executionId = new ExecutionId("exec-1");
         var decisionId = new DecisionId("decision-1");
         var events = new FlowEvent[]
@@ -287,7 +287,7 @@ public class StateProjectorTests
     [Fact]
     public void A_new_attempt_after_resume_starts_with_PauseRecordedForLatestExecution_false()
     {
-        // A fresh ExecutionId (e.g. via §17.2's RetryWithRevision/Supersede, landing in later
+        // A fresh ExecutionId (e.g. via RetryWithRevision/Supersede, landing in later
         // phases) has never itself been paused, regardless of the step's history.
         var firstAttempt = new ExecutionId("exec-1");
         var secondAttempt = new ExecutionId("exec-2");
@@ -312,7 +312,7 @@ public class StateProjectorTests
     public void An_all_pending_workflow_projects_WorkflowStatus_Running()
     {
         // Flipped by #810 (the pin carried no rationale): an empty journal on a started run means
-        // "accepted, first dispatch imminent" — or crashed before it, which §6 already reads as
+        // "accepted, first dispatch imminent" — or crashed before it, which already reads as
         // in-flight. Terminal's contract is "nothing further to dispatch", and a root step with
         // satisfiable dependencies is exactly further-to-dispatch.
         var state = StateProjector.Project([], TwoStepSnapshot());
@@ -720,7 +720,7 @@ public class StateProjectorTests
         Assert.Equal(executionId, stepLess.ExecutionId);
         Assert.Equal("human", stepLess.Worker);
 
-        // Never perturbs any step's own projection (§12) — a step-less execution belongs to no StepId.
+        // Never perturbs any step's own projection — a step-less execution belongs to no StepId.
         Assert.Equal(StepStatus.Pending, StepFor(state, Architect).Status);
         Assert.Equal(StepStatus.Pending, StepFor(state, Critic).Status);
     }
@@ -771,7 +771,7 @@ public class StateProjectorTests
         var state = StateProjector.Project(events, TwoStepSnapshot());
 
         Assert.Equal([executionId], state.CancellationRequestedExecutionIds);
-        // §9: mid-execution, not an outcome — the step itself stays Running until a terminal event.
+        // Mid-execution, not an outcome — the step itself stays Running until a terminal event.
         Assert.Equal(StepStatus.Running, StepFor(state, Architect).Status);
     }
 
@@ -788,7 +788,7 @@ public class StateProjectorTests
 
         var state = StateProjector.Project(events, TwoStepSnapshot());
 
-        // §9 step 4's too-late request: recorded, but never surfaced as still owed.
+        // The too-late request: recorded, but never surfaced as still owed.
         Assert.Empty(state.CancellationRequestedExecutionIds);
         Assert.Equal(StepStatus.Succeeded, StepFor(state, Architect).Status);
     }

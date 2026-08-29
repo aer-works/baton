@@ -5,7 +5,7 @@ namespace Aer.Cli.SmokeTests;
 
 /// <summary>
 /// M12 Phase 4 (#98), the milestone's completion gate: a real <c>draft</c> (Claude) →
-/// <c>review</c> (Gemini/<c>agy</c>) workflow — §18.1's composition case — run through
+/// <c>review</c> (Gemini/<c>agy</c>) workflow — a composition case — run through
 /// <see cref="RunCommand.ExecuteAsync"/>, pausing at <c>review</c>'s declared <see cref="PausePoint"/>,
 /// then resumed to terminal success through <see cref="DecideCommand.ExecuteAsync"/> — the exact
 /// calls <c>Program.cs</c> makes for <c>aer run</c>/<c>aer decide</c> — against the real headless
@@ -68,7 +68,7 @@ public class LiveMixedVendorPausedRunSmokeTest
 
     /// <summary>
     /// Only checks the output exists and is non-blank — a live worker's exact text is never
-    /// asserted verbatim (spec §4.1's contract is "the file exists", not "the file says X"; the
+    /// asserted verbatim (the contract is "the file exists", not "the file says X"; the
     /// CLAUDE.md rule against parsing worker output applies here too).
     /// </summary>
     private static async Task AssertRealOutputAsync(string artifactsRoot, StepState stepState, string outputName)

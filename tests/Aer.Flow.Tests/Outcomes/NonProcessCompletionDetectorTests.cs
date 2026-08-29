@@ -8,7 +8,7 @@ using Aer.Flow.Outcomes;
 namespace Aer.Flow.Tests.Outcomes;
 
 /// <summary>
-/// M9 Phase 4 (§17.3): unit tests against a real temp-directory artifacts root, proving
+/// M9 Phase 4: unit tests against a real temp-directory artifacts root, proving
 /// <see cref="NonProcessCompletionDetector.GetSettledExecutions"/> only ever finalizes a step
 /// actually bound to a <see cref="WorkerBinding.NonProcess"/>, treats an unsatisfied contract as
 /// still-pending rather than failed, and extends the same classification to step-less supplementary

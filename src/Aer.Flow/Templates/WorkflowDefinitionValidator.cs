@@ -3,7 +3,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Templates;
 
 /// <summary>
-/// Structural validation for a <see cref="WorkflowDefinition"/> template (spec §11.1), independent
+/// Structural validation for a <see cref="WorkflowDefinition"/> template, independent
 /// of how the definition was produced (parsed from a file, constructed in-memory, etc).
 /// </summary>
 public static class WorkflowDefinitionValidator
@@ -13,9 +13,9 @@ public static class WorkflowDefinitionValidator
     /// with every violation found if it is not well-formed. A well-formed definition has:
     /// unique <see cref="StepId"/>s; every <c>DependsOn</c> entry resolving to a declared
     /// <see cref="StepId"/>; an acyclic <c>DependsOn</c> graph; a <c>RetryPolicy</c> with
-    /// <c>MaxAttempts &gt;= 1</c> on every step (§10); and, for every declared <c>PausePoint</c>,
+    /// <c>MaxAttempts &gt;= 1</c> on every step; and, for every declared <c>PausePoint</c>,
     /// <c>SupersedeTargets</c> entries that are each either a transitive ancestor of the declaring
-    /// step or the declaring step itself (§17.1) — the latter is the repeated-supersede-self chain
+    /// step or the declaring step itself — the latter is the repeated-supersede-self chain
     /// M24's chat primitive depends on; <see cref="Mutation.ExternalDecisionValidator"/> already
     /// admits it at the decision level, this was the one gate that had not been updated to match.
     /// </summary>
@@ -156,7 +156,7 @@ public static class WorkflowDefinitionValidator
     /// <summary>
     /// Computes, for every step, the full set of StepIds reachable by following <c>DependsOn</c>
     /// edges backward. Detects cycles along the way — a cyclic <c>DependsOn</c> graph contradicts
-    /// §11.1's "no loops" static-DAG requirement, and would otherwise make "transitive ancestor"
+    /// the "no loops" static-DAG requirement, and would otherwise make "transitive ancestor"
     /// an ill-defined question for <c>SupersedeTargets</c> validation.
     /// </summary>
     private static Dictionary<StepId, HashSet<StepId>> ComputeTransitiveAncestorsCore(

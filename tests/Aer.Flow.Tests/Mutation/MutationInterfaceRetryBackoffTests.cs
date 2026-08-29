@@ -72,7 +72,7 @@ public class MutationInterfaceRetryBackoffTests
         return await pumpTask;
     }
 
-    // 1. Fails on a zero-delay retry (Test 1 from §6)
+    // 1. Fails on a zero-delay retry (Test 1)
     // Mutation control note: Zeroing the delay in GetRetryObligations causes test 1 to fail (dispatch occurs at t+0) while test 2 remains green.
     [Fact]
     public async Task Test1_Fails_on_zero_delay_retry_steady_backoff_defers_execution()
@@ -160,7 +160,7 @@ public class MutationInterfaceRetryBackoffTests
         }
     }
 
-    // 2. Polarity (Test 2 from §6)
+    // 2. Polarity (Test 2)
     [Fact]
     public async Task Test2_Backoff_none_dispatches_retry_immediately_at_t0()
     {
@@ -227,7 +227,7 @@ public class MutationInterfaceRetryBackoffTests
         }
     }
 
-    // 4. Replay determinism, falsifiable (Test 4 from §6)
+    // 4. Replay determinism, falsifiable (Test 4)
     [Fact]
     public void Test4_Replay_determinism_under_throwing_time_provider_and_jitter_source()
     {
@@ -262,7 +262,7 @@ public class MutationInterfaceRetryBackoffTests
         Assert.Equal(WorkflowStatus.Running, state.Status);
     }
 
-    // 7. Abandoned-crash corner (Test 7 from §6)
+    // 7. Abandoned-crash corner (Test 7)
     [Fact]
     public async Task Test7_Abandoned_crash_recovery_execution_failed_gets_retry_scheduled()
     {
@@ -293,7 +293,7 @@ public class MutationInterfaceRetryBackoffTests
 
             // Simulate a crash after the process spawned: an ExecutionRequestAccepted plus the
             // Core half's ExecutionStarted, with no ExecutionExited. Both live in the one
-            // flow.jsonl (§5.1) — Core events are LogEntry-wrapped lines in the same file, so they
+            // flow.jsonl — Core events are LogEntry-wrapped lines in the same file, so they
             // go through the writer's own CoreEvent overload, never a hand-built sidecar file.
             await using (var writerInit = new FlowEventLogWriter(logPath))
             {
@@ -451,7 +451,7 @@ public class MutationInterfaceRetryBackoffTests
         }
     }
 
-    // 9. Operator RetryWithRevision is not deferred (Test 9 from §6)
+    // 9. Operator RetryWithRevision is not deferred (Test 9)
     [Fact]
     public async Task Test9_Operator_RetryWithRevision_dispatches_immediately_clearing_deadline()
     {
@@ -545,7 +545,7 @@ public class MutationInterfaceRetryBackoffTests
         }
     }
 
-    // 10. Not Terminal while deferred (Test 10 from §6)
+    // 10. Not Terminal while deferred (Test 10)
     [Fact]
     public async Task Test10_WorkflowStatus_remains_Running_while_step_is_deferred()
     {
@@ -609,7 +609,7 @@ public class MutationInterfaceRetryBackoffTests
         }
     }
 
-    // 11. Paused sibling keeps aer decide reachable (Test 11 from §6)
+    // 11. Paused sibling keeps aer decide reachable (Test 11)
     [Fact]
     public async Task Test11_Paused_sibling_keeps_aer_decide_reachable_pump_returns_paused()
     {
@@ -755,7 +755,7 @@ public class MutationInterfaceRetryBackoffTests
         }
     }
 
-    // 12. Host stop during a deferral wait (Test 12 from §6)
+    // 12. Host stop during a deferral wait (Test 12)
     [Fact]
     public async Task Test12_Host_stop_during_deferral_wait_returns_promptly()
     {
@@ -888,7 +888,7 @@ public class MutationInterfaceRetryBackoffTests
     // instant (0026 §5) — and that combination fell through to ordinary backoff with
     // ConsecutiveFailureCount frozen at 0, i.e. a ~1s fabricated-instant retry loop against a
     // known-dead quota, forever. An unknown-instant exhaustion gets NO obligation: nothing
-    // wakes up; a person resumes it (§17.2). The non-null arm above is this test's polarity.
+    // wakes up; a person resumes it. The non-null arm above is this test's polarity.
     [Fact]
     public async Task ExhaustedUntil_with_unknown_reset_instant_schedules_no_obligation_at_all()
     {

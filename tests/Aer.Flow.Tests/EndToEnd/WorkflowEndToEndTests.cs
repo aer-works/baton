@@ -13,7 +13,7 @@ namespace Aer.Flow.Tests.EndToEnd;
 /// <summary>
 /// M7's completion gate (issue #14): loads a real <c>WorkflowDefinition</c> template from a
 /// fixture file — not one constructed in-memory — binds it, and runs the full linear happy path
-/// through the single mutation surface, on a real filesystem, with the §15 concurrency guard
+/// through the single mutation surface, on a real filesystem, with the concurrency guard
 /// engaged for the whole run. No mocking of Aer.Core itself.
 /// </summary>
 public class WorkflowEndToEndTests
@@ -77,7 +77,7 @@ public class WorkflowEndToEndTests
             await AssertOutputExistsAsync(artifactsRoot, stepStateById[Critic], "review", "the-plan");
             await AssertOutputExistsAsync(artifactsRoot, stepStateById[Publisher], "summary", "the-plan");
 
-            // The guard (§15) was held for the whole run above; its lock file is left on disk once
+            // The guard was held for the whole run above; its lock file is left on disk once
             // released, proving the run actually went through it and that release doesn't erase
             // the file (a sentinel-file scheme would instead delete it to signal "unlocked").
             Assert.True(File.Exists(Path.Combine(roomDirectory, "flow.lock")));
@@ -218,13 +218,13 @@ public class WorkflowEndToEndTests
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var flakyExecutionIds = GetAcceptedExecutionIds(events, Flaky);
 
-            // §10's history shape: two attempts, distinct ExecutionIds, first failed then succeeded.
+            // The history shape: two attempts, distinct ExecutionIds, first failed then succeeded.
             Assert.Equal(2, flakyExecutionIds.Count);
             Assert.NotEqual(flakyExecutionIds[0], flakyExecutionIds[1]);
             Assert.Equal(StepStatus.Failed, GetTerminalStatus(events, flakyExecutionIds[0]));
             Assert.Equal(StepStatus.Succeeded, GetTerminalStatus(events, flakyExecutionIds[1]));
 
-            // History is never cleaned up (§10, §16): both attempts' artifact directories persist.
+            // History is never cleaned up: both attempts' artifact directories persist.
             Assert.True(Directory.Exists(Path.Combine(artifactsRoot, $"execution_{flakyExecutionIds[0]}")));
             Assert.True(Directory.Exists(Path.Combine(artifactsRoot, $"execution_{flakyExecutionIds[1]}")));
 
@@ -325,7 +325,7 @@ public class WorkflowEndToEndTests
             Assert.Equal(StepStatus.Failed, permanentState.Status);
             Assert.Equal(FailureClassification.Permanent, permanentState.LatestFailureClassification);
 
-            // Exactly one attempt despite MaxAttempts: 3 remaining — the Permanent short-circuit (§8.1).
+            // Exactly one attempt despite MaxAttempts: 3 remaining — the Permanent short-circuit.
             var executionIds = GetAcceptedExecutionIds(await reader.ReadAllAsync(TestContext.Current.CancellationToken), Permanent);
             Assert.Single(executionIds);
         }
@@ -378,7 +378,7 @@ public class WorkflowEndToEndTests
             Assert.All(executionIds, id => Assert.Equal(StepStatus.Failed, GetTerminalStatus(events, id)));
             Assert.Empty(GetAcceptedExecutionIds(events, Downstream));
 
-            // Both attempts' artifact directories persist — history is never cleaned up (§10, §16).
+            // Both attempts' artifact directories persist — history is never cleaned up.
             Assert.True(Directory.Exists(Path.Combine(artifactsRoot, $"execution_{executionIds[0]}")));
             Assert.True(Directory.Exists(Path.Combine(artifactsRoot, $"execution_{executionIds[1]}")));
         }
@@ -391,10 +391,10 @@ public class WorkflowEndToEndTests
     [Fact]
     public async Task Re_reading_the_full_event_log_every_scheduling_round_scales_linearly_not_worse()
     {
-        // §21's "manifest cache if scale demands" question, measured as a SHAPE rather than a
+        // The "manifest cache if scale demands" question, measured as a SHAPE rather than a
         // wall-clock budget. The M8 Phase 3 reactive loop re-reads the whole flow.jsonl every
         // scheduling round instead of tailing it, so what actually decides whether a manifest cache
-        // (§12.1) is warranted is whether that re-read's cost stays proportional to event count
+        // is warranted is whether that re-read's cost stays proportional to event count
         // (linear — no cache needed) or grows faster (super-linear — it is).
         //
         // The old form asserted a fixed 50ms/round budget, which silently encoded "this machine,
@@ -414,7 +414,7 @@ public class WorkflowEndToEndTests
             ReadCostScalesLinearly(smallMs, small, largeMs, large),
             $"Re-read cost grew faster than linearly: {smallMs:F3}ms at {small} events, "
             + $"{largeMs:F3}ms at {large} (a {large / small}x size increase should stay within ~{large / small}x "
-            + "time). This is the signal §12.1's manifest cache exists for, not a machine-speed check.");
+            + "time). This is the signal the manifest cache exists for, not a machine-speed check.");
     }
 
     /// <summary>

@@ -4,7 +4,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Store;
 
 /// <summary>
-/// Reads <c>room.jsonl</c> back into ordered <see cref="RoomEvent"/> lists (spec §5.1 / #798).
+/// Reads <c>room.jsonl</c> back into ordered <see cref="RoomEvent"/> lists (#798).
 /// Missing required constructor parameters fail replay loudly via <see cref="FlowEventLogReadException"/>.
 /// </summary>
 public sealed class RoomEventLogReader(string logFilePath) : IRoomEventLogReader

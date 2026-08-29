@@ -83,7 +83,7 @@ public class PauseEngineTests
     public void A_resumed_PausePoint_step_is_not_re_paused()
     {
         // Resume clears StepStatus.Paused back to the underlying terminal status, but the fact that
-        // a pause already happened for this ExecutionId survives (§17.2's "one resolving decision
+        // a pause already happened for this ExecutionId survives ("one resolving decision
         // per pause") — the projector's PauseRecordedForLatestExecution, not the transient Paused
         // status, is what this engine must consult.
         var executionId = new ExecutionId("A1");
@@ -111,7 +111,7 @@ public class PauseEngineTests
     [Fact]
     public void A_failed_PausePoint_step_with_retry_budget_remaining_owes_no_pause_yet()
     {
-        // §10 runs first: retrying is still available, so this attempt's round hasn't settled.
+        // The retry policy runs first: retrying is still available, so this attempt's round hasn't settled.
         var state = new FlowState(
             new WorkflowDefinitionSnapshotId("snapshot-1"),
             [Terminal(Architect, StepStatus.Failed, new ExecutionId("A1"), consecutiveFailureCount: 1), Pending(Critic)]);

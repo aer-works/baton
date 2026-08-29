@@ -301,7 +301,7 @@ public class ContractValidatorTests
     }
 
     /// <summary>
-    /// Spec §4.2: a declared <see cref="OutputSchema"/> makes shape part of contract satisfaction.
+    /// A declared <see cref="OutputSchema"/> makes shape part of contract satisfaction.
     /// Both polarities in one place — a valid verdict document satisfies, a same-named prose file
     /// is a <see cref="UnsatisfiedOutputReason.SchemaViolation"/> carrying the parser's why.
     /// </summary>
@@ -343,7 +343,7 @@ public class ContractValidatorTests
     /// <summary>
     /// A parseable-but-hollow document — valid JSON, wrong shape — must fail the schema, not slide
     /// through as "it parsed as JSON". This is the arm that discriminates schema checking from
-    /// §4.1's NotJson check, which such a file passes.
+    /// the NotJson check, which such a file passes.
     /// </summary>
     [Fact]
     public void A_schema_declared_output_that_is_valid_JSON_but_not_the_shape_is_a_SchemaViolation()
@@ -371,7 +371,7 @@ public class ContractValidatorTests
     }
 
     /// <summary>
-    /// Spec §4.2's one-report-per-output rule: when a schema'd output also declares a condition and
+    /// The one-report-per-output rule: when a schema'd output also declares a condition and
     /// the schema fails, the condition is not separately evaluated — one output, one diagnostic.
     /// The condition here would itself fail, so a double report is what a regression looks like.
     /// </summary>
@@ -439,7 +439,7 @@ public class ContractValidatorTests
 
     /// <summary>
     /// A schema'd output that passes its schema still has its condition evaluated — declaring a
-    /// shape does not exempt an output from §4.1. The condition targets a field the schema does not
+    /// shape does not exempt an output from condition evaluation. The condition targets a field the schema does not
     /// know, which is also the extra-fields-tolerated claim exercised end to end.
     /// </summary>
     [Fact]
@@ -474,7 +474,7 @@ public class ContractValidatorTests
     }
 
     /// <summary>
-    /// Spec §4.2: a declared <see cref="OutputSchema.Diff"/> output is satisfied by a valid diff
+    /// A declared <see cref="OutputSchema.Diff"/> output is satisfied by a valid diff
     /// and unsatisfied by garbage with <see cref="UnsatisfiedOutputReason.SchemaViolation"/> carrying
     /// the parser's error sentence. Control: the same garbage file under <see cref="OutputSchema.None"/>
     /// passes either way.

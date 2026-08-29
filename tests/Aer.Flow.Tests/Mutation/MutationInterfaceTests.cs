@@ -115,7 +115,7 @@ public class MutationInterfaceTests
             Assert.All(finalState.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
             Assert.Equal(0, finalState.Steps.Single(s => s.StepId == Architect).ConsecutiveFailureCount);
 
-            // §10's history shape: two distinct ExecutionIds for Architect, the first failed and
+            // The history shape: two distinct ExecutionIds for Architect, the first failed and
             // the second succeeded — neither event mutated or removed.
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var architectAttempts = events

@@ -7,7 +7,7 @@ namespace Aer.Flow.Mutation;
 
 /// <summary>
 /// The single mutation interface for holding-room journal changes (<c>room.jsonl</c>).
-/// Enforces single-writer discipline and §15 concurrency locking.
+/// Enforces single-writer discipline and concurrency locking.
 /// </summary>
 public static class RoomMutationInterface
 {
@@ -344,10 +344,10 @@ public static class RoomMutationInterface
     /// </para>
     /// <para>
     /// "In flight" is <b>not</b> <c>StepStatus.Running</c>. <see cref="Domain.WorkflowStatus.Running"/>
-    /// is defined as a live attempt <em>or</em> a crash before the outcome was recorded (§6), so a
+    /// is defined as a live attempt <em>or</em> a crash before the outcome was recorded, so a
     /// room whose process died days ago is indistinguishable from a live one by the journal alone —
     /// testing it would leave such a room permanently unable to switch off. The honest test, the one
-    /// #1219 established for the same reason, is the pair of primitives underneath: the room's §15
+    /// #1219 established for the same reason, is the pair of primitives underneath: the room's
     /// flow lock (held only by a live pump, dropped by the OS the instant its holder exits) and any
     /// step actually <see cref="Domain.StepStatus.Paused"/> awaiting a person.
     /// </para>

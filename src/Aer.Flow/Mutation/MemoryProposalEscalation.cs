@@ -55,7 +55,7 @@ public static class MemoryProposalEscalation
     /// Sweeps every execution directory under <paramref name="roomDirectoryPath"/>'s own
     /// <c>artifacts/</c> for a <see cref="CaptureDirectoryName"/> subdirectory and escalates each
     /// one's new captures into this same room (#833). Attribution is structural, never a claim: the
-    /// room's storage form IS the room directory (spec §2), so every <c>execution_*</c> directory
+    /// room's storage form IS the room directory (spec/baton.md §2), so every <c>execution_*</c> directory
     /// found under <c>{roomDirectoryPath}/artifacts</c> was, by construction, dispatched by this room
     /// and no other -- there is nothing here for a worker to lie about. Retires the #801 static,
     /// shared capture directory this replaces: that directory served every room at once with no way

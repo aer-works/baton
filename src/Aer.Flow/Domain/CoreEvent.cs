@@ -3,8 +3,8 @@ using System.Text.Json.Serialization;
 namespace Aer.Flow.Domain;
 
 /// <summary>
-/// Core-originated lifecycle events (spec §5.1's <c>events.jsonl</c> half), recorded into the same
-/// combined log Flow uses for its own events (M7 Phase 6's dual-log ownership decision — spec §5
+/// Core-originated lifecycle events (the <c>events.jsonl</c> half), recorded into the same
+/// combined log Flow uses for its own events (M7 Phase 6's dual-log ownership decision
 /// permits a single storage backend as long as per-event-type ownership still holds) but kept a
 /// wholly separate type from <see cref="FlowEvent"/>. Only the Core Dispatcher writes these — it
 /// mirrors the <c>AerTask.EventRaised</c> callbacks from the aer-core M5 binding it P/Invokes into
@@ -31,7 +31,7 @@ public abstract record CoreEvent
 
 /// <summary>
 /// Mirrors aer-core M5's <c>AerExitReason</c> at Flow's event-log boundary, rather than reusing the
-/// binding's enum directly — this is the boundary spec §8's failure model (<c>NaturalExit</c> |
+/// binding's enum directly — this is the boundary the failure model (<c>NaturalExit</c> |
 /// <c>TimedOut</c> | <c>CancelRequested</c>) is defined against, and it must serialize stably in
 /// <c>flow.jsonl</c> independent of however aer-core's own ABI numbering evolves.
 /// <para>

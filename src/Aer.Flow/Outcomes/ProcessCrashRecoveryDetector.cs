@@ -4,17 +4,17 @@ using Aer.Flow.Mutation;
 namespace Aer.Flow.Outcomes;
 
 /// <summary>
-/// M10 Phase 3 (spec §7 full robustness): reconciles a <see cref="WorkerBinding.Process"/> step
+/// M10 Phase 3 (full robustness): reconciles a <see cref="WorkerBinding.Process"/> step
 /// whose latest attempt is still projected <see cref="StepStatus.Running"/> — genuinely still
 /// executing, or a prior pump crashed before recording its outcome, the two indistinguishable from
-/// <see cref="FlowEvent"/>s alone (§6) — from the Core half of the log
+/// <see cref="FlowEvent"/>s alone — from the Core half of the log
 /// (<see cref="CoreEvent.ExecutionStarted"/>/<see cref="CoreEvent.ExecutionExited"/>), which since
 /// #971 arrives pre-aggregated: the caller merges the checkpoint's carried aggregates with the tail
 /// read's <see cref="CoreEvent"/>s (<see cref="CoreEventAggregation.Merge"/>) and passes the merged
 /// sets, so this detector sees the whole Core history however little of the log was re-read. Consulted at the top
 /// of every scheduling round, the same derived-obligation pattern <see cref="NonProcessCompletionDetector"/>
 /// and <see cref="NonProcessCancellationDetector"/> already follow, so a crash at any point below
-/// simply re-evaluates the identical projected fact on the next mutation call (§13). Non-process
+/// simply re-evaluates the identical projected fact on the next mutation call. Non-process
 /// targets are entirely out of scope here — Core never writes a <see cref="CoreEvent"/> for one, and
 /// the two detectors above already own that tier.
 /// </summary>
@@ -22,26 +22,26 @@ public static class ProcessCrashRecoveryDetector
 {
     /// <summary>
     /// Classifies every <see cref="WorkerBinding.Process"/> step's unfinalized latest attempt into
-    /// exactly one of four crash states, per spec §7:
+    /// exactly one of four crash states:
     /// <list type="bullet">
     /// <item><see cref="ProcessCrashRecoveryObligations.ToResubmit"/> — no <see cref="CoreEvent.ExecutionStarted"/>
-    /// and no unfulfilled cancellation: the safe pre-spawn crash state (§7). Re-dispatch the same
+    /// and no unfulfilled cancellation: the safe pre-spawn crash state. Re-dispatch the same
     /// <see cref="ExecutionRequest"/>, no new accept event.</item>
     /// <item><see cref="ProcessCrashRecoveryObligations.ToFinalizeAsCancelled"/> — no
     /// <see cref="CoreEvent.ExecutionStarted"/> but an unfulfilled <see cref="FlowEvent.CancellationRequested"/>:
-    /// the cancel wins (§9's crash clause) — finalize cancelled, never dispatch.</item>
+    /// the cancel wins — finalize cancelled, never dispatch.</item>
     /// <item><see cref="ProcessCrashRecoveryObligations.ToClassify"/> — <see cref="CoreEvent.ExecutionExited"/>
-    /// recorded with no outcome yet: ran while Flow was down (§6); classify now from the recorded
+    /// recorded with no outcome yet: ran while Flow was down; classify now from the recorded
     /// exit exactly as if the completion had just arrived, regardless of any pending cancellation
     /// (too late if the exit wasn't itself a cancellation).</item>
     /// <item><see cref="ProcessCrashRecoveryObligations.ToFinalizeAsAbandoned"/> — <see cref="CoreEvent.ExecutionStarted"/>
-    /// with no <see cref="CoreEvent.ExecutionExited"/>: the orphan (§7's third crash state).</item>
+    /// with no <see cref="CoreEvent.ExecutionExited"/>: the orphan (the third crash state).</item>
     /// </list>
     /// Every one of these excludes any <paramref name="inFlightExecutionIds"/> this same call is
     /// still genuinely awaiting, checked before any of the four states above — that dispatch's pump
     /// did not die, it is this pump, regardless of what the Core log does or doesn't yet show for it.
     /// Snapshot declaration order throughout, for the same determinism reason every other
-    /// round-level obligation follows it (§13).
+    /// round-level obligation follows it.
     /// </summary>
     public static ProcessCrashRecoveryObligations GetObligations(
         FlowState state,
@@ -121,7 +121,7 @@ public static class ProcessCrashRecoveryDetector
     }
 }
 
-/// <summary>The four crash-state obligations <see cref="ProcessCrashRecoveryDetector.GetObligations"/> derives (spec §7).</summary>
+/// <summary>The four crash-state obligations <see cref="ProcessCrashRecoveryDetector.GetObligations"/> derives.</summary>
 public sealed record ProcessCrashRecoveryObligations(
     IReadOnlyList<ExecutionId> ToResubmit,
     IReadOnlyList<ExecutionId> ToFinalizeAsCancelled,

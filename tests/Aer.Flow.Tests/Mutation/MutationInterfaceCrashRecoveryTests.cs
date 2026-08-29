@@ -8,9 +8,9 @@ using Aer.Flow.Tests.TestSupport;
 namespace Aer.Flow.Tests.Mutation;
 
 /// <summary>
-/// M10 Phase 3 (§7 full robustness): mutation-level tests proving each of the four crash states a
+/// M10 Phase 3 (full crash-recovery robustness): mutation-level tests proving each of the four crash states a
 /// process-bound step's unfinalized latest attempt can be in is reconciled correctly by reading back
-/// the Core half of the log (§6). Every fixture manufactures the crash window directly — appending
+/// the Core half of the log. Every fixture manufactures the crash window directly — appending
 /// exactly the <see cref="LogEntry"/> lines a real crash would leave behind via
 /// <see cref="FlowEventLogWriter"/>'s <see cref="IEventLogWriter"/>/<see cref="ICoreEventLogWriter"/>
 /// halves — rather than actually killing a process (Phase 4's job).
@@ -39,7 +39,7 @@ public class MutationInterfaceCrashRecoveryTests
             var bindings = MakeBindings();
             var workflowId = new WorkflowId("wf");
 
-            // §7's named safe pre-spawn crash state: the intent is durable, but Core never got a
+            // The named safe pre-spawn crash state: the intent is durable, but Core never got a
             // chance to run it (crash between accept-fsync and spawn).
             var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A);
 
@@ -113,7 +113,7 @@ public class MutationInterfaceCrashRecoveryTests
 
             var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A);
 
-            // Ran to a natural, successful exit while Flow was down (§6) — Core recorded both
+            // Ran to a natural, successful exit while Flow was down — Core recorded both
             // lifecycle events, but no Flow-side outcome was ever appended for them.
             await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
             await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
@@ -234,7 +234,7 @@ public class MutationInterfaceCrashRecoveryTests
 
             var orphanExecutionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A);
 
-            // §7's third crash state: Core recorded the start, but this pump's predecessor died
+            // The third crash state: Core recorded the start, but this pump's predecessor died
             // before an exit was ever recorded — nothing to classify against.
             await writer.AppendAsync(new CoreEvent.ExecutionStarted(orphanExecutionId, Pid: 4242), TestContext.Current.CancellationToken);
 
@@ -256,7 +256,7 @@ public class MutationInterfaceCrashRecoveryTests
             Assert.Equal(orphanExecutionId, abandoned.ExecutionId);
             Assert.Equal(FailureClassification.Retryable, abandoned.FailureClassification);
 
-            // §16: the orphaned attempt's own artifact directory is untouched by the retry, which
+            // The orphaned attempt's own artifact directory is untouched by the retry, which
             // gets its own fresh directory under the new ExecutionId.
             Assert.True(Directory.Exists(ArtifactManager.ResolveOutputDirectory(artifactsRoot, orphanExecutionId)));
         }

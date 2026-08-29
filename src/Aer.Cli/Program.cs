@@ -76,11 +76,11 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 
 using var hostStopSource = new CancellationTokenSource();
 
-// §9's host-initiated stop (M10 Phase 2), finally wired to something: Ctrl+C no longer kills the
+// The host-initiated stop (M10 Phase 2), finally wired to something: Ctrl+C no longer kills the
 // process outright — it cancels the ambient token the pump races against, which records
-// CancellationRequested for every in-flight execution before signalling any of them (§7's
-// intent-first ordering). Suppressing the default SIGINT behavior is what keeps the process alive
-// long enough for that to happen.
+// CancellationRequested for every in-flight execution before signalling any of them, intent-first.
+// Suppressing the default SIGINT behavior is what keeps the process alive long enough for that to
+// happen.
 Console.CancelKeyPress += (_, eventArgs) =>
 {
     eventArgs.Cancel = true;

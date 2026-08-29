@@ -8,8 +8,8 @@ namespace Aer.Adapters;
 /// <c>MutationInterface.StartWorkflowAsync</c> needs — the "adapter resolution into WorkerBinding"
 /// M11 Phase 1 names, kept out of <c>Aer.Flow</c> entirely per CLAUDE.md's Adapter Isolation rule.
 /// Every entry resolves to <see cref="WorkerBinding.Process"/>: a worker-binding config describes
-/// a real vendor invocation, never a non-process party (<c>Aer.Flow.Mutation.WorkerBinding.NonProcess</c>,
-/// spec §17.3) — those are constructed directly by whatever caller needs one, same as before this
+/// a real vendor invocation, never a non-process party (<c>Aer.Flow.Mutation.WorkerBinding.NonProcess</c>)
+/// — those are constructed directly by whatever caller needs one, same as before this
 /// seam existed.
 /// </summary>
 public static class WorkerBindingResolver

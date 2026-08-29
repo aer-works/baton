@@ -4,8 +4,7 @@ using System.Text.Json;
 namespace Aer.Flow.Concurrency;
 
 /// <summary>
-/// record-once-ok: #443 spec/aer-flow-behavioral-spec-v1.0.md
-/// Enforces spec §15: at most one Flow instance may mutate a given room's workflow state at a
+/// Enforces: at most one Flow instance may mutate a given room's workflow state at a
 /// time. Backed by a kernel-held advisory file lock (<see cref="FileShare.None"/> on a
 /// <see cref="FileStream"/>) scoped to the room's own directory — deliberately not a sentinel
 /// file, whose mere existence would signal "locked" and would survive a crash requiring manual
@@ -14,8 +13,8 @@ namespace Aer.Flow.Concurrency;
 /// <para>
 /// 0053: two independent lock files per room directory, one per log. <c>flow.lock</c> serializes
 /// the engine and <c>flow.jsonl</c> writers; <c>room-events.lock</c> serializes <c>room.jsonl</c>
-/// appends (and the daemon's <c>bindings.json</c> read-modify-writes). §15's single-writer
-/// guarantee holds per log; §186 forbids replay from depending on cross-log order, so nothing may
+/// appends (and the daemon's <c>bindings.json</c> read-modify-writes). The single-writer
+/// guarantee holds per log; #186 forbids replay from depending on cross-log order, so nothing may
 /// rely on the accidental cross-log serialization the former single lock provided.
 /// </para>
 /// <para>
@@ -276,7 +275,7 @@ public sealed class ConcurrencyGuard : IDisposable
     /// directory or the lock file. A read-only probe: callers that need the lock still go through
     /// <see cref="Acquire"/>. A missing <c>flow.lock</c> (or a non-existent directory) means no
     /// holder. A lock file left on disk by a previously-released guard is deliberately <em>not</em>
-    /// treated as a hold — under §15 only the live <see cref="FileShare.None"/> stream carries
+    /// treated as a hold — only the live <see cref="FileShare.None"/> stream carries
     /// meaning, not the file's existence — so this opens the file to test the OS-held lock rather
     /// than reading its mere presence.
     /// </summary>
@@ -318,8 +317,8 @@ public sealed class ConcurrencyGuard : IDisposable
     }
 
     /// <summary>
-    /// Releases the lock. The lock file itself is deliberately left on disk — under §15's
-    /// guarantee, only the OS-held lock carries meaning, not the file's existence — so a
+    /// Releases the lock. The lock file itself is deliberately left on disk — under the guarantee
+    /// above, only the OS-held lock carries meaning, not the file's existence — so a
     /// subsequent acquire for the same room directory succeeds immediately.
     /// The holder sidecar is removed best-effort first, while the lock is still held, so no reader
     /// ever sees this holder's label on a lock it has already released; a delete that loses a race

@@ -4,9 +4,9 @@ using Aer.Flow.Store;
 namespace Aer.Flow.Mutation;
 
 /// <summary>
-/// M10 Phase 2's delivery mechanism (spec §9 steps 1-3, §14): a caller-owned, in-process handle to
+/// M10 Phase 2's delivery mechanism: a caller-owned, in-process handle to
 /// whichever process-bound <see cref="ExecutionId"/>s a single <see cref="MutationInterface"/> pump
-/// call currently has dispatched to Core. §15's guard is held for that call's entire duration, so no
+/// call currently has dispatched to Core. The pump's concurrency guard is held for that call's entire duration, so no
 /// second mutation-surface call can ever reach a live execution (a concurrent
 /// <see cref="MutationInterface.RequestCancellationAsync"/> targeting it would just fail to acquire
 /// the guard) — this registry is the pump's own host process offering an in-process alternative,
@@ -23,11 +23,11 @@ public sealed class InFlightExecutionRegistry
     private IEventLogWriter? _eventLogWriter;
 
     /// <summary>
-    /// Durably records a cancellation intent for <paramref name="targetExecutionId"/> (§7's
-    /// intent-first ordering) and signals its dispatch — the same <see cref="FlowEvent.CancellationRequested"/>
+    /// Durably records a cancellation intent for <paramref name="targetExecutionId"/> (intent-first
+    /// ordering) and signals its dispatch — the same <see cref="FlowEvent.CancellationRequested"/>
     /// append <see cref="MutationInterface.RequestCancellationAsync"/> would make, but delivered
-    /// in-process to a dispatch this same call already has in flight, instead of waiting on the §15
-    /// guard. Returns <c>true</c> if <paramref name="targetExecutionId"/> was registered in-flight and
+    /// in-process to a dispatch this same call already has in flight, instead of waiting on the
+    /// concurrency guard. Returns <c>true</c> if <paramref name="targetExecutionId"/> was registered in-flight and
     /// cancellation was recorded and signalled; <c>false</c> if it was not registered (already
     /// settled, not yet registered by <c>MutationInterface</c>, or a non-process target).
     /// </summary>
@@ -53,7 +53,7 @@ public sealed class InFlightExecutionRegistry
     }
 
     /// <summary>
-    /// A host-initiated stop (§9's "no workflow-level stop operation" resolution: simply an intent
+    /// A host-initiated stop ("no workflow-level stop operation" resolution: simply an intent
     /// minted for every currently in-flight <see cref="ExecutionId"/>): records
     /// <see cref="FlowEvent.CancellationRequested"/> for every entry still registered — fsync'd,
     /// sequentially, in registration order, all before any is signalled — then cancels every one of

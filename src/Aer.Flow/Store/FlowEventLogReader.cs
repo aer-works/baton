@@ -5,14 +5,14 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Store;
 
 /// <summary>
-/// Reads the combined <c>flow.jsonl</c> back into ordered event lists (spec §5.1):
-/// <see cref="ReadAllAsync"/> for Flow's own half, which the State Projector (§12) consumes,
+/// Reads the combined <c>flow.jsonl</c> back into ordered event lists:
+/// <see cref="ReadAllAsync"/> for Flow's own half, which the State Projector consumes,
 /// <see cref="ReadAllCoreEventsAsync"/> for the Core Dispatcher's half (M7 Phase 6), which M10
-/// Phase 3's crash reconciliation reads back for §6's causal link, <see cref="ReadSnapshotAsync"/>
+/// Phase 3's crash reconciliation reads back for the causal link, <see cref="ReadSnapshotAsync"/>
 /// for a caller needing both from a single read pass, and <see cref="ReadAllEntriesWithTimestampsAsync"/>
 /// for callers that need entries with their writer-stamped timestamps (#745) — used by status
 /// reporting to display per-step times. Pairs with <see cref="FlowEventLogWriter"/>, which guarantees
-/// each entry is a single, complete, newline-terminated line (§5.3).
+/// each entry is a single, complete, newline-terminated line.
 /// </summary>
 public sealed class FlowEventLogReader(string logFilePath) : IEventLogReader
 {
@@ -100,7 +100,7 @@ public sealed class FlowEventLogReader(string logFilePath) : IEventLogReader
             using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
             var text = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
 
-            // Only lines terminated by '\n' are complete entries (§5.3); a dangling suffix with no
+            // Only lines terminated by '\n' are complete entries; a dangling suffix with no
             // terminator is a write still in flight (or a crash mid-append) and is not yet observable.
             var lastNewline = text.LastIndexOf('\n');
             var completeText = lastNewline >= 0 ? text[..(lastNewline + 1)] : string.Empty;

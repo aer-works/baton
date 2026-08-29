@@ -4,8 +4,8 @@ namespace Aer.Cli;
 /// Parsed arguments for <c>aer resume</c> (issue #1359): the first-class "continue this worker with
 /// this message" verb — re-enters an already-dispatched worker's vendor session with a new message,
 /// same workspace and grants, recording the result as a new execution linked to the one it continues.
-/// Mirrors <see cref="SupplyOptions"/>'s shape: a mutation command never binds a fresh snapshot
-/// (§11.2), and it names its target by worker role the same way <c>aer supply</c> does.
+/// Mirrors <see cref="SupplyOptions"/>'s shape: a mutation command never binds a fresh snapshot,
+/// and it names its target by worker role the same way <c>aer supply</c> does.
 /// <para>
 /// Scope of the continuation claim (F7): only ONE <c>--resume</c> hop is vendor-verified
 /// (<c>docs/vendor-doc-audit.md</c>'s "defer ends the query, and the session resumes" entry). A

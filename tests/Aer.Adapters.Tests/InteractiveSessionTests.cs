@@ -98,7 +98,7 @@ public sealed class InteractiveSessionTests
 
         // #285: "chat" itself declares no PausePoint (a successful turn must flow straight through
         // to the anchor, uninterrupted); the downstream "turn-anchor" step declares the PausePoint,
-        // targeting "chat" -- a legal, distinct-ancestor Supersede target per spec §17.1, unlike the
+        // targeting "chat" -- a legal, distinct-ancestor Supersede target, unlike the
         // old single self-referencing step.
         Assert.Equal("interactive-session-template", def.WorkflowTemplateId.Value);
         Assert.Equal(2, def.Steps.Count);
@@ -123,7 +123,7 @@ public sealed class InteractiveSessionTests
         // or in the vendor's structured result, and the daemon reads whichever it gets — so requiring
         // the file classified a completed turn as Failed on every directory-less and plan-mode
         // session, whose grants cannot write one. The ask moved to the prompt, where it belongs:
-        // spec §4 is right that a declared-and-absent output is a failure.
+        // a declared-and-absent output is correctly a failure.
         Assert.Empty(chatStep.Outputs);
         Assert.Empty(bindings["chat-worker"].Contract.ProducedOutputs);
         // Deliberately NOT asserted on the materialized PromptTemplate: the daemon rebuilds a turn's

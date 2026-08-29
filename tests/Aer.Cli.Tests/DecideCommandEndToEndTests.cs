@@ -10,7 +10,7 @@ using Aer.Flow.Templates;
 namespace Aer.Cli.Tests;
 
 /// <summary>
-/// M12 Phase 3's completion gate for <c>aer decide</c> (issue #97): pause → each of §17.2's four
+/// M12 Phase 3's completion gate for <c>aer decide</c> (issue #97): pause → each of the four
 /// decision types → fixed point, driven through the real <see cref="DecideCommand.ExecuteAsync"/>
 /// entry point — the exact call <c>Program.cs</c> makes — mirroring
 /// <see cref="RunCommandEndToEndTests"/>'s discipline of never mocking <c>Aer.Core</c> itself.

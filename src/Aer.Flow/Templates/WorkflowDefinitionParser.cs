@@ -5,7 +5,7 @@ using Aer.Flow.Store;
 namespace Aer.Flow.Templates;
 
 /// <summary>
-/// Loads a <see cref="WorkflowDefinition"/> template from a file (spec §11.1) and validates it.
+/// Loads a <see cref="WorkflowDefinition"/> template from a file and validates it.
 /// <para>
 /// <b>File format convention:</b> templates are plain JSON, deserialized through the same
 /// <see cref="JsonSerializer"/> converters the rest of <c>Aer.Flow</c> already uses for

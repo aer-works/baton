@@ -3,7 +3,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Mutation;
 
 /// <summary>
-/// Capability 14's validation half (spec §17.2): a pure function — no I/O, no dispatch — deciding
+/// Capability 14's validation half: a pure function — no I/O, no dispatch — deciding
 /// whether a candidate <see cref="FlowEvent.ExternalDecisionRecorded"/> is admissible against
 /// projected <see cref="FlowState"/>. Every <see cref="DecisionType"/> is validated here, even
 /// though <see cref="DecisionType.RetryWithRevision"/>/<see cref="DecisionType.Supersede"/>
@@ -12,7 +12,7 @@ namespace Aer.Flow.Mutation;
 /// </summary>
 public static class ExternalDecisionValidator
 {
-    /// <exception cref="InvalidExternalDecisionException">The decision violates one of §17.2's rules.</exception>
+    /// <exception cref="InvalidExternalDecisionException">The decision violates one of the validation rules.</exception>
     public static void Validate(
         FlowState state,
         WorkflowDefinitionSnapshot snapshot,
@@ -26,7 +26,7 @@ public static class ExternalDecisionValidator
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(succeededExecutionIds);
 
-        // "One resolving decision per pause" (§17.2) needs no separate check: once a prior decision
+        // "One resolving decision per pause" needs no separate check: once a prior decision
         // has resolved this ExecutionId, WorkflowResumed has already cleared its Paused status, so a
         // further decision against it fails this same lookup.
         var referencedStep = state.Steps.SingleOrDefault(step => step.LatestExecutionId == referencedExecutionId);
@@ -47,8 +47,8 @@ public static class ExternalDecisionValidator
                 $"Execution '{referencedExecutionId}' is not the currently paused latest attempt of any step.");
         }
 
-        // Every Paused step was paused by the Pause Engine only for a step declaring PausePoint
-        // (§17.1) — a Flow-internal invariant, not something a caller's input can violate.
+        // Every Paused step was paused by the Pause Engine only for a step declaring PausePoint —
+        // a Flow-internal invariant, not something a caller's input can violate.
         var pausePoint = snapshot.Steps.Single(step => step.StepId == referencedStep.StepId).PausePoint!;
 
         switch (decisionType)

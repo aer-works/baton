@@ -3,7 +3,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Projection;
 
 /// <summary>
-/// Projections of an active grant (§D).
+/// Projections of an active grant.
 /// </summary>
 public sealed record GrantState(
     GrantId GrantId,

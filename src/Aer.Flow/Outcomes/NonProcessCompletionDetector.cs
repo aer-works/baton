@@ -5,22 +5,22 @@ using Aer.Flow.Mutation;
 namespace Aer.Flow.Outcomes;
 
 /// <summary>
-/// Capability 16's completion half (spec §17.3): finds every unfinalized non-process execution —
+/// Capability 16's completion half: finds every unfinalized non-process execution —
 /// a step bound to a <see cref="WorkerBinding.NonProcess"/>, or a step-less supplementary
 /// execution — whose output directory now satisfies its <see cref="WorkerContract"/>. Consulted at
 /// the top of every scheduling round, exactly like <see cref="Scheduling.PauseEngine"/>'s derived
 /// obligation, so a crash between the artifact appearing on disk and this classification landing
 /// simply re-evaluates the same disk state on the next mutation call. The filesystem is read here,
-/// at classification time, only — replay never re-evaluates (§13); the resulting
+/// at classification time, only — replay never re-evaluates; the resulting
 /// <see cref="FlowEvent.ExecutionSucceeded"/> is the durable truth thereafter.
 /// </summary>
 public static class NonProcessCompletionDetector
 {
     /// <summary>
-    /// Returns the <see cref="ExecutionId"/>s that satisfy their contract right now (§4.1) and
+    /// Returns the <see cref="ExecutionId"/>s that satisfy their contract right now and
     /// therefore owe an <see cref="FlowEvent.ExecutionSucceeded"/> append. An unsatisfied contract
     /// means still pending — never <c>Failed</c> — since there is no exit signal to classify
-    /// against (§17.3).
+    /// against.
     /// </summary>
     /// <exception cref="UnresolvedWorkerException">
     /// A step-less execution's <see cref="StepLessExecutionState.Worker"/> has no corresponding
@@ -55,7 +55,7 @@ public static class NonProcessCompletionDetector
 
             // Only a step actually bound to a non-process worker can ever be "settled" by contract
             // satisfaction alone — a Running process-bound step is either still genuinely in
-            // flight or crashed before its outcome was recorded (§6), and is not this method's
+            // flight or crashed before its outcome was recorded, and is not this method's
             // concern either way; DispatchAndRecordOutcomeAsync's own in-flight task owns it.
             if (!workerBindings.TryGetValue(stepDefinition.Worker, out var binding) || binding is not WorkerBinding.NonProcess nonProcess)
             {

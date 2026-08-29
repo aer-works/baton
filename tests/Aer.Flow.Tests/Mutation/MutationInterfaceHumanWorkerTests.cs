@@ -7,13 +7,13 @@ using Aer.Flow.Tests.TestSupport;
 namespace Aer.Flow.Tests.Mutation;
 
 /// <summary>
-/// M9 Phase 4 (Human worker support, §17.3): mutation-level tests proving a
+/// M9 Phase 4 (Human worker support): mutation-level tests proving a
 /// <see cref="WorkerBinding.NonProcess"/> step dispatches nothing to Core, sits pending until its
 /// output satisfies its <see cref="WorkerContract"/>, then finalizes and unblocks downstream
 /// exactly as any other worker's success would; and that step-less supplementary executions mint
 /// independently of the DAG, without perturbing any step's own projection, and feed
 /// <see cref="DecisionType.RetryWithRevision"/>'s <c>SupplementaryExecutionId</c>. The test drops
-/// the contract-satisfying file itself, playing the human (§20: no watching, no polling).
+/// the contract-satisfying file itself, playing the human (no watching, no polling).
 /// </summary>
 public class MutationInterfaceHumanWorkerTests
 {
@@ -54,9 +54,9 @@ public class MutationInterfaceHumanWorkerTests
             aResult.SetResult(Succeeded);
             var firstState = await firstRunTask;
 
-            // H was admitted (ExecutionRequestAccepted) but no Core process was ever asked for it
-            // (§17.3) — StubCoreDispatcher would have thrown had anything tried. Still "Running":
-            // no terminal event exists for it yet, same as any other unfinalized attempt (§6).
+            // H was admitted (ExecutionRequestAccepted) but no Core process was ever asked for it —
+            // StubCoreDispatcher would have thrown had anything tried. Still "Running":
+            // no terminal event exists for it yet, same as any other unfinalized attempt.
             Assert.Equal(StepStatus.Running, firstState.Steps.Single(s => s.StepId == H).Status);
             Assert.Equal(StepStatus.Pending, firstState.Steps.Single(s => s.StepId == C).Status);
 
@@ -118,7 +118,7 @@ public class MutationInterfaceHumanWorkerTests
                 workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
 
             // Never Failed — an unsatisfied contract means still pending; there is no exit signal
-            // to classify against (§17.3).
+            // to classify against.
             Assert.Equal(StepStatus.Running, secondState.Steps.Single().Status);
             Assert.Equal(hExecutionId, secondState.Steps.Single().LatestExecutionId);
 
@@ -268,7 +268,7 @@ public class MutationInterfaceHumanWorkerTests
                 workflowId, roomDirectory, snapshot, new Dictionary<string, WorkerBinding>(), artifactsRoot, "human", inputs: [], reader, writer, cancellationToken: TestContext.Current.CancellationToken));
 
             // A process-bound role name is just as invalid — a supplementary execution is
-            // non-process by definition (§17.3).
+            // non-process by definition.
             await Assert.ThrowsAsync<UnresolvedWorkerException>(() => MutationInterface.RecordSupplementaryExecutionAsync(
                 workflowId, roomDirectory, snapshot, MakeBindings(), artifactsRoot, "stub-worker", inputs: [], reader, writer, cancellationToken: TestContext.Current.CancellationToken));
         }

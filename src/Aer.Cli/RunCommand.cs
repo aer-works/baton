@@ -12,7 +12,7 @@ using Aer.Flow.Workspaces;
 namespace Aer.Cli;
 
 /// <summary>
-/// <c>aer run</c>, the "pump" §21 designates as v1's execution driver (M11 Phase 3): the exact
+/// <c>aer run</c>, the "pump" that is v1's execution driver (M11 Phase 3): the exact
 /// project → resolve → dispatch → await loop <c>WorkflowEndToEndTests</c> has exercised since M7,
 /// now reached through a real <see cref="IWorkerAdapter"/> and a real host process instead of a
 /// test fixture constructing <see cref="WorkerBinding"/>s by hand.
@@ -54,7 +54,7 @@ public static class RunCommand
     /// <see cref="MutationInterface.StartWorkflowAsync"/>. <c>null</c> for every caller (the CLI
     /// included) that has no need to reach a live execution mid-pump; a caller that retains one can
     /// signal a targeted Cancel to a specific in-flight execution this same call dispatched, without
-    /// a second mutation-surface call racing §15's guard (originally <c>Aer.RoomSession</c>'s
+    /// a second mutation-surface call racing the same guard (originally <c>Aer.RoomSession</c>'s
     /// <c>RoomClient</c>, itself since deleted, #1420).
     /// </param>
     /// <param name="onWorkerStdoutLine">

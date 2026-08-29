@@ -3,9 +3,9 @@ using Aer.Flow.Domain;
 namespace Aer.Cli;
 
 /// <summary>
-/// Parsed arguments for <c>aer decide</c> (M12 Phase 3, §17.2's external-decision surface exposed
-/// on the CLI). Mirrors <see cref="CancelOptions"/>'s shape: a mutation command never binds a fresh
-/// snapshot (§11.2).
+/// Parsed arguments for <c>aer decide</c> (M12 Phase 3), the external-decision surface exposed
+/// on the CLI. Mirrors <see cref="CancelOptions"/>'s shape (mutation commands do not bind fresh
+/// snapshots).
 /// </summary>
 /// <param name="RoomDirectoryPath">An already-started room's durable state directory.</param>
 /// <param name="ExecutionId">
@@ -15,11 +15,11 @@ namespace Aer.Cli;
 /// only, also a Failed latest attempt with a scheduled retry still pending (#815) — a step #594's
 /// classification quota-parked without ever pausing it.
 /// </param>
-/// <param name="DecisionType">One of §17.2's closed set: <c>resume</c>, <c>reject</c>, <c>retry-with-revision</c>, <c>supersede</c>.</param>
+/// <param name="DecisionType">One of the closed set: <c>resume</c>, <c>reject</c>, <c>retry-with-revision</c>, <c>supersede</c>.</param>
 /// <param name="TargetStepId">Required for, and only valid with, <see cref="Domain.DecisionType.Supersede"/>.</param>
 /// <param name="SupplementaryExecutionId">
 /// Required for <see cref="Domain.DecisionType.Supersede"/>; optional for
-/// <see cref="Domain.DecisionType.RetryWithRevision"/> (§17.2). Names an already-succeeded
+/// <see cref="Domain.DecisionType.RetryWithRevision"/>. Names an already-succeeded
 /// supplementary execution — see <c>aer supply</c>.
 /// </param>
 /// <param name="BindingsFilePath">The worker-binding config file (M11 Phase 1's sidecar shape).</param>

@@ -39,7 +39,7 @@ public enum RunExitCode
 /// #1388 review F9: for <c>aer resume</c>, this still classifies the WHOLE room's <see cref="FlowState"/>,
 /// not "did the resumed step itself succeed" — a successful resume of one step in a room where a
 /// different step already Failed exits <see cref="RunExitCode.Failed"/>, consistent with #1356's
-/// room-scoped table (§5) rather than a per-verb verdict. Read the resumed step's own
+/// room-scoped table rather than a per-verb verdict. Read the resumed step's own
 /// <see cref="StepState.Status"/> (via <c>status --json</c>) for that.
 /// </para>
 /// </summary>

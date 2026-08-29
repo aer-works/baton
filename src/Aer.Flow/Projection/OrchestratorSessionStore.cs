@@ -6,7 +6,7 @@ using Aer.Flow.Store;
 namespace Aer.Flow.Projection;
 
 /// <summary>
-/// Persistence store for engine session metadata under <c>{room}/.aer/orchestrator-session.json</c> (§A).
+/// Persistence store for engine session metadata under <c>{room}/.aer/orchestrator-session.json</c>.
 /// Follows the same loud-fallback posture as <see cref="ProjectionCheckpointStore"/>:
 /// missing or corrupt file → loud stderr message + cold start from zero.
 /// </summary>

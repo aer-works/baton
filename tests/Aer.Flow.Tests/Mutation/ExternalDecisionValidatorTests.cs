@@ -4,7 +4,7 @@ using Aer.Flow.Mutation;
 namespace Aer.Flow.Tests.Mutation;
 
 /// <summary>
-/// M9 Phase 2 (External Decision Handler, §17.2): the full validation matrix for
+/// M9 Phase 2 (External Decision Handler): the full validation matrix for
 /// <see cref="ExternalDecisionValidator.Validate"/> against hand-built <see cref="FlowState"/> —
 /// no event log, no dispatch. Mirrors <see cref="Scheduling.PauseEngineTests"/>'s and
 /// <see cref="Scheduling.RetryEngineTests"/>'s style: a pure function tested directly.
@@ -329,7 +329,7 @@ public class ExternalDecisionValidatorTests
     [Fact]
     public void A_fully_valid_Supersede_naming_the_pausing_steps_own_execution_as_the_supplement_is_valid()
     {
-        // §17.5's own example: the critic's feedback artifact is its own successful execution.
+        // The critic produced its feedback artifact in an execution of its own.
         var state = new FlowState(
             new WorkflowDefinitionSnapshotId("snapshot-1"),
             [

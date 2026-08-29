@@ -56,7 +56,7 @@ public class LiveClaudeRunSmokeTest
 
     /// <summary>
     /// Only checks the output exists and is non-blank — unlike the shell-stub tests, a live
-    /// worker's exact text is never asserted verbatim (spec §4.1's contract is "the file exists",
+    /// worker's exact text is never asserted verbatim (the contract is "the file exists",
     /// not "the file says X"; the CLAUDE.md rule against parsing worker output applies here too).
     /// </summary>
     private static async Task AssertRealOutputAsync(string artifactsRoot, StepState stepState, string outputName)

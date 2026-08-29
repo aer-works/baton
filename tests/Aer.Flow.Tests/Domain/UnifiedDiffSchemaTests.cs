@@ -5,7 +5,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Tests.Domain;
 
 /// <summary>
-/// The parse floor of spec §4.2's <c>Diff</c> schema (#881): what must be present, what empty
+/// The parse floor of the <c>Diff</c> schema (#881): what must be present, what empty
 /// inputs mean, and what bad shapes are refused.
 /// </summary>
 public class UnifiedDiffSchemaTests

@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Aer.Flow.Domain;
 
 /// <summary>
-/// Custom JSON converter for <see cref="BackoffPolicy"/> (spec §2).
+/// Custom JSON converter for <see cref="BackoffPolicy"/>.
 /// Accepts preset string names ("none", "brisk", "steady", "patient"), object specifications,
 /// and throws descriptive exceptions for invalid preset names.
 /// </summary>

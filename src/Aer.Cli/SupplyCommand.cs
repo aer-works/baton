@@ -10,13 +10,13 @@ using Aer.Flow.Workspaces;
 namespace Aer.Cli;
 
 /// <summary>
-/// <c>aer supply</c> (M12 Phase 3): the CLI surface for §17.3's supplementary artifact — the one
+/// <c>aer supply</c> (M12 Phase 3): the CLI surface for the supplementary artifact — the one
 /// mutation-interface entry point (<see cref="MutationInterface.RecordSupplementaryExecutionAsync"/>)
 /// no CLI command reached before this phase. Per M11's decision of record that worker-binding
 /// config entries only ever resolve to <see cref="Aer.Flow.Mutation.WorkerBinding.Process"/>, the
 /// <see cref="Aer.Flow.Mutation.WorkerBinding.NonProcess"/> binding this command dispatches under is
 /// constructed directly here, from <see cref="SupplyOptions.OutputName"/> — not looked up in the
-/// bindings file. Minting alone does not drive the pump (§17.3: nothing about minting changes
+/// bindings file. Minting alone does not drive the pump (nothing about minting changes
 /// readiness), so this command populates the assigned output immediately from
 /// <see cref="SupplyOptions.SourceFilePath"/> and then runs one settling pump
 /// (<see cref="MutationInterface.StartWorkflowAsync"/>) itself — the same two-call sequence

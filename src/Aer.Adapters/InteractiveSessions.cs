@@ -120,8 +120,8 @@ public static class InteractiveSessionMaterializer
     public const string DefaultOutputFileName = "response.md";
 
     // M24 Phase 5.2 (#285): a downstream anchor step exists purely to give a repeated-turn
-    // `Supersede` (spec §17.5) a legal target. `Supersede`'s target must be a distinct transitive
-    // ancestor (§17.1) -- a single "chat" step targeting itself is spec-illegal three ways (self-
+    // `Supersede` a legal target (the ancestry rule lives on `NoOpWorkerAdapter`'s
+    // remarks) -- a single "chat" step targeting itself is illegal three ways (self-
     // target, no ancestor, no supplementary artifact possible) and was silently no-oping every turn
     // after the first (see #285's investigation notes). "chat" itself now declares no PausePoint at
     // all, so a successful turn flows straight through to the anchor without stopping -- Anchor's own
@@ -349,8 +349,8 @@ public static class InteractiveSessionMaterializer
 
         var definition = new WorkflowDefinition(
             WorkflowTemplateId: new WorkflowTemplateId("interactive-session-template"),
-            // 3: the chat step no longer declares response.md (#650). Spec §4 is unambiguous that a
-            // declared output which does not appear is a failure, and it is right — the defect was
+            // 3: the chat step no longer declares response.md (#650). A declared output which does
+            // not appear is unambiguously a failure, and it is right — the defect was
             // declaring one AER does not actually require. A chat turn's answer has two channels, the
             // artifact and the vendor's own structured result, and the daemon accepts either.
             WorkflowTemplateVersion: 3,

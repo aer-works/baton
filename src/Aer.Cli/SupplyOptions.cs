@@ -1,8 +1,8 @@
 namespace Aer.Cli;
 
 /// <summary>
-/// Parsed arguments for <c>aer supply</c> (M12 Phase 3, §17.3's supplementary-artifact surface
-/// exposed on the CLI). Mints a step-less <see cref="Aer.Flow.Mutation.WorkerBinding.NonProcess"/>
+/// Parsed arguments for <c>aer supply</c> (M12 Phase 3), the supplementary-artifact surface
+/// exposed on the CLI. Mints a step-less <see cref="Aer.Flow.Mutation.WorkerBinding.NonProcess"/>
 /// execution and populates it from <paramref name="SourceFilePath"/> in the same call, so the
 /// printed <see cref="Aer.Flow.Domain.ExecutionId"/> is immediately usable as a
 /// <c>--supplementary</c> argument to <c>aer decide</c> — no separate settling call is needed

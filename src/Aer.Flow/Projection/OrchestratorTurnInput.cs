@@ -4,7 +4,7 @@ using Aer.Flow.Store;
 namespace Aer.Flow.Projection;
 
 /// <summary>
-/// Assembles what one orchestrator turn reads (§B):
+/// Assembles what one orchestrator turn reads:
 /// <list type="bullet">
 ///   <item><description>The projected <see cref="RoomState"/> (carrying ActiveGrants + OpenEscalations).</description></item>
 ///   <item><description>The event delta: room events appended since the last completed turn cursor.</description></item>
@@ -12,7 +12,7 @@ namespace Aer.Flow.Projection;
 ///   <item><description>The <see cref="RoomMemoryDocument"/>.</description></item>
 /// </list>
 /// <para>
-/// <b>Re-schedulable Turns (§E):</b> Advancing the cursor is a separate explicit call
+/// <b>Re-schedulable Turns:</b> Advancing the cursor is a separate explicit call
 /// (<see cref="CommitTurn"/>), and it takes THIS input — never a caller-computed count — so the
 /// only committable value is what the turn actually read (#778 review: a bare int invited
 /// committing events no turn ever saw, silently dropping them from every future delta).
@@ -109,7 +109,7 @@ public sealed record OrchestratorTurnInput(
     }
 
     /// <summary>
-    /// Explicitly advances the session cursor past everything <paramref name="input"/> read (§B).
+    /// Explicitly advances the session cursor past everything <paramref name="input"/> read.
     /// Takes the assembled input rather than a count so a caller cannot commit a value divorced
     /// from what the turn actually saw — see the class remarks for the bug that shape invites.
     /// </summary>

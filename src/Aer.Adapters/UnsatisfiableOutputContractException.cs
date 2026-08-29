@@ -22,8 +22,8 @@ namespace Aer.Adapters;
 /// <para>
 /// Every declared output is required: <c>ContractValidator</c> checks <c>File.Exists</c> for each
 /// one, and an <see cref="Aer.Flow.Domain.OutputCondition"/> only adds a stricter check on top of
-/// existence rather than excusing it. Spec §4 is explicit that a declared-but-absent output is a
-/// failure. That is what makes refusing early safe rather than over-strict — and #650 is the
+/// existence rather than excusing it: a declared-but-absent output is a failure.
+/// That is what makes refusing early safe rather than over-strict — and #650 is the
 /// counterpart: a contract that declares an output nobody requires is the other way to get this
 /// wrong, and the answer there was to stop declaring it, not to relax the rule.
 /// </para>

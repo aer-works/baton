@@ -8,7 +8,7 @@ namespace Aer.Cli;
 /// [--supplementary &lt;execution-id&gt;] --bindings &lt;bindings-file&gt; [--workflow-id &lt;id&gt;]</c>.
 /// Never throws a bare <see cref="InvalidOperationException"/> for a malformed invocation — every
 /// failure here is a <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules),
-/// mirroring <see cref="CancelOptionsParser"/>. Every validity rule beyond "is this one of §17.2's
+/// mirroring <see cref="CancelOptionsParser"/>. Every validity rule beyond "is this one of the
 /// four spellings" stays <c>ExternalDecisionValidator</c>'s (e.g. whether <c>--target-step</c> is
 /// required for the given <c>--type</c>) — this parser adds no vocabulary of its own.
 /// </summary>

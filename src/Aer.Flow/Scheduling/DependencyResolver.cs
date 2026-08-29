@@ -3,7 +3,7 @@ using Aer.Flow.Domain;
 namespace Aer.Flow.Scheduling;
 
 /// <summary>
-/// Determines which steps are ready to run per spec §11.3's Dependency Resolution Rule. A pure
+/// Determines which steps are ready to run per the Dependency Resolution Rule. A pure
 /// function over <see cref="FlowState"/> and <see cref="WorkflowDefinitionSnapshot"/> — no I/O, no
 /// dispatch, no retries.
 /// </summary>
@@ -14,8 +14,8 @@ public static class DependencyResolver
     /// step <c>DependsOn</c>, that dependency's most recent attempt succeeded (condition 1), and
     /// this step does not already have a successful execution that used the dependency's current
     /// most recent successful <see cref="ExecutionId"/> (condition 2 — staleness after
-    /// <see cref="DecisionType.Supersede"/>, §17.5). A step whose latest attempt failed is also
-    /// ready when <see cref="RetryEngine.MayRetry"/> holds for it (§10) — "terminally failed" is
+    /// <see cref="DecisionType.Supersede"/>). A step whose latest attempt failed is also
+    /// ready when <see cref="RetryEngine.MayRetry"/> holds for it — "terminally failed" is
     /// the derived complement (<see cref="StepStatus.Failed"/> and not <c>MayRetry</c>), never a
     /// stored event.
     /// </summary>
@@ -38,7 +38,7 @@ public static class DependencyResolver
 
             // A Supersede's target is already Succeeded and therefore never "ready" through the
             // ordinary conditions below — it is ready as the decision's direct consequence instead
-            // (§17.5), independent of its own dependencies' staleness. Once dispatched, the next
+            // independent of its own dependencies' staleness. Once dispatched, the next
             // projection clears this and the step falls back into ordinary readiness.
             if (stepState.IsPendingSupersedeTarget)
             {
@@ -47,16 +47,16 @@ public static class DependencyResolver
             }
 
             // Running: an attempt is already in flight. Paused: idle until an external decision
-            // resolves it (§17.1). Rejected: an external Reject forecloses retry regardless of
+            // resolves it. Rejected: an external Reject forecloses retry regardless of
             // remaining budget, equivalent in effect to exhausting RetryPolicy but externally
-            // triggered (§17.2).
+            // triggered.
             if (stepState.Status is StepStatus.Running or StepStatus.Paused or StepStatus.Rejected)
             {
                 continue;
             }
 
-            // Cancelled is never retried by RetryPolicy (§9, §10) — but a RetryWithRevision
-            // decision reopens "the referenced step, which has not yet succeeded" (§17.2)
+            // Cancelled is never retried by RetryPolicy — but a RetryWithRevision
+            // decision reopens "the referenced step, which has not yet succeeded"
             // regardless of whether that step's terminal outcome was Cancelled or Failed, and a
             // pending PendingSupplementaryExecutionId is recorded only in exactly that case (StateProjector
             // also resets ConsecutiveFailureCount for the same decision, mirroring how Failed's own
@@ -69,8 +69,8 @@ public static class DependencyResolver
                 continue;
             }
 
-            // A failed step stays terminal unless its RetryPolicy still permits another attempt
-            // (§10); one that does proceeds into the same readiness check as any other step.
+            // A failed step stays terminal unless its RetryPolicy still permits another attempt;
+            // one that does proceeds into the same readiness check as any other step.
             if (stepState.Status == StepStatus.Failed && !RetryEngine.MayRetry(stepState, stepDefinition.RetryPolicy))
             {
                 continue;
@@ -112,7 +112,7 @@ public static class DependencyResolver
         Dictionary<StepId, StepState> stepStateByStepId)
     {
         // Condition 2 only ever blocks re-readiness by comparing against a dependency that could
-        // have gone stale (§17.5). A step with no DependsOn has nothing to go stale against, so
+        // have gone stale. A step with no DependsOn has nothing to go stale against, so
         // the loop below would never run and an already-succeeded root step would be vacuously
         // "ready" on every single projection — an infinite re-run, not a one-time completion.
         if (stepState.Status == StepStatus.Succeeded && stepDefinition.DependsOn.Count == 0)
@@ -124,17 +124,17 @@ public static class DependencyResolver
         {
             var dependencyState = stepStateByStepId[dependencyStepId];
 
-            // Condition 1 (§11.3): the dependency's most recent attempt must have succeeded.
+            // Condition 1: the dependency's most recent attempt must have succeeded.
             if (dependencyState.Status != StepStatus.Succeeded)
             {
                 return false;
             }
 
-            // Condition 2 (§11.3): only relevant once this step has already succeeded — otherwise
+            // Condition 2: only relevant once this step has already succeeded — otherwise
             // there is no prior successful execution to compare staleness against. If this step's
             // recorded upstream for this dependency still matches the dependency's current latest
             // successful ExecutionId, this step is up to date with respect to it and is not ready
-            // again; a mismatch (or no recorded entry) means it is stale and must rerun (§17.5).
+            // again; a mismatch (or no recorded entry) means it is stale and must rerun.
             if (stepState.Status == StepStatus.Succeeded &&
                 stepState.UpstreamExecutionIds.TryGetValue(dependencyStepId, out var recordedUpstreamExecutionId) &&
                 recordedUpstreamExecutionId == dependencyState.LatestExecutionId)
