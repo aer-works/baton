@@ -135,11 +135,6 @@ def main() -> int:
         return 2
 
     env = dict(os.environ)
-    if os.name != "nt":
-        # Transitional arm for CI's ubuntu shard until #1405 deletes it -- a CI runner is
-        # single-lane, so it never needed the lock anyway.
-        return subprocess.run(command, env=env, check=False).returncode
-
     if env.get(HELD_MARKER):
         # Marker inherited: probe, don't trust (see the module docstring's Nesting section).
         handle = try_acquire_once(lock_path(), command)
@@ -205,10 +200,6 @@ def _spawn_selftest_child(code: str, lock_file: str, *args: str) -> subprocess.P
 
 
 def selftest() -> int:
-    if os.name != "nt":
-        # Same #1405 transitional arm as main(): the mechanism under test is Windows-only.
-        print("selftest: skipped (non-Windows host; the lock is a pass-through here)")
-        return 0
     ok = True
     with tempfile.TemporaryDirectory() as td:
         lock_file = os.path.join(td, "selftest.lock")
