@@ -51,10 +51,10 @@ namespace Aer.Flow.Store;
 /// is left at <c>Never</c>, and that is the only reason a null required member is written at all —
 /// <c>"FailureClassification":null</c> is emitted rather than omitted. Setting
 /// <c>WhenWritingNull</c> here would stop the writer emitting it and the reader would immediately
-/// reject the lines it had just written: a store that cannot read its own output. This is a live
-/// copy-paste hazard rather than a hypothetical, because the daemon's own options legitimately do set
-/// it (<c>DaemonBroadcast.cs</c>, <c>Aer.Daemon/Program.cs</c>) — that is correct for a wire frame,
-/// where absence and null mean the same thing, and wrong here, where absence means damage.
+/// reject the lines it had just written: a store that cannot read its own output. On a wire frame
+/// absence and null mean the same thing, so <c>WhenWritingNull</c> is the natural choice there and
+/// copy-pasting such options here looks harmless; here absence means damage. A test pins this
+/// setting so the mistake fails loudly instead of corrupting the journal.
 /// </para>
 /// </remarks>
 public static class FlowEventLogJson

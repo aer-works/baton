@@ -40,18 +40,17 @@ public static class MemoryProposalResolution
 
     /// <summary>
     /// #857: how long a resolve waits out a contended room lock before refusing. Sized against the
-    /// holder it actually loses to — <c>RoomWakeBridge</c>'s sweep, whose hold is one
-    /// read-project-append per newly-escalated proposal, measured in milliseconds.
+    /// holders it can actually lose to — the other mutation verbs, each holding for one
+    /// read-project-append, measured in milliseconds.
     /// <para>
     /// Two seconds is generous for that and still short enough to surface a stuck holder rather
-    /// than hide it. What it is <b>not</b> sized against is an unbounded burst: the sweep escalates
-    /// every new capture file it finds in one pass, each taking the lock in turn, and nothing caps
-    /// how many that can be. A large enough burst would exhaust this budget — unmeasured, because
-    /// no such burst has been observed, and called out here rather than left as an assumption
+    /// than hide it. What it is <b>not</b> sized against is journal compaction, whose hold grows
+    /// with journal length; a long enough journal would exhaust this budget — unmeasured, because
+    /// no such contention has been observed, and called out here rather than left as an assumption
     /// hiding inside a number.
     /// </para>
     /// </summary>
-    internal static readonly TimeSpan SweepContentionBudget = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan LockContentionBudget = TimeSpan.FromSeconds(2);
 
     public static async Task<RoomState> ResolveAsync(
         string roomDirectoryPath,
@@ -73,16 +72,12 @@ public static class MemoryProposalResolution
         // RoomMutationInterface's own already-resolved guard ever got a chance to refuse it.
         //
         // #857: acquired WITH A WAIT rather than fail-fast, because this is the operator-facing
-        // path. RoomWakeBridge's sweep takes this same room lock when it escalates a newly-appeared
-        // memory proposal, so a fail-fast acquire here turns that overlap into a refused
-        // approve/reject the operator can only answer by clicking again. The hold is milliseconds,
-        // so a short wait converts a coin-flip into a certainty. Still bounded: a genuinely stuck
-        // holder must surface, not be waited on forever.
-        //
-        // Note the sweep does NOT take this lock on every tick -- it skips capture files already in
-        // the projected state, so an idle tick locks nothing. The first draft of this comment said
-        // "every 500ms" and was wrong; #878 covers the doc that led there.
-        using var guard = ConcurrencyGuard.AcquireRoomEventsWithin(roomDirectoryPath, SweepContentionBudget);
+        // path. Every other mutation verb takes this same room lock for one read-project-append,
+        // so a fail-fast acquire here turns any overlap into a refused approve/reject the operator
+        // can only answer by clicking again. The hold is milliseconds, so a short wait converts a
+        // coin-flip into a certainty. Still bounded: a genuinely stuck holder must surface, not be
+        // waited on forever.
+        using var guard = ConcurrencyGuard.AcquireRoomEventsWithin(roomDirectoryPath, LockContentionBudget);
 
         var existingEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
         var state = RoomProjector.Project(existingEvents);

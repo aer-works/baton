@@ -385,6 +385,10 @@ jobs:
       # the other free audits above.
       - name: Tracked markdown stays within the docs budget
         run: pixi run audit-docsbudget
+      # #1428: the spec cites file + symbol, never a line number (see speccitations.py). Free audit,
+      # same job for the same reason as the two above.
+      - name: The spec carries no line-number citations
+        run: pixi run audit-speccitations && pixi run audit-speccitations-selftest
       # The live PR-body guard moved to its own workflow, .github/workflows/pr-body-lint.yml (#862),
       # so that fixing a bad body CLEARS it (it runs on `edited`; this job does not). Its logic is
       # still tested here -- `negated_close_faults`'s polarity arms run in audit-selfcheck above,

@@ -88,11 +88,11 @@ public abstract record RoomEvent
         DateTimeOffset Timestamp) : RoomEvent
     {
         /// <summary>
-        /// The <see cref="EscalationSubject.HostCondition"/> condition name the dormancy breaker
-        /// raises alongside this event. Canonical here because both the writer
-        /// (<c>Aer.Daemon.RoomTurnHost</c>) and the reader (<see cref="Projection.RoomProjector"/>,
-        /// which pairs the escalation's detail onto the entered transition, #1178) must agree on
-        /// it, and the projector cannot reference the daemon.
+        /// The <see cref="EscalationSubject.HostCondition"/> condition name a dormancy breaker
+        /// raises alongside this event. Canonical here because the reader
+        /// (<see cref="Projection.RoomProjector"/>, which pairs the escalation's detail onto the
+        /// entered transition, #1178) keys on it, existing journals already contain it, and any
+        /// writer of this event must agree on the name.
         /// </summary>
         public const string DormancyConditionName = "turn-host-dormancy";
     }

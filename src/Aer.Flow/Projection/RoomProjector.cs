@@ -126,8 +126,8 @@ public static class RoomProjector
                 case RoomEvent.EscalationRaised escalation:
                     openEscalations.Add(escalation);
 
-                    // #1178: the breaker's escalation is journaled AFTER its TurnHostDormancyEntered
-                    // event (RoomTurnHost.ExecuteSingleTickAsync writes entered first, then raises the
+                    // #1178: a dormancy breaker's escalation is journaled AFTER its
+                    // TurnHostDormancyEntered event (the writer protocol is entered first, then the
                     // escalation on the same writer), so the entered transition starts with a null
                     // Detail and the matching escalation backfills it here. Gating on the LAST
                     // transition being an entered one with no detail yet keeps the pairing within the
