@@ -547,6 +547,20 @@ document ships — never retroactively, and never to re-derive something this do
 as settled. If a future change needs to record its own reasoning, it gets its own record; it does not
 reach backward to reconstruct a numbering scheme that no longer exists.
 
+### C-10 — Windows-only build, test, CI, and packaging
+
+The owner runs everything on one Windows machine. Build, test, CI, and packaging are Windows-only:
+no ubuntu/macos CI legs, no non-Windows pixi platforms shipped as a support target, and no per-OS
+conditional kept alive for a platform that no longer builds (#1405). This is a statement about what
+AER Flow ships and is verified on, not about `external/aer-core` (a separate repo, pinned by SHA,
+out of this decision's scope) or about a vendor CLI's own OS support (`docs/vendor-doc-audit.md`,
+`docs/vendor-capabilities.md`).
+
+**Carve-out, so this entry and `pixi.toml` never contradict each other:** `pixi.toml`'s
+`platforms` list keeps `linux-64` alongside `win-64`. That is a dev-sandbox accommodation — a Claude
+Code cloud session doing *development* work on this repo from a Linux sandbox — not a second support
+target; nothing is built, tested, or packaged for it, and `osx-arm64` is dropped outright.
+
 ---
 
 ## Appendix: full subsystem ruling table
