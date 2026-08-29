@@ -48,35 +48,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest exists so pixi.toml's declared osx-arm64 support actually builds somewhere —
-        # cross-compiling aer_core to aarch64-apple-darwin from the ubuntu-latest runner isn't
-        # practical without Apple's SDK. rid/lib-name key each OS's native-lib artifact for the pack
-        # job below to gather.
-        #
-        # It runs only on pushes to main, never on pull requests. Measured on a real run it takes 3
-        # of the workflow's 19 wall-clock minutes but 30 of its 51 billable ones, because macOS
-        # runners bill at a 10x multiplier — 59% of the cost for 6% of the time. Reserving it for
-        # main keeps PR feedback fast and still catches macOS breakage before it can compound, and
-        # keeps the workflow affordable should this repository ever go private (the Free tier's
-        # 2,000 minutes/month is under one backlog sweep at the unreserved rate). The pack job below
-        # is gated identically because it cannot assemble a multi-RID package without this leg's
-        # artifact.
-        #
-        # These leg names are NO LONGER branch-protection required contexts on their own -- the
-        # single `ci` gate job at the bottom of this file is (it aggregates these legs).
-        # That indirection is deliberate: the heavy jobs are path-filtered, so a leg that
-        # legitimately skips on a given PR would, if it were still a required context, sit at
-        # "Expected" forever and block the PR -- exactly what happened when the macOS leg moved to
-        # main-only while still listed as required (an unexplained CI hang, not an obvious
-        # misconfiguration). Rule: require only the always-running `ci` gate; never list a
-        # path-filterable leg as a required context.
+        # Windows-only (#1405): one matrix, both events. rid/lib-name key the native-lib artifact
+        # for the pack job below to gather.
         #
         # Sharding the long-pole Windows test leg (#1363): Flow suite vs remaining
         # test projects cuts test duration from ~3:49 to ~1:55.
-        include: >-
-          ${{ github.event_name == 'push'
-              && fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-flow","task":"test-flow"},{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-other","task":"test-other","skip-artifact":true},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so","name":"ubuntu","task":"test-dotnet"},{"os":"macos-latest","rid":"osx-arm64","lib-name":"libaer_core.dylib","name":"macos","task":"test-dotnet"}]')
-              || fromJSON('[{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-flow","task":"test-flow"},{"os":"windows-latest","rid":"win-x64","lib-name":"aer_core.dll","name":"windows-shard-other","task":"test-other","skip-artifact":true},{"os":"ubuntu-latest","rid":"linux-x64","lib-name":"libaer_core.so","name":"ubuntu","task":"test-dotnet"}]') }}
+        include:
+          - { os: "windows-latest", rid: "win-x64", lib-name: "aer_core.dll", name: "windows-shard-flow", task: "test-flow" }
+          - { os: "windows-latest", rid: "win-x64", lib-name: "aer_core.dll", name: "windows-shard-other", task: "test-other", skip-artifact: true }
     runs-on: ${{ matrix.os }}
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
@@ -195,10 +174,9 @@ jobs:
         run: pixi run dotnet build-server shutdown
         if: always()
 
-      # M13 Phase 3 (#109): each OS's own cargo build output (already produced above as a
-      # dependency of lint/test) becomes this platform's contribution to the fat multi-RID
-      # package the pack job below assembles. Shard 2 on Windows skips upload to avoid duplicate
-      # artifact conflicts.
+      # M13 Phase 3 (#109): the cargo build output (already produced above as a dependency of
+      # lint/test) becomes the pack job's win-x64 native lib. Shard 2 skips upload to avoid
+      # duplicate artifact conflicts.
       - name: Upload native library artifact
         if: ${{ !matrix.skip-artifact }}
         uses: actions/upload-artifact@v4
@@ -208,11 +186,12 @@ jobs:
           if-no-files-found: error
 
   # Platform-independent formatting and compiler/linter checks hoisted out of the test matrix (#1363).
-  # Runs on ubuntu-latest parallel to the test legs, saving ~2 min of serial overhead off the long pole.
+  # Runs parallel to the test legs, saving ~2 min of serial overhead off the long pole. Windows-only
+  # (#1405): no non-Windows-specific step here, so this just moved to the same runner as everything else.
   lint:
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dotnet == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
@@ -256,14 +235,11 @@ jobs:
         run: pixi run dotnet build-server shutdown
         if: always()
 
-  # M13 Phase 3 (#109): gathers the native libs the test matrix above built on all three OSes into
-  # one fat nupkg — the same install command (`dotnet tool install --global aer`) then works
-  # regardless of host OS. Runs after `test` so it only packs libraries that already passed lint
-  # and test on their own platform.
-  # Pushes to main only, matching the macOS matrix leg above: this job downloads that leg's
-  # native-lib-osx-arm64 artifact, so on a pull request (where macOS does not run) it would fail
-  # at the download step rather than merely pack less. It verifies packaging integrity, not the
-  # correctness of the change under review, so main is the right place for it.
+  # M13 Phase 3 (#109): packs the native lib the test matrix above built into a nupkg — Windows-only
+  # (#1405), so this is now a single-RID (win-x64) package, not a multi-RID one. Runs after `test`
+  # so it only packs a library that already passed lint and test.
+  # Pushes to main only: it verifies packaging integrity, not the correctness of the change under
+  # review, so main is the right place for it.
   pack:
     # !cancelled() opts this out of the changes-skip propagation on push (#412; the changes job is
     # PR-only per #410, and its skip otherwise cascades through `test` to here). The explicit
@@ -271,7 +247,7 @@ jobs:
     # needs-success gate provided before !cancelled() removed it.
     if: ${{ !cancelled() && github.event_name == 'push' && needs.test.result == 'success' }}
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
@@ -314,23 +290,10 @@ jobs:
           cache: true
           cache-dependency-path: "**/packages.lock.json"
 
-      # This job's own host (Linux) is folded in automatically by `pixi run pack`'s build-core
-      # dependency + Aer.Core.csproj's existing build-time copy (M7 Phase 6) — only the other two
-      # platforms' pre-built binaries need fetching into the artifacts/native-libs/<rid>/
-      # convention Aer.Cli.csproj's Phase 3 items read from.
-      - name: Download Windows native library
-        uses: actions/download-artifact@v4
-        with:
-          name: native-lib-win-x64
-          path: artifacts/native-libs/win-x64
-
-      - name: Download macOS native library
-        uses: actions/download-artifact@v4
-        with:
-          name: native-lib-osx-arm64
-          path: artifacts/native-libs/osx-arm64
-
-      - name: Pack aer (multi-RID)
+      # This job's own host (Windows) is folded in automatically by `pixi run pack`'s build-core
+      # dependency + Aer.Core.csproj's existing build-time copy (M7 Phase 6) — win-x64 is the only
+      # RID now, so there is nothing left to fetch from another leg's artifact.
+      - name: Pack aer
         run: pixi run pack
 
       - name: Upload packed nupkg
@@ -361,7 +324,7 @@ jobs:
   # in a merged PR body. Adding a red check to CI would have blocked every unrelated PR on
   # pre-existing debt, which is why #589 landed first.
   audit:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
