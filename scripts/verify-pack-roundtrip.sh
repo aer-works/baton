@@ -24,12 +24,15 @@ trap cleanup EXIT
 # network or needing vendor auth -- proving the packaged aer_core dispatch + adapter shell-wrapping
 # work end to end from the installed global tool, the same proof-of-dispatch goal Phases 1/3 used
 # ExitCode:127 for, but this time settling the step Succeeded instead of Failed.
-cat > "$STUB_DIR/claude" <<'STUB'
-#!/bin/sh
-mkdir -p "$AER_OUTPUT_DIR"
-echo "stub greeting from the pack round-trip check" > "$AER_OUTPUT_DIR/greeting"
+#
+# Windows-only (#1405): the adapter spawns the literal name "claude", which process creation
+# resolves against PATHEXT (VendorCliPresence.cs) -- an extension-less file is not one of those
+# extensions and would not be found at all, so the stub is a `.cmd`, not a POSIX shell script.
+cat > "$STUB_DIR/claude.cmd" <<'STUB'
+@echo off
+mkdir "%AER_OUTPUT_DIR%" 2>nul
+echo stub greeting from the pack round-trip check> "%AER_OUTPUT_DIR%\greeting"
 STUB
-chmod +x "$STUB_DIR/claude"
 
 WORKFLOW_FILE="$TASK_ROOT/workflow.json"
 BINDINGS_FILE="$TASK_ROOT/bindings.json"
