@@ -1257,37 +1257,23 @@ public class CoreDispatcherTests
     }
 
     /// <summary>
-    /// The guard claims a limit only where one was measured (#579's <c>Win32Exception (206)</c>).
-    /// Asserted in both directions so that quietly giving POSIX an invented number, or quietly
-    /// dropping Windows' real one, both fail here.
+    /// The guard claims a limit measured against #579's <c>Win32Exception (206)</c> -- Windows-only
+    /// (#1405), so this is always <see cref="CoreDispatcher.WindowsCommandLineCeiling"/>.
     /// </summary>
     [Fact]
-    public void PlatformCommandLineCeiling_carries_a_number_on_Windows_and_none_elsewhere()
+    public void PlatformCommandLineCeiling_equals_the_Windows_ceiling()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Equal(CoreDispatcher.WindowsCommandLineCeiling, CoreDispatcher.PlatformCommandLineCeiling);
-        }
-        else
-        {
-            Assert.Null(CoreDispatcher.PlatformCommandLineCeiling);
-        }
+        Assert.Equal(CoreDispatcher.WindowsCommandLineCeiling, CoreDispatcher.PlatformCommandLineCeiling);
     }
 
     /// <summary>
     /// The end-to-end arm: the guard is actually wired into <see cref="CoreDispatcher.DispatchAsync"/>
-    /// and refuses before aer-core is reached. Windows-only because it is the only platform
-    /// <see cref="CoreDispatcher.PlatformCommandLineCeiling"/> claims a limit for -- the boundary
-    /// itself is covered on every platform by the tests above, which pass their own ceiling in.
+    /// and refuses before aer-core is reached. The boundary itself is covered on every platform by the
+    /// tests above, which pass their own ceiling in.
     /// </summary>
     [Fact]
     public async Task DispatchAsync_refuses_an_over_long_command_line_before_spawning()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("No command-line ceiling is claimed off Windows; the boundary is covered by the guard tests.");
-        }
-
         var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
         var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
         try
@@ -1467,11 +1453,6 @@ public class CoreDispatcherTests
     [Fact]
     public async Task DispatchAsync_when_prompt_above_threshold_with_null_wrapper_throws_CommandLineTooLongException()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("Windows-only: this single ~33k-char argument sits far under Linux's MAX_ARG_STRLEN, so no POSIX guard trips at this size.");
-        }
-
         var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
         var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
         try
@@ -1498,11 +1479,6 @@ public class CoreDispatcherTests
     [Fact]
     public async Task DispatchAsync_when_prompt_above_threshold_and_AER_OUTPUT_DIR_unresolved_does_not_swap()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("Windows-only: this single ~33k-char argument sits far under Linux's MAX_ARG_STRLEN, so no POSIX guard trips at this size.");
-        }
-
         var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
         try
         {
@@ -1524,151 +1500,10 @@ public class CoreDispatcherTests
         }
     }
 
-    // Issue #612: POSIX has no single UTF-16 ceiling like Windows. Two byte-based caps are guarded
-    // instead -- a per-argument MAX_ARG_STRLEN (Linux) and a total ARG_MAX that also counts the
-    // environment -- so the over-long spawn is refused up-front as CommandLineTooLongException (Permanent) rather than reaching
-    // aer-core and coming back as a Retryable E2BIG that retries a deterministic failure to exhaustion.
-    // The classifiers below take their caps as arguments, so the boundary is exercised on every OS the
-    // suite runs on; only the wiring (which cap applies on which platform) is platform-gated.
-
     /// <summary>
-    /// Pins the per-argument byte accounting: UTF-8 bytes plus the terminating NUL. The NUL is why the
-    /// kernel's "including NUL" comparison lines up with a strict <c>&gt;</c> against the cap.
-    /// </summary>
-    [Fact]
-    public void PosixArgBytes_counts_utf8_bytes_and_the_terminating_nul()
-    {
-        Assert.Equal(1, CoreDispatcher.PosixArgBytes(""));
-        Assert.Equal(3, CoreDispatcher.PosixArgBytes("ab"));
-
-        // '€' is one UTF-16 code unit but three UTF-8 bytes, so a byte count is strictly heavier than the
-        // UTF-16 length the Windows measure uses -- the whole reason POSIX cannot reuse that measure.
-        Assert.Equal(1, "€".Length);
-        Assert.Equal(4, CoreDispatcher.PosixArgBytes("€"));
-    }
-
-    /// <summary>
-    /// The per-argument boundary fires one byte past the cap and not at it -- the two-sided shape #598
-    /// established. An argument whose bytes-including-NUL equal the cap is accepted; one byte more throws.
-    /// </summary>
-    [Fact]
-    public void GuardPosixArgumentLength_fires_one_byte_past_the_cap_and_not_at_it()
-    {
-        const int cap = 100;
-
-        // PosixArgBytes(arg) == arg.Length + 1 for ASCII, so 99 chars lands exactly on the cap.
-        var exactlyAtCap = new string('x', cap - 1);
-        Assert.Equal(cap, CoreDispatcher.PosixArgBytes(exactlyAtCap));
-        CoreDispatcher.GuardPosixArgumentLength("p", [exactlyAtCap], cap);
-
-        var oneOver = exactlyAtCap + "x";
-        Assert.Equal(cap + 1, CoreDispatcher.PosixArgBytes(oneOver));
-        Assert.Throws<CommandLineTooLongException>(
-            () => CoreDispatcher.GuardPosixArgumentLength("p", [oneOver], cap));
-    }
-
-    /// <summary>
-    /// The guard measures bytes, not UTF-16 code units: a multi-byte argument that clears the cap on its
-    /// <see cref="string.Length"/> still trips it on its byte image. Without this, a non-ASCII prompt near
-    /// the limit would slip past into the OS-level failure the guard exists to pre-empt.
-    /// </summary>
-    [Fact]
-    public void GuardPosixArgumentLength_counts_bytes_not_utf16_code_units()
-    {
-        const int cap = 20;
-        var multiByte = new string('€', 10); // 10 UTF-16 code units, 30 UTF-8 bytes.
-
-        Assert.True(multiByte.Length < cap, "The UTF-16 length must be under the cap, or the test proves nothing.");
-        Assert.True(CoreDispatcher.PosixArgBytes(multiByte) > cap);
-        Assert.Throws<CommandLineTooLongException>(
-            () => CoreDispatcher.GuardPosixArgumentLength("p", [multiByte], cap));
-    }
-
-    /// <summary>
-    /// The refusal names the program and the per-argument limit it crossed, so an operator is not left to
-    /// guess the prompt was the cause -- the same transparency the Windows message carries.
-    /// </summary>
-    [Fact]
-    public void GuardPosixArgumentLength_names_the_program_and_the_per_argument_limit()
-    {
-        const int cap = 50;
-        var longest = new string('x', 200);
-
-        var exception = Assert.Throws<CommandLineTooLongException>(
-            () => CoreDispatcher.GuardPosixArgumentLength("agy", ["-p", longest], cap));
-
-        Assert.Contains("'agy'", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("MAX_ARG_STRLEN", exception.Message, StringComparison.Ordinal);
-        Assert.Contains(cap.ToString(CultureInfo.InvariantCulture), exception.Message, StringComparison.Ordinal);
-        Assert.Contains("as a file it reads under its read-files grant", exception.Message, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// Pins the total-bytes accounting MeasurePosixTotalBytes documents, so a change to it has to be a
-    /// deliberate edit here rather than a silent shift in where the guard fires. The worked figures below
-    /// (program, then arguments, then environment) are what its formula must reproduce.
-    /// </summary>
-    [Fact]
-    public void MeasurePosixTotalBytes_counts_the_program_its_arguments_and_the_environment()
-    {
-        // "p": 1 byte + NUL + 8-byte pointer = 10.
-        Assert.Equal(10, CoreDispatcher.MeasurePosixTotalBytes("p", [], []));
-        // + "ab": 2 + 1 + 8 = 11 => 21.
-        Assert.Equal(21, CoreDispatcher.MeasurePosixTotalBytes("p", ["ab"], []));
-        // + ("K","V"): 1 + 1 (=) + 1 + 1 (NUL) + 8 = 12 => 33.
-        Assert.Equal(33, CoreDispatcher.MeasurePosixTotalBytes("p", ["ab"], [("K", "V")]));
-    }
-
-    /// <summary>
-    /// The total boundary fires one byte past the cap and not at it, two-sided like the per-argument one.
-    /// </summary>
-    [Fact]
-    public void GuardPosixTotalLength_fires_one_byte_past_the_cap_and_not_at_it()
-    {
-        var total = CoreDispatcher.MeasurePosixTotalBytes("p", ["ab"], [("K", "V")]);
-
-        CoreDispatcher.GuardPosixTotalLength("p", ["ab"], [("K", "V")], total);
-        Assert.Throws<CommandLineTooLongException>(
-            () => CoreDispatcher.GuardPosixTotalLength("p", ["ab"], [("K", "V")], total - 1));
-    }
-
-    /// <summary>
-    /// The total cap counts the environment, not just the arguments, so a large environment alone --
-    /// identical program and arguments -- can trip it. The property would silently vanish if the guard
-    /// measured only the arguments, and is the reason <see cref="CoreDispatcher.AssembleChildEnvironment"/>
-    /// is measured at all.
-    /// </summary>
-    [Fact]
-    public void GuardPosixTotalLength_charges_the_environment_so_a_big_env_alone_can_trip_it()
-    {
-        const int cap = 100;
-        (string, string)[] bigEnv = [("BIG", new string('v', 200))];
-
-        // Same program and arguments; only the environment differs.
-        CoreDispatcher.GuardPosixTotalLength("p", ["a"], [], cap);
-        Assert.Throws<CommandLineTooLongException>(
-            () => CoreDispatcher.GuardPosixTotalLength("p", ["a"], bigEnv, cap));
-    }
-
-    /// <summary>
-    /// The total refusal names the program and ARG_MAX, distinguishing it from the per-argument refusal so
-    /// an operator can tell which of the two caps was crossed.
-    /// </summary>
-    [Fact]
-    public void GuardPosixTotalLength_names_the_program_and_arg_max()
-    {
-        var exception = Assert.Throws<CommandLineTooLongException>(
-            () => CoreDispatcher.GuardPosixTotalLength("agy", [new string('x', 200)], [], argMax: 50));
-
-        Assert.Contains("'agy'", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("ARG_MAX", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("as a file it reads under its read-files grant", exception.Message, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// The assembled child environment is exactly what the ARG_MAX guard must measure and what WithEnv
-    /// applies. Asserts the source order AssembleChildEnvironment documents, and that a PassThrough
-    /// variable (its value resolved elsewhere) is excluded. Same-source-for-both keeps the guard honest.
+    /// The assembled child environment is exactly what WithEnv applies to the spawned process. Asserts
+    /// the source order AssembleChildEnvironment documents, and that a PassThrough variable (its value
+    /// resolved elsewhere) is excluded.
     /// </summary>
     [Fact]
     public void AssembleChildEnvironment_orders_inherited_then_computed_then_target_and_drops_passthrough()
@@ -1716,115 +1551,6 @@ public class CoreDispatcherTests
         Assert.Contains(("EXPANDED", "/task/out/.gemini_home"), environment);
         Assert.Contains(("EXPANDED_WIN", "/task/out\\.gemini_home"), environment);
         Assert.Contains(("UNTOUCHED", "$NOT_A_COMPUTED_VAR/%ALSO_NOT%"), environment);
-    }
-
-    /// <summary>
-    /// The runtime ARG_MAX query returns a plausible limit on POSIX -- the only test that exercises the
-    /// real <c>sysconf</c>. On Linux this runs on CI's ubuntu leg; on macOS it first runs on the
-    /// post-merge macOS leg (PRs do not build macOS), which is what confirms the <c>_SC_ARG_MAX</c>
-    /// symbol resolves correctly there. On Windows there is no such limit, so it is skipped.
-    /// </summary>
-    [Fact]
-    public void ArgMaxBytes_returns_a_plausible_limit_on_posix()
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Skip("ARG_MAX is a POSIX limit; Windows is guarded by the UTF-16 command-line ceiling.");
-        }
-
-        var argMax = PosixProcessLimits.ArgMaxBytes();
-        Assert.NotNull(argMax);
-
-        // Asserted against 131072 -- the glibc legacy floor every real Linux/macOS ARG_MAX clears by
-        // 2-8x (macOS kern.argmax is >= 262144) -- and NOT POSIX's toothless 4096. A 4096 assertion
-        // would pass on almost any garbage a mis-resolved _SC_ARG_MAX could return, so it could not
-        // catch the one thing this test exists to catch on the macOS leg: the symbol resolving wrong.
-        Assert.True(
-            argMax >= 131072,
-            $"sysconf(_SC_ARG_MAX) returned {argMax}, below the 131072 floor every real Linux/macOS "
-            + "ARG_MAX clears -- the _SC_ARG_MAX symbol likely resolved wrong on this platform.");
-    }
-
-    /// <summary>
-    /// The end-to-end Linux arm: an argument past MAX_ARG_STRLEN is refused inside
-    /// <see cref="CoreDispatcher.DispatchAsync"/> before aer-core is reached, as a
-    /// <see cref="CommandLineTooLongException"/>. Linux-only because it is the only platform with a
-    /// per-argument cap; the boundary itself is covered on every OS by the classifier tests above.
-    /// </summary>
-    [Fact]
-    public async Task DispatchAsync_refuses_an_over_long_argument_on_linux()
-    {
-        if (!OperatingSystem.IsLinux())
-        {
-            Assert.Skip("MAX_ARG_STRLEN is a Linux per-argument cap; other platforms bound the prompt differently.");
-        }
-
-        var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
-        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
-        try
-        {
-            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
-            var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
-
-            // One argument past MAX_ARG_STRLEN (but well under ARG_MAX), so the per-argument guard is the
-            // one that fires. "exit 0" would succeed if it ever ran, so a pass cannot come from the command
-            // failing for a reason of its own.
-            var oversizedArgument = new string('x', PosixProcessLimits.LinuxMaxArgStrlen + 1_000);
-            var target = new CoreDispatchTarget("sh", ["-c", "exit 0", oversizedArgument]);
-
-            await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
-
-            var exception = await Assert.ThrowsAsync<CommandLineTooLongException>(
-                () => dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken));
-            Assert.Contains("MAX_ARG_STRLEN", exception.Message, StringComparison.Ordinal);
-        }
-        finally
-        {
-            DirectoryCleanup.DeleteRecursively(artifactsRoot);
-            FileCleanup.Delete(logPath);
-        }
-    }
-
-    /// <summary>
-    /// The control arm #612 asks for by name -- the guard must fire above the real boundary "and not
-    /// below" it. An argument just UNDER MAX_ARG_STRLEN (a genuine ~130 KB single argument, the shape a
-    /// real inline prompt takes, and well under ARG_MAX) dispatches successfully on Linux, so the refusal
-    /// above is shown to key on the real limit rather than refusing every large spawn. Injected-cap
-    /// boundary tests cannot prove this: only a real near-limit dispatch does.
-    /// </summary>
-    [Fact]
-    public async Task DispatchAsync_dispatches_an_argument_just_under_max_arg_strlen_on_linux()
-    {
-        if (!OperatingSystem.IsLinux())
-        {
-            Assert.Skip("MAX_ARG_STRLEN is a Linux per-argument cap; this control arm is Linux-specific.");
-        }
-
-        var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
-        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
-        try
-        {
-            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
-            var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
-
-            // Just under the per-argument cap. sh ignores arguments after the -c command string, so
-            // "exit 0" still runs and returns 0 -- a pass cannot come from the command failing on its own.
-            var nearLimitArgument = new string('x', PosixProcessLimits.LinuxMaxArgStrlen - 1_000);
-            var target = new CoreDispatchTarget("sh", ["-c", "exit 0", nearLimitArgument]);
-
-            await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer)
-                .DispatchAsync(request, target, TestContext.Current.CancellationToken);
-
-            Assert.Equal(0, result.ExitCode);
-            Assert.Equal(CoreExitReason.Natural, result.Reason);
-        }
-        finally
-        {
-            DirectoryCleanup.DeleteRecursively(artifactsRoot);
-            FileCleanup.Delete(logPath);
-        }
     }
 
     // #1084: a seed body is frequently JSON, and AER-computed variables are absolute paths whose raw

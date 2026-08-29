@@ -78,7 +78,8 @@ env $STRIP claude -p --output-format stream-json --verbose "..."
 ## Prompt delivery splits the vendors (#932)
 
 **Measured 2026-08-02, live, control-armed.** A worker's prompt is passed today as the `-p` argument,
-so `ARG_MAX` caps its size and `CoreDispatcher`'s ceiling guard (#598/#612) refuses an over-long one.
+so the Windows command-line length caps its size and `CoreDispatcher`'s ceiling guard (#598) refuses
+an over-long one.
 Whether the prompt can move **off** the command line — delivered via stdin — is what decides #932
 (decision 0048), and the two CLIs differ:
 
