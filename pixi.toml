@@ -225,8 +225,7 @@ audit-waitceiling-selftest = { cmd = "python -u tools/audit-completeness/waitcei
 audit-retiredphrases = { cmd = "python -u tools/audit-completeness/retiredphrases.py" }
 audit-retiredphrases-selftest = { cmd = "python -u tools/audit-completeness/retiredphrases.py --selftest" }
 
-# #1428: line-number citations in the spec go stale on every edit; the spec cites file + symbol,
-# never a line. See speccitations.py's own docstring.
+# #1428: see speccitations.py's own docstring for what it enforces.
 audit-speccitations = { cmd = "python -u tools/audit-completeness/speccitations.py" }
 audit-speccitations-selftest = { cmd = "python -u tools/audit-completeness/speccitations.py --selftest" }
 
