@@ -6,7 +6,6 @@
     <Project Path="src/Aer.Flow/Aer.Flow.csproj" />
     <Project Path="src/Aer.Mcp/Aer.Mcp.csproj" />
     <Project Path="src/Aer.Mcp.Host/Aer.Mcp.Host.csproj" />
-    <Project Path="src/Aer.RoomSession/Aer.RoomSession.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/Aer.GateProbe/Aer.GateProbe.csproj" />

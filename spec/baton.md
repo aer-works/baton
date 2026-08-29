@@ -363,23 +363,21 @@ depends on this fact directly.
 ## §7 The daemon, narrowed
 
 **The harness is the orchestrator.** There is no resident conversational presence a room maintains
-between harness invocations. `RoomTurnHost`/`RoomWakeBridge`
-(`src/Aer.Daemon/RoomTurnHost.cs`, `src/Aer.Daemon/RoomWakeBridge.cs`, registered at
-`src/Aer.Daemon/Program.cs:178-184`) and the daemon's reassignment/pairing/broadcast REST surface are
-archived along with the daemon narrowing below.
+between harness invocations. `RoomTurnHost`/`RoomWakeBridge` (deleted, #1420) and the daemon's
+reassignment/pairing/broadcast REST surface are archived along with the daemon narrowing below.
 
 What the daemon narrows **to**: a **room-watcher serving `fleet_status`/the registry** (§8 — though
 `fleet_status` itself needs no daemon, per §6), the **snapshot push loop** feeding the mailbox (§6),
 and the **quota-runway ledger** (below). Two more live responsibilities need a stated home rather
 than silently dropping out when the rest of `Aer.Daemon` is archived:
 
-- **`RoomRetentionSweep`** (`Program.cs:187`, a hosted service) — it prunes execution directories, and
+- **`RoomRetentionSweep`** (`Program.cs:43`, a hosted service) — it prunes execution directories, and
   `ExecutionUsageProjector` has an explicit pruned-path fallback specifically because the sweep moves
   them (`src/Aer.Flow/Status/ExecutionUsageView.cs`). It is engine-adjacent housekeeping, not a UI
   concern, and belongs in the narrowed daemon's kept surface alongside the room-watcher.
 - **Fleet-wide concurrency caps** — `DaemonSettingsStore` (`src/Aer.Adapters/DaemonSettingsStore.cs`,
   reading/writing `AerPaths.SettingsFile`, i.e. `{Root}/settings.json`) plus `ConcurrencySlotGate.SetCaps`,
-  applied at daemon startup (`Program.cs:65-66`). At HEAD this settings file holds only
+  applied at daemon startup (`Program.cs:37-38`). At HEAD this settings file holds only
   `GlobalConcurrencyCap`/`PerVendorConcurrencyCap` (`DaemonSettingsStore.cs:8-15`) — it is machine-wide,
   not per-room, so it belongs in the narrowed daemon too.
 
@@ -525,7 +523,10 @@ copy) and decide time (reads only the room's copy, per this section's own rule a
   which keeps one set of hands on the workers. A direct phone-to-worker control path would be a
   second interaction surface outside the orchestrator, which the one-surface design retires.
   `Aer.Sidecar` — the Go tsnet component that existed solely to give a paired remote client
-  zero-config Tailscale reach to the daemon's REST/WS API — is ARCHIVE: `src/Aer.Sidecar/` is a real, tracked Go module (an earlier draft claimed otherwise; a lane verified it exists — corrected), and it goes with the pairing surface it served, along with `Aer.Daemon.csproj`'s optional copy step for its binary.
+  zero-config Tailscale reach to the daemon's REST/WS API — is ARCHIVE, done (#1420): it was a real,
+  tracked Go module (an earlier draft claimed otherwise; a lane verified it existed — corrected), and
+  it went with the pairing surface it served, along with `Aer.Daemon.csproj`'s optional copy step for
+  its binary.
   **The harness seam is vendor-neutral, deliberately:** any agent that can run `aer` CLI verbs and
   read `terminal.json`/`fleet_status` can be the orchestrator. Claude Code is the current occupant of
   that seam, not a requirement of it.
@@ -556,11 +557,11 @@ reach backward to reconstruct a numbering scheme that no longer exists.
 | `Aer.Adapters` (incl. `BuiltInWorkflowTemplates`) | **KEEP** | The cross-vendor seam; the template catalog narrows to built-in only. |
 | `Aer.Cli` | **KEEP**, verb set narrows | `run`/`dispatch`/`decide`/`cancel`/`supply`/`resume`/`status` stay; `templates` narrows to the built-in catalog. |
 | `Aer.Mcp` / `Aer.Mcp.Host` | **KEEP**, grows | `fleet_status` is the anchor and gains the §6 drill-down levels; `YieldTool`, `MemoryProposalTool` stay, orthogonal to this reset. `PermissionGateTool` and `PermissionReturnShape` — the ask machinery — are **DELETED** (#1417, §5); confirmed `PermissionReturnShape` had no other consumer in the tree. |
-| `Aer.Daemon` | **PORT, drastically** | Narrows to the room-watcher (serving `fleet_status`/the registry, §8), the snapshot push loop (§6, new build), the quota-runway ledger (§7, partly new build), `RoomRetentionSweep`, and the fleet-wide concurrency caps (`DaemonSettingsStore`/`ConcurrencySlotGate`) — homes stated in §7. The permission REST answerer (`/api/rooms/permissions/answer`) and its `DoorbellMonitor`/`PendingGateRegistry`/crash-reconciliation plumbing are **DELETED** (#1417). Pairing, WebSocket broadcast, sidecar supervision, template-picker endpoints, and orchestrator reassignment remain ARCHIVE, not yet done. **Breaking dependency the narrowing must resolve:** `Aer.Daemon.csproj:12` holds a hard `ProjectReference` to `Aer.Ui.Core.csproj`, and it is not incidental — `Program.cs` uses `MainWindowViewModel` (`:172`) and constructs `RoomClient` (`:199-231`), which the WebSocket endpoint, `/api/version`, the reconcile loop, and essentially every kept `/api/rooms/*`/`/api/sessions/*` handler in the file consume as a DI parameter. A daemon that narrows to room-watcher + push loop + quota ledger needs its own room-reading path that does **not** go through `RoomClient`/`MainWindowViewModel` — both of which are `Aer.Ui.Core` types this table ARCHIVEs below. This is new engineering work the narrowing creates, not a rename. |
+| `Aer.Daemon` | **PORT, drastically — done (#1420)** | Every REST/WS route, pairing, WebSocket broadcast, sidecar supervision, template-picker endpoints, and orchestrator reassignment are archived; the permission REST answerer (`/api/rooms/permissions/answer`) and its `DoorbellMonitor`/`PendingGateRegistry`/crash-reconciliation plumbing were already **DELETED** (#1417). `Aer.RoomSession` (the room-reading path `RoomClient`/`MainWindowViewModel` were replaced with, #1412) is deleted too, #1420 — no caller of it survived once every route was gone. What remains is a bare hosted-service runner: mutex, settings load, fleet-wide concurrency-cap apply (`DaemonSettingsStore`/`ConcurrencySlotGate`), and `RoomRetentionSweep`. The room-watcher (serving `fleet_status`/the registry, §8), the snapshot push loop (§6), and the quota-runway ledger (§7) are unbuilt new work for a later PR, not something this narrowing preserved — homes stated in §7. |
 | `Aer.Ui` | **DELETED** (#1412 Part 2) | Not a description of the existing Avalonia app with features removed — a full archive, then deletion. Fleet Glass (§6) is the diagnostic surface, built as MCP-tool levels, never a UI app. |
-| `Aer.Ui.Core` | **DELETED** (#1412 Part 2) | `RoomClient` and `MainWindowViewModel` were named explicitly here because `Aer.Daemon`'s PORT row above depended on both and the narrowing had to break that dependency, not carry it forward silently — resolved by extracting the salvageable read-model surface into `Aer.RoomSession` (#1412 Part 1) before deleting the rest. The bulk (`ChatViewModel`, `RoomsViewModel`, `RemoteViewModel`, `TemplateEditorViewModel`, `StandingPermissionsViewModel`) was UI-surface logic for the retired product and is gone with it. `RoomProjection.cs`, `RoomFilesProjector.cs`/`RoomFilesViewModels.cs`, and `ExecutionHistoryProjector.cs`'s equivalents now live in `Aer.RoomSession`, confirmed Avalonia-free (that project's `.csproj` references only `Aer.Flow`/`Aer.Cli`/`Aer.Adapters`) — the "Uncertain" section's salvage-candidate entry below is resolved. |
+| `Aer.Ui.Core` | **DELETED** (#1412 Part 2) | `RoomClient` and `MainWindowViewModel` were named explicitly here because `Aer.Daemon`'s PORT row above depended on both and the narrowing had to break that dependency, not carry it forward silently — resolved by extracting the salvageable read-model surface into `Aer.RoomSession` (#1412 Part 1) before deleting the rest. The bulk (`ChatViewModel`, `RoomsViewModel`, `RemoteViewModel`, `TemplateEditorViewModel`, `StandingPermissionsViewModel`) was UI-surface logic for the retired product and is gone with it. `RoomProjection.cs`, `RoomFilesProjector.cs`/`RoomFilesViewModels.cs`, and `ExecutionHistoryProjector.cs`'s equivalents lived on in `Aer.RoomSession` — itself deleted in full, #1420, once `RoomClient` and every daemon route were gone and nothing called them. |
 | `Aer.Mobile` | **DELETED** (#1407) | No harness-driven use case; deleted along with its dedicated build machinery (CI job, pixi tasks, scripts) rather than left archived. |
-| `Aer.Sidecar` | **ARCHIVE** | `src/Aer.Sidecar/` (a tracked Go module) and `Aer.Daemon.csproj`'s optional binary copy step both go. Remote dispatch is closed, orchestrator-only (§10); no resurrection case remains. (An earlier draft claimed the project was absent from the tree; corrected — it exists and is archived deliberately.) |
+| `Aer.Sidecar` | **ARCHIVE**, done (#1420) | The tracked Go module and `Aer.Daemon.csproj`'s optional binary copy step both went. Remote dispatch is closed, orchestrator-only (§10); no resurrection case remains. (An earlier draft claimed the project was absent from the tree; corrected — it existed and was archived deliberately.) |
 | `Aer.Workers.Dialogue` | **ARCHIVE** | Vendor-neutral multi-model machinery that served the retired interactive/chat product; no harness-facing use case survives this reset. |
 | `Aer.Flow.CrashTestHost`, `Aer.Architecture.Tests` | **KEEP** | The gate mechanisms stay untouched. |
 | `Aer.Journeys.Tests`, `Aer.Plan.Tests` | **DELETED** (by this spec's own landing PR) | Both existed solely to cross-check `docs/plan.md` and `spec/journeys.md`, deleted with them; harness-facing journeys are future work that brings its own checks when it exists. |

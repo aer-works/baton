@@ -26,11 +26,6 @@
     <ProjectReference Include="..\..\src\Aer.Cli\Aer.Cli.csproj" />
     <ProjectReference Include="..\..\src\Aer.Adapters\Aer.Adapters.csproj" />
     <ProjectReference Include="..\..\src\Aer.Flow\Aer.Flow.csproj" />
-    <!-- M24 Phase 1 (#262) live session smoke coverage: interactive sessions are daemon-only, with
-         no `aer` CLI command wrapping ExecuteSessionTurnAsync, so exercising one live means driving
-         Aer.Daemon's real HTTP surface directly instead of RunCommand.ExecuteAsync like the other
-         smoke tests here. -->
-    <ProjectReference Include="..\..\src\Aer.Daemon\Aer.Daemon.csproj" />
   </ItemGroup>
 
   <ItemGroup>

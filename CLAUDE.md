@@ -15,22 +15,19 @@ aer-flow/
 │   ├── Aer.Flow/              The core execution engine and routing state machine
 │   ├── Aer.Adapters/          Vendor adapters (Claude/Gemini) + the built-in template catalog
 │   ├── Aer.Cli/               Command-line interface (aer run/dispatch/decide/cancel/supply/resume/status)
-│   ├── Aer.Daemon/            ASP.NET background runner — PORTED, drastically: narrows to the
-│   │                          room-watcher (serving fleet_status/the registry), the snapshot push
-│   │                          loop, the quota-runway ledger, RoomRetentionSweep, and fleet-wide
-│   │                          concurrency caps (spec/baton.md §7). The permission-ask REST answerer
-│   │                          (and its DoorbellMonitor/PendingGateRegistry/crash-reconciliation
-│   │                          plumbing) is deleted (#1417). Pairing, WebSocket broadcast, and
-│   │                          sidecar supervision remain — archive PRs of #1396 in flight
+│   ├── Aer.Daemon/            ASP.NET background runner — NARROWED to the 7-kept surface (#1420):
+│   │                          mutex, settings load, fleet-wide concurrency-cap apply, and
+│   │                          RoomRetentionSweep as a hosted service. No HTTP listener remains —
+│   │                          every REST/WS route, pairing, WebSocket broadcast, and sidecar
+│   │                          supervision are deleted, along with Aer.RoomSession and Aer.Sidecar
+│   │                          in full. The room-watcher (serving fleet_status/the registry), the
+│   │                          snapshot push loop, and the quota-runway ledger (spec/baton.md §7)
+│   │                          are unbuilt new work for a later PR, not something this narrowing
+│   │                          preserved — nothing in the pre-narrowing daemon actually served them
 │   ├── Aer.Mcp/               MCP server library — IMcpTool + the stdio host plumbing
-│   ├── Aer.Mcp.Host/          The MCP executable workers connect to (fleet_status, aer yield,
-│   │                          memory proposals). PermissionGateTool/PermissionReturnShape (the
-│   │                          mid-lane ask machinery) are deleted (#1417, spec/baton.md §5)
-│   ├── Aer.RoomSession/       The room read-model (RoomProjection + projectors) and the daemon's
-│   │                          in-process RoomClient — extracted from Aer.Ui.Core (#1412 Part 1) so
-│   │                          the daemon survived the Ui archive (Aer.Ui and Aer.Ui.Core deleted,
-│   │                          #1412 Part 2)
-│   └── Aer.Sidecar/           Go tsnet sidecar the daemon supervises for zero-config Tailscale
+│   └── Aer.Mcp.Host/          The MCP executable workers connect to (fleet_status, aer yield,
+│                              memory proposals). PermissionGateTool/PermissionReturnShape (the
+│                              mid-lane ask machinery) are deleted (#1417, spec/baton.md §5)
 ├── tests/                     Unit/integration tests; live-smoke test projects (Aer.Cli.SmokeTests)
 │                              live outside AerFlow.slnx (default CI skips them) — see docs/runbooks/
 ├── spec/
@@ -82,8 +79,6 @@ The hook is in the repo but git does not use it until that command has been run 
 - Linux (Claude Code remote sandbox): `sudo apt-get install -y dotnet-sdk-10.0` directly, skipping `apt-get update` (or ignoring its exit code) — the sandbox's `deadsnakes`/`ondrej/php` PPAs are broken (403/unsigned) and make `apt-get update` fail, but that's unrelated to .NET: the `dotnet-sdk-10.0` package already resolves fine from `archive.ubuntu.com`/`security.ubuntu.com`, so `apt-get install` succeeds without a clean `update`. Installs straight to `/usr/bin/dotnet` — no `PATH` edit needed.
 
 **Rust toolchain** is required to build `external/aer-core`'s native library (`pixi run build-core`) — also installed separately, not pixi-managed, same convention as the .NET SDK above. GitHub Actions' standard runner images (`windows-latest`, `ubuntu-latest`) already have one; for local dev, install via [rustup](https://rustup.rs).
-
-**Go 1.26+** is required to build/test `Aer.Sidecar` (`build-sidecar`/`test-sidecar`, part of `build`/`gates`) — also installed separately, not pixi-managed, same convention as above.
 
 **aer-core** (`external/aer-core`) is a git submodule, not a package — there is no NuGet feed for it yet (a single-developer project doesn't need the auth/RID-packaging overhead a real feed would add; see AER Overview §6). `pixi run build-core` builds its native library from source via `cargo build`.
 
@@ -281,9 +276,10 @@ a vendor CLI is the first kind, settled: do not relitigate it, and never install
 path to make it closable by an agent. Running a live-vendor gate against a CLI already authenticated
 on the machine is not — see the owner ruling under "Live-vendor smoke tests" above — but it still
 spends real, disclosed budget, which is what this section is about either way.
-*One smoke test spent top-tier model budget per run — the per-turn figure is in
-`tests/Aer.Cli.SmokeTests/LiveSessionSmokeTest.cs`, not here. Two issues were filed as permanently
-human when one needed a browser for a single question and the other needed a better probe.*
+*One smoke test spent top-tier model budget per run — the per-turn figure was in
+`tests/Aer.Cli.SmokeTests/LiveSessionSmokeTest.cs` (deleted with the daemon's session-chat surface,
+#1420), not here. Two issues were filed as permanently human when one needed a browser for a single
+question and the other needed a better probe.*
 
 ---
 

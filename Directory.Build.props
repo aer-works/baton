@@ -1,14 +1,13 @@
 <Project>
 
   <!-- M13 Phase 2 (#108) set this up as the repo's single shared version; the release-please
-       linked-versions migration (the "core" group — Aer.Flow/Aer.Adapters/Aer.Cli/Aer.RoomSession —
-       see release-please-config.json) moved real, release-please-patched versioning onto each
+       linked-versions migration (the "core" group — Aer.Flow/Aer.Adapters/Aer.Cli — see
+       release-please-config.json) moved real, release-please-patched versioning onto each
        independently-shipped artifact's own local Directory.Build.props (Aer.Cli's, Aer.Daemon's —
        the latter versioned on its own since #1412 archived the desktop group it used to share with
        Aer.Ui/Aer.Ui.Core). This root Version is now just the static default every other project
-       (Aer.Flow, Aer.Adapters, Aer.RoomSession) inherits — none of them are independently
-       packed/shipped, so nothing reads their own assembly version, and it no longer needs to move on
-       its own. -->
+       (Aer.Flow, Aer.Adapters) inherits — none of them are independently packed/shipped, so nothing
+       reads their own assembly version, and it no longer needs to move on its own. -->
   <PropertyGroup>
     <Version>0.14.0</Version>
 

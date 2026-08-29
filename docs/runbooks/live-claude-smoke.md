@@ -88,9 +88,10 @@ whole point of #331).
 Run each probe **several times** — Claude Code's headless sandbox behaviour is non-deterministic
 (see #289's ~50% note). Strip **every** env var matching `^CLAUDE` first, not just `CLAUDE_CODE_*`:
 they make a nested `claude` a *child session* that inherits the parent's tool set (an early probe was
-bypassed by an inherited `Monitor` tool that isn't present in the daemon's clean spawn, and a later
-one drew a wrong conclusion because the `CLAUDE_CODE_` prefix misses `CLAUDECODE` itself). The daemon
-spawns `claude` as a plain process, so the clean env is the representative one. Build the list rather
+bypassed by an inherited `Monitor` tool that isn't present in the harness's clean spawn, and a later
+one drew a wrong conclusion because the `CLAUDE_CODE_` prefix misses `CLAUDECODE` itself). The harness
+(`aer run`/`aer dispatch`, via `WorkerAdapterRegistry`) spawns `claude` as a plain process — since
+#1420 the daemon spawns no workers at all — so the clean env is the representative one. Build the list rather
 than hand-listing it, and verify it worked by reading `permissionMode` and the inherited `tools`
 array out of the `system:init` event:
 

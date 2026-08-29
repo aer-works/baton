@@ -78,11 +78,6 @@ jobs:
           cache: true
           cache-dependency-path: "**/packages.lock.json"
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-          cache-dependency-path: src/Aer.Sidecar/go.sum
-
       # Explicit rather than trusting the runner image: every other `python` in this repo's CI runs
       # in the audit job, which is ubuntu-only, so bare `python` on windows-latest has never been
       # exercised here. If that assumption were wrong it would not fail early — it would fail at the

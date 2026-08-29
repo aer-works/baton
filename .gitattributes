@@ -1,13 +1,9 @@
 # SCM syntax highlighting & preventing 3-way merges
 pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff
 
-# M21 Phase 5 (#242): gofmt is byte-strict about LF-only line endings. Without this, a Windows
-# checkout of src/Aer.Sidecar (Windows git's default core.autocrlf converts LF blobs to CRLF on
-# checkout) makes `gofmt -l .` report an already-clean file as needing formatting -- found live via
-# CI's Windows job failing fmt-check-sidecar despite an identical Linux job passing.
+# gofmt is byte-strict about LF-only line endings (M21 Phase 5, #242 — learned on the since-deleted
+# Go sidecar); kept generic so any future Go file checks out LF on Windows.
 *.go text eol=lf
-src/Aer.Sidecar/go.mod text eol=lf
-src/Aer.Sidecar/go.sum text eol=lf
 
 # Shell scripts and patch files must stay LF on every platform. A CRLF shell script fails on
 # Linux with `bash: \r: command not found` on its first line, and `git apply` rejects a CRLF

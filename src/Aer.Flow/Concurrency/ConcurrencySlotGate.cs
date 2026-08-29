@@ -60,7 +60,7 @@ public static class ConcurrencySlotGate
         public required TaskCompletionSource Tcs { get; init; }
     }
 
-    /// <summary>True while <paramref name="directoryPath"/> sits FIFO-queued behind the cap — the input Aer.RoomSession's <c>RoomCardViewModel.DeriveStatus</c> needs to derive <c>RoomCardStatus.WaitingToStart</c> (this project does not reference Aer.RoomSession, hence plain text here rather than a cref).</summary>
+    /// <summary>True while <paramref name="directoryPath"/> sits FIFO-queued behind the cap — originally the input Aer.RoomSession's <c>RoomCardViewModel.DeriveStatus</c> needed to derive <c>RoomCardStatus.WaitingToStart</c> (that project is deleted, #1420; this project never referenced it, hence plain text here rather than a cref).</summary>
     public static bool IsWaiting(string directoryPath)
     {
         lock (Lock)

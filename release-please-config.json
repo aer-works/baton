@@ -50,20 +50,6 @@
         { "type": "chore", "section": "Miscellaneous" }
       ]
     },
-    "src/Aer.RoomSession": {
-      "release-type": "simple",
-      "component": "room-session",
-      "changelog-sections": [
-        { "type": "feat", "section": "Features" },
-        { "type": "fix", "section": "Bug Fixes" },
-        { "type": "perf", "section": "Performance Improvements" },
-        { "type": "refactor", "section": "Code Refactoring" },
-        { "type": "docs", "section": "Documentation" },
-        { "type": "ci", "section": "Continuous Integration" },
-        { "type": "test", "section": "Tests" },
-        { "type": "chore", "section": "Miscellaneous" }
-      ]
-    },
     "src/Aer.Daemon": {
       "release-type": "simple",
       "component": "daemon",
@@ -90,7 +76,7 @@
     {
       "type": "linked-versions",
       "groupName": "core",
-      "components": ["flow", "adapters", "cli", "room-session"]
+      "components": ["flow", "adapters", "cli"]
     }
   ]
 }
