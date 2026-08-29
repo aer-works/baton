@@ -28,9 +28,8 @@ namespace Aer.Flow.Dispatch;
 /// <c>Environment</c>, which is applied after this and therefore wins.
 /// </para>
 /// <para>
-/// <b>The measurement is Windows-only, and the Unix list is reasoned rather than measured.</b> Said
-/// here because the first version of this file read as if the whole allowlist were evidence-backed:
-/// only <c>USERPROFILE</c> carries a measurement, and it is a Windows entry.
+/// <b>The measurement is Windows-only.</b> Said here because the first version of this file read as
+/// if the whole allowlist were evidence-backed: only <c>USERPROFILE</c> carries a measurement.
 /// </para>
 /// <para>
 /// <b><c>CLAUDE_CONFIG_DIR</c> is deliberately absent.</b> Architecture Rule 4's 2026-07-25
@@ -98,15 +97,8 @@ internal static class InheritedEnvironment
         "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
     ];
 
-    private static readonly string[] Unix =
-    [
-        "HOME", "SHELL", "USER", "LOGNAME", "TMPDIR",
-        "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
-    ];
-
-    /// <summary>The allowlisted names for the current platform, in a stable order.</summary>
-    internal static IReadOnlyList<string> Names =>
-        [.. Common, .. OperatingSystem.IsWindows() ? Windows : Unix];
+    /// <summary>The allowlisted names, in a stable order.</summary>
+    internal static IReadOnlyList<string> Names => [.. Common, .. Windows];
 
     /// <summary>
     /// Each allowlisted variable that is actually set, with the value this process sees. Variables
