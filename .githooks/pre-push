@@ -5,8 +5,8 @@
 # the repository rather than of one clone: it binds whoever pushes, including an agent session.
 #
 # `gates --fast` is everything but the test suite -- membership lives in tools/gates/gates.py,
-# never restated here, and so does why the line is drawn there. CI still runs everything on both
-# platforms; this only stops the failures that were already knowable here.
+# never restated here, and so does why the line is drawn there. CI still runs everything on its one
+# (Windows) platform; this only stops the failures that were already knowable here.
 #
 # Exit code is the whole contract. Nothing parses the output.
 exec pixi run gates-fast
