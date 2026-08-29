@@ -22,7 +22,7 @@ SPEC_FILES = [ROOT / "spec" / "baton.md"]
 
 # An extension-bearing filename followed by :N (optionally a range or a comma list of them).
 CITATION_RE = re.compile(
-    r"\.(?:cs|csproj|py|md|json|jsonl|toml|yml|yaml|dart|axaml|ts|js|sh|ps1)"
+    r"\.(?:cs|csproj|py|md|json|jsonl|toml|yml|yaml|dart|axaml|ts|js|sh|ps1|rs|slnx|props|targets|xml)"
     r":\d+(?:-\d+)?(?:,\s*\d+(?:-\d+)?)*"
 )
 
@@ -59,7 +59,14 @@ def _selftest() -> int:
     """Prove the pattern still catches what it exists for, and spares what it must ignore."""
     failures = []
 
-    for sample in ("see Program.cs:123", "RoomEvent.cs:93-95", "verify.py:12,40-44", "ci.yml:7"):
+    for sample in (
+        "see Program.cs:123",
+        "RoomEvent.cs:93-95",
+        "verify.py:12,40-44",
+        "ci.yml:7",
+        "ffi.rs:120",
+        "Directory.Build.props:6",
+    ):
         if not CITATION_RE.search(sample):
             failures.append(f"missed a citation it exists to catch: {sample!r}")
 
