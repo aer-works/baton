@@ -26,12 +26,12 @@ public abstract record LogEntry
     public sealed record FlowLogEntry(FlowEvent Event, DateTime? WriterUtcTimestamp = null) : LogEntry;
 
     /// <summary>
-    /// A line written by the Core Dispatcher on Core's behalf (spec/baton.md §2's <c>events.jsonl</c>
-    /// owner) — Flow never originates these, it only durably records what Core reported.
+    /// A line written by the Core Dispatcher on Core's behalf — Flow never originates these, it
+    /// only durably records what Core reported.
     /// </summary>
     public sealed record CoreLogEntry(CoreEvent Event, DateTime? WriterUtcTimestamp = null) : LogEntry;
 
-    /// <summary>A line written by the holding room's engine (spec/baton.md §2's <c>room.jsonl</c> owner).</summary>
+    /// <summary>A line wrapping a room event (spec/baton.md §2's <c>room.jsonl</c> log).</summary>
     public sealed record RoomLogEntry(RoomEvent Event, DateTime? WriterUtcTimestamp = null) : LogEntry;
 }
 

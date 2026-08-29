@@ -31,11 +31,15 @@ SPEC = ROOT / "spec" / "baton.md"
 
 DECISION_CARVEOUT_TRACKING = "#1431"
 
+# Only numeric §N markers are checkable; a quoted-heading citation (§"Environment starvation")
+# or a lettered subsection of an issue comment (§C) carries no number to resolve and is out of
+# scope — the document-name rule still applies to it by convention, unenforced.
 SECTION_RE = re.compile(r"§(\d+)(?:\.\d+)?")
 HEADING_RE = re.compile(r"^#+\s+§(\d+)\b", re.MULTILINE)
 # Decision records are cited both worded ("decision 0047 §4") and bare ("0047 §4"); the ids are
-# zero-padded four digits, which is what keeps the bare form matchable without false positives.
-DECISION_RE = re.compile(r"(?:decision\s+\d{3,4}|\b0\d{3})\b", re.IGNORECASE)
+# zero-padded four digits, and the id must sit directly before the § it governs so an unrelated
+# leading-zero number elsewhere on the line cannot waive the check by coincidence.
+DECISION_RE = re.compile(r"(?:decision\s+\d{3,4}|\b0\d{3})\b[^§\n]{0,12}§", re.IGNORECASE)
 DOCS_PATH_RE = re.compile(r"docs/[\w./-]+\.md")
 LIVE_SPEC_MARKER = "spec/baton.md"
 
@@ -44,18 +48,21 @@ def _live_sections() -> set[str]:
     return set(HEADING_RE.findall(SPEC.read_text(encoding="utf-8")))
 
 
-def _line_problems(line: str, sections: set[str]) -> list[str]:
+def _line_problems(line: str, sections: set[str], previous_line: str = "") -> list[str]:
     cited = SECTION_RE.findall(line)
     if not cited:
         return []
     if DECISION_RE.search(line):
         return []
-    docs_hit = DOCS_PATH_RE.search(line)
+    # Doc-comment wrapping routinely splits "docs/x.md ... §N" over two lines, so the document
+    # name may sit on the line above the § marker.
+    window = f"{previous_line} {line}"
+    docs_hit = DOCS_PATH_RE.search(window)
     if docs_hit:
         if (ROOT / docs_hit.group(0)).is_file():
             return []
         return [f"cites {docs_hit.group(0)}, which does not exist in the tree"]
-    if LIVE_SPEC_MARKER not in line:
+    if LIVE_SPEC_MARKER not in window:
         return [f"§{n} names no document — a section number alone cannot resolve" for n in cited]
     return [
         f"§{n} is not a heading in {LIVE_SPEC_MARKER}"
@@ -76,17 +83,20 @@ def main(argv: list[str]) -> int:
         root = ROOT / root_name
         if not root.is_dir():
             continue
-        for path in root.rglob("*.cs"):
-            if any(part in {"bin", "obj"} for part in path.parts):
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            scanned += 1
-            for lineno, line in enumerate(text.splitlines(), start=1):
-                for why in _line_problems(line, sections):
-                    problems.append(f"{path.relative_to(ROOT)}:{lineno}: {why}")
+        for pattern in ("*.cs", "*.csproj"):
+            for path in root.rglob(pattern):
+                if any(part in {"bin", "obj"} for part in path.parts):
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+                scanned += 1
+                previous = ""
+                for lineno, line in enumerate(text.splitlines(), start=1):
+                    for why in _line_problems(line, sections, previous):
+                        problems.append(f"{path.relative_to(ROOT)}:{lineno}: {why}")
+                    previous = line
 
     print(f"commentspecrefs: {scanned} file(s) scanned against {len(sections)} live spec section(s)")
     if problems:
@@ -108,6 +118,7 @@ def _selftest() -> int:
         ("// see §5.1 for the torn-line rule", "bare section, no document named"),
         ("// spec/baton.md §12 rules this out", "names the live spec but a dead section"),
         ("// docs/no-such-file.md §3 explains this", "names a docs file that does not exist"),
+        ("// error 0404 was returned; the rule is stated in §17.2", "unrelated 0NNN must not waive"),
     ):
         if not _line_problems(sample, sections):
             failures.append(f"missed: {reason}: {sample!r}")
@@ -121,6 +132,13 @@ def _selftest() -> int:
     ):
         if _line_problems(sample, sections):
             failures.append(f"false positive: {reason}: {sample!r}")
+
+    wrapped = _line_problems(
+        "/// §5: the gate is closed exactly one way",
+        sections,
+        previous_line="/// The rule lives in spec/baton.md —")
+    if wrapped:
+        failures.append("false positive: a citation wrapped across two doc-comment lines")
 
     if failures:
         print(" !! commentspecrefs selftest FAILED:")

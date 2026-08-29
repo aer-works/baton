@@ -13,7 +13,6 @@ namespace Aer.Flow.Dispatch;
 /// the limit it crossed. <c>Aer.Cli</c>'s top-level <c>catch (AerFlowException)</c> renders this one
 /// as an ordinary AER error instead.
 /// </para>
-/// </para>
 /// <para>
 /// <b>A recorded outcome since #747, reversing this doc's earlier position.</b> Caught in
 /// <c>MutationInterface.DispatchAndRecordOutcomeAsync</c> and recorded as <c>ExecutionFailed</c>

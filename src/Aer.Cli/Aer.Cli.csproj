@@ -12,8 +12,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <!-- M13 Phase 1 (#107): pack aer as an installable global dotnet tool. No public feed exists to
-       collide with (AER Overview §6), so PackageId/ToolCommandName are a local-convenience choice,
+  <!-- #107: pack aer as an installable global dotnet tool. No public feed exists to
+       collide with, so PackageId/ToolCommandName are a local-convenience choice,
        not a namespace-squatting concern. -->
   <PropertyGroup>
     <PackAsTool>true</PackAsTool>
