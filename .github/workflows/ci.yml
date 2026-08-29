@@ -48,14 +48,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows-only (#1405): one matrix, both events. rid/lib-name key the native-lib artifact
-        # for the pack job below to gather.
+        # Windows-only (#1405): one matrix, both events.
         #
         # Sharding the long-pole Windows test leg (#1363): Flow suite vs remaining
         # test projects cuts test duration from ~3:49 to ~1:55.
         include:
-          - { os: "windows-latest", rid: "win-x64", lib-name: "aer_core.dll", name: "windows-shard-flow", task: "test-flow" }
-          - { os: "windows-latest", rid: "win-x64", lib-name: "aer_core.dll", name: "windows-shard-other", task: "test-other", skip-artifact: true }
+          - { os: "windows-latest", name: "windows-shard-flow", task: "test-flow" }
+          - { os: "windows-latest", name: "windows-shard-other", task: "test-other" }
     runs-on: ${{ matrix.os }}
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
@@ -173,17 +172,6 @@ jobs:
       - name: Shutdown dotnet build server
         run: pixi run dotnet build-server shutdown
         if: always()
-
-      # M13 Phase 3 (#109): the cargo build output (already produced above as a dependency of
-      # lint/test) becomes the pack job's win-x64 native lib. Shard 2 skips upload to avoid
-      # duplicate artifact conflicts.
-      - name: Upload native library artifact
-        if: ${{ !matrix.skip-artifact }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-lib-${{ matrix.rid }}
-          path: external/aer-core/target/debug/${{ matrix.lib-name }}
-          if-no-files-found: error
 
   # Platform-independent formatting and compiler/linter checks hoisted out of the test matrix (#1363).
   # Runs parallel to the test legs, saving ~2 min of serial overhead off the long pole. Windows-only

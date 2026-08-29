@@ -27,17 +27,4 @@
        Aer.Core.csproj's aer_core copy (M7 Phase 6), landing it at tools/$(TargetFramework)/any/
        next to the managed DLLs for free. Confirmed by inspecting the packed nupkg (#107). -->
 
-  <!-- M13 Phase 3 (#109), single-RID (Windows-only, #1405): the item below folds in whichever
-       native lib the packing machine itself just built, gathered by CI into
-       artifacts/native-libs/win-x64/. No runtime OS-detection/P/Invoke-resolution code is needed —
-       NativeMethods.cs's DllImport/LibraryImport attributes reference the bare name "aer_core", and
-       .NET's default native-library probing already appends the host-appropriate prefix/extension
-       (aer_core.dll) when resolving it. Condition="Exists(...)" means a plain `pixi run pack`
-       (Phase 1's original round trip, no gathered artifacts folder) still packs exactly as before. -->
-  <ItemGroup>
-    <None Condition="Exists('$(MSBuildThisFileDirectory)../../artifacts/native-libs/win-x64/aer_core.dll')"
-          Include="$(MSBuildThisFileDirectory)../../artifacts/native-libs/win-x64/aer_core.dll"
-          Pack="true" PackagePath="tools/$(TargetFramework)/any/" />
-  </ItemGroup>
-
 </Project>

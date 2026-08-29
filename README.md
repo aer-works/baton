@@ -59,7 +59,7 @@ pixi run fmt
 a single-developer project doesn't need one. Build a local nupkg and install from it directly:
 
 ```bash
-# Build the nupkg (embeds the native aer_core library for every OS CI already built one for)
+# Build the nupkg (embeds the native aer_core library the build itself produces; win-x64 only, #1405)
 pixi run pack
 
 # Install it as a global tool from that local folder
