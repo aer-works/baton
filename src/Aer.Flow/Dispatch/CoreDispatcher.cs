@@ -1,4 +1,3 @@
-using System.Text;
 using Aer.Core;
 using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
@@ -438,21 +437,11 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
     internal const int WindowsCommandLineCeiling = 32_000;
 
     /// <summary>
-    /// The single-integer, UTF-16 command-line ceiling for the running OS, or <see langword="null"/>
-    /// where the platform's limit is not that shape. Windows carries a number — its
+    /// The single-integer, UTF-16 command-line ceiling this platform is guarded against — Windows'
     /// <c>CreateProcessW</c> <c>lpCommandLine</c> maximum, measured here against #579's
-    /// <c>Win32Exception (206)</c>. POSIX returns <see langword="null"/> deliberately: its limit is not
-    /// one integer but two byte-based caps — a per-argument <c>MAX_ARG_STRLEN</c> and a total
-    /// <c>ARG_MAX</c> across argv+envp — enforced by <see cref="GuardPosixArgumentLength"/> and
-    /// <see cref="GuardPosixTotalLength"/> instead (#612), so there is no single number to hand back.
-    /// <see langword="null"/> here therefore means "guarded elsewhere", not "unguarded":
-    /// <see cref="DispatchAsync"/> branches on it. An over-long POSIX command line is now refused
-    /// up-front as a <see cref="CommandLineTooLongException"/> — the same <c>AerFlowException</c> the
-    /// Windows path raises, so it no longer escapes <c>Aer.Cli</c>'s top-level handler as a raw stack
-    /// trace the way it did before this guard existed.
+    /// <c>Win32Exception (206)</c> (Windows-only, #1405).
     /// </summary>
-    internal static int? PlatformCommandLineCeiling =>
-        OperatingSystem.IsWindows() ? WindowsCommandLineCeiling : null;
+    internal static int PlatformCommandLineCeiling => WindowsCommandLineCeiling;
 
     /// <summary>
     /// An upper bound on the command line <c>std::process::Command</c> assembles from
@@ -547,106 +536,12 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
     }
 
     /// <summary>
-    /// The byte image a single argument occupies in a POSIX <c>exec</c> — its UTF-8 encoding plus the
-    /// terminating NUL. POSIX counts bytes, not the UTF-16 code units <see cref="MeasureCommandLineLength"/>
-    /// counts for <c>CreateProcessW</c>, so a non-ASCII prompt weighs more here than on Windows.
-    /// </summary>
-    internal static int PosixArgBytes(string value) => Encoding.UTF8.GetByteCount(value) + 1;
-
-    /// <summary>
-    /// Throws <see cref="CommandLineTooLongException"/> when any single argument's byte image reaches
-    /// <paramref name="maxArgStrlen"/> — Linux's per-argument <c>MAX_ARG_STRLEN</c>, which both adapters'
-    /// single-inline-prompt shape is exactly what exceeds first (#612). Takes the cap as an argument
-    /// rather than reading <see cref="PosixProcessLimits.LinuxMaxArgStrlen"/> itself, so the boundary is
-    /// exercisable on every OS the suite runs on and not only Linux — the same reason
-    /// <see cref="GuardCommandLineLength"/> takes its ceiling in. The kernel refuses an argument whose
-    /// bytes-including-NUL exceed the cap, so <see cref="PosixArgBytes"/> is compared with <c>&gt;</c>.
-    /// </summary>
-    internal static void GuardPosixArgumentLength(string program, IReadOnlyList<string> args, int maxArgStrlen)
-    {
-        foreach (var arg in args)
-        {
-            var bytes = PosixArgBytes(arg);
-            if (bytes <= maxArgStrlen)
-            {
-                continue;
-            }
-
-            throw new CommandLineTooLongException(
-                $"Cannot dispatch '{program}': one of its arguments is about {bytes} bytes, past the "
-                + $"{maxArgStrlen}-byte per-argument limit this platform enforces (MAX_ARG_STRLEN). A "
-                + "worker's prompt is passed inline as one argument. Hand large content to the worker as "
-                + "a file it reads under its read-files grant (as the review workflow does), rather than "
-                + "inlining it in the prompt.");
-        }
-    }
-
-    /// <summary>
-    /// A conservative upper bound on the bytes the program, its arguments, and the child's environment
-    /// occupy in one POSIX <c>exec</c> image — the total <c>ARG_MAX</c> is charged against (a limit
-    /// across argv <em>and</em> envp, #612). Each string is charged its UTF-8 bytes, a NUL, and a 64-bit
-    /// pointer slot, and a duplicated environment name is charged twice, so the figure can only over-shoot
-    /// the kernel's real accounting, never under-shoot it — the same over-estimate discipline
-    /// <see cref="MeasureCommandLineLength"/> uses for Windows.
-    /// </summary>
-    internal static long MeasurePosixTotalBytes(
-        string program,
-        IReadOnlyList<string> args,
-        IReadOnlyList<(string Name, string Value)> environment)
-    {
-        // Every platform AER ships on is 64-bit, so each argv/envp entry costs an 8-byte pointer on top
-        // of its string. Counting it makes the bound an over-estimate of the kernel's real accounting.
-        const int pointerBytes = 8;
-
-        long total = PosixArgBytes(program) + pointerBytes;
-        foreach (var arg in args)
-        {
-            total += PosixArgBytes(arg) + pointerBytes;
-        }
-
-        foreach (var (name, value) in environment)
-        {
-            // "NAME=VALUE\0" plus its envp pointer.
-            total += Encoding.UTF8.GetByteCount(name) + 1 + Encoding.UTF8.GetByteCount(value) + 1 + pointerBytes;
-        }
-
-        return total;
-    }
-
-    /// <summary>
-    /// Throws <see cref="CommandLineTooLongException"/> when <see cref="MeasurePosixTotalBytes"/> exceeds
-    /// <paramref name="argMax"/> — the kernel's <c>ARG_MAX</c>, a total across argv <em>and</em> envp,
-    /// which is why <paramref name="environment"/> is passed and measured here and not just the arguments
-    /// (#612). Takes the cap as an argument for the same cross-OS testability reason as the guards above.
-    /// </summary>
-    internal static void GuardPosixTotalLength(
-        string program,
-        IReadOnlyList<string> args,
-        IReadOnlyList<(string Name, string Value)> environment,
-        long argMax)
-    {
-        var total = MeasurePosixTotalBytes(program, args, environment);
-        if (total <= argMax)
-        {
-            return;
-        }
-
-        throw new CommandLineTooLongException(
-            $"Cannot dispatch '{program}': its command line and environment assemble to about {total} "
-            + $"bytes, past this platform's {argMax}-byte ARG_MAX (a combined limit on arguments and "
-            + "environment). A worker's prompt is passed inline as one argument. Hand large content to "
-            + "the worker as a file it reads under its read-files grant (as the review workflow does), "
-            + "rather than inlining it in the prompt.");
-    }
-
-    /// <summary>
     /// The exact environment the spawned child receives, in application order: the inherited allowlist
     /// (<see cref="InheritedEnvironment"/>), then <paramref name="request"/>'s AER-computed variables,
     /// then <paramref name="target"/>'s own adapter variables — later entries overriding earlier ones by
     /// name when applied, the ordering <c>ClaudeWorkerAdapter.SimpleModeVariable</c> depends on. One
-    /// assembly point so <see cref="GuardPosixTotalLength"/> measures precisely what
-    /// <see cref="DispatchAsync"/> applies: two enumerations of these three sources would drift the
-    /// moment a fourth is added, and the drift would silently mis-size the ARG_MAX guard.
+    /// assembly point so there is a single place these three sources are enumerated, rather than two
+    /// that could drift the moment a fourth is added.
     /// </summary>
     internal static IReadOnlyList<(string Name, string Value)> AssembleChildEnvironment(
         ExecutionRequest request, CoreDispatchTarget target)
@@ -706,9 +601,6 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         // Perform expansion on target arguments
         var expandedArgs = target.Args.Select(arg => ExpandVariables(arg, pathVariables)).ToList();
 
-        // The child's environment, assembled once so the ARG_MAX guard below measures exactly what
-        // WithEnv applies further down — POSIX ARG_MAX is a total across argv AND envp, so the guard
-        // cannot be honest without the environment in hand at guard time.
         var childEnvironment = AssembleChildEnvironment(request, target);
 
         // Issue #292: durably capture the resolved prompt a step's worker was actually invoked with
@@ -770,28 +662,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         // Deliberately after the prompt capture: a command line long enough to trip this is a prompt
         // problem, and prompt.txt is the artifact an operator needs in order to see how it got that
         // big — throwing before writing it would withhold the evidence for the very failure reported.
-        if (PlatformCommandLineCeiling is { } ceiling)
-        {
-            GuardCommandLineLength(target.Program, expandedArgs, ceiling);
-        }
-        else
-        {
-            // POSIX (#612): two byte-based caps rather than one UTF-16 ceiling. The per-argument
-            // MAX_ARG_STRLEN is Linux-only — macOS has no per-argument cap and bounds the prompt through
-            // ARG_MAX alone — and ARG_MAX is queried at runtime, skipped when it cannot be determined
-            // (see PosixProcessLimits.ArgMaxBytes). Both throw CommandLineTooLongException, which
-            // MutationInterface records as Permanent — the same up-front, non-retried refusal the Windows
-            // path already produces.
-            if (OperatingSystem.IsLinux())
-            {
-                GuardPosixArgumentLength(target.Program, expandedArgs, PosixProcessLimits.LinuxMaxArgStrlen);
-            }
-
-            if (PosixProcessLimits.ArgMaxBytes() is { } argMax)
-            {
-                GuardPosixTotalLength(target.Program, expandedArgs, childEnvironment, argMax);
-            }
-        }
+        GuardCommandLineLength(target.Program, expandedArgs, PlatformCommandLineCeiling);
 
         // Only ever invoked for a WorkerBinding.Process dispatch (MutationInterface never calls a
         // dispatcher for a NonProcess execution, §17.3) — Timeout is therefore always set.

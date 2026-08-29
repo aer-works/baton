@@ -1,7 +1,9 @@
 [workspace]
 channels = ["conda-forge"]
 name = "aer-flow"
-platforms = ["win-64", "linux-64", "osx-arm64"]
+# win-64 is the only support target (#1405, Windows-only). linux-64 stays solely as a dev-sandbox
+# accommodation -- Claude Code cloud sessions doing development work here -- not a support target.
+platforms = ["win-64", "linux-64"]
 version = "0.1.0"
 
 # Disable MSBuild out-of-process node reuse. With reuse on (the default), a build leaves persistent

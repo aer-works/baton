@@ -28,18 +28,14 @@ permissions:
 
 jobs:
   repeat:
-    name: repeat (${{ matrix.os }})
+    name: repeat (windows-latest)
     # An hour is not a pace: 5 passes of a ~5-minute suite is ~25 minutes, and Windows is slower.
     # This only stops a hung pass burning a runner all day.
     timeout-minutes: 90
-    strategy:
-      # Never fail-fast: the whole point is the report, and ubuntu finishing early must not cancel
-      # the Windows leg — Windows is where the largest mechanism (file locking) lives, so an
-      # ubuntu-only answer would be blind to it.
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Windows-only (#1405): one matrix entry is no longer a matrix, so the strategy/fail-fast
+    # indirection this used to need (protecting the Windows leg from an ubuntu leg finishing early
+    # and cancelling it) has nothing left to protect.
+    runs-on: windows-latest
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
@@ -78,10 +74,10 @@ jobs:
           cache: true
           cache-dependency-path: "**/packages.lock.json"
 
-      # Explicit rather than trusting the runner image: every other `python` in this repo's CI runs
-      # in the audit job, which is ubuntu-only, so bare `python` on windows-latest has never been
-      # exercised here. If that assumption were wrong it would not fail early — it would fail at the
-      # one step that produces the report, on the platform this workflow most exists for.
+      # Explicit rather than trusting the runner image: bare `python` on windows-latest is worth
+      # its own verification rather than assuming the runner image provides it, since a wrong
+      # assumption here would not fail early — it would fail at the one step that produces the
+      # report, on the platform this workflow most exists for.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -103,7 +99,8 @@ jobs:
           # pass. That is a false flake report, and a watch that cries wolf is one nobody reads.
           # Measured locally: ten .trx files, several one second apart.
           # Separators and line endings normalised: the solution stores Windows-style paths, which
-          # `dotnet test` on ubuntu will not resolve, and a stray CR ends up inside the directory name.
+          # Git Bash treats backslashes in as escape characters, and a stray CR would otherwise end
+          # up inside the directory name.
           projects=$(dotnet sln AerFlow.slnx list | tr -d '\r' | tr '\134' '/' | grep 'Tests\.csproj$')
 
           for i in $(seq 1 "$passes"); do
@@ -131,7 +128,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: flake-results-${{ matrix.os }}
+          name: flake-results-windows-latest
           path: flake-results/
           retention-days: 14
 

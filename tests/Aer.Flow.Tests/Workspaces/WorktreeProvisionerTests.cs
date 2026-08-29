@@ -255,7 +255,7 @@ public sealed class WorktreeProvisionerTests : IDisposable
     /// #1103: git prints macOS temp paths in their resolved <c>/private/...</c> spelling while
     /// callers hold the <c>/var/...</c> symlink spelling; equality must see through that or the
     /// idempotence check above can never match on macOS. Pure string logic, so this discriminates
-    /// on every platform — it is the unit-level pin for the macos-only CI failure.
+    /// on every platform — it is the unit-level pin for what was then a macOS CI failure.
     /// </summary>
     [Theory]
     [InlineData("/private/var/folders/x/task/workspace", "/var/folders/x/task/workspace", true)]

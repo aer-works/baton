@@ -285,9 +285,12 @@ AppContainer sandbox on Windows · the daemon↔credential coupling ·
 
 ## D. Gaps that are not about the vendors — current state, not a snapshot
 
-1. **Every finding here is Windows-only.** AER Flow ships cross-platform, and the sandbox correction
-   is the proof this matters: a platform-scoped observation was generalised into a product claim
-   once already. **Nothing has been verified on macOS or Linux.**
+1. **Every finding here is Windows-only, and so is AER Flow itself (decision C-10, #1405).** Kept as
+   its own item rather than folded away now that the product is Windows-only too: the sandbox
+   correction is the proof the distinction still matters even so — a platform-scoped *vendor*
+   observation was generalised into a product claim once already, and the lesson (don't generalise a
+   finding past what was actually measured) outlives the cross-platform goal that originally
+   prompted it.
 
 2. **`src/` audit coverage against corrected vendor reality is partial, not swept.** #521, #529 and
    others were found by looking, each in the first file checked for that specific issue — that is

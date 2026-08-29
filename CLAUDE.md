@@ -45,7 +45,7 @@ aer-flow/
 │                              (standing check, gate `record-once` below).
 │                              `ls tools/` is the authority — this line is a map, not a register
 ├── .github/workflows/
-│   ├── ci.yml                 lint + fmt + test on win/linux/mac
+│   ├── ci.yml                 lint + fmt + test on win (Windows-only, #1405)
 │   └── release-please.yml     versioning and changelog
 └── pixi.toml                  task runner and toolchain manager
 ```
@@ -74,11 +74,9 @@ The hook is in the repo but git does not use it until that command has been run 
 
 **.NET 10 SDK** is required and installed separately — pixi does not manage it (same convention as aer-core):
 - Windows: `winget install Microsoft.DotNet.SDK.10`
-- macOS: `brew install dotnet-sdk` or the official installer
-- Linux: follow [Microsoft's install guide](https://learn.microsoft.com/en-us/dotnet/core/install/linux)
 - Linux (Claude Code remote sandbox): `sudo apt-get install -y dotnet-sdk-10.0` directly, skipping `apt-get update` (or ignoring its exit code) — the sandbox's `deadsnakes`/`ondrej/php` PPAs are broken (403/unsigned) and make `apt-get update` fail, but that's unrelated to .NET: the `dotnet-sdk-10.0` package already resolves fine from `archive.ubuntu.com`/`security.ubuntu.com`, so `apt-get install` succeeds without a clean `update`. Installs straight to `/usr/bin/dotnet` — no `PATH` edit needed.
 
-**Rust toolchain** is required to build `external/aer-core`'s native library (`pixi run build-core`) — also installed separately, not pixi-managed, same convention as the .NET SDK above. GitHub Actions' standard runner images (`windows-latest`, `ubuntu-latest`) already have one; for local dev, install via [rustup](https://rustup.rs).
+**Rust toolchain** is required to build `external/aer-core`'s native library (`pixi run build-core`) — also installed separately, not pixi-managed, same convention as the .NET SDK above. GitHub Actions' `windows-latest` runner image already has one; for local dev, install via [rustup](https://rustup.rs).
 
 **aer-core** (`external/aer-core`) is a git submodule, not a package — there is no NuGet feed for it yet (a single-developer project doesn't need the auth/RID-packaging overhead a real feed would add; see AER Overview §6). `pixi run build-core` builds its native library from source via `cargo build`.
 

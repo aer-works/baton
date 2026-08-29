@@ -5,18 +5,22 @@ pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff
 # Go sidecar); kept generic so any future Go file checks out LF on Windows.
 *.go text eol=lf
 
-# Shell scripts and patch files must stay LF on every platform. A CRLF shell script fails on
-# Linux with `bash: \r: command not found` on its first line, and `git apply` rejects a CRLF
-# patch against LF sources -- both would break CI's Linux jobs while passing on Windows.
+# Shell scripts and patch files must stay LF on every platform. Windows-only (#1405), but this is
+# still load-bearing: scripts/verify-pack-roundtrip.sh and .githooks/pre-push both run through a
+# POSIX-shell interpreter (Git Bash) on the operator's own Windows machine, and a CRLF `#!/bin/sh`
+# first line breaks Git Bash identically to how it broke a Linux CI clone -- there is no CI job left
+# to protect, but there is still a local Git Bash execution to protect. `git apply` also rejects a
+# CRLF patch against LF sources.
 *.sh text eol=lf
 *.patch -text
 
-# Git hooks are shell scripts with no extension, so `*.sh` above does not reach them. Same failure,
-# one step earlier: a CRLF `#!/bin/sh` is not a valid shebang, so the hook would not merely misbehave
-# on a Linux clone -- it would fail to execute at all, and a hook that cannot run is a gate that
-# silently is not there. Git warned about exactly this conversion when .githooks/pre-push was added.
+# Git hooks are shell scripts with no extension, so `*.sh` above does not reach them. Same reasoning
+# as above, one step earlier: a CRLF `#!/bin/sh` is not a valid shebang, so the hook would not merely
+# misbehave under the operator's own Git Bash -- it would fail to execute at all, and a hook that
+# cannot run is a gate that silently is not there.
 .githooks/* text eol=lf
 
-# The committed vendor-survey index (#589). Generated on whichever machine ran the survey and
-# read by `audit-completeness` in CI on Linux -- pin LF so the file does not churn per platform.
+# The committed vendor-survey index (#589). Generated on whichever machine ran the survey and read
+# by `audit-completeness` in CI (windows-latest, #1405) -- pin LF so the file does not churn from
+# Windows `core.autocrlf` on a tracked generated file.
 .vendor-survey/ledger.tsv text eol=lf

@@ -40,8 +40,6 @@ Each vendor CLI remains subject to its own provider's terms, between the operato
 - **[pixi](https://pixi.sh)** — task runner.
 - **.NET 10 SDK** — install separately (not managed by pixi), same as aer-core:
   - Windows: `winget install Microsoft.DotNet.SDK.10`
-  - macOS: `brew install dotnet-sdk` or the official installer
-  - Linux: follow [Microsoft's install guide](https://learn.microsoft.com/en-us/dotnet/core/install/linux)
 
 ## Quickstart
 ```bash
@@ -61,7 +59,7 @@ pixi run fmt
 a single-developer project doesn't need one. Build a local nupkg and install from it directly:
 
 ```bash
-# Build the nupkg (embeds the native aer_core library for every OS CI already built one for)
+# Build the nupkg (embeds the native aer_core library the build itself produces; win-x64 only, #1405)
 pixi run pack
 
 # Install it as a global tool from that local folder
