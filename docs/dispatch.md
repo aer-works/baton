@@ -87,13 +87,10 @@ path above (`IWorkerAdapter.WithheldWritesReachTheOutbox`, `docs/decisions/0004-
 
 `fact-check` stays `no-shell`/`no-network` outright. `review` no longer does (#1456, reversing
 #1355's flat refusal for this role specifically — see spec/baton.md §9 for the full reasoning and the
-network-honesty caveat): it carries `run_shell_commands: true` scoped by `shell_command_patterns` to
-a read-only `git`/`gh` allowlist (`git diff`/`log`/`show`/`blame`/`status`/`grep`/`rev-parse`/
-`merge-base`/`ls-files`/`branch --list`, `gh pr view`/`diff`/`checks`, `gh issue view`), with
-`denied_shell_command_patterns` closing the mutating families and `shell_commands_are_read_only: true`
-asserting the allowlist can neither write nor exceed the network reach those specific `gh`
-subcommands need. This is enforced on claude via `--allowedTools`/`--disallowedTools` pattern
-matching — measured as a real same-tool ceiling in `docs/vendor-capabilities.md`, not mere
+network-honesty caveat): it now carries a scoped read-only `git`/`gh` shell grant. The exact
+allow/deny pattern lists and the three catalog fields expressing them live canonically in
+spec/baton.md §9; this page does not restate them. Enforced on claude via
+`--allowedTools`/`--disallowedTools` pattern matching — a measured same-tool ceiling, not mere
 pre-approval — not a `PreToolUse` hook change. `agy`'s `IPermissionGrantTranslator` still refuses
 `RunShellCommands` without `NetworkAccess` with no scoped exception, so this shell grant does not
 reach `--adapter agy`: `review` there now refuses to dispatch (`PermissionGrantUnsupportedException`)

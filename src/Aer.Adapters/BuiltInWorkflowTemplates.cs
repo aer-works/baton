@@ -20,10 +20,9 @@ public sealed record RoleTemplateExport(
     [property: JsonPropertyName("verdict_schema")] bool VerdictSchema,
     [property: JsonPropertyName("_use")] string Use,
     [property: JsonPropertyName("_outputs")] IReadOnlyList<RoleTemplateOutputExport> Outputs,
-    // #1456: exported so tools/aer-agy-loop/dispatch.py's own grant_refusal()/build_bindings() (the
-    // #836 shared-source pattern's other reader of this catalog) can see the same scoped-shell shape
-    // `aer dispatch review` resolves through WorkerRoleCatalog directly -- without these, `aer
-    // templates --json` would silently under-report the review role's grant to that tool.
+    // #1456: exported so the catalog's other reader (the #836 shared-source loop tool) sees the
+    // scoped-shell shape too — otherwise `aer templates --json` under-reports review's grant.
+    // Field semantics: spec/baton.md §9.
     [property: JsonPropertyName("shell_command_patterns")] IReadOnlyList<string>? ShellCommandPatterns = null,
     [property: JsonPropertyName("denied_shell_command_patterns")] IReadOnlyList<string>? DeniedShellCommandPatterns = null,
     [property: JsonPropertyName("shell_commands_are_read_only")] bool ShellCommandsAreReadOnly = false);

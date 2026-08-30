@@ -86,14 +86,12 @@ public sealed record PermissionGrant(
     /// <c>gate.allowedtools-is-preapproval-not-ceiling</c> measured that list to be pre-approval
     /// rather than a ceiling for CROSS-tool substitution (a withheld category reached through a
     /// different, granted tool). <see cref="ShellCommandsAreReadOnly"/> is the explicit, named escape
-    /// hatch for the narrower claim that actually holds here: <c>docs/vendor-capabilities.md</c>'s
-    /// "canonical ceiling" measurement shows <c>--disallowedTools Bash(pattern)</c> IS enforced,
-    /// same-tool, with precedence over <c>--allowedTools</c> (<c>git push</c> denied under
-    /// <c>--allowedTools "Bash(git *)" --disallowedTools "Bash(git push*)"</c>) — so a grant whose
-    /// author asserts the allowed patterns cannot write or mutate is not defeating a withheld
-    /// category by the same mechanism #529 measured. Without that assertion this stays exactly as
-    /// conservative as before: a pattern list changes what is pre-approved, never (on its own) what
-    /// is reachable.
+    /// hatch for the narrower claim that actually holds — same-tool Bash pattern denial is a real,
+    /// measured ceiling with deny-over-allow precedence; the measurement and its negative control are
+    /// stated canonically in spec/baton.md §9 — so an author asserting the allowed patterns cannot
+    /// write or mutate is not defeating a withheld category by the mechanism #529 measured. Without
+    /// that assertion this stays exactly as conservative as before: a pattern list changes what is
+    /// pre-approved, never (on its own) what is reachable.
     /// </para>
     /// <para>
     /// <b>This lives here, on the grant, because three surfaces need the same answer and #645 was

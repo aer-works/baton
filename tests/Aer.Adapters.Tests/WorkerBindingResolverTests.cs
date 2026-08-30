@@ -405,8 +405,8 @@ public class WorkerBindingResolverTests
     [Fact]
     public void ShellCommandsAreReadOnly_does_not_exempt_ReadFiles()
     {
-        // A read-only-asserted shell still performs reads -- that is the point of it -- so withholding
-        // ReadFiles while granting one is still incoherent regardless of the new assertion.
+        // Why ReadFiles stays outside the exemption: PermissionGrant.CategoriesDefeatedByTheShell's
+        // own comment. Withholding it while granting the shell is still incoherent.
         var grant = new PermissionGrant(
             ReadFiles: false, WriteFiles: true,
             RunShellCommands: true, ShellCommandPatterns: ["git diff*"], NetworkAccess: true,

@@ -697,11 +697,10 @@ BUILT_IN = {
     "run_shell_commands": False, "network_access": False,
     "timeout_minutes": 20,
     "verdict_schema": False,
-    # #1456: the review role's scoped-shell shape. None/False are the pre-#1456 default for every
-    # OTHER template -- these three only ever come from a template's own catalog entry (`aer templates
-    # --json`'s shell_command_patterns/denied_shell_command_patterns/shell_commands_are_read_only,
-    # RoleTemplateExport) or, rarely, an explicit flag on an ad-hoc dispatch. Nothing here derives a
-    # pattern list from a boolean; a mismatched pair (patterns with the flag left False) is refused by
+    # #1456: the review role's scoped-shell shape (semantics: spec/baton.md §9). None/False are the
+    # pre-#1456 default for every OTHER template -- values only ever come from a template's own
+    # catalog entry (RoleTemplateExport) or an explicit ad-hoc flag. Nothing here derives a pattern
+    # list from a boolean; a mismatched pair (patterns with the flag left False) is refused by
     # `grant_refusal` exactly like any other incoherent grant.
     "shell_command_patterns": None,
     "denied_shell_command_patterns": None,

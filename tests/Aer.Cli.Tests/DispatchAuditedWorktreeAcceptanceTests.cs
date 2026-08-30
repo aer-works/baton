@@ -119,8 +119,8 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
     // fakes implement IPermissionGrantTranslator to always succeed (GrantConsumingContractOutput-
     // WorkerAdapter.TryTranslatePermissionGrant, deliberately, for the two grant-line tests above),
     // so dispatching "review" through them here would prove nothing about the real AgyWorkerAdapter.
-    // AgyWorkerAdapterTests.A_read_only_scoped_shell_grant_is_still_refused_shell_without_network_on_agy
-    // exercises the real adapter directly.
+    // The real adapter's refusal is exercised directly in AgyWorkerAdapterTests (its scoped-shell
+    // refusal fact).
 
     [Fact]
     public async Task Dispatching_fact_check_on_agy_against_a_workspace_that_is_itself_a_worktree_with_an_untracked_file_still_succeeds()
