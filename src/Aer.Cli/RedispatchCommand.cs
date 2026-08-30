@@ -175,12 +175,7 @@ public static class RedispatchCommand
         };
     }
 
-    /// <summary>
-    /// The <c>--spec</c>-given path: an amended brief means the prompt must be rebuilt, so this goes
-    /// back through <see cref="RoleDispatch.Materialize"/> -- the same primitive a fresh <c>aer
-    /// dispatch</c> uses -- with the parent's recorded axes as the defaults <see cref="RedispatchOptions"/>'s
-    /// own overrides win against.
-    /// </summary>
+    /// <summary>The <c>--spec</c>-given path: rebuilds through <see cref="RoleDispatch.Materialize"/>, spec/baton.md §2's named primitive.</summary>
     private static async Task<(WorkflowDefinition Definition, WorkerBindingConfigEntry Entry)> RebuildFromAmendedSpecAsync(
         string workerName, WorkerBindingConfigEntry parentEntry, RedispatchOptions options, CancellationToken cancellationToken)
     {
