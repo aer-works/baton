@@ -7,7 +7,7 @@
       "ProducedOutputs": [{ "Name": "draft" }],
       "OptionalMetadata": []
     },
-    "PromptTemplate": "Write a two-sentence draft product description for a fictional CLI tool called Aer Flow, a workflow execution engine. Write only the draft text itself -- no preamble, no markdown formatting.",
+    "PromptTemplate": "Write a two-sentence draft product description for a fictional CLI tool called Baton Flow, a workflow execution engine. Write only the draft text itself -- no preamble, no markdown formatting.",
     "Timeout": "00:05:00",
     "Model": "claude-haiku-4-5-20251001"
   },

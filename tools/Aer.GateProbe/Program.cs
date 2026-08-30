@@ -17,8 +17,8 @@ namespace Aer.GateProbe;
 /// <para>
 /// <b>In <c>tools/</c> and not <c>tests/</c>, for a measured reason.</b> It was written under
 /// <c>tests/</c> first, alongside <c>Aer.Flow.CrashTestHost</c>, and did not work:
-/// <c>tests/Directory.Build.props</c> links <c>AerHomeRedirect</c> into every project there, giving
-/// each one a throwaway per-process <c>AER_HOME</c>. This probe's whole job is to write AER's real
+/// <c>tests/Directory.Build.props</c> links <c>BatonHomeRedirect</c> into every project there, giving
+/// each one a throwaway per-process <c>BATON_HOME</c>. This probe's whole job is to write AER's real
 /// launch config — the settings file carrying the <c>PreToolUse</c> hook — somewhere a SEPARATE
 /// process can then read it, and a home that dies with the probe leaves the caller running
 /// <c>claude</c> against a <c>--settings</c> path that no longer exists.
@@ -28,7 +28,7 @@ namespace Aer.GateProbe;
 /// for, and this is an instrument.
 /// </para>
 /// <para>
-/// Placeholders are left UNEXPANDED — <c>%AER_OUTPUT_DIR%</c> and friends are what the adapter really
+/// Placeholders are left UNEXPANDED — <c>%BATON_OUTPUT_DIR%</c> and friends are what the adapter really
 /// produces, and <c>CoreDispatcher</c> expands them at dispatch. The caller substitutes its own
 /// directories, which keeps this honest about what the adapter emits.
 /// </para>

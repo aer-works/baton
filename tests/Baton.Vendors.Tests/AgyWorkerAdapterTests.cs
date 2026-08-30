@@ -1054,7 +1054,7 @@ public class AgyWorkerAdapterTests
         // No directory component, so the 8.3 remedy has nothing to shorten -- the contract is a
         // loud refusal, never a command that is emitted and then silently reads as an allow.
         var refusal = Assert.Throws<InvalidOperationException>(
-            () => AgyWorkerAdapter.HookAssemblyToken("Aer Cli.dll"));
+            () => AgyWorkerAdapter.HookAssemblyToken("Baton Cli.dll"));
         Assert.Contains("decision 0029", refusal.Message);
     }
 
