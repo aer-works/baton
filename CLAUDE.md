@@ -355,9 +355,11 @@ The five canonical roles, un-namespaced, and none of them exists on GitHub yet. 
 
 ### Domain docs
 
-Single-context. **This repo has no standing decision-record directory — do not create `docs/adr/`
-or restore `docs/decisions/`.** The spec v2.0 reset (#1397) folded every prior decision into
-`spec/baton.md` and deleted the register; `spec/baton.md` §11 states the rule for what comes next.
+Single-context. **`docs/decisions/` is a verbatim-restored, read-only archive of the pre-reset
+records that live code still cites (#1431) — never edit a restored record, never restore more
+without an owner ruling, and do not create `docs/adr/`.** The spec v2.0 reset (#1397) folded
+every prior decision into `spec/baton.md`; `spec/baton.md` §11 states the standing rule (fresh
+records only for genuinely new decisions, and the restored subset's status).
 Two skills hardcode `docs/decisions/` or `docs/adr/` in their own text — `/domain-modeling` (which
 will create one lazily) and `/improve-codebase-architecture` — and both are wrong here until a first
 fresh record actually exists. `/tdd` and `/diagnosing-bugs` say "ADRs" without naming a path, so they

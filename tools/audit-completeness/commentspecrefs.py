@@ -39,7 +39,10 @@ HEADING_RE = re.compile(r"^#+\s+§(\d+)\b", re.MULTILINE)
 DECISION_FILE_RE = re.compile(r"^(\d{4})-")
 # Decision records are cited both worded ("decision 0047 §4") and bare ("0047 §4"); the ids are
 # zero-padded four digits, and the id must sit directly before the § it governs so an unrelated
-# leading-zero number elsewhere on the line cannot waive the check by coincidence.
+# leading-zero number elsewhere on the line cannot waive the check by coincidence. The digit
+# minimum makes zero-padding load-bearing: an unpadded "decision 58 §4" would miss this branch
+# and fail as an unresolvable §4 — deliberately, since record files are named NNNN-*.md and an
+# unpadded citation would not resolve against them anyway. Pad the citation, not the regex.
 DECISION_RE = re.compile(
     r"(?:decision\s+(?P<worded>\d{3,4})|(?P<bare>\b0\d{3}))\b[^§\n]{0,12}§",
     re.IGNORECASE,
