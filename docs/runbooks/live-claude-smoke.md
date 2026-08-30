@@ -18,8 +18,7 @@ a capability to rely on for future re-runs or for gates on other vendors (see
   for it. `ClaudeWorkerAdapter` has no key-handling code of its own; it shells out to whatever
   `claude` invocation is already authenticated on this machine.
 - Outbound network access to Anthropic's API.
-- The usual repo prerequisites (`.NET 10` SDK, Rust toolchain, submodule initialized —
-  see the root `README.md`).
+- The usual repo prerequisites (`.NET 10` SDK, Rust toolchain — see the root `README.md`).
 
 ## Running it
 

@@ -209,7 +209,7 @@ public class WorkerBindingConfigParserTests
     /// <summary>
     /// A non-positive <c>Timeout</c> is not a slow worker, it is an unrunnable one: it reaches
     /// <c>AerTask.WithTimeout</c> as <c>Duration::from_millis(0)</c>, and
-    /// <c>external/aer-core/src/task.rs:265-269</c> arms a monitor thread that kills the process tree
+    /// <c>native/core/src/task.rs:265-269</c> arms a monitor thread that kills the process tree
     /// as soon as <c>recv_timeout</c> returns. Before this check the file parsed happily and the
     /// worker died on startup with nothing naming the cause.
     /// </summary>

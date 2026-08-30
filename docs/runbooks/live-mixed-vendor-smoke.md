@@ -22,8 +22,7 @@ the gate pass.
   or an API key configured for it. `AgyWorkerAdapter` has no key-handling code of its own; it
   shells out to whatever `agy` invocation is already authenticated on this machine.
 - Outbound network access to both Anthropic's and Google's APIs.
-- The usual repo prerequisites (`.NET 10` SDK, Rust toolchain, submodule initialized — see the
-  root `README.md`).
+- The usual repo prerequisites (`.NET 10` SDK, Rust toolchain — see the root `README.md`).
 
 ## Running it
 

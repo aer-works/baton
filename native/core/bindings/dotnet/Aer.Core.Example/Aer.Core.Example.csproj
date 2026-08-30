@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!-- The native aer_core library is copied into this project's output directory
+       automatically: Aer.Core.csproj marks it as Content with CopyToOutputDirectory,
+       and MSBuild propagates such items transitively through ProjectReference. Build
+       the Rust library first: pixi run build -->
+  <ItemGroup>
+    <ProjectReference Include="../Aer.Core/Aer.Core.csproj" />
+  </ItemGroup>
+
+</Project>

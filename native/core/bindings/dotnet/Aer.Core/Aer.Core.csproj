@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- Copy the native aer_core library to the output directory so any referencing project
+       (tests, examples, apps) gets it automatically. Build the Rust library first:
+       pixi run build -->
+  <PropertyGroup>
+    <_NativeLibName Condition="$([MSBuild]::IsOSPlatform('Windows'))">aer_core.dll</_NativeLibName>
+    <_NativeLibName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libaer_core.so</_NativeLibName>
+    <_NativeLibName Condition="$([MSBuild]::IsOSPlatform('OSX'))">libaer_core.dylib</_NativeLibName>
+    <_NativeLibPath>$(MSBuildProjectDirectory)/../../../target/debug/$(_NativeLibName)</_NativeLibPath>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(_NativeLibPath)')">
+    <Content Include="$(_NativeLibPath)" Link="$(_NativeLibName)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

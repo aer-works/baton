@@ -21,7 +21,7 @@ namespace Aer.Architecture.Tests;
 /// <item>Reflection or a delegate (<c>typeof(Process).GetMethod("Start")</c>) matches no text here.</item>
 /// <item>An approved site spawning something that itself spawns a vendor CLI — a shell script, the
 /// Go sidecar — is a grandchild this cannot see.</item>
-/// <item>Native spawns inside <c>external/aer-core</c>: that is Rust, and out of this scan.</item>
+/// <item>Native spawns inside <c>native/core</c>: that is Rust, and out of this scan.</item>
 /// <item>An approved site silently dropping its gate arguments — each adapter's own <c>Resolve</c>
 /// tests cover the two shipped adapters; nothing covers a third that has not been written.</item>
 /// </list>

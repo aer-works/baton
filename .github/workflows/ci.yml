@@ -28,8 +28,7 @@ jobs:
             dotnet:
               - 'src/**'
               - 'tests/**'
-              - 'external/**'
-              - '.gitmodules'
+              - 'native/core/**'
               - 'AerFlow.slnx'
               - 'Directory.Build.props'
               - 'coverage.runsettings'
@@ -62,17 +61,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
-      # Caches ~/.cargo and external/aer-core/target, keyed off external/aer-core/Cargo.lock, so
-      # `pixi run build-core`'s cargo build only recompiles when the submodule pin actually moves.
+      # Caches ~/.cargo and native/core/target, keyed off native/core/Cargo.lock, so
+      # `pixi run build-core`'s cargo build only recompiles when native/core actually changes.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: external/aer-core
+          workspaces: native/core
 
       # run-install/cache are off: the pixi env is deliberately empty (the .NET SDK and, since M7
-      # Phase 6, the Rust toolchain used to build the external/aer-core submodule are both system
+      # Phase 6, the Rust toolchain used to build native/core are both system
       # installs, not conda packages — GitHub's standard runner images ship both already), and
       # setup-pixi's `pixi list` step fails hard on an empty environment. `pixi run` performs the
       # (trivial) implicit install on first use instead.
@@ -185,12 +182,10 @@ jobs:
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: external/aer-core
+          workspaces: native/core
 
       - uses: prefix-dev/setup-pixi@v0.8.0
         id: pixi-attempt-1
@@ -219,6 +214,12 @@ jobs:
       - name: Lint
         run: pixi run lint
 
+      # #1458: native/core's own CI (aer-core, before the fold-in) ran `cargo test` on every push;
+      # this repo's CI only ever built the native lib (`build-core`, a plain `cargo build`). This
+      # step closes that gap so the folded-in state is equivalent to what aer-core's own CI covered.
+      - name: Rust test
+        run: pixi run test-core
+
       - name: Shutdown dotnet build server
         run: pixi run dotnet build-server shutdown
         if: always()
@@ -242,12 +243,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: external/aer-core
+          workspaces: native/core
 
       # #1117: the pixi binary download itself flaked ("socket hang up") four times on
       # 2026-08-12, failing runs before any repo code executed. One bounded retry; a second
@@ -318,11 +317,9 @@ jobs:
         with:
           # The record-once check below diffs against origin/main. A shallow clone cannot see it, and
           # the check fails closed rather than passing on an unreadable diff -- so the depth is what
-          # makes it run at all.
+          # makes it run at all. native/core (needed by build-cli below, source only, no cargo) is
+          # plain tracked files since #1458, so no submodule flag is needed to bring it along.
           fetch-depth: 0
-          # For build-cli below -- pixi.toml's build-cli comment says why the submodule (source
-          # only, no cargo) is needed while the native lib is not.
-          submodules: true
       # Same setup the test and pack jobs use, for the reason recorded there: pinning a pixi version
       # pinned one too old to read this repo's lock file (version 7), and setup-pixi's own install
       # step fails hard on an empty environment. Let `pixi run` do the implicit install.
