@@ -1,0 +1,200 @@
+<!--
+  Fleet Glass — the operator's primary observability surface (Baton Spike 1;
+  provenance in worker.js's header).
+
+  This is a Claude.ai ARTIFACT, not a plain static page: it declares the `mcp` capability and
+  watches the `fleet_status` tool on a custom MCP connector named "baton" (Settings -> Connectors
+  -> Add custom -> the Worker's /mcp/<READ_SEGMENT> URL from tools/fleet-glass/secrets.local.json).
+  Data flows fleet machine -> pusher.py -> Worker (worker.js) -> KV -> this page, on a 30s poll,
+  with the viewer's own connector credentials. Read-only: no write verbs anywhere in this file.
+
+  Each room lane links to that room's deliverables in inbox.html (same MCP connector, same auth) --
+  see inbox.html's header for the newest-first / tap-to-read contract.
+-->
+<title>Fleet Glass</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FAFAF8; --ink:#232830; --ink-soft:#5A6372; --line:#E3E2DC; --card:#FFFFFF;
+  --accent:#0F766E;
+  --ok:#2E7D32; --run:#0B69C7; --warn:#B45309; --bad:#B3261E; --idle:#8A8F98;
+  --chip-ok:#E5F2E6; --chip-run:#E3EEF9; --chip-warn:#F8ECDD; --chip-bad:#F9E5E3; --chip-idle:#EEEFF1;
+  --mono:'IBM Plex Mono',ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#15181D; --ink:#E8EAEE; --ink-soft:#9AA3B0; --line:#2A2F38; --card:#1C2027;
+    --accent:#3FB8AC;
+    --ok:#66BB6A; --run:#5EA3E8; --warn:#E0A458; --bad:#E57373; --idle:#7C828C;
+    --chip-ok:#1D2E1E; --chip-run:#1A2735; --chip-warn:#332818; --chip-bad:#331D1B; --chip-idle:#242830;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#15181D; --ink:#E8EAEE; --ink-soft:#9AA3B0; --line:#2A2F38; --card:#1C2027;
+  --accent:#3FB8AC;
+  --ok:#66BB6A; --run:#5EA3E8; --warn:#E0A458; --bad:#E57373; --idle:#7C828C;
+  --chip-ok:#1D2E1E; --chip-run:#1A2735; --chip-warn:#332818; --chip-bad:#331D1B; --chip-idle:#242830;
+}
+body{background:var(--paper); color:var(--ink); font:15px/1.55 'Public Sans',system-ui,sans-serif; margin:0; padding:20px 16px 60px;}
+main{max-width:34rem; margin:0 auto;}
+h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline;}
+h1 .fresh{font:400 .72rem var(--mono); color:var(--ink-soft);}
+h1 .navlink{font:500 .74rem 'Public Sans'; color:var(--accent); text-decoration:none;}
+h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.08em;}
+.lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:.45rem 0; background:var(--card);}
+.lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
+.lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
+.lane .deliverables{font-size:.74rem; margin-top:.3rem;}
+.lane .deliverables a{color:var(--accent); text-decoration:none;}
+.chip{font:600 .62rem/1 'Public Sans'; letter-spacing:.05em; padding:.28em .6em; border-radius:999px; white-space:nowrap;}
+.c-run{background:var(--chip-run); color:var(--run);}
+.c-ok{background:var(--chip-ok); color:var(--ok);}
+.c-warn{background:var(--chip-warn); color:var(--warn);}
+.c-bad{background:var(--chip-bad); color:var(--bad);}
+.c-idle{background:var(--chip-idle); color:var(--idle);}
+.banner{border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:0 10px 10px 0; background:var(--card); padding:.7rem .9rem; margin:1rem 0; font-size:.85rem; color:var(--ink-soft);}
+.banner b{color:var(--ink);}
+details{margin:.6rem 0;}
+summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
+.mono{font-family:var(--mono); font-size:.9em;}
+footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:.6rem;}
+</style>
+<main>
+  <h1>Fleet Glass <span class="fresh" id="fresh">connecting…</span></h1>
+  <div><a class="navlink" href="inbox.html">Deliverables inbox &rarr;</a></div>
+  <div id="banner"></div>
+  <div id="content"></div>
+  <footer>Spike 1 · watches <span class="mono">baton / fleet_status</span> every 30s · push-fed mailbox, read-only, no write verbs · rulings happen in chat</footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function age(iso){
+  if(!iso) return null;
+  const ms = Date.now() - Date.parse(iso);
+  if(!isFinite(ms) || ms < 0) return null;
+  const m = Math.floor(ms/60000);
+  if(m < 1) return "just now";
+  if(m < 60) return m + "m";
+  const h = Math.floor(m/60);
+  if(h < 48) return h + "h";
+  return Math.floor(h/24) + "d";
+}
+function dur(msVal){
+  if(msVal == null) return null;
+  const m = Math.round(msVal/60000);
+  return m < 1 ? Math.round(msVal/1000) + "s" : m + "m";
+}
+function tokens(u){
+  if(!u || u.tokensIn == null) return null;
+  const t = (u.tokensIn + (u.tokensOut||0))/1000;
+  return Math.round(t) + "k tok";
+}
+function newestStepTime(room){
+  let newest = null;
+  for(const s of room.steps || []){
+    if(s.timestamp && (!newest || s.timestamp > newest)) newest = s.timestamp;
+  }
+  return newest;
+}
+function laneHtml(room){
+  const st = room.state;
+  const chip = st === "Running" ? ["RUNNING","c-run"]
+    : st === "Succeeded" ? ["SUCCEEDED","c-ok"]
+    : st === "Failed" ? ["FAILED","c-bad"]
+    : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"];
+  const running = (room.steps||[]).find(s => s.state === "Running");
+  const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
+  const bits = [];
+  if(running) bits.push("step: " + esc(running.id));
+  else if(lastStep) bits.push(esc(lastStep.id) + " " + esc(lastStep.state));
+  const u = lastStep && (lastStep.usage || lastStep.linkedFromUsage);
+  const tk = tokens(u); if(tk) bits.push(tk);
+  const wc = u && dur(u.wallClockMs); if(wc) bits.push(wc);
+  const err = room.error ? `<div class="ev" title="${esc(room.error)}">⛔ ${esc(room.error.slice(0,110))}</div>` : "";
+  const t = newestStepTime(room);
+  const a = age(t);
+  const ageLine = a ? `<div class="age">last event ${a} ago${st==="Running" && t && (Date.now()-Date.parse(t)) > 15*60000 ? " ⚠" : ""}</div>` : "";
+  const deliverables = room.name
+    ? `<div class="deliverables"><a href="inbox.html?room=${encodeURIComponent(room.name)}">deliverables &rarr;</a></div>` : "";
+  return `<div class="lane"><div class="top"><span class="name">${esc(room.name)}</span><span class="chip ${chip[1]}">${chip[0]}</span></div>
+    ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${err}${ageLine}${deliverables}</div>`;
+}
+function underhoodHtml(list){
+  if(!Array.isArray(list) || !list.length) return "";
+  const rows = list.map(w => {
+    const commitAge = w.last_commit_at ? age(w.last_commit_at) : null;
+    const bits = [];
+    if(w.branch) bits.push(`<span class="mono">${esc(w.branch)}</span>`);
+    if(w.uncommitted) bits.push(esc(w.uncommitted));
+    const commit = w.last_commit ? `<div class="ev">last commit: ${esc(w.last_commit)}${commitAge ? ` · ${esc(commitAge)} ago` : ""}</div>` : "";
+    const act = w.activity ? `<div class="age" title="${esc(w.activity)}">${esc(w.activity)}</div>` : "";
+    return `<div class="lane"><div class="top"><span class="name">${esc(w.name)}</span></div>
+      <div class="ev">${bits.join(" · ")}</div>${commit}${act}</div>`;
+  }).join("");
+  return `<h2>Under the hood · ${list.length}</h2>` + rows;
+}
+function render(rooms, pushedAt, underhood){
+  const running = rooms.filter(r => r.state === "Running");
+  const failed  = rooms.filter(r => r.state === "Failed");
+  const done    = rooms.filter(r => r.state === "Succeeded");
+  const other   = rooms.filter(r => !r.state);
+  const byNewest = (a,b) => (newestStepTime(b)||"").localeCompare(newestStepTime(a)||"");
+  running.sort(byNewest); failed.sort(byNewest); done.sort(byNewest);
+  let html = underhoodHtml(underhood);
+  html += `<h2>Running · ${running.length}</h2>` + (running.map(laneHtml).join("") || `<div class="lane"><div class="ev">none</div></div>`);
+  html += `<h2>Failed · ${failed.length}</h2>` + (failed.slice(0,12).map(laneHtml).join("") || `<div class="lane"><div class="ev">none</div></div>`);
+  html += `<details><summary>Succeeded · ${done.length}</summary>${done.slice(0,40).map(laneHtml).join("")}</details>`;
+  if(other.length) html += `<details><summary>Unreadable entries · ${other.length}</summary>${other.slice(0,20).map(laneHtml).join("")}</details>`;
+  $("content").innerHTML = html;
+  const a = age(pushedAt);
+  $("fresh").textContent = pushedAt ? "pushed " + (a || new Date(pushedAt).toLocaleTimeString()) + (a && a !== "just now" ? " ago" : "") : "push time unknown";
+}
+function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${html}</div>` : ""; }
+
+(async () => {
+  const mcp = await claude.use("mcp");
+  if(!mcp){
+    banner("<b>No MCP in this view.</b> The fleet feed comes from the <span class='mono'>baton</span> connector; this surface cannot reach connectors.");
+    $("fresh").textContent = "static";
+    return;
+  }
+  let lastGood = null;
+  mcp.watchTool("baton", "fleet_status", {}, (ev) => {
+    if(ev.type === "data"){
+      let snap = ev.result.payload;
+      if(typeof snap === "string"){ try { snap = JSON.parse(snap); } catch { snap = null; } }
+      if(snap && Array.isArray(snap.rooms)){
+        lastGood = snap;
+        const ageMs = snap.pushed_at ? Date.now() - Date.parse(snap.pushed_at) : null;
+        banner(ageMs != null && ageMs > 2*60000
+          ? `<b>Pusher stale.</b> The fleet machine last pushed ${esc(age(snap.pushed_at) || "?")} ago — it may be off or offline. Data below is from that push.`
+          : "");
+        render(snap.rooms, snap.pushed_at, snap.underhood);
+      } else if(snap && snap.rooms === null){
+        $("content").innerHTML = "";
+        banner("<b>No snapshot pushed yet.</b> The mailbox is live but the fleet machine hasn't pushed data.");
+        $("fresh").textContent = "empty mailbox";
+      }
+      return;
+    }
+    const e = ev.error || {};
+    if(e.code === "server_not_connected"){
+      if(lastGood){ banner("<b>Feed lost.</b> The baton connector is not reachable — data below is the last snapshot."); }
+      else { banner("<b>The baton connector is not connected in this view.</b> Add it once via Settings → Connectors → Add custom (or the connector prompt this page raises), then reload."); $("fresh").textContent = "no feed"; }
+    } else if(e.code === "needs_reauth" || e.code === "blocked_by_policy" || e.code === "approval_required"){
+      $("content").innerHTML = "";
+      banner(`<b>Access denied</b> (${esc(e.code)}). ${esc(e.message || "")}`);
+      $("fresh").textContent = "no feed";
+    } else if(e.code === "tool_error"){
+      banner(`<b>fleet_status reported failure:</b> ${esc(e.message || "")}` + (lastGood ? " — showing last good data." : ""));
+    } else {
+      if(!lastGood){ banner(`<b>No data yet</b> (${esc(e.code || "unknown")}). ${esc(e.message || "")}`); }
+    }
+  }, { refetchInterval: 30000, cache: { staleTime: 25000 } });
+})();
+</script>

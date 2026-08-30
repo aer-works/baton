@@ -276,6 +276,13 @@ aer-dispatch = { cmd = "python tools/aer-agy-loop/dispatch.py" }
 # would silently disable the guard fails a gate instead.
 aer-dispatch-selftest = { cmd = "python tools/aer-agy-loop/dispatch.py --selftest" }
 
+# #1413: pure-Python red/green check that the fleet-glass pusher's secret gate fails CLOSED (a
+# missing/unreadable secretpatterns.local.txt withholds every deliverable) and that its dedupe and
+# artifact-selection rules discriminate, over synthetic temp fixtures -- no network, no real
+# ~/.aer. Not wired into gates/gates-fast: fleet-glass is an unbuilt-by-CI operator tool (like
+# vendor-verify/aer-dispatch above), run by whoever touches pusher.py rather than on every PR.
+fleet-glass-pusher-selftest = { cmd = "python tools/fleet-glass/pusher.py --selftest" }
+
 # M13 Phase 4 (#110), the milestone's completion gate: unlike smoke-claude/smoke-mixed-vendor
 # above, this needs no live vendor auth, so it runs unattended in default CI rather than a gated
 # runbook. Packs `aer`, installs it as a real global tool from that local nupkg, runs it against a
