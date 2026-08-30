@@ -9,7 +9,7 @@ one-liner, three separate times, and got three different bugs from it:
   * `Steps[].Inputs` / `Contract.OptionalMetadata` must be JSON arrays, not objects -- guessed wrong
     the second time.
   * A relative `--room-dir` resolves against the CLI's own cwd, but `agy` runs with cwd set to
-    `WorkingDirectory` (`GeminiWorkerAdapter.cs`'s own `--add-dir` comment explains why: `agy -p`
+    `WorkingDirectory` (`AgyWorkerAdapter.cs`'s own `--add-dir` comment explains why: `agy -p`
     ignores the process working directory entirely) -- so a relative room-dir and an explicit
     `WorkingDirectory` silently produce an `AER_OUTPUT_DIR` the dispatched process resolves against
     the wrong root. The run exits 0, the workflow step is reported `Failed`, and `flow.jsonl` gives
@@ -271,7 +271,7 @@ def budget_preamble(timeout_minutes: int, output_name: str) -> str:
     """What the worker is never otherwise told: how long it has, and that expiry destroys its work.
 
     No adapter passes the budget through. `ClaudeWorkerAdapter` passes no timeout flag at all, and
-    `GeminiWorkerAdapter`'s `--print-timeout` is a backstop pushed past AER's own limit so agy does
+    `AgyWorkerAdapter`'s `--print-timeout` is a backstop pushed past AER's own limit so agy does
     not expire first (#588) -- neither reaches the model. On expiry AER raises `AerTimeoutException`
     and kills the process, so a report composed in memory and written at the end is lost entirely,
     not truncated. The #666 review used 19 of its 25 minutes; there is no margin to spend on a model
@@ -768,7 +768,7 @@ def grant_refusal(grant: dict) -> str | None:
         #     Two explanations survive that evidence, and this comment does not choose between them:
         #       - the hook denied the write tools and the shell wrote the file (#529's substitution);
         #       - the hook never fired, so nothing was denied and agy's own write tool wrote it.
-        #     The second is live rather than theoretical: see `GeminiWorkerAdapter`'s
+        #     The second is live rather than theoretical: see `AgyWorkerAdapter`'s
         #     `BuildDeniedTools` paragraph AND the fail-open one after it -- the hook only withholds
         #     while it runs, and under `--dangerously-skip-permissions`, which is what this grant
         #     translates to, there is no backstop behind it. So do not read this run as evidence
@@ -801,7 +801,7 @@ def grant_refusal(grant: dict) -> str | None:
 # each, and requiring both keeps a stray "permission" or "auto-denied" elsewhere from false-firing.
 # `_selftest` below pins the exact marker, so an agy rewording fails THERE, loudly, rather than
 # silently disabling this guard in a live dispatch.
-# Twin: GeminiWorkerAdapter.TryClassifyAutoDeniedTool (#914) applies the identical two-substring
+# Twin: AgyWorkerAdapter.TryClassifyAutoDeniedTool (#914) applies the identical two-substring
 # discipline to give the ENGINE a typed FailureClassification.ToolDenied for every caller (daemon, UI,
 # aer run), not just this dispatch.py path. Each side pins the real marker in its own test, so a
 # rewording reds both — but keep the two marker sets in step until dispatch.py is migrated to read the

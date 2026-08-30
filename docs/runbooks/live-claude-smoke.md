@@ -126,7 +126,7 @@ close the human gate.
 needing the `command` permission it cannot prompt for — verified 2026-07-23 across `default` / `plan`
 / `accept-edits` (6/6 refused, *"a tool required the 'command' permission that headless mode cannot
 prompt for, so it was auto-denied"*). Its request-side is refused at the adapter
-(`GeminiWorkerAdapter` throws for requested shell/network — unit-tested).
+(`AgyWorkerAdapter` throws for requested shell/network — unit-tested).
 
 > **Corrected 2026-07-24 (`#472`).** This section previously said `agy` was fail-closed "the opposite
 > of Claude Code's headless auto-*approve*". **That contrast is wrong: both vendors fail closed.**

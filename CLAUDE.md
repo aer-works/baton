@@ -94,7 +94,7 @@ are **already authenticated on the machine** — disclose the expected spend bef
 action item: there is no headless or non-interactive way to sign a vendor CLI in from inside an
 agent session, and there should not be one — dropping in an API key to make a gate pass would test
 a different auth path than the one the project exists to support (Adapter Isolation:
-`ClaudeWorkerAdapter`/`GeminiWorkerAdapter` deliberately own no key-handling code and shell out to
+`ClaudeWorkerAdapter`/`AgyWorkerAdapter` deliberately own no key-handling code and shell out to
 whatever vendor CLI is already authenticated on the host, because the project's whole point is
 working against **subscriptions**, not API keys).
 

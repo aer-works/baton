@@ -136,7 +136,7 @@ one of them does not withhold it ([#529](https://github.com/aer-works/baton/issu
 refuses these at bind time; `dispatch.py` refuses them here so the flags fail before you commit to
 them rather than after.
 
-The network arm carries a second, vendor-specific reason on gemini: `GeminiWorkerAdapter` has no way
+The network arm carries a second, vendor-specific reason on gemini: `AgyWorkerAdapter` has no way
 to unlock shell commands without also unlocking network access (`--dangerously-skip-permissions` is
 the only confirmed non-interactive bypass agy exposes, and it grants everything together — see the
 adapter's own `TryTranslatePermissionGrant`). That reason applies to one vendor; the #529 one applies

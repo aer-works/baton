@@ -19,7 +19,7 @@ the gate pass.
 - An authenticated `claude` CLI on `PATH` — see
   [`live-claude-smoke.md`](./live-claude-smoke.md)'s prerequisites; unchanged here.
 - An authenticated `agy` (antigravity, Google Gemini's CLI) on `PATH` — either a logged-in session
-  or an API key configured for it. `GeminiWorkerAdapter` has no key-handling code of its own; it
+  or an API key configured for it. `AgyWorkerAdapter` has no key-handling code of its own; it
   shells out to whatever `agy` invocation is already authenticated on this machine.
 - Outbound network access to both Anthropic's and Google's APIs.
 - The usual repo prerequisites (`.NET 10` SDK, Rust toolchain, submodule initialized — see the
@@ -69,7 +69,7 @@ exists", not "the file says X" — the same rule `live-claude-smoke.md` document
 - **`review` (Gemini/`agy`) never reaches a paused `Succeeded` outcome**: check the step's latest
   execution's directory under `artifacts/` for whatever `agy` actually produced (or didn't).
   Re-run `agy -p "..." --mode accept-edits --add-dir "<artifacts root>"` by hand with the same
-  flags `GeminiWorkerAdapter` builds (see its XML doc remarks) to isolate CLI-vs-engine issues. A
+  flags `AgyWorkerAdapter` builds (see its XML doc remarks) to isolate CLI-vs-engine issues. A
   clarifying question with no file written is `agy`'s documented failure mode (spike #21) — it
   exits 0, and `ContractValidator` reads the missing output as retryable, same as any other
   contract failure.
