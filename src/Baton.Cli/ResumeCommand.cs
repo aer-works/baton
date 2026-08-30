@@ -19,7 +19,7 @@ namespace Baton.Cli;
 /// mutation: <see cref="MutationInterface.RecordResumeAsync"/> mints and dispatches the one linked
 /// execution, then <see cref="MutationInterface.StartWorkflowAsync"/> settles any downstream
 /// consequence (a sibling step this one's outcome unblocks, a pause obligation) to the next fixed
-/// point — so this command blocks and reports exactly like <c>baton run</c>.
+/// point, with the same blocking/reporting shape <see cref="DecideCommand"/>'s own doc comment describes.
 /// </para>
 /// </summary>
 public static class ResumeCommand
