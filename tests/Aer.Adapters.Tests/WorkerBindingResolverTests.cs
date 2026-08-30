@@ -108,35 +108,9 @@ public class WorkerBindingResolverTests
     }
 
     /// <summary>
-    /// A caller that is not a UI cannot store an incoherent grant either — <c>POST
-    /// /api/sessions/start</c> takes one straight from the request body. Why the check sits in
-    /// <c>Materialize</c> rather than at the endpoint, and what a grant accepted there would cost, is
-    /// recorded once beside the check itself.
-    /// </summary>
-    [Fact]
-    public void Materializing_a_session_with_an_incoherent_grant_is_refused()
-    {
-        var incoherent = new PermissionGrant(
-            ReadFiles: false, WriteFiles: false, RunShellCommands: true, ShellCommandPatterns: [], NetworkAccess: false);
-
-        var thrown = Assert.Throws<ArgumentException>(() => InteractiveSessionMaterializer.Materialize(
-            "sess1234", Path.Combine(Path.GetTempPath(), $"aer-mat-{Guid.NewGuid():N}"),
-            "claude", workingDirectory: Path.GetTempPath(), grant: incoherent));
-        Assert.Contains("shell is granted while", thrown.Message, StringComparison.Ordinal);
-
-        // The control: the same call with a coherent grant materializes, so the refusal is about the
-        // grant rather than about anything else in this argument list.
-        var coherent = InteractiveSessionMaterializer.GrantForMode("default");
-        var (_, bindings, _) = InteractiveSessionMaterializer.Materialize(
-            "sess1234", Path.Combine(Path.GetTempPath(), $"aer-mat-{Guid.NewGuid():N}"),
-            "claude", workingDirectory: Path.GetTempPath(), grant: coherent);
-        Assert.Equal(coherent, bindings[InteractiveSessionMaterializer.DefaultWorkerName].PermissionGrant);
-    }
-
-    /// <summary>
-    /// The CONTROL for the above: <see cref="InteractiveSessionMaterializer.GrantForMode"/> is not a function
-    /// that says yes to everything, and an incoherent grant really is refused — so the test above
-    /// passing means the modes are coherent rather than that nothing is checked.
+    /// The CONTROL for the mode-coherence test above: <see cref="InteractiveSessionMaterializer.GrantForMode"/>
+    /// is not a function that says yes to everything, and an incoherent grant really is refused — so
+    /// that test passing means the modes are coherent rather than that nothing is checked.
     /// </summary>
     [Fact]
     public void An_unknown_mode_yields_no_grant_and_an_incoherent_grant_is_refused()

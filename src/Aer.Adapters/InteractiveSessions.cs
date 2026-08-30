@@ -88,74 +88,6 @@ public sealed record SessionMetadata(
 
 public static class InteractiveSessionMaterializer
 {
-    public const int DefaultSafetyCeiling = 100;
-    public const string DefaultStepId = "chat";
-    public const string DefaultWorkerName = "chat-worker";
-    public const string DefaultOutputFileName = "response.md";
-
-    // M24 Phase 5.2 (#285): a downstream anchor step exists purely to give a repeated-turn
-    // `Supersede` a legal target (the ancestry rule lives on `NoOpWorkerAdapter`'s
-    // remarks) -- a single "chat" step targeting itself is illegal three ways (self-
-    // target, no ancestor, no supplementary artifact possible) and was silently no-oping every turn
-    // after the first (see #285's investigation notes). "chat" itself now declares no PausePoint at
-    // all, so a successful turn flows straight through to the anchor without stopping -- Anchor's own
-    // PausePoint (targeting "chat") is what actually pauses the workflow, ready for the next turn's
-    // Supersede. This also means "chat" has no pause-driven retry path of its own: a first-ever turn
-    // that fails outright leaves the workflow terminally failed with nothing to Decide against, which
-    // is why Aer.Daemon's turn-execution code detects "anchor has never succeeded" and re-materializes
-    // Flow's own state fresh for that one narrow case, rather than issuing a decision.
-    public const string AnchorStepId = "turn-anchor";
-    public const string AnchorWorkerName = "turn-anchor-worker";
-    public const string AnchorOutputFileName = "turn.marker";
-
-    /// <summary>
-    /// Asks for the answer as a file without requiring it (#650). It lives in the prompt rather than
-    /// in the contract's <c>ProducedOutputs</c> because those are two different statements that were
-    /// being made with one: what the worker is asked to do, and what AER treats as the turn having
-    /// succeeded. A chat turn's answer arrives either as this file or in the vendor's own structured
-    /// result, and the daemon reads whichever it gets — so requiring the file classified a completed
-    /// turn as <c>Failed</c> whenever the session's grant could not write one, which is every
-    /// directory-less and every plan-mode session.
-    /// </summary>
-    /// <remarks>
-    /// Still worth asking for: the structured-result channel only carries an answer when the turn ran
-    /// with streaming output captured, so on a non-streaming turn the file is the only channel there is.
-    /// </remarks>
-    /// <summary>
-    /// The prompt a chat turn is actually dispatched with. Every turn's prompt is rebuilt by the
-    /// daemon from the user's message (or a synthesized handoff summary) and overwrites the
-    /// materialized <c>PromptTemplate</c>, so the ask has to be appended here, on the per-turn path,
-    /// rather than once at materialization — appending it to the materialized template only was
-    /// measured to reach no vendor at all.
-    /// </summary>
-    public static string BuildTurnPrompt(string message) => message + ResponseFileInstruction;
-
-    /// <summary>The chat worker's contract. AER owns it; it is never operator-authored.</summary>
-    public static WorkerContract ChatWorkerContract => new(
-        WorkerName: DefaultWorkerName,
-        RequiredInputs: [],
-        // See ResponseFileInstruction (#650).
-        ProducedOutputs: [],
-        OptionalMetadata: []);
-
-    public static string ResponseFileInstruction =>
-        $"\n\nWrite your answer to {WorkerEnvironmentReference.For("AER_OUTPUT_DIR")}" +
-        $"{Path.DirectorySeparatorChar}{DefaultOutputFileName} if you are able to write files. " +
-        "If you cannot, just answer normally — the answer is read either way.";
-
-    /// <summary>
-    /// The default <see cref="PermissionGrant"/> for an interactive session that supplied no explicit
-    /// grant. A working directory is a project ceiling (decision 0004); with none, the effective grant
-    /// floors to the intersection and MUST fail closed -- no filesystem, shell, or network -- so a
-    /// directory-less "plain chat" cannot inherit the daemon/app cwd with write access nobody scoped
-    /// (#321). With a directory, the conservative codebase default applies (read + write, no shell or
-    /// network). This is the single home for that policy; every materialize path routes through it.
-    /// </summary>
-    public static PermissionGrant DefaultGrantForWorkingDirectory(string? workingDirectory) =>
-        string.IsNullOrWhiteSpace(workingDirectory)
-            ? new PermissionGrant(ReadFiles: false, WriteFiles: false, RunShellCommands: false, ShellCommandPatterns: [], NetworkAccess: false)
-            : new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false, ShellCommandPatterns: [], NetworkAccess: false);
-
     /// <summary>
     /// The session-mode vocabulary <c>POST /api/sessions/{id}/mode</c> accepts, and the only place it
     /// is written down. #645.
@@ -274,142 +206,21 @@ public static class InteractiveSessionMaterializer
     /// </summary>
     public const string CustomMode = "custom";
 
-    public static (WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings, SessionMetadata Metadata) Materialize(
-        string sessionId,
-        string roomDirectoryPath,
-        string adapter,
-        string? model = null,
-        string? workingDirectory = null,
-        string? initialMessage = null,
-        int safetyCeiling = DefaultSafetyCeiling,
-        PermissionGrant? grant = null)
-    {
-        var normalizedAdapter = string.IsNullOrWhiteSpace(adapter) ? "claude" : adapter.Trim().ToLowerInvariant();
-        var defaultGrant = grant ?? DefaultGrantForWorkingDirectory(workingDirectory);
+    /// <summary>
+    /// The interactive chat worker's binding key. No production path materializes a chat-worker
+    /// binding any more (the daemon HTTP surface that started interactive sessions was deleted in
+    /// #1420, and the last materializer for one was deleted alongside it, #1440) — this and
+    /// <see cref="ChatWorkerContract"/> survive only as the realistic "chat worker" fixture
+    /// WorkerBindingResolverTests' session-mode coherence tests bind against.
+    /// </summary>
+    public const string DefaultWorkerName = "chat-worker";
 
-        // #645 at the last choke point before a caller-supplied grant is written to bindings.json.
-        // The UI surfaces check this too, and they must -- an operator needs to hear it while
-        // authoring, not as a rejected request. This is here for the callers that are not a UI:
-        // `POST /api/sessions/start` takes a grant straight from the request body, and the per-turn
-        // rewrite reads whatever that wrote back out and re-persists it, so an incoherent grant
-        // accepted once would fail every turn of that session until someone changed the mode.
-        //
-        // Throws rather than silently repairing: which category the operator actually meant to grant
-        // is not knowable here, and quietly widening a permission is the wrong direction to guess in.
-        // Why the rule lives on PermissionGrant is recorded once, on CategoriesDefeatedByTheShell.
-        if (defaultGrant.CategoriesDefeatedByTheShell is { Count: > 0 } defeated)
-        {
-            throw new ArgumentException(
-                $"This session's permission grant cannot be stored: the shell is granted while "
-                + $"{string.Join(", ", defeated)} {(defeated.Count == 1 ? "is" : "are")} withheld, and a "
-                + "shell command reaches them anyway. The engine refuses this at bind time, so a "
-                + "session created with it could never run a turn.",
-                nameof(grant));
-        }
-
-        var definition = new WorkflowDefinition(
-            WorkflowTemplateId: new WorkflowTemplateId("interactive-session-template"),
-            // 3: the chat step no longer declares response.md (#650). A declared output which does
-            // not appear is unambiguously a failure, and it is right — the defect was
-            // declaring one AER does not actually require. A chat turn's answer has two channels, the
-            // artifact and the vendor's own structured result, and the daemon accepts either.
-            WorkflowTemplateVersion: 3,
-            Steps:
-            [
-                new WorkflowStepDefinition(
-                    StepId: new StepId(DefaultStepId),
-                    Worker: DefaultWorkerName,
-                    Inputs: [],
-                    Outputs: [],
-                    DependsOn: [],
-                    // SessionTurnStubAdapter.ExhaustionSentinel's two-call classifier design (formerly
-                    // tests/Aer.Ui.Tests/TestSupport, deleted #1412) assumed exactly one pump attempt
-                    // per chat turn -- raising this MaxAttempts would have changed which consultation
-                    // was "call #2" there (#1180 review); no surviving test enforces that constraint,
-                    // so a future MaxAttempts change here has nothing pinning it.
-                    RetryPolicy: new RetryPolicy(1)),
-                new WorkflowStepDefinition(
-                    StepId: new StepId(AnchorStepId),
-                    Worker: AnchorWorkerName,
-                    // Nothing upstream declares response.md any more, so the anchor cannot require it
-                    // as an input. DependsOn is what orders the two steps; this only ever wired an
-                    // artifact the anchor does not read (it is a no-op bookkeeping step).
-                    Inputs: [],
-                    Outputs: [AnchorOutputFileName],
-                    DependsOn: [new StepId(DefaultStepId)],
-                    RetryPolicy: new RetryPolicy(1),
-                    // NeedsInput, not the default ReadyForReview: a settled chat turn is "awaiting your
-                    // next message," never "approve finished work" (#334). This is the one declaration
-                    // site that opts out of the approval-gate default; every authored review gate keeps it.
-                    PausePoint: new PausePoint([new StepId(DefaultStepId)], PausePointKind.NeedsInput))
-            ]);
-
-        var promptTemplate = BuildTurnPrompt(string.IsNullOrWhiteSpace(initialMessage)
-            ? "You are an AI assistant in an interactive session. Answer user questions and perform requested tasks."
-            : initialMessage);
-
-        var vendorSessionId = string.Equals(normalizedAdapter, "claude", StringComparison.OrdinalIgnoreCase)
-            ? Guid.NewGuid().ToString()
-            : null;
-
-        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
-        {
-            [DefaultWorkerName] = new WorkerBindingConfigEntry(
-                Adapter: normalizedAdapter,
-                Contract: ChatWorkerContract,
-                PromptTemplate: promptTemplate,
-                Timeout: TimeSpan.FromMinutes(10),
-                PermissionGrant: defaultGrant,
-                Model: model,
-                WorkingDirectory: workingDirectory),
-            [AnchorWorkerName] = new WorkerBindingConfigEntry(
-                Adapter: NoOpWorkerAdapter.AdapterName,
-                Contract: new WorkerContract(
-                    WorkerName: AnchorWorkerName,
-                    RequiredInputs: [],
-                    ProducedOutputs: [new ProducedOutput(AnchorOutputFileName)],
-                    OptionalMetadata: []),
-                PromptTemplate: "(no-op bookkeeping step; ignored)",
-                Timeout: TimeSpan.FromSeconds(30),
-                // No PermissionGrant, because NoOpWorkerAdapter never reads one (#651): it is not a
-                // vendor CLI, and AER builds its dispatch itself. The all-false grant that used to sit
-                // here constrained nothing while reading as a sandbox — including to the bind-time rule
-                // #629 proposes, which took it at face value and would have refused every interactive
-                // session. It also read as a builder-mode grant to the bindings editor, which flagged a
-                // session's bindings dirty on load and would have rewritten this entry on save.
-                // WorkerAdapterRegistryTests is what keeps "reads a grant" and
-                // "declares IPermissionGrantTranslator" the same set.
-                PermissionGrant: null)
-        };
-
-        // 0054 §1/§6, #1305: the room's first (and, for now, only) worker is a participant with its
-        // own identity -- auto-named after its vendor -- and the room's implicit first orchestrator
-        // (0054 §6: no gesture, no one else to choose). ParticipantNaming.NextName against an empty
-        // set always returns the bare vendor name here, since nothing else has joined yet.
-        var firstParticipant = new Participant(
-            Id: new WorkerId(DefaultWorkerName),
-            Name: ParticipantNaming.NextName(normalizedAdapter, existingNames: []),
-            Vendor: normalizedAdapter,
-            Model: model,
-            Effort: null,
-            IsOrchestrator: true);
-
-        var metadata = new SessionMetadata(
-            SessionId: sessionId,
-            RoomDirectoryPath: roomDirectoryPath,
-            CurrentAdapter: normalizedAdapter,
-            CurrentVendorSessionId: vendorSessionId,
-            Model: model,
-            WorkingDirectory: workingDirectory,
-            TurnCount: 0,
-            SafetyCeiling: safetyCeiling > 0 ? safetyCeiling : DefaultSafetyCeiling,
-            CreatedAt: DateTimeOffset.UtcNow,
-            UpdatedAt: DateTimeOffset.UtcNow,
-            Turns: [],
-            Participants: [firstParticipant]);
-
-        return (definition, bindings, metadata);
-    }
+    /// <summary>The chat worker's contract. See <see cref="DefaultWorkerName"/> for why this still exists.</summary>
+    public static WorkerContract ChatWorkerContract => new(
+        WorkerName: DefaultWorkerName,
+        RequiredInputs: [],
+        ProducedOutputs: [],
+        OptionalMetadata: []);
 
     /// <summary>
     /// How many times <see cref="ReadRoomKind"/>'s retry loop attempts a sharing-violation before
