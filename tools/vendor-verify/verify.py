@@ -3649,10 +3649,12 @@ def _effort_agy_conflict():
 #
 # `docs/vendor-capabilities.md` § "The canonical model-purpose mapping" is the register these guard.
 
-# The 11-entry catalogue recorded in docs/vendor-capabilities.md § "`agy models`" (captured while
-# building the effort sentinels above, 2026-07-28). Each entry bakes a model family AND an effort
-# suffix into one string -- that is agy's own shape, not a parsing choice made here.
+# The 14-entry catalogue recorded in docs/vendor-capabilities.md § "`agy models`" (first captured
+# 2026-07-28; re-captured 2026-08-30 when the 3.7 family appeared, #1422). Each entry bakes a model
+# family AND an effort suffix into one string -- that is agy's own shape, not a parsing choice made
+# here.
 AGY_MODELS = {
+    "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
     "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
     "gemini-3.5-flash-high", "gemini-3.5-flash-medium", "gemini-3.5-flash-low",
     "gemini-3.1-pro-high", "gemini-3.1-pro-low",
@@ -3687,22 +3689,24 @@ def run_bare(cmd, timeout=300, cwd=None, extra_env=None):
 
 
 @check("models.agy-value-set", "models",
-       "agy models lists exactly the 11-entry catalogue recorded in docs/vendor-capabilities.md -- "
+       "agy models lists exactly the catalogue recorded in docs/vendor-capabilities.md -- "
        "no fewer, no more, no renames", sentinel=True)
 def _models_agy_value_set():
     """`agy models` is the machine-readable surface 0023 §4 names. Bare invocation, matching
     `AgyWorkerAdapter.RunAgySubcommandAsync(["models"], ...)` exactly -- see `run_bare` above for why
     this deliberately skips the harness's usual cheap-model injection.
 
-    The output is columnar (several names per line); this parses on whitespace across the whole blob
-    rather than per-line, because `ParseModelLines` in `AgyWorkerAdapter.cs` treats each *line* as one
-    opaque string and is not the shape this register cares about -- the register's unit is the
-    individual model+effort name, which whitespace-splitting recovers regardless of column layout.
+    Output format (re-measured 2026-08-30, #1422): one `id<TAB>display name` pair per line -- so this
+    drops everything after each line's first tab, then whitespace-splits what remains.
+    Whitespace-splitting the whole blob (correct for the original multi-column grid format) would now
+    pick up display-name words as phantom catalogue entries and misreport a format change as a
+    catalogue change; the tab-strip-then-split shape reads both formats correctly (a grid line has no
+    tab, so its whole run of ids survives to the whitespace split).
     """
     rc, out, err = run_bare(["agy", "models"])
     if rc != 0:
         return INCONCLUSIVE, f"agy models exited {rc} -- {(err or out).strip()[:200]}"
-    found = set(out.split())
+    found = {tok for ln in out.splitlines() for tok in ln.split("\t", 1)[0].split()}
     if found == AGY_MODELS:
         return PASS, f"unchanged: {len(found)} models"
     added, removed = sorted(found - AGY_MODELS), sorted(AGY_MODELS - found)
