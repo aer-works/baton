@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Aer.Flow.Artifacts;
 using Aer.Flow.Domain;
+using Aer.Flow.Outcomes;
 
 namespace Aer.Flow.Status;
 
@@ -8,6 +9,8 @@ namespace Aer.Flow.Status;
 /// One step's machine-readable state, per <c>aer status --json</c>'s shape (#1356): a bare
 /// <see cref="StepStatus"/> token, never the human prose <c>StatusCommand.FormatStepStatus</c> prints
 /// (a parked/liveness-annotated sentence a machine consumer would have to parse back apart).
+/// <see cref="Liveness"/> (#1375, spec/baton.md §3) is the one exception carried as a separate,
+/// structured field rather than folded into <see cref="State"/> — see its own remarks.
 /// </summary>
 public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("id")] string Id,
@@ -27,13 +30,22 @@ public sealed record WorkflowStatusStepView(
     // two executions are two distinct cost entries, not one to be added or overwritten.
     [property: JsonPropertyName("linkedFromUsage")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    ExecutionUsageView? LinkedFromUsage = null);
+    ExecutionUsageView? LinkedFromUsage = null,
+    // #1375: the SAME EngineLivenessProbe the human `aer status` rendering consults
+    // (StatusCommand.FormatStepStatus), never a second probe -- present only for a Running step,
+    // FormatStepStatus's own gate (why non-Running steps claim nothing: spec/baton.md §3).
+    // "alive" | "dead" | "unknown", lower-cased from EngineLivenessStatus; omitted, never null, for
+    // every non-Running step so the field's mere presence already answers "does liveness apply here".
+    [property: JsonPropertyName("liveness")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Liveness = null);
 
 /// <summary>
 /// The one JSON object <c>aer status --json</c> writes to stdout (#1356's machine completion
-/// contract): <c>{state, steps:[{id, state, execution, linkedFrom, usage, linkedFromUsage}],
-/// outputs:[...], error, try}</c> — the canonical statement of this shape (see
-/// <c>docs/agents/invoking-baton.md</c>'s <c>record-once-ok</c> marker, which points here).
+/// contract): <c>{state, steps:[{id, state, execution, linkedFrom, usage, linkedFromUsage, liveness}],
+/// outputs:[...], error, try, rejected}</c> — the canonical statement of this shape, full schema at
+/// spec/baton.md §3 (see also <c>docs/agents/invoking-baton.md</c>'s <c>record-once-ok</c> marker,
+/// which points here).
 /// <c>linkedFrom</c> (#1359) is additive to #1356's shape, same as <c>Try</c> below — see
 /// <see cref="WorkflowStatusStepView.LinkedFrom"/>. <c>usage</c>/<c>linkedFromUsage</c> (#1360) are
 /// likewise additive — see <see cref="WorkflowStatusStepView.Usage"/>. Also what the terminal sentinel
@@ -44,13 +56,24 @@ public sealed record WorkflowStatusStepView(
 /// rather than appended into <see cref="Error"/> so a consumer can tell diagnosis from remedy apart.
 /// Only ever populated on the pre-ledger sentinel path (<see cref="TerminalSentinelWriter.WriteValidationRefusedAsync"/>) —
 /// a normal ledger projection has no exception to carry one.
+/// <see cref="Rejected"/> (#1377) and <see cref="WorkflowStatusStepView.Liveness"/> (#1375) are the
+/// two most recently added additive fields — see each property's own remarks for what they carry and
+/// why.
 /// </summary>
 public sealed record WorkflowStatusView(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("steps")] IReadOnlyList<WorkflowStatusStepView> Steps,
     [property: JsonPropertyName("outputs")] IReadOnlyList<string> Outputs,
     [property: JsonPropertyName("error")] string? Error,
-    [property: JsonPropertyName("try")] string? Try = null);
+    [property: JsonPropertyName("try")] string? Try = null,
+    // #1377: true when at least one step settled via `DecisionType.Reject` -- the one structural
+    // fact this contract can honestly assert about a rejection. There is no recorded-reason text to
+    // surface alongside it: `FlowEvent.ExternalDecisionRecorded` carries no operator-supplied reason
+    // field today, so a `reason` field here would always read `null` and this deliberately does not
+    // invent one. Lets a caller reading `state: "Failed"`/`error: null` tell "a person said no" apart
+    // from "the worker crashed and nobody recorded why" without parsing prose; the branching recipe
+    // and the which-step pointer live in spec/baton.md §3.
+    [property: JsonPropertyName("rejected")] bool Rejected = false);
 
 /// <summary>
 /// Builds <see cref="WorkflowStatusView"/> from the same <see cref="FlowState"/>
@@ -100,9 +123,22 @@ public static class WorkflowStatusProjector
         var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
             entries ?? [], artifactsRootPath, adapters, roomDirectoryPath);
 
+        // #1375: the same (pid, engine-start-time) pair StatusCommand.FormatStepStatus reads off
+        // ExecutionRequestAccepted to drive EngineLivenessProbe -- built once here rather than
+        // re-scanning `entries` per Running step.
+        var engineIdentityByExecutionId = new Dictionary<string, (int? Pid, DateTimeOffset? StartTime)>(StringComparer.Ordinal);
+        foreach (var entry in entries ?? [])
+        {
+            if (entry is LogEntry.FlowLogEntry { Event: FlowEvent.ExecutionRequestAccepted accepted })
+            {
+                engineIdentityByExecutionId[accepted.Request.ExecutionId.Value] = (accepted.EnginePid, accepted.EngineStartTime);
+            }
+        }
+
         var steps = new List<WorkflowStatusStepView>(state.Steps.Count);
         var outputs = new List<string>();
         string? firstFailureReason = null;
+        var anyRejected = false;
 
         foreach (var step in state.Steps)
         {
@@ -113,14 +149,41 @@ public static class WorkflowStatusProjector
                 ? linkedUsage
                 : null;
 
+            // Probe ONLY steps this projection itself calls Running -- same gate as
+            // FormatStepStatus's own; the record parameter's comment above says why the gate exists.
+            // Unlike FormatStepStatus, a step with no recorded
+            // ExecutionRequestAccepted identity still gets probed -- Probe(null, null) itself already
+            // reads as EngineLivenessStatus.Unknown, so this always renders a value for a Running step
+            // rather than silently omitting the field on a miss (review finding: the two renderings
+            // must never disagree about WHETHER a verdict exists, only about its OS-level result).
+            string? liveness = null;
+            if (step.Status == StepStatus.Running && step.LatestExecutionId is { } runningExecution)
+            {
+                var identity = engineIdentityByExecutionId.TryGetValue(runningExecution.Value, out var found)
+                    ? found
+                    : (Pid: (int?)null, StartTime: (DateTimeOffset?)null);
+                var probeResult = EngineLivenessProbe.Probe(identity.Pid, identity.StartTime);
+                liveness = probeResult.Status switch
+                {
+                    EngineLivenessStatus.Alive => "alive",
+                    EngineLivenessStatus.Dead => "dead",
+                    _ => "unknown",
+                };
+            }
+
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
-                usage, linkedFromUsage));
+                usage, linkedFromUsage, liveness));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))
             {
                 firstFailureReason = step.LatestFailureReason;
+            }
+
+            if (step.Status == StepStatus.Rejected)
+            {
+                anyRejected = true;
             }
 
             // #740's rule via StepOutputResolver, the one place it is implemented (#1374 F5) — this
@@ -131,7 +194,7 @@ public static class WorkflowStatusProjector
             }
         }
 
-        return new WorkflowStatusView(WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason);
+        return new WorkflowStatusView(WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected);
     }
 
     /// <summary>
