@@ -407,14 +407,33 @@ public class WorkflowEndToEndTests
         const int small = 500;
         const int large = 2000; // 4x, so quadratic (~16x time) is well clear of linear (~4x)
 
-        var smallMs = await MeasureReadMsPerRound(small);
-        var largeMs = await MeasureReadMsPerRound(large);
+        // A single small/large pair is one sample of a noisy process: a GC pause or scheduler
+        // stall landing on only one of the two calls can inflate the ratio even when the underlying
+        // read cost is linear (#1418 — flaked once under a full-gates run with overlapped audits
+        // loading the machine, passed repeatedly in isolation). Retrying the whole pair does not
+        // weaken what this proves: a genuine O(n^2) regression is a property of the code, not the
+        // machine, so it reproduces on every attempt, while a noise-driven outlier is unlikely to
+        // survive several. Fail only if every attempt shows super-linear growth.
+        const int maxAttempts = 5;
+        var attempts = new List<(double SmallMs, double LargeMs)>();
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            var smallMs = await MeasureReadMsPerRound(small);
+            var largeMs = await MeasureReadMsPerRound(large);
+            attempts.Add((smallMs, largeMs));
 
-        Assert.True(
-            ReadCostScalesLinearly(smallMs, small, largeMs, large),
-            $"Re-read cost grew faster than linearly: {smallMs:F3}ms at {small} events, "
-            + $"{largeMs:F3}ms at {large} (a {large / small}x size increase should stay within ~{large / small}x "
-            + "time). This is the signal the manifest cache exists for, not a machine-speed check.");
+            if (ReadCostScalesLinearly(smallMs, small, largeMs, large))
+            {
+                return;
+            }
+        }
+
+        Assert.Fail(
+            $"Re-read cost grew faster than linearly in all {maxAttempts} attempts: "
+            + string.Join(", ", attempts.Select(a => $"{a.SmallMs:F3}ms->{a.LargeMs:F3}ms"))
+            + $" at {small}->{large} events (a {large / small}x size increase should stay within ~{large / small}x "
+            + "time, checked on every attempt). This is the signal the manifest cache exists for, not a "
+            + "machine-speed check.");
     }
 
     /// <summary>
