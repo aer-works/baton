@@ -63,6 +63,36 @@ public class RunCommandEndToEndTests
         }
     }
 
+    /// <summary>
+    /// spec/baton.md §8's writer, exercised through the exact call <c>Program.cs</c> makes for a bare
+    /// <c>aer run</c> (no <c>--workspace</c> concept, unlike <c>aer dispatch</c>): the registration uses
+    /// whatever <see cref="RunOptions.ProjectRootDirectory"/> was resolved to (the process cwd in
+    /// production; passed explicitly here rather than mutating the shared process cwd for one test).
+    /// </summary>
+    [Fact]
+    public async Task Running_registers_the_room_into_the_multi_project_registry()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteThreeStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteThreeStepBindingsAsync(testRoot);
+            var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory, ProjectRootDirectory: testRoot);
+
+            await RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            var entries = await RoomRegistryStore.ReadDistinctByRoomAsync(
+                AerPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
+            var entry = Assert.Single(entries, e => e.RoomPath == AerPaths.RecordKey(roomDirectory));
+            Assert.Equal(AerPaths.RecordKey(testRoot), entry.ProjectRoot);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [Fact]
     public async Task Running_again_against_the_same_room_directory_resumes_without_redispatching()
     {

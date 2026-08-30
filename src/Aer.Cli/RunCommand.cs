@@ -76,6 +76,7 @@ public static class RunCommand
         ArgumentNullException.ThrowIfNull(adapters);
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
+        await RegisterRoomAsync(options, cancellationToken).ConfigureAwait(false);
 
         var snapshotPath = Path.Combine(options.RoomDirectoryPath, SnapshotFileName);
         var logPath = Path.Combine(options.RoomDirectoryPath, LogFileName);
@@ -292,5 +293,47 @@ public static class RunCommand
         var snapshot = SnapshotBinder.Bind(definition);
         await SnapshotBinder.PersistAsync(snapshot, snapshotPath, cancellationToken).ConfigureAwait(false);
         return snapshot;
+    }
+
+    /// <summary>
+    /// spec/baton.md §8: records this room into the machine-local multi-project registry so
+    /// <c>fleet_status</c> can find it even outside any root a caller happens to scan. Runs on every
+    /// call to <see cref="ExecuteAsync"/> — a fresh dispatch, or a repeated <c>aer run</c> against a
+    /// room this same pump already started — rather than only when <see cref="RunOptions.RoomDirectoryPath"/>
+    /// has no snapshot yet, so a registration lost to an earlier crash (the process died between
+    /// <see cref="Directory.CreateDirectory(string)"/> above and this write) is repaired by the next
+    /// call through this pump rather than staying permanently unregistered. Re-registering an
+    /// already-registered room is harmless: <see cref="RoomRegistryStore.ReadDistinctByRoomAsync"/>
+    /// folds repeats down to the last write per room path.
+    /// <para>
+    /// This does <b>not</b> cover the separate <c>aer resume</c>/<c>decide</c>/<c>supply</c> mutation
+    /// verbs (<see cref="ResumeCommand"/> and friends) — those only ever act against a room <c>aer
+    /// run</c>/<c>dispatch</c> already created, never through this pump, so they never re-register. A
+    /// room whose very first registration attempt failed and is thereafter driven only through one of
+    /// those verbs stays unregistered until the next plain <c>aer run</c>/<c>dispatch</c> against it —
+    /// an accepted gap, not a claim this comment makes.
+    /// </para>
+    /// <para>
+    /// Never gates the run: the registry only adds <c>fleet_status</c> coverage, so a write failure
+    /// (an unwritable or momentarily locked registry file, or a lock-name collision) is reported on
+    /// stderr and swallowed rather than surfaced as a run failure.
+    /// </para>
+    /// </summary>
+    private static async Task RegisterRoomAsync(RunOptions options, CancellationToken cancellationToken)
+    {
+        var projectRoot = options.ProjectRootDirectory ?? Directory.GetCurrentDirectory();
+
+        try
+        {
+            await RoomRegistryStore.AppendAsync(
+                options.RoomDirectoryPath, projectRoot, AerPaths.RoomRegistryFile, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+        {
+            Console.Error.WriteLine(
+                $"Could not update the room registry at '{AerPaths.RoomRegistryFile}': {ex.Message}. "
+                + "fleet_status will still find this room via its normal directory scan.");
+        }
     }
 }

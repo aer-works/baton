@@ -15,6 +15,13 @@ namespace Aer.Mcp.Host;
 /// leveraging the terminal sentinel fast-path for terminal rooms and projecting active rooms from
 /// bound snapshots and Flow event logs. Returns a structured JSON array of per-room status.
 /// </summary>
+/// <remarks>
+/// spec/baton.md §8: the directory scan (<see cref="AerPaths.Rooms"/> plus caller-supplied
+/// <c>roots</c>) is unioned with <see cref="RoomRegistryStore"/>'s registrations, so a room
+/// dispatched into a project directory nobody passed as a <c>roots</c> entry is still found. The
+/// union only ever adds rooms — a stale or unreadable registry falls back to exactly what the scan
+/// alone would have returned, never fewer.
+/// </remarks>
 public sealed class FleetStatusTool : IMcpTool
 {
     private static readonly JsonSerializerOptions SerializerOptions = new()
@@ -89,6 +96,23 @@ public sealed class FleetStatusTool : IMcpTool
             }
         }
 
+        // spec/baton.md §8: the registry's project-root map, keyed the same way seenRooms/roomDir
+        // comparisons already are, so a room found by BOTH the directory scan below AND a registry
+        // entry (the common case — a room dispatched under the default AerPaths.Rooms location still
+        // gets registered) is decorated with its project, not just rooms the registry alone finds. A
+        // registry entry whose directory no longer exists is dropped here rather than surfacing as a
+        // phantom room or a spurious project label.
+        var registryEntries = await RoomRegistryStore.ReadDistinctByRoomAsync(AerPaths.RoomRegistryFile, cancellationToken)
+            .ConfigureAwait(false);
+        var projectByRoom = new Dictionary<string, string>(AerPaths.RecordKeyComparer);
+        foreach (var entry in registryEntries)
+        {
+            if (Directory.Exists(entry.RoomPath))
+            {
+                projectByRoom[entry.RoomPath] = entry.ProjectRoot;
+            }
+        }
+
         var seenRooms = new HashSet<string>(AerPaths.RecordKeyComparer);
         var results = new List<FleetRoomStatusView>();
 
@@ -117,14 +141,35 @@ public sealed class FleetStatusTool : IMcpTool
                 var roomStatus = await ProcessRoomAsync(roomDir, includeTerminal, cancellationToken).ConfigureAwait(false);
                 if (roomStatus is not null)
                 {
-                    results.Add(roomStatus);
+                    results.Add(DecorateWithProject(roomStatus, recordKey, projectByRoom));
                 }
+            }
+        }
+
+        // The registry's whole point (spec/baton.md §8): a room dispatched into a project directory never passed as
+        // a scan root above is still invisible to the loop that just ran — pick up whatever the
+        // registry names that the scan did not already cover.
+        foreach (var (roomPath, projectRoot) in projectByRoom)
+        {
+            if (!seenRooms.Add(roomPath))
+            {
+                continue;
+            }
+
+            var roomStatus = await ProcessRoomAsync(roomPath, includeTerminal, cancellationToken).ConfigureAwait(false);
+            if (roomStatus is not null)
+            {
+                results.Add(roomStatus with { Project = projectRoot });
             }
         }
 
         var json = JsonSerializer.Serialize(results, SerializerOptions);
         return new McpToolCallResult(json);
     }
+
+    private static FleetRoomStatusView DecorateWithProject(
+        FleetRoomStatusView roomStatus, string recordKey, IReadOnlyDictionary<string, string> projectByRoom) =>
+        projectByRoom.TryGetValue(recordKey, out var projectRoot) ? roomStatus with { Project = projectRoot } : roomStatus;
 
     private static async Task<FleetRoomStatusView?> ProcessRoomAsync(
         string roomDir, bool includeTerminal, CancellationToken cancellationToken)
@@ -246,6 +291,9 @@ public sealed class FleetStatusTool : IMcpTool
 public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("path")] string Path,
+    [property: JsonPropertyName("project")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Project = null,
     [property: JsonPropertyName("state")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? State = null,
