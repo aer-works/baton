@@ -65,7 +65,13 @@ public static class RoleDispatch
     /// this path; <see cref="WorkflowTemplateComposer"/> deliberately opts out (R5) — see its own call
     /// site for why.
     /// </param>
-    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null, bool autoProvisionWorktree = true)
+    /// <param name="timeoutOverride">
+    /// The <c>--timeout</c> escape hatch (#1442), independent of the role like <paramref
+    /// name="modelOverride"/>/<paramref name="effortOverride"/> — a role that legitimately needs longer
+    /// than its fixed tier timebox (an orchestrator coordinating sub-lanes, say) does not have to die
+    /// mid-flight. Null keeps <see cref="WorkerRole.Timeout"/>.
+    /// </param>
+    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null, bool autoProvisionWorktree = true, TimeSpan? timeoutOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -135,7 +141,7 @@ public static class RoleDispatch
             Adapter: adapter,
             Contract: contract,
             PromptTemplate: BuildPrompt(role, spec, outputs),
-            Timeout: role.Timeout,
+            Timeout: timeoutOverride ?? role.Timeout,
             Model: model,
             PermissionGrant: grant,
             WorkingDirectory: effectiveWorkDir,
@@ -158,13 +164,15 @@ public static class RoleDispatch
     /// </summary>
     public static (WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings) Materialize(
         WorkerRole role, string spec, string? adapterOverride = null, string? workingDirectory = null,
-        string? modelOverride = null, string? effortOverride = null, string? outputOverride = null)
+        string? modelOverride = null, string? effortOverride = null, string? outputOverride = null,
+        TimeSpan? timeoutOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
         var binding = ToBinding(
             role, spec, adapterOverride, workingDirectory: workingDirectory,
-            modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride);
+            modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride,
+            timeoutOverride: timeoutOverride);
 
         var stepOutputs = binding.Contract.ProducedOutputs.Select(o => o.Name).ToList();
 

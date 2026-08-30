@@ -59,6 +59,41 @@ public class DispatchOptionsParserTests
         Assert.Null(options.Model);
         Assert.Null(options.Effort);
         Assert.Null(options.WorkspaceDirectory);
+        Assert.Null(options.Timeout);
+    }
+
+    [Fact]
+    public void Parses_the_timeout_override_as_minutes()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--timeout", "90"]);
+        Assert.Equal(TimeSpan.FromMinutes(90), options.Timeout);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("nope")]
+    [InlineData("12.5")]
+    public void A_non_positive_or_unparseable_timeout_is_a_typed_argument_error(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--timeout", rawValue]));
+        Assert.Contains("--timeout", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_timeout_above_the_24h_ceiling_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--timeout", "1441"]));
+        Assert.Contains("ceiling", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_timeout_at_exactly_the_24h_ceiling_is_accepted()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--timeout", "1440"]);
+        Assert.Equal(TimeSpan.FromHours(24), options.Timeout);
     }
 
     [Fact]

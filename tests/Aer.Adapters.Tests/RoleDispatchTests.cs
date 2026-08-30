@@ -78,6 +78,17 @@ public class RoleDispatchTests
         Assert.Equal(Review.Effort, binding.Effort);
     }
 
+    /// <summary>#1442: --timeout is a fourth independent axis alongside adapter/model/effort.</summary>
+    [Fact]
+    public void A_timeout_override_wins_over_the_roles_own_catalog_timeout()
+    {
+        Assert.Equal(Review.Timeout, RoleDispatch.ToBinding(Review, "spec").Timeout);
+
+        var overridden = TimeSpan.FromMinutes(180);
+        Assert.Equal(overridden, RoleDispatch.ToBinding(Review, "spec", timeoutOverride: overridden).Timeout);
+        Assert.NotEqual(Review.Timeout, overridden);
+    }
+
     [Fact]
     public void The_adapter_defaults_to_the_roles_tier_but_an_override_wins()
     {

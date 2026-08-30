@@ -98,14 +98,19 @@ A harness invokes work two ways, both in `src/Aer.Cli/Program.cs`:
   [--echo-worker] [--wait]`** — runs an authored `WorkflowDefinition` to a terminal state or a pause
   (`src/Aer.Cli/RunOptionsParser.cs`).
 - **`aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
-  [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>]`** — the one-shot
-  form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in template
-  (`src/Aer.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
+  [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]`**
+  — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
+  template (`src/Aer.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
   directory under `AerPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
   second `aer dispatch review` reruns rather than resuming the first's terminal snapshot. Bindings are
   written into the room directory by `DispatchCommand.ExecuteAsync`
   (`src/Aer.Cli/DispatchCommand.cs`, via `WorkerBindingConfigWriter.SaveToFileAsync`) before
-  `RunCommand` is invoked underneath it.
+  `RunCommand` is invoked underneath it. `--timeout` (#1442) overrides the dispatched role's own
+  catalog timeout for just this dispatch, recorded into that same `bindings.json` (never
+  `workflow.json` — a worker's timeout has always been kept off the frozen `WorkflowDefinitionSnapshot`,
+  the M7 Phase 7 split `WorkerBindingConfigEntry`'s own doc states); role dispatch only, rejected for a
+  template. Values are whole minutes, rejected outright above a 24h ceiling (no interactive confirmation
+  exists for a non-interactive CLI) and merely flagged on stderr above 2h.
 
 A room's model is always pinned in `bindings.json` at dispatch time — there is no runtime model
 choice a harness makes mid-lane; §9 covers the bindings contract. `aer resume`, `aer decide`, `aer
@@ -116,7 +121,7 @@ cancel`, and `aer supply` continue an already-dispatched room; §5 covers `decid
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `aer run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait]` | `RunOptionsParser.cs` |
-| `dispatch` | `aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>]` | `DispatchOptionsParser.cs` |
+| `dispatch` | `aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]` | `DispatchOptionsParser.cs` |
 | `resume` | `aer resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `aer decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `supply` | `aer supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
