@@ -656,6 +656,12 @@ def main(argv: list[str]) -> int:
     if restored:
         print(f" -- restored decision records, not compared (#1431): {len(restored)} file(s)")
 
+    vendored = sorted(p for p in by_file if excluded_from_comparison(p) == "vendored-snapshot")
+    for p in vendored:
+        del by_file[p]
+    if vendored:
+        print(f" -- vendored snapshot files, not compared (#1458): {len(vendored)} file(s)")
+
     print(f"record-once: {len(by_file)} changed file(s) against {base}")
     if not by_file:
         # An empty population passing looks exactly like a real pass, which is the failure this
