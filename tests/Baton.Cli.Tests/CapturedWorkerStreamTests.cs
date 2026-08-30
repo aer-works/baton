@@ -6,9 +6,9 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Templates;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Templates;
 using Xunit;
 
 namespace Baton.Cli.Tests;

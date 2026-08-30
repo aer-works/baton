@@ -91,11 +91,11 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
         var output = Path.Combine(root, "execution_1");
 
         var relative = Assert.Throws<ArgumentException>(
-            () => Baton.Flow.Artifacts.ArtifactManager.BuildEnvironment([], "task2/artifacts/execution_1", root));
+            () => Baton.Artifacts.ArtifactManager.BuildEnvironment([], "task2/artifacts/execution_1", root));
         Assert.Contains("resolved by the worker process", relative.Message, StringComparison.Ordinal);
 
         Assert.Throws<ArgumentException>(
-            () => Baton.Flow.Artifacts.ArtifactManager.BuildEnvironment([], output, "task2/artifacts"));
+            () => Baton.Artifacts.ArtifactManager.BuildEnvironment([], output, "task2/artifacts"));
 
         // The drive-relative arm, and the reason the predicate is IsPathFullyQualified rather than
         // IsPathRooted: on Windows `IsPathRooted("C:task2")` is true while GetFullPath resolves it
@@ -104,12 +104,12 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
         if (OperatingSystem.IsWindows())
         {
             Assert.Throws<ArgumentException>(
-                () => Baton.Flow.Artifacts.ArtifactManager.BuildEnvironment([], "C:task2", root));
+                () => Baton.Artifacts.ArtifactManager.BuildEnvironment([], "C:task2", root));
         }
 
         // The control: the same call, both fully qualified, must still build — or the guard has
         // disabled the method and every assertion above it means nothing.
-        Assert.NotEmpty(Baton.Flow.Artifacts.ArtifactManager.BuildEnvironment([], output, root));
+        Assert.NotEmpty(Baton.Artifacts.ArtifactManager.BuildEnvironment([], output, root));
     }
 
     [Fact]

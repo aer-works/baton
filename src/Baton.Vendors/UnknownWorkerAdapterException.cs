@@ -1,4 +1,4 @@
-using Baton.Flow;
+using Baton;
 
 namespace Baton.Vendors;
 
@@ -6,7 +6,7 @@ namespace Baton.Vendors;
 /// Raised by <see cref="WorkerBindingResolver.Resolve"/> when a <see cref="WorkerBindingConfigEntry.Adapter"/>
 /// name has no corresponding entry in the supplied adapter registry — the config named an adapter
 /// that was never registered (e.g. a typo, or a vendor not yet built). Mirrors
-/// <c>Baton.Flow.Mutation.UnresolvedWorkerException</c>'s role one layer up, for worker roles with no
+/// <c>Baton.Mutation.UnresolvedWorkerException</c>'s role one layer up, for worker roles with no
 /// registered binding at all.
 /// </summary>
 public sealed class UnknownWorkerAdapterException : BatonFlowException

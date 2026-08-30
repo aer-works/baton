@@ -1,5 +1,5 @@
 using System.Text.Json;
-using Baton.Flow.Domain;
+using Baton.Domain;
 
 namespace Baton.Vendors;
 
@@ -9,7 +9,7 @@ namespace Baton.Vendors;
 /// <para>
 /// <b>File format convention:</b> a single JSON object keyed by worker role name, each value a
 /// <see cref="WorkerBindingConfigEntry"/> — deserialized through the same <see cref="JsonSerializer"/>
-/// defaults <c>Baton.Flow.Templates.WorkflowDefinitionParser</c> uses for templates (case-sensitive,
+/// defaults <c>Baton.Templates.WorkflowDefinitionParser</c> uses for templates (case-sensitive,
 /// PascalCase property names matching the record shapes exactly, no custom naming policy).
 /// </para>
 /// </summary>
@@ -18,7 +18,7 @@ public static class WorkerBindingConfigParser
     /// <summary>Parses a worker-binding config from a JSON string.</summary>
     /// <param name="json">The config document.</param>
     /// <param name="sourcePath">
-    /// Same contract as <see cref="Baton.Flow.Templates.WorkflowDefinitionParser.Parse"/>'s
+    /// Same contract as <see cref="Baton.Templates.WorkflowDefinitionParser.Parse"/>'s
     /// <c>sourcePath</c> (#562).
     /// </param>
     /// <exception cref="WorkerBindingConfigException">The JSON is malformed or empty.</exception>

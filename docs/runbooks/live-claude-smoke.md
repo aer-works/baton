@@ -49,7 +49,7 @@ The test passes when:
   and are non-blank.
 
 The test does not assert on the *content* Claude wrote (spec §4.1's contract is "the file exists",
-not "the file says X" — the same rule that keeps `Baton.Flow` from ever parsing worker output).
+not "the file says X" — the same rule that keeps `Baton` from ever parsing worker output).
 
 ## If it fails
 

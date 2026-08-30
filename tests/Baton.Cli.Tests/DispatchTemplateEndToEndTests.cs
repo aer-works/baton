@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
-using Baton.Flow.Domain;
+using Baton.Domain;
 
 namespace Baton.Cli.Tests;
 
@@ -59,7 +59,7 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
             // A minimal conforming ReviewVerdict (decision 0043: the engine checks only that it PARSES
             // as one — ReviewedRef required, empty Findings valid). Written with a real file API and
             // copied into place by the fake, so no JSON is assembled through a shell echo. The canonical
-            // schema is Baton.Flow.Domain.ReviewVerdict; this is the smallest document it accepts.
+            // schema is Baton.Domain.ReviewVerdict; this is the smallest document it accepts.
             var verdictFixture = Path.Combine(testRoot, "verdict-fixture.json");
             await File.WriteAllTextAsync(
                 verdictFixture, """{"reviewedRef":"HEAD","findings":[]}""", TestContext.Current.CancellationToken);

@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using Baton.Cli;
-using Baton.Flow.Domain;
-using Baton.Flow.Outcomes;
+using Baton.Domain;
+using Baton.Outcomes;
 
 namespace Baton.Cli.Tests;
 

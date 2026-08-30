@@ -19,14 +19,14 @@ namespace Baton.Architecture.Tests;
 /// </summary>
 public class ReferenceDirectionTests
 {
-    // Baton.Flow is the pure engine (CLAUDE.md rule 2: the core layer understands only the single,
+    // Baton is the pure engine (CLAUDE.md rule 2: the core layer understands only the single,
     // unified canonical protocol). It may depend on the aer-core binding and the framework — never on
     // a vendor adapter, a client, or the daemon. This is the load-bearing invariant #335 rides: the
     // engine needs no changes for multi-task precisely because nothing above it reaches back in.
     [Fact]
     public void Baton_Flow_depends_on_nothing_above_the_engine()
         => AssertNoForbiddenReferences(
-            project: "Baton.Flow",
+            project: "Baton",
             forbiddenProjects: ["Baton.Vendors", "Baton.Daemon", "Baton.Cli"],
             forbiddenPackagePrefixes: ["Avalonia", "Microsoft.AspNetCore"]);
 

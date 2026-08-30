@@ -55,7 +55,7 @@ What Baton is **not**, stated as exclusions (§10 expands each):
 ## §2 The dispatch unit
 
 A **room** is one working directory: `~/.baton/rooms/<room>/` (`BatonPaths.Rooms`,
-`src/Baton.Flow/Status/BatonPaths.cs`). One directory may contain several repositories; the room does
+`src/Baton/Status/BatonPaths.cs`). One directory may contain several repositories; the room does
 not know or care.
 
 A room holds, at minimum: `room.json` (the room-kind marker — `BatonPaths.RoomMetadataFileName`,
@@ -68,9 +68,9 @@ snapshot" and reports it as an error entry rather than a state (`src/Baton.Mcp.H
 **There are two independent event logs, not one, and this spec states both honestly.**
 `flow.jsonl` is the workflow ledger — steps, executions, decisions — and everything in §3–§9 below
 reads and writes only this one. A **second** ledger, `room.jsonl`, exists in the same engine
-(`src/Baton.Flow/Domain/RoomEvent.cs`, `src/Baton.Flow/Store/RoomEventLogReader.cs`,
-`RoomEventLogWriter.cs`, `src/Baton.Flow/Projection/RoomProjector.cs`,
-`src/Baton.Flow/Mutation/RoomMutationInterface.cs`) and its full event vocabulary is: held-work
+(`src/Baton/Domain/RoomEvent.cs`, `src/Baton/Store/RoomEventLogReader.cs`,
+`RoomEventLogWriter.cs`, `src/Baton/Projection/RoomProjector.cs`,
+`src/Baton/Mutation/RoomMutationInterface.cs`) and its full event vocabulary is: held-work
 dispatch/escalation/resolution, grant record/amend/revoke, ask-time escalation, turn-host dormancy
 entered/cleared, mid-turn permission ask/answer/revoke, standing-permission revocation, the
 workflow on/off switch, worker join/rename, and orchestrator (re)assignment
@@ -86,7 +86,7 @@ served. I checked: neither `src/Baton.Cli` nor `src/Baton.Mcp.Host` reference
 `RoomMutationInterface`, `RoomEventLogReader`, or `RoomEventLogWriter` anywhere — the harness-facing
 surface this spec describes has never touched `room.jsonl`, and `fleet_status` reads only the
 terminal sentinel, `snapshot.json`, and `flow.jsonl`
-(`FleetStatusTool.cs`) — never `room.jsonl`. Its type definitions stay in `Baton.Flow` because
+(`FleetStatusTool.cs`) — never `room.jsonl`. Its type definitions stay in `Baton` because
 Architecture Rule 1 keeps the journal engine-owned regardless of who reads it, and deleting dead
 infrastructure is a separate cleanup this document does not scope — but a harness author should read
 `room.jsonl` as **inert**: nothing in the dispatch/decide/status/fleet_status surface this spec
@@ -181,12 +181,12 @@ against).
 `terminal.json` is written into a room directory the moment its workflow reaches a terminal state —
 the completion signal a harness should watch instead of polling `baton status` prose or racing the
 `baton run`/`baton dispatch` process's own exit
-(`src/Baton.Flow/Status/TerminalSentinelWriter.cs`). It is written **last** — after every output an
+(`src/Baton/Status/TerminalSentinelWriter.cs`). It is written **last** — after every output an
 outcome could reference already exists on disk — via a temp-file-then-atomic-move sequence, so a
 file-watching harness never observes a partial write (`TerminalSentinelWriter.cs`). It is the
 identical shape `baton status --json` prints (`WorkflowStatusView`), so a file-watcher and a polling
 `status --json` caller read one contract for that pair specifically
-(`src/Baton.Flow/Status/WorkflowStatusView.cs`) — `fleet_status` is a **third, related** shape;
+(`src/Baton/Status/WorkflowStatusView.cs`) — `fleet_status` is a **third, related** shape;
 see §6.
 
 **Its absence does not always mean "not terminal yet."** Two exceptions, both real:
@@ -286,7 +286,7 @@ where `ExecutionUsageView` is
 ```
 { "wallClockMs": number, "tokensIn"?: number, "tokensOut"?: number, "turns"?: number }
 ```
-(`WorkflowStatusView.cs`, `src/Baton.Flow/Status/ExecutionUsageView.cs`). `wallClockMs` is
+(`WorkflowStatusView.cs`, `src/Baton/Status/ExecutionUsageView.cs`). `wallClockMs` is
 always present when the object is present at all — derived from recorded start/exit timestamps; the
 token/turn fields are independently omitted (never `null`, never fabricated as zero) when the
 vendor's captured stdout carried no such figure.
@@ -318,7 +318,7 @@ matters, is `steps[].state == "Rejected"` — already a token distinct from `"Fa
 
 ## §4 Workers and vendor adapters
 
-Vendor-specific behavior is isolated inside `Baton.Vendors`; `Baton.Flow` understands only a single
+Vendor-specific behavior is isolated inside `Baton.Vendors`; `Baton` understands only a single
 canonical message protocol. Adapters live behind `IWorkerAdapter`, resolved via
 `WorkerAdapterRegistry.Default` (`src/Baton.Vendors/WorkerAdapterRegistry.cs`) — the registry is the
 authority on what is registered; this document deliberately does not count them. The two production
@@ -357,7 +357,7 @@ granted in `bindings.json` before `baton run`/`baton dispatch` is called (§9). 
 **A worker that hits a capability it was not pre-cleared for is denied, fail-closed, by the
 `PreToolUse`/`agy-hook-check` enforcement in §9** — the same mechanism that already exists for every
 other denial, not a new one. The denial surfaces legibly: `FailureClassification.ToolDenied`
-(`src/Baton.Flow/Domain/FailureClassification.cs`, one of the enum's four values — see §7 for the
+(`src/Baton/Domain/FailureClassification.cs`, one of the enum's four values — see §7 for the
 other three) is the vocabulary a harness reads off the failed step in `terminal.json`. A harness that
 sees `ToolDenied` re-dispatches — with a widened grant in a fresh `bindings.json`, or a narrowed task
 that does not need the capability. That is the whole of the recovery path; there is no live channel to
@@ -494,7 +494,7 @@ than silently dropping out with the rest of the deleted daemon surface:
 
 - **`RoomRetentionSweep`** (`Program.cs`, a hosted service) — it prunes execution directories, and
   `ExecutionUsageProjector` has an explicit pruned-path fallback specifically because the sweep moves
-  them (`src/Baton.Flow/Status/ExecutionUsageView.cs`). It is engine-adjacent housekeeping, not a UI
+  them (`src/Baton/Status/ExecutionUsageView.cs`). It is engine-adjacent housekeeping, not a UI
   concern, and belongs in the narrowed daemon's kept surface alongside the room-watcher.
 - **Fleet-wide concurrency caps** — `DaemonSettingsStore` (`src/Baton.Vendors/DaemonSettingsStore.cs`,
   reading/writing `BatonPaths.SettingsFile`, i.e. `{Root}/settings.json`) plus `ConcurrencySlotGate.SetCaps`,
@@ -515,11 +515,11 @@ implementation, a runway projection, or push delivery for quota anywhere in `src
 is genuinely **(new build)**.
 
 What is **not** new build, and must not be re-derived: `FailureClassification`
-(`src/Baton.Flow/Domain/FailureClassification.cs`) has **four** values —
+(`src/Baton/Domain/FailureClassification.cs`) has **four** values —
 `Retryable, Permanent, ExhaustedUntil, ToolDenied` — not two. `ExhaustedUntil` is load-bearing
-throughout the scheduler, not a stub: it appears across `Baton.Flow/Scheduling/RetryEngine.cs`,
-`Baton.Flow/Mutation/MutationInterface.cs`, `Baton.Flow/Outcomes/OutcomeClassifier.cs`,
-`Baton.Flow/Status/WorkflowOutcome.cs`, and both adapters. Concretely, `AgyWorkerAdapter` already parses
+throughout the scheduler, not a stub: it appears across `Baton/Scheduling/RetryEngine.cs`,
+`Baton/Mutation/MutationInterface.cs`, `Baton/Outcomes/OutcomeClassifier.cs`,
+`Baton/Status/WorkflowOutcome.cs`, and both adapters. Concretely, `AgyWorkerAdapter` already parses
 a vendor-reported reset time into an `ExhaustedUntil` classification and a `retryNotBefore` instant
 (`src/Baton.Vendors/AgyWorkerAdapter.cs`). So: the classification vocabulary, the retry/
 dependency handling built on top of it, and at least one adapter's refusal-message parse into
@@ -554,7 +554,7 @@ under whichever roots I was told about." A harness that dispatches into a fresh 
 operator never passed as a `roots` entry was invisible to `fleet_status` until someone remembered to
 add it. The registry closes *that* gap.
 
-**The mechanism.** `RoomRegistryStore` (`src/Baton.Flow/Status/RoomRegistryStore.cs`, namespace
+**The mechanism.** `RoomRegistryStore` (`src/Baton/Status/RoomRegistryStore.cs`, namespace
 `Baton.Vendors` for the same reason `BatonPaths` lives there — `fleet_status` reads it with no
 `Baton.Vendors` project reference) reads and writes `BatonPaths.RoomRegistryFile`
 (`{BATON_HOME}/room-registry.jsonl`), one JSON line per registration: room directory path, project root,
@@ -829,7 +829,7 @@ git history is the archive; "ARCHIVE" as a distinct ruling applied to nothing an
 
 | Project / verb | Ruling | Note |
 |---|---|---|
-| `Baton.Flow` | **KEEP** | Engine core; vendor/UI-agnostic; untouched by this reset except that `room.jsonl`'s machinery (§2, §5) is now dead code from the harness surface's perspective — kept in place, not exercised. |
+| `Baton` | **KEEP** | Engine core; vendor/UI-agnostic; untouched by this reset except that `room.jsonl`'s machinery (§2, §5) is now dead code from the harness surface's perspective — kept in place, not exercised. |
 | `Baton.Vendors` (incl. `BuiltInWorkflowTemplates`) | **KEEP** | The cross-vendor seam; the template catalog narrows to built-in only. |
 | `Baton.Cli` | **KEEP**, verb set narrows | `run`/`dispatch`/`decide`/`cancel`/`supply`/`resume`/`status` stay; `templates` narrows to the built-in catalog. |
 | `Baton.Mcp` / `Baton.Mcp.Host` | **KEEP**, grows | `fleet_status` is the anchor and gains the §6 drill-down levels; `YieldTool`, `MemoryProposalTool` stay, orthogonal to this reset. `PermissionGateTool` and `PermissionReturnShape` — the ask machinery — are **DELETED** (#1417, §5); confirmed `PermissionReturnShape` had no other consumer in the tree. |
@@ -839,7 +839,7 @@ git history is the archive; "ARCHIVE" as a distinct ruling applied to nothing an
 | `Baton.Mobile` | **DELETED** (#1407) | No harness-driven use case; deleted along with its dedicated build machinery (CI job, pixi tasks, scripts) rather than left archived. |
 | `Baton.Sidecar` | **DELETED** — done (#1420) | The tracked Go module and `Baton.Daemon.csproj`'s optional binary copy step both went. Remote dispatch is closed, orchestrator-only (§10); no resurrection case remains. (An earlier draft claimed the project was absent from the tree; corrected — it existed and was deleted deliberately.) |
 | `Baton.Workers.Dialogue` | **DELETED** (#1408) | Vendor-neutral multi-model machinery that served the retired interactive/chat product; no harness-facing use case survives this reset. |
-| `Baton.Flow.CrashTestHost`, `Baton.Architecture.Tests` | **KEEP** | The gate mechanisms stay untouched. |
+| `Baton.CrashTestHost`, `Baton.Architecture.Tests` | **KEEP** | The gate mechanisms stay untouched. |
 | `Baton.Journeys.Tests`, `Baton.Plan.Tests` | **DELETED** (by this spec's own landing PR) | Both existed solely to cross-check `docs/plan.md` and `spec/journeys.md`, deleted with them; harness-facing journeys are future work that brings its own checks when it exists. |
 | `docs/design/*` | **DELETE** | Per §11 — not archived, deleted. Its methodology (settle definition before screens) is worth reusing as a technique; its content does not survive and there is nowhere left for it to live. |
 
@@ -860,7 +860,7 @@ reach:
 - **The room registry's (§8) registration mechanism**, and whether it shares an implementation with
   the quota ledger (§7) or is fully separate. Both are named as parallel new-build items with no
   stated relationship; I treated them as independent.
-- **Whether `Baton.Flow`/`Baton.Vendors` have silently accreted a human-watching assumption anywhere
+- **Whether `Baton`/`Baton.Vendors` have silently accreted a human-watching assumption anywhere
   outside the paths this document cites directly** (terminal sentinel, status projection, hook
   enforcement, `FailureClassification`, `PermissionGrant`). I did not do a full pass of scheduling
   code; `Baton.Architecture.Tests` is the stated defense and I did not verify its actual coverage.

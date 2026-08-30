@@ -1,9 +1,9 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Vendors;
 

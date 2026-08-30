@@ -1,7 +1,7 @@
 using Baton.Vendors;
 using Baton.Daemon;
-using Baton.Flow.Concurrency;
-using Baton.Flow.Status;
+using Baton.Concurrency;
+using Baton.Status;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
@@ -16,7 +16,7 @@ namespace Baton.Daemon.Tests;
 /// <c>~/.baton</c>, and resets <see cref="ConcurrencySlotGate"/>'s process-static caps to their documented
 /// defaults before every test the same way <c>ConcurrencySlotGateTests</c> resets full state, since
 /// xunit runs one class's methods sequentially by default (one collection per class) -- what makes that
-/// safe here too. This project has no <c>InternalsVisibleTo</c> grant from Baton.Flow, so it goes through
+/// safe here too. This project has no <c>InternalsVisibleTo</c> grant from Baton, so it goes through
 /// the public <see cref="ConcurrencySlotGate.SetCaps"/> rather than that type's test-only internal reset;
 /// these tests never call <c>AcquireAsync</c>, so only the two cap values need resetting.
 /// </summary>

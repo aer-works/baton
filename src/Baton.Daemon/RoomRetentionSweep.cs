@@ -1,7 +1,7 @@
 using Baton.Vendors;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Projection;
-using Baton.Flow.Status;
+using Baton.Artifacts;
+using Baton.Projection;
+using Baton.Status;
 using Microsoft.Extensions.Hosting;
 
 namespace Baton.Daemon;

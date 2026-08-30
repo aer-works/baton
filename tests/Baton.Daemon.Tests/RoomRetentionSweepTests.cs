@@ -1,9 +1,9 @@
 using Baton.Daemon;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Concurrency;
-using Baton.Flow.Domain;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
+using Baton.Artifacts;
+using Baton.Concurrency;
+using Baton.Domain;
+using Baton.Store;
+using Baton.Templates;
 using Xunit;
 
 namespace Baton.Daemon.Tests;

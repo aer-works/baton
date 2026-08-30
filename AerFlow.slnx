@@ -3,7 +3,7 @@
     <Project Path="src/Baton.Vendors/Baton.Vendors.csproj" />
     <Project Path="src/Baton.Cli/Baton.Cli.csproj" />
     <Project Path="src/Baton.Daemon/Baton.Daemon.csproj" />
-    <Project Path="src/Baton.Flow/Baton.Flow.csproj" />
+    <Project Path="src/Baton/Baton.csproj" />
     <Project Path="src/Baton.Mcp/Baton.Mcp.csproj" />
     <Project Path="src/Baton.Mcp.Host/Baton.Mcp.Host.csproj" />
   </Folder>
@@ -16,8 +16,8 @@
     <Project Path="tests/Baton.Architecture.Tests/Baton.Architecture.Tests.csproj" />
     <Project Path="tests/Baton.Cli.Tests/Baton.Cli.Tests.csproj" />
     <Project Path="tests/Baton.Daemon.Tests/Baton.Daemon.Tests.csproj" />
-    <Project Path="tests/Baton.Flow.CrashTestHost/Baton.Flow.CrashTestHost.csproj" />
-    <Project Path="tests/Baton.Flow.Tests/Baton.Flow.Tests.csproj" />
+    <Project Path="tests/Baton.CrashTestHost/Baton.CrashTestHost.csproj" />
+    <Project Path="tests/Baton.Tests/Baton.Tests.csproj" />
     <Project Path="tests/Baton.Mcp.Tests/Baton.Mcp.Tests.csproj" />
     <Project Path="tests/Aer.VendorProbe.Tests/Aer.VendorProbe.Tests.csproj" />
   </Folder>

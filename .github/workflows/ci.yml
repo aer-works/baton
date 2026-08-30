@@ -97,7 +97,7 @@ jobs:
           cache: false
 
       # Caches NuGet restore keyed off every packages.lock.json in the repo (the xunit test
-      # projects — Baton.Flow.Tests, Baton.Vendors.Tests — are the only ones with real
+      # projects — Baton.Tests, Baton.Vendors.Tests — are the only ones with real
       # PackageReferences). cache-dependency-path must be explicit: cache: true alone only looks
       # for a lock file at the repo root, not recursively.
       - uses: actions/setup-dotnet@v4
@@ -131,7 +131,7 @@ jobs:
       # C:\ and D:\ whole-drive, so realtime is almost certainly irrelevant to these files — this
       # confirms it) plus a snapshot of the scan-capable services. The transient handle itself is
       # already gone by the time this post-hoc step runs, which is exactly why the in-process holder
-      # name now rides in FlowJournalHeldException's message (src/Baton.Flow/Store/FileHolderProbe.cs);
+      # name now rides in FlowJournalHeldException's message (src/Baton/Store/FileHolderProbe.cs);
       # this step is the environmental context around that. Never fails the job.
       - name: Capture file-lock diagnostics on failure (Windows)
         if: ${{ failure() && runner.os == 'Windows' }}

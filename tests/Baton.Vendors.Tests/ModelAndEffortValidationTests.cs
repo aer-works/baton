@@ -1,6 +1,6 @@
 using System.Linq;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
+using Baton.Dispatch;
+using Baton.Domain;
 
 namespace Baton.Vendors.Tests;
 

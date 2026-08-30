@@ -1,14 +1,14 @@
-using Baton.Flow.Domain;
-using Baton.Flow.Mutation;
+using Baton.Domain;
+using Baton.Mutation;
 
 namespace Baton.Vendors;
 
 /// <summary>
-/// Turns a parsed worker-binding config into the <c>Baton.Flow.Mutation.WorkerBinding</c> dictionary
+/// Turns a parsed worker-binding config into the <c>Baton.Mutation.WorkerBinding</c> dictionary
 /// <c>MutationInterface.StartWorkflowAsync</c> needs — the "adapter resolution into WorkerBinding"
-/// M11 Phase 1 names, kept out of <c>Baton.Flow</c> entirely per CLAUDE.md's Adapter Isolation rule.
+/// M11 Phase 1 names, kept out of <c>Baton</c> entirely per CLAUDE.md's Adapter Isolation rule.
 /// Every entry resolves to <see cref="WorkerBinding.Process"/>: a worker-binding config describes
-/// a real vendor invocation, never a non-process party (<c>Baton.Flow.Mutation.WorkerBinding.NonProcess</c>)
+/// a real vendor invocation, never a non-process party (<c>Baton.Mutation.WorkerBinding.NonProcess</c>)
 /// — those are constructed directly by whatever caller needs one, same as before this
 /// seam existed.
 /// </summary>
@@ -36,7 +36,7 @@ public static class WorkerBindingResolver
     /// called with the worker's name and each raw stdout line as its dispatch runs live. Null (the
     /// default) for every caller that has no live consumer for that — <c>baton run</c>/<c>baton decide</c>
     /// from the CLI, any non-interactive workflow — since capturing output at all has a real cost
-    /// (<see cref="Baton.Flow.Dispatch.CoreDispatcher"/> only turns on stdout capture when
+    /// (<see cref="Baton.Dispatch.CoreDispatcher"/> only turns on stdout capture when
     /// <c>OnStdoutLine</c> is non-null). What this callback actually does with a line — parse it,
     /// broadcast it — is entirely the caller's concern; this seam only ever forwards raw text.
     /// </param>

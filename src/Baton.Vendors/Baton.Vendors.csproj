@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\Baton.Flow\Baton.Flow.csproj" />
+    <ProjectReference Include="..\Baton\Baton.csproj" />
 
     <!-- #667: AtomicLaunchConfigWriter is internal and had no direct tests, so its drift-correction
          behaviour could only be reached through ClaudeWorkerAdapter.Resolve. That meant a test had

@@ -1,5 +1,5 @@
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
+using Baton.Dispatch;
+using Baton.Domain;
 
 namespace Baton.Vendors;
 
@@ -60,13 +60,13 @@ public sealed record WorkerProgressEvent(string Kind, string Text, bool IsPartia
 /// <see cref="CoreDispatchTarget"/> — the seam CLAUDE.md's Adapter Isolation rule requires. Every
 /// vendor quirk (flag vocabulary, cwd handling, stdin redirection, shell-wrapping to reference
 /// <c>BATON_INPUT_&lt;n&gt;</c>/<c>BATON_OUTPUT_DIR</c>) lives behind an implementation of this
-/// interface; <c>Baton.Flow</c> never learns a vendor exists.
+/// interface; <c>Baton</c> never learns a vendor exists.
 /// </summary>
-public interface IWorkerAdapter : Baton.Flow.Outcomes.IFailureClassifier, Baton.Flow.Status.IWorkerUsageParser
+public interface IWorkerAdapter : Baton.Outcomes.IFailureClassifier, Baton.Status.IWorkerUsageParser
 {
     /// <summary>
     /// Resolves <paramref name="invocation"/> and <paramref name="contract"/> into the concrete
-    /// command <c>Baton.Flow.Dispatch.CoreDispatcher</c> spawns. Called once per worker-binding config
+    /// command <c>Baton.Dispatch.CoreDispatcher</c> spawns. Called once per worker-binding config
     /// entry, not per execution — see <see cref="WorkerInvocation"/>'s remarks for why the result
     /// must not embed a resolved, execution-specific file path.
     /// </summary>
@@ -110,7 +110,7 @@ public interface IWorkerAdapter : Baton.Flow.Outcomes.IFailureClassifier, Baton.
     /// answers it in its own vendor's terms, which is what Adapter Isolation requires here. The
     /// mechanisms do not resemble each other: on Claude the write tools stay pre-approved on
     /// <c>--allowedTools</c> and AER's <c>PreToolUse</c> hook confines them to the outbox; <c>agy</c>
-    /// answers no for the reason recorded in #670. <c>Baton.Flow</c> learns neither mechanism — it learns
+    /// answers no for the reason recorded in #670. <c>Baton</c> learns neither mechanism — it learns
     /// only whether a declared output is reachable.
     /// </para>
     /// <para>

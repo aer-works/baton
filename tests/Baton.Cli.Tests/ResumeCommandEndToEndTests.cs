@@ -2,9 +2,9 @@ using System.Diagnostics;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
-using Baton.Flow.Templates;
+using Baton.Domain;
+using Baton.Status;
+using Baton.Templates;
 
 namespace Baton.Cli.Tests;
 
@@ -54,7 +54,7 @@ public class ResumeCommandEndToEndTests
 
             // The ledger shows both executions -- the issue's own acceptance wording -- via the same
             // status --json shape #1356 already renders every other execution fact through.
-            var logEntries = await new Baton.Flow.Store.FlowEventLogReader(Path.Combine(roomDirectory, "flow.jsonl"))
+            var logEntries = await new Baton.Store.FlowEventLogReader(Path.Combine(roomDirectory, "flow.jsonl"))
                 .ReadAllEntriesWithTimestampsAsync(TestContext.Current.CancellationToken);
             var view = WorkflowStatusProjector.Project(resumeResult.State, resumeResult.Snapshot, roomDirectory, logEntries);
             var stepView = view.Steps.Single();
@@ -68,7 +68,7 @@ public class ResumeCommandEndToEndTests
             // (ExecutionUsageProjector's own map, keyed by the two known execution ids) rather than
             // only asserted non-negative -- inverting WorkflowStatusProjector's field mapping (using
             // LatestExecutionId for both Usage and LinkedFromUsage) fails this.
-            var artifactsRootPath = Path.Combine(roomDirectory, Baton.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName);
+            var artifactsRootPath = Path.Combine(roomDirectory, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
             var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
                 logEntries, artifactsRootPath, WorkerAdapterRegistry.Default, roomDirectory);
 

@@ -1,7 +1,7 @@
 using System.Linq;
 using System.Text.Json;
 using Baton.Vendors;
-using Baton.Flow.Domain;
+using Baton.Domain;
 using Xunit;
 
 namespace Baton.Vendors.Tests;

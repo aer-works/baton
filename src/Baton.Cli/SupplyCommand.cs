@@ -1,11 +1,11 @@
 using Baton.Vendors;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Mutation;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
-using Baton.Flow.Workspaces;
+using Baton.Artifacts;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Mutation;
+using Baton.Store;
+using Baton.Templates;
+using Baton.Workspaces;
 
 namespace Baton.Cli;
 
@@ -13,8 +13,8 @@ namespace Baton.Cli;
 /// <c>baton supply</c> (M12 Phase 3): the CLI surface for the supplementary artifact — the one
 /// mutation-interface entry point (<see cref="MutationInterface.RecordSupplementaryExecutionAsync"/>)
 /// no CLI command reached before this phase. Per M11's decision of record that worker-binding
-/// config entries only ever resolve to <see cref="Baton.Flow.Mutation.WorkerBinding.Process"/>, the
-/// <see cref="Baton.Flow.Mutation.WorkerBinding.NonProcess"/> binding this command dispatches under is
+/// config entries only ever resolve to <see cref="Baton.Mutation.WorkerBinding.Process"/>, the
+/// <see cref="Baton.Mutation.WorkerBinding.NonProcess"/> binding this command dispatches under is
 /// constructed directly here, from <see cref="SupplyOptions.OutputName"/> — not looked up in the
 /// bindings file. Minting alone does not drive the pump (nothing about minting changes
 /// readiness), so this command populates the assigned output immediately from
@@ -42,11 +42,11 @@ public static class SupplyCommand
     /// only when the resume pump first looks that worker up (<see cref="WorkerBindingResolver.ResolveLazily"/>, #662).
     /// </exception>
     /// <exception cref="CliArgumentException"><see cref="SupplyOptions.SourceFilePath"/> does not exist.</exception>
-    /// <exception cref="Baton.Flow.Concurrency.WorkflowLockedException">
+    /// <exception cref="Baton.Concurrency.WorkflowLockedException">
     /// record-once-ok: #443 src/Baton.Cli/RunCommand.cs
     /// Another Flow instance already holds this room directory's lock.
     /// </exception>
-    /// <exception cref="Baton.Flow.Store.FlowJournalHeldException">
+    /// <exception cref="Baton.Store.FlowJournalHeldException">
     /// Same journal-held refusal as <see cref="DecideCommand"/> (#816); see that exception's own docs.
     /// </exception>
     public static async Task<SupplyResult> ExecuteAsync(

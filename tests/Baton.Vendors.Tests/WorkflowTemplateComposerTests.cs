@@ -1,6 +1,6 @@
 using Baton.Vendors;
-using Baton.Flow.Domain;
-using Baton.Flow.Templates;
+using Baton.Domain;
+using Baton.Templates;
 using Xunit;
 
 namespace Baton.Vendors.Tests;

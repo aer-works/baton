@@ -13,7 +13,7 @@ namespace Baton.Mcp.Host;
 /// <b>This tool never writes <c>memory/</c>.</b> Decision 0044 owns the rule (its point 3:
 /// memory changes only by decision; this tool merely proposes). A call here only
 /// captures the proposed edit to disk for a later escalation step (<c>MemoryProposalEscalation</c>,
-/// <c>Baton.Flow</c>) to turn into room-journal held work an operator decides on.
+/// <c>Baton</c>) to turn into room-journal held work an operator decides on.
 /// </para>
 /// <para>
 /// Unlike <see cref="YieldTool"/>'s single capture file, a worker may propose more than one edit in a
@@ -27,8 +27,8 @@ public sealed class MemoryProposalTool(string captureDirectoryPath) : IMcpTool
     /// The subdirectory name this tool's captures land under, relative to the execution's own
     /// <c>BATON_OUTPUT_DIR</c> (#833). <c>Baton.Mcp.Host/Program.cs</c> is the only production caller
     /// that combines this with an output directory; mirrored as a literal in
-    /// <see cref="Baton.Flow.Mutation.MemoryProposalEscalation"/>'s own constant of the same value
-    /// (<c>Baton.Flow</c> cannot reference this project) -- the two must agree, which
+    /// <see cref="Baton.Mutation.MemoryProposalEscalation"/>'s own constant of the same value
+    /// (<c>Baton</c> cannot reference this project) -- the two must agree, which
     /// <c>MemoryProposalCaptureDirectoryNameTests</c> asserts on both sides.
     /// </summary>
     public const string CaptureDirectoryName = "memory-proposals";

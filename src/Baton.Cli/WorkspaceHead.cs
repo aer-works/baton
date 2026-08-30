@@ -6,7 +6,7 @@ namespace Baton.Cli;
 /// <summary>
 /// Captures a git workspace's current HEAD commit — the base ref the capture worker (0047 §4) diffs
 /// against, taken at workflow start (the git-aware entrypoint, mirroring <c>dispatch.py</c>'s
-/// <c>head_before</c>). Kept in the CLI, not <c>Baton.Flow</c>: the engine stays git-agnostic, and the
+/// <c>head_before</c>). Kept in the CLI, not <c>Baton</c>: the engine stays git-agnostic, and the
 /// only other place that knows git is <c>Baton.Vendors.CaptureWorkerAdapter</c> (Adapter Isolation).
 /// </summary>
 internal static class WorkspaceHead

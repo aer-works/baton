@@ -2,10 +2,10 @@ using System.Diagnostics;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
-using Baton.Flow.Concurrency;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
-using Baton.Flow.Templates;
+using Baton.Concurrency;
+using Baton.Domain;
+using Baton.Status;
+using Baton.Templates;
 
 namespace Baton.Cli.Tests;
 

@@ -9,7 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Baton.Mcp\Baton.Mcp.csproj" />
-    <ProjectReference Include="..\Baton.Flow\Baton.Flow.csproj" />
+    <ProjectReference Include="..\Baton\Baton.csproj" />
   </ItemGroup>
 
 </Project>

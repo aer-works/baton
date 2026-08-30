@@ -1,12 +1,12 @@
 <Project>
 
   <!-- M13 Phase 2 (#108) set this up as the repo's single shared version; the release-please
-       linked-versions migration (the "core" group — Baton.Flow/Baton.Vendors/Baton.Cli — see
+       linked-versions migration (the "core" group — Baton/Baton.Vendors/Baton.Cli — see
        release-please-config.json) moved real, release-please-patched versioning onto each
        independently-shipped artifact's own local Directory.Build.props (Baton.Cli's, Baton.Daemon's —
        the latter versioned on its own since #1412 archived the desktop group it used to share with
        Baton.Ui/Baton.Ui.Core). This root Version is now just the static default every other project
-       (Baton.Flow, Baton.Vendors) inherits — none of them are independently packed/shipped, so nothing
+       (Baton, Baton.Vendors) inherits — none of them are independently packed/shipped, so nothing
        reads their own assembly version, and it no longer needs to move on its own. -->
   <PropertyGroup>
     <Version>0.14.0</Version>

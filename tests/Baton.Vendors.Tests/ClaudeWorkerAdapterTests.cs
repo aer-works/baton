@@ -1,8 +1,8 @@
 using System.Diagnostics;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Outcomes;
-using Baton.Flow.Status;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Outcomes;
+using Baton.Status;
 
 namespace Baton.Vendors.Tests;
 

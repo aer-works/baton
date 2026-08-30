@@ -1,7 +1,7 @@
 using System.Threading;
 using Baton.Vendors;
-using Baton.Flow.Concurrency;
-using Baton.Flow.Status;
+using Baton.Concurrency;
+using Baton.Status;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 

@@ -21,7 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Baton.Daemon\Baton.Daemon.csproj" />
-    <ProjectReference Include="..\..\src\Baton.Flow\Baton.Flow.csproj" />
+    <ProjectReference Include="..\..\src\Baton\Baton.csproj" />
   </ItemGroup>
 
 </Project>

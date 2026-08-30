@@ -172,7 +172,7 @@
       "baton.core": {
         "type": "Project"
       },
-      "baton.flow": {
+      "Baton.Engine.RestoreGraphName": {
         "type": "Project",
         "dependencies": {
           "Baton.Core": "[1.0.0, )"
@@ -184,7 +184,7 @@
       "baton.mcp.host": {
         "type": "Project",
         "dependencies": {
-          "Baton.Flow": "[0.14.0, )",
+          "Baton.Engine.RestoreGraphName": "[0.14.0, )",
           "Baton.Mcp": "[0.14.0, )"
         }
       }

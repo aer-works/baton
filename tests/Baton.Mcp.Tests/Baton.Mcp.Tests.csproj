@@ -22,7 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Baton.Mcp\Baton.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Baton.Mcp.Host\Baton.Mcp.Host.csproj" />
-    <ProjectReference Include="..\..\src\Baton.Flow\Baton.Flow.csproj" />
+    <ProjectReference Include="..\..\src\Baton\Baton.csproj" />
   </ItemGroup>
 
 </Project>

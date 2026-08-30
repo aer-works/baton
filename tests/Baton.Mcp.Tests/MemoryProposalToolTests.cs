@@ -235,7 +235,7 @@ public class MemoryProposalToolTests
         }
     }
 
-    /// <summary>Pins the literal (#833) -- see <see cref="MemoryProposalTool.CaptureDirectoryName"/>'s own doc comment for why this must agree with the Baton.Flow side.</summary>
+    /// <summary>Pins the literal (#833) -- see <see cref="MemoryProposalTool.CaptureDirectoryName"/>'s own doc comment for why this must agree with the Baton side.</summary>
     [Fact]
     public void CaptureDirectoryName_is_the_literal_mirrored_on_the_Baton_Flow_side()
     {

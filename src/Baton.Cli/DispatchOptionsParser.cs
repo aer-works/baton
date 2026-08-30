@@ -109,7 +109,7 @@ public static class DispatchOptionsParser
         if (roomDirectoryPath is null)
         {
             var uniqueName = $"dispatch-{name}-{Guid.NewGuid().ToString("N")[..8]}";
-            roomDirectoryPath = Path.Combine(Baton.Flow.Status.BatonPaths.Rooms, uniqueName);
+            roomDirectoryPath = Path.Combine(Baton.Status.BatonPaths.Rooms, uniqueName);
         }
 
         return new DispatchOptions(

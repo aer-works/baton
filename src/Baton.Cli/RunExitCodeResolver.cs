@@ -1,5 +1,5 @@
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
+using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Cli;
 
@@ -20,8 +20,8 @@ public enum RunExitCode
     Cancelled = 4,
 
     /// <summary>
-    /// #1374 F1: <see cref="Baton.Flow.Concurrency.WorkflowLockedException"/> or
-    /// <see cref="Baton.Flow.Store.FlowJournalHeldException"/> reached <c>Program</c>'s catch —
+    /// #1374 F1: <see cref="Baton.Concurrency.WorkflowLockedException"/> or
+    /// <see cref="Baton.Store.FlowJournalHeldException"/> reached <c>Program</c>'s catch —
     /// another Flow instance already holds this room. Distinct from <see cref="ValidationRefused"/>
     /// on purpose: this room may be perfectly healthy (a live pump, or a background sweep's brief
     /// lock), so nothing here is refused and no terminal sentinel is written. The caller's answer is

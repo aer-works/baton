@@ -1,5 +1,5 @@
 using Baton.Vendors.Tests.TestSupport;
-using Baton.Flow.Status;
+using Baton.Status;
 
 namespace Baton.Vendors.Tests;
 

@@ -1,9 +1,9 @@
 using Baton.Core;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Outcomes;
-using Baton.Flow.Store;
+using Baton.Artifacts;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Outcomes;
+using Baton.Store;
 using Baton.Tests.Shared;
 using System.Diagnostics;
 using Xunit;

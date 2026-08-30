@@ -2,9 +2,9 @@ using System.Diagnostics;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
-using Baton.Flow.Domain;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
+using Baton.Domain;
+using Baton.Store;
+using Baton.Templates;
 
 namespace Baton.Cli.Tests;
 

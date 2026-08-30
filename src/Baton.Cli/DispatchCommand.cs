@@ -1,8 +1,8 @@
 using System.Text.Json;
 using Baton.Vendors;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
-using Baton.Flow.Templates;
+using Baton.Domain;
+using Baton.Status;
+using Baton.Templates;
 
 namespace Baton.Cli;
 
@@ -107,7 +107,7 @@ public static class DispatchCommand
         }
         else
         {
-            var artifactsDirectory = Path.Combine(options.RoomDirectoryPath, Baton.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName);
+            var artifactsDirectory = Path.Combine(options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
             Console.Out.WriteLine($"Artifacts directory: {artifactsDirectory} (each execution's outputs land in its own subdirectory under it)");
         }
 
@@ -150,7 +150,7 @@ public static class DispatchCommand
         }
 
         var srcPath = Path.Combine(
-            options.RoomDirectoryPath, Baton.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName, $"execution_{execId}", primaryOutputName);
+            options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName, $"execution_{execId}", primaryOutputName);
         if (!File.Exists(srcPath))
         {
             return;
@@ -348,7 +348,7 @@ public static class DispatchCommand
     /// with nothing naming the cause. The other two checks catch a rename that collides with something
     /// already writing to the same execution output directory: the engine's own reserved namespace
     /// (<see cref="ReservedOutputNames"/>), its durable prompt capture
-    /// (<see cref="Baton.Flow.Artifacts.ArtifactManager.PromptFileName"/>), or another output the same
+    /// (<see cref="Baton.Artifacts.ArtifactManager.PromptFileName"/>), or another output the same
     /// role already declares.
     /// </summary>
     private static void ValidateOutputOverride(DispatchOptions options, WorkerRole role)
@@ -375,10 +375,10 @@ public static class DispatchCommand
                 retryInvocation);
         }
 
-        if (string.Equals(customName, Baton.Flow.Artifacts.ArtifactManager.PromptFileName, StringComparison.Ordinal))
+        if (string.Equals(customName, Baton.Artifacts.ArtifactManager.PromptFileName, StringComparison.Ordinal))
         {
             throw new CliArgumentException(
-                $"'--output {customName}' collides with '{Baton.Flow.Artifacts.ArtifactManager.PromptFileName}', "
+                $"'--output {customName}' collides with '{Baton.Artifacts.ArtifactManager.PromptFileName}', "
                 + "the durable prompt capture the engine writes into every execution's own output directory. "
                 + "Choose a different name.",
                 retryInvocation);

@@ -3,12 +3,12 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Baton.Vendors;
-using Baton.Flow;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
-using Baton.Flow.Store;
+using Baton;
+using Baton.Artifacts;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Status;
+using Baton.Store;
 using Baton.Mcp;
 
 namespace Baton.Mcp.Host;
@@ -279,7 +279,7 @@ public sealed class RoomDetailTool : IMcpTool
     /// Finds the most recently written <c>.stdout.log</c> under the room's <c>artifacts</c>
     /// directory — the execution currently or most recently in flight, which is "the lane" a caller
     /// debugging one room means. Falls back to <c>artifacts/pruned</c> (#973) the same way
-    /// <see cref="Baton.Flow.Status.ExecutionUsageView"/> does, so a retention-swept room still answers.
+    /// <see cref="Baton.Status.ExecutionUsageView"/> does, so a retention-swept room still answers.
     /// </summary>
     private static (string Source, string StdoutPath)? FindLatestStdoutFile(string roomDir)
     {
@@ -327,7 +327,7 @@ public sealed class RoomDetailTool : IMcpTool
 
     /// <summary>
     /// Resolves a caller-pinned execution id directly, the same fallback order
-    /// <see cref="Baton.Flow.Status.ExecutionUsageView"/> uses: the live output directory, then
+    /// <see cref="Baton.Status.ExecutionUsageView"/> uses: the live output directory, then
     /// <c>artifacts/pruned</c> for a retention-swept execution. Exists because
     /// <see cref="FindLatestStdoutFile"/>'s "newest write wins" heuristic disagrees with the caller
     /// whenever a retried step's later execution has written more recently than the one being

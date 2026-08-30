@@ -1,10 +1,10 @@
 using System.Reflection;
 using Baton.Vendors;
 using Baton.Cli;
-using Baton.Flow;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
-using Baton.Flow.Store;
+using Baton;
+using Baton.Domain;
+using Baton.Status;
+using Baton.Store;
 
 if (args.Length == 1 && args[0] == "--version")
 {
@@ -222,7 +222,7 @@ try
         ? 0
         : 1;
 }
-catch (BatonFlowException ex) when (ex is Baton.Flow.Concurrency.WorkflowLockedException or Baton.Flow.Store.FlowJournalHeldException)
+catch (BatonFlowException ex) when (ex is Baton.Concurrency.WorkflowLockedException or Baton.Store.FlowJournalHeldException)
 {
     // #1374 F1: this room is held by another Flow instance -- most often a live 'baton run' pump on
     // a perfectly healthy room, sometimes a background component's brief lock. Neither is a

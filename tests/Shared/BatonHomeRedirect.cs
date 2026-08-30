@@ -4,7 +4,7 @@ namespace Baton.Tests.Shared;
 
 /// <summary>
 /// Redirects AER's storage root (the <c>BATON_HOME</c> environment variable that
-/// <c>Baton.Flow.Status.BatonPaths.Root</c> reads) to a throwaway per-process temp directory <b>before any
+/// <c>Baton.Status.BatonPaths.Root</c> reads) to a throwaway per-process temp directory <b>before any
 /// test runs</b>, so no test in this assembly reads or writes the developer's — or the CI runner's —
 /// real <c>~/.baton</c>.
 /// </summary>

@@ -29,7 +29,7 @@ public class FileDeleteHygieneTests
         var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "Shared/FileCleanup.cs",
-            "Baton.Flow.Tests/CleanupHelpersTests.cs",
+            "Baton.Tests/CleanupHelpersTests.cs",
         };
 
         foreach (var filePath in Directory.EnumerateFiles(testsDir, "*.cs", SearchOption.AllDirectories))

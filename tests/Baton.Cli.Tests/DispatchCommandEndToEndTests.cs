@@ -1,7 +1,7 @@
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
+using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Cli.Tests;
 

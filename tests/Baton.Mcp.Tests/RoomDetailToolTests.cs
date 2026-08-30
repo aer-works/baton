@@ -1,11 +1,11 @@
 using System.Text;
 using System.Text.Json;
 using Baton.Vendors;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
-using Baton.Flow.Store;
+using Baton.Artifacts;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Status;
+using Baton.Store;
 using Baton.Mcp.Host;
 
 namespace Baton.Mcp.Tests;

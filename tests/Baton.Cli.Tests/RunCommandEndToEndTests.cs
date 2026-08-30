@@ -1,19 +1,19 @@
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
+using Baton.Domain;
+using Baton.Status;
+using Baton.Store;
+using Baton.Templates;
 
 namespace Baton.Cli.Tests;
 
 /// <summary>
 /// M11 Phase 3's completion gate: the project → resolve → dispatch → await loop
-/// <c>Baton.Flow.Tests.EndToEnd.WorkflowEndToEndTests</c> has exercised since M7, now reached through
+/// <c>Baton.Tests.EndToEnd.WorkflowEndToEndTests</c> has exercised since M7, now reached through
 /// <c>RunCommand.ExecuteAsync</c> — the exact call <c>Program.cs</c> makes — with a real
 /// <see cref="IWorkerAdapter"/> resolving a real worker-binding config file, not a
-/// <see cref="Baton.Flow.Mutation.WorkerBinding"/> constructed directly by the test. The shell-stub
+/// <see cref="Baton.Mutation.WorkerBinding"/> constructed directly by the test. The shell-stub
 /// adapter (<see cref="ShellCommandWorkerAdapter"/>) keeps every dispatch CI-safe while still
 /// going through the real aer-core M5 binding, same as <c>WorkflowEndToEndTests</c> itself.
 /// </summary>

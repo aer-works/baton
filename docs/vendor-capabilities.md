@@ -351,7 +351,7 @@ Two things the design assumed otherwise:
   - **The rejection datum was never about `--effort` at all. Resolved 2026-07-28.** A real dispatch
     had failed with `Error: invalid model selection (--model "gemini-3-pro" --effort "high"):
     --effort is not supported for model "gemini-3-pro"` — recorded in
-    [`OutcomeClassifierTests`](../tests/Baton.Flow.Tests/Outcomes/OutcomeClassifierTests.cs), which
+    [`OutcomeClassifierTests`](../tests/Baton.Tests/Outcomes/OutcomeClassifierTests.cs), which
     pins it as the stderr AER must surface. This page then read it as evidence that effort support is
     *per-model*, while flagging that reading as an inference and naming the control that would settle
     it: the same dispatch with `--effort` dropped.

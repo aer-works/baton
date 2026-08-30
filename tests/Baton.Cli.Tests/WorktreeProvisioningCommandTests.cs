@@ -2,11 +2,11 @@ using System.Diagnostics;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
-using Baton.Flow.Domain;
-using Baton.Flow.Mutation;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
-using Baton.Flow.Workspaces;
+using Baton.Domain;
+using Baton.Mutation;
+using Baton.Store;
+using Baton.Templates;
+using Baton.Workspaces;
 
 namespace Baton.Cli.Tests;
 
@@ -268,10 +268,10 @@ public class WorktreeProvisioningCommandTests
             var bindingsFilePath = await WriteWorktreeBindingsAsync(testRoot, repository, "main");
 
             Directory.CreateDirectory(roomDirectory);
-            using var heldByAnotherInstance = Baton.Flow.Concurrency.ConcurrencyGuard.Acquire(roomDirectory);
+            using var heldByAnotherInstance = Baton.Concurrency.ConcurrencyGuard.Acquire(roomDirectory);
 
             var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
-            await Assert.ThrowsAsync<Baton.Flow.Concurrency.WorkflowLockedException>(() =>
+            await Assert.ThrowsAsync<Baton.Concurrency.WorkflowLockedException>(() =>
                 RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken));
 
             var worktreePath = Path.Combine(roomDirectory, WorktreeWorkspaces.WorkspacesDirectoryName, "b");

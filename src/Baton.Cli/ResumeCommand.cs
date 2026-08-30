@@ -1,11 +1,11 @@
 using Baton.Vendors;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Mutation;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
-using Baton.Flow.Workspaces;
+using Baton.Artifacts;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Mutation;
+using Baton.Store;
+using Baton.Templates;
+using Baton.Workspaces;
 
 namespace Baton.Cli;
 
@@ -46,14 +46,14 @@ public static class ResumeCommand
     /// See that type's own doc for the closed set of state-based refusals this can mean (missing
     /// on-disk workspace included).
     /// </exception>
-    /// <exception cref="Baton.Flow.Workspaces.InvalidWorkspaceSpecException">
+    /// <exception cref="Baton.Workspaces.InvalidWorkspaceSpecException">
     /// A bad worktree spec, per <see cref="Baton.Vendors.WorktreeWorkspaces.Provision"/>'s documented
     /// checks.
     /// </exception>
-    /// <exception cref="Baton.Flow.Concurrency.WorkflowLockedException">
+    /// <exception cref="Baton.Concurrency.WorkflowLockedException">
     /// Another Flow instance already holds this room directory's lock.
     /// </exception>
-    /// <exception cref="Baton.Flow.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
+    /// <exception cref="Baton.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
     public static async Task<CommandResult> ExecuteAsync(
         ResumeOptions options,
         IReadOnlyDictionary<string, IWorkerAdapter> adapters,

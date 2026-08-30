@@ -9,7 +9,7 @@
        throwaway per-process temp root before any test runs (see Shared/BatonHomeRedirect.cs). Linked,
        not project-referenced, so it carries no dependency and compiles into each test assembly on its
        own. The initializer no-ops when BATON_HOME is already set, so linking it into helper hosts that
-       run as spawned children (Baton.Flow.CrashTestHost) is safe — they inherit the parent's root. -->
+       run as spawned children (Baton.CrashTestHost) is safe — they inherit the parent's root. -->
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)Shared\BatonHomeRedirect.cs" Link="TestSupport\BatonHomeRedirect.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Shared\CleanupRetry.cs" Link="TestSupport\CleanupRetry.cs" />

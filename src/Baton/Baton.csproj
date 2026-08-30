@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- #1458 3b: NuGet's restore graph keys each project by PackageSpec.Name, which defaults to
+         PackageId when one is set. Baton.Cli packs as a dotnet tool with PackageId "baton"
+         (PackAsTool, the shipped `baton` binary) and references this project by ProjectReference.
+         Once this csproj's own MSBuildProjectName became "Baton" (this rename), the two collided
+         case-insensitively and `dotnet build`/`restore` failed with NuGet.Commands.RestoreCommand's
+         "Ambiguous project name 'baton'" (confirmed empirically: reverting either name resolves it).
+         This PackageId exists ONLY to give the restore graph a distinct key; IsPackable=false means
+         it is never produced as an actual package. Does not affect AssemblyName, RootNamespace, or
+         the produced Baton.dll, all of which stay "Baton" per the rename. -->
+    <PackageId>Baton.Engine.RestoreGraphName</PackageId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- aer-core .NET binding (P/Invoke wrapper over the FFI boundary), folded into native/core
+         (#1458, native/core/PROVENANCE.md) per CLAUDE.md's P/Invoke Layer rule. No package feed
+         exists for this yet — a single-developer project doesn't need one; `pixi run
+         build-core` builds the native lib the ProjectReference below expects. -->
+    <ProjectReference Include="..\..\native\core\bindings\dotnet\Baton.Core\Baton.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Lets the test project exercise internal pump machinery (e.g. InFlightExecutionRegistry's
+         Register/Unregister/RequestStopAsync) directly where a test needs to force an exact
+         internal race deterministically, not just through the public mutation surface. -->
+    <InternalsVisibleTo Include="Baton.Tests" />
+  </ItemGroup>
+
+</Project>

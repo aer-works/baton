@@ -14,7 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Baton.Flow\Baton.Flow.csproj" />
+    <ProjectReference Include="..\Baton\Baton.csproj" />
     <ProjectReference Include="..\Baton.Vendors\Baton.Vendors.csproj" />
   </ItemGroup>
 

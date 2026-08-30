@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <!-- Generates packages.lock.json so CI can cache NuGet restore (actions/setup-dotnet's
-         cache-dependency-path globs **/packages.lock.json, same as Baton.Flow.Tests). -->
+         cache-dependency-path globs **/packages.lock.json, same as Baton.Tests). -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 

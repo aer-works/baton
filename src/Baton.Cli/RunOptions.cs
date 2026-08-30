@@ -40,7 +40,7 @@ namespace Baton.Cli;
 /// </param>
 /// <param name="Wait">
 /// #1356: the pump (<c>MutationInterface.StartWorkflowAsync</c>) already blocks in-process until it
-/// returns <see cref="Baton.Flow.Domain.WorkflowStatus.Terminal"/> or <see cref="Baton.Flow.Domain.WorkflowStatus.Paused"/> —
+/// returns <see cref="Baton.Domain.WorkflowStatus.Terminal"/> or <see cref="Baton.Domain.WorkflowStatus.Paused"/> —
 /// this flag only changes what happens on the latter. Without it, a paused workflow returns
 /// immediately (today's behaviour: nothing further to dispatch until an external <c>baton decide</c>
 /// resolves it). With it, <see cref="RunCommand"/> keeps polling the room's own journal — the same

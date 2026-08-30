@@ -1,11 +1,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Baton.Vendors;
-using Baton.Flow.Domain;
-using Baton.Flow.Projection;
-using Baton.Flow.Status;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
+using Baton.Domain;
+using Baton.Projection;
+using Baton.Status;
+using Baton.Store;
+using Baton.Templates;
 using Baton.Mcp;
 
 namespace Baton.Mcp.Host;

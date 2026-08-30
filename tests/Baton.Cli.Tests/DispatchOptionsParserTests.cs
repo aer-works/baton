@@ -151,7 +151,7 @@ public class DispatchOptionsParserTests
 
     /// <summary>
     /// R2 (#1354/#1380, finding 2) -- see the parser's own comment for why the default must sit outside
-    /// any workspace a dispatch might audit. <c>Baton.Flow.Status.BatonPaths.Rooms</c> is the one place that
+    /// any workspace a dispatch might audit. <c>Baton.Status.BatonPaths.Rooms</c> is the one place that
     /// root is resolved from (honouring <c>BATON_HOME</c>); this pins that the default is built from it,
     /// not re-derives it.
     /// </summary>
@@ -161,7 +161,7 @@ public class DispatchOptionsParserTests
         var options = DispatchOptionsParser.Parse(["review", "--spec", "t.md"]);
 
         Assert.StartsWith(
-            Path.GetFullPath(Baton.Flow.Status.BatonPaths.Rooms), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
+            Path.GetFullPath(Baton.Status.BatonPaths.Rooms), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             Path.GetFullPath(Directory.GetCurrentDirectory()), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
     }

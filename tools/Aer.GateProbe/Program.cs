@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Baton.Vendors;
-using Baton.Flow.Domain;
+using Baton.Domain;
 
 namespace Aer.GateProbe;
 

@@ -40,10 +40,10 @@ public class VendorSpawnGateTests
     /// </summary>
     private static readonly Dictionary<string, string> ApprovedSpawnSites = new()
     {
-        ["src/Baton.Flow/Dispatch/CoreDispatcher.cs"] = "The gated dispatch path. Adapters build the gate into the target.",
+        ["src/Baton/Dispatch/CoreDispatcher.cs"] = "The gated dispatch path. Adapters build the gate into the target.",
         ["src/Baton.Vendors/AgyWorkerAdapter.cs"] = "Read-only agy registry queries (models/agent/plugin list) — no -p, no tool execution.",
         ["src/Baton.Cli/WorkspaceHead.cs"] = "Read-only 'git rev-parse HEAD' to capture a capture step's base ref — git, not a vendor CLI; no -p, no tool execution.",
-        ["src/Baton.Flow/Workspaces/WorktreeProvisioner.cs"] = "'git worktree add/remove' plus 'git status' to provision and tear down a worker's workspace (#669) — git, not a vendor CLI; spawns no vendor process.",
+        ["src/Baton/Workspaces/WorktreeProvisioner.cs"] = "'git worktree add/remove' plus 'git status' to provision and tear down a worker's workspace (#669) — git, not a vendor CLI; spawns no vendor process.",
     };
 
     private static readonly string[] SpawnMarkers = ["new ProcessStartInfo", "Process.Start", "new BatonTask"];

@@ -1,4 +1,4 @@
-using Baton.Flow.Domain;
+using Baton.Domain;
 
 namespace Baton.Vendors;
 
@@ -16,7 +16,7 @@ namespace Baton.Vendors;
 /// </param>
 /// <param name="Contract">This worker role's <see cref="WorkerContract"/> — required inputs, declared outputs, optional metadata.</param>
 /// <param name="PromptTemplate">Forwarded verbatim into the resolved <see cref="WorkerInvocation"/>.</param>
-/// <param name="Timeout">The per-execution timeout carried on the resolved <c>Baton.Flow.Mutation.WorkerBinding.Process</c>.</param>
+/// <param name="Timeout">The per-execution timeout carried on the resolved <c>Baton.Mutation.WorkerBinding.Process</c>.</param>
 /// <param name="Model">Forwarded verbatim into the resolved <see cref="WorkerInvocation"/>.</param>
 /// <param name="PermissionScope">Forwarded verbatim into the resolved <see cref="WorkerInvocation"/>.</param>
 /// <param name="PermissionGrant">Forwarded verbatim into the resolved <see cref="WorkerInvocation"/> — see its docs for precedence over <paramref name="PermissionScope"/>.</param>
@@ -69,7 +69,7 @@ public sealed record WorkerBindingConfigEntry(
 /// A worktree workspace spec on a <see cref="WorkerBindingConfigEntry"/> (#669): the local
 /// <paramref name="Repository"/> to make a worktree of, and the <paramref name="Ref"/> (a branch or
 /// commit) to check out. The provisioning, teardown, and the local-only / Credential-Isolation
-/// rationale all live on <c>Baton.Flow.Workspaces.WorktreeProvisioner</c>; this record is only the
+/// rationale all live on <c>Baton.Workspaces.WorktreeProvisioner</c>; this record is only the
 /// declared intent.
 /// </summary>
 public sealed record WorktreeWorkspace(string Repository, string Ref);
