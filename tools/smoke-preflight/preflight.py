@@ -65,11 +65,16 @@ def run(cmd, timeout=90):
 
 
 def agy_catalogue():
-    """The exact set agy will accept. Empty means agy is missing, which is its own finding."""
+    """The exact set agy will accept. Empty means agy is missing, which is its own finding.
+
+    Each line is `id<TAB>display name`; keep only the id -- matching on the whole line made
+    every agy pin FAIL once `agy models` started appending a description column, which read as
+    every pin having gone stale when none had.
+    """
     rc, out, _ = run(["agy", "models"])
     if rc != 0:
         return None
-    return {line.strip() for line in out.splitlines() if line.strip()}
+    return {line.split("\t", 1)[0].strip() for line in out.splitlines() if line.strip()}
 
 
 def pins():
