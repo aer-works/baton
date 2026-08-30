@@ -454,11 +454,12 @@ closed", restated in decision 0023 §4). What the
 CLI *does* expose, and what `ClaudeWorkerAdapter.ModelAliases` already commits to as the stable
 interface, is three named aliases — `sonnet`, `opus`, `haiku` — each always resolving to that tier's
 current model. Three aliases, three canonical purposes, and the assignment is not new: it is the
-design corpus's own worked example for this exact vocabulary
-([`docs/design/04-workers-commands-control.md`](design/04-workers-commands-control.md): *"Opus 4.8 ·
-deep work"*, *"Sonnet 5 · balanced"*, *"Haiku 4.5 · fast"*) — two-thirds of it (`opus`/deep,
-`haiku`/fast) quoted verbatim inside 0023 itself as the settled illustration of the naming rule. Each
-canonical purpose lands on a distinct alias — nothing here collapses.
+design corpus's own worked example for this exact vocabulary — `docs/design/*` was deleted, not
+archived, in the spec v2.0 reset (spec/baton.md §11), so two-thirds of that example (`opus`/deep,
+`haiku`/fast: *"Opus 4.8 · deep work"*, *"Haiku 4.5 · fast"*) survives only as the quote
+[0023](decisions/0023-effort-and-models-are-named-by-behaviour.md) preserves verbatim; the
+`Sonnet 5 · balanced` third is not otherwise recorded. Each canonical purpose lands on a distinct
+alias — nothing here collapses.
 
 **`agy` — model set recorded, purpose column left open.** `agy models` is a real, machine-readable
 subcommand — already shelled out to by `AgyWorkerAdapter.DiscoverCapabilitiesAsync` — and its 11-entry

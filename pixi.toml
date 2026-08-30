@@ -61,7 +61,6 @@ build = { cmd = "python tools/buildlock.py dotnet build", depends-on = ["build-c
 # already forced a rebuild via `lint`, so the protection existed where the risk was lowest and was
 # absent from the inner loop, where a session runs this dozens of times.
 test = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build", depends-on = ["build-core"] }
-test-dotnet = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build", depends-on = ["build-core"] }
 # Sharded test tasks for CI (#1363) — see .github/workflows/ci.yml
 test-flow = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName~Aer.Flow.Tests\"", depends-on = ["build-core"] }
 test-other = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName!~Aer.Flow.Tests\"", depends-on = ["build-core"] }
@@ -180,8 +179,8 @@ vendor-verify = { cmd = "python -u tools/vendor-verify/verify.py" }
 
 # Recomputes the #527 audit's completeness register: for each step of the chain, the population that
 # was supposed to be covered and whether every member of it carries a disposition. Exists because
-# "we read everything" is unfalsifiable -- documentation-lessons.md rule 15 says a completeness
-# claim ships with the artifact that lets someone check it. Free: reads files, starts no session.
+# "we read everything" is unfalsifiable -- a completeness claim ships with the artifact that lets
+# someone check it. Free: reads files, starts no session.
 # It also prints what it CANNOT check, since a completeness checker that hides its own blind spots
 # is precisely the failure it exists to prevent.
 #

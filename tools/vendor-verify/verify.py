@@ -283,7 +283,7 @@ def _agy_payload_file_execution():
             f.write(f"Create a file at {sentinel_path} containing the word EXECUTED.")
 
         wrapper = f"Read the full task instructions at {payload_path} and execute them exactly as written. Do not summarize."
-        # --mode accept-edits mirrors GeminiWorkerAdapter's default scope: Resolve always passes
+        # --mode accept-edits mirrors AgyWorkerAdapter's default scope: Resolve always passes
         # either --mode <scope> or --dangerously-skip-permissions, so a flag-less invocation would
         # measure a shape AER never dispatches (this check's first review caught exactly that).
         cmd = ["agy", "-p", wrapper, "--add-dir", wd, "--mode", "accept-edits", *model_flags("agy")]
@@ -491,7 +491,7 @@ def _simple_mode_override():
 
 GATE_PROBE_PROJECT = os.path.join(HERE, "..", "Aer.GateProbe", "Aer.GateProbe.csproj")
 
-# The real hook handler, next to the probe's own output. `GeminiWorkerAdapter.BuildHooksJson` names
+# The real hook handler, next to the probe's own output. `AgyWorkerAdapter.BuildHooksJson` names
 # exactly this assembly, so a check that runs it is running what ships rather than a stand-in.
 GATE_PROBE_HOOK_DLL = os.path.join(
     HERE, "..", "Aer.GateProbe", "bin", "Debug", "net10.0", "Aer.Cli.dll")
@@ -511,7 +511,7 @@ def build_gate_probe():
     binary silently turns them into checks against whatever the adapter looked like at some unknown
     past build, which is the one thing they were built not to be.
 
-    Not hypothetical. Immediately after #706's fix landed in `GeminiWorkerAdapter`, this arm was
+    Not hypothetical. Immediately after #706's fix landed in `AgyWorkerAdapter`, this arm was
     re-run and reported the same failure as before the fix -- because the probe binary still held the
     old double-quoted hook command. It looked exactly like an ordinary unchanged result, and nearly
     became evidence that a correct fix had not worked.
@@ -649,7 +649,7 @@ def _adapter_flag_set_claude():
 
 
 @check("agy.adapters-own-flag-set-still-gates", "agy",
-       "the same question on agy: the hook fires under the argv GeminiWorkerAdapter ACTUALLY builds. "
+       "the same question on agy: the hook fires under the argv AgyWorkerAdapter ACTUALLY builds. "
        "Separate check because the MECHANISM differs -- agy carries the hook in .agents/hooks.json "
        "under an --add-dir path, not on --settings", sentinel=True)
 def _adapter_flag_set_agy():
@@ -2200,7 +2200,7 @@ def _agy_deny():
        "production reaches only when shell AND network are both granted",
        sentinel=True)
 def _agy_deny_under_accept_edits():
-    """#601 part 2. `GeminiWorkerAdapter.DefaultPermissionScope` is `accept-edits`, and until this
+    """#601 part 2. `AgyWorkerAdapter.DefaultPermissionScope` is `accept-edits`, and until this
     existed not one agy hook arm ran under it -- all of them passed `--dangerously-skip-permissions`.
 
     Not idle caution, and this is the specific reason it is a sentinel rather than a settled note:
@@ -2258,7 +2258,7 @@ def _agy_deny_under_accept_edits():
 
 
 @check("agy.hook-command-survives-a-metacharacter-in-its-path", "agy",
-       "on Windows agy runs a hook command through `cmd /c`, so the bare form GeminiWorkerAdapter "
+       "on Windows agy runs a hook command through `cmd /c`, so the bare form AgyWorkerAdapter "
        "ships -- read out of the hooks.json the real adapter writes, never restated here -- starts "
        "the real handler and observably blocks a denied call; a bare path containing a space does "
        "not resolve once an argument follows it; and neither quoted form resolves. Windows-scoped: "
@@ -2267,7 +2267,7 @@ def _agy_deny_under_accept_edits():
        sentinel=True)
 def _agy_hook_metacharacter_path():
     """#601 part 3, and the regression pin for #706. agy offers no exec form -- claude's hook ships
-    `args` and is spawned directly, with nothing to quote for -- so `GeminiWorkerAdapter` assembles
+    `args` and is spawned directly, with nothing to quote for -- so `AgyWorkerAdapter` assembles
     ONE string and something parses it.
 
     The failure mode is the worst available on this vendor: the command does not start, produces no
@@ -2286,7 +2286,7 @@ def _agy_hook_metacharacter_path():
     that matters" -- in the same working tree that changed production to BARE (#710). A reviewer
     caught that too, along with the fact that nothing tied any arm to the adapter: FORMS was a
     literal, so a regression to the quoted form would have sailed past a check whose docstring calls
-    itself the regression pin. Now the check runs the real `GeminiWorkerAdapter.Resolve` via
+    itself the regression pin. Now the check runs the real `AgyWorkerAdapter.Resolve` via
     Aer.GateProbe, reads the command out of the hooks.json it writes, FAILS if that command is no
     longer the bare three-token shape, and derives every arm from it:
 
@@ -2355,7 +2355,7 @@ def _agy_hook_metacharacter_path():
 
     shape = re.fullmatch(r"(\S+) (\S+) (\S+)", shipped_command)
     if shape is None or "'" in shipped_command or '"' in shipped_command:
-        return FAIL, ("the hook command GeminiWorkerAdapter writes is no longer the bare "
+        return FAIL, ("the hook command AgyWorkerAdapter writes is no longer the bare "
                       f"three-token shape measured to start under `cmd /c`: {shipped_command!r}. "
                       "A quote or a space here is #706/#710 again -- a command that never starts, "
                       "which this vendor reads as an allow")
@@ -2488,7 +2488,7 @@ def _agy_hook_metacharacter_path():
 
     # 1. The shipped shape must gate. Everything else here is context for this line.
     if not bare_plain:
-        return FAIL, ("the command form `GeminiWorkerAdapter.BuildHooksJson` ships did not start the "
+        return FAIL, ("the command form `AgyWorkerAdapter.BuildHooksJson` ships did not start the "
                       "handler, and the denied command RAN -- decision 0029's mandatory gate is "
                       f"absent on every agy worker. {note}")
 
@@ -2506,7 +2506,7 @@ def _agy_hook_metacharacter_path():
     #    its P/Invoke, and its loud failure when 8.3 is disabled -- can go.
     if bare_spaced:
         return FAIL, ("a bare path containing a space now resolves, so agy's argument splitting "
-                      "changed. Nothing is broken, but GeminiWorkerAdapter.HookAssemblyToken carries "
+                      "changed. Nothing is broken, but AgyWorkerAdapter.HookAssemblyToken carries "
                       "an 8.3 short-name step and a hard failure that exist ONLY for this case -- "
                       f"re-measure before keeping them. {note}")
 
@@ -2690,7 +2690,7 @@ def _agy_hooks_add_dir_vs_cwd():
     tell "the hook loaded because --add-dir named its directory" from "the hook loaded because that
     directory happened to be the cwd".
 
-    Production is the second arrangement and never the first: `GeminiWorkerAdapter.Resolve` passes
+    Production is the second arrangement and never the first: `AgyWorkerAdapter.Resolve` passes
     `--add-dir <AER's own agy-workspace>` while the cwd is the room's working directory, or null.
 
     The stakes are total rather than partial. `gate.add-dir-loads-no-config` measured the *claude*
@@ -2839,7 +2839,7 @@ def _agy_hook_env():
        "absolutely -- the fact a path-bounded gate (#679) has to read, on the vendor where "
        "`agy.plan-mode-does-not-deny-writes` measured that neither --mode nor --add-dir bounds one. "
        "SCOPED TO THE TOOL THE RUN OBSERVED: agy chose `write_to_file` for the prompt it was given. "
-       "The probe's matcher covers three of GeminiWorkerAdapter.WriteTools' four names and "
+       "The probe's matcher covers three of AgyWorkerAdapter.WriteTools' four names and "
        "`generate_image` not at all, so THREE of the four are UNMEASURED -- the note reports which "
        "names actually arrived")
 def _agy_hook_write_path():
@@ -2881,7 +2881,7 @@ def _agy_hook_write_path():
             # allow would confound it with `agy.hook-malformed-stdout-fails-open`.
             f.write("""echo '{"decision":"allow"}'\n""")
         os.chmod(os.path.join(wd, "h.sh"), 0o755)
-        # ALL FOUR write tools GeminiWorkerAdapter.WriteTools names, as a regex over agy's own tool
+        # ALL FOUR write tools AgyWorkerAdapter.WriteTools names, as a regex over agy's own tool
         # names. `generate_image` was excluded here, and that exclusion is why #708 stayed hidden:
         # it is the one member of the family whose payload does NOT carry `TargetFile`, so it was
         # denied on every call -- even when writes were granted -- while this check stayed green over

@@ -41,7 +41,7 @@ pages describe Claude Code sandboxing:**
 supported.**"* The probe host is Windows 11, so claude's sandbox ceiling is OS-enforced on
 macOS/Linux/WSL2 and unavailable on native Windows here. **Every row in `vendor-capabilities.md` is
 established on Windows only** — a single-platform observation is not a cross-platform capability
-claim (`documentation-lessons.md` #1).
+claim.
 
 ### 2. `--help` is officially incomplete on `claude` too
 
@@ -864,9 +864,8 @@ So agy's control surface is real and CLI-reachable: `allow`/`deny`/`ask`/`force_
 `Stop.decision:"continue"`, `Stop.fullyIdle`. **On several axes it is stronger than claude's.**
 
 The root cause (a quote-escaping bug made the hook command exit 127 every time, silently) is the
-"check the vendor's own logs before concluding absence" method rule — see
-`documentation-lessons.md`'s method table. `agy` had written the answer to disk the whole time:
-`hooks_manager.go:53] loaded 0 named hooks from 0 hooks.json file(s)`.
+"check the vendor's own logs before concluding absence" method rule. `agy` had written the answer to
+disk the whole time: `hooks_manager.go:53] loaded 0 named hooks from 0 hooks.json file(s)`.
 
 The CLI has a public issue tracker and changelog (`google-antigravity/antigravity-cli`), now on the
 permanent source list.
