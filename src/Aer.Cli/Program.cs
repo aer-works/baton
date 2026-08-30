@@ -52,11 +52,12 @@ if (args.Length >= 1 && args[0] == "agy-hook-check")
         Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns);
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "cancel", "decide", "supply", "resume", "status", "templates" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "supply", "resume", "status", "templates" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
     Console.Error.WriteLine($"       {DispatchOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {RedispatchOptionsParser.Usage[7..]}");
     Console.Error.WriteLine(
         "       aer cancel <room-dir> --execution <execution-id> --bindings <bindings-file> [--workflow-id <id>]");
     Console.Error.WriteLine(
@@ -133,6 +134,15 @@ try
                 break;
             }
 
+        case "redispatch":
+            {
+                var options = RedispatchOptionsParser.Parse(args[1..]);
+                roomDirectoryPathForFailureSentinel = options.RoomDirectoryPath;
+                result = await RedispatchCommand.ExecuteAsync(options, WorkerAdapterRegistry.Default, hostStopSource.Token)
+                    .ConfigureAwait(false);
+                break;
+            }
+
         case "cancel":
             {
                 var options = CancelOptionsParser.Parse(args[1..]);
@@ -199,8 +209,9 @@ try
 
     // #1359: aer resume gets the same truthful exit-code table as run/dispatch — its own design
     // ruling names the completion contract explicitly, unlike cancel/decide/supply below, which
-    // #1356 never asked to widen.
-    if (args[0] is "run" or "dispatch" or "resume")
+    // #1356 never asked to widen. #1441: aer redispatch drives the identical RunCommand pump a fresh
+    // dispatch does, so it gets the same table for the same reason.
+    if (args[0] is "run" or "dispatch" or "redispatch" or "resume")
     {
         return (int)RunExitCodeResolver.Resolve(result);
     }
@@ -220,7 +231,7 @@ catch (AerFlowException ex) when (ex is Aer.Flow.Concurrency.WorkflowLockedExcep
     // contradict 'aer status --json' reading the very same room's ledger as Running at the same
     // moment. The room is left exactly as it was; the exit code alone says "retry later".
     WriteErrorWithTry(ex);
-    return args[0] is "run" or "dispatch" or "resume" ? (int)RunExitCode.RoomHeld : 1;
+    return args[0] is "run" or "dispatch" or "redispatch" or "resume" ? (int)RunExitCode.RoomHeld : 1;
 }
 catch (AerFlowException ex)
 {
@@ -241,7 +252,7 @@ catch (AerFlowException ex)
     // it with a fabricated Failed/no-outputs sentinel (see invoking-baton.md's exit-code section for
     // the scenario this guards). The exit code still reports the refusal; only the sentinel write is
     // conditional.
-    if (args[0] is "run" or "dispatch" && roomDirectoryPathForFailureSentinel is not null)
+    if (args[0] is "run" or "dispatch" or "redispatch" && roomDirectoryPathForFailureSentinel is not null)
     {
         if (!RoomLedgerProbe.HasLedger(roomDirectoryPathForFailureSentinel))
         {

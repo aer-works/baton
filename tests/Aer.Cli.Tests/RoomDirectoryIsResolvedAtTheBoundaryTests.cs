@@ -38,6 +38,11 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
         [typeof(ResumeOptionsParser)] = () =>
             ResumeOptionsParser.Parse([Relative, "--worker", "w", "--message", "m", "--bindings", "b.json"])
                 .RoomDirectoryPath,
+        // Redispatch has no --room-dir flag at all (its RoomDirectoryPath is always a fresh generated
+        // one, never operator-supplied — spec/baton.md §2). The operator-supplied path this parser
+        // actually takes is the positional parent room directory, so that is what must resolve here.
+        [typeof(RedispatchOptionsParser)] = () =>
+            RedispatchOptionsParser.Parse([Relative]).ParentRoomDirectoryPath,
         [typeof(StatusOptionsParser)] = () =>
             StatusOptionsParser.Parse([Relative]).RoomDirectoryPath,
     };

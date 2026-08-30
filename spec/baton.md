@@ -119,12 +119,39 @@ A room's model is always pinned in `bindings.json` at dispatch time — there is
 choice a harness makes mid-lane; §9 covers the bindings contract. `aer resume`, `aer decide`, `aer
 cancel`, and `aer supply` continue an already-dispatched room; §5 covers `decide` specifically.
 
+**`aer redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
+<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>]`** (#1441) reruns a single-role
+`aer dispatch` room into a fresh one, once the operator finds the brief was wrong or incomplete —
+without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch `aer dispatch`
+would otherwise force. `<room-dir>` names the parent room; like `aer dispatch`, the new room's own
+directory is always freshly generated (`RedispatchOptionsParser.cs`) — a redispatch is never a resume,
+same rule as §2's dispatch entry above. Every flag inherits the parent room's recorded `bindings.json`
+entry as its default — adapter, model, effort, workspace, timeout — and is overridden by whichever
+flag the operator actually passes (`RedispatchCommand.InheritBinding`); `--output` is the one
+exception, never inherited, because a prior `--output`'s destination copy path is not persisted
+anywhere in the room (only the produced output's customized *name* is, on the bindings entry's
+contract) — a redispatch's own `--output`, when given, works exactly like dispatch's own. `--spec`
+omitted reuses the parent's already-built prompt verbatim; given, the amended brief is rebuilt through
+the same `RoleDispatch.Materialize` a fresh dispatch uses, with the parent's recorded axes as defaults.
+The parent must be Terminal (`terminal.json` present) — a still-running or never-dispatched parent is
+refused with a typed `CliArgumentException` naming `aer status` as the retry (no interactive
+confirmation exists for a non-interactive CLI, the same doctrine `--timeout`'s ceiling above rests on);
+a Terminal-but-not-`Succeeded` parent is redispatched anyway, with a stderr note rather than a silent
+rerun of a failed or cancelled lane. A parent whose `bindings.json` binds more than one worker (a
+composed template, never a single role) is refused — redispatch supports a single-role dispatch only.
+The parent's own artifacts are never copied into the child room — the child's `--spec` can cite paths
+under the parent room if it needs to, but copying would blur which run produced what. Lineage is
+recorded on the new room's own `.aer/room.json` marker (`RoomMetadataFileName`, `AerPaths.cs`) — the
+parent room directory, and the parent's own execution id when cheaply known from its terminal
+sentinel — rather than a new parallel file, since that marker is already this room's metadata home.
+
 ### §2 schema — the CLI argument table
 
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `aer run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait]` | `RunOptionsParser.cs` |
 | `dispatch` | `aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]` | `DispatchOptionsParser.cs` |
+| `redispatch` | `aer redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `aer resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `aer decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `supply` | `aer supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
