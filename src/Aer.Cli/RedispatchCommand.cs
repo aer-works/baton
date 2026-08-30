@@ -7,40 +7,12 @@ using Aer.Flow.Templates;
 namespace Aer.Cli;
 
 /// <summary>
-/// <c>aer redispatch &lt;room-dir&gt;</c> (#1441): reruns a TERMINAL room's single-role dispatch into a
-/// fresh room — the operator's move when a lane's brief turned out wrong or incomplete, without
-/// hand-retyping the adapter/model/effort/workspace/timeout flags a fresh <c>aer dispatch</c> would
-/// otherwise force. Inherits <paramref name="options"/>'s parent room's recorded <c>bindings.json</c>
-/// entry as defaults; any flag present on the command line overrides it, same flags/parsers as
-/// <c>aer dispatch</c> (<see cref="DispatchOptionsParser"/>).
+/// <c>aer redispatch &lt;room-dir&gt;</c> (#1441) — the implementation of the contract spec/baton.md §2
+/// states in full (what inherits vs. overrides, the two refusals, the `--output` exception, where
+/// lineage lands); this type doc does not restate it. <see cref="DispatchCommand.CopyPrimaryOutputToOverride"/>
+/// is the code reference for why a parent's <c>--output</c> destination cannot be recovered here — it
+/// is a process-local copy target, never persisted to any room file.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>Decide-and-document (#1441):</b> the parent room's artifacts are never copied into the child
-/// room — the child's <c>--spec</c> can cite paths under the parent room if it needs to, but copying
-/// would blur which run actually produced what.
-/// </para>
-/// <para>
-/// <b>Premise correction against the issue's own parenthetical.</b> The issue describes
-/// <c>bindings.json</c> as recording "adapter, model, effort, workspace, output path, timeout" for the
-/// parent. Five of those are exactly right — <see cref="WorkerBindingConfigEntry.Adapter"/>/<see
-/// cref="WorkerBindingConfigEntry.Model"/>/<see cref="WorkerBindingConfigEntry.Effort"/>/<see
-/// cref="WorkerBindingConfigEntry.WorkingDirectory"/> (or <see cref="WorkerBindingConfigEntry.Worktree"/>)/<see
-/// cref="WorkerBindingConfigEntry.Timeout"/>. The sixth, "output path", is not: <c>--output</c>'s
-/// destination is a copy target <see cref="DispatchCommand.CopyPrimaryOutputToOverride"/> writes to
-/// once, after Terminal — it is never persisted into <c>bindings.json</c>, <c>workflow.json</c>, or
-/// any other room file (only whether the produced output's <em>name</em> was customized survives, on
-/// <see cref="Aer.Flow.Domain.WorkerContract.ProducedOutputs"/>). So redispatch does not inherit
-/// <c>--output</c> — a redispatch's own <c>--output</c>, when given, works exactly like dispatch's.
-/// </para>
-/// <para>
-/// <b>Single-role rooms only.</b> A composed template's room binds several workers in one
-/// <c>bindings.json</c> (<see cref="Aer.Adapters.WorkflowTemplateComposer"/>); a role dispatch
-/// (<see cref="RoleDispatch.Materialize"/>) always binds exactly one, keyed by the role id. Redispatch
-/// refuses a parent whose bindings file has more than one entry rather than guess which one the
-/// operator meant to rerun.
-/// </para>
-/// </remarks>
 public static class RedispatchCommand
 {
     private const string WorkflowFileName = "workflow.json";
@@ -167,9 +139,7 @@ public static class RedispatchCommand
 
         var adapter = options.Adapter ?? parentEntry.Adapter;
 
-        // Same axis-reset rule as RoleDispatch.ToBinding's own vendor swap (spec/baton.md §2, #1082):
-        // an inherited model/effort string is vendor-specific, so carrying it across an adapter change
-        // with no explicit --model/--effort would risk handing the new vendor a value it cannot parse.
+        // RoleDispatch.ToBinding's own vendor-swap axis rule, applied here too (#1082, spec/baton.md §2).
         var vendorSwapped = !string.Equals(adapter, parentEntry.Adapter, StringComparison.OrdinalIgnoreCase);
         var model = options.Model ?? (vendorSwapped ? null : parentEntry.Model);
         var effort = options.Effort ?? (vendorSwapped ? null : parentEntry.Effort);

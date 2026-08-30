@@ -127,13 +127,9 @@ aer redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--model
                           [--workspace <dir>] [--output <path>] [--timeout <minutes>]
 ```
 
-When a lane's brief turned out wrong or incomplete, `aer redispatch <room-dir>` reruns that TERMINAL
-room's single-role dispatch into a fresh room, inheriting its recorded `bindings.json` entry
-(adapter/model/effort/workspace/timeout) as defaults rather than making the operator retype them.
-`<room-dir>` is the parent to redispatch; the new room's own directory is always freshly generated,
-never a flag — same never-reused rule as a plain dispatch's default `--room-dir`. The full contract —
-what each flag inherits vs. overrides, `--output`'s one exception, the Terminal/single-role
-refusals, and where lineage is recorded — is `spec/baton.md` §2; this page does not restate it.
+`<room-dir>` names the parent room to rerun. The full contract — what each flag inherits from that
+room vs. overrides, the Terminal/single-role refusals, and where lineage is recorded — is
+`spec/baton.md` §2; this page does not restate it.
 
 ## What a dispatch leaves in the room
 

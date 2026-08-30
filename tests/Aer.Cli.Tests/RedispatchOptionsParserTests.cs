@@ -1,10 +1,9 @@
 namespace Aer.Cli.Tests;
 
 /// <summary>
-/// <c>aer redispatch</c>'s argument parsing (#1441): the parent room directory is positional, every
-/// override flag is optional (defaults are inherited from the parent's own bindings, not this parser's
-/// job to know), and there is deliberately no <c>--room-dir</c> — the new room's directory is always
-/// freshly generated, mirroring <see cref="DispatchOptionsParserTests"/>'s own pin for <c>aer dispatch</c>.
+/// <c>aer redispatch</c>'s argument parsing (#1441): parse-level shapes only, mirroring
+/// <see cref="DispatchOptionsParserTests"/>'s own pin for <c>aer dispatch</c> — what each override
+/// flag means once applied is <see cref="RedispatchBindingTests"/>'s job, not this file's.
 /// </summary>
 public class RedispatchOptionsParserTests
 {

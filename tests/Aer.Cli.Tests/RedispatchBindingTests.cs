@@ -64,11 +64,7 @@ public class RedispatchBindingTests
         Assert.Equal("agy", entry.Adapter);
     }
 
-    /// <summary>
-    /// Same axis-reset rule <see cref="RoleDispatch.ToBinding"/>'s own vendor swap applies (#1082):
-    /// an inherited model/effort string is vendor-specific, so it must not ride an adapter change with
-    /// no explicit override.
-    /// </summary>
+    /// <summary>Pins the axis rule <see cref="RedispatchCommand.InheritBinding"/>'s own comment cites (#1082).</summary>
     [Fact]
     public void An_adapter_swap_with_no_explicit_model_or_effort_drops_both_rather_than_carrying_them_across()
     {
