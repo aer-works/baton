@@ -23,8 +23,8 @@ namespace Aer.Mcp.Host;
 /// composes sibling tools this way (<see cref="FleetStatusTool"/> plus <see cref="MemoryProposalTool"/>
 /// and <see cref="YieldTool"/>, one CLI flag per tool in <c>Program.cs</c>) — the mailbox's own
 /// <c>deliverables_list</c>/<c>deliverable_read</c> split (<c>tools/fleet-glass/worker.js</c>) is the
-/// same precedent one level up the stack. Direct file reads, same as level one: no daemon dependency,
-/// and a missing or still-running room degrades to a partial view plus a note, never a throw.
+/// same precedent one level up the stack. Reads room files directly and reports whatever subset it
+/// could get — spec/baton.md §6 pins the degradation contract (partial view over any throw).
 /// </summary>
 public sealed class RoomDetailTool : IMcpTool
 {
