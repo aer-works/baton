@@ -67,14 +67,17 @@ def run(cmd, timeout=90):
 def agy_catalogue():
     """The exact set agy will accept. Empty means agy is missing, which is its own finding.
 
-    Each line is `id<TAB>display name`; keep only the id -- matching on the whole line made
-    every agy pin FAIL once `agy models` started appending a description column, which read as
-    every pin having gone stale when none had.
+    Each line is `id<TAB>display name` (re-measured 2026-08-30, #1422; recorded in
+    docs/vendor-capabilities.md's `agy models` section); keep only the id -- matching on the whole
+    line made every agy pin FAIL once the description column appeared, which read as every pin
+    having gone stale when none had. Tab-strip then whitespace-split, so the pre-2026-08
+    multi-column grid format (no tabs, several ids per line) would also parse -- same shape as
+    tools/vendor-verify/verify.py's models.agy-value-set check.
     """
     rc, out, _ = run(["agy", "models"])
     if rc != 0:
         return None
-    return {line.split("\t", 1)[0].strip() for line in out.splitlines() if line.strip()}
+    return {tok for line in out.splitlines() for tok in line.split("\t", 1)[0].split()}
 
 
 def pins():

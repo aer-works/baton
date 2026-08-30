@@ -313,9 +313,13 @@ actually removes on disk.
 
 ## `agy models` — effort and model are not orthogonal
 
-`agy models` enumerates what the CLI will actually accept:
+`agy models` enumerates what the CLI will actually accept. Since at least 2026-08-30 its live
+output is one `id<TAB>display name` pair per line (a bare multi-column id grid when first captured
+2026-07-28 — the format change broke `smoke-preflight`'s whole-line membership test, #1422). This
+fence records the id column only, because the checkers that read it take bare whitespace-split ids:
 
 ```
+gemini-3.7-flash-high     gemini-3.7-flash-medium   gemini-3.7-flash-low
 gemini-3.6-flash-high     gemini-3.6-flash-medium   gemini-3.6-flash-low
 gemini-3.5-flash-high     gemini-3.5-flash-medium   gemini-3.5-flash-low
 gemini-3.1-pro-high       gemini-3.1-pro-low
