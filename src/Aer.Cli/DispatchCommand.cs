@@ -57,6 +57,14 @@ public static class DispatchCommand
             workspaceFact = $"Workspace: worktree of {workspace} at HEAD ({shortSha}) — uncommitted changes are not visible to the worker";
         }
 
+        // #1442: warn-don't-refuse above the caution threshold — rationale in spec/baton.md §2.
+        if (options.Timeout is { } timeoutOverride && timeoutOverride > TimeSpan.FromMinutes(DispatchOptionsParser.WarnTimeoutMinutes))
+        {
+            Console.Error.WriteLine(
+                $"Warning: --timeout {(int)timeoutOverride.TotalMinutes} exceeds "
+                + $"{DispatchOptionsParser.WarnTimeoutMinutes} minutes (2h) — a typo here can strand a lane for a long time.");
+        }
+
         Directory.CreateDirectory(options.RoomDirectoryPath);
 
         var primaryOutputName = definition.Steps.FirstOrDefault()?.Outputs.FirstOrDefault() ?? "output";
@@ -272,6 +280,14 @@ public static class DispatchCommand
                 "remove the --output flag, or dispatch a single role instead of a template.");
         }
 
+        if (options.Timeout is not null)
+        {
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — each phase carries its own role's timeout, so "
+                + "--timeout does not apply to one of them. Pass --timeout only when dispatching a role.",
+                "remove the --timeout flag, or dispatch a single role instead of a template.");
+        }
+
         var template = WorkflowTemplateCatalog.For(options.Name);
         // #1083: hand every phase the workspace too, so a role run as a template phase can read the repo
         // exactly as a directly-dispatched role now can.
@@ -310,7 +326,8 @@ public static class DispatchCommand
         // #1082: vendor/model/effort are three independent axes over the role's instructions ([0017]).
         return RoleDispatch.Materialize(
             role, spec, options.Adapter, workingDirectory: workspaceDirectory,
-            modelOverride: options.Model, effortOverride: options.Effort, outputOverride: options.OutputPath);
+            modelOverride: options.Model, effortOverride: options.Effort, outputOverride: options.OutputPath,
+            timeoutOverride: options.Timeout);
     }
 
     /// <summary>

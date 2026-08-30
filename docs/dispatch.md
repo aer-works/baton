@@ -10,7 +10,7 @@ interactive session (chat) is a different path with a different prompt and a con
 
 ```
 aer dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
-                    [--workspace <dir>] [--workflow-id <label>] [--output <path>]
+                    [--workspace <dir>] [--workflow-id <label>] [--output <path>] [--timeout <minutes>]
 ```
 
 ## Flags
@@ -25,6 +25,7 @@ aer dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--mod
 | `--workspace <dir>` | The repository the worker's read access is scoped to. Defaults to the current directory. For a role whose grant is enforced as declared, this is literally the directory the worker runs in. For a role whose write grant is audited rather than enforced (a withheld-write role on a vendor whose withheld writes do not reach the outbox — today, the write-withholding roles on `agy`), dispatch instead auto-provisions a **fresh git worktree of this directory at `HEAD`** and hands the worker that (#1354/#1380) — the worker never sees uncommitted or staged changes in that case, only what HEAD already had. Bound explicitly because `agy -p` ignores the process working directory (#491). |
 | `--workflow-id <label>` | A label forwarded to the run; defaults to the materialised template id. |
 | `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. |
+| `--timeout <minutes>` | Override the dispatched role's own catalog timeout for just this dispatch — a role that legitimately needs longer than its fixed tier timebox (an orchestrator coordinating sub-lanes, say) does not have to die mid-flight. Role dispatch only — refused up front on a template dispatch, the same way `--output` is: each phase carries its own role's timeout, so there is no single one to override. Must be a positive whole number of minutes; rejected outright above a 24h ceiling (a non-interactive dispatch has no confirmation prompt to gate a larger value behind); merely flagged on stderr above 2h. |
 
 #1355's acceptance criterion "one output path" is about `--output`/the printed fact above naming one
 destination — not about a role declaring only one output (`review` declares two: `report.md` AND

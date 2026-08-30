@@ -35,6 +35,11 @@ namespace Aer.Cli;
 /// </param>
 /// <param name="Effort">The effort axis, independent of the role's tier ([0017]/[0023]); null keeps the tier's effort.</param>
 /// <param name="OutputPath">The path where the primary worker report output must land (#1354); null keeps room artifact path default.</param>
+/// <param name="Timeout">
+/// The <c>--timeout</c> escape hatch (#1442) — semantics and rationale in spec/baton.md §2. Role
+/// dispatch only, rejected for a workflow template the same way <see cref="OutputPath"/> is. Null
+/// keeps the role's tier timeout. Validated and bounded by <see cref="DispatchOptionsParser"/>, not here.
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -44,4 +49,5 @@ public sealed record DispatchOptions(
     string? WorkspaceDirectory = null,
     string? Model = null,
     string? Effort = null,
-    string? OutputPath = null);
+    string? OutputPath = null,
+    TimeSpan? Timeout = null);

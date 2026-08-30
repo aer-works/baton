@@ -12,7 +12,19 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>aer dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>]";
+        "Usage: aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]";
+
+    /// <summary>
+    /// The hard ceiling <c>--timeout</c> refuses outright (#1442) — why refuse rather than confirm:
+    /// spec/baton.md §2.
+    /// </summary>
+    public const int MaxTimeoutMinutes = 24 * 60;
+
+    /// <summary>
+    /// The caution threshold <c>--timeout</c> accepts but flags — <see cref="Aer.Cli.DispatchCommand"/>
+    /// prints the stderr warning above this; why warn rather than refuse: spec/baton.md §2.
+    /// </summary>
+    public const int WarnTimeoutMinutes = 120;
 
     public static DispatchOptions Parse(IReadOnlyList<string> args)
     {
@@ -25,6 +37,7 @@ public static class DispatchOptionsParser
         string? workspaceDirectory = null;
         string? workflowId = null;
         string? outputPath = null;
+        TimeSpan? timeout = null;
 
         var i = 0;
         while (i < args.Count)
@@ -55,6 +68,9 @@ public static class DispatchOptionsParser
                     break;
                 case "--output":
                     outputPath = RequireValue(args, ref i, arg);
+                    break;
+                case "--timeout":
+                    timeout = ParseTimeout(RequireValue(args, ref i, arg));
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -100,7 +116,36 @@ public static class DispatchOptionsParser
             name, specFilePath, RoomDirectoryPath.Resolve(roomDirectoryPath), adapter, workflowId,
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             model, effort,
-            outputPath is null ? null : Path.GetFullPath(outputPath));
+            outputPath is null ? null : Path.GetFullPath(outputPath),
+            timeout);
+    }
+
+    /// <summary>
+    /// Parses <c>--timeout</c>'s minutes value: rejects anything that isn't a positive whole number,
+    /// and rejects (rather than merely warns on) anything above <see cref="MaxTimeoutMinutes"/> — the
+    /// issue's proposed &gt;2h interactive confirmation has no non-interactive equivalent, so the
+    /// simplest honest substitute is a hard ceiling here plus a caution-only warning printed by
+    /// <see cref="Aer.Cli.DispatchCommand"/> above <see cref="WarnTimeoutMinutes"/>.
+    /// </summary>
+    private static TimeSpan ParseTimeout(string rawValue)
+    {
+        if (!int.TryParse(rawValue, out var minutes) || minutes <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--timeout {rawValue}' is not a positive whole number of minutes. {Usage}",
+                "pass a positive integer, e.g. --timeout 90.");
+        }
+
+        if (minutes > MaxTimeoutMinutes)
+        {
+            throw new CliArgumentException(
+                $"'--timeout {rawValue}' exceeds the {MaxTimeoutMinutes}-minute (24h) ceiling. A "
+                + "non-interactive dispatch cannot ask for confirmation, so a value this large is "
+                + "refused outright rather than risk a typo stranding a lane for a full day.",
+                $"pass a value at or below {MaxTimeoutMinutes}, e.g. --timeout 120.");
+        }
+
+        return TimeSpan.FromMinutes(minutes);
     }
 
     private static string RequireValue(IReadOnlyList<string> args, ref int index, string optionName)

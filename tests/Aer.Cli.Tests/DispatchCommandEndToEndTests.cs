@@ -246,6 +246,104 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Dispatching_a_role_with_a_timeout_override_records_it_in_bindings_json()
+    {
+        // #1442: the override must land in the RECORDED bindings.json, not just influence the live
+        // run in memory -- WorkerBindingConfigEntry.Timeout (not workflow.json's WorkflowDefinition,
+        // which deliberately keeps a worker's timeout off the frozen step, see RoleDispatch's own doc)
+        // is what the engine actually resolves the per-execution timeout from.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions(
+                "advise", specPath, roomDirectory, Adapter: "fake", Timeout: TimeSpan.FromMinutes(99));
+
+            var state = (await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken)).State;
+
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(roomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal(TimeSpan.FromMinutes(99), bindings["advise"].Timeout);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Omitting_the_timeout_flag_keeps_the_role_s_own_catalog_timeout()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake");
+
+            await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(roomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal(WorkerRoleCatalog.For("advise").Timeout, bindings["advise"].Timeout);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_timeout_override_above_the_2h_caution_threshold_is_a_stderr_warning_not_a_refusal()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalError = Console.Error;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions(
+                "advise", specPath, roomDirectory, Adapter: "fake", Timeout: TimeSpan.FromMinutes(180));
+
+            using var stderrCapture = new StringWriter();
+            Console.SetError(stderrCapture);
+            var state = (await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken)).State;
+            Console.SetError(originalError);
+
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+            Assert.Contains("Warning", stderrCapture.ToString(), StringComparison.Ordinal);
+            Assert.Contains("--timeout", stderrCapture.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_a_template_with_a_timeout_override_is_a_typed_argument_error()
+    {
+        // Mirrors --output's template refusal — why in spec/baton.md §2.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var options = new DispatchOptions(
+                "implement-review", SpecFilePath: null, Path.Combine(testRoot, "task"), Timeout: TimeSpan.FromMinutes(30));
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+            Assert.Contains("--timeout", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Output_pointing_at_an_existing_directory_survives_and_still_reaches_terminal()
     {
         // R3 (#1354/#1380, finding 3): the red test for the copy crashing before Program's
