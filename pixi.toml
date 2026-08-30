@@ -237,6 +237,11 @@ audit-commentspecrefs-selftest = { cmd = "python -u tools/audit-completeness/com
 audit-docsbudget = { cmd = "python -u tools/audit-completeness/docsbudget.py" }
 audit-docsbudget-selftest = { cmd = "python -u tools/audit-completeness/docsbudget.py --selftest" }
 
+# #1400: invoking-baton.md's command lines vs the CLI parsers' own usage strings -- see
+# clitripwire.py's own docstring for the bidirectional contract it enforces.
+audit-clitripwire = { cmd = "python -u tools/audit-completeness/clitripwire.py" }
+audit-clitripwire-selftest = { cmd = "python -u tools/audit-completeness/clitripwire.py --selftest" }
+
 # #1402: proves the build lock discriminates -- two wrapped commands serialize, a dead holder's
 # lock is released by the OS, and a blocked waiter times out loudly. Real subprocesses against an
 # isolated lock file; never touches the real one, so it is safe to overlap with anything.

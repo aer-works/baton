@@ -275,7 +275,7 @@ slow one (#1356, #1374).** `aer run`/`aer dispatch`/`aer resume` (#1359) return 
 **`aer resume` continues ONE worker** — it hands an already-dispatched step's vendor session your
 follow-up message, reusing the workspace and grant that step already had, and the ledger gains a
 fresh execution pointing back at its predecessor (`aer resume <room-dir> --worker <role>
---message <text> --bindings <file>`; see `aer resume --help`). Its exit code is still the WHOLE
+--message <text> --bindings <file>`). Its exit code is still the WHOLE
 ROOM's outcome, same table, not "did the resumed step itself succeed" — if some other step had
 already Failed, even a perfectly good resume exits 1; read the resumed step's own status via
 `aer status --json`'s `steps[].state`/`linkedFrom` for that:
