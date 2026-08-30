@@ -120,6 +120,17 @@ worker is told to produce exactly what the contract asserts. A dispatched worker
 is one-shot (#1095): do the work to completion now and write the outputs before the turn ends — never
 schedule background work or wait for a wake-up, because nothing resumes the turn.
 
+## `aer redispatch` — rerunning a terminal room with an amended brief
+
+```
+aer redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--model <m>] [--effort <e>]
+                          [--workspace <dir>] [--output <path>] [--timeout <minutes>]
+```
+
+`<room-dir>` names the parent room to rerun. The full contract — what each flag inherits from that
+room vs. overrides, the Terminal/single-role refusals, and where lineage is recorded — is
+`spec/baton.md` §2; this page does not restate it.
+
 ## What a dispatch leaves in the room
 
 The room directory accumulates the materialised workflow definition and its worker bindings, the

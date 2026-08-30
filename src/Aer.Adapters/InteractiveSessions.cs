@@ -318,7 +318,16 @@ public static class InteractiveSessionMaterializer
     /// absent one already reads as a workflow room — but it makes the room self-describing on disk
     /// instead of implied by a missing file.
     /// </summary>
-    public static async Task WriteWorkflowRoomMarkerAsync(string roomDirectoryPath, CancellationToken cancellationToken = default)
+    /// <param name="parentRoomDirectoryPath">
+    /// <c>aer redispatch</c>'s lineage (#1441, spec/baton.md §2): the terminal room this one was
+    /// redispatched from. Null for an ordinary <c>aer dispatch</c>, which has no parent.
+    /// </param>
+    /// <param name="parentExecutionId">The parent room's own execution id, when cheaply known (#1441). Null otherwise.</param>
+    public static async Task WriteWorkflowRoomMarkerAsync(
+        string roomDirectoryPath,
+        string? parentRoomDirectoryPath = null,
+        string? parentExecutionId = null,
+        CancellationToken cancellationToken = default)
     {
         var markerPath = Path.Combine(roomDirectoryPath, ".aer", AerPaths.RoomMetadataFileName);
         var dir = Path.GetDirectoryName(markerPath);
@@ -328,7 +337,7 @@ public static class InteractiveSessionMaterializer
         }
 
         var json = JsonSerializer.Serialize(
-            new WorkflowRoomMarker(RoomKind.Workflow),
+            new WorkflowRoomMarker(RoomKind.Workflow, parentRoomDirectoryPath, parentExecutionId),
             new JsonSerializerOptions { WriteIndented = true });
 
         await RetryOnSharingViolationAsync(
@@ -336,7 +345,7 @@ public static class InteractiveSessionMaterializer
             cancellationToken).ConfigureAwait(false);
     }
 
-    private sealed record WorkflowRoomMarker(RoomKind Kind);
+    private sealed record WorkflowRoomMarker(RoomKind Kind, string? ParentRoomDirectoryPath = null, string? ParentExecutionId = null);
 
     /// <summary>
     /// Retries <paramref name="action"/> through the transient states of a concurrently
