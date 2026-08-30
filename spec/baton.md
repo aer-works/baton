@@ -220,12 +220,16 @@ as an error.
 status at all (`Program.cs`) — it cannot complete a room or substitute for watching the
 sentinel.
 
-**Two open defects a harness author must know about this contract, cited rather than smoothed
-over:** #1375 — `status --json` can report `Running` indefinitely for a dead engine (a crashed pump
-leaves no terminal record for the projection to read), so "Running" is a claim about the ledger, not
-a liveness proof; and #1377 — a human `reject` decision can surface as state `Failed` with
-`error: null`, so an absent `error` never implies an absent cause. Both are tracked bugs against
-this contract, not accepted behavior.
+**Two defects this contract used to carry, now closed (#1375, #1377) — cited so a harness author who
+read an older version of this section knows what changed:** a dead engine's `Running` step
+now also reports `steps[].liveness: "dead"` (§3 schema below), computed by the identical
+`EngineLivenessProbe` the human `aer status` rendering already used — one probe, two renderings,
+never two that can disagree; and a decision-rejected step now sets the top-level `rejected: true`
+(§3 schema below) alongside `state: "Failed"`/`error: null`, so an absent `error` no longer implies an
+absent cause — it can mean "a person said no" as well as "not yet recorded". Neither fix invents a
+value the ledger cannot actually support: there is still no operator-supplied rejection *reason* to
+surface (`FlowEvent.ExternalDecisionRecorded` carries none), so `rejected` stays a boolean, not a
+`reason` field that would always read `null`.
 
 ### Exit codes
 
@@ -268,12 +272,14 @@ only signal a lane is even still going, and it is unreliable for that purpose by
       "execution"?: string,
       "linkedFrom"?: string,           // set when this step's latest execution is an `aer resume`
       "usage"?: ExecutionUsageView,
-      "linkedFromUsage"?: ExecutionUsageView
+      "linkedFromUsage"?: ExecutionUsageView,
+      "liveness"?: "alive" | "dead" | "unknown"   // #1375, only present while this step reads "Running"
     }
   ],
   "outputs": [string],                 // resolved output paths
   "error": string | null,
-  "try": string | null                 // corrected-invocation text; only set on a pre-ledger refusal
+  "try": string | null,                // corrected-invocation text; only set on a pre-ledger refusal
+  "rejected": boolean                  // #1377, true iff some step settled via `DecisionType.Reject`
 }
 ```
 where `ExecutionUsageView` is
@@ -293,6 +299,20 @@ entirely (`JsonIgnoreCondition.WhenWritingNull`, `FleetStepStatusView`,
 `src/Aer.Mcp.Host/FleetStatusTool.cs`), and the fleet variant additionally carries a
 `timestamp` field the terminal-sentinel shape does not have. `terminal.json` and `status --json` are
 one contract; `fleet_status` is a third, related shape with its own null-handling — see §6's schema.
+
+**`liveness`/`rejected` (#1375/#1377) are `WorkflowStatusView`/`WorkflowStatusStepView`-only** — the
+`fleet_status` shape (§6) does not carry either field today; `FleetStatusTool` builds
+`FleetStepStatusView`/`FleetRoomStatusView` by copying named fields off the same projection rather
+than re-exposing it whole, so a fleet_status caller still cannot tell a dead engine or a rejection
+apart from an ordinary `Failed`/`Running` room. Not fixed here: out of scope for the `status --json`
+finding both issues were filed against, tracked as a gap rather than silently left unstated.
+`liveness` is present only on a step this same projection calls `"Running"` — the identical gate
+`StatusCommand.FormatStepStatus` uses before probing (a `Paused` step's engine has legitimately
+exited; a step with no execution yet has nothing to probe) — so its mere presence in the JSON already
+answers "does liveness apply here" before a caller reads its value. `rejected` carries no reason text
+alongside it: `FlowEvent.ExternalDecisionRecorded` records no operator-supplied reason field, so
+there is nothing structural to surface beyond the boolean fact itself; which step rejected, if that
+matters, is `steps[].state == "Rejected"` — already a token distinct from `"Failed"`.
 
 ---
 

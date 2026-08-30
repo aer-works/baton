@@ -156,8 +156,8 @@ available two other ways, and both give you the same set of paths without parsin
 
 - **`aer status <room-dir> --json`** — one JSON object to stdout, nothing else:
   <!-- record-once-ok: #1359 src/Aer.Flow/Status/WorkflowStatusView.cs -->
-  `{state, steps:[{id, state, execution, linkedFrom, usage, linkedFromUsage}], outputs:[...], error, try}`.
-  `outputs` is the
+  `{state, steps:[{id, state, execution, linkedFrom, usage, linkedFromUsage, liveness?}], outputs:[...], error, try, rejected}`
+  — full schema, including `liveness`/`rejected`'s exact semantics, at spec/baton.md §3. `outputs` is the
   flat list of absolute paths every succeeded step's declared outputs resolved to — the same paths
   the human line above prints, derived from the same read. Works on a running room too
   (`state: "Running"`), not only a settled one. `try` (#1357) is the same corrected-invocation text a
@@ -165,7 +165,11 @@ available two other ways, and both give you the same set of paths without parsin
   `error` — `null` when the refusal had none. Only ever populated on a pre-ledger `Failed` room (§5's
   exit-code-2 case); a settled or running room's ledger projection has no exception to carry one.
   `linkedFrom` (#1359) names the predecessor execution when the step's current one was started by
-  `aer resume`; anything that was dispatched or retried normally shows `null` there.
+  `aer resume`; anything that was dispatched or retried normally shows `null` there. `rejected` (#1377)
+  is `true` when a human `aer decide reject` settled some step, so `state: "Failed"`/`error: null`
+  never gets misread as an unrecorded crash. `liveness` (#1375) is present only on a step reading
+  `"Running"`, `"alive" | "dead" | "unknown"` from the same probe the human `aer status` line already
+  uses — so a SIGKILLed `aer run` stops reading as indefinitely `"Running"` to a polling agent.
 - **`usage`/`linkedFromUsage` (#1360)** cost per execution — the second field is the linked-from
   execution's own separate figure, present exactly when `linkedFrom` is. Shape:
   `{wallClockMs, tokensIn?, tokensOut?, turns?}`. The clock figure lands the moment Core has recorded

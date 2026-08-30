@@ -212,6 +212,53 @@ public class StatusJsonEndToEndTests
             Assert.Empty(view.Outputs);
             Assert.NotNull(view.Error);
             Assert.Contains("non-zero code", view.Error);
+            // #1377 polarity: an ordinary crash must NOT also read as a decision rejection.
+            Assert.False(view.Rejected);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_rejected_gate_reports_rejected_true_with_error_still_null_distinct_from_a_crash()
+    {
+        // #1377: a human `aer decide reject` over a succeeded, paused step carries no failure event
+        // (StateProjector never sets LatestFailureReason for a Reject), so `error` stays null exactly
+        // as it would for a healthy room -- `rejected` is the field that lets a machine caller tell
+        // "a person said no" apart from "the worker crashed and nobody recorded why" without parsing
+        // the (here, absent) error prose. `steps[].state` already reads "Rejected", a distinct token
+        // from "Failed" -- pinned here too, so both halves of the contract are proven together.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-rejected-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteApprovalGateWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteApprovalGateBindingsAsync(testRoot);
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+
+            var pausedResult = await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Paused, pausedResult.State.Status);
+            var pausedExecutionId = pausedResult.State.Steps.Single(s => s.StepId.Value == "a").LatestExecutionId!.Value;
+
+            var decideOptions = new DecideOptions(
+                roomDirectory, pausedExecutionId.Value, DecisionType.Reject, TargetStepId: null,
+                SupplementaryExecutionId: null, bindingsFilePath);
+            await DecideCommand.ExecuteAsync(decideOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            using var stdout = new StringWriter();
+            await StatusCommand.ExecuteAsync(
+                new StatusOptions(roomDirectory, Json: true), stdout, TestContext.Current.CancellationToken);
+
+            var rawJson = stdout.ToString();
+            var view = ParseSingleObject(rawJson);
+            Assert.Equal("Failed", view.State);
+            var step = Assert.Single(view.Steps);
+            Assert.Equal("Rejected", step.State);
+            Assert.Null(view.Error);
+            Assert.True(view.Rejected);
+            Assert.Contains("\"rejected\":true", rawJson, StringComparison.Ordinal);
         }
         finally
         {
@@ -309,6 +356,33 @@ public class StatusJsonEndToEndTests
         {
             ["solo"] = new WorkerBindingConfigEntry(
                 "shell", new WorkerContract("solo", [], [new ProducedOutput("plan")], []), command, TimeSpan.FromSeconds(30)),
+        };
+
+        var path = Path.Combine(directory, "bindings.json");
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(config));
+        return path;
+    }
+
+    private static async Task<string> WriteApprovalGateWorkflowAsync(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        var definition = new WorkflowDefinition(
+            new WorkflowTemplateId("status-json-approval-gate"), 1,
+            [new WorkflowStepDefinition(new StepId("a"), "a", [], ["out_a"], [], new RetryPolicy(1), new PausePoint([]))]);
+
+        var path = Path.Combine(directory, "workflow.json");
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(definition));
+        return path;
+    }
+
+    private static async Task<string> WriteApprovalGateBindingsAsync(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["a"] = new WorkerBindingConfigEntry(
+                "shell", new WorkerContract("a", [], [new ProducedOutput("out_a")], []),
+                WriteFileCommand("out_a", "a-out"), TimeSpan.FromSeconds(30)),
         };
 
         var path = Path.Combine(directory, "bindings.json");
