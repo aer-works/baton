@@ -42,6 +42,12 @@ last pushed for each (room, artifact) pair, and a run that finds an unchanged ha
 it. A room with zero declared outputs (typically a Failed room) still gets ONE deliverable, carrying
 only the verdict summary, so a failure with nothing to show is still visible in the inbox.
 
+A PER-ITEM pattern hit IS memorized as pushed, unlike the missing-patterns-file case: its stub was
+delivered, and not memorizing it would re-send that stub every cycle. The trade-off is that a
+false-positive match does not self-heal when the offending pattern is later narrowed -- to re-offer
+such an item, delete its (room, artifact) entry from push_state_file, or touch the artifact so its
+hash changes.
+
 Usage: python pusher.py [--once] [--selftest]
 Writes pusher.log (rotating-ish: truncated at 1MB) next to this script.
 """

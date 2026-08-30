@@ -186,13 +186,27 @@ async function handleMcp(request, env) {
   return json(rpcError(id ?? null, -32601, `method not found: ${method}`));
 }
 
+// Constant-time token compare: a plain !== leaks match-prefix length through timing. Network
+// jitter makes that impractical to exploit against a Worker, but the fix costs nothing.
+function tokenMatches(candidate, secret) {
+  if (typeof candidate !== "string" || typeof secret !== "string") return false;
+  const enc = new TextEncoder();
+  const a = enc.encode(candidate);
+  const b = enc.encode(secret);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
+  }
+  return diff === 0;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
 
     if (parts[0] === "push") {
-      if (parts[1] !== env.PUSH_TOKEN) return new Response(null, { status: 404 });
+      if (!tokenMatches(parts[1], env.PUSH_TOKEN)) return new Response(null, { status: 404 });
       if (request.method !== "POST") return new Response(null, { status: 405 });
       const body = await request.text();
       if (body.length > 1_000_000) return new Response("too large", { status: 413 });
@@ -211,12 +225,12 @@ export default {
     }
 
     if (parts[0] === "deliver") {
-      if (parts[1] !== env.PUSH_TOKEN) return new Response(null, { status: 404 });
+      if (!tokenMatches(parts[1], env.PUSH_TOKEN)) return new Response(null, { status: 404 });
       return handleDeliver(request, env);
     }
 
     if (parts[0] === "mcp") {
-      if (parts[1] !== env.READ_SEGMENT) return new Response(null, { status: 404 });
+      if (!tokenMatches(parts[1], env.READ_SEGMENT)) return new Response(null, { status: 404 });
       return handleMcp(request, env);
     }
 
