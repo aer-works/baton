@@ -7,12 +7,12 @@ enforces nothing on its own -- this is the check that does, per the project's ru
 which must not regress needs one that runs and fails.
 
 THE TWO SOURCES, READ FROM CODE RATHER THAN HARDCODED
-- The CLI parsers: every `src/Aer.Cli/*OptionsParser.cs` is enumerated by glob, and each one's own
+- The CLI parsers: every `src/Baton.Cli/*OptionsParser.cs` is enumerated by glob, and each one's own
   `Usage` string constant (the same text it prints on a malformed invocation) is parsed for its verb
   and its flags. A flag inside `[...]` is optional; a flag inside a bare `(a | b)` alternation group
   needs only one member present; everything else is required. This is the same shape
   `spec/baton.md`'s CLI table was verified against.
-- The doc: every fenced or single-backtick `aer <verb> ...` span in invoking-baton.md is extracted,
+- The doc: every fenced or single-backtick `baton <verb> ...` span in invoking-baton.md is extracted,
   with its starting line, verb, and the `--flag` tokens it uses.
 
 TWO DIRECTIONS OF DRIFT
@@ -26,10 +26,10 @@ TWO DIRECTIONS OF DRIFT
    reference (`docs/dispatch.md` and `spec/baton.md` own that job, and CLAUDE.md's record-once gate
    forbids restating one in the other) -- demanding every optional flag appear here would turn the
    quickstart into the reference it explicitly defers to.
-A verb the doc never demonstrates with a flag-bearing invocation (`aer cancel`, `aer supply` are
+A verb the doc never demonstrates with a flag-bearing invocation (`baton cancel`, `baton supply` are
 never shown at all) is out of scope for direction 2 -- there is nothing there to be missing FROM.
 
-Bare mentions (`aer templates`, `` `aer run` `` with no arguments) still have their verb checked
+Bare mentions (`baton templates`, `` `baton run` `` with no arguments) still have their verb checked
 against Program.cs's own `knownSubcommands` list, so a doc reference to a retired or misspelled verb
 is still caught even though it carries no flags to validate.
 """
@@ -41,14 +41,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-CLI_DIR = ROOT / "src" / "Aer.Cli"
+CLI_DIR = ROOT / "src" / "Baton.Cli"
 PROGRAM_CS = CLI_DIR / "Program.cs"
 DOC = ROOT / "docs" / "agents" / "invoking-baton.md"
 
 FLAG_RE = re.compile(r"--[a-z][a-z0-9-]*")
 BRACKET_RE = re.compile(r"\[[^\[\]]*\]")
 PAREN_RE = re.compile(r"\([^()]*\)")
-VERB_RE = re.compile(r"\baer\s+([a-z][a-z0-9-]*)")
+VERB_RE = re.compile(r"\bbaton\s+([a-z][a-z0-9-]*)")
 
 USAGE_CONST_RE = re.compile(
     r'const\s+string\s+Usage\s*=\s*((?:"(?:[^"\\]|\\.)*"\s*\+?\s*)+);')
@@ -56,7 +56,7 @@ STRING_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 CLASS_RE = re.compile(r"class\s+(\w+OptionsParser)\b")
 
 FENCE_RE = re.compile(r"```[a-zA-Z]*\n(.*?)```", re.S)
-INLINE_RE = re.compile(r"`(aer [^`]*)`", re.S)
+INLINE_RE = re.compile(r"`(baton [^`]*)`", re.S)
 
 # Sanity floor (#common-sense): a checker that silently extracted nothing is worse than none.
 MIN_PARSERS = 5
@@ -79,7 +79,7 @@ class ParserContract:
 
 
 class DocInvocation:
-    """One `aer <verb> ...` span found in the doc."""
+    """One `baton <verb> ...` span found in the doc."""
 
     def __init__(self, line, verb, flags, raw):
         self.line = line
@@ -134,12 +134,12 @@ def parse_known_subcommands(program_cs_text: str) -> set[str]:
 
 
 def parse_doc(text: str) -> list[DocInvocation]:
-    """Every `aer <verb> ...` span in the doc, fenced blocks and inline code spans alike."""
+    """Every `baton <verb> ...` span in the doc, fenced blocks and inline code spans alike."""
     invocations = []
 
     for m in FENCE_RE.finditer(text):
         block = m.group(1)
-        if not block.strip().startswith("aer "):
+        if not block.strip().startswith("baton "):
             continue
         line = text.count("\n", 0, m.start(1)) + 1
         verb_match = VERB_RE.search(block)
@@ -170,7 +170,7 @@ def find_drift(parsers: dict[str, ParserContract], known_verbs: set[str],
     for inv in invocations:
         if inv.verb not in known_verbs:
             problems.append(
-                f"docs/agents/invoking-baton.md:{inv.line}: `aer {inv.verb}` -- not a known "
+                f"docs/agents/invoking-baton.md:{inv.line}: `baton {inv.verb}` -- not a known "
                 f"subcommand (Program.cs's knownSubcommands). Invocation: `{inv.raw}`")
             continue
         parser = parsers.get(inv.verb)
@@ -179,7 +179,7 @@ def find_drift(parsers: dict[str, ParserContract], known_verbs: set[str],
         unknown_flags = sorted(inv.flags - parser.all_flags)
         for flag in unknown_flags:
             problems.append(
-                f"docs/agents/invoking-baton.md:{inv.line}: `aer {inv.verb}` doc invocation uses "
+                f"docs/agents/invoking-baton.md:{inv.line}: `baton {inv.verb}` doc invocation uses "
                 f"'{flag}', which {parser.cls_name}.Usage does not recognise. Invocation: `{inv.raw}`")
 
     # Direction 2: only verbs the doc actually demonstrates with a real (flag-bearing) invocation.
@@ -195,13 +195,13 @@ def find_drift(parsers: dict[str, ParserContract], known_verbs: set[str],
         for missing in sorted(parser.required_flags - doc_flags):
             problems.append(
                 f"{parser.file_rel}:{parser.line}: {parser.cls_name}.Usage requires '{missing}' "
-                f"for `aer {verb}`, but no invoking-baton.md invocation of `aer {verb}` ever shows it")
+                f"for `baton {verb}`, but no invoking-baton.md invocation of `baton {verb}` ever shows it")
         for group in parser.or_groups:
             if not (group & doc_flags):
                 problems.append(
                     f"{parser.file_rel}:{parser.line}: {parser.cls_name}.Usage requires one of "
-                    f"{sorted(group)} for `aer {verb}`, but no invoking-baton.md invocation of "
-                    f"`aer {verb}` shows any of them")
+                    f"{sorted(group)} for `baton {verb}`, but no invoking-baton.md invocation of "
+                    f"`baton {verb}` shows any of them")
 
     return problems
 
@@ -241,7 +241,7 @@ def main(argv: list[str]) -> int:
               f"Program.cs, got {len(known_verbs)}")
         return 1
     if len(invocations) < MIN_DOC_INVOCATIONS:
-        print(f" !! sanity floor tripped: expected >= {MIN_DOC_INVOCATIONS} `aer <verb> ...` spans "
+        print(f" !! sanity floor tripped: expected >= {MIN_DOC_INVOCATIONS} `baton <verb> ...` spans "
               f"in {DOC.relative_to(ROOT)}, got {len(invocations)}")
         return 1
 
@@ -263,10 +263,10 @@ def _selftest() -> int:
 
     fake_run_usage = (
         'public const string Usage =\n'
-        '    "Usage: aer run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] '
+        '    "Usage: baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] '
         '[--echo-worker]";')
-    fake_run_source = f'namespace Aer.Cli;\npublic static class RunOptionsParser {{\n{fake_run_usage}\n}}\n'
-    run_contract = parse_parser_file(fake_run_source, "src/Aer.Cli/RunOptionsParser.cs")
+    fake_run_source = f'namespace Baton.Cli;\npublic static class RunOptionsParser {{\n{fake_run_usage}\n}}\n'
+    run_contract = parse_parser_file(fake_run_source, "src/Baton.Cli/RunOptionsParser.cs")
     if run_contract is None or run_contract.verb != "run":
         failures.append("could not parse the fixture RunOptionsParser -- extraction anchor broke on a fixture")
     else:
@@ -274,32 +274,32 @@ def _selftest() -> int:
         known_verbs = {"run"}
 
         # Arm 1: unknown doc flag caught.
-        bad_doc = parse_doc("```\naer run wf.json --bindings b.json --frobnicate\n```\n")
+        bad_doc = parse_doc("```\nbaton run wf.json --bindings b.json --frobnicate\n```\n")
         problems = find_drift(parsers, known_verbs, bad_doc)
         if not any("--frobnicate" in p for p in problems):
             failures.append("arm 1 FAILED: an unknown doc flag was not caught")
 
         # Arm 2: parser flag the doc's covered verb never mentions (required --bindings omitted).
-        incomplete_doc = parse_doc("```\naer run wf.json --room-dir /tmp/x\n```\n")
+        incomplete_doc = parse_doc("```\nbaton run wf.json --room-dir /tmp/x\n```\n")
         problems = find_drift(parsers, known_verbs, incomplete_doc)
         if not any("--bindings" in p and "RunOptionsParser" in p for p in problems):
             failures.append("arm 2 FAILED: a required parser flag missing from every doc invocation was not caught")
 
         # Arm 2 control: an optional flag (--room-dir) omitted from the doc must NOT fail --
         # the quickstart is not required to demonstrate every optional flag.
-        minimal_doc = parse_doc("```\naer run wf.json --bindings b.json\n```\n")
+        minimal_doc = parse_doc("```\nbaton run wf.json --bindings b.json\n```\n")
         problems = find_drift(parsers, known_verbs, minimal_doc)
         if problems:
             failures.append(f"arm 2 control FAILED: omitting an optional flag fired: {problems}")
 
         # Arm 3: unknown verb caught even with no flags.
-        bad_verb_doc = parse_doc("see `aer defenestrate <room-dir>` for details")
+        bad_verb_doc = parse_doc("see `baton defenestrate <room-dir>` for details")
         problems = find_drift(parsers, known_verbs, bad_verb_doc)
         if not any("defenestrate" in p for p in problems):
             failures.append("arm 3 FAILED: an unknown verb was not caught")
 
         # Arm 4: clean doc passes.
-        clean_doc = parse_doc("```\naer run wf.json --bindings b.json --room-dir /tmp/x --echo-worker\n```\n")
+        clean_doc = parse_doc("```\nbaton run wf.json --bindings b.json --room-dir /tmp/x --echo-worker\n```\n")
         problems = find_drift(parsers, known_verbs, clean_doc)
         if problems:
             failures.append(f"arm 4 FAILED: a clean doc invocation was reported as drift: {problems}")
@@ -307,11 +307,11 @@ def _selftest() -> int:
     # Arm 5: OR-group satisfied by either alternative, not both.
     fake_resume_usage = (
         'public const string Usage =\n'
-        '    "Usage: aer resume <room-dir> --worker <role> (--message <text> | --message-file <path>) '
+        '    "Usage: baton resume <room-dir> --worker <role> (--message <text> | --message-file <path>) '
         '--bindings <bindings-file>";')
     fake_resume_source = (
-        f'namespace Aer.Cli;\npublic static class ResumeOptionsParser {{\n{fake_resume_usage}\n}}\n')
-    resume_contract = parse_parser_file(fake_resume_source, "src/Aer.Cli/ResumeOptionsParser.cs")
+        f'namespace Baton.Cli;\npublic static class ResumeOptionsParser {{\n{fake_resume_usage}\n}}\n')
+    resume_contract = parse_parser_file(fake_resume_source, "src/Baton.Cli/ResumeOptionsParser.cs")
     if resume_contract is None:
         failures.append("could not parse the fixture ResumeOptionsParser")
     elif resume_contract.or_groups != [frozenset({"--message", "--message-file"})]:
@@ -319,26 +319,26 @@ def _selftest() -> int:
     else:
         parsers = {"resume": resume_contract}
         one_alt_doc = parse_doc(
-            "`aer resume <room-dir> --worker <role> --message <text> --bindings <file>`")
+            "`baton resume <room-dir> --worker <role> --message <text> --bindings <file>`")
         problems = find_drift(parsers, {"resume"}, one_alt_doc)
         if problems:
             failures.append(f"arm 5 FAILED: satisfying one OR-alternative still fired: {problems}")
 
-        neither_alt_doc = parse_doc("`aer resume <room-dir> --worker <role> --bindings <file>`")
+        neither_alt_doc = parse_doc("`baton resume <room-dir> --worker <role> --bindings <file>`")
         problems = find_drift(parsers, {"resume"}, neither_alt_doc)
         if not any("--message" in p for p in problems):
             failures.append("arm 5 FAILED: satisfying neither OR-alternative did not fire")
 
     # Arm 6: sanity floor trips on an extraction that yields nothing.
-    empty_contract = parse_parser_file("namespace Aer.Cli;\npublic static class EmptyOptionsParser {}\n",
-                                        "src/Aer.Cli/EmptyOptionsParser.cs")
+    empty_contract = parse_parser_file("namespace Baton.Cli;\npublic static class EmptyOptionsParser {}\n",
+                                        "src/Baton.Cli/EmptyOptionsParser.cs")
     if empty_contract is not None:
         failures.append("arm 6 FAILED: a parser file with no Usage constant was not treated as an "
                          "extraction failure")
 
     # Arm 7: verbs the doc never demonstrates with a flag are out of scope for direction 2.
     if run_contract is not None:
-        bare_mention_doc = parse_doc("see `aer run` for details")
+        bare_mention_doc = parse_doc("see `baton run` for details")
         problems = find_drift({"run": run_contract}, {"run"}, bare_mention_doc)
         if problems:
             failures.append(f"arm 7 FAILED: a bare mention with no flags was treated as a covered "

@@ -193,7 +193,7 @@ NO_EXTENSION = ("#",)
 #     showing the same command, not restating a fact.
 #   * A generated file. Its single source is a string literal in the generator, invisible here; the
 #     copies are derived. Rewording the banner re-emits it into every generated file at once, and
-#     those files cannot carry a suppression marker -- Aer.Architecture.Tests fails hand edits.
+#     those files cannot carry a suppression marker -- Baton.Architecture.Tests fails hand edits.
 PATH_PREFIX = re.compile(r"^b/")
 TABLE_ROW = re.compile(r"^\s*\|")
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -373,6 +373,10 @@ def normalise(line: str) -> list[str]:
 # and `dispatch.py:231` at that SHA -- one fact, three files, near-verbatim. That is the defect this
 # checker exists for, found by the change rather than broken by it. A pin moving is not a licence to
 # repin; this one moved because the passage was read and judged real.
+#
+# #1458 renamed every one of these paths (Baton everywhere). The tuples below still spell out the
+# NAMES AS THEY EXISTED AT fc884cd -- pinned by SHA against a commit git history cannot rewrite, so
+# they stay `Aer.*`/`aer-agy-loop` regardless of what the current tree calls the same files.
 PROVEN_SHA = "fc884cd6dac19f16d803c28246e101e1c9fef493"
 PROVEN_GROUPS = (
     ('docs/decisions/0004-permission-scopes.md', 'src/Aer.Adapters/IWorkerAdapter.cs',
