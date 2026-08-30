@@ -317,13 +317,22 @@ snapshots plus `flow.jsonl` when no sentinel exists yet (`FleetStatusTool.cs`). 
 `AerPaths.Rooms` plus any caller-supplied extra `roots` and does not itself depend on a running daemon
 process — it opens files directly (`FleetStatusTool.cs`).
 
-**Two-level drill-down, both **(new build)** levels of `fleet_status` itself, never a second
-application:** the tool's per-room summary (level one) is what exists today; a room's own `stdout`
-tail and `flow.jsonl` timeline (level two, for debugging a specific lane) does not exist at HEAD — the
-tool currently reports only the terminal sentinel or a `state`+`error` projection
-(`FleetStatusTool.cs`), never live stdout. This settles the prior draft's open question:
-there is no separate diagnostic UI, dev or otherwise. Fleet Glass **is** the diagnostic story, and its
-second level is scoped work against the same MCP tool, not a new surface (tracked: #1427).
+**Two-level drill-down, both levels of `fleet_status`'s MCP host, never a second application:** the
+tool's per-room summary (level one, `fleet_status` itself) is what exists today. Level two — a room's
+own `stdout` tail and `flow.jsonl` timeline, for debugging a specific lane — is now `room_detail`
+(`src/Aer.Mcp.Host/RoomDetailTool.cs`, #1427): a sibling tool in the same MCP host, gated by its own
+`--room-detail-tool` flag in `Program.cs`, resolving a room by name or absolute path and returning a
+bounded (64 KiB) tail of an execution's `.stdout.log` plus a bounded (500-entry tail) projection of
+`flow.jsonl` (event type and writer-stamped timestamp per line, never the raw event payloads — both
+halves are capped for the same reason `fleet_status`'s own output stays MCP-friendly). Which
+execution's stdout: the most recently written one by default (a heuristic that can name the wrong
+lane after a retry, since the newest write is not necessarily the one being debugged), or a
+caller-pinned `execution` id to bypass the heuristic. Same direct-file-read posture as level one — no
+daemon dependency, and a missing or still-running room, a held-open ledger, or a malformed line all
+degrade to a partial view plus a `note`/`unreadable` marker, never a throw. This settles the prior
+draft's open question: there is no separate diagnostic UI, dev or otherwise. Fleet Glass **is** the
+diagnostic story, and its second level is scoped work against the same MCP tool surface, not a new
+one.
 
 The outbound push mailbox — the mechanism that would notify a harness of a state-change event without
 polling — is **(new build)**. There is no `push`, `mailbox`, or outbound-webhook-shaped
@@ -354,6 +363,7 @@ Output: a JSON array of
 {
   "name": string,
   "path": string,
+  "project"?: string,             // §8 registry: the project root this room was dispatched for
   "state"?: string,
   "steps"?: [
     { "id": string, "state": string, "execution"?: string, "linkedFrom"?: string,
@@ -370,8 +380,38 @@ is a **third shape**, related to but not identical with `terminal.json`/`status 
 note on `linkedFrom` and `timestamp` for the concrete divergence.
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
-(`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found today. §8
-depends on this fact directly.
+(`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan
+alone. §8 depends on this fact directly, and closes it by unioning the scan with a registry rather
+than by making the scan recurse.
+
+### §6 schema — `room_detail`
+
+Input:
+```
+{
+  "room": string,                 // room name (resolved under AerPaths.Rooms + roots) or an absolute path
+  "roots"?: [string],             // extra directories to search when 'room' is a name
+  "execution"?: string            // pin a specific execution id's stdout; default: most recently written
+}
+```
+Output:
+```
+{
+  "name": string,
+  "path"?: string,
+  "stdout"?: { "text": string, "truncated": boolean, "totalBytes": number, "source": string, "readError"?: string },
+  "timeline"?: { "entries": [ { "type": string, "timestamp"?: string, "detail"?: string } ],
+                 "truncated": boolean, "totalEntries": number },
+  "error"?: string,
+  "note"?: string
+}
+```
+(`RoomDetailTool.cs`). Optional fields are omitted, never emitted `null`, the same convention as
+`fleet_status`'s shapes. `stdout` is absent (not an error) for a room with no captured output yet;
+`timeline` is absent for a room with no `flow.jsonl` yet (pre-ledger). A held-open ledger or a
+malformed line surfaces as a single `timeline.entries` item with `"type": "unreadable"` and a
+`detail` message, rather than failing the call. `error` is set only when `room` itself does not
+resolve to a directory.
 
 ---
 
@@ -433,26 +473,76 @@ code path. Both vendors participate in the ledger.
 
 ## §8 Multi-project room registry
 
-**(new build).** No registry implementation exists at HEAD; this section states the invariant a build
-must satisfy, not a shipped contract. Name the invariant: **`fleet_status` coverage never shrinks
-when daemon surfaces are deleted** — a room that `fleet_status` could find before a given daemon
-endpoint was removed must still be findable after. This needs a regression test, not just a design
-note.
+**Shipped (#1426).** Name the invariant: **`fleet_status` coverage never shrinks when daemon surfaces
+are deleted** — a room that `fleet_status` could find before a given daemon endpoint was removed must
+still be findable after. Regression-tested directly:
+`FleetStatusToolTests.RegistryEntry_OutsideEveryScannedRoot_IsStillFoundByFleetStatus` registers a room
+under a project directory passed as no `roots` entry and asserts `fleet_status` still returns it.
 
 **The true reason this is a prerequisite, stated correctly:** it is not that deleting daemon surfaces
-*shrinks* `fleet_status`'s coverage — I checked, and `fleet_status` derives coverage from
-`AerPaths.Rooms` plus caller-supplied `roots` and nothing else (`FleetStatusTool.cs`); it does
-not depend on any daemon surface today, so deleting one cannot regress it. The real risk is narrower
-and still real: `fleet_status`'s scan is **single-level**
-(`Directory.GetDirectories`, one call per root, §6) — it has no notion of "every room across every
-project a harness might dispatch into," only "every room directly under whichever roots I was told
-about." A harness that dispatches into a fresh project directory the operator never passed as a
-`roots` entry is invisible to `fleet_status` until someone remembers to add it. The registry closes
-*that* gap — project-grouped discovery and cross-root coverage a caller does not have to enumerate by
-hand — not a regression from deleted daemon code.
+*shrinks* `fleet_status`'s coverage — `fleet_status` derives coverage from `AerPaths.Rooms` plus
+caller-supplied `roots` and nothing else at the scan layer (`FleetStatusTool.cs`); it does not depend
+on any daemon surface, so deleting one cannot regress it. The real risk is narrower and still real:
+the scan itself is **single-level** (`Directory.GetDirectories`, one call per root, §6) — it has no
+notion of "every room across every project a harness might dispatch into," only "every room directly
+under whichever roots I was told about." A harness that dispatches into a fresh project directory the
+operator never passed as a `roots` entry was invisible to `fleet_status` until someone remembered to
+add it. The registry closes *that* gap.
 
-The exact registration mechanism (how `aer dispatch` announces a room's existence and project grouping
-to the registry) is unspecified here — that is design work for the build (tracked: #1426).
+**The mechanism.** `RoomRegistryStore` (`src/Aer.Flow/Status/RoomRegistryStore.cs`, namespace
+`Aer.Adapters` for the same reason `AerPaths` lives there — `fleet_status` reads it with no
+`Aer.Adapters` project reference) reads and writes `AerPaths.RoomRegistryFile`
+(`{AER_HOME}/room-registry.jsonl`), one JSON line per registration: room directory path, project root,
+created-at.
+
+- **Writer.** `RunCommand.ExecuteAsync` — the one pump both `aer run` and `aer dispatch` share —
+  registers the room right after creating its directory, on every call through that pump (a fresh
+  dispatch, or a repeated `aer run` against a room this pump already started), so a registration lost
+  to a crash between directory creation and the write is repaired the next time this pump runs against
+  the same room. `aer dispatch` passes its own resolved workspace (honouring `--workspace`) as the
+  project root; a bare `aer run` has no separate workspace concept and uses the process cwd. This does
+  *not* cover the separate `aer resume`/`decide`/`supply` mutation verbs — they only ever act against a
+  room `aer run`/`dispatch` already created and never re-register it, so a room whose very first
+  registration attempt failed and is thereafter driven only through one of those verbs stays
+  unregistered until the next plain `aer run`/`dispatch` against it. The write is fire-and-forget with
+  respect to the run itself — an `IOException`/`UnauthorizedAccessException`/`WaitHandleCannotBeOpenedException`
+  is reported on stderr and swallowed, never surfaced as a run failure, because the registry only ever
+  *adds* `fleet_status` coverage and must never gate a dispatch.
+- **Format: append-only JSONL, not a rewritten JSON map, guarded by a named `Mutex`.** Every dispatch
+  that creates a room is a separate, potentially concurrent `aer` process — that concurrency is the
+  reason a fleet-wide registry exists at all. A last-writer-wins map would need a read-modify-write
+  cycle on every registration; append avoids that. `FileMode.Append` alone is **not** atomic across
+  processes on Windows — measured with no lock and no `FileShare` restriction at all: six concurrent
+  processes appending under `FileMode.Append`/`FileShare.ReadWrite` lost roughly a fifth of their
+  lines, some to two JSON objects concatenated with no newline between them. The shipped writer
+  additionally opens with the narrower `FileShare.Read` (the same choice `FlowEventLogWriter` makes
+  for `flow.jsonl`), which stops that byte-level interleaving on its own — but not losses: without a
+  lock, a second concurrent writer gets a sharing-violation `IOException` instead, which the registry's
+  fail-open contract requires swallowing, i.e. a dropped registration rather than corrupted bytes.
+  `RoomRegistryStore` closes that gap by serializing every access, read or write, behind one named
+  `Mutex` keyed on the registry file path, so a concurrent writer waits and then succeeds rather than
+  losing its registration to a sharing violation
+  (`RoomRegistryStoreTests.Concurrent_appends_from_many_tasks_lose_no_entries` drives fifty concurrent
+  writers at the store's public API and asserts none are lost). "Last-writer-wins per room" is the
+  *read-time* semantic on top of that — `RoomRegistryStore.ReadDistinctByRoomAsync` folds repeated
+  lines for one room path down to the last one written.
+- **Reader.** `FleetStatusTool` unions the registry's entries with its existing `AerPaths.Rooms` +
+  caller `roots` scan. A registry entry whose room directory no longer exists is skipped (not pruned
+  from the file yet — see below). Every room `fleet_status` returns, whether found by the scan or the
+  registry, carries a `project` field (§6 schema) when a registry entry names one, so callers can
+  group the level-one summary by project without enumerating project directories themselves.
+- **Malformed/missing tolerated.** A missing registry file reads as no entries; a malformed line is
+  skipped without failing the read or hiding the well-formed lines around it — the registry degrades
+  to exactly what the directory scan alone would have returned, never fewer.
+
+**Left undone, reported rather than silently dropped:** stale entries (a registered room directory
+later deleted) are skipped on every read but not physically pruned from the file. The `Mutex` above
+would make a compaction rewrite safe against a concurrent appender; writing that rewrite (fold to one
+line per room, drop entries whose directory no longer exists, replace the file under the same lock)
+was judged out of scope for this build regardless. The registry file grows without bound as rooms are
+created and later cleaned up by `RoomRetentionSweep` (§7); a follow-up should add that compaction
+(e.g. gated the same way `RoomRetentionSweep` already is) or confirm the growth rate is immaterial in
+practice.
 
 ---
 

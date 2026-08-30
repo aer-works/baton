@@ -122,6 +122,16 @@ public static class AerPaths
     public const string SettingsFileName = "settings.json";
 
     /// <summary>
+    /// <c>{Root}/room-registry.jsonl</c> — see <see cref="RoomRegistryStore"/> (spec/baton.md §8) for what
+    /// this holds: one append-only line per room registration (room path, project root, created-at).
+    /// The coverage guarantee this buys is stated once, in <c>FleetStatusTool</c>'s remarks.
+    /// </summary>
+    public static string RoomRegistryFile => Path.Combine(Root, RoomRegistryFileName);
+
+    /// <summary>Filename of <see cref="RoomRegistryFile"/> relative to a root.</summary>
+    public const string RoomRegistryFileName = "room-registry.jsonl";
+
+    /// <summary>
     /// The canonical key for a record directory: absolute, with any trailing separator removed, so
     /// <c>C:\x\run</c>, <c>C:\x\run\</c> and <c>C:\x\..\x\run</c> all resolve to one entry.
     /// </summary>

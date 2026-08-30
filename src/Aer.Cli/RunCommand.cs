@@ -76,6 +76,7 @@ public static class RunCommand
         ArgumentNullException.ThrowIfNull(adapters);
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
+        await RegisterRoomAsync(options, cancellationToken).ConfigureAwait(false);
 
         var snapshotPath = Path.Combine(options.RoomDirectoryPath, SnapshotFileName);
         var logPath = Path.Combine(options.RoomDirectoryPath, LogFileName);
@@ -292,5 +293,45 @@ public static class RunCommand
         var snapshot = SnapshotBinder.Bind(definition);
         await SnapshotBinder.PersistAsync(snapshot, snapshotPath, cancellationToken).ConfigureAwait(false);
         return snapshot;
+    }
+
+    /// <summary>
+    /// spec/baton.md §8: records this room into the machine-local multi-project registry so
+    /// <c>fleet_status</c> can find it even outside any root a caller happens to scan. Runs on every
+    /// call to <see cref="ExecuteAsync"/> (first start and re-entry through this pump alike;
+    /// spec/baton.md §8 names which verbs those are) — rather than only when <see cref="RunOptions.RoomDirectoryPath"/>
+    /// has no snapshot yet, so a registration lost to an earlier crash (the process died between
+    /// <see cref="Directory.CreateDirectory(string)"/> above and this write) is repaired by the next
+    /// call through this pump rather than staying permanently unregistered. Re-registering an
+    /// already-registered room is harmless: <see cref="RoomRegistryStore.ReadDistinctByRoomAsync"/>
+    /// folds repeats down to the last write per room path.
+    /// <para>
+    /// The mutation verbs (<see cref="ResumeCommand"/> and friends) bypass this pump and therefore
+    /// never re-register — spec/baton.md §8 spells out which verbs register and the accepted gap
+    /// that leaves (an initially-failed registration driven only by mutation verbs stays
+    /// unregistered until the pump next runs against that room).
+    /// </para>
+    /// <para>
+    /// Never gates the run: the registry only adds <c>fleet_status</c> coverage, so a write failure
+    /// (an unwritable or momentarily locked registry file, or a lock-name collision) is reported on
+    /// stderr and swallowed rather than surfaced as a run failure.
+    /// </para>
+    /// </summary>
+    private static async Task RegisterRoomAsync(RunOptions options, CancellationToken cancellationToken)
+    {
+        var projectRoot = options.ProjectRootDirectory ?? Directory.GetCurrentDirectory();
+
+        try
+        {
+            await RoomRegistryStore.AppendAsync(
+                options.RoomDirectoryPath, projectRoot, AerPaths.RoomRegistryFile, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+        {
+            Console.Error.WriteLine(
+                $"Could not update the room registry at '{AerPaths.RoomRegistryFile}': {ex.Message}. "
+                + "fleet_status will still find this room via its normal directory scan.");
+        }
     }
 }

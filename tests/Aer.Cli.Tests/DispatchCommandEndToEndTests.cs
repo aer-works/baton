@@ -83,6 +83,39 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// spec/baton.md §8's writer: <c>aer dispatch</c> registers the room into
+    /// <see cref="RoomRegistryStore"/> keyed on its resolved workspace, not the process cwd -- the two
+    /// can differ (<c>--workspace</c>), and it is exactly that difference the registry exists to close
+    /// (<see cref="FleetStatusToolTests.RegistryEntry_OutsideEveryScannedRoot_IsStillFoundByFleetStatus"/>
+    /// is the reader-side half of the same invariant).
+    /// </summary>
+    [Fact]
+    public async Task Dispatching_registers_the_room_under_its_workspace_as_the_project_root()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var workspace = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-workspace-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(workspace);
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for Y.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake", WorkspaceDirectory: workspace);
+
+            await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            var entries = await RoomRegistryStore.ReadDistinctByRoomAsync(
+                AerPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
+            var entry = Assert.Single(entries, e => e.RoomPath == AerPaths.RecordKey(roomDirectory));
+            Assert.Equal(AerPaths.RecordKey(workspace), entry.ProjectRoot);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
     [Fact]
     public async Task Dispatching_a_role_whose_worker_writes_nothing_fails_the_contract()
     {

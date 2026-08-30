@@ -110,7 +110,9 @@ public static class DispatchCommand
         await WorkflowDefinitionWriter.SaveToFileAsync(definition, workflowFilePath, cancellationToken).ConfigureAwait(false);
         await WorkerBindingConfigWriter.SaveToFileAsync(bindings, bindingsFilePath, cancellationToken).ConfigureAwait(false);
 
-        var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, options.WorkflowId);
+        var runOptions = new RunOptions(
+            workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, options.WorkflowId,
+            ProjectRootDirectory: workspace);
         var result = await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: cancellationToken).ConfigureAwait(false);
 
         if (options.OutputPath is not null && result.State.Status == WorkflowStatus.Terminal)

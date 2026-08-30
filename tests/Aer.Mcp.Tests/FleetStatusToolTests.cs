@@ -13,6 +13,7 @@ namespace Aer.Mcp.Tests;
 /// Validates root enumeration, terminal sentinel fast path, active room projection,
 /// filtering, and graceful error handling on malformed rooms.
 /// </summary>
+[Collection(AerHomeEnvCollection.Name)]
 public sealed class FleetStatusToolTests : IDisposable
 {
     private readonly string _tempHome;
@@ -255,6 +256,135 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("sync-room", singleRoom.Name);
+    }
+
+    /// <summary>
+    /// spec/baton.md §8's named invariant, as a regression test rather than a design note: a room
+    /// registered under a project root the caller never passes as a <c>roots</c> entry is still found.
+    /// The room directory here sits outside both <see cref="AerPaths.Rooms"/> and any scanned root —
+    /// only the registry names it — so this fails the moment the union degrades back to a bare
+    /// directory scan.
+    /// </summary>
+    [Fact]
+    public async Task RegistryEntry_OutsideEveryScannedRoot_IsStillFoundByFleetStatus()
+    {
+        var unlistedProjectDir = Path.Combine(Path.GetTempPath(), $"aer-fleet-unlisted-project-{Guid.NewGuid():N}");
+        var room = Path.Combine(unlistedProjectDir, ".aer", "rooms", "registry-only-room");
+
+        try
+        {
+            Directory.CreateDirectory(room);
+            var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+            await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+            await RoomRegistryStore.AppendAsync(
+                room, unlistedProjectDir, AerPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
+
+            var tool = new FleetStatusTool();
+            // Deliberately no "roots" entry for unlistedProjectDir -- the whole point of the test.
+            var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+            Assert.False(result.IsError);
+            var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+            Assert.NotNull(rooms);
+            var found = Assert.Single(rooms!, r => r.Name == "registry-only-room");
+            Assert.Equal("Succeeded", found.State);
+            Assert.Equal(AerPaths.RecordKey(unlistedProjectDir), found.Project);
+        }
+        finally
+        {
+            if (Directory.Exists(unlistedProjectDir))
+            {
+                DirectoryCleanup.DeleteRecursively(unlistedProjectDir);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task RegistryEntry_WhoseRoomDirectoryWasDeleted_IsSkippedRatherThanErroring()
+    {
+        var deletedRoomProjectDir = Path.Combine(Path.GetTempPath(), $"aer-fleet-deleted-project-{Guid.NewGuid():N}");
+        var deletedRoom = Path.Combine(deletedRoomProjectDir, "rooms", "gone-room");
+        try
+        {
+            Directory.CreateDirectory(deletedRoom);
+            await RoomRegistryStore.AppendAsync(
+                deletedRoom, deletedRoomProjectDir, AerPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
+            DirectoryCleanup.DeleteRecursively(deletedRoom);
+
+            var defaultRoomsDir = Path.Combine(_tempHome, AerPaths.RoomsDirectoryName);
+            var healthyRoom = Path.Combine(defaultRoomsDir, "healthy-registry-room");
+            Directory.CreateDirectory(healthyRoom);
+            var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+            await TerminalSentinelWriter.WriteAsync(healthyRoom, sentinel, TestContext.Current.CancellationToken);
+
+            var tool = new FleetStatusTool();
+            var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+            Assert.False(result.IsError);
+            var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+            Assert.NotNull(rooms);
+            Assert.DoesNotContain(rooms!, r => r.Name == "gone-room");
+            Assert.Contains(rooms!, r => r.Name == "healthy-registry-room");
+        }
+        finally
+        {
+            if (Directory.Exists(deletedRoomProjectDir))
+            {
+                DirectoryCleanup.DeleteRecursively(deletedRoomProjectDir);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task MalformedRegistry_IsToleratedAndFallsBackToTheDirectoryScan()
+    {
+        await File.WriteAllTextAsync(
+            AerPaths.RoomRegistryFile, "{ not valid json\n", TestContext.Current.CancellationToken);
+
+        var defaultRoomsDir = Path.Combine(_tempHome, AerPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "scanned-room");
+        Directory.CreateDirectory(room);
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("scanned-room", singleRoom.Name);
+        Assert.Null(singleRoom.Project);
+    }
+
+    /// <summary>
+    /// A real I/O failure, not just malformed content (#1447 review finding): the registry path
+    /// occupied by a DIRECTORY makes every open attempt throw. The only-ever-adds-coverage
+    /// contract means the scan's rooms must still come back with no error — losing the whole call
+    /// to a registry read failure would be strictly worse than answering scan-only.
+    /// </summary>
+    [Fact]
+    public async Task RegistryPathOccupiedByADirectory_StillAnswersFromTheScanAlone()
+    {
+        Directory.CreateDirectory(AerPaths.RoomRegistryFile);
+
+        var defaultRoomsDir = Path.Combine(_tempHome, AerPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "scanned-room");
+        Directory.CreateDirectory(room);
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("scanned-room", singleRoom.Name);
+        Assert.Null(singleRoom.Project);
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
