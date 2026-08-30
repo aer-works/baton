@@ -13,6 +13,7 @@ namespace Aer.Mcp.Tests;
 /// Validates root enumeration, terminal sentinel fast path, active room projection,
 /// filtering, and graceful error handling on malformed rooms.
 /// </summary>
+[Collection(AerHomeEnvCollection.Name)]
 public sealed class FleetStatusToolTests : IDisposable
 {
     private readonly string _tempHome;
