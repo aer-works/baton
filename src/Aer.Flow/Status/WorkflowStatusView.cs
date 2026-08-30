@@ -71,8 +71,8 @@ public sealed record WorkflowStatusView(
     // surface alongside it: `FlowEvent.ExternalDecisionRecorded` carries no operator-supplied reason
     // field today, so a `reason` field here would always read `null` and this deliberately does not
     // invent one. Lets a caller reading `state: "Failed"`/`error: null` tell "a person said no" apart
-    // from "the worker crashed and nobody recorded why" without parsing prose; which step, if that
-    // matters, is `steps[].state == "Rejected"` (already a distinct token from `Failed`).
+    // from "the worker crashed and nobody recorded why" without parsing prose; the branching recipe
+    // and the which-step pointer live in spec/baton.md §3.
     [property: JsonPropertyName("rejected")] bool Rejected = false);
 
 /// <summary>
