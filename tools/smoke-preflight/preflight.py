@@ -44,7 +44,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SMOKE = os.path.join(ROOT, "tests", "Aer.Cli.SmokeTests")
+SMOKE = os.path.join(ROOT, "tests", "Baton.Cli.SmokeTests")
 
 # Aliases claude documents in `--help`. `haiku` is not in its example list but resolves: verified via
 # `modelUsage`, which reported claude-haiku-4-5-20251001 rather than a fallback. Checking the

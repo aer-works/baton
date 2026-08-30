@@ -260,10 +260,10 @@ Machine-readable, explicitly *"for scripting; does not require a TTY"*. Observed
 
 ```json
 [
-  { "id": "6567d8cf", "cwd": "…\\source\\repos\\aer", "kind": "background",
+  { "id": "6567d8cf", "cwd": "…\\source\\repos\\baton", "kind": "background",
     "startedAt": 1784902257007, "sessionId": "…", "name": "Reevaluate user experience from ground up",
     "state": "blocked" },
-  { "pid": 18272, "cwd": "…\\source\\repos\\aer", "kind": "interactive",
+  { "pid": 18272, "cwd": "…\\source\\repos\\baton", "kind": "interactive",
     "startedAt": 1784925162327, "sessionId": "…", "name": "…", "status": "busy" }
 ]
 ```
@@ -351,7 +351,7 @@ Two things the design assumed otherwise:
   - **The rejection datum was never about `--effort` at all. Resolved 2026-07-28.** A real dispatch
     had failed with `Error: invalid model selection (--model "gemini-3-pro" --effort "high"):
     --effort is not supported for model "gemini-3-pro"` — recorded in
-    [`OutcomeClassifierTests`](../tests/Aer.Flow.Tests/Outcomes/OutcomeClassifierTests.cs), which
+    [`OutcomeClassifierTests`](../tests/Baton.Flow.Tests/Outcomes/OutcomeClassifierTests.cs), which
     pins it as the stderr AER must surface. This page then read it as evidence that effort support is
     *per-model*, while flagging that reading as an inference and naming the control that would settle
     it: the same dispatch with `--effort` dropped.
@@ -437,7 +437,7 @@ judging how "deep" one model's answers actually read next to another's.
 `models.claude-alias-floor`, both `--sentinels`-covered) guard the one thing this mapping actually
 depends on: that each vendor's model set hasn't moved out from under it.
 
-**Not to be confused with** `src/Aer.Adapters/WorkerTiers.json`'s
+**Not to be confused with** `src/Baton.Vendors/WorkerTiers.json`'s
 frontier/standard/cheap/minimal/orchestrator vocabulary — that is role-dispatch's own internal
 dispatch-tier system, unrelated to this one, and never rendered to a person.
 
@@ -640,7 +640,7 @@ in the execution's captured stdout; nothing here is fabricated when a line does 
 
 **The gate every one of these rows sits behind: structured-output mode.** All three vendor-reported
 fields live in the `stream-json` terminal line this whole document has been describing — if a
-dispatch runs in plain-text mode instead (today's default for an ordinary `aer run`/`aer dispatch`
+dispatch runs in plain-text mode instead (today's default for an ordinary `baton run`/`baton dispatch`
 lane; see `RoleDispatch.ToBinding`'s own remarks on why claude stays text-mode there), stdout is prose
 with no such line in it, and `tokensIn`/`tokensOut`/`turns` are absent for that execution regardless
 of what the vendor is otherwise capable of reporting. `wallClockMs` is unaffected either way.
@@ -905,7 +905,7 @@ to come from `--sandbox` or from the MCP consultation path, not from flags.
 **`agy -p` has its own print-mode wait timeout, decoupled from anything AER configures unless the
 flag is passed.** `agy --help`: `--print-timeout  Timeout for print mode wait (default 5m0s)`. Until
 `#588`, `GeminiWorkerAdapter` never passed it, so a long read+reason+write job (measured with a
-~39-file corpus audit dispatched via `Aer.Cli run`) exited 0 with no output file and no diagnostic
+~39-file corpus audit dispatched via `Baton.Cli run`) exited 0 with no output file and no diagnostic
 *from agy*, regardless of AER's own configured `Timeout` being far longer.
 
 The operator was not told nothing — they were told the **wrong thing**. A clean exit 0 with the

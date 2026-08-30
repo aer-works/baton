@@ -16,7 +16,7 @@ import json
 import os
 import sys
 
-SENTINEL_DIR = os.environ.get("AER_SENTINEL_DIR", ".")
+SENTINEL_DIR = os.environ.get("BATON_SENTINEL_DIR", ".")
 
 TOOLS = [
     {

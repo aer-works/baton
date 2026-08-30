@@ -1,0 +1,152 @@
+[
+  {
+    "id": "advise",
+    "tier": "standard",
+    "read_files": true,
+    "write_files": true,
+    "run_shell_commands": false,
+    "network_access": false,
+    "timeout_minutes": 25,
+    "verdict_schema": false,
+    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. #1355 tried making this read-shaped (write_files: false, the review/fact-check/patch shape) but reverted it: advise's tier defaults to agy, which is not outbox-write-capable, and tools/baton-agy-loop/dispatch.py's grant_refusal() refuses a withheld-write role on a non-outbox-capable adapter outright by design (satisfiability there is unmeasured, #638) rather than auto-granting the audited write the C# engine's RoleDispatch now does. Narrowing this needs either a tier change (a separate decision) or teaching dispatch.py the engine's audited-grant translation -- see #1386 for the follow-up.",
+    "outputs": [
+      {
+        "name": "advice.md",
+        "schema": "none",
+        "instruction": "Write your recommendation -- the options you weighed and your reasoning -- to $BATON_OUTPUT_DIR/advice.md."
+      }
+    ]
+  },
+  {
+    "id": "implement",
+    "tier": "standard",
+    "read_files": true,
+    "write_files": true,
+    "run_shell_commands": true,
+    "network_access": true,
+    "timeout_minutes": 40,
+    "verdict_schema": false,
+    "purpose": "A bounded change with the approach already decided. Exercises the write path and agy's skip-permissions translation, which is the half of AER that review-only dispatches never touch. Its 40 minutes is NOT the #588 path -- every template's timeout exercises that equally -- so do not reach for the skip-permissions grant expecting it to buy that. #1355 kept network_access true here: PermissionGrant.CategoriesDefeatedByTheShell/WorkerBindingResolver refuse RunShellCommands without NetworkAccess outright for EVERY grant-consuming adapter, claude included, not agy alone (--adapter claude is not an escape hatch) -- and agy's own AgyWorkerAdapter.TryTranslatePermissionGrant refuses the same combination a second time at the vendor-translation layer, since --dangerously-skip-permissions grants both or neither. Defaulting network off here would make every unmodified dispatch of this role throw. See #1387 for the follow-up this leaves open.",
+    "outputs": [
+      {
+        "name": "changes.md",
+        "schema": "none",
+        "instruction": "Write a summary of the changes you made -- which files, and what and why -- to $BATON_OUTPUT_DIR/changes.md. This is a floor and a handoff, not proof the change is correct; a following review verifies that against the diff."
+      }
+    ]
+  },
+  {
+    "id": "review",
+    "tier": "frontier",
+    "read_files": true,
+    "write_files": false,
+    "run_shell_commands": true,
+    "network_access": false,
+    "shell_command_patterns": [
+      "git diff*", "git log*", "git show*", "git blame*", "git status*", "git grep*",
+      "git rev-parse*", "git merge-base*", "git ls-files*", "git branch --list*",
+      "gh pr view*", "gh pr diff*", "gh pr checks*", "gh issue view*"
+    ],
+    "denied_shell_command_patterns": [
+      "git commit*", "git push*", "git merge*", "git checkout*", "git switch*", "git reset*", "git clean*",
+      "git rebase*", "git am*", "git apply*", "git stash*", "git worktree*", "git remote*", "git config*",
+      "git tag*", "git restore*", "git cherry-pick*", "git revert*",
+      "gh pr comment*", "gh pr edit*", "gh pr merge*", "gh issue comment*", "gh issue edit*", "gh label*",
+      "gh repo*", "gh release*", "gh api*", "gh auth*", "gh secret*", "gh variable*", "gh workflow*",
+      "gh run cancel*", "gh run rerun*"
+    ],
+    "shell_commands_are_read_only": true,
+    "timeout_minutes": 25,
+    "verdict_schema": true,
+    "purpose": "Adversarial review of CLAIMS -- a decision record, a measured finding, anything whose rationale asserts something. The default for any PR touching src/ or making a claim in docs/. #1456 (spec/baton.md SS9) grants read-only git/gh so scope no longer has to be reconstructed from grep and .git ref reads: the allowlist above is claude's real, measured ceiling (docs/vendor-capabilities.md's 'canonical ceiling' -- --allowedTools patterns plus a --disallowedTools deny-subset, both enforced with precedence, not mere pre-approval) rather than a wider categorical run_shell_commands. gh api is deliberately excluded -- its method is a runtime flag/field this glob matcher cannot bind to GET-only, so admitting it would be an unenforced hole, not a scoped one. This reverses #1355's flat shell refusal for review specifically because that decision's own reasoning was agy's incoherence (no scoped-shell-without-network grant exists there); #1456 accepts that agy therefore refuses this role's grant outright (PermissionGrantUnsupportedException) rather than silently degrading it -- claude stays the tier's only adapter for review.",
+    "outputs": [
+      {
+        "name": "report.md",
+        "schema": "none",
+        "instruction": "Write your prose review -- each finding with file:line evidence -- to $BATON_OUTPUT_DIR/report.md."
+      },
+      {
+        "name": "verdict.json",
+        "schema": "review_verdict",
+        "instruction": "Also write your findings as a ReviewVerdict JSON to $BATON_OUTPUT_DIR/verdict.json (the machine-checked structured form of the same review). severity is one of high/medium/low; status is one of confirmed/refuted/unverified; unlisted fields are ignored; findings may be an empty array. Example: {\"reviewedRef\":\"<branch, commit, or PR>\",\"summary\":\"<optional overall assessment>\",\"findings\":[{\"claim\":\"<one-line finding>\",\"severity\":\"high\",\"status\":\"confirmed\",\"anchor\":{\"file\":\"path/to/file\",\"line\":1},\"detail\":\"<evidence, reproduction, reasoning>\"}]}"
+      }
+    ]
+  },
+  {
+    "id": "patch",
+    "tier": "frontier",
+    "read_files": true,
+    "write_files": false,
+    "run_shell_commands": false,
+    "network_access": false,
+    "timeout_minutes": 25,
+    "verdict_schema": false,
+    "purpose": "Proposes code modifications as an applyable unified diff without mutating its workspace directly (withheld writes run enforced on claude, and audited-not-enforced on agy per #659).",
+    "outputs": [
+      {
+        "name": "patch.diff",
+        "schema": "diff",
+        "instruction": "Write your proposed changes as a unified diff against your workspace to $BATON_OUTPUT_DIR/patch.diff. If you propose no changes, write an empty file."
+      }
+    ]
+  },
+  {
+    "id": "fact-check",
+    "tier": "minimal",
+    "read_files": true,
+    "write_files": false,
+    "run_shell_commands": false,
+    "network_access": false,
+    "timeout_minutes": 15,
+    "verdict_schema": false,
+    "purpose": "'Confirm these specific facts against the repo.' Handed an exhaustive list, so the list determines the work and a cheap model runs it. NOT for anything where noticing something absent from the list is the point.",
+    "outputs": [
+      {
+        "name": "findings.md",
+        "schema": "none",
+        "instruction": "Write your findings -- each claim from the list and whether it holds, with evidence -- to $BATON_OUTPUT_DIR/findings.md."
+      }
+    ]
+  },
+  {
+    "id": "janitor",
+    "tier": "cheap",
+    "read_files": true,
+    "write_files": true,
+    "run_shell_commands": true,
+    "network_access": true,
+    "timeout_minutes": 15,
+    "verdict_schema": false,
+    "purpose": "After an implementer commits: run the named mechanical checkers and make them green without changing behavior (#729). The canonical brief is janitor-prompt.md next to dispatch.py -- pass it via --prompt-file rather than restating the contract. The checkers determine the work, so the cheap tier runs it; anything needing judgment comes back [NOT DONE], not guessed at. #1355 kept network_access true here for the same reason as implement -- see implement's purpose field for the full reasoning (it is not agy-specific), not restated here.",
+    "outputs": [
+      {
+        "name": "janitor.md",
+        "schema": "none",
+        "instruction": "Write a report of what you changed and which checkers are now green to $BATON_OUTPUT_DIR/janitor.md."
+      },
+      {
+        "name": "branch.diff",
+        "schema": "none",
+        "instruction": "Write the full diff of the committed change to $BATON_OUTPUT_DIR/branch.diff -- this is the ground truth a following review reads, so it must be the diff of the change, not of HEAD."
+      }
+    ]
+  },
+  {
+    "id": "orchestrate",
+    "tier": "orchestrator",
+    "read_files": true,
+    "write_files": false,
+    "run_shell_commands": false,
+    "network_access": false,
+    "timeout_minutes": 10,
+    "verdict_schema": false,
+    "purpose": "Resident room occupant turn that reads room state and emits turn actions.",
+    "outputs": [
+      {
+        "name": "turn-actions.json",
+        "schema": "none",
+        "instruction": "Write your turn actions JSON to $BATON_OUTPUT_DIR/turn-actions.json."
+      }
+    ]
+  }
+]

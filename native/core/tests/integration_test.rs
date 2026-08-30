@@ -1361,7 +1361,7 @@ fn ffi_exit_reason_natural_on_clean_exit() {
 
     assert_eq!(code, AerErrorCode::Ok);
     let exited = events.iter().find(|e| e.kind == 1).unwrap();
-    assert_eq!(exited.reason, 0, "expected AER_EXIT_NATURAL (0)");
+    assert_eq!(exited.reason, 0, "expected BATON_EXIT_NATURAL (0)");
 }
 
 #[test]
@@ -1385,7 +1385,7 @@ fn ffi_exit_reason_timed_out() {
 
     assert_eq!(run_code, AerErrorCode::TimedOut);
     let exited = events.iter().find(|e| e.kind == 1).unwrap();
-    assert_eq!(exited.reason, 1, "expected AER_EXIT_TIMED_OUT (1)");
+    assert_eq!(exited.reason, 1, "expected BATON_EXIT_TIMED_OUT (1)");
     assert_eq!(exited.code, -1);
 }
 
@@ -1421,7 +1421,7 @@ fn ffi_cancel_kills_process() {
     assert_eq!(cancel_result, AerErrorCode::Ok);
     assert_eq!(run_code, AerErrorCode::Cancelled);
     let exited = events.iter().find(|e| e.kind == 1).unwrap();
-    assert_eq!(exited.reason, 2, "expected AER_EXIT_CANCEL_REQUESTED (2)");
+    assert_eq!(exited.reason, 2, "expected BATON_EXIT_CANCEL_REQUESTED (2)");
     assert_eq!(exited.code, -1);
 }
 
@@ -1495,9 +1495,9 @@ fn stdout_text(events: &[Event]) -> String {
 
 #[test]
 fn with_env_var_is_visible_to_child() {
-    let (prog, args) = echo_env_var_cmd("AER_TEST_VAR");
+    let (prog, args) = echo_env_var_cmd("BATON_TEST_VAR");
     let task = Task::new(prog, args)
-        .with_env("AER_TEST_VAR", "hello_from_aer")
+        .with_env("BATON_TEST_VAR", "hello_from_aer")
         .with_capture_output(true);
     let mut events = Vec::new();
     let result = task.run(|e| events.push(e));
@@ -1513,10 +1513,10 @@ fn with_env_var_is_visible_to_child() {
 
 #[test]
 fn with_env_repeated_call_same_key_overrides_earlier_value() {
-    let (prog, args) = echo_env_var_cmd("AER_TEST_VAR");
+    let (prog, args) = echo_env_var_cmd("BATON_TEST_VAR");
     let task = Task::new(prog, args)
-        .with_env("AER_TEST_VAR", "first_value")
-        .with_env("AER_TEST_VAR", "second_value")
+        .with_env("BATON_TEST_VAR", "first_value")
+        .with_env("BATON_TEST_VAR", "second_value")
         .with_capture_output(true);
     let mut events = Vec::new();
     let result = task.run(|e| events.push(e));
@@ -1540,21 +1540,21 @@ fn with_clear_env_removes_inherited_var_but_keeps_explicit_ones() {
     // SAFETY: no other thread in this test binary reads this uniquely-named
     // var concurrently; set/remove bracket the run tightly.
     unsafe {
-        std::env::set_var("AER_INHERITED_TEST_VAR", "should_not_be_inherited");
+        std::env::set_var("BATON_INHERITED_TEST_VAR", "should_not_be_inherited");
     }
 
     // Program resolved via shell_absolute_path() (see its doc comment for why),
     // not the "cmd"/"sh" from echo_two_env_vars_cmd — only its args are reused.
-    let (_, args) = echo_two_env_vars_cmd("AER_INHERITED_TEST_VAR", "AER_EXPLICIT_TEST_VAR");
+    let (_, args) = echo_two_env_vars_cmd("BATON_INHERITED_TEST_VAR", "BATON_EXPLICIT_TEST_VAR");
     let task = Task::new(shell_absolute_path(), args)
         .with_clear_env(true)
-        .with_env("AER_EXPLICIT_TEST_VAR", "should_be_present")
+        .with_env("BATON_EXPLICIT_TEST_VAR", "should_be_present")
         .with_capture_output(true);
     let mut events = Vec::new();
     let result = task.run(|e| events.push(e));
 
     unsafe {
-        std::env::remove_var("AER_INHERITED_TEST_VAR");
+        std::env::remove_var("BATON_INHERITED_TEST_VAR");
     }
 
     assert!(result.is_ok(), "expected Ok, got {:?}", result);
@@ -1620,11 +1620,11 @@ fn ffi_set_env_and_cwd_visible_in_child() {
     let target_dir = std::env::temp_dir();
     let expected = fs::canonicalize(&target_dir).expect("canonicalize temp dir");
 
-    let (prog, args) = echo_env_var_and_cwd_cmd("AER_FFI_TEST_VAR");
+    let (prog, args) = echo_env_var_and_cwd_cmd("BATON_FFI_TEST_VAR");
     let task = ffi_new_task(&prog, &args);
     assert!(!task.is_null());
 
-    let key = CString::new("AER_FFI_TEST_VAR").unwrap();
+    let key = CString::new("BATON_FFI_TEST_VAR").unwrap();
     let value = CString::new("ffi_env_value").unwrap();
     let env_code = unsafe { ffi::aer_task_set_env(task, key.as_ptr(), value.as_ptr()) };
     assert_eq!(env_code, AerErrorCode::Ok);
@@ -1673,12 +1673,12 @@ fn ffi_set_env_and_cwd_visible_in_child() {
 #[test]
 fn ffi_set_clear_env_removes_inherited_var() {
     unsafe {
-        std::env::set_var("AER_FFI_INHERITED_VAR", "should_not_be_inherited_ffi");
+        std::env::set_var("BATON_FFI_INHERITED_VAR", "should_not_be_inherited_ffi");
     }
 
     // Program resolved via shell_absolute_path() (see its doc comment for why),
     // not the "cmd"/"sh" from echo_env_var_cmd — only its args are reused.
-    let (_, args) = echo_env_var_cmd("AER_FFI_INHERITED_VAR");
+    let (_, args) = echo_env_var_cmd("BATON_FFI_INHERITED_VAR");
     let task = ffi_new_task(&shell_absolute_path(), &args);
     assert!(!task.is_null());
 
@@ -1703,7 +1703,7 @@ fn ffi_set_clear_env_removes_inherited_var() {
     };
     unsafe { ffi::aer_task_free(task) };
     unsafe {
-        std::env::remove_var("AER_FFI_INHERITED_VAR");
+        std::env::remove_var("BATON_FFI_INHERITED_VAR");
     }
 
     assert_eq!(run_code, AerErrorCode::Ok);

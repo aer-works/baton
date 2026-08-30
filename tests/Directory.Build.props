@@ -5,20 +5,20 @@
        would otherwise shadow the root one for every test project. -->
   <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
 
-  <!-- Isolate every test project from the real ~/.aer: a module initializer redirects AER_HOME to a
-       throwaway per-process temp root before any test runs (see Shared/AerHomeRedirect.cs). Linked,
+  <!-- Isolate every test project from the real ~/.baton: a module initializer redirects BATON_HOME to a
+       throwaway per-process temp root before any test runs (see Shared/BatonHomeRedirect.cs). Linked,
        not project-referenced, so it carries no dependency and compiles into each test assembly on its
-       own. The initializer no-ops when AER_HOME is already set, so linking it into helper hosts that
-       run as spawned children (Aer.Flow.CrashTestHost) is safe — they inherit the parent's root. -->
+       own. The initializer no-ops when BATON_HOME is already set, so linking it into helper hosts that
+       run as spawned children (Baton.Flow.CrashTestHost) is safe — they inherit the parent's root. -->
   <ItemGroup>
-    <Compile Include="$(MSBuildThisFileDirectory)Shared\AerHomeRedirect.cs" Link="TestSupport\AerHomeRedirect.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Shared\BatonHomeRedirect.cs" Link="TestSupport\BatonHomeRedirect.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Shared\CleanupRetry.cs" Link="TestSupport\CleanupRetry.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Shared\DirectoryCleanup.cs" Link="TestSupport\DirectoryCleanup.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Shared\FileCleanup.cs" Link="TestSupport\FileCleanup.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <Using Include="Aer.Tests.Shared" />
+    <Using Include="Baton.Tests.Shared" />
   </ItemGroup>
 
 </Project>

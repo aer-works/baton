@@ -1,4 +1,4 @@
-namespace Aer.Tests.Shared;
+namespace Baton.Tests.Shared;
 
 /// <summary>
 /// The single-file counterpart to <see cref="DirectoryCleanup"/>; both route a test's delete through

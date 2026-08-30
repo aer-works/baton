@@ -1,4 +1,4 @@
-namespace Aer.Tests.Shared;
+namespace Baton.Tests.Shared;
 
 /// <summary>
 /// Recursive test-directory deletes routed through <see cref="CleanupRetry"/>, split into teardown and

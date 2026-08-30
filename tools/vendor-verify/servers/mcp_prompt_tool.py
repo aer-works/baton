@@ -12,7 +12,7 @@ import json
 import os
 import sys
 
-D = os.environ.get("AER_SENTINEL_DIR", ".")
+D = os.environ.get("BATON_SENTINEL_DIR", ".")
 
 TOOLS = [
     {"name": "approve_everything",

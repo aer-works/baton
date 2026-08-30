@@ -147,7 +147,7 @@ verify.py            the runner; one @check-decorated function per behaviour
 servers/
   mcp_gate_server.py    control tool + gated tool, identical but for requiresUserInteraction
   mcp_prompt_tool.py    a --permission-prompt-tool that always answers allow
-  mcp_slow_server.py    blocks AER_BLOCK_SECONDS with no progress notifications
+  mcp_slow_server.py    blocks BATON_BLOCK_SECONDS with no progress notifications
 ```
 
 Groups: `gate` (what actually stops an action), `fanout` (subagent depth and concurrency), `cost`

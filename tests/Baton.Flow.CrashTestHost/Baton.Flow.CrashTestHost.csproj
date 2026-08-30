@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- M10 Phase 4 (issue #72): see Program.cs's own header comment for why this project exists.
+         Never shipped: lives under tests/, referenced only by Baton.Flow.Tests (for the scenario
+         builder, so the killed run and the in-process recovery run bind against the identical
+         WorkflowDefinitionSnapshot). -->
+    <ProjectReference Include="..\..\src\Baton.Flow\Baton.Flow.csproj" />
+  </ItemGroup>
+
+</Project>

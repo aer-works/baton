@@ -13,17 +13,17 @@ fn main() -> Result<(), AerError> {
     let cwd = env::temp_dir();
 
     #[cfg(target_os = "windows")]
-    let task = Task::new("cmd", vec!["/c", "echo %AER_EXAMPLE_VAR% & cd"]);
+    let task = Task::new("cmd", vec!["/c", "echo %BATON_EXAMPLE_VAR% & cd"]);
     #[cfg(not(target_os = "windows"))]
-    let task = Task::new("sh", vec!["-c", "echo $AER_EXAMPLE_VAR; pwd"]);
+    let task = Task::new("sh", vec!["-c", "echo $BATON_EXAMPLE_VAR; pwd"]);
 
     let task = task
-        .with_env("AER_EXAMPLE_VAR", "hello_from_aer")
+        .with_env("BATON_EXAMPLE_VAR", "hello_from_aer")
         .with_cwd(&cwd)
         .with_capture_output(true);
 
     println!(
-        "Spawning with AER_EXAMPLE_VAR=hello_from_aer, cwd={}\n",
+        "Spawning with BATON_EXAMPLE_VAR=hello_from_aer, cwd={}\n",
         cwd.display()
     );
 

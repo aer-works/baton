@@ -72,8 +72,8 @@ def load(path: Path, name: str):
 # edited these tracked files in place would leave the repo broken if it were interrupted, and the
 # faults being injected are deliberately the kind that make a checker pass -- the worst kind to
 # leave behind.
-DISPATCH_PY = ROOT / "tools" / "aer-agy-loop" / "dispatch.py"
-LINT_DIRS = (ROOT / "tools" / "audit-completeness", ROOT / "tools" / "aer-agy-loop")
+DISPATCH_PY = ROOT / "tools" / "baton-agy-loop" / "dispatch.py"
+LINT_DIRS = (ROOT / "tools" / "audit-completeness", ROOT / "tools" / "baton-agy-loop")
 
 dispatch = load(DISPATCH_PY, "_selfcheck_dispatch")
 completeness = load(ROOT / "tools" / "audit-completeness" / "completeness.py", "_selfcheck_audit")
@@ -321,14 +321,14 @@ def _templates_are_dispatchable():
         "reads withheld, shell granted": {**granted, "read_files": False},
         "network withheld, shell granted": {**granted, "network_access": False},
     }
-    # #649: on an adapter whose withheld writes reach AER_OUTPUT_DIR the "nothing here can write the
+    # #649: on an adapter whose withheld writes reach BATON_OUTPUT_DIR the "nothing here can write the
     # output" arm is false, and refusing it refuses the read-only reviewer the whole feature exists
     # for. Asserted as a pair against the identical gemini grant, so the rule cannot be satisfied by
     # allowing that shape everywhere -- which is what would silently un-refuse gemini, where the
     # vendor still denies the write before AER's hook is reached.
     reviewer = {**granted, "write_files": False, "run_shell_commands": False}
     assert dispatch.grant_refusal({**reviewer, "adapter": "claude"}) is None, (
-        "a read-only claude reviewer is refused. Its declared output lands in AER_OUTPUT_DIR, which "
+        "a read-only claude reviewer is refused. Its declared output lands in BATON_OUTPUT_DIR, which "
         "a withheld write still reaches on that adapter (#649) -- refusing it forces every reviewing "
         "template to grant a workspace write it does not need."
     )
@@ -380,7 +380,7 @@ def _templates_dry_run():
                 f"dispatched at all:\n{done.stderr.strip()[:400]}"
             )
             # Exit 0 plus a written bindings.json is ALSO true of a real, successful dispatch. Delete
-            # --dry-run's early return and, on a machine with Aer.Cli.exe built, this check becomes
+            # --dry-run's early return and, on a machine with Baton.Cli.exe built, this check becomes
             # four live vendor runs -- two agy, one opus at xhigh -- and still prints OK. The marker
             # is the only thing that distinguishes "stopped" from "spent".
             assert "DRY RUN -- nothing was dispatched" in done.stdout, (
@@ -503,7 +503,7 @@ def _lane_dry_run():
             f"fails the step loudly when the diff is not written; got {jan_outputs}")
         assert bindings["review"]["Contract"]["RequiredInputs"] == [diff_name], (
             f"review's RequiredInputs must be [{diff_name!r}] (bare strings) -- that is what the "
-            f"adapter surfaces as the AER_INPUT_0 pointer; got "
+            f"adapter surfaces as the BATON_INPUT_0 pointer; got "
             f"{bindings['review']['Contract']['RequiredInputs']}")
 
         # The concrete base SHA, not a symbolic ref: the janitor prompt must bake the tree's real
@@ -1187,7 +1187,7 @@ def _recordonce_discriminates():
              "[0003](0003-templates-collapse-to-three-shapes.md).")},
          False),
         ("a regenerated banner in two generated files",
-         {"src/Aer.Ui.Core/Generated.cs": [banner], "src/Aer.Ui/Theme/Tokens.axaml.cs": [banner]}, False),
+         {"src/Baton.Ui.Core/Generated.cs": [banner], "src/Baton.Ui/Theme/Tokens.axaml.cs": [banner]}, False),
         ("the same command block fenced in two runbooks",
          {"docs/runbooks/a.md": [fenced], "docs/runbooks/b.md": [fenced]}, False),
         # A file with no extension is still a file with comments, and the per-language table read it
@@ -1341,7 +1341,7 @@ def _recordonce_discriminates():
     excl = rec.excluded_from_comparison
     assert excl("docs/decisions/0001-two-nouns-workflow-and-session.md") == "restored-decision", (
         "record-once: a restored decision record was not excluded from comparison")
-    assert excl("src/Aer.Flow/CHANGELOG.md") == "changelog", (
+    assert excl("src/Baton.Flow/CHANGELOG.md") == "changelog", (
         "record-once: a generated changelog was not excluded from comparison")
     assert excl("native/core/src/lib.rs") == "vendored-snapshot", (
         "record-once: a vendored aer-core snapshot file (#1458) was not excluded from comparison")

@@ -97,7 +97,7 @@ jobs:
           cache: false
 
       # Caches NuGet restore keyed off every packages.lock.json in the repo (the xunit test
-      # projects — Aer.Flow.Tests, Aer.Adapters.Tests — are the only ones with real
+      # projects — Baton.Flow.Tests, Baton.Vendors.Tests — are the only ones with real
       # PackageReferences). cache-dependency-path must be explicit: cache: true alone only looks
       # for a lock file at the repo root, not recursively.
       - uses: actions/setup-dotnet@v4
@@ -108,17 +108,17 @@ jobs:
 
 
 
-      # Isolation guard (#318). The suite redirects AER_HOME to a throwaway temp root
-      # (tests/Shared/AerHomeRedirect.cs), so a correct run never touches the real ~/.aer. Snapshot
+      # Isolation guard (#318). The suite redirects BATON_HOME to a throwaway temp root
+      # (tests/Shared/BatonHomeRedirect.cs), so a correct run never touches the real ~/.baton. Snapshot
       # it before and after the run and fail if anything changed: this is what catches a store added
-      # later that bypasses AerPaths and writes to the real per-user dir -- the day it lands, not six
+      # later that bypasses BatonPaths and writes to the real per-user dir -- the day it lands, not six
       # milestones on when a user finds 48 dead projects. Path list only (not mtimes), so a benign
       # touch of a pre-existing file doesn't false-positive.
-      - name: Snapshot ~/.aer before tests
+      - name: Snapshot ~/.baton before tests
         shell: bash
         run: |
-          if [ -d "$HOME/.aer" ]; then
-            find "$HOME/.aer" -type f | LC_ALL=C sort > "$RUNNER_TEMP/aer-before.txt"
+          if [ -d "$HOME/.baton" ]; then
+            find "$HOME/.baton" -type f | LC_ALL=C sort > "$RUNNER_TEMP/aer-before.txt"
           else
             : > "$RUNNER_TEMP/aer-before.txt"
           fi
@@ -131,7 +131,7 @@ jobs:
       # C:\ and D:\ whole-drive, so realtime is almost certainly irrelevant to these files — this
       # confirms it) plus a snapshot of the scan-capable services. The transient handle itself is
       # already gone by the time this post-hoc step runs, which is exactly why the in-process holder
-      # name now rides in FlowJournalHeldException's message (src/Aer.Flow/Store/FileHolderProbe.cs);
+      # name now rides in FlowJournalHeldException's message (src/Baton.Flow/Store/FileHolderProbe.cs);
       # this step is the environmental context around that. Never fails the job.
       - name: Capture file-lock diagnostics on failure (Windows)
         if: ${{ failure() && runner.os == 'Windows' }}
@@ -147,7 +147,7 @@ jobs:
               Select-Object Name, Status | Format-Table -AutoSize
           } catch { Write-Warning "Get-Service unavailable: $($_.Exception.Message)" }
 
-      - name: Assert ~/.aer untouched by tests
+      - name: Assert ~/.baton untouched by tests
         if: always()
         shell: bash
         run: |
@@ -155,16 +155,16 @@ jobs:
             echo "Pre-test snapshot missing (an earlier step failed before tests ran); nothing to check."
             exit 0
           fi
-          if [ -d "$HOME/.aer" ]; then
-            find "$HOME/.aer" -type f | LC_ALL=C sort > "$RUNNER_TEMP/aer-after.txt"
+          if [ -d "$HOME/.baton" ]; then
+            find "$HOME/.baton" -type f | LC_ALL=C sort > "$RUNNER_TEMP/aer-after.txt"
           else
             : > "$RUNNER_TEMP/aer-after.txt"
           fi
           if ! diff -u "$RUNNER_TEMP/aer-before.txt" "$RUNNER_TEMP/aer-after.txt"; then
-            echo "::error::Tests changed the real ~/.aer. The AER_HOME redirect leaked -- a store is bypassing AerPaths (see tests/Shared/AerHomeRedirect.cs and src/Aer.Adapters/AerPaths.cs)."
+            echo "::error::Tests changed the real ~/.baton. The BATON_HOME redirect leaked -- a store is bypassing BatonPaths (see tests/Shared/BatonHomeRedirect.cs and src/Baton.Vendors/BatonPaths.cs)."
             exit 1
           fi
-          echo "~/.aer unchanged by the test run."
+          echo "~/.baton unchanged by the test run."
 
       - name: Shutdown dotnet build server
         run: pixi run dotnet build-server shutdown
@@ -276,9 +276,9 @@ jobs:
           cache-dependency-path: "**/packages.lock.json"
 
       # This job's own host (Windows) is folded in automatically by `pixi run pack`'s build-core
-      # dependency + Aer.Core.csproj's existing build-time copy (M7 Phase 6) — win-x64 is the only
+      # dependency + Baton.Core.csproj's existing build-time copy (M7 Phase 6) — win-x64 is the only
       # RID now, so there is nothing left to fetch from another leg's artifact.
-      - name: Pack aer
+      - name: Pack baton
         run: pixi run pack
 
       - name: Upload packed nupkg
@@ -348,9 +348,9 @@ jobs:
       - name: Audit register completeness
         run: pixi run audit-completeness
       # audit-selfcheck below is no longer .NET-free: since #887 the role catalog's one source
-      # is the engine (`aer templates --json`), and selfcheck's catalog checks consume it. This
-      # builds ONLY Aer.Cli -- no native lib, no cargo (see pixi.toml's build-cli).
-      # cache is OFF here (#1398): Aer.Cli's project graph has zero PackageReferences (framework
+      # is the engine (`baton templates --json`), and selfcheck's catalog checks consume it. This
+      # builds ONLY Baton.Cli -- no native lib, no cargo (see pixi.toml's build-cli).
+      # cache is OFF here (#1398): Baton.Cli's project graph has zero PackageReferences (framework
       # refs resolve from SDK runtime packs, outside NuGet's restore graph), so restore never
       # creates ~/.nuget/packages -- and then setup-dotnet's post-job cache save fails the job
       # after every audit step passed. A cache saves nothing here; heavy test/pack jobs keep theirs.

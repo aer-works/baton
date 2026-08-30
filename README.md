@@ -29,7 +29,7 @@ on their own machine.
 **AER never reads, copies, forwards, or stores a vendor credential** — no API keys, no OAuth tokens,
 no access to the OS credential store, and it never places a credential into a config directory. This
 is an enforced invariant, not an intention: see
-[`VendorCredentialIsolationTests`](tests/Aer.Architecture.Tests/VendorCredentialIsolationTests.cs).
+[`VendorCredentialIsolationTests`](tests/Baton.Architecture.Tests/VendorCredentialIsolationTests.cs).
 
 Baton is a personal tool. It is not offered as a product or a service, and it does not provide,
 resell, or proxy access to any provider — you bring a CLI you have already signed into yourself.
@@ -53,9 +53,9 @@ pixi run test
 pixi run fmt
 ```
 
-## Installing `aer`
+## Installing `baton`
 
-`aer` is distributed as a self-built, unpublished `dotnet tool` — there is no public NuGet feed;
+`baton` is distributed as a self-built, unpublished `dotnet tool` — there is no public NuGet feed;
 a single-developer project doesn't need one. Build a local nupkg and install from it directly:
 
 ```bash
@@ -63,13 +63,13 @@ a single-developer project doesn't need one. Build a local nupkg and install fro
 pixi run pack
 
 # Install it as a global tool from that local folder
-dotnet tool install --global --add-source bin/pack aer
+dotnet tool install --global --add-source bin/pack baton
 
 # Run it
-aer run <workflow-file> --bindings <bindings-file>
+baton run <workflow-file> --bindings <bindings-file>
 
 # Remove it
-dotnet tool uninstall --global aer
+dotnet tool uninstall --global baton
 ```
 
 `pixi run verify-pack` runs this exact install → run → uninstall round trip end to end against a

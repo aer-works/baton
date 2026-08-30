@@ -1,0 +1,105 @@
+using Aer.VendorProbe;
+
+namespace Baton.Architecture.Tests;
+
+/// <summary>
+/// #504's trigger: when a vendor CLI updates itself, the recorded capability findings stop being
+/// about the CLI that is installed — and something has to notice.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The probe itself drives live authenticated CLIs and spends real subscription usage, so it is
+/// permanently a human action item (CLAUDE.md) and must never run unattended. But the trigger for
+/// running it does not have to be expensive. <c>--version</c> starts no session and burns no quota,
+/// so this test asks the only cheap question that matters: <em>is what is installed still the thing
+/// the findings were established against?</em>
+/// </para>
+/// <para>
+/// <b>Why this lives in the local test suite rather than in CI.</b> No CI runner has an
+/// authenticated <c>claude</c> or <c>agy</c> on PATH, so a CI job would find both vendors absent and
+/// go green forever — a pass that means only "the vendors were never here". That green would be
+/// worse than no check at all, because it looks like coverage. The machine that can answer the
+/// question is the operator's, which is also the only machine where the CLIs self-update, so the
+/// check belongs in the suite that runs there. It skips where it cannot know, which is the same
+/// discipline the probe enforces on its own findings: absence of a surface to look at is never a
+/// finding of absence.
+/// </para>
+/// </remarks>
+public class VendorProbeStalenessTests
+{
+    private static readonly string[] Vendors = ["claude", "agy"];
+
+    [Fact]
+    public void RecordedVendorFindingsAreAboutTheCliThatIsInstalled()
+    {
+        var lockPath = Path.Combine(RepositoryRoot(), Staleness.DefaultLockPath);
+        var statuses = Staleness.Check(lockPath, Vendors);
+
+        var inspectable = statuses.Where(s => s.Verdict != Staleness.Verdict.Uninspectable).ToList();
+        if (inspectable.Count == 0)
+        {
+            Assert.Skip(
+                "No vendor CLI is on PATH, so this machine cannot tell whether the recorded findings "
+                + "still hold. Skipped rather than passed — a green here would only mean the vendors "
+                + "were never present, which is exactly the false negative the probe suite exists to "
+                + "stop us reporting as fact.");
+        }
+
+        var stale = inspectable
+            .Where(s => s.Verdict is Staleness.Verdict.Drifted or Staleness.Verdict.NeverProbed)
+            .ToList();
+
+        Assert.True(
+            stale.Count == 0,
+            $"""
+            {stale.Count} vendor CLI(s) no longer match the recorded capability findings.
+
+            {string.Join("\n\n", stale.Select(s => s.Explain()))}
+
+            The findings in docs/vendor-capabilities.md are attributed to specific vendor versions.
+            When a CLI moves, those rows are unverified — not disproven, unverified — and the only
+            way to restore them is to look again:
+
+                pixi run vendor-probe
+
+            That run spends real subscription usage and takes a couple of minutes, which is precisely
+            why it is triggered by this check rather than run on a schedule.
+            """);
+    }
+
+    /// <summary>
+    /// The lock file is what makes the cheap check possible, so its absence is a real gap rather
+    /// than a fresh-clone inconvenience.
+    /// </summary>
+    [Fact]
+    public void AProbeRunHasBeenRecorded()
+    {
+        var lockPath = Path.Combine(RepositoryRoot(), Staleness.DefaultLockPath);
+
+        Assert.True(
+            File.Exists(lockPath),
+            $"""
+            {Staleness.DefaultLockPath} is missing, so nothing can be compared against and the
+            staleness check above degrades to silence on every machine.
+
+            Run `pixi run vendor-probe` on a machine with the vendor CLIs authenticated and commit
+            the result.
+            """);
+    }
+
+    private static string RepositoryRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "AerFlow.slnx")))
+            {
+                return dir.FullName;
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new InvalidOperationException("Could not locate the repository root (no AerFlow.slnx found) from " + AppContext.BaseDirectory);
+    }
+}

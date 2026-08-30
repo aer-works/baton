@@ -39,7 +39,7 @@ same rule as the `smoke-*` tasks, for the same reason. But asking *"has the CLI 
 looked?"* costs nothing: `--version` is a local string that starts no session.
 
 So the free check is the trigger for the paid one. The probe records the versions it ran against in
-`docs/vendor-probe.lock.json`; `VendorProbeStalenessTests` (in `Aer.Architecture.Tests`, which *is*
+`docs/vendor-probe.lock.json`; `VendorProbeStalenessTests` (in `Baton.Architecture.Tests`, which *is*
 in the default suite) compares that against what is installed. The day `claude` self-updates, the
 test goes red and tells you to re-probe.
 
@@ -115,7 +115,7 @@ about that path — which reads exactly like "the command does not exist."
 
 **Strip every `^CLAUDE` variable, not just `^CLAUDE_CODE_`.** A nested `claude` launched from inside a
 Claude Code session inherits the parent's tool set and MCP servers, which no harness-spawned worker
-ever has (the harness — `aer run`/`aer dispatch` — spawns workers; since #1420 the daemon spawns
+ever has (the harness — `baton run`/`baton dispatch` — spawns workers; since #1420 the daemon spawns
 nothing). An earlier probe missed `CLAUDECODE`, `CLAUDE_EFFORT`, `CLAUDE_PID` and `CLAUDE_JOB_DIR`
 and produced a result we nearly wrote down as fact. `Cli.Invoke` does this for you.
 

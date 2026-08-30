@@ -84,23 +84,23 @@ def _surfaced(tui, url):
 
 
 def _agy_cmd(wd):
-    """The agy invocation, or a free stand-in when AER_531_DRYRUN is set.
+    """The agy invocation, or a free stand-in when BATON_531_DRYRUN is set.
 
     The dry run exists so the harness can be proven to LAUNCH before any arm spends vendor usage.
     That order is not optional here: the first run of this probe reported four all-zero arms
     because bash never started agy at all, and an all-zero arm is indistinguishable from a real
     refusal unless something records that the instrument itself ran.
     """
-    if os.environ.get("AER_531_DRYRUN"):
+    if os.environ.get("BATON_531_DRYRUN"):
         return "agy --help"
     # `--dangerously-skip-permissions` is what makes the run scriptable, and it is ALSO a candidate
     # cause of the result: the first four arms all answered `cancel` and never surfaced the url, and
     # a flag that auto-approves tool permissions is exactly the sort of thing that would auto-decline
     # an elicitation too. That confound is the probe's, not the vendor's, so it gets its own arm --
-    # AER_531_NO_SKIP drops the flag and relies on the driver's periodic CR to clear the trust
+    # BATON_531_NO_SKIP drops the flag and relies on the driver's periodic CR to clear the trust
     # prompt instead. Without this control, "agy declines url mode" and "the probe told it to" are
     # the same observation.
-    skip = "" if os.environ.get("AER_531_NO_SKIP") else " --dangerously-skip-permissions"
+    skip = "" if os.environ.get("BATON_531_NO_SKIP") else " --dangerously-skip-permissions"
     return ('agy -i "Call the MCP tool control_tool, then call elicit_tool. Call both." '
             '--add-dir %s%s' % (wd.replace("\\", "/"), skip))
 
@@ -111,7 +111,7 @@ def arm(flow, answer, seconds, keep=False):
     os.makedirs(os.path.join(wd, ".agents"), exist_ok=True)
     cfg = {"mcpServers": {"probe": {
         "command": sys.executable, "args": [SERVER],
-        "env": {"AER_SENTINEL_DIR": wd, "AER_URL_FLOW": flow}}}}
+        "env": {"BATON_SENTINEL_DIR": wd, "BATON_URL_FLOW": flow}}}}
     json.dump(cfg, open(os.path.join(wd, ".agents", "mcp_config.json"), "w"))
     log = os.path.join(wd, "tui.log")
 
@@ -196,7 +196,7 @@ def arm(flow, answer, seconds, keep=False):
         # answer is a different question, and conflating them would credit agy with accepting a
         # result it may have already torn down. The completion text is greppable for exactly this.
         "server_completed_call": os.path.exists(os.path.join(wd, "CALLED_elicit_tool")),
-        "client_showed_result": "AER_COMPLETION_SENTINEL" in re.sub(r"\s+", "", _ANSI.sub("", tui)),
+        "client_showed_result": "BATON_COMPLETION_SENTINEL" in re.sub(r"\s+", "", _ANSI.sub("", tui)),
         "agy_version": AGY_VERSION,
         "control_ran": os.path.exists(os.path.join(wd, "CALLED_control_tool")),
         "tui_bytes": len(tui),
@@ -241,7 +241,7 @@ def manual(flow, where):
             pass
     cfg = {"mcpServers": {"probe": {
         "command": sys.executable, "args": [SERVER],
-        "env": {"AER_SENTINEL_DIR": where, "AER_URL_FLOW": flow}}}}
+        "env": {"BATON_SENTINEL_DIR": where, "BATON_URL_FLOW": flow}}}}
     json.dump(cfg, open(os.path.join(where, ".agents", "mcp_config.json"), "w"), indent=2)
 
     bar = "=" * 78

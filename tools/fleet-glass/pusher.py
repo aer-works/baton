@@ -1,4 +1,4 @@
-"""Fleet Glass pusher: derive the fleet snapshot via Aer.Mcp.Host (stdio MCP) and scan ~/.aer/rooms
+"""Fleet Glass pusher: derive the fleet snapshot via Baton.Mcp.Host (stdio MCP) and scan ~/.baton/rooms
 for terminal-room deliverables, then POST both outbound to the Cloudflare mailbox Worker (worker.js)
 every ~25s. Moved into the repo, with the deliverables inbox added, by aer-works/baton#1413.
 
@@ -18,13 +18,13 @@ file below); a FAILED POST never persists the hash, so the next cycle retries. S
 Config comes from pusher.config.json next to this script (gitignored, machine-local -- ship
 pusher.config.example.json and copy it):
     {
-      "dll": "<path to Aer.Mcp.Host.dll>",
+      "dll": "<path to Baton.Mcp.Host.dll>",
       "push_url": "https://.../push/<PUSH_TOKEN>",
       "deliver_url": "https://.../deliver/<PUSH_TOKEN>",   # optional; derived from push_url if absent
       "interval_seconds": 25,
       "roots": [],
       "max_age_days": 3,
-      "rooms_root": "~/.aer/rooms",                         # optional; defaults there
+      "rooms_root": "~/.baton/rooms",                         # optional; defaults there
       "secret_patterns_file": "secretpatterns.local.txt",    # optional; defaults next to this script
       "push_state_file": "push-state.local.json",            # optional; defaults next to this script
       "underhood_dirs": [], "underhood_logs": []
@@ -78,7 +78,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 LOG = HERE / "pusher.log"
 
-DEFAULT_ROOMS_ROOT = Path.home() / ".aer" / "rooms"
+DEFAULT_ROOMS_ROOT = Path.home() / ".baton" / "rooms"
 DEFAULT_SECRET_PATTERNS_FILE = HERE / "secretpatterns.local.txt"
 DEFAULT_PUSH_STATE_FILE = HERE / "push-state.local.json"
 
@@ -94,7 +94,7 @@ def log(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------------------------
-# Fleet snapshot (unchanged pipeline: derive via Aer.Mcp.Host, drop stale rooms, gather underhood)
+# Fleet snapshot (unchanged pipeline: derive via Baton.Mcp.Host, drop stale rooms, gather underhood)
 # ---------------------------------------------------------------------------------------------
 
 def rpc(proc: subprocess.Popen, req_id: int, method: str, params=None):
@@ -570,7 +570,7 @@ def main() -> None:
 
 # ---------------------------------------------------------------------------------------------
 # Selftest -- pins the secret-gate's fail-closed behavior and the dedupe/selection rules against
-# synthetic fixtures. No network, no real ~/.aer: pixi run fleet-glass-pusher-selftest.
+# synthetic fixtures. No network, no real ~/.baton: pixi run fleet-glass-pusher-selftest.
 # ---------------------------------------------------------------------------------------------
 
 def _make_room(root: Path, name: str, outputs_rel: list, state="Succeeded", error=None) -> Path:

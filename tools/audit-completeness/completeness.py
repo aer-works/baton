@@ -356,7 +356,7 @@ def is_probe_input(line: str) -> bool:
 def step9_pinned_models_exist():
     """Every `agy` model name pinned in the worker-role catalog or a tool is one `agy models` lists.
 
-    Population, precisely: the shared tier pins in `src/Aer.Adapters/WorkerTiers.json` (#888, the
+    Population, precisely: the shared tier pins in `src/Baton.Vendors/WorkerTiers.json` (#888, the
     canonical source both the engine and `dispatch.py` read), `verify.py`'s `CHEAP['agy']`, and any
     `agy` model name in a pin POSITION under `tools/`. The catalog moved out of `tools/` when the pins
     left the `dispatch.py` literal, so "in a tool" alone no longer bounds it -- the src/ file is read
@@ -380,7 +380,7 @@ def step9_pinned_models_exist():
     BETTER where it runs: it queries `agy models` live rather than joining against a recording.
 
     They are complementary, and the split is not a matter of taste:
-      * preflight's population is `tests/Aer.Cli.SmokeTests` and its fixtures. It does not read
+      * preflight's population is `tests/Baton.Cli.SmokeTests` and its fixtures. It does not read
         `tools/`, which is where these pins live.
       * preflight needs a live `agy` binary and degrades to a WARNING without one, so it cannot gate
         anything in CI. It runs as a `depends-on` of the `smoke-*` tasks, which are permanently
@@ -420,7 +420,7 @@ def step9_pinned_models_exist():
     # read it. Check that source DIRECTLY rather than importing dispatch.py -- the check then reads the
     # truth instead of a Python view rebuilt from the same file, and it survives dispatch.py's
     # retirement (the front door replaces it, #887) instead of breaking with it.
-    tiers_path = os.path.join(ROOT, "src", "Aer.Adapters", "WorkerTiers.json")
+    tiers_path = os.path.join(ROOT, "src", "Baton.Vendors", "WorkerTiers.json")
     if not os.path.exists(tiers_path):
         # A missing source is a HARD failure, not a quiet skip. Skipping would let a rename drop the
         # tier pins from the population while `verify.py`'s pin kept the step green -- a check that
@@ -827,7 +827,7 @@ def step13_structural_claims():
 
     Three asserts, each a prose claim the tree can falsify the day it drifts:
     - CLAUDE.md's repo-structure map names exactly the src/* projects on disk, both directions.
-      First live catch, before this step even ran in CI: Aer.Mcp and Aer.Mcp.Host had shipped
+      First live catch, before this step even ran in CI: Baton.Mcp and Baton.Mcp.Host had shipped
       without the map noticing.
     - Every src/... path cited by spec/*.md resolves in the tree.
     - Every docs/runbooks/*.md referenced from pixi.toml exists.
@@ -842,7 +842,7 @@ def step13_structural_claims():
     src = os.path.join(ROOT, "src")
     on_disk = {d for d in os.listdir(src) if os.path.isdir(os.path.join(src, d))} if os.path.isdir(src) else set()
     block = re.search(r"## Repo structure.*?```(.*?)```", read("CLAUDE.md"), re.S)
-    mapped = set(re.findall(r"(Aer\.[A-Za-z.]+)/", block.group(1))) if block else set()
+    mapped = set(re.findall(r"(Baton\.[A-Za-z.]+)/", block.group(1))) if block else set()
     # A check over an empty population passes vacuously — assert the anchors held before
     # trusting the comparison (found by #314's second reader).
     ok &= line("src/ directories found (a 0 here means the scan itself broke)", 1 if on_disk else 0, 1)
@@ -850,7 +850,7 @@ def step13_structural_claims():
     missing = sorted(on_disk - mapped)
     ghosts = sorted(m for m in mapped - on_disk if os.path.isdir(os.path.join(ROOT, "src")))
     ok &= line("src/ projects missing from CLAUDE.md's repo map", len(missing), 0,
-               "Aer.Mcp shipped invisibly once already")
+               "Baton.Mcp shipped invisibly once already")
     for name in missing:
         print(f"      NOT IN MAP: src/{name}")
     ok &= line("repo-map entries with no src/ directory behind them", len(ghosts), 0)
