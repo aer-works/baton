@@ -136,5 +136,8 @@ public sealed class WorkflowStatusProjectorLivenessTests
         var step = Assert.Single(view.Steps);
         Assert.Equal("Paused", step.State);
         Assert.Null(step.Liveness);
+        // Wire-level: the key must be ABSENT, not present-as-null — the omission rests on the
+        // WhenWritingNull attribute, and only a serialized assertion catches that attribute breaking.
+        Assert.DoesNotContain("\"liveness\"", System.Text.Json.JsonSerializer.Serialize(step));
     }
 }
