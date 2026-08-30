@@ -84,6 +84,14 @@ public static class RedispatchCommand
             var parentWorkflowPath = Path.Combine(options.ParentRoomDirectoryPath, WorkflowFileName);
             definition = await WorkflowDefinitionParser.LoadFromFileAsync(parentWorkflowPath, cancellationToken).ConfigureAwait(false);
             entry = InheritBinding(parentEntry, options);
+            if (!string.Equals(entry.Adapter, parentEntry.Adapter.Trim().ToLowerInvariant(), StringComparison.Ordinal))
+            {
+                // Loud, not silent — the one inheritance rule that differs from a fresh dispatch
+                // (spec/baton.md §2's grant-carry paragraph).
+                Console.Error.WriteLine(
+                    $"Warning: --adapter {entry.Adapter} inherits the parent's resolved grant, audit mode and "
+                    + "worktree intent unchanged; pass --spec to re-derive them for the new adapter.");
+            }
         }
         else
         {
@@ -137,10 +145,13 @@ public static class RedispatchCommand
         ArgumentNullException.ThrowIfNull(parentEntry);
         ArgumentNullException.ThrowIfNull(options);
 
-        var adapter = options.Adapter ?? parentEntry.Adapter;
+        // Normalized exactly as RoleDispatch.ToBinding normalizes its winner — the registry lookup is
+        // case-sensitive, so an unnormalized "Claude" would fail at resolve time, after the room's
+        // files were already written.
+        var adapter = (options.Adapter ?? parentEntry.Adapter).Trim().ToLowerInvariant();
 
         // RoleDispatch.ToBinding's own vendor-swap axis rule, applied here too (#1082, spec/baton.md §2).
-        var vendorSwapped = !string.Equals(adapter, parentEntry.Adapter, StringComparison.OrdinalIgnoreCase);
+        var vendorSwapped = !string.Equals(adapter, parentEntry.Adapter.Trim().ToLowerInvariant(), StringComparison.Ordinal);
         var model = options.Model ?? (vendorSwapped ? null : parentEntry.Model);
         var effort = options.Effort ?? (vendorSwapped ? null : parentEntry.Effort);
 
@@ -169,6 +180,10 @@ public static class RedispatchCommand
             WorkingDirectory = workingDirectory,
             Worktree = worktree,
             Timeout = options.Timeout ?? parentEntry.Timeout,
+            // Adapter-derived, not role-derived, so it CAN be recomputed here — carrying the parent's
+            // value across a vendor swap would stream-json a claude worker (or text-mode an agy one).
+            // Grant/GrantAuditMode/worktree intent stay inherited: spec/baton.md §2 states why.
+            StreamJson = string.Equals(adapter, "agy", StringComparison.Ordinal),
             // A redispatch is a fresh worker turn, never a continuation of the parent's own session.
             SessionId = null,
             ResumeSession = false,

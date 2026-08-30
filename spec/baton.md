@@ -144,6 +144,16 @@ under the parent room if it needs to, but copying would blur which run produced 
 recorded on the new room's own `.aer/room.json` marker (`RoomMetadataFileName`, `AerPaths.cs`) — the
 parent room directory, and the parent's own execution id when cheaply known from its terminal
 sentinel — rather than a new parallel file, since that marker is already this room's metadata home.
+One inheritance rule differs from what `--adapter`'s name implies: on the `--spec`-omitted path, an
+adapter swap re-derives only the adapter-scoped axes (model and effort drop to the new vendor's
+defaults per the vendor-swap rule above; `StreamJson` is recomputed for the new adapter). The
+parent's resolved `PermissionGrant`, `GrantAuditMode`, and worktree-provisioning intent are carried
+across the swap **unchanged**, because the role's *declared* grant intent — what
+`RoleDispatch.ToBinding` derives those from per adapter — is not recoverable from `bindings.json`
+(only the already-resolved grant is persisted). So a redispatched worker can run under a grant shape
+a fresh dispatch of the same role+adapter would never produce; the command prints a stderr note on
+every such swap, and an operator who needs the grant re-derived passes `--spec`, which rebuilds
+through `RoleDispatch.Materialize` against the real role catalog.
 
 ### §2 schema — the CLI argument table
 

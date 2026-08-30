@@ -64,6 +64,30 @@ public class RedispatchBindingTests
         Assert.Equal("agy", entry.Adapter);
     }
 
+    [Fact]
+    public void A_differently_cased_adapter_is_normalized_and_is_not_a_vendor_swap()
+    {
+        // The registry lookup is case-sensitive; ToBinding normalizes its winner, so this path must
+        // too — and "Claude" over a "claude" parent is the SAME vendor, so model/effort survive.
+        var parent = ParentEntry(adapter: "claude", model: "opus", effort: "careful");
+        var entry = RedispatchCommand.InheritBinding(parent, new RedispatchOptions("parent-room", "new-room", Adapter: " Claude "));
+
+        Assert.Equal("claude", entry.Adapter);
+        Assert.Equal("opus", entry.Model);
+        Assert.Equal("careful", entry.Effort);
+    }
+
+    [Fact]
+    public void Stream_json_is_recomputed_for_the_new_adapter_not_inherited()
+    {
+        // Adapter-derived (#1089): agy streams, claude doesn't. Both swap directions.
+        var fromAgy = ParentEntry(adapter: "agy") with { StreamJson = true };
+        Assert.False(RedispatchCommand.InheritBinding(fromAgy, new RedispatchOptions("parent-room", "new-room", Adapter: "claude")).StreamJson);
+
+        var fromClaude = ParentEntry(adapter: "claude") with { StreamJson = false };
+        Assert.True(RedispatchCommand.InheritBinding(fromClaude, new RedispatchOptions("parent-room", "new-room", Adapter: "agy")).StreamJson);
+    }
+
     /// <summary>Pins the axis rule <see cref="RedispatchCommand.InheritBinding"/>'s own comment cites (#1082).</summary>
     [Fact]
     public void An_adapter_swap_with_no_explicit_model_or_effort_drops_both_rather_than_carrying_them_across()
