@@ -4,15 +4,19 @@ using Aer.Flow.Concurrency;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Aer.Daemon.Tests")]
-
 await Aer.Daemon.DaemonHost.RunDaemonAsync(args);
 
 namespace Aer.Daemon
 {
     public static class DaemonHost
     {
-        public static async Task RunDaemonAsync(string[] args)
+        public static Task RunDaemonAsync(string[] args) => RunDaemonAsync(args, onHostBuilt: null);
+
+        /// <summary>Test-only seam (Aer.Daemon.Tests, via <c>InternalsVisibleTo</c>): <paramref name="onHostBuilt"/>
+        /// runs after the host is built but before <c>RunAsync</c>, so a test can inspect DI registrations and/or
+        /// register a stop trigger. Without it, <c>RunAsync</c> blocks until an external process signal that never
+        /// arrives in-process, so a test calling this method directly would hang forever.</summary>
+        internal static async Task RunDaemonAsync(string[] args, Action<IHost>? onHostBuilt)
         {
             var noMutex = args.Contains("--no-mutex");
             Mutex? mutex = null;
@@ -43,6 +47,7 @@ namespace Aer.Daemon
             builder.Services.AddHostedService<RoomRetentionSweep>();
 
             var host = builder.Build();
+            onHostBuilt?.Invoke(host);
             await host.RunAsync();
             mutex?.Dispose();
         }
