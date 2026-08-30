@@ -26,8 +26,8 @@ trap cleanup EXIT
 # ExitCode:127 for, but this time settling the step Succeeded instead of Failed.
 #
 # Windows-only (#1405): the adapter spawns the literal name "claude", which process creation
-# resolves against PATHEXT (VendorCliPresence.cs) -- an extension-less file is not one of those
-# extensions and would not be found at all, so the stub is a `.cmd`, not a POSIX shell script.
+# resolves against PATHEXT -- an extension-less file is not one of those extensions and would not
+# be found at all, so the stub is a `.cmd`, not a POSIX shell script.
 cat > "$STUB_DIR/claude.cmd" <<'STUB'
 @echo off
 mkdir "%AER_OUTPUT_DIR%" 2>nul
