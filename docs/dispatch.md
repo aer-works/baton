@@ -99,8 +99,8 @@ match — spec/baton.md §9's paragraph on that tool states what its extension c
 
 `advise` and `patch` are the same shape by outcome (no unscoped shell or network) but not by
 mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose` field in
-`WorkerRoles.json` for why — narrowing it broke `tools/baton-agy-loop/dispatch.py`'s own grant
-coherence check on its default `agy` tier), and `patch` never grants a write in the first place —
+`WorkerRoles.json` for why — narrowing it broke the dispatcher's grant_refusal() coherence check on
+its default `agy` tier), and `patch` never grants a write in the first place —
 its whole point is proposing a diff without mutating the workspace.
 
 ## Roles

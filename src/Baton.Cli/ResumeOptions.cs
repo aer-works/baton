@@ -32,7 +32,7 @@ namespace Baton.Cli;
 /// The worker-binding config file — must name the same bindings the room was originally dispatched
 /// with; the worker's own recorded <c>SessionId</c> is what makes a resume possible at all.
 /// </param>
-/// <param name="WorkflowId">Defaults to the bound snapshot's <c>WorkflowTemplateId</c> when not given, same as <c>baton run</c>.</param>
+/// <param name="WorkflowId">See <see cref="CancelOptions.WorkflowId"/> — every mutation command shares this fallback.</param>
 public sealed record ResumeOptions(
     string RoomDirectoryPath,
     string Worker,

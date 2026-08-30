@@ -73,10 +73,9 @@ public static class FlowStateReporter
                 output.WriteLine($"  {step.StepId}: {step.Status}{reasonSuffix}");
             }
 
-            // #740: At settle, baton run prints one line per produced output of each succeeded execution:
-            // output name -> absolute path. A Paused step whose underlying outcome Succeeded — the
-            // ready-for-review approval gate — prints them too: that is exactly the moment a person
-            // wants to open what the worker produced.
+            // #740: the settle-time output listing docs/agents/invoking-baton.md describes. A Paused
+            // step whose underlying outcome Succeeded — the ready-for-review approval gate — prints
+            // them too: that is exactly the moment a person wants to open what the worker produced.
             if (artifactsRootPath is not null && stepDefByStepId.TryGetValue(step.StepId, out var stepDef))
             {
                 foreach (var (outputName, outputPath) in StepOutputResolver.Resolve(step, stepDef, artifactsRootPath))

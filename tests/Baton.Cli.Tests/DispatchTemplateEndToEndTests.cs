@@ -7,8 +7,9 @@ namespace Baton.Cli.Tests;
 
 /// <summary>
 /// <c>baton dispatch &lt;template&gt;</c> end to end (rung-3, #920): a shipped multi-phase template is
-/// resolved, composed into a DAG, and driven through the exact pump <c>baton run</c> uses — and when it
-/// declares a <c>diff-of-work-so-far</c> phase, the dispatch entrypoint captures the workspace HEAD and
+/// resolved and composed into a DAG, run through the same real pump <see cref="DispatchCommandEndToEndTests"/>
+/// covers for the single-step case — and when the template declares a <c>diff-of-work-so-far</c> phase,
+/// the dispatch entrypoint captures the workspace HEAD and
 /// injects it as the capture step's base ref. Roles run on a CI-safe fake; the capture step runs on a
 /// fake that records the base it was handed, so the whole injection chain (compose → detect the capture
 /// binding → capture HEAD → adapter receives it) is proven without a live LLM and without git having to

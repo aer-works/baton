@@ -37,10 +37,7 @@ public static class DecideCommand
     /// record-once-ok: #443 src/Baton.Cli/RunCommand.cs
     /// Another Flow instance already holds this room directory's lock.
     /// </exception>
-    /// <exception cref="Baton.Flow.Store.FlowJournalHeldException">
-    /// Another process — most likely a live <c>baton run</c> engine — already holds this room's
-    /// <c>flow.jsonl</c> open (#816).
-    /// </exception>
+    /// <exception cref="Baton.Flow.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
     /// <param name="inFlightExecutions">
     /// M15 Phase 4's (issue #140) additive caller-retained delivery point — see
     /// <see cref="RunCommand.ExecuteAsync"/>'s own remarks; forwarded, unchanged, to

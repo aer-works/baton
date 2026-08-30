@@ -34,9 +34,8 @@ This runs `dotnet test tests/Baton.Cli.SmokeTests` filtered to
 `LiveMixedVendorPausedRunSmokeTest` — the same project as `smoke-claude`, still **not** part of
 `AerFlow.slnx`, so it never builds or runs as a side effect of `pixi run build`/`test`/`lint`.
 
-The test drives `RunCommand.ExecuteAsync` then `DecideCommand.ExecuteAsync` — the same calls
-`Program.cs` makes for `baton run`/`baton decide` — against the fixtures in
-`tests/Baton.Cli.SmokeTests/Fixtures/`:
+The test drives the CLI commands directly (see `LiveMixedVendorPausedRunSmokeTest`'s own doc comment
+for exactly which calls), reading its fixture pair from `tests/Baton.Cli.SmokeTests/Fixtures/`:
 
 - `draft-review-paused-workflow.json` — two steps, `draft` then `review`, `review` depending on
   `draft`'s output and declaring a `PausePoint` with no supersede targets.

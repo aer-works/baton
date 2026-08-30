@@ -13,8 +13,8 @@ namespace Baton.Flow.Tests.EndToEnd;
 
 /// <summary>
 /// M10 Phase 4 (issue #72): the real-process half of the crash-durability guarantee. Every fixture
-/// here launches <c>Baton.Flow.CrashTestHost</c> — a small, test-only pump host standing in for
-/// <c>Baton.Cli</c>, still a stub — as a genuinely separate OS process, waits for the exact durable
+/// here launches <c>Baton.Flow.CrashTestHost</c> (see its own <c>Program.cs</c> header for why it
+/// exists) as a genuinely separate OS process, waits for the exact durable
 /// fact that defines one of <see cref="Outcomes.ProcessCrashRecoveryDetector"/>'s four crash states
 /// to appear in its log, then kills that process outright and reconciles from the resulting,
 /// genuinely crashed log via a second, in-process <see cref="MutationInterface.StartWorkflowAsync"/>

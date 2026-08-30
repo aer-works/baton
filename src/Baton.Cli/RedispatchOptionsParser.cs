@@ -10,7 +10,7 @@ namespace Baton.Cli;
 /// </summary>
 public static class RedispatchOptionsParser
 {
-    /// <summary>The one copy of <c>baton redispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
+    /// <summary><c>baton redispatch</c>'s usage string, same role as <see cref="DispatchOptionsParser"/>'s own.</summary>
     public const string Usage =
         "Usage: baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] "
         + "[--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>]";

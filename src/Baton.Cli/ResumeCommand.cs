@@ -56,10 +56,7 @@ public static class ResumeCommand
     /// <exception cref="Baton.Flow.Concurrency.WorkflowLockedException">
     /// Another Flow instance already holds this room directory's lock.
     /// </exception>
-    /// <exception cref="Baton.Flow.Store.FlowJournalHeldException">
-    /// Another process — most likely a live <c>baton run</c> engine — already holds this room's
-    /// <c>flow.jsonl</c> open (#816).
-    /// </exception>
+    /// <exception cref="Baton.Flow.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
     public static async Task<CommandResult> ExecuteAsync(
         ResumeOptions options,
         IReadOnlyDictionary<string, IWorkerAdapter> adapters,

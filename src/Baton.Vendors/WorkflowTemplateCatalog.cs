@@ -26,8 +26,8 @@ public sealed record WorkflowTemplate(string Id, IReadOnlyList<WorkflowTemplateP
 /// The runtime-resolved catalog of workflow templates.
 /// </summary>
 /// <remarks>
-/// Resolution order per file, evaluated fresh on every access (the same "resolve, never capture"
-/// discipline <see cref="BatonPaths"/> keeps, so a test or a live edit is honoured immediately):
+/// Resolution order per file, evaluated fresh on every access (<see cref="WorkerRoleCatalog"/> keeps
+/// the same "resolve, never capture" discipline, for the same reason):
 /// <list type="number">
 /// <item>the <c>BATON_WORKFLOW_TEMPLATES_PATH</c> environment override, when set — for a one-off experiment;</item>
 /// <item><c>{BatonPaths.Root}/workflow-templates.json</c> when it exists — the operator's durable, rebuild-free override;</item>

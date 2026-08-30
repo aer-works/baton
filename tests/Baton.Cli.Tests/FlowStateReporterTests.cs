@@ -3,9 +3,8 @@ using Baton.Flow.Domain;
 namespace Baton.Cli.Tests;
 
 /// <summary>
-/// M12 Phase 3's pause-aware reporting requirement (issue #97): without a paused step's
-/// <see cref="ExecutionId"/> and declared <c>SupersedeTargets</c> printed somewhere, a terminal user
-/// has no way to know what to pass to <c>baton decide --execution</c>/<c>--target-step</c>.
+/// M12 Phase 3's pause-aware reporting requirement (issue #97) -- see <see cref="FlowStateReporter"/>'s
+/// own doc comment for why this printing exists at all.
 /// </summary>
 public class FlowStateReporterTests
 {

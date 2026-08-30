@@ -18,7 +18,7 @@ namespace Baton.Cli;
 /// <param name="OutputName">The single declared output name this supplementary execution produces.</param>
 /// <param name="SourceFilePath">An existing file copied into the assigned output directory under <paramref name="OutputName"/>.</param>
 /// <param name="BindingsFilePath">The worker-binding config file — resolved for its Process entries only.</param>
-/// <param name="WorkflowId">Defaults to the bound snapshot's <c>WorkflowTemplateId</c> when not given, same as <c>baton run</c>.</param>
+/// <param name="WorkflowId">See <see cref="CancelOptions.WorkflowId"/> — every mutation command shares this fallback.</param>
 public sealed record SupplyOptions(
     string RoomDirectoryPath,
     string Worker,
