@@ -14,16 +14,18 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
-      PROJECT_NUMBER: 1
-      ORG: aer-works
+      # The board moved from the aer-works org (project 1) to a user project
+      # when the repo transferred to philipreese (#1469).
+      PROJECT_NUMBER: 3
+      OWNER: philipreese
 
     steps:
       - name: Get project and field metadata
         id: meta
         run: |
           DATA=$(gh api graphql -f query='
-            query($org: String!, $num: Int!) {
-              organization(login: $org) {
+            query($owner: String!, $num: Int!) {
+              user(login: $owner) {
                 projectV2(number: $num) {
                   id
                   fields(first: 20) {
@@ -37,18 +39,18 @@ jobs:
                   }
                 }
               }
-            }' -F org=$ORG -F num=$PROJECT_NUMBER)
+            }' -F owner=$OWNER -F num=$PROJECT_NUMBER)
 
-          PROJECT_ID=$(echo "$DATA" | jq -r '.data.organization.projectV2.id')
+          PROJECT_ID=$(echo "$DATA" | jq -r '.data.user.projectV2.id')
           STATUS_FIELD_ID=$(echo "$DATA" | jq -r '
-            .data.organization.projectV2.fields.nodes[]
+            .data.user.projectV2.fields.nodes[]
             | select(.name == "Status") | .id')
           TODO_ID=$(echo "$DATA" | jq -r '
-            .data.organization.projectV2.fields.nodes[]
+            .data.user.projectV2.fields.nodes[]
             | select(.name == "Status") | .options[]
             | select(.name == "Todo") | .id')
           DONE_ID=$(echo "$DATA" | jq -r '
-            .data.organization.projectV2.fields.nodes[]
+            .data.user.projectV2.fields.nodes[]
             | select(.name == "Status") | .options[]
             | select(.name == "Done") | .id')
 
@@ -69,9 +71,8 @@ jobs:
             echo "option_id=${{ steps.meta.outputs.todo_id }}" >> "$GITHUB_OUTPUT"
           fi
 
-      # The org plan's built-in auto-add workflow is already consumed by
-      # aer-core, so this repo adds its own issues to the board. Only on
-      # opened/reopened: a closed issue was already added when it was opened,
+      # The board's built-in auto-add workflow is a web-UI-only setup step, so
+      # this repo adds its own issues to the board. Only on opened/reopened: a closed issue was already added when it was opened,
       # so re-running item-add here would be a redundant call for every PR
       # merge that closes an issue. Issues only — PRs are deliberately never
       # added to the board.
