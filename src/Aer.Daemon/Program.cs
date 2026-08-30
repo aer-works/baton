@@ -4,8 +4,6 @@ using Aer.Flow.Concurrency;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Aer.Daemon.Tests")]
-
 await Aer.Daemon.DaemonHost.RunDaemonAsync(args);
 
 namespace Aer.Daemon
