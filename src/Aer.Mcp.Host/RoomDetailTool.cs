@@ -208,9 +208,25 @@ public sealed class RoomDetailTool : IMcpTool
     private static async Task<RoomStdoutTailView?> ReadStdoutTailAsync(
         string roomDir, string? executionId, CancellationToken cancellationToken)
     {
-        var found = executionId is not null
-            ? FindStdoutFileForExecution(roomDir, executionId)
-            : FindLatestStdoutFile(roomDir);
+        (string Source, string StdoutPath)? found;
+        try
+        {
+            found = executionId is not null
+                ? FindStdoutFileForExecution(roomDir, executionId)
+                : FindLatestStdoutFile(roomDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Discovery itself can race RoomRetentionSweep moving execution_* into pruned/ between
+            // the existence check and the enumeration -- degrade like a failed read, never throw.
+            return new RoomStdoutTailView(
+                Text: string.Empty,
+                Truncated: false,
+                TotalBytes: 0,
+                Source: "artifacts",
+                ReadError: ex.Message);
+        }
+
         if (found is null)
         {
             return null;

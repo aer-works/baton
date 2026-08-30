@@ -166,6 +166,39 @@ public sealed class RoomDetailToolTests : IDisposable
         Assert.Equal(Encoding.UTF8.GetByteCount(content), view.Stdout.TotalBytes);
     }
 
+    /// <summary>
+    /// Pins the exact 64 KiB boundary (review of #1427 flagged the cap test above as only
+    /// exercising ~13x the cap): a file of exactly DefaultStdoutTailBytes must come back whole and
+    /// unmarked, and one byte more must trip the tail path — an off-by-one in the
+    /// <c>totalLength - DefaultStdoutTailBytes</c> math would flip one of the two.
+    /// </summary>
+    [Fact]
+    public async Task StdoutAtExactlyTheCap_IsNotTruncated_AndOneByteOverIs()
+    {
+        var tool = new RoomDetailTool();
+
+        var atCapDir = Path.Combine(_tempHome, AerPaths.RoomsDirectoryName, "at-cap-room");
+        Directory.CreateDirectory(atCapDir);
+        var atCap = new string('x', RoomDetailTool.DefaultStdoutTailBytes - 1) + "\n";
+        WriteStdout(atCapDir, new ExecutionId("exec-at-cap"), atCap);
+
+        var atCapResult = await tool.CallAsync(Parse("""{ "room": "at-cap-room" }"""), TestContext.Current.CancellationToken);
+        var atCapView = JsonSerializer.Deserialize<RoomDetailView>(atCapResult.Text);
+        Assert.NotNull(atCapView?.Stdout);
+        Assert.False(atCapView!.Stdout!.Truncated);
+        Assert.Equal(RoomDetailTool.DefaultStdoutTailBytes, atCapView.Stdout.TotalBytes);
+
+        var overCapDir = Path.Combine(_tempHome, AerPaths.RoomsDirectoryName, "over-cap-room");
+        Directory.CreateDirectory(overCapDir);
+        WriteStdout(overCapDir, new ExecutionId("exec-over-cap"), "y\n" + atCap);
+
+        var overCapResult = await tool.CallAsync(Parse("""{ "room": "over-cap-room" }"""), TestContext.Current.CancellationToken);
+        var overCapView = JsonSerializer.Deserialize<RoomDetailView>(overCapResult.Text);
+        Assert.NotNull(overCapView?.Stdout);
+        Assert.True(overCapView!.Stdout!.Truncated);
+        Assert.Equal(RoomDetailTool.DefaultStdoutTailBytes + 2, overCapView.Stdout.TotalBytes);
+    }
+
     [Fact]
     public async Task StdoutFallsBackToPrunedExecutionDirectory()
     {
