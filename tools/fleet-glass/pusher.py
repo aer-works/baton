@@ -268,6 +268,16 @@ def should_push_snapshot(state: dict, current_hash: str) -> bool:
     return state.get(SNAPSHOT_HASH_KEY) != current_hash
 
 
+def push_snapshot_and_record(post, body: str, state: dict, state_path, current_hash: str) -> None:
+    """POST first, record the hash ONLY afterwards. This ordering is the change-gate's single most
+    safety-critical property (a hash persisted for a FAILED push would gate every retry and go
+    silent until the next content change), so it lives in one testable function instead of inline
+    in main()'s loop -- the selftest proves a raising `post` leaves the state file untouched."""
+    post(body)
+    state[SNAPSHOT_HASH_KEY] = current_hash
+    save_push_state(state_path, state)
+
+
 def should_log_skip(streak: int, log_every: int) -> bool:
     """First skip in a streak logs immediately (so 'now skipping' is visible right away); after
     that, only every `log_every`th cycle -- keeps pusher.log from being mostly skip lines across a
@@ -523,9 +533,9 @@ def main() -> None:
             current_hash = snapshot_hash(wrapped)
             snap_state = load_push_state(state_path)
             if should_push_snapshot(snap_state, current_hash):
-                post_json(cfg["push_url"], json.dumps(wrapped))
-                snap_state[SNAPSHOT_HASH_KEY] = current_hash
-                save_push_state(state_path, snap_state)
+                push_snapshot_and_record(
+                    lambda b: post_json(cfg["push_url"], b),
+                    json.dumps(wrapped), snap_state, state_path, current_hash)
                 if skip_streak:
                     log(f"skipped {skip_streak} unchanged cycle(s) since last push")
                     skip_streak = 0
@@ -693,6 +703,24 @@ def _selftest() -> int:
           all(not should_log_skip(n, 24) for n in range(2, 24)))
     check("should_log_skip fires again at the coarse cadence boundary",
           should_log_skip(24, 24) is True and should_log_skip(48, 24) is True)
+
+    # Post-before-save ordering (#1457 review finding A): a raising post must leave the state file
+    # untouched; a succeeding one must persist the hash. Real temp file, stubbed post.
+    with tempfile.TemporaryDirectory() as tmp:
+        sp = Path(tmp) / "push-state.json"
+
+        def _boom(_body):
+            raise RuntimeError("post failed")
+
+        try:
+            push_snapshot_and_record(_boom, "{}", {}, sp, hash_a)
+        except RuntimeError:
+            pass
+        check("a FAILED post persists nothing (state file untouched, retries next cycle)",
+              not sp.exists())
+        push_snapshot_and_record(lambda _body: None, "{}", {}, sp, hash_a)
+        check("a successful post persists the hash for the next cycle's gate",
+              load_push_state(sp).get(SNAPSHOT_HASH_KEY) == hash_a)
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)
