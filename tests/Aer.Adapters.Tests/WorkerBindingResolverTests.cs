@@ -403,6 +403,24 @@ public class WorkerBindingResolverTests
     }
 
     [Fact]
+    public void ShellCommandsAreReadOnly_without_patterns_exempts_nothing()
+    {
+        // #1456 second-reader finding 1: the assertion is about a specific, named pattern set — an
+        // UNSCOPED shell (no patterns) claiming read-only would have been certified coherent and
+        // translated to bare Bash. It must refuse exactly like the flag was never set.
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: false,
+            RunShellCommands: true, ShellCommandPatterns: null, NetworkAccess: false,
+            ShellCommandsAreReadOnly: true);
+
+        var thrown = Assert.Throws<IncoherentPermissionGrantException>(
+            () => WorkerBindingResolver.Resolve(ConfigWithGrant(grant), EchoAdapter()));
+
+        Assert.Contains("WriteFiles", thrown.WithheldCategories);
+        Assert.Contains("NetworkAccess", thrown.WithheldCategories);
+    }
+
+    [Fact]
     public void ShellCommandsAreReadOnly_does_not_exempt_ReadFiles()
     {
         // Why ReadFiles stays outside the exemption: PermissionGrant.CategoriesDefeatedByTheShell's

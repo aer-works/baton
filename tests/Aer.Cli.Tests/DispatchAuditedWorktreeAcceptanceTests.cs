@@ -42,10 +42,11 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
     {
         // #1456: this file used "review" for the flat write_files:false/run_shell_commands:false/
         // network_access:false shape every read-only role carried before that change. review no
-        // longer has it (a scoped shell now, refused outright on agy -- see
-        // Dispatching_review_on_agy_is_refused_the_shell_grant_agy_cannot_express below); fact-check
-        // still does, and is what this R1 acceptance path (audited-write worktree provisioning) is
-        // actually about -- a shape any read-only, write-widened-on-agy role exercises identically.
+        // longer has it (a scoped shell now, refused outright on agy — exercised against the real
+        // adapter in AgyWorkerAdapterTests' scoped-shell refusal fact, not in this file, whose fakes
+        // always translate grants successfully); fact-check still does, and is what this R1
+        // acceptance path (audited-write worktree provisioning) is actually about -- a shape any
+        // read-only, write-widened-on-agy role exercises identically.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-agy-e2e-{Guid.NewGuid():N}");
         try
         {

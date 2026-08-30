@@ -117,15 +117,22 @@ public sealed record PermissionGrant(
                 withheld.Add(nameof(ReadFiles));
             }
 
+            // The read-only assertion is a claim about a SPECIFIC, NAMED set of patterns — applied
+            // to an unscoped shell (null/empty ShellCommandPatterns means "any command") it is
+            // meaningless and dangerous, so it only counts when a non-empty pattern list backs it
+            // (#1456 second-reader finding 1: without this guard, RunShellCommands + the bare flag
+            // certified an unscoped shell as coherent and claude translated it to bare Bash).
+            var readOnlyPatternedShell = ShellCommandsAreReadOnly && ShellCommandPatterns is { Count: > 0 };
+
             // A read-only-asserted shell still performs reads (that is the whole reason it is useful),
-            // so ReadFiles is never exempted by ShellCommandsAreReadOnly — only WriteFiles/NetworkAccess,
-            // the two categories the assertion actually claims the patterns cannot reach.
-            if (!WriteFiles && !ShellCommandsAreReadOnly)
+            // so ReadFiles is never exempted — only WriteFiles/NetworkAccess, the two categories the
+            // assertion actually claims the patterns cannot reach.
+            if (!WriteFiles && !readOnlyPatternedShell)
             {
                 withheld.Add(nameof(WriteFiles));
             }
 
-            if (!NetworkAccess && !ShellCommandsAreReadOnly)
+            if (!NetworkAccess && !readOnlyPatternedShell)
             {
                 withheld.Add(nameof(NetworkAccess));
             }

@@ -750,7 +750,11 @@ def grant_refusal(grant: dict) -> str | None:
     # is, because a read-only shell still performs reads. `.get` rather than `[...]` because this is the
     # one grant key older callers (a hand-built dict, a hardcoded refusal_arms fixture) might omit --
     # missing must read as False, not raise, or every pre-#1456 caller of this function breaks.
-    read_only_shell = grant.get("shell_commands_are_read_only", False)
+    # Guarded on a non-empty pattern list, same as the C# side: the assertion is about a specific,
+    # named set of patterns — flagging an UNSCOPED shell read-only is meaningless and refused.
+    read_only_shell = bool(grant.get("shell_commands_are_read_only", False)) and bool(
+        grant.get("shell_command_patterns")
+    )
 
     if grant["run_shell_commands"] and not grant["network_access"] and not read_only_shell:
         # The network arm of the same #529 rule as the condition below, kept separate only because it

@@ -49,7 +49,11 @@
     ],
     "denied_shell_command_patterns": [
       "git commit*", "git push*", "git merge*", "git checkout*", "git switch*", "git reset*", "git clean*",
-      "gh pr comment*", "gh pr edit*", "gh pr merge*", "gh issue comment*", "gh issue edit*", "gh label*"
+      "git rebase*", "git am*", "git apply*", "git stash*", "git worktree*", "git remote*", "git config*",
+      "git tag*", "git restore*", "git cherry-pick*", "git revert*",
+      "gh pr comment*", "gh pr edit*", "gh pr merge*", "gh issue comment*", "gh issue edit*", "gh label*",
+      "gh repo*", "gh release*", "gh api*", "gh auth*", "gh secret*", "gh variable*", "gh workflow*",
+      "gh run cancel*", "gh run rerun*"
     ],
     "shell_commands_are_read_only": true,
     "timeout_minutes": 25,

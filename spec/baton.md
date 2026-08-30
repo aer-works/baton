@@ -685,13 +685,22 @@ correcting this section's own earlier framing where it over-generalised.** §9 a
 discrimination**: `docs/vendor-capabilities.md`'s "canonical ceiling" measurement shows
 `--disallowedTools Bash(pattern)` enforced, with precedence over `--allowedTools`, and a Bash pattern
 *not* on the allow list denied outright (`Bash(npm *)` refused when only `Bash(git *)` was granted —
-the negative control that makes it a ceiling rather than a coincidence). `review`'s grant relies on
-exactly that: only the enumerated `Bash(git …*)`/`Bash(gh …*)` patterns are pre-approved (no bare
-`Bash`), and the deny-subset above is belt-and-braces on top. `PermissionGrant.ShellCommandsAreReadOnly`
+the negative control that makes it a ceiling rather than a coincidence). Two granularity limits of
+that measurement, stated rather than assumed (#1456 second reader): the negative control differs at
+the PROGRAM level (`npm` vs `git`), not the subcommand level — whether an unlisted `git`/`gh`
+subcommand is denied the same way is unmeasured — and nothing measures whether the pattern is
+matched against the whole command line or only its leading tokens (shell chaining/redirection inside
+an allowed prefix). Until both are measured and recorded in `docs/vendor-capabilities.md`, the deny
+list above enumerates every known-mutating `git`/`gh` subcommand family explicitly rather than
+relying on allowlist-omission alone, and the read-only assertion should be read as resting on that
+explicit deny-subset plus the measured program-level control. `review`'s grant relies on exactly
+that: only the enumerated `Bash(git …*)`/`Bash(gh …*)` patterns are pre-approved (no bare `Bash`),
+and the deny-subset above is belt-and-braces on top. `PermissionGrant.ShellCommandsAreReadOnly`
 (new, #1456) is the named, author-asserted escape hatch that lets a grant like this one compose
 without widening `WriteFiles`/`NetworkAccess` just to satisfy `CategoriesDefeatedByTheShell`'s
-coherence check — see that type's own doc comment for exactly what the assertion claims and does not
-derive.
+coherence check — it only counts when a non-empty pattern list backs it (an unscoped shell claiming
+read-only is refused as incoherent); see that type's own doc comment for exactly what the assertion
+claims and does not derive.
 
 **Network honesty: `review`'s `network_access` stays `false`, and `gh` reaches github.com anyway.**
 The categorical `NetworkAccess` grant (claude's `WebFetch`/`WebSearch`, arbitrary URLs) is
