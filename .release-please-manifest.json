@@ -1,6 +1,6 @@
 {
-  "src/Aer.Flow": "0.21.0",
-  "src/Aer.Adapters": "0.21.0",
-  "src/Aer.Cli": "0.21.0",
-  "src/Aer.Daemon": "0.21.0"
+  "src/Aer.Flow": "0.22.0",
+  "src/Aer.Adapters": "0.22.0",
+  "src/Aer.Cli": "0.22.0",
+  "src/Aer.Daemon": "0.21.1"
 }

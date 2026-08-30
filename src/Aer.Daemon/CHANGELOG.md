@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.21.1](https://github.com/aer-works/baton/compare/daemon-v0.21.0...daemon-v0.21.1) (2026-08-30)
+
+
+### Code Refactoring
+
+* **daemon:** Extract Aer.RoomSession and sever the daemon's Aer.Ui.Core dependency ([#1414](https://github.com/aer-works/baton/issues/1414)) ([30f8ee8](https://github.com/aer-works/baton/commit/30f8ee8f570664fb4901a3a8d4b5761492eae7b7))
+
+
+### Tests
+
+* **daemon:** Cover RunDaemonAsync's mutex, settings ordering, and service registration ([#1438](https://github.com/aer-works/baton/issues/1438)) ([a73449f](https://github.com/aer-works/baton/commit/a73449fe0829c77fe6dbe93bd1da0ce02dafb387))
+
+
+### Miscellaneous
+
+* **reset:** Archive Aer.Mobile — app, build machinery, CI leg ([#1409](https://github.com/aer-works/baton/issues/1409)) ([f165268](https://github.com/aer-works/baton/commit/f165268b4aea8b75a43a9c71c9e1a3dc525f6154))
+* **reset:** Archive the mid-lane ask machinery — PermissionGateTool, the daemon answerer, and VendorGate ([#1419](https://github.com/aer-works/baton/issues/1419)) ([4c13a2f](https://github.com/aer-works/baton/commit/4c13a2ffb9fe55ee42cee76e62563cbbbe73f0be))
+* **reset:** Delete Aer.Ui, Aer.Ui.Core, and their design-token, harness, and checker satellites ([#1415](https://github.com/aer-works/baton/issues/1415)) ([88e61fc](https://github.com/aer-works/baton/commit/88e61fcee97e2813f41b3075650072d620a7ecb4))
+* **reset:** Narrow Aer.Daemon to a bare hosted-service runner — no HTTP surface pending the room-watcher build ([#1423](https://github.com/aer-works/baton/issues/1423)) ([2b5a925](https://github.com/aer-works/baton/commit/2b5a925a741eb883ea115ae42e10a7b43274a08e))
+
 ## [0.21.0](https://github.com/aer-works/baton/compare/daemon-v0.20.0...daemon-v0.21.0) (2026-08-27)
 
 

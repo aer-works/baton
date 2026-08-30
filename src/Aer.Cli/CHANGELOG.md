@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.22.0](https://github.com/aer-works/baton/compare/cli-v0.21.0...cli-v0.22.0) (2026-08-30)
+
+
+### Features
+
+* **cli:** Add aer redispatch to rerun a terminal room's role with amended spec ([#1453](https://github.com/aer-works/baton/issues/1453)) ([4701486](https://github.com/aer-works/baton/commit/4701486a8174cb3310aba7d241079ed472ecbd22))
+* **cli:** Add dispatch --timeout to override the role timebox ([#1451](https://github.com/aer-works/baton/issues/1451)) ([9dfa3d7](https://github.com/aer-works/baton/commit/9dfa3d741fe99a0aebc6263ea6b081abaec560ce))
+* **daemon:** Add the multi-project room registry behind fleet_status ([#1447](https://github.com/aer-works/baton/issues/1447)) ([d5f83c2](https://github.com/aer-works/baton/commit/d5f83c2ab0217b4d0dd8b1b0c7eb4b204c6de6b2))
+* **mcp:** Add read-only fleet_status MCP tool in Aer.Mcp.Host ([#1393](https://github.com/aer-works/baton/issues/1393)) ([df49112](https://github.com/aer-works/baton/commit/df491125104acb36e7962660f271094d4f0557bc))
+* **roles:** Give review lanes read-only git and gh access, enforced at the permission layer ([#1460](https://github.com/aer-works/baton/issues/1460)) ([1fbfbf3](https://github.com/aer-works/baton/commit/1fbfbf32f9c3fc5021b6d7fcaf39dd757474af36))
+
+
+### Bug Fixes
+
+* **comments:** Remove dead spec-section references and gate comment citations on resolution ([#1432](https://github.com/aer-works/baton/issues/1432)) ([f39217c](https://github.com/aer-works/baton/commit/f39217ceaab201ddf00e14093a0ae8cb9670f1c2))
+
+
+### Code Refactoring
+
+* **daemon:** Extract Aer.RoomSession and sever the daemon's Aer.Ui.Core dependency ([#1414](https://github.com/aer-works/baton/issues/1414)) ([30f8ee8](https://github.com/aer-works/baton/commit/30f8ee8f570664fb4901a3a8d4b5761492eae7b7))
+
+
+### Miscellaneous
+
+* **reset:** Archive Aer.Workers.Dialogue — worker, adapter wiring, smoke leg ([#1411](https://github.com/aer-works/baton/issues/1411)) ([2513a63](https://github.com/aer-works/baton/commit/2513a638176a080a950fcbf3b322599eed85e992))
+* **reset:** Archive the mid-lane ask machinery — PermissionGateTool, the daemon answerer, and VendorGate ([#1419](https://github.com/aer-works/baton/issues/1419)) ([4c13a2f](https://github.com/aer-works/baton/commit/4c13a2ffb9fe55ee42cee76e62563cbbbe73f0be))
+* **reset:** Delete Aer.Ui, Aer.Ui.Core, and their design-token, harness, and checker satellites ([#1415](https://github.com/aer-works/baton/issues/1415)) ([88e61fc](https://github.com/aer-works/baton/commit/88e61fcee97e2813f41b3075650072d620a7ecb4))
+* **reset:** Go Windows-only — CI matrix, pixi platforms, single-RID pack, POSIX guard subsystem ([#1424](https://github.com/aer-works/baton/issues/1424)) ([e1f2aef](https://github.com/aer-works/baton/commit/e1f2aeffe336edbc9c486e69329d1f5313040738))
+* **reset:** Narrow Aer.Daemon to a bare hosted-service runner — no HTTP surface pending the room-watcher build ([#1423](https://github.com/aer-works/baton/issues/1423)) ([2b5a925](https://github.com/aer-works/baton/commit/2b5a925a741eb883ea115ae42e10a7b43274a08e))
+
 ## [0.21.0](https://github.com/aer-works/baton/compare/cli-v0.20.0...cli-v0.21.0) (2026-08-27)
 
 
