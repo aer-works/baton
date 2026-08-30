@@ -294,7 +294,7 @@ AppContainer sandbox on Windows · the daemon↔credential coupling ·
 
 2. **`src/` audit coverage against corrected vendor reality is partial, not swept.** #521, #529 and
    others were found by looking, each in the first file checked for that specific issue — that is
-   not evidence the rest of `ClaudeWorkerAdapter`/`GeminiWorkerAdapter` are clean, only that nobody
+   not evidence the rest of `ClaudeWorkerAdapter`/`AgyWorkerAdapter` are clean, only that nobody
    has looked comprehensively.
 
 3. **Every decision's disposition against measured vendor reality is tracked, and current** — see

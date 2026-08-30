@@ -691,7 +691,7 @@ it as the **absolute** path the prompt named — not a basename, not a path rela
 ignores anyway (#472). The key is **`TargetFile`**, PascalCase. So a path-bounded gate is
 implementable here, which is what #679 rests on.
 
-**Scoped to `write_to_file`.** `GeminiWorkerAdapter.WriteTools` names four tools, and this measured
+**Scoped to `write_to_file`.** `AgyWorkerAdapter.WriteTools` names four tools, and this measured
 one; the other three (`replace_file_content`, `multi_replace_file_content`, `generate_image`) may key
 their target differently or not carry one. That is why the gate this feeds denies a write whose path
 it cannot find rather than allowing it: an unmeasured key fails loudly instead of silently unbounded.

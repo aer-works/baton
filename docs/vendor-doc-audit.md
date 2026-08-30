@@ -1047,7 +1047,7 @@ reaches the network (`curl`). The method's own XML doc already warns that denial
 not default-deny", but scopes that to tools *outside* the four categories. The hole is **inside**
 them.
 
-`GeminiWorkerAdapter` is **not** affected, and for a reason this audit independently verified:
+`AgyWorkerAdapter` is **not** affected, and for a reason this audit independently verified:
 `agy -p` fails closed, and the adapter refuses shell and network grants outright rather than
 approximating them — so there is no substitute tool to reach for. The asymmetry the adapter's
 comments describe is real.
