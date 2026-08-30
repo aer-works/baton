@@ -102,8 +102,20 @@ public sealed class FleetStatusTool : IMcpTool
         // gets registered) is decorated with its project, not just rooms the registry alone finds. A
         // registry entry whose directory no longer exists is dropped here rather than surfacing as a
         // phantom room or a spurious project label.
-        var registryEntries = await RoomRegistryStore.ReadDistinctByRoomAsync(AerPaths.RoomRegistryFile, cancellationToken)
-            .ConfigureAwait(false);
+        IReadOnlyList<RoomRegistryEntry> registryEntries;
+        try
+        {
+            registryEntries = await RoomRegistryStore.ReadDistinctByRoomAsync(AerPaths.RoomRegistryFile, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Defense-in-depth for the registry's only-ever-adds-coverage contract: the store's own
+            // catch list should make this unreachable, but if any exception shape slips it, losing
+            // the whole call (directory-scan results included) to the host's generic catch-all would
+            // be strictly worse than answering scan-only.
+            registryEntries = [];
+        }
         var projectByRoom = new Dictionary<string, string>(AerPaths.RecordKeyComparer);
         foreach (var entry in registryEntries)
         {

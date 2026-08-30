@@ -358,5 +358,33 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(singleRoom.Project);
     }
 
+    /// <summary>
+    /// A real I/O failure, not just malformed content (#1447 review finding): the registry path
+    /// occupied by a DIRECTORY makes every open attempt throw. The only-ever-adds-coverage
+    /// contract means the scan's rooms must still come back with no error — losing the whole call
+    /// to a registry read failure would be strictly worse than answering scan-only.
+    /// </summary>
+    [Fact]
+    public async Task RegistryPathOccupiedByADirectory_StillAnswersFromTheScanAlone()
+    {
+        Directory.CreateDirectory(AerPaths.RoomRegistryFile);
+
+        var defaultRoomsDir = Path.Combine(_tempHome, AerPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "scanned-room");
+        Directory.CreateDirectory(room);
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("scanned-room", singleRoom.Name);
+        Assert.Null(singleRoom.Project);
+    }
+
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
 }
