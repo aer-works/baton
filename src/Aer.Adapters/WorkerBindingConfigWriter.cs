@@ -13,8 +13,8 @@ namespace Aer.Adapters;
 /// scope) lives entirely in this assembly (Adapter Isolation, the repo's own architecture rule),
 /// exactly mirroring <c>Aer.Flow.Templates.WorkflowDefinitionWriter</c>'s placement reasoning
 /// beside <c>WorkflowDefinitionParser</c> for templates (M16 Phase 1). Originally written for the
-/// desktop authoring surface (deleted, #1412); today's callers are the daemon, DispatchCommand,
-/// and the built-in templates.
+/// desktop authoring surface (deleted, #1412); the daemon caller went with the daemon's HTTP
+/// surface (#1420) — today's sole production caller is <c>DispatchCommand</c>.
 /// </para>
 /// <para>
 /// <b>Validation decision of record:</b> there is no separate <c>WorkerBindingConfigValidator</c> —
