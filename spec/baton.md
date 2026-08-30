@@ -108,9 +108,12 @@ A harness invokes work two ways, both in `src/Aer.Cli/Program.cs`:
   `RunCommand` is invoked underneath it. `--timeout` (#1442) overrides the dispatched role's own
   catalog timeout for just this dispatch, recorded into that same `bindings.json` (never
   `workflow.json` — a worker's timeout has always been kept off the frozen `WorkflowDefinitionSnapshot`,
-  the M7 Phase 7 split `WorkerBindingConfigEntry`'s own doc states); role dispatch only, rejected for a
-  template. Values are whole minutes, rejected outright above a 24h ceiling (no interactive confirmation
-  exists for a non-interactive CLI) and merely flagged on stderr above 2h.
+  the M7 Phase 7 split `WorkerBindingConfigEntry`'s own doc states). It is the escape hatch for a role
+  that legitimately needs longer than its fixed tier timebox — an orchestrator coordinating sub-lanes,
+  say — so such a lane does not die mid-flight. Role dispatch only, rejected for a template: a
+  template's phases each carry their own role's timeout, so there is no single one to override. Values
+  are whole minutes, rejected outright above a 24h ceiling (no interactive confirmation exists for a
+  non-interactive CLI) and merely flagged on stderr above 2h.
 
 A room's model is always pinned in `bindings.json` at dispatch time — there is no runtime model
 choice a harness makes mid-lane; §9 covers the bindings contract. `aer resume`, `aer decide`, `aer

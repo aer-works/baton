@@ -67,9 +67,8 @@ public static class RoleDispatch
     /// </param>
     /// <param name="timeoutOverride">
     /// The <c>--timeout</c> escape hatch (#1442), independent of the role like <paramref
-    /// name="modelOverride"/>/<paramref name="effortOverride"/> — a role that legitimately needs longer
-    /// than its fixed tier timebox (an orchestrator coordinating sub-lanes, say) does not have to die
-    /// mid-flight. Null keeps <see cref="WorkerRole.Timeout"/>.
+    /// name="modelOverride"/>/<paramref name="effortOverride"/> — rationale in spec/baton.md §2.
+    /// Null keeps <see cref="WorkerRole.Timeout"/>.
     /// </param>
     public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null, bool autoProvisionWorktree = true, TimeSpan? timeoutOverride = null)
     {

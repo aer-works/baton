@@ -326,8 +326,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     [Fact]
     public async Task Dispatching_a_template_with_a_timeout_override_is_a_typed_argument_error()
     {
-        // Mirrors --output's template refusal: a template's phases each carry their own role's
-        // timeout, so there is no single one for --timeout to override.
+        // Mirrors --output's template refusal — why in spec/baton.md §2.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
         try
         {
