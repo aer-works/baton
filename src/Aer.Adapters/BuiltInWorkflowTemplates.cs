@@ -19,7 +19,13 @@ public sealed record RoleTemplateExport(
     [property: JsonPropertyName("timeout_minutes")] int TimeoutMinutes,
     [property: JsonPropertyName("verdict_schema")] bool VerdictSchema,
     [property: JsonPropertyName("_use")] string Use,
-    [property: JsonPropertyName("_outputs")] IReadOnlyList<RoleTemplateOutputExport> Outputs);
+    [property: JsonPropertyName("_outputs")] IReadOnlyList<RoleTemplateOutputExport> Outputs,
+    // #1456: exported so the catalog's other reader (the #836 shared-source loop tool) sees the
+    // scoped-shell shape too — otherwise `aer templates --json` under-reports review's grant.
+    // Field semantics: spec/baton.md §9.
+    [property: JsonPropertyName("shell_command_patterns")] IReadOnlyList<string>? ShellCommandPatterns = null,
+    [property: JsonPropertyName("denied_shell_command_patterns")] IReadOnlyList<string>? DeniedShellCommandPatterns = null,
+    [property: JsonPropertyName("shell_commands_are_read_only")] bool ShellCommandsAreReadOnly = false);
 
 /// <summary>
 /// Information describing a built-in workflow template (M22 Phase 1).
@@ -92,7 +98,10 @@ public static class BuiltInWorkflowTemplates
                         OutputSchema.Diff => "diff",
                         _ => "none",
                     },
-                    Instruction: o.Instruction)).ToList());
+                    Instruction: o.Instruction)).ToList(),
+                ShellCommandPatterns: role.Grant.ShellCommandPatterns,
+                DeniedShellCommandPatterns: role.Grant.DeniedShellCommandPatterns,
+                ShellCommandsAreReadOnly: role.Grant.ShellCommandsAreReadOnly);
         }
         return dict;
     }

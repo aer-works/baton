@@ -38,28 +38,35 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
     }
 
     [Fact]
-    public async Task Dispatching_review_on_agy_against_a_real_git_workspace_auto_provisions_and_satisfies_the_contract_with_output()
+    public async Task Dispatching_fact_check_on_agy_against_a_real_git_workspace_auto_provisions_and_satisfies_the_contract_with_output()
     {
+        // #1456: this file used "review" for the flat write_files:false/run_shell_commands:false/
+        // network_access:false shape every read-only role carried before that change. review no
+        // longer has it (a scoped shell now, refused outright on agy — exercised against the real
+        // adapter in AgyWorkerAdapterTests' scoped-shell refusal fact, not in this file, whose fakes
+        // always translate grants successfully); fact-check still does, and is what this R1
+        // acceptance path (audited-write worktree provisioning) is actually about -- a shape any
+        // read-only, write-widened-on-agy role exercises identically.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-agy-e2e-{Guid.NewGuid():N}");
         try
         {
             var workspace = Path.Combine(testRoot, "workspace");
             await InitGitRepoAsync(workspace);
 
-            var specPath = await WriteSpecAsync(testRoot, "Review the change.");
+            var specPath = await WriteSpecAsync(testRoot, "Confirm the facts.");
             var roomDirectory = Path.Combine(testRoot, "task");
-            var outputPath = Path.Combine(testRoot, "report-out.md");
+            var outputPath = Path.Combine(testRoot, "findings-out.md");
             var adapters = await AgyFakeAdaptersAsync(testRoot);
 
             var options = new DispatchOptions(
-                "review", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace, OutputPath: outputPath);
+                "fact-check", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace, OutputPath: outputPath);
 
             var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
             var step = Assert.Single(result.State.Steps);
             Assert.Equal(StepStatus.Succeeded, step.Status);
-            Assert.True(File.Exists(outputPath), "the --output copy of report.md should have landed");
+            Assert.True(File.Exists(outputPath), "the --output copy of findings.md should have landed");
 
             // The binding that actually ran was audited and provisioned, not enforced against the
             // caller's own workspace directly — the whole point of R1.
@@ -74,11 +81,12 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
     }
 
     [Fact]
-    public async Task Dispatching_review_on_agy_prints_the_audited_write_grant_not_a_bare_write()
+    public async Task Dispatching_fact_check_on_agy_prints_the_audited_write_grant_not_a_bare_write()
     {
         // #1355: the printed grant line has to name the audited-not-enforced write it actually
         // resolved to, not just "write" -- otherwise an invoking agent relaying the line to its own
-        // permission layer under-reports what the run really carried.
+        // permission layer under-reports what the run really carried. #1456: fact-check stands in for
+        // review here now -- see the fact-check test above this class's own note.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-agy-grant-line-{Guid.NewGuid():N}");
         var originalOut = Console.Out;
         try
@@ -86,11 +94,11 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
             var workspace = Path.Combine(testRoot, "workspace");
             await InitGitRepoAsync(workspace);
 
-            var specPath = await WriteSpecAsync(testRoot, "Review the change.");
+            var specPath = await WriteSpecAsync(testRoot, "Confirm the facts.");
             var roomDirectory = Path.Combine(testRoot, "task");
             var adapters = await AgyFakeAdaptersAsync(testRoot, translatesGrants: true);
 
-            var options = new DispatchOptions("review", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace);
+            var options = new DispatchOptions("fact-check", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace);
 
             using var consoleOutput = new StringWriter();
             Console.SetOut(consoleOutput);
@@ -108,14 +116,22 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
         }
     }
 
+    // #1456: review's own shell-grant refusal on agy is asserted where it is real -- this file's
+    // fakes implement IPermissionGrantTranslator to always succeed (GrantConsumingContractOutput-
+    // WorkerAdapter.TryTranslatePermissionGrant, deliberately, for the two grant-line tests above),
+    // so dispatching "review" through them here would prove nothing about the real AgyWorkerAdapter.
+    // The real adapter's refusal is exercised directly in AgyWorkerAdapterTests (its scoped-shell
+    // refusal fact).
+
     [Fact]
-    public async Task Dispatching_review_on_agy_against_a_workspace_that_is_itself_a_worktree_with_an_untracked_file_still_succeeds()
+    public async Task Dispatching_fact_check_on_agy_against_a_workspace_that_is_itself_a_worktree_with_an_untracked_file_still_succeeds()
     {
         // The red test for finding 1/R1: before this fix, IsWorktree(workspace) == true routed the
         // caller's OWN directory in as WorkingDirectory (stamped IsWorktree: true without this run
         // having provisioned it), so the post-run audit inspected the caller's own untracked file and
         // failed Permanent. R1 provisions a fresh worktree regardless of the caller's directory shape,
-        // so the caller's own dirt must be irrelevant to the outcome.
+        // so the caller's own dirt must be irrelevant to the outcome. #1456: fact-check stands in for
+        // review -- see this class's top-of-file test for why.
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-agy-worktree-e2e-{Guid.NewGuid():N}");
         try
         {
@@ -130,11 +146,11 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
                 Path.Combine(workspace, "operators-scratch-file.txt"), "not the worker's business",
                 TestContext.Current.CancellationToken);
 
-            var specPath = await WriteSpecAsync(testRoot, "Review the change.");
+            var specPath = await WriteSpecAsync(testRoot, "Confirm the facts.");
             var roomDirectory = Path.Combine(testRoot, "task");
             var adapters = await AgyFakeAdaptersAsync(testRoot);
 
-            var options = new DispatchOptions("review", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace);
+            var options = new DispatchOptions("fact-check", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace);
 
             var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
 

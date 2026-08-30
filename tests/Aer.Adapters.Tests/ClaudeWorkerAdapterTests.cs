@@ -315,6 +315,36 @@ public class ClaudeWorkerAdapterTests
     }
 
     [Fact]
+    public void A_read_only_scoped_shell_grant_allows_only_its_patterns_and_denies_the_named_mutating_ones()
+    {
+        // #1456: the review role's actual grant shape -- read-only git/gh patterns allowed, mutating
+        // families explicitly denied on top, no bare "Bash" anywhere on either flag. This is what
+        // makes the ceiling real per docs/vendor-capabilities.md's measured negative control (a Bash
+        // pattern not on the allow list is refused, not merely unprompted).
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: false, RunShellCommands: true,
+            ShellCommandPatterns: ["git diff*", "gh pr view*"], NetworkAccess: false,
+            DeniedShellCommandPatterns: ["git commit*", "git push*"], ShellCommandsAreReadOnly: true);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+
+        var allowed = ArgValue(target, "--allowedTools")!;
+        Assert.Contains("Bash(git diff*)", allowed);
+        Assert.Contains("Bash(gh pr view*)", allowed);
+        Assert.DoesNotContain("Bash,", allowed, StringComparison.Ordinal);
+        Assert.DoesNotContain("Bash(git commit*)", allowed);
+
+        var denied = ArgValue(target, "--disallowedTools")!;
+        Assert.Contains("Bash(git commit*)", denied);
+        Assert.Contains("Bash(git push*)", denied);
+        Assert.DoesNotContain("Bash(git diff*)", denied);
+        // Bare "Bash" (the category-level denial #331 emits when the shell is fully withheld) must
+        // not appear -- this grant GRANTS the shell, just scoped, so the bare-tool denial branch
+        // (WithheldToolNames) must not fire.
+        Assert.DoesNotMatch(@"(^|,)Bash(,|$)", denied);
+    }
+
+    [Fact]
     public void A_raw_permission_scope_with_no_structured_grant_emits_no_disallowed_list()
     {
         // The Advanced escape hatch carries no categories to deny — a hand-typed scope is taken as-is.

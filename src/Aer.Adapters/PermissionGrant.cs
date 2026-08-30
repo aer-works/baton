@@ -36,13 +36,26 @@ namespace Aer.Adapters;
 /// (spec/baton.md §5); this field remains enforced on both vendors for any grant that already
 /// carries entries, e.g. from a hand-edited <c>bindings.json</c>.
 /// </param>
+/// <param name="ShellCommandsAreReadOnly">
+/// Asserts that every pattern in <see cref="ShellCommandPatterns"/> is read-only: none of them can
+/// write a file, mutate git/gh state, or reach network beyond what the specific named command
+/// inherently needs (e.g. <c>gh pr view</c> reaching github.com). This is a claim made by the grant's
+/// author, not a fact <see cref="CategoriesDefeatedByTheShell"/> derives by parsing the patterns — a
+/// pattern list that actually can write or mutate, with this set true, is the author's mistake, not
+/// something this type catches. Exists so a role author can compose a genuinely read-only, narrowly
+/// scoped shell (spec/baton.md §9, #1456) without widening <see cref="WriteFiles"/>/
+/// <see cref="NetworkAccess"/> just to satisfy the coherence check below — the general field #1387
+/// wants for a future scoped-shell-without-network grant. False (the default) leaves every existing
+/// grant's coherence check exactly as conservative as it was before this field existed.
+/// </param>
 public sealed record PermissionGrant(
     bool ReadFiles = false,
     bool WriteFiles = false,
     bool RunShellCommands = false,
     IReadOnlyList<string>? ShellCommandPatterns = null,
     bool NetworkAccess = false,
-    IReadOnlyList<string>? DeniedShellCommandPatterns = null)
+    IReadOnlyList<string>? DeniedShellCommandPatterns = null,
+    bool ShellCommandsAreReadOnly = false)
 {
     /// <summary>
     /// True when every category is unset — the structured equivalent of a blank
@@ -68,11 +81,17 @@ public sealed record PermissionGrant(
     /// grant withholding any of these while granting the shell does not actually withhold it.
     /// </para>
     /// <para>
-    /// <see cref="ShellCommandPatterns"/> is deliberately <em>not</em> an exemption. A pattern list
-    /// only reaches the <c>--allowedTools</c> string, and
+    /// <see cref="ShellCommandPatterns"/> alone is deliberately <em>not</em> an exemption. A pattern
+    /// list only reaches the <c>--allowedTools</c> string, and
     /// <c>gate.allowedtools-is-preapproval-not-ceiling</c> measured that list to be pre-approval
-    /// rather than a ceiling; the <c>--disallowedTools</c> side has no narrowed <c>Bash(…)</c> form
-    /// at all. A pattern list changes what is pre-approved, never what is reachable.
+    /// rather than a ceiling for CROSS-tool substitution (a withheld category reached through a
+    /// different, granted tool). <see cref="ShellCommandsAreReadOnly"/> is the explicit, named escape
+    /// hatch for the narrower claim that actually holds — same-tool Bash pattern denial is a real,
+    /// measured ceiling with deny-over-allow precedence; the measurement and its negative control are
+    /// stated canonically in spec/baton.md §9 — so an author asserting the allowed patterns cannot
+    /// write or mutate is not defeating a withheld category by the mechanism #529 measured. Without
+    /// that assertion this stays exactly as conservative as before: a pattern list changes what is
+    /// pre-approved, never (on its own) what is reachable.
     /// </para>
     /// <para>
     /// <b>This lives here, on the grant, because three surfaces need the same answer and #645 was
@@ -98,12 +117,22 @@ public sealed record PermissionGrant(
                 withheld.Add(nameof(ReadFiles));
             }
 
-            if (!WriteFiles)
+            // The read-only assertion is a claim about a SPECIFIC, NAMED set of patterns — against
+            // an unscoped shell (null/empty ShellCommandPatterns means "any command") it is
+            // meaningless, so it is honored only alongside a populated pattern list (#1456
+            // second-reader finding 1: without this guard, RunShellCommands + the bare flag
+            // certified an unscoped shell as coherent and claude translated it to bare Bash).
+            var readOnlyPatternedShell = ShellCommandsAreReadOnly && ShellCommandPatterns is { Count: > 0 };
+
+            // A read-only-asserted shell still performs reads (that is the whole reason it is useful),
+            // so ReadFiles is never exempted — only WriteFiles/NetworkAccess, the two categories the
+            // assertion actually claims the patterns cannot reach.
+            if (!WriteFiles && !readOnlyPatternedShell)
             {
                 withheld.Add(nameof(WriteFiles));
             }
 
-            if (!NetworkAccess)
+            if (!NetworkAccess && !readOnlyPatternedShell)
             {
                 withheld.Add(nameof(NetworkAccess));
             }
