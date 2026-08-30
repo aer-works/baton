@@ -32,10 +32,7 @@ public static class ResumeCommand
     /// <see cref="ResumeOptions.MessageFilePath"/> does not exist, or the bindings file has no entry
     /// for <see cref="ResumeOptions.Worker"/>.
     /// </exception>
-    /// <exception cref="SnapshotLoadException">
-    /// The room directory has no persisted snapshot yet (never started via <c>baton run</c>), or its
-    /// persisted snapshot is malformed.
-    /// </exception>
+    /// <exception cref="SnapshotLoadException">Same failure shape as <see cref="DecideCommand"/>'s own.</exception>
     /// <exception cref="WorkerBindingConfigException">The worker-binding config is malformed.</exception>
     /// <exception cref="UnknownWorkerAdapterException">
     /// The worker-binding config names an adapter not present in <paramref name="adapters"/>, for the

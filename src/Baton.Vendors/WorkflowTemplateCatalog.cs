@@ -26,13 +26,10 @@ public sealed record WorkflowTemplate(string Id, IReadOnlyList<WorkflowTemplateP
 /// The runtime-resolved catalog of workflow templates.
 /// </summary>
 /// <remarks>
-/// Resolution order per file, evaluated fresh on every access (<see cref="WorkerRoleCatalog"/> keeps
-/// the same "resolve, never capture" discipline, for the same reason):
-/// <list type="number">
-/// <item>the <c>BATON_WORKFLOW_TEMPLATES_PATH</c> environment override, when set — for a one-off experiment;</item>
-/// <item><c>{BatonPaths.Root}/workflow-templates.json</c> when it exists — the operator's durable, rebuild-free override;</item>
-/// <item>the default shipped next to the assembly (<see cref="AppContext.BaseDirectory"/>).</item>
-/// </list>
+/// Same three-tier resolution order as <see cref="WorkerRoleCatalog"/> (env override, then
+/// <c>{BatonPaths.Root}/workflow-templates.json</c>, then the shipped default), evaluated fresh on
+/// every access for the same "resolve, never capture" reason — substituting
+/// <c>BATON_WORKFLOW_TEMPLATES_PATH</c> for the env var name.
 /// </remarks>
 public static class WorkflowTemplateCatalog
 {

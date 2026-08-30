@@ -22,11 +22,8 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
     private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
     private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
 
-    // Pin all three shipped catalogs. Without this the role/template/tier lookups resolve through the
-    // middle rung ({BatonPaths.Root}/*.json) and would silently read an operator's local override on a
-    // machine that has one -- the hazard WorkerRoleCatalogTests.ShippedDefault documents. Only this
-    // class and DispatchCommandEndToEndTests touch the catalogs, both serially, so the process-global
-    // env edit is set and restored per test with no bleed.
+    // Pin all three shipped catalogs -- same hazard, same reason as DispatchCommandEndToEndTests'
+    // own ctor comment, which this class shares [Collection(WorkerCatalogEnvCollection.Name)] with.
     public DispatchTemplateEndToEndTests()
     {
         Environment.SetEnvironmentVariable(
