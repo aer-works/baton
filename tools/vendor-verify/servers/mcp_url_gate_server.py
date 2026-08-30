@@ -27,8 +27,8 @@ to catch, and it would have looked like a pass.
 
 THE TWO FLOWS, AND WHY THE SECOND ONE IS THE POINT
 --------------------------------------------------
-AER_URL_FLOW=hold      server keeps tools/call open, completes it after the URL is hit.
-AER_URL_FLOW=required  server answers tools/call IMMEDIATELY with -32042 and a list of required
+BATON_URL_FLOW=hold      server keeps tools/call open, completes it after the URL is hit.
+BATON_URL_FLOW=required  server answers tools/call IMMEDIATELY with -32042 and a list of required
                        elicitations, then waits. This is the flow decision 0029 needs: the call is
                        released, the human answers whenever, and the client retries. The spec marks
                        that retry **MAY**, so whether `agy` actually does it is the open question.
@@ -49,8 +49,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-D = os.environ.get("AER_SENTINEL_DIR", ".")
-FLOW = os.environ.get("AER_URL_FLOW", "hold")   # "hold" | "required" | "form"
+D = os.environ.get("BATON_SENTINEL_DIR", ".")
+FLOW = os.environ.get("BATON_URL_FLOW", "hold")   # "hold" | "required" | "form"
 EID = "aer-531-0001"
 
 _out_lock = threading.Lock()
@@ -91,7 +91,7 @@ class Gate(BaseHTTPRequestHandler):
         if call_id is not None:
             write("CALLED_elicit_tool", "1")
             send({"jsonrpc": "2.0", "id": call_id, "result": {
-                "content": [{"type": "text", "text": "AER_COMPLETION_SENTINEL out-of-band approved"}]}})
+                "content": [{"type": "text", "text": "BATON_COMPLETION_SENTINEL out-of-band approved"}]}})
 
     def log_message(self, *a):                           # noqa: A003 -- silence the access log
         pass
@@ -158,7 +158,7 @@ for line in sys.stdin:
                 if _state["consented"]:
                     write("CALLED_elicit_tool", "1")
                     send({"jsonrpc": "2.0", "id": call_id, "result": {"content": [
-                        {"type": "text", "text": "AER_COMPLETION_SENTINEL form approved"}]}})
+                        {"type": "text", "text": "BATON_COMPLETION_SENTINEL form approved"}]}})
                 else:
                     send({"jsonrpc": "2.0", "id": call_id, "result": {
                         "isError": True,
@@ -193,7 +193,7 @@ for line in sys.stdin:
             if _state["hit"]:
                 write("CALLED_elicit_tool", "1")
                 send({"jsonrpc": "2.0", "id": rid, "result": {
-                    "content": [{"type": "text", "text": "AER_COMPLETION_SENTINEL retry approved"}]}})
+                    "content": [{"type": "text", "text": "BATON_COMPLETION_SENTINEL retry approved"}]}})
                 continue
 
         if FLOW == "required":

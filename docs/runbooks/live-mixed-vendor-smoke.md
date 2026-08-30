@@ -1,11 +1,11 @@
 # Runbook: Live mixed-vendor paused-run smoke run (M12 Phase 4)
 
 M12's completion gate (#98): a real `draft` (Claude) → `review` (Gemini/`agy`) workflow — §18.1's
-composition case, the original goal the project was built for. Run through `aer run` against both
-real headless CLIs, pausing at `review`'s declared `PausePoint`, resumed by a real `aer decide` to
+composition case, the original goal the project was built for. Run through `baton run` against both
+real headless CLIs, pausing at `review`'s declared `PausePoint`, resumed by a real `baton decide` to
 terminal success, with real artifacts from both vendors on disk. This is the first time aer-flow
 dispatches two different vendors in the same run, and the first time a live smoke test also
-exercises the mutation surface (`aer decide`), not just `aer run`.
+exercises the mutation surface (`baton decide`), not just `baton run`.
 
 **This is always a human-run step, not something an agent session can close on its own** — see
 CLAUDE.md's "Live-vendor smoke tests" section. Both adapters shell out to whatever's already
@@ -30,13 +30,13 @@ the gate pass.
 pixi run smoke-mixed-vendor
 ```
 
-This runs `dotnet test tests/Aer.Cli.SmokeTests` filtered to
+This runs `dotnet test tests/Baton.Cli.SmokeTests` filtered to
 `LiveMixedVendorPausedRunSmokeTest` — the same project as `smoke-claude`, still **not** part of
 `AerFlow.slnx`, so it never builds or runs as a side effect of `pixi run build`/`test`/`lint`.
 
 The test drives `RunCommand.ExecuteAsync` then `DecideCommand.ExecuteAsync` — the same calls
-`Program.cs` makes for `aer run`/`aer decide` — against the fixtures in
-`tests/Aer.Cli.SmokeTests/Fixtures/`:
+`Program.cs` makes for `baton run`/`baton decide` — against the fixtures in
+`tests/Baton.Cli.SmokeTests/Fixtures/`:
 
 - `draft-review-paused-workflow.json` — two steps, `draft` then `review`, `review` depending on
   `draft`'s output and declaring a `PausePoint` with no supersede targets.
@@ -51,9 +51,9 @@ Each run uses a fresh temporary room directory, so repeated runs never resume a 
 
 The test passes when:
 
-- `aer run` reaches a `Paused` workflow status with `draft` `Succeeded` and `review` `Paused`
+- `baton run` reaches a `Paused` workflow status with `draft` `Succeeded` and `review` `Paused`
   (`PausedOutcome: Succeeded`).
-- `aer decide --type resume` against `review`'s paused execution reaches a `Terminal` workflow
+- `baton decide --type resume` against `review`'s paused execution reaches a `Terminal` workflow
   status with both steps `Succeeded`.
 - Both declared outputs (`draft`, `review`) exist on disk under the run's `artifacts/` directory
   and are non-blank.
@@ -72,11 +72,11 @@ exists", not "the file says X" — the same rule `live-claude-smoke.md` document
   clarifying question with no file written is `agy`'s documented failure mode (spike #21) — it
   exits 0, and `ContractValidator` reads the missing output as retryable, same as any other
   contract failure.
-- **`aer run` never pauses** (workflow reaches `Terminal` or fails before pausing): the fixture's
+- **`baton run` never pauses** (workflow reaches `Terminal` or fails before pausing): the fixture's
   `PausePoint` declaration is the only thing to check — this mechanism is proven end-to-end against
   a stub worker in `PauseDecisionSupersedeHumanEndToEndTests` (M9), so a live-only failure here
   points at the fixture, not the engine.
-- **`aer decide` fails to resolve the pause**: engine-side decision semantics are proven at the
+- **`baton decide` fails to resolve the pause**: engine-side decision semantics are proven at the
   `MutationInterface` layer (M9) and CLI wiring at `DecideCommandEndToEndTests` (M12 Phase 3) — if
   those are green but this isn't, the fault is almost certainly in one of the two live adapters, not
   the decision surface itself.
@@ -96,5 +96,5 @@ needed the same Windows-only fix first (see `live-claude-smoke.md`'s 2026-07-13 
 root cause): `ClaudeWorkerAdapter`/`GeminiWorkerAdapter` each built one pre-quoted `cmd /c "..."`
 string, which aer-core's Windows spawn (`Command::args`) re-quoted and corrupted a second time. Fixed
 in both adapters by passing each token as its own `Args` element on Windows instead. With that fix,
-`draft` (Claude) → paused `review` (Gemini/`agy`) → `aer decide --type resume` → `Terminal` ran to
+`draft` (Claude) → paused `review` (Gemini/`agy`) → `baton decide --type resume` → `Terminal` ran to
 completion end to end on the first live attempt.

@@ -55,10 +55,10 @@ native/core/spec/AER Overview.md
 native/core/spec/aer-core-behavioral-spec-v1.0.md
 native/core/spec/aer-core-behavioral-spec-v1.1.md
 spec/baton.md
-src/Aer.Adapters/CHANGELOG.md
-src/Aer.Cli/CHANGELOG.md
-src/Aer.Daemon/CHANGELOG.md
-src/Aer.Flow/CHANGELOG.md
-tools/aer-agy-loop/README.md
-tools/aer-agy-loop/janitor-prompt.md
+src/Baton.Vendors/CHANGELOG.md
+src/Baton.Cli/CHANGELOG.md
+src/Baton.Daemon/CHANGELOG.md
+src/Baton.Flow/CHANGELOG.md
+tools/baton-agy-loop/README.md
+tools/baton-agy-loop/janitor-prompt.md
 tools/vendor-verify/README.md

@@ -13,12 +13,12 @@
     <!-- The whole point: the argv this emits must come from the REAL adapter, not a copy of it.
          That dependency is why this is NOT part of tools/Aer.VendorProbe, which deliberately
          references nothing so it can interrogate a vendor CLI without depending on AER's build. -->
-    <ProjectReference Include="../../src/Aer.Adapters/Aer.Adapters.csproj" />
-    <!-- Referenced purely so MSBuild copies Aer.Cli.dll alongside this binary. ClaudeWorkerAdapter
+    <ProjectReference Include="../../src/Baton.Vendors/Baton.Vendors.csproj" />
+    <!-- Referenced purely so MSBuild copies Baton.Cli.dll alongside this binary. ClaudeWorkerAdapter
          REFUSES to resolve without it: the PreToolUse hook command names that path, and a hook
          naming a missing file fails open and silently (#530). Being subject to that refusal is part
          of exercising the real path. -->
-    <ProjectReference Include="../../src/Aer.Cli/Aer.Cli.csproj" />
+    <ProjectReference Include="../../src/Baton.Cli/Baton.Cli.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,6 +1,6 @@
 # Runbook: Live Claude smoke run (M11 Phase 4)
 
-M11's completion gate (#87): a real two-step `draft` → `review` workflow, run through `aer run`
+M11's completion gate (#87): a real two-step `draft` → `review` workflow, run through `baton run`
 against the real headless `claude` CLI, producing real artifacts on disk. This is the first time
 aer-flow dispatches to a live LLM instead of `StubCoreDispatcher` or a shell-stub worker — so it
 runs from this runbook and a dedicated `pixi run` task, never from default CI (no API key or
@@ -26,11 +26,11 @@ a capability to rely on for future re-runs or for gates on other vendors (see
 pixi run smoke-claude
 ```
 
-This runs `dotnet test tests/Aer.Cli.SmokeTests`, which is **not** part of `AerFlow.slnx` — it
+This runs `dotnet test tests/Baton.Cli.SmokeTests`, which is **not** part of `AerFlow.slnx` — it
 never builds or runs as a side effect of `pixi run build`/`test`/`lint`, only from this task.
 
 The test (`LiveClaudeRunSmokeTest`) drives `RunCommand.ExecuteAsync` — the same call `Program.cs`
-makes — against the fixtures in `tests/Aer.Cli.SmokeTests/Fixtures/`:
+makes — against the fixtures in `tests/Baton.Cli.SmokeTests/Fixtures/`:
 
 - `draft-review-workflow.json` — two steps, `draft` then `review`, `review` depending on `draft`'s
   output.
@@ -44,12 +44,12 @@ Each run uses a fresh temporary room directory, so repeated runs never resume a 
 
 The test passes when:
 
-- `aer run` reaches a `Terminal` workflow status with both steps `Succeeded`.
+- `baton run` reaches a `Terminal` workflow status with both steps `Succeeded`.
 - Both declared outputs (`draft`, `review`) exist on disk under the run's `artifacts/` directory
   and are non-blank.
 
 The test does not assert on the *content* Claude wrote (spec §4.1's contract is "the file exists",
-not "the file says X" — the same rule that keeps `Aer.Flow` from ever parsing worker output).
+not "the file says X" — the same rule that keeps `Baton.Flow` from ever parsing worker output).
 
 ## If it fails
 
@@ -89,7 +89,7 @@ Run each probe **several times** — Claude Code's headless sandbox behaviour is
 they make a nested `claude` a *child session* that inherits the parent's tool set (an early probe was
 bypassed by an inherited `Monitor` tool that isn't present in the harness's clean spawn, and a later
 one drew a wrong conclusion because the `CLAUDE_CODE_` prefix misses `CLAUDECODE` itself). The harness
-(`aer run`/`aer dispatch`, via `WorkerAdapterRegistry`) spawns `claude` as a plain process — since
+(`baton run`/`baton dispatch`, via `WorkerAdapterRegistry`) spawns `claude` as a plain process — since
 #1420 the daemon spawns no workers at all — so the clean env is the representative one. Build the list rather
 than hand-listing it, and verify it worked by reading `permissionMode` and the inherited `tools`
 array out of the `system:init` event:

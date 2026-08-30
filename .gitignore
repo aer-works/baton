@@ -52,13 +52,13 @@ bld/
 # Nothing flags that today -- tracked in #620 alongside the rest of the check-that-a-check-runs work.
 !.vendor-survey/ledger.tsv
 
-# tools/aer-agy-loop/dispatch.py's generated workflow/bindings/task-dir per run -- transient
+# tools/baton-agy-loop/dispatch.py's generated workflow/bindings/task-dir per run -- transient
 # per-invocation scaffolding, never the deliverable.
-/aer-agy-loop-scratch/
+/baton-agy-loop-scratch/
 
-# `aer dispatch` per-run room dirs (artifacts, redirected .gemini_home, flow log) -- transient
+# `baton dispatch` per-run room dirs (artifacts, redirected .gemini_home, flow log) -- transient
 # per-invocation working state, never the deliverable.
-/.aer/
+/.baton/
 
 # Python bytecode. Four .pyc files were tracked, so every tool run dirtied the tree.
 __pycache__/

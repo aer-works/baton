@@ -12,23 +12,23 @@ some other repo and collect its output — read `docs/agents/invoking-baton.md` 
 ```
 aer-flow/
 ├── src/
-│   ├── Aer.Flow/              The core execution engine and routing state machine
-│   ├── Aer.Adapters/          Vendor adapters (Claude/Gemini) + the built-in template catalog
-│   ├── Aer.Cli/               Command-line interface (aer run/dispatch/decide/cancel/supply/resume/status)
-│   ├── Aer.Daemon/            ASP.NET background runner — NARROWED to the 7-kept surface (#1420):
+│   ├── Baton.Flow/              The core execution engine and routing state machine
+│   ├── Baton.Vendors/          Vendor adapters (Claude/Gemini) + the built-in template catalog
+│   ├── Baton.Cli/               Command-line interface (baton run/dispatch/decide/cancel/supply/resume/status)
+│   ├── Baton.Daemon/            ASP.NET background runner — NARROWED to the 7-kept surface (#1420):
 │   │                          mutex, settings load, fleet-wide concurrency-cap apply, and
 │   │                          RoomRetentionSweep as a hosted service. No HTTP listener remains —
 │   │                          every REST/WS route, pairing, WebSocket broadcast, and sidecar
-│   │                          supervision are deleted, along with Aer.RoomSession and Aer.Sidecar
+│   │                          supervision are deleted, along with Baton.RoomSession and Baton.Sidecar
 │   │                          in full. The room-watcher (serving fleet_status/the registry), the
 │   │                          snapshot push loop, and the quota-runway ledger (spec/baton.md §7)
 │   │                          are unbuilt new work for a later PR, not something this narrowing
 │   │                          preserved — nothing in the pre-narrowing daemon actually served them
-│   ├── Aer.Mcp/               MCP server library — IMcpTool + the stdio host plumbing
-│   └── Aer.Mcp.Host/          The MCP executable workers connect to (fleet_status, aer yield,
+│   ├── Baton.Mcp/               MCP server library — IMcpTool + the stdio host plumbing
+│   └── Baton.Mcp.Host/          The MCP executable workers connect to (fleet_status, baton yield,
 │                              memory proposals). PermissionGateTool/PermissionReturnShape (the
 │                              mid-lane ask machinery) are deleted (#1417, spec/baton.md §5)
-├── tests/                     Unit/integration tests; live-smoke test projects (Aer.Cli.SmokeTests)
+├── tests/                     Unit/integration tests; live-smoke test projects (Baton.Cli.SmokeTests)
 │                              live outside AerFlow.slnx (default CI skips them) — see docs/runbooks/
 ├── spec/
 │   └── baton.md                the sole register (§11) — system identity, dispatch contract,
@@ -154,7 +154,7 @@ on the primary path; then a milestone green **including a live vendor smoke test
 fundamentally unusable when a person actually drove it. Both suites were written by the same reasoning
 that produced the gap, and both asked "does this do what I designed" rather than "did I design the
 right thing". The product-journey harness that once caught this (`spec/journeys.md`,
-`Aer.Journeys.Tests`) was deleted in the spec v2.0 reset along with the interactive product it tested
+`Baton.Journeys.Tests`) was deleted in the spec v2.0 reset along with the interactive product it tested
 (#1397) — harness-facing journeys are future work that will bring its own checks (`spec/baton.md`
 §10); until it lands, this gate has no structural instrument and rests on judgment alone.*
 
@@ -241,7 +241,7 @@ Note the test keys on the *pass*, not on the change: "I handed it a specific lis
 trigger for the cheap tier, because handing over a specific list is already mandatory above.
 
 Say what a pass will spend before spending it, the same way the cost-and-reversibility policy below requires for a live run: it is the
-operator's budget either way. `tools/aer-agy-loop/dispatch.py` announces the tier before it dispatches,
+operator's budget either way. `tools/baton-agy-loop/dispatch.py` announces the tier before it dispatches,
 so that path says it without being asked; every other way of launching a reviewer does not.
 *Four reviewer passes in one session all inherited the parent's model because none was ever named, so
 the frontier rate was paid for the grep half too (#548).*
@@ -277,7 +277,7 @@ path to make it closable by an agent. Running a live-vendor gate against a CLI a
 on the machine is not — see the owner ruling under "Live-vendor smoke tests" above — but it still
 spends real, disclosed budget, which is what this section is about either way.
 *One smoke test spent top-tier model budget per run — the per-turn figure was in
-`tests/Aer.Cli.SmokeTests/LiveSessionSmokeTest.cs` (deleted with the daemon's session-chat surface,
+`tests/Baton.Cli.SmokeTests/LiveSessionSmokeTest.cs` (deleted with the daemon's session-chat surface,
 #1420), not here. Two issues were filed as permanently human when one needed a browser for a single
 question and the other needed a better probe.*
 
@@ -286,8 +286,8 @@ question and the other needed a better probe.*
 ## Architecture Rules
 
 1. **Flow carries discipline, Workers carry intelligence**: The Flow engine must *never* parse conversation content, inspect prompt text, or attempt to understand LLM outputs to make routing decisions. Routing is exclusively defined by the structured workflow config and explicit tool returns from the Workers.
-2. **Adapter Isolation**: Vendor-specific quirks (e.g., Anthropic's block format vs Gemini's part format) MUST be isolated inside `Aer.Adapters`. The `Aer.Flow` core layer only understands a single, unified canonical message protocol.
-3. **P/Invoke Layer**: Any interaction with `aer-core` for process execution must go through strict P/Invoke wrappers that match the M4 ABI (`AerTask`, `AerCancelHandle`, `AerEvent`).
+2. **Adapter Isolation**: Vendor-specific quirks (e.g., Anthropic's block format vs Gemini's part format) MUST be isolated inside `Baton.Vendors`. The `Baton.Flow` core layer only understands a single, unified canonical message protocol.
+3. **P/Invoke Layer**: Any interaction with `aer-core` for process execution must go through strict P/Invoke wrappers that match the M4 ABI (`BatonTask`, `BatonCancelHandle`, `BatonEvent`).
 4. **Credential Isolation**: AER never reads, copies, forwards, or stores a vendor credential. It spawns the vendor's own first-party CLI, which authenticates itself — AER is a keyboard, not a client. No API keys, no OAuth tokens, no OS credential store, and **AER never places a credential into a config directory**. This is the product premise made structural: AER works against **subscriptions**, not API keys, which is why both vendors' API-key-only SDKs were evaluated and rejected (`docs/vendor-doc-audit.md`). Enforced by `VendorCredentialIsolationTests` — **do not weaken that test to make something pass**; if a change appears to need a vendor key, the design is wrong, not the test.
    - **Corrected 2026-07-25 (#527).** This rule previously said "no redirecting the vendor CLIs' config directories", which was too broad and rested on a misreading. `CLAUDE_CONFIG_DIR` **is** usable: credentials live under the config root, and a fresh root is made usable by a one-time interactive `claude auth login` performed **by the operator**. That is a human signing in, not AER handling a credential, so per-worker config roots are permitted and are an available design option. What stays forbidden is AER *copying* credentials into a root, or otherwise obtaining one itself. `claude auth status` reports per-root, is structured, and spends no subscription usage — use it as a pre-dispatch readiness probe.
 
@@ -310,7 +310,7 @@ registers).
 
 - Use strictly typed Records for complex types and configuration.
 - Do NOT silently swallow Exceptions (`catch (Exception e) {}`). Always log and rethrow, or map to a structured Error record/result type if handled.
-- Define specific exception types (e.g., `AerFlowException`) for domain-level errors rather than relying solely on generic `InvalidOperationException`.
+- Define specific exception types (e.g., `BatonFlowException`) for domain-level errors rather than relying solely on generic `InvalidOperationException`.
 
 ---
 

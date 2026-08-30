@@ -1,6 +1,6 @@
 {
-  "src/Aer.Flow": "0.21.0",
-  "src/Aer.Adapters": "0.21.0",
-  "src/Aer.Cli": "0.21.0",
-  "src/Aer.Daemon": "0.21.0"
+  "src/Baton.Flow": "0.22.0",
+  "src/Baton.Vendors": "0.22.0",
+  "src/Baton.Cli": "0.22.0",
+  "src/Baton.Daemon": "0.21.0"
 }

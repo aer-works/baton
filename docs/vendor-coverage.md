@@ -219,7 +219,7 @@ concurrent / 1,000 per run, no mid-run input · agent-teams task dependencies an
 | ~~`claude auth status` as a readiness probe~~ | ✅ verified — reports per config root, structured, and **spends no subscription usage**; usable before dispatch |
 | ~~whether a second concurrent login on one subscription is permitted~~ | ✅ verified — a fresh root's interactive login did not displace the pre-existing root's, both reported the same account, and two concurrent `-p` runs (one per root) both succeeded (`vendor-doc-audit.md` § Worker identity; 0029's Rests-on table). Not yet tested above two concurrent roots. |
 
-| ~~two processes cannot write one transcript~~ — **not what protects it.** `--session-id` is an existence check, not a lock: sequential reuse is refused, but a concurrent pair races past and **both run**. | ⚠️ corrected + verified twice — this was `Aer.Daemon`'s obligation to enforce while it ran interactive sessions; that daemon-hosted session surface is deleted (#1420), and no component in this repo runs a session against this vendor behavior today |
+| ~~two processes cannot write one transcript~~ — **not what protects it.** `--session-id` is an existence check, not a lock: sequential reuse is refused, but a concurrent pair races past and **both run**. | ⚠️ corrected + verified twice — this was `Baton.Daemon`'s obligation to enforce while it ran interactive sessions; that daemon-hosted session surface is deleted (#1420), and no component in this repo runs a session against this vendor behavior today |
 
 `·` Still documented-only: `--fork-session` starts
 without session grants while `/branch` carries them · credential expiry stalls a long-running

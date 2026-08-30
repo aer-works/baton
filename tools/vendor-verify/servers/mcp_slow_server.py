@@ -12,8 +12,8 @@ import os
 import sys
 import time
 
-D = os.environ.get("AER_SENTINEL_DIR", ".")
-BLOCK_SECONDS = int(os.environ.get("AER_BLOCK_SECONDS", "180"))
+D = os.environ.get("BATON_SENTINEL_DIR", ".")
+BLOCK_SECONDS = int(os.environ.get("BATON_BLOCK_SECONDS", "180"))
 
 TOOLS = [{
     "name": "slow_gate",

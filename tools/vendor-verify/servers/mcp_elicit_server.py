@@ -30,8 +30,8 @@ import json
 import os
 import sys
 
-D = os.environ.get("AER_SENTINEL_DIR", ".")
-MODE = os.environ.get("AER_ELICIT_MODE", "form")   # "form" (in-band) or "url" (out-of-band)
+D = os.environ.get("BATON_SENTINEL_DIR", ".")
+MODE = os.environ.get("BATON_ELICIT_MODE", "form")   # "form" (in-band) or "url" (out-of-band)
 
 # elicitation id -> the tools/call id that is waiting on it.
 #

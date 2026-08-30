@@ -1,15 +1,15 @@
-# `aer dispatch` — the front door for driving a worker
+# `baton dispatch` — the front door for driving a worker
 
-`aer dispatch` runs **one worker role, one-shot**, against a vendor CLI that is already logged in on
+`baton dispatch` runs **one worker role, one-shot**, against a vendor CLI that is already logged in on
 this host, and drops the result into a room directory. It is the operator-facing front door to the
-same engine `aer run` drives — a role is materialised into a single-step workflow, dispatched, and
+same engine `baton run` drives — a role is materialised into a single-step workflow, dispatched, and
 its declared outputs are contract-checked exactly as a full run's are.
 
 It is **not** the chat surface. A dispatch turn is non-interactive and runs to completion once; the
 interactive session (chat) is a different path with a different prompt and a continuing turn.
 
 ```
-aer dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
+baton dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
                     [--workspace <dir>] [--workflow-id <label>] [--output <path>] [--timeout <minutes>]
 ```
 
@@ -18,7 +18,7 @@ aer dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--mod
 | Flag | Meaning |
 |------|---------|
 | `--spec <file>` | The task prompt for the worker — the file whose contents become the spec. |
-| `--room-dir <dir>` | Where the run is recorded (created if absent) — this is the room. Optional: omitted, each invocation gets a fresh unique one at `$AER_HOME/rooms/dispatch-<role>-<8 hex>` (`AER_HOME` defaults to `~/.aer`, see `AerPaths`) — outside any workspace a dispatch might audit (#1354/#1380), and fresh each time because a dispatch is one-shot and a stable derived directory would make the second `aer dispatch review` *resume* the first's terminal snapshot instead of running. |
+| `--room-dir <dir>` | Where the run is recorded (created if absent) — this is the room. Optional: omitted, each invocation gets a fresh unique one at `$BATON_HOME/rooms/dispatch-<role>-<8 hex>` (`BATON_HOME` defaults to `~/.baton`, see `BatonPaths`) — outside any workspace a dispatch might audit (#1354/#1380), and fresh each time because a dispatch is one-shot and a stable derived directory would make the second `baton dispatch review` *resume* the first's terminal snapshot instead of running. |
 | `--adapter <vendor>` | Run the role on a specific vendor (`claude` / `agy`) instead of its tier's default. The `--adapter` escape hatch; a role never names a vendor itself. |
 | `--model <m>` | The model axis, independent of the role ([0017]/[0023]). Omitted keeps the tier's model — except on a vendor swap, where the tier's vendor-specific model is dropped for the new vendor's default (#1082). |
 | `--effort <e>` | The effort axis, independent of the role. Omitted keeps the tier's effort; dropped on a vendor swap. |
@@ -52,7 +52,7 @@ The provisioned tree is torn down once the room reaches Terminal — **except** 
 uncommitted changes (a worker's own output written but not committed) or a removal is blocked (a
 still-held file), in which case it is deliberately kept rather than discarded, and a Ctrl-C or crash
 mid-run leaves it in place too. A kept tree is one more entry in the *workspace repository's* own `git
-worktree list`, not something the operator asked for per invocation — `aer run`'s own worktree teardown
+worktree list`, not something the operator asked for per invocation — `baton run`'s own worktree teardown
 reporting (`worktree <outcome> at <path>`, printed to stderr) is what surfaces it.
 
 ### The printed grant line
@@ -76,7 +76,7 @@ for a grant, not a second one invented for this line — read it as what the inv
 relay to its own permission layer, not as a hardening claim about a vendor that was never asked.
 
 Only printed for a bound worker whose adapter actually consumes a structured grant (implements
-`IPermissionGrantTranslator`, `src/Aer.Adapters/WorkerBindingResolver.cs`'s own rule for which
+`IPermissionGrantTranslator`, `src/Baton.Vendors/WorkerBindingResolver.cs`'s own rule for which
 adapters a grant governs). A composed template's capture step, say, spawns `git` directly and never
 reads a grant at all — its phase gets no line printed, never a placeholder one.
 
@@ -94,12 +94,12 @@ spec/baton.md §9; this page does not restate them. Enforced on claude via
 pre-approval — not a `PreToolUse` hook change. `agy`'s `IPermissionGrantTranslator` still refuses
 `RunShellCommands` without `NetworkAccess` with no scoped exception, so this shell grant does not
 reach `--adapter agy`: `review` there now refuses to dispatch (`PermissionGrantUnsupportedException`)
-rather than falling back to its old no-shell shape. `tools/aer-agy-loop/dispatch.py` is extended to
+rather than falling back to its old no-shell shape. `tools/baton-agy-loop/dispatch.py` is extended to
 match — spec/baton.md §9's paragraph on that tool states what its extension covers.
 
 `advise` and `patch` are the same shape by outcome (no unscoped shell or network) but not by
 mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose` field in
-`WorkerRoles.json` for why — narrowing it broke `tools/aer-agy-loop/dispatch.py`'s own grant
+`WorkerRoles.json` for why — narrowing it broke `tools/baton-agy-loop/dispatch.py`'s own grant
 coherence check on its default `agy` tier), and `patch` never grants a write in the first place —
 its whole point is proposing a diff without mutating the workspace.
 
@@ -107,7 +107,7 @@ its whole point is proposing a diff without mutating the workspace.
 
 Each role declares what it must produce; those declarations become the contract the engine enforces,
 so a role that writes nothing fails loudly. The roles and their outputs are defined in
-`src/Aer.Adapters/WorkerRoles.json` (authoritative); this table is a snapshot, pinned against that
+`src/Baton.Vendors/WorkerRoles.json` (authoritative); this table is a snapshot, pinned against that
 catalog by `WorkerRoleCatalogTests`.
 
 | Role | Tier | Writes | For |
@@ -125,10 +125,10 @@ worker is told to produce exactly what the contract asserts. A dispatched worker
 is one-shot (#1095): do the work to completion now and write the outputs before the turn ends — never
 schedule background work or wait for a wake-up, because nothing resumes the turn.
 
-## `aer redispatch` — rerunning a terminal room with an amended brief
+## `baton redispatch` — rerunning a terminal room with an amended brief
 
 ```
-aer redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--model <m>] [--effort <e>]
+baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--model <m>] [--effort <e>]
                           [--workspace <dir>] [--output <path>] [--timeout <minutes>]
 ```
 
@@ -141,7 +141,7 @@ room vs. overrides, the Terminal/single-role refusals, and where lineage is reco
 The room directory accumulates the materialised workflow definition and its worker bindings, the
 `flow.jsonl` event ledger (the append-only record of what the engine did), and an `artifacts/` tree
 holding each step's declared outputs. The authoritative room layout is `spec/baton.md` §2;
-`aer status <dir>` — the room directory is positional there, not a flag — reads the ledger and
+`baton status <dir>` — the room directory is positional there, not a flag — reads the ledger and
 reports where each step stands.
 
 ## The vendor premise
@@ -153,6 +153,6 @@ is a fact of the host, not something a dispatch can provision. Dispatching a rol
 CLI is not authenticated fails at that vendor's own login check, not inside AER.
 
 If the vendor reports quota exhaustion, the engine paces a retry to the reported reset instant
-(decision 0026) rather than burning attempts on a doomed retry. A foreground `aer dispatch` surfaces
+(decision 0026) rather than burning attempts on a doomed retry. A foreground `baton dispatch` surfaces
 that park — `Parked on vendor quota — the run resumes automatically at <time>` — and can be stopped
 with Ctrl-C, which records a resumable state; re-running resumes it (#1094).

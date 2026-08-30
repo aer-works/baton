@@ -1,4 +1,4 @@
-namespace Aer.Tests.Shared;
+namespace Baton.Tests.Shared;
 
 /// <summary>
 /// Shared retry core behind the test-cleanup helpers (<see cref="FileCleanup"/> and

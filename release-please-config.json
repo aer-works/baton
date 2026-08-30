@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "packages": {
-    "src/Aer.Flow": {
+    "src/Baton.Flow": {
       "release-type": "simple",
       "component": "flow",
       "changelog-sections": [
@@ -15,9 +15,9 @@
         { "type": "chore", "section": "Miscellaneous" }
       ]
     },
-    "src/Aer.Adapters": {
+    "src/Baton.Vendors": {
       "release-type": "simple",
-      "component": "adapters",
+      "component": "vendors",
       "changelog-sections": [
         { "type": "feat", "section": "Features" },
         { "type": "fix", "section": "Bug Fixes" },
@@ -29,7 +29,7 @@
         { "type": "chore", "section": "Miscellaneous" }
       ]
     },
-    "src/Aer.Cli": {
+    "src/Baton.Cli": {
       "release-type": "simple",
       "component": "cli",
       "extra-files": [
@@ -50,7 +50,7 @@
         { "type": "chore", "section": "Miscellaneous" }
       ]
     },
-    "src/Aer.Daemon": {
+    "src/Baton.Daemon": {
       "release-type": "simple",
       "component": "daemon",
       "extra-files": [
@@ -76,7 +76,7 @@
     {
       "type": "linked-versions",
       "groupName": "core",
-      "components": ["flow", "adapters", "cli"]
+      "components": ["flow", "vendors", "cli"]
     }
   ]
 }

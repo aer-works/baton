@@ -230,7 +230,7 @@ def _dry_run_unmarked():
     # Removes only the marker line, leaving the early return in place: the check must not rely on
     # exit 0 plus a written bindings.json, both of which a REAL dispatch also produces.
     with mutated_tree(
-        "tools/aer-agy-loop/dispatch.py",
+        "tools/baton-agy-loop/dispatch.py",
         lambda s: s.replace('print("[dispatch.py] DRY RUN -- nothing was dispatched and nothing was spent.")',
                             'pass')
     ) as path:
@@ -242,7 +242,7 @@ def _dry_run_unmarked():
          "precedence stops carrying the template into the generated bindings")
 def _precedence_dropped():
     with mutated_tree(
-        "tools/aer-agy-loop/dispatch.py",
+        "tools/baton-agy-loop/dispatch.py",
         lambda s: s.replace("for key, value in resolve(TEMPLATES.get(args.template, {})).items():",
                             "for key, value in resolve({}).items():")
     ) as path:
@@ -257,7 +257,7 @@ def _lane_review_input_dropped():
     # reviewer is back to auditing HEAD with no diff -- the state the whole issue is about. The check
     # must go red on review's empty Inputs/RequiredInputs.
     with mutated_tree(
-        "tools/aer-agy-loop/dispatch.py",
+        "tools/baton-agy-loop/dispatch.py",
         lambda s: s.replace('"inputs": [LANE_DIFF_OUTPUT_NAME],', '"inputs": [],')
     ) as path:
         with swap(selfcheck, "DISPATCH_PY", path):
@@ -271,7 +271,7 @@ def _lane_head_guard_neutered():
     # with no real base SHA and dry-runs clean instead of exiting 2. The check's non-git polarity arm
     # must catch that it stopped refusing.
     with mutated_tree(
-        "tools/aer-agy-loop/dispatch.py",
+        "tools/baton-agy-loop/dispatch.py",
         lambda s: s.replace("if head_before is None:", "if head_before is None and False:")
     ) as path:
         with swap(selfcheck, "DISPATCH_PY", path):

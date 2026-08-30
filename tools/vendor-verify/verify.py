@@ -301,7 +301,7 @@ def _agy_payload_file_execution():
 
 
 def mcp_config(path, server, sentinel_dir, extra_env=None):
-    e = {"AER_SENTINEL_DIR": sentinel_dir}
+    e = {"BATON_SENTINEL_DIR": sentinel_dir}
     e.update(extra_env or {})
     json.dump({"mcpServers": {"probe": {
         "command": sys.executable, "args": [os.path.join(SERVERS, server)], "env": e}}},
@@ -494,9 +494,9 @@ GATE_PROBE_PROJECT = os.path.join(HERE, "..", "Aer.GateProbe", "Aer.GateProbe.cs
 # The real hook handler, next to the probe's own output. `AgyWorkerAdapter.BuildHooksJson` names
 # exactly this assembly, so a check that runs it is running what ships rather than a stand-in.
 GATE_PROBE_HOOK_DLL = os.path.join(
-    HERE, "..", "Aer.GateProbe", "bin", "Debug", "net10.0", "Aer.Cli.dll")
+    HERE, "..", "Aer.GateProbe", "bin", "Debug", "net10.0", "Baton.Cli.dll")
 
-# What the adapter puts in AER_HOOK_DENIED_TOOLS for a grant withholding the shell. The real handler
+# What the adapter puts in BATON_HOOK_DENIED_TOOLS for a grant withholding the shell. The real handler
 # fail-closes without it (`agy.hook-env-inherited`), which would deny for the wrong reason.
 AGY_DENIED_TOOLS_FOR_A_SHELL_WITHHELD_GRANT = "agy:run_command"
 GATE_PROBE = os.path.join(
@@ -548,10 +548,10 @@ def _adapter_flag_set_for(vendor):
     record: the first version flipped WriteFiles and expected the withheld arm to write nothing. Both
     arms wrote, and the gate was right. Withholding writes deliberately does NOT forbid the tool --
     #649 keeps Edit/Write pre-approved and out of --disallowedTools precisely so the hook can allow
-    the ONE write landing in AER_OUTPUT_DIR, because a worker must always be able to produce its
+    the ONE write landing in BATON_OUTPUT_DIR, because a worker must always be able to produce its
     contract output. The hook bounds writes by PATH.
 
-      into AER_OUTPUT_DIR    must LAND    -- also the discovery control
+      into BATON_OUTPUT_DIR    must LAND    -- also the discovery control
       outside it             must BLOCK   -- the boundary the hook exists to draw
 
     If the control does not write, the invocation never reached a tool call, and the escape arm's
@@ -577,7 +577,7 @@ def _adapter_flag_set_for(vendor):
             out_dir = os.path.join(wd, "outbox")
             os.makedirs(out_dir, exist_ok=True)
 
-            # OUTSIDE wd, not a subdirectory of it. The adapter passes --add-dir %AER_ARTIFACTS_ROOT%,
+            # OUTSIDE wd, not a subdirectory of it. The adapter passes --add-dir %BATON_ARTIFACTS_ROOT%,
             # which the caller sets to wd, so an escape target under wd sits inside a directory the
             # vendor was explicitly granted -- a write landing there is the CLI behaving correctly and
             # would be read as the gate failing. Measured: that confound made the agy arm report a
@@ -594,21 +594,21 @@ def _adapter_flag_set_for(vendor):
             target = json.loads(out.strip().splitlines()[-1])
 
             def expand(s):
-                return (s.replace("%AER_OUTPUT_DIR%", out_dir)
-                         .replace("$AER_OUTPUT_DIR", out_dir)
-                         .replace("%AER_ARTIFACTS_ROOT%", wd)
-                         .replace("$AER_ARTIFACTS_ROOT", wd))
+                return (s.replace("%BATON_OUTPUT_DIR%", out_dir)
+                         .replace("$BATON_OUTPUT_DIR", out_dir)
+                         .replace("%BATON_ARTIFACTS_ROOT%", wd)
+                         .replace("$BATON_ARTIFACTS_ROOT", wd))
 
             argv = [target["program"]] + [expand(a) for a in target["args"]]
             env = {k: expand(v) for k, v in target["environment"].items()}
 
-            # The adapter's Environment is NOT the whole child environment: AER_OUTPUT_DIR and
-            # AER_ARTIFACTS_ROOT are AER-COMPUTED values CoreDispatcher supplies from
+            # The adapter's Environment is NOT the whole child environment: BATON_OUTPUT_DIR and
+            # BATON_ARTIFACTS_ROOT are AER-COMPUTED values CoreDispatcher supplies from
             # request.Environment, and this check is standing in for the dispatcher. Without them the
             # hook has no outbox to confine a granted write to and refuses everything -- which is the
             # hook working correctly, and looks exactly like the gate being broken.
-            env["AER_OUTPUT_DIR"] = out_dir
-            env["AER_ARTIFACTS_ROOT"] = wd
+            env["BATON_OUTPUT_DIR"] = out_dir
+            env["BATON_ARTIFACTS_ROOT"] = wd
             rc, out, err = run(argv, cwd=wd, extra_env=env)
             return {
                 "contract": os.path.exists(os.path.join(out_dir, "out.txt")),
@@ -1240,7 +1240,7 @@ def _agy_url_elicit():
     try:
         os.makedirs(os.path.join(wd, ".agents"))
         mcp_config(os.path.join(wd, ".agents", "mcp_config.json"), "mcp_elicit_server.py", wd,
-                   extra_env={"AER_ELICIT_MODE": "url"})
+                   extra_env={"BATON_ELICIT_MODE": "url"})
         rc, out, err = run(["agy", "-p",
                             "Call the MCP tool control_tool, then call elicit_tool. Call both.",
                             "--add-dir", wd, "--dangerously-skip-permissions"],
@@ -2111,7 +2111,7 @@ def _agy_plan_writes():
     target fixes the aim, and the walk below tells "refused" apart from "wrote elsewhere", which no
     amount of reading the CLI's output can.
     """
-    token = "AER_WRITE_PROBE_OK"
+    token = "BATON_WRITE_PROBE_OK"
     inside = tempfile.mkdtemp(prefix="v-agyw-in-")
     # A second temp dir NOT passed as --add-dir, so one dispatch also answers whether --add-dir
     # bounds writes at all. Contained either way: agy can only reach a directory this check owns.
@@ -2173,7 +2173,7 @@ def _agy_deny():
         os.makedirs(os.path.join(wd, ".agents"))
         log = os.path.join(wd, "h.log").replace("\\", "/")
         hk = os.path.join(wd, "h.sh").replace("\\", "/")
-        hook_script(hk, log, """echo '{"decision":"deny","reason":"AER_VERIFY_TOKEN"}'""")
+        hook_script(hk, log, """echo '{"decision":"deny","reason":"BATON_VERIFY_TOKEN"}'""")
         json.dump({"v": {"PreToolUse": [{"matcher": "run_command", "hooks": [
             {"type": "command", "command": "sh %s" % hk, "timeout": 25}]}]}},
             open(os.path.join(wd, ".agents", "hooks.json"), "w"))
@@ -2189,7 +2189,7 @@ def _agy_deny():
         # `reason surfaced` is reported, never gated on -- it has measured False, and the check's
         # claim is the block. It was previously in this check's DESCRIPTION as though established.
         return PASS, (f"fired {n}x, blocked | reason reached CLI output="
-                      f"{'AER_VERIFY_TOKEN' in blob} (reported, not claimed)")
+                      f"{'BATON_VERIFY_TOKEN' in blob} (reported, not claimed)")
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
@@ -2218,7 +2218,7 @@ def _agy_deny_under_accept_edits():
         try:
             log = os.path.join(wd, "h.log").replace("\\", "/")
             hk = os.path.join(wd, "h.sh").replace("\\", "/")
-            hook_script(hk, log, """echo '{"decision":"deny","reason":"AER_VERIFY_TOKEN"}'""")
+            hook_script(hk, log, """echo '{"decision":"deny","reason":"BATON_VERIFY_TOKEN"}'""")
             _agy_hook_json(wd, "sh %s" % hk)
             rc, out, err = run(["agy", "-p", "Run this shell command: node --version",
                                 "--add-dir", wd] + mode_args, cwd=wd)
@@ -2315,7 +2315,7 @@ def _agy_hook_metacharacter_path():
     # It mattered, because the conclusion was wrong. agy runs the command via `cmd /c` on Windows
     # (agy's own embedded spec -- `.vendor-survey/corpus/agy__hooks-embedded.md`), `cmd` does not
     # treat `'` as quoting, and the single-quoted form #706 introduced hands `dotnet` a literal
-    # `'C:/.../Aer.Cli.dll'` it cannot find. The gate never fired on Windows, and this check said the
+    # `'C:/.../Baton.Cli.dll'` it cannot find. The gate never fired on Windows, and this check said the
     # opposite while passing.
     #
     # Every expectation below is `cmd /c`'s. Under `sh -c` POSIX strips the single quotes, so the
@@ -2394,10 +2394,10 @@ def _agy_hook_metacharacter_path():
             os.makedirs(wd)
             # The handler is the SHIPPED one, copied so its path carries the shape under test. It
             # must be the whole publish directory: .NET resolves dependencies by file name, so
-            # carrying Aer.Cli.dll alone leaves it hunting an Aer.Cli.deps.json that is not there.
+            # carrying Baton.Cli.dll alone leaves it hunting an Baton.Cli.deps.json that is not there.
             handler_dir = os.path.join(wd, "gate")
             shutil.copytree(os.path.dirname(os.path.abspath(GATE_PROBE_HOOK_DLL)), handler_dir)
-            dll = os.path.join(handler_dir, "Aer.Cli.dll").replace("\\", "/")
+            dll = os.path.join(handler_dir, "Baton.Cli.dll").replace("\\", "/")
 
             _agy_hook_json(wd, FORMS[form] % dll)
             # extra_env, not a whole environment: it is applied after this harness's own env strip,
@@ -2406,7 +2406,7 @@ def _agy_hook_metacharacter_path():
             rc, out, err = run(["agy", "-p", "Run this shell command: node --version",
                                 "--add-dir", wd, "--dangerously-skip-permissions"],
                                cwd=wd,
-                               extra_env={"AER_HOOK_DENIED_TOOLS":
+                               extra_env={"BATON_HOOK_DENIED_TOOLS":
                                           AGY_DENIED_TOOLS_FOR_A_SHELL_WITHHELD_GRANT})
             blob = out + err
             ran = bool(re.search(r"\bv?\d+\.\d+\.\d+", blob))
@@ -2550,7 +2550,7 @@ def _agy_broken_hook():
             hk = os.path.join(wd, "h.sh").replace("\\", "/")
             if kind in ("control-blocks", "control-allows"):
                 hook_script(hk, log,
-                            """echo '{"decision":"deny","reason":"AER_VERIFY_TOKEN"}'"""
+                            """echo '{"decision":"deny","reason":"BATON_VERIFY_TOKEN"}'"""
                             if kind == "control-blocks" else "exit 0")
                 cmd = "sh %s" % hk
             elif kind == "missing-script":
@@ -2568,7 +2568,7 @@ def _agy_broken_hook():
             # Same distinction as #530: failing open LOUDLY is detectable at startup, silently
             # is not. That difference, not the fail-open itself, is what the design turns on.
             #
-            # AER_VERIFY_TOKEN is in this list to give `noisy` a POSITIVE control. The deny arm
+            # BATON_VERIFY_TOKEN is in this list to give `noisy` a POSITIVE control. The deny arm
             # surfaces that token, so control-blocks must report True -- otherwise every
             # `reported=False` below is a zero from a detector never shown capable of a one,
             # which is the same defect this suite keeps finding in its own instruments.
@@ -2651,7 +2651,7 @@ def _agy_hook_json(wd, command, event="PreToolUse", matcher="run_command"):
         {"type": "command", "command": command, "timeout": 25}]}]}
         if event == "PreToolUse" else
         {event: [{"type": "command", "command": command, "timeout": 25}]})
-    json.dump({"aer": body}, open(os.path.join(wd, ".agents", "hooks.json"), "w"))
+    json.dump({"baton": body}, open(os.path.join(wd, ".agents", "hooks.json"), "w"))
 
 
 def _agy_brain_recorded_a_deny(since, needle):
@@ -2719,7 +2719,7 @@ def _agy_hooks_add_dir_vs_cwd():
         try:
             log = os.path.join(root, "h.log").replace("\\", "/")
             hk = os.path.join(root, "h.sh").replace("\\", "/")
-            hook_script(hk, log, """echo '{"decision":"deny","reason":"AER_ADDDIR_PROBE"}'""")
+            hook_script(hk, log, """echo '{"decision":"deny","reason":"BATON_ADDDIR_PROBE"}'""")
 
             if kind == "both":
                 _agy_hook_json(extra, "sh %s" % hk)
@@ -2773,7 +2773,7 @@ def _agy_hook_env():
 
     `.vendor-survey/corpus/claude__hooks.md` states plainly that "a hook process inherits the parent
     environment", which is what lets `ClaudeWorkerAdapter` ship ONE static settings file and pass
-    per-invocation data (the denied-tool list) through `AER_HOOK_DENIED_TOOLS`.
+    per-invocation data (the denied-tool list) through `BATON_HOOK_DENIED_TOOLS`.
     `.vendor-survey/corpus/agy__hooks.md` documents the stdin payload in detail and says **nothing**
     about environment inheritance, so carrying claude's answer across would be exactly the
     population-scope mistake CLAUDE.md gate `claim-scope` names.
@@ -2796,7 +2796,7 @@ def _agy_hook_env():
             hk = os.path.join(wd, "h.sh").replace("\\", "/")
             with open(os.path.join(wd, "h.sh"), "w", newline="\n") as f:
                 f.write("#!/bin/sh\n")
-                f.write('echo "SEEN=[${AER_PROBE_ENV:-UNSET}]" >> "%s"\n' % log)
+                f.write('echo "SEEN=[${BATON_PROBE_ENV:-UNSET}]" >> "%s"\n' % log)
                 f.write('cat >> "%s"\n' % log)
                 f.write('printf "\\n" >> "%s"\n' % log)
                 # Allow explicitly. This check is about the environment channel, not about gating,
@@ -2806,7 +2806,7 @@ def _agy_hook_env():
             _agy_hook_json(wd, "sh %s" % hk)
             run(["agy", "-p", "Run this shell command: node --version",
                  "--add-dir", wd, "--dangerously-skip-permissions"], cwd=wd,
-                extra_env={"AER_PROBE_ENV": SENTINEL} if set_var else None)
+                extra_env={"BATON_PROBE_ENV": SENTINEL} if set_var else None)
             if not os.path.exists(os.path.join(wd, "h.log")):
                 return None, ""
             blob = open(os.path.join(wd, "h.log"), encoding="utf-8", errors="replace").read()
@@ -2823,7 +2823,7 @@ def _agy_hook_env():
                               "reading proves nothing about inheritance")
     if not seen_set:
         return FAIL, ("agy hook subprocesses do NOT inherit the parent environment -- "
-                      "AER_HOOK_DENIED_TOOLS cannot reach the hook and the gate reads as empty")
+                      "BATON_HOOK_DENIED_TOOLS cannot reach the hook and the gate reads as empty")
     # Reported, never gated on: the payload FIELD SHAPE the hook's own parser depends on, and one
     # field agy's documentation omits. Same discipline as `agy.hook-deny-honoured`'s reason note --
     # a fact worth recording in the result is not automatically a fact worth failing on.
@@ -2843,7 +2843,7 @@ def _agy_hook_env():
        "`generate_image` not at all, so THREE of the four are UNMEASURED -- the note reports which "
        "names actually arrived")
 def _agy_hook_write_path():
-    """#679 proposes confining a granted write to `WorkingDirectory` union `AER_OUTPUT_DIR`.
+    """#679 proposes confining a granted write to `WorkingDirectory` union `BATON_OUTPUT_DIR`.
     `AgyHookCheckCommand` decides on `toolCall.name` alone today, so that fix rests entirely on the
     payload carrying a target path. agy's corpus documents `toolCall.args`, and agy's documentation
     has already been wrong twice in `docs/vendor-doc-audit.md` -- `--cwd` is documented and does not
@@ -2867,7 +2867,7 @@ def _agy_hook_write_path():
     before any conclusion is drawn from an absent path: an empty log means discovery failed, which
     reads identically to a payload without a path and means something completely different.
     """
-    token = "AER_PATH_PROBE_OK"
+    token = "BATON_PATH_PROBE_OK"
     wd = tempfile.mkdtemp(prefix="v-agyp-")
     try:
         log = os.path.join(wd, "h.log").replace("\\", "/")

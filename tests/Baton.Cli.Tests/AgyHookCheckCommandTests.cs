@@ -1,0 +1,448 @@
+using System.Text.Json;
+
+namespace Baton.Cli.Tests;
+
+/// <summary>
+/// #554: <see cref="AgyHookCheckCommand"/> is the executable target <c>agy</c> spawns for every
+/// matched <c>PreToolUse</c> event. These drive <see cref="AgyHookCheckCommand.Execute"/> against
+/// the exact stdin shape the live CLI produces — captured by
+/// <c>agy.hook-env-inherited</c> in <c>tools/vendor-verify/verify.py</c>, which logs the real
+/// payload — rather than a hand-shaped fixture, so a regression in field handling surfaces here.
+/// </summary>
+/// <remarks>
+/// <b>Every assertion below checks the parsed <c>decision</c> field, never the exit code.</b> On agy
+/// the exit code carries no gating meaning; the verdict is a JSON object on stdout, and
+/// <c>agy.hook-malformed-stdout-fails-open</c> measured that output agy cannot parse — or no output
+/// at all — is read as an <b>allow</b>. A test asserting on an exit code would pass while the gate
+/// silently let everything through, which is the failure this suite exists to catch.
+/// <para>
+/// The polarity pairs are deliberate (gate `v-and-v`): a denied tool blocked and a granted tool allowed, on
+/// the same payload shape and the same denied list, so a mechanism that denies (or allows)
+/// unconditionally cannot pass both.
+/// </para>
+/// </remarks>
+public class AgyHookCheckCommandTests
+{
+    /// <summary>
+    /// The real payload agy sends, from the live capture in <c>agy.hook-env-inherited</c>'s log.
+    /// Note <c>toolCall.name</c> nested and camelCase — claude's is a root-level <c>tool_name</c> —
+    /// and the undocumented <c>modelName</c> field (recorded in <c>docs/vendor-doc-audit.md</c>),
+    /// present here so a parser that trips over unexpected fields fails in this suite.
+    /// </summary>
+    private static string Payload(string toolName) => $$"""
+        {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+         "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+         "toolCall":{"args":{"CommandLine":"node --version","Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                     "name":"{{toolName}}"},
+         "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+        """;
+
+    private static string Decide(
+        string stdinText, string? denied, string? outbox = null, string? workspace = null,
+        string? shellPatterns = "agy:", string? deniedShellPatterns = "agy:")
+    {
+        using var stdin = new StringReader(stdinText);
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, denied, shellPatternsRaw: shellPatterns, outboxDirectory: outbox,
+            workspaceDirectory: workspace, deniedShellPatternsRaw: deniedShellPatterns);
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+
+        // Parsing rather than substring-matching is the point: agy parses this, and output that
+        // merely *contains* the word "deny" while being invalid JSON is an allow.
+        var raw = stdout.ToString();
+        using var doc = JsonDocument.Parse(raw);
+        return doc.RootElement.GetProperty("decision").GetString()!;
+    }
+
+    [Fact]
+    public void A_run_command_payload_within_shell_patterns_is_allowed()
+    {
+        var payload = Payload("run_command"); // CommandLine: node --version
+        Assert.Equal("allow", Decide(payload, "agy:", shellPatterns: "agy:node *"));
+    }
+
+    [Fact]
+    public void A_run_command_payload_outside_shell_patterns_is_denied()
+    {
+        var payload = Payload("run_command"); // CommandLine: node --version
+        Assert.Equal("deny", Decide(payload, "agy:", shellPatterns: "agy:git *"));
+    }
+
+    [Fact]
+    public void A_non_run_command_tool_is_unaffected_by_shell_patterns()
+    {
+        var payload = Payload("view_file");
+        Assert.Equal("allow", Decide(payload, "agy:", shellPatterns: "agy:git *"));
+    }
+
+    [Fact]
+    public void Wrong_vendor_shell_patterns_are_denied_fail_closed()
+    {
+        var payload = Payload("run_command");
+        Assert.Equal("deny", Decide(payload, "agy:", shellPatterns: "claude:git *"));
+    }
+
+    [Theory]
+    [InlineData(null)] // the variable was never set
+    [InlineData("")] // present but empty (whitespace-only collapses here too)
+    public void Absent_shell_patterns_are_denied_fail_closed(string? shellPatterns)
+    {
+        // AgyWorkerAdapter always emits BATON_HOOK_SHELL_PATTERNS ("agy:" at minimum) alongside the
+        // denied-tool list, so an absent value means the channel broke, not an unscoped grant — the
+        // same fail-open #679 closed for denied tools. An unscoped grant is Present+empty ("agy:").
+        var payload = Payload("run_command");
+        Assert.Equal("deny", Decide(payload, "agy:", shellPatterns: shellPatterns));
+    }
+
+    [Fact]
+    public void An_unscoped_present_but_empty_shell_pattern_list_allows_run_command()
+    {
+        // "agy:" parses to Present with no patterns — the deliberate unscoped-shell state, which must
+        // still allow run_command (the deny above keys on Absent, not on an empty Present list).
+        var payload = Payload("run_command");
+        Assert.Equal("allow", Decide(payload, "agy:", shellPatterns: "agy:"));
+    }
+
+    // ---- DenyAlways channel (0022's standing "never" rung, #390): agy's only enforcement for it ----
+
+    [Fact]
+    public void A_run_command_matching_a_denied_pattern_is_refused_even_when_the_shell_is_unscoped()
+    {
+        // Deny beats allow: the shell is granted unscoped ("agy:" = allow anything), yet a standing
+        // "never" on node refuses it. If this allowed, DenyAlways could be reopened by a wider grant.
+        var payload = Payload("run_command"); // CommandLine: node --version
+        Assert.Equal("deny", Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:node *"));
+    }
+
+    [Fact]
+    public void A_run_command_not_matching_the_denied_pattern_is_allowed()
+    {
+        // The discriminating control: a deny on a DIFFERENT family must not refuse this command, or the
+        // deny channel would just be a blanket run_command block rather than a scoped "never".
+        var payload = Payload("run_command"); // CommandLine: node --version
+        Assert.Equal("allow", Decide(payload, "agy:", shellPatterns: "agy:node *", deniedShellPatterns: "agy:git *"));
+    }
+
+    [Theory]
+    [InlineData(null)] // the variable was never set
+    [InlineData("")] // present but empty of the vendor tag
+    public void Absent_denied_shell_patterns_deny_run_command_fail_closed(string? deniedShellPatterns)
+    {
+        // AgyWorkerAdapter always emits BATON_HOOK_DENIED_SHELL_PATTERNS ("agy:" at minimum) alongside the
+        // allow channel, so an absent value means the channel broke — not "no standing denies". Fail
+        // closed, exactly as the allow channel does, rather than skip a "never" we cannot read.
+        var payload = Payload("run_command");
+        Assert.Equal("deny", Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: deniedShellPatterns));
+    }
+
+    [Fact]
+    public void Wrong_vendor_denied_shell_patterns_deny_run_command_fail_closed()
+    {
+        var payload = Payload("run_command");
+        Assert.Equal("deny", Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "claude:node *"));
+    }
+
+    [Fact]
+    public void A_non_run_command_tool_is_unaffected_by_denied_shell_patterns()
+    {
+        // The deny channel gates exactly run_command; a broken/again-Absent state must not leak a verdict
+        // onto other tools (view_file is judged only by the denied-tool channel).
+        var payload = Payload("view_file");
+        Assert.Equal("allow", Decide(payload, "agy:", deniedShellPatterns: null));
+    }
+
+    [Fact]
+    public void The_shell_patterns_variable_matches_the_adapter_side_contract()
+    {
+        Assert.Equal("BATON_HOOK_SHELL_PATTERNS", AgyHookCheckCommand.ShellPatternsEnvironmentVariable);
+    }
+
+    [Fact]
+    public void A_tool_named_in_the_denied_list_is_denied()
+    {
+        Assert.Equal("deny", Decide(Payload("run_command"), "agy:run_command,manage_task"));
+    }
+
+    [Fact]
+    public void A_tool_not_named_in_the_denied_list_is_allowed()
+    {
+        // Same payload shape and same denied list as the deny case above — only the tool name
+        // differs, so neither result can come from a mechanism that ignores the input.
+        Assert.Equal("allow", Decide(Payload("view_file"), "agy:run_command,manage_task"));
+    }
+
+    [Fact]
+    public void A_granted_write_outside_the_workspace_and_the_outbox_is_denied()
+    {
+        // #679 inverted, and re-keyed to names agy actually sends. This asserted the opposite until
+        // the bound existed — but it could never have failed for the right reason, because it drove
+        // the gate with `write_file` and `AbsolutePath`, neither of which agy produces.
+        // `agy.hook-payload-carries-write-path` measured the real pair: `write_to_file` and
+        // `toolCall.args.TargetFile`. A fabricated tool name is not in any write list, so that
+        // payload was judged as an ordinary unknown tool and would have passed against a gate that
+        // bounded real writes correctly.
+        //
+        // It matters here more than on claude: `agy.plan-mode-does-not-deny-writes` measured that
+        // agy itself writes outside every directory it was given, so there is no second bound
+        // underneath this one to fall back on.
+        var payload = WritePayload("C:/somewhere/else/entirely.txt");
+
+        Assert.Equal("deny", Decide(payload, "agy:run_command,manage_task", Outbox, Workspace));
+
+        // The same two controls OutboxWriteExemptionTests' claude equivalent carries, for the same
+        // reasons: an inside-the-workspace write that must still be allowed, and the same payload
+        // with the tool withheld.
+        Assert.Equal(
+            "allow",
+            Decide(WritePayload(Workspace + "/src/x.cs"), "agy:run_command,manage_task", Outbox, Workspace));
+        Assert.Equal("deny", Decide(payload, "agy:run_command,write_to_file", Outbox, Workspace));
+    }
+
+    /// <summary>
+    /// A granted write still reaches the outbox, which sits outside the workspace. Same claim as
+    /// <c>OutboxWriteExemptionTests</c>' claude equivalent, which says what a workspace-only bound
+    /// would cost.
+    /// </summary>
+    [Fact]
+    public void A_granted_write_into_the_outbox_is_allowed()
+    {
+        Assert.Equal(
+            "allow",
+            Decide(WritePayload(Outbox + "/review.md"), "agy:run_command", Outbox, Workspace));
+
+        // Same control as the claude equivalent, and it earns its place for the same reason there.
+        Assert.False(OutboxPath.IsInside(Path.Combine(Outbox, "review.md"), Workspace));
+    }
+
+    /// <summary>
+    /// A write whose target this gate cannot read is denied — the condition
+    /// <c>OutboxWriteExemptionTests</c>' claude equivalent states, and the one agy's own payload check
+    /// is recorded as non-sentinel on.
+    /// </summary>
+    [Fact]
+    public void A_granted_write_whose_target_cannot_be_read_from_the_payload_is_denied()
+    {
+        // The measured key, replaced with the one the old test invented — so this also pins that a
+        // fabricated field name is not silently accepted as a target.
+        var payload = WritePayload("C:/somewhere/else.txt").Replace("TargetFile", "AbsolutePath");
+
+        Assert.Equal("deny", Decide(payload, "agy:run_command", Outbox, Workspace));
+
+        // The control: the identical payload for a non-write tool is still allowed, so the denial is
+        // about an unreadable write target rather than about the unexpected key.
+        Assert.Equal(
+            "allow",
+            Decide(Payload("list_dir").Replace("CommandLine", "AbsolutePath"), "agy:run_command", Outbox, Workspace));
+    }
+
+    // Real rooted paths for this platform, not literals: `C:/...` is not rooted on Linux, so a
+    // hardcoded Windows path would make every containment answer false and the allow arms would fail
+    // on the Linux CI leg for a reason that has nothing to do with the gate.
+    private static readonly string Workspace = Path.Combine(Path.GetTempPath(), "baton-workspace");
+
+    private static readonly string Outbox =
+        Path.Combine(Path.GetTempPath(), "baton-task", "artifacts", "execution_1");
+
+    /// <summary>
+    /// A real <c>write_to_file</c> payload: the tool name and the <c>TargetFile</c> key are the ones
+    /// <c>agy.hook-payload-carries-write-path</c> observed on a live call, not plausible-looking
+    /// substitutes.
+    /// </summary>
+    /// <remarks>
+    /// Serialised rather than string-spliced, so a Windows path's backslashes cannot produce JSON
+    /// that happens to parse into something other than the path intended — the same reason
+    /// <c>OutboxWriteExemptionTests</c> builds its payloads this way.
+    /// </remarks>
+    private static string WritePayload(string target) =>
+        JsonSerializer.Serialize(new
+        {
+            artifactDirectoryPath = "C:/x/brain/abc",
+            conversationId = "abc",
+            modelName = "gemini-3.6-flash-medium",
+            stepIdx = 3,
+            toolCall = new { args = new { TargetFile = target }, name = "write_to_file" },
+            transcriptPath = "C:/x/transcript_full.jsonl",
+            workspacePaths = new[] { "C:/x" },
+        });
+
+    /// <summary>
+    /// <c>generate_image</c> carries its target in <c>ImageName</c>, not <c>TargetFile</c> — and
+    /// until #708 the gate read only the latter, so every call to it was denied even when the
+    /// operator had granted writes.
+    /// </summary>
+    /// <remarks>
+    /// See <see cref="AgyHookCheckCommand.WriteTargetFields"/> for why it failed and why it stayed
+    /// hidden. This is the behavioural half — the allow arm below was impossible before the fix.
+    /// </remarks>
+    [Fact]
+    public void A_granted_generate_image_inside_the_outbox_is_allowed_and_outside_it_is_denied()
+    {
+        // The arm that was impossible before: an ordinary granted image write into the outbox.
+        Assert.Equal(
+            "allow",
+            Decide(ImagePayload(Outbox + "/diagram.png"), "agy:run_command", Outbox, Workspace));
+
+        // Polarity, so this cannot pass by the gate having simply stopped bounding the tool.
+        Assert.Equal(
+            "deny",
+            Decide(ImagePayload("C:/somewhere/else/entirely.png"), "agy:run_command", Outbox, Workspace));
+
+        // And the withheld arm still wins over the path, as for every other write-family tool.
+        Assert.Equal(
+            "deny",
+            Decide(ImagePayload(Outbox + "/diagram.png"), "agy:generate_image", Outbox, Workspace));
+    }
+
+    /// <summary>
+    /// A <c>generate_image</c> payload carrying the argument names a REAL call was observed to
+    /// carry, captured the same way <see cref="WritePayload"/>'s were — so neither fixture rests on
+    /// documentation. What the observation was, and how it differed from the corpus, is recorded on
+    /// <c>AgyHookCheckCommand.WriteTargetFields</c>.
+    /// </summary>
+    private static string ImagePayload(string imageName) =>
+        JsonSerializer.Serialize(new
+        {
+            artifactDirectoryPath = "C:/x/brain/abc",
+            conversationId = "abc",
+            modelName = "gemini-3.6-flash-medium",
+            stepIdx = 3,
+            toolCall = new
+            {
+                args = new { Prompt = "a diagram", ImageName = imageName },
+                name = "generate_image",
+            },
+            transcriptPath = "C:/x/transcript_full.jsonl",
+            workspacePaths = new[] { "C:/x" },
+        });
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void An_absent_or_blank_denied_list_now_denies_because_the_gate_cannot_know(string? denied)
+    {
+        // A known-empty grant withholds nothing, which is different from being unable to determine
+        // what is withheld — the cases below deny for exactly that reason.
+        // #600 inverted this deliberately. It used to allow, so "AER set the list and nothing is
+        // withheld" and "the list never arrived" were the same observable outcome. On this vendor
+        // there is no fail-closed backstop under --dangerously-skip-permissions, so a channel that
+        // silently stopped arriving meant a fully ungated worker. An empty list AER actually sent
+        // still allows; it now arrives tagged (`agy:`), which is what tells the two apart.
+        Assert.Equal("deny", Decide(Payload("run_command"), denied));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not json at all")]
+    [InlineData("[1,2,3]")]
+    [InlineData("""{"toolCall":{}}""")]
+    [InlineData("""{"toolCall":"not-an-object"}""")]
+    [InlineData("""{"tool_name":"run_command"}""")]
+    [InlineData("""{"toolCall":{"name":""}}""")]
+    [InlineData("""{"toolCall":{"name":7}}""")]
+    [InlineData("""{"toolCall":{"name":{"tool":"run_command"}}}""")]
+    public void Input_it_cannot_judge_is_denied_never_allowed(string stdinText)
+    {
+        // The core of #554 and the opposite of HookCheckCommand's claude-side posture. claude has
+        // --disallowedTools independently covering the same names, so failing open there is "no
+        // worse than what exists". agy has no such flag (agy.permissions-are-global-only, decision
+        // 0029): this hook is the only per-worker gate, so anything it cannot judge must be denied.
+        //
+        // `{"tool_name":"run_command"}` is in this list deliberately: that is claude's payload
+        // shape, and it must NOT be understood here. If a future refactor merged the two commands,
+        // this case would start returning "allow" (claude's field, agy's fail-open) and this test
+        // is what would catch it.
+        Assert.Equal("deny", Decide(stdinText, "agy:run_command,manage_task"));
+    }
+
+    [Theory]
+    [InlineData("""{"toolCall":{"name":7}}""")]
+    [InlineData("""{"toolCall":{"name":{"tool":"run_command"}}}""")]
+    public void A_non_string_tool_name_is_answered_by_the_guard_not_the_catch_all(string stdinText)
+    {
+        // The row above proves only that these deny, and BOTH paths deny -- so it cannot tell which
+        // one ran. It matters: JsonElement.GetString throws InvalidOperationException on a non-string,
+        // which `catch (JsonException)` does not catch, so before #679's review this shape escaped
+        // Decide entirely and was caught by Execute's last-resort handler. Safe, but it made that
+        // handler's "reaching here means a defect" comment false and gave the model a reason naming
+        // an internal failure instead of the payload. Asserting the reason is what discriminates.
+        using var stdin = new StringReader(stdinText);
+        using var stdout = new StringWriter();
+
+        AgyHookCheckCommand.Execute(stdin, stdout, "agy:run_command");
+
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        var reason = doc.RootElement.GetProperty("reason").GetString();
+        Assert.Equal("deny", doc.RootElement.GetProperty("decision").GetString());
+        Assert.Contains("toolCall.name", reason);
+        Assert.DoesNotContain("failed internally", reason);
+    }
+
+    [Fact]
+    public void A_denial_reason_names_the_tool_so_the_model_is_told_what_was_withheld()
+    {
+        using var stdin = new StringReader(Payload("run_command"));
+        using var stdout = new StringWriter();
+
+        AgyHookCheckCommand.Execute(stdin, stdout, "agy:run_command");
+
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Contains("run_command", doc.RootElement.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public void A_failure_to_read_stdin_is_denied_rather_than_allowed()
+    {
+        // The one path that cannot be reached by feeding text in: a reader that throws. Without
+        // this arm the IOException branch is untested, and it is precisely the branch where a
+        // crash-to-allow would be invisible.
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(new ThrowingReader(), stdout, "agy:run_command");
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal("deny", doc.RootElement.GetProperty("decision").GetString());
+    }
+
+    [Theory]
+    [InlineData("browser_navigate", "deny")]
+    [InlineData("browser_click", "deny")]
+    [InlineData("browser", "allow")]          // the bare prefix without the separator is not a match
+    [InlineData("view_file", "allow")]
+    public void A_trailing_star_entry_withholds_a_whole_tool_family(string toolName, string expected)
+    {
+        // agy's corpus offers `browser_.*` as a matcher example -- "Match any tool starting with
+        // browser_" -- while enumerating no such tools, so the family cannot be listed by name. The
+        // allow rows are the polarity control: a prefix matcher that matched everything would pass
+        // the deny rows alone.
+        Assert.Equal(expected, Decide(Payload(toolName), "agy:browser_*,search_web"));
+    }
+
+    [Fact]
+    public void A_bare_star_does_not_deny_everything_by_accident()
+    {
+        // Guards the prefix implementation's edge: `entry.Length > 1` means a lone "*" is not
+        // treated as a match-all prefix. If it ever were, an adapter bug emitting "*" would silently
+        // withhold every tool and break every worker -- loudly, but for a baffling reason.
+        Assert.Equal("allow", Decide(Payload("view_file"), "agy:*"));
+    }
+
+    [Fact]
+    public void The_denied_tools_variable_matches_the_adapter_side_contract()
+    {
+        // Baton.Vendors cannot reference Baton.Cli, so the variable name is a plain string contract
+        // mirrored on both sides. Each side asserts the literal in its own suite; if they drift,
+        // the hook reads an empty list, treats it as "nothing withheld", and allows everything.
+        Assert.Equal("BATON_HOOK_DENIED_TOOLS", AgyHookCheckCommand.DeniedToolsEnvironmentVariable);
+    }
+
+    private sealed class ThrowingReader : TextReader
+    {
+        public override string ReadToEnd() => throw new IOException("simulated pipe failure");
+    }
+}

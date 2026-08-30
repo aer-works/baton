@@ -344,7 +344,7 @@ nothing was written to the operator's configuration, and asked to deny a `Write`
 
 ```json
 {"hookSpecificOutput":{"hookEventName":"PreToolUse",
- "permissionDecision":"deny","permissionDecisionReason":"blocked by aer probe hook"}}
+ "permissionDecision":"deny","permissionDecisionReason":"blocked by baton probe hook"}}
 ```
 
 | `--permission-mode` | hook fired | write blocked |
@@ -352,7 +352,7 @@ nothing was written to the operator's configuration, and asked to deny a `Write`
 | `auto` — where `--permission-prompt-tool` is silently skipped (#514) | **yes** | **yes** |
 | `bypassPermissions` — the most permissive mode there is | **yes** | **yes** |
 
-The worker reported: *"Blocked — a hook named 'aer probe hook' rejected the Write to `x.txt`. I'm not
+The worker reported: *"Blocked — a hook named 'baton probe hook' rejected the Write to `x.txt`. I'm not
 going to route around it."*
 
 **So a `PreToolUse` hook is the only gate instrument observed to hold in every mode.** It is what AER
@@ -392,7 +392,7 @@ A `PreToolUse` hook returning `defer`:
 
 ```json
 {"hookSpecificOutput":{"hookEventName":"PreToolUse",
- "permissionDecision":"defer","permissionDecisionReason":"aer probe defer"}}
+ "permissionDecision":"defer","permissionDecisionReason":"baton probe defer"}}
 ```
 
 ```
@@ -426,9 +426,9 @@ a claim 0022's answer semantics may depend on.
 Also documented, and worth having: when several hooks or rules apply, the precedence is
 **`deny` > `defer` > `ask` > `allow`**. And `updatedInput` is ignored on a `defer`.
 
-**Also unmeasured (issue #1359, `aer resume`): only ONE `--resume` hop is verified above.** Whether a
+**Also unmeasured (issue #1359, `baton resume`): only ONE `--resume` hop is verified above.** Whether a
 *second* `--resume` — passing the session id a first resume already continued — reaches the first
-resume's own turn, or forks back to before it, has never been run. `aer resume` itself refuses nothing
+resume's own turn, or forks back to before it, has never been run. `baton resume` itself refuses nothing
 based on this (a resume-of-a-resume dispatches the same way any resume does), but its own doc scopes
 the continuation claim to this one measured hop rather than asserting it chains indefinitely.
 
@@ -887,9 +887,9 @@ teammates make the lead a single point of failure — while `--bg` sessions surv
 
 ### 7. The vendor's changelog is a test plan for AER's own supervisor
 
-This applied to `Aer.Daemon` while it supervised workers and survived restarts; #1420 deleted that
-surface, and today no resident process supervises a worker turn — the harness (`aer` CLI, via
-`aer run`) dispatches and drives each turn directly, with no daemon to restart. The lessons below
+This applied to `Baton.Daemon` while it supervised workers and survived restarts; #1420 deleted that
+surface, and today no resident process supervises a worker turn — the harness (`baton` CLI, via
+`baton run`) dispatches and drives each turn directly, with no daemon to restart. The lessons below
 stay live as a test plan for whenever a resident process is built again (spec/baton.md §7/§8's
 room-watcher): the vendor built the same thing and shipped the bugs. Stale lock **whose PID the OS
 reused**; auto-upgrade **silently killing all live sessions**;
@@ -987,7 +987,7 @@ can be *made* to return a structure rather than asked nicely.
 So the structure is the flag's doing, not the model's cooperation. **A worker's return can be a
 typed record, which is what Rule 1's "explicit tool returns" needs.**
 
-**Implementation note for `Aer.Adapters`:** `--json-schema` takes the schema **inline**, not a file
+**Implementation note for `Baton.Vendors`:** `--json-schema` takes the schema **inline**, not a file
 path. Passing a filename fails with `--json-schema is not valid JSON: Unexpected identifier "C"` —
 which reads like a malformed schema rather than the wrong *kind* of argument, and cost a
 debugging cycle here.
@@ -1033,7 +1033,7 @@ reach it. The categories are independent, so a grant with `WriteFiles = false` a
 `RunShellCommands = true` emitted exactly `--disallowedTools Edit,Write,NotebookEdit` and left
 `Bash` available. (Since [#649](https://github.com/aer-works/baton/issues/649) those three names
 travel on the `PreToolUse` hook instead, so the hook can allow the write landing in
-`AER_OUTPUT_DIR` — the substitution below is unaffected, since it is about what `Bash` reaches.)
+`BATON_OUTPUT_DIR` — the substitution below is unaffected, since it is about what `Bash` reaches.)
 Running **that exact string**:
 
 ```
@@ -1328,7 +1328,7 @@ cannot be reused at all" are the same observation — and here the concurrent pa
 which only means something because sequential reuse *was*.
 
 **Consequence: there is no vendor-side mutex.** Two workers handed the same session id will both
-run and both write. This was `Aer.Daemon`'s obligation to enforce while it hosted interactive
+run and both write. This was `Baton.Daemon`'s obligation to enforce while it hosted interactive
 sessions; that surface is deleted (#1420), and no component in this repo runs a session against
 this vendor behavior today. If a future resident process needs single-writer semantics on a
 session, it has to enforce them itself — the vendor's guard will not lose loudly, it will lose

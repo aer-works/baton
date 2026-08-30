@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    #370: the code sibling of the doc/spec guards (#367/#314/#315). Enforces CLAUDE.md's
+    reference-direction architecture invariants against the actual project graph, so the room-model
+    churn (#333/#335) can't silently introduce a layering violation. IN AerFlow.slnx on purpose —
+    it must run in default CI (`pixi run test`) so a forbidden dependency fails the build the moment
+    it is added. Mostly pure file reading over the repo, and no network — so it runs identically on
+    every CI platform, the same shape as Baton.Plan.Tests.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      #504's staleness check reuses the probe suite's own version comparison rather than
+      reimplementing it, for the same reason the token gate reuses the generator above: a second
+      opinion about what "up to date" means drifts from the real one and then passes while it is
+      wrong. Referencing the tool builds it in CI (which costs nothing) without ever running the
+      probe (which spends real subscription usage) — only the version flag is invoked, and only where
+      a vendor CLI actually exists.
+    -->
+    <ProjectReference Include="..\..\tools\Aer.VendorProbe\Aer.VendorProbe.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

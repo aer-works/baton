@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Baton.Core/Baton.Core.csproj" />
+  <Project Path="Baton.Core.Tests/Baton.Core.Tests.csproj" />
+  <Project Path="Baton.Core.Example/Baton.Core.Example.csproj" />
+</Solution>
