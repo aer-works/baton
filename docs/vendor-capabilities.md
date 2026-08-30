@@ -31,7 +31,7 @@ is verified."
 This exists because the M25 design assumed capabilities in several places, and design that assumes
 wrongly is worse than design that knows its limits. Four assumptions were **wrong** and are corrected
 below. Two of the four were this document's own rows, which is the honest reason the probes are now
-[a program](../tools/Aer.VendorProbe/) rather than a habit: `pixi run vendor-probe` regenerates the
+[a program](../tools/Baton.VendorProbe/) rather than a habit: `pixi run vendor-probe` regenerates the
 findings, and `pixi run vendor-check` (free — it only reads `--version`) tells you when a vendor has
 moved out from under them.
 
@@ -147,7 +147,7 @@ something that certainly does not exist, and see whether the CLI discriminates a
 `claude` rejects unknown flags and accepts this one; `agy` rejects both, so *its* absence is real and
 now rests on something firmer than help text. Without the control row, a zero exit is not evidence —
 "accepted" and "silently ignored" are indistinguishable — which is why
-[`FlagProbe`](../tools/Aer.VendorProbe/FlagProbe.cs) establishes the baseline before judging any flag.
+[`FlagProbe`](../tools/Baton.VendorProbe/FlagProbe.cs) establishes the baseline before judging any flag.
 
 ### It is honoured, not merely parsed
 
@@ -351,7 +351,7 @@ Two things the design assumed otherwise:
   - **The rejection datum was never about `--effort` at all. Resolved 2026-07-28.** A real dispatch
     had failed with `Error: invalid model selection (--model "gemini-3-pro" --effort "high"):
     --effort is not supported for model "gemini-3-pro"` — recorded in
-    [`OutcomeClassifierTests`](../tests/Baton.Flow.Tests/Outcomes/OutcomeClassifierTests.cs), which
+    [`OutcomeClassifierTests`](../tests/Baton.Tests/Outcomes/OutcomeClassifierTests.cs), which
     pins it as the stderr AER must surface. This page then read it as evidence that effort support is
     *per-model*, while flagging that reading as an inference and naming the control that would settle
     it: the same dispatch with `--effort` dropped.

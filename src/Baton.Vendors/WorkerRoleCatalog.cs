@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
+using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Vendors;
 

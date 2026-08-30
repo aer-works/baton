@@ -1,12 +1,12 @@
 using System.Collections;
-using Baton.Flow.Mutation;
+using Baton.Mutation;
 
 namespace Baton.Vendors;
 
 /// <summary>
 /// Backs <see cref="WorkerBindingResolver.ResolveLazily"/>: resolves (and refuses) each config entry
 /// only the first time its worker name is looked up, never merely because the entry is present in the
-/// file (#662). Every consumer in <c>Baton.Flow</c> — <c>MutationInterface</c>, the outcome detectors —
+/// file (#662). Every consumer in <c>Baton</c> — <c>MutationInterface</c>, the outcome detectors —
 /// only ever calls <see cref="TryGetValue"/> or the indexer for a specific, already-known worker name;
 /// none enumerates the whole map, which is what makes deferring resolution to that lookup safe here.
 /// </summary>

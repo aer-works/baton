@@ -1341,7 +1341,7 @@ def _recordonce_discriminates():
     excl = rec.excluded_from_comparison
     assert excl("docs/decisions/0001-two-nouns-workflow-and-session.md") == "restored-decision", (
         "record-once: a restored decision record was not excluded from comparison")
-    assert excl("src/Baton.Flow/CHANGELOG.md") == "changelog", (
+    assert excl("src/Baton/CHANGELOG.md") == "changelog", (
         "record-once: a generated changelog was not excluded from comparison")
     assert excl("native/core/src/lib.rs") == "vendored-snapshot", (
         "record-once: a vendored aer-core snapshot file (#1458) was not excluded from comparison")

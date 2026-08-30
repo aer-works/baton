@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Vendors.Tests;
 
@@ -1349,7 +1349,11 @@ public class AgyWorkerAdapterTests
         var server = mcpDoc.RootElement.GetProperty("mcpServers").GetProperty("baton-memory-proposal");
         Assert.Equal("dotnet", server.GetProperty("command").GetString());
         var serverArgs = server.GetProperty("args").EnumerateArray().Select(a => a.GetString()).ToList();
-        Assert.Contains(serverArgs, a => a!.EndsWith("Baton.Mcp.Host.dll", StringComparison.Ordinal));
+        // #1458: same args-order assertion as ClaudeWorkerAdapterTests' sibling test, and for the
+        // identical reason -- see that test's own doc comment (canonical).
+        Assert.True(serverArgs.Count >= 3, "expected <dll path>, mcp, --memory-proposal-tool");
+        Assert.EndsWith("Baton.Cli.dll", serverArgs[0], StringComparison.Ordinal);
+        Assert.Equal("mcp", serverArgs[1]);
         Assert.Contains("--memory-proposal-tool", serverArgs);
         Assert.DoesNotContain(serverArgs, a => a!.Contains("memory-proposals", StringComparison.Ordinal));
     }

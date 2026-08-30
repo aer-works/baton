@@ -1,4 +1,4 @@
-using Baton.Flow;
+using Baton;
 
 namespace Baton.Vendors;
 
@@ -8,7 +8,7 @@ namespace Baton.Vendors;
 /// </summary>
 /// <remarks>
 /// <para>
-/// A vendor worker satisfies <see cref="Baton.Flow.Domain.WorkerContract.ProducedOutputs"/> in exactly
+/// A vendor worker satisfies <see cref="Baton.Domain.WorkerContract.ProducedOutputs"/> in exactly
 /// one way: by writing the named artifact into <c>BATON_OUTPUT_DIR</c>. A grant with
 /// <see cref="PermissionGrant.WriteFiles"/> withheld removes the tools that do it, so the combination
 /// cannot succeed — with one exception, which is why the shell refusal runs first: a granted shell
@@ -21,7 +21,7 @@ namespace Baton.Vendors;
 /// </para>
 /// <para>
 /// Every declared output is required: <c>ContractValidator</c> checks <c>File.Exists</c> for each
-/// one, and an <see cref="Baton.Flow.Domain.OutputCondition"/> only adds a stricter check on top of
+/// one, and an <see cref="Baton.Domain.OutputCondition"/> only adds a stricter check on top of
 /// existence rather than excusing it: a declared-but-absent output is a failure.
 /// That is what makes refusing early safe rather than over-strict — and #650 is the
 /// counterpart: a contract that declares an output nobody requires is the other way to get this

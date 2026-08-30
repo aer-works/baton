@@ -1,8 +1,8 @@
 using System.Diagnostics;
-using Baton.Flow.Domain;
-using Baton.Flow.Outcomes;
-using Baton.Flow.Projection;
-using Baton.Flow.Status;
+using Baton.Domain;
+using Baton.Outcomes;
+using Baton.Projection;
+using Baton.Status;
 
 namespace Baton.Cli.Tests;
 

@@ -1,12 +1,12 @@
 using System.Text.Json;
 using Baton.Vendors;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Domain;
-using Baton.Flow.Outcomes;
-using Baton.Flow.Projection;
-using Baton.Flow.Status;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
+using Baton.Artifacts;
+using Baton.Domain;
+using Baton.Outcomes;
+using Baton.Projection;
+using Baton.Status;
+using Baton.Store;
+using Baton.Templates;
 
 namespace Baton.Cli;
 
@@ -18,7 +18,7 @@ namespace Baton.Cli;
 /// <see cref="CancelCommand"/> already call — so there is exactly one place "what does this event
 /// log mean" is computed, never a second reader of the format here.
 /// <para>
-/// Deliberately never takes <see cref="Baton.Flow.Concurrency.ConcurrencyGuard"/>'s lock and never
+/// Deliberately never takes <see cref="Baton.Concurrency.ConcurrencyGuard"/>'s lock and never
 /// constructs a <see cref="FlowEventLogWriter"/>: this is the one command in <c>Baton.Cli</c> that can
 /// run concurrently with a live <c>baton run</c> pump on the same room directory, which is the whole
 /// point of a status/watch command. It also never resolves a worker binding (no <c>--bindings</c>
@@ -125,7 +125,7 @@ public static class StatusCommand
 
             if (options.Follow)
             {
-                var artifactsDir = Path.Combine(options.RoomDirectoryPath, Baton.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName);
+                var artifactsDir = Path.Combine(options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
                 TailStreams(output, artifactsDir, new Dictionary<string, long>(StringComparer.Ordinal));
             }
 
@@ -162,7 +162,7 @@ public static class StatusCommand
         CancellationToken cancellationToken)
     {
         var lastObservedLength = -1L;
-        var artifactsDir = Path.Combine(roomDirectoryPath, Baton.Flow.Artifacts.ArtifactManager.ArtifactsDirectoryName);
+        var artifactsDir = Path.Combine(roomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
         var streamOffsets = new Dictionary<string, long>(StringComparer.Ordinal);
 
         while (true)
@@ -232,14 +232,14 @@ public static class StatusCommand
         {
             TailStreamFile(
                 output,
-                Path.Combine(execDir, Baton.Flow.Dispatch.ExecutionStreamLogger.StdoutLogFileName),
-                Path.Combine(execDir, Baton.Flow.Dispatch.ExecutionStreamLogger.StdoutRolloverFileName),
+                Path.Combine(execDir, Baton.Dispatch.ExecutionStreamLogger.StdoutLogFileName),
+                Path.Combine(execDir, Baton.Dispatch.ExecutionStreamLogger.StdoutRolloverFileName),
                 streamOffsets);
 
             TailStreamFile(
                 output,
-                Path.Combine(execDir, Baton.Flow.Dispatch.ExecutionStreamLogger.StderrLogFileName),
-                Path.Combine(execDir, Baton.Flow.Dispatch.ExecutionStreamLogger.StderrRolloverFileName),
+                Path.Combine(execDir, Baton.Dispatch.ExecutionStreamLogger.StderrLogFileName),
+                Path.Combine(execDir, Baton.Dispatch.ExecutionStreamLogger.StderrRolloverFileName),
                 streamOffsets);
         }
     }
@@ -567,7 +567,7 @@ public static class StatusCommand
     /// attempt <see cref="FlowEvent.StepRetryScheduled"/> is pacing, mapped to the operator-facing
     /// word: <see cref="FailureClassification.ExhaustedUntil"/> is the vendor-quota wait 0026
     /// introduced; everything else eligible to reach here (<see cref="FailureClassification.Retryable"/>
-    /// or absent, per <see cref="Baton.Flow.Scheduling.RetryEngine.MayRetry"/>) is an ordinary
+    /// or absent, per <see cref="Baton.Scheduling.RetryEngine.MayRetry"/>) is an ordinary
     /// backoff.
     /// </summary>
     private static string FormatParkedStatus(StepState step)

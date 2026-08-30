@@ -2,20 +2,20 @@ namespace Baton.Vendors;
 
 /// <summary>
 /// The vendor-neutral description of what a worker adapter must invoke a worker to do (CLAUDE.md
-/// rule #2's canonical protocol, M11 Phase 1). Paired with the <see cref="Baton.Flow.Domain.WorkerContract"/>
+/// rule #2's canonical protocol, M11 Phase 1). Paired with the <see cref="Baton.Domain.WorkerContract"/>
 /// a <see cref="IWorkerAdapter"/> resolves alongside it, which already carries the ordered input
 /// role names and declared outputs — this record adds only what the contract doesn't: the
 /// human-authored prompt and the vendor-facing invocation knobs.
 /// <para>
-/// Built once, when a worker-binding config entry is resolved into a <see cref="Baton.Flow.Mutation.WorkerBinding"/>
-/// — not once per execution. The resulting <see cref="Baton.Flow.Dispatch.CoreDispatchTarget"/> is
-/// reused by <c>Baton.Flow.Mutation.MutationInterface.StartWorkflowAsync</c> for every dispatch of
+/// Built once, when a worker-binding config entry is resolved into a <see cref="Baton.Mutation.WorkerBinding"/>
+/// — not once per execution. The resulting <see cref="Baton.Dispatch.CoreDispatchTarget"/> is
+/// reused by <c>Baton.Mutation.MutationInterface.StartWorkflowAsync</c> for every dispatch of
 /// this worker role across the whole run, so nothing here may carry a resolved, execution-specific
 /// file path. Per-execution dynamism (which files exist at <c>BATON_INPUT_&lt;n&gt;</c>/
 /// <c>BATON_OUTPUT_DIR</c> right now) is carried entirely by the environment variables
-/// <c>Baton.Flow.Artifacts.ArtifactManager</c> already resolves per dispatch — an adapter
+/// <c>Baton.Artifacts.ArtifactManager</c> already resolves per dispatch — an adapter
 /// references those variables by name (shell-expanded at dispatch time, e.g. via a shell-wrapped
-/// <see cref="Baton.Flow.Dispatch.CoreDispatchTarget"/>), the same convention the shell-stub workers
+/// <see cref="Baton.Dispatch.CoreDispatchTarget"/>), the same convention the shell-stub workers
 /// already use.
 /// </para>
 /// </summary>
@@ -29,7 +29,7 @@ namespace Baton.Vendors;
 /// <param name="PermissionScope">
 /// The raw, hand-typed permission grant to pre-authorize (e.g. Claude's <c>--allowedTools</c>
 /// value) — each vendor's flag and vocabulary differs (spike #21), which is exactly why this is an
-/// opaque string the adapter alone interprets, never a shared enum Baton.Flow or this record would
+/// opaque string the adapter alone interprets, never a shared enum Baton or this record would
 /// have to version. Superseded by <paramref name="PermissionGrant"/> when both are set (M21 Phase
 /// 1) — kept only as the bindings editor's "Advanced" escape hatch for vendor vocabulary the
 /// structured model can't yet express.
@@ -50,7 +50,7 @@ namespace Baton.Vendors;
 /// record is ever constructed, so every adapter receives the same real path regardless of which
 /// machine or profile named it. Null keeps the prior default (no explicit cwd — AER's own scratch
 /// artifacts folder). Every <see cref="IWorkerAdapter"/> forwards this into the
-/// <see cref="Baton.Flow.Dispatch.CoreDispatchTarget"/> it builds unchanged — it carries no
+/// <see cref="Baton.Dispatch.CoreDispatchTarget"/> it builds unchanged — it carries no
 /// vendor-specific meaning, unlike <paramref name="PromptTemplate"/>.
 /// </param>
 /// <param name="BindingsFileDirectory">

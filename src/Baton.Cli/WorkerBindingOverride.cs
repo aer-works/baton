@@ -1,5 +1,5 @@
 using System.Collections;
-using Baton.Flow.Mutation;
+using Baton.Mutation;
 
 namespace Baton.Cli;
 

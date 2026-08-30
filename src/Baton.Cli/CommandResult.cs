@@ -1,5 +1,5 @@
-using Baton.Flow.Domain;
-using Baton.Flow.Workspaces;
+using Baton.Domain;
+using Baton.Workspaces;
 
 namespace Baton.Cli;
 

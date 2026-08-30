@@ -1,13 +1,13 @@
 using Baton.Vendors;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Mutation;
-using Baton.Flow.Projection;
-using Baton.Flow.Status;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
-using Baton.Flow.Workspaces;
+using Baton.Artifacts;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Mutation;
+using Baton.Projection;
+using Baton.Status;
+using Baton.Store;
+using Baton.Templates;
+using Baton.Workspaces;
 
 namespace Baton.Cli;
 
@@ -45,10 +45,10 @@ public static class RunCommand
     /// <paramref name="options"/>'s room directory is already bound to a snapshot, and the workflow
     /// file named is a different template (#628).
     /// </exception>
-    /// <exception cref="Baton.Flow.Concurrency.WorkflowLockedException">
+    /// <exception cref="Baton.Concurrency.WorkflowLockedException">
     /// Another Flow instance already holds this room directory's lock.
     /// </exception>
-    /// <exception cref="Baton.Flow.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
+    /// <exception cref="Baton.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
     /// <param name="inFlightExecutions">
     /// M15 Phase 4's (issue #140) additive caller-retained delivery point — forwarded, unchanged, to
     /// <see cref="MutationInterface.StartWorkflowAsync"/>. <c>null</c> for every caller (the CLI

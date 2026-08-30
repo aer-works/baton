@@ -9,9 +9,9 @@ namespace Baton.Vendors;
 /// <para>
 /// <b>Placement decision of record:</b> the writer lives here, beside its parser in
 /// <c>Baton.Vendors</c>, not in a caller's assembly — the bindings shape
-/// (adapter names, <see cref="Baton.Flow.Domain.WorkerContract"/>, prompt/timeout/model/permission
+/// (adapter names, <see cref="Baton.Domain.WorkerContract"/>, prompt/timeout/model/permission
 /// scope) lives entirely in this assembly (Adapter Isolation, the repo's own architecture rule),
-/// exactly mirroring <c>Baton.Flow.Templates.WorkflowDefinitionWriter</c>'s placement reasoning
+/// exactly mirroring <c>Baton.Templates.WorkflowDefinitionWriter</c>'s placement reasoning
 /// beside <c>WorkflowDefinitionParser</c> for templates (M16 Phase 1). Originally written for the
 /// desktop authoring surface (deleted, #1412); the daemon caller went with the daemon's HTTP
 /// surface (#1420) — today's sole production caller is <c>DispatchCommand</c>.
@@ -22,7 +22,7 @@ namespace Baton.Vendors;
 /// present <c>Contract</c>, non-blank <c>PromptTemplate</c>) are this format's only validation.
 /// <see cref="Serialize"/> proves them by round-tripping its own output through that exact parser
 /// before ever returning it, so "write nothing on failure" holds the same way
-/// <c>Baton.Flow.Templates.WorkflowDefinitionWriter.Serialize</c> holds it via
+/// <c>Baton.Templates.WorkflowDefinitionWriter.Serialize</c> holds it via
 /// <c>WorkflowDefinitionValidator.Validate</c> — just using the parser itself as the validation
 /// step, since this format has no separate one.
 /// </para>
@@ -60,7 +60,7 @@ public static class WorkerBindingConfigWriter
     /// <summary>
     /// Persists <paramref name="config"/> as bindings JSON at <paramref name="bindingsFilePath"/>,
     /// creating parent directories as needed — the same shape as
-    /// <c>Baton.Flow.Templates.WorkflowDefinitionWriter.SaveToFileAsync</c>.
+    /// <c>Baton.Templates.WorkflowDefinitionWriter.SaveToFileAsync</c>.
     /// </summary>
     /// <remarks>
     /// <para>

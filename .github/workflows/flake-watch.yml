@@ -99,7 +99,7 @@ jobs:
           # Separators and line endings normalised: the solution stores Windows-style paths, which
           # Git Bash treats backslashes in as escape characters, and a stray CR would otherwise end
           # up inside the directory name.
-          projects=$(dotnet sln AerFlow.slnx list | tr -d '\r' | tr '\134' '/' | grep 'Tests\.csproj$')
+          projects=$(dotnet sln Baton.slnx list | tr -d '\r' | tr '\134' '/' | grep 'Tests\.csproj$')
 
           for i in $(seq 1 "$passes"); do
             pass_dir="flake-results/pass-$(printf '%02d' "$i")"

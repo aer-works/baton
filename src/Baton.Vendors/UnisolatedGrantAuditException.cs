@@ -1,10 +1,10 @@
-using Baton.Flow;
+using Baton;
 
 namespace Baton.Vendors;
 
 /// <summary>
 /// Raised by <see cref="WorkerBindingResolver.Resolve"/> when an entry specifies
-/// <see cref="Baton.Flow.Domain.GrantAuditMode.AuditedNotEnforced"/> without an ACTUALLY provisioned
+/// <see cref="Baton.Domain.GrantAuditMode.AuditedNotEnforced"/> without an ACTUALLY provisioned
 /// worktree — <see cref="WorkerBindingConfigEntry.IsWorktree"/>, the stamp
 /// <see cref="WorktreeWorkspaces.Provision"/> leaves after rewriting the working directory. A
 /// merely DECLARED <see cref="WorkerBindingConfigEntry.Worktree"/> spec is not isolation: the

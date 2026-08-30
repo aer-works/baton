@@ -1,8 +1,8 @@
 using System.Diagnostics;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Outcomes;
-using Baton.Flow.Status;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Outcomes;
+using Baton.Status;
 
 namespace Baton.Vendors.Tests;
 
@@ -650,9 +650,14 @@ public class ClaudeWorkerAdapterTests
 
     /// <summary>
     /// #801/#833: opting in points `--mcp-config` at a real config naming AER's own MCP server and
-    /// the `memory-edit-proposal` tool, invoked via `Baton.Mcp.Host.dll --memory-proposal-tool` -- the
+    /// the `memory-edit-proposal` tool, invoked via `Baton.Cli.dll mcp --memory-proposal-tool` -- the
     /// same `dotnet <dll>` shape #543 requires for the PreToolUse hook, for the identical
-    /// packed-global-tool deployment reason. No capture-directory path rides the args (#833) -- see
+    /// packed-global-tool deployment reason. #1458: `mcp` is a verb on `Baton.Cli.dll` now, not its
+    /// own `Baton.Mcp.Host.dll` -- asserted by exact args order below, not just membership, since a
+    /// membership-only assertion is what let #1458 3b ship this path with the verb missing (a real
+    /// escaped defect: this test asserted `EndsWith("Baton.Mcp.Host.dll")` after that project was
+    /// deleted, and stayed green because nothing checked the `mcp` verb was ever added).
+    /// No capture-directory path rides the args (#833) -- see
     /// `ClaudeWorkerAdapter.EnsureMemoryProposalMcpConfig`'s own remarks (canonical) for why.
     /// </summary>
     [Fact]
@@ -671,7 +676,9 @@ public class ClaudeWorkerAdapterTests
         var server = mcpDoc.RootElement.GetProperty("mcpServers").GetProperty("baton-memory-proposal");
         Assert.Equal("dotnet", server.GetProperty("command").GetString());
         var serverArgs = server.GetProperty("args").EnumerateArray().Select(a => a.GetString()).ToList();
-        Assert.Contains(serverArgs, a => a!.EndsWith("Baton.Mcp.Host.dll", StringComparison.Ordinal));
+        Assert.True(serverArgs.Count >= 3, "expected <dll path>, mcp, --memory-proposal-tool");
+        Assert.EndsWith("Baton.Cli.dll", serverArgs[0], StringComparison.Ordinal);
+        Assert.Equal("mcp", serverArgs[1]);
         Assert.Contains("--memory-proposal-tool", serverArgs);
         Assert.DoesNotContain(serverArgs, a => a!.Contains("memory-proposals", StringComparison.Ordinal));
     }

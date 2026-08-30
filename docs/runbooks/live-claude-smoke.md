@@ -26,7 +26,7 @@ a capability to rely on for future re-runs or for gates on other vendors (see
 pixi run smoke-claude
 ```
 
-This runs `dotnet test tests/Baton.Cli.SmokeTests`, which is **not** part of `AerFlow.slnx` — it
+This runs `dotnet test tests/Baton.Cli.SmokeTests`, which is **not** part of `Baton.slnx` — it
 never builds or runs as a side effect of `pixi run build`/`test`/`lint`, only from this task.
 
 The test (`LiveClaudeRunSmokeTest`) drives `RunCommand.ExecuteAsync` — the same call `Program.cs`
@@ -49,7 +49,7 @@ The test passes when:
   and are non-blank.
 
 The test does not assert on the *content* Claude wrote (spec §4.1's contract is "the file exists",
-not "the file says X" — the same rule that keeps `Baton.Flow` from ever parsing worker output).
+not "the file says X" — the same rule that keeps `Baton` from ever parsing worker output).
 
 ## If it fails
 

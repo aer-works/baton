@@ -1,6 +1,6 @@
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Templates;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Templates;
 
 namespace Baton.Vendors.Tests;
 

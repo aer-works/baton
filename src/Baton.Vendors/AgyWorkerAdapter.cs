@@ -5,9 +5,9 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Vendors;
 
@@ -576,15 +576,27 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <remarks>
     /// <b>Carries no capture-directory path (#833)</b> -- same reason and mechanism as
     /// <see cref="ClaudeWorkerAdapter.EnsureMemoryProposalMcpConfig"/>'s own remarks, which are
-    /// canonical; this side differs only in which vendor process <c>Baton.Mcp.Host</c> inherits
-    /// <c>BATON_OUTPUT_DIR</c> from (<c>agy</c> here, <c>claude</c> there).
+    /// canonical; this side differs only in which vendor process <c>baton mcp</c> inherits
+    /// <c>BATON_OUTPUT_DIR</c> from (<c>agy</c> here, <c>claude</c> there). #1458: same
+    /// <c>mcp</c>-verb-plus-<see cref="File.Exists"/>-guard fix as that method, for the identical
+    /// fail-open-and-silent reason (#530) -- doubly so here, since agy is the vendor whose own
+    /// hook-check fails open on a bad path.
     /// </remarks>
     private static string EnsureMemoryProposalWorkspace()
     {
         var workspace = Path.Combine(BatonPaths.WorkerLaunchConfig, MemoryProposalWorkspaceDirectoryName);
         Directory.CreateDirectory(Path.Combine(workspace, ".agents"));
 
-        var hostDllPath = Path.Combine(AppContext.BaseDirectory, "Baton.Mcp.Host.dll");
+        var hostDllPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        if (!File.Exists(hostDllPath))
+        {
+            throw new InvalidOperationException(
+                $"Cannot write the memory-proposal MCP config (#801): '{hostDllPath}' does not exist. " +
+                "Every deployment of baton must carry Baton.Cli.dll alongside its own binary -- an MCP " +
+                "config naming a path that does not exist fails open and silently (#530), so this fails " +
+                "loudly here instead, before any worker is dispatched.");
+        }
+
         var json = JsonSerializer.Serialize(new
         {
             mcpServers = new Dictionary<string, object>
@@ -592,7 +604,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                 ["baton-memory-proposal"] = new
                 {
                     command = "dotnet",
-                    args = new[] { hostDllPath, "--memory-proposal-tool" },
+                    args = new[] { hostDllPath, "mcp", "--memory-proposal-tool" },
                 },
             },
         });

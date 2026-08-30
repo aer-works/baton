@@ -155,7 +155,7 @@ That prose is for a person watching. For a machine caller (#1356), the same info
 available two other ways, and both give you the same set of paths without parsing a sentence:
 
 - **`baton status <room-dir> --json`** — one JSON object to stdout, nothing else:
-  <!-- record-once-ok: #1359 src/Baton.Flow/Status/WorkflowStatusView.cs -->
+  <!-- record-once-ok: #1359 src/Baton/Status/WorkflowStatusView.cs -->
   `{state, steps:[{id, state, execution, linkedFrom, usage, linkedFromUsage, liveness?}], outputs:[...], error, try, rejected}`
   — full schema, including `liveness`/`rejected`'s exact semantics, at spec/baton.md §3. `outputs` is the
   flat list of absolute paths every succeeded step's declared outputs resolved to — the same paths

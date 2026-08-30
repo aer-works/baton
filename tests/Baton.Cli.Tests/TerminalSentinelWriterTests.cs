@@ -1,4 +1,4 @@
-using Baton.Flow.Status;
+using Baton.Status;
 
 namespace Baton.Cli.Tests;
 

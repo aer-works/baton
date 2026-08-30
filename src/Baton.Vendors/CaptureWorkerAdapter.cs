@@ -1,5 +1,5 @@
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
+using Baton.Dispatch;
+using Baton.Domain;
 
 namespace Baton.Vendors;
 
@@ -7,7 +7,7 @@ namespace Baton.Vendors;
 /// The engine-run capture worker (decision 0047 §4): produces the <c>diff-of-work-so-far</c> artifact a
 /// downstream phase reads, by running <c>git diff --output=&lt;artifact&gt; &lt;base&gt;</c> in the
 /// workspace. Registered under the capability name <see cref="WorkflowTemplateComposer.CaptureAdapter"/>
-/// (<c>"capture"</c>); to <c>Baton.Flow</c> it is an ordinary worker dispatched through an adapter, so the
+/// (<c>"capture"</c>); to <c>Baton</c> it is an ordinary worker dispatched through an adapter, so the
 /// engine never learns git exists — the git-ness is quarantined here (Adapter Isolation, CLAUDE.md
 /// rule 2).
 /// </summary>

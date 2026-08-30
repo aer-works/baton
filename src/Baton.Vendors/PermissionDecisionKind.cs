@@ -2,7 +2,7 @@ namespace Baton.Vendors;
 
 /// <summary>
 /// The permission-ladder rungs 04:82-94 defines (decision 0022) — the vocabulary a historical
-/// <c>RoomEvent.RuntimePermissionAnswered</c>/<see cref="Baton.Flow.Projection.PermissionAnswer"/>'s
+/// <c>RoomEvent.RuntimePermissionAnswered</c>/<see cref="Baton.Projection.PermissionAnswer"/>'s
 /// <c>decisionKind</c> string was drawn from, back when a mid-lane runtime ask could be answered.
 /// That machinery was retired (#1417) — see spec/baton.md §5 for the ruling. This vocabulary
 /// survives only to make sense of the historical string values already recorded in an existing

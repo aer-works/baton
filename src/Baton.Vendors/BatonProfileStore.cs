@@ -1,5 +1,5 @@
 using System.Text.Json;
-using Baton.Flow.Status;
+using Baton.Status;
 
 namespace Baton.Vendors;
 

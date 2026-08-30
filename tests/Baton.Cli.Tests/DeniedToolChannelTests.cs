@@ -102,7 +102,7 @@ public class DeniedToolChannelTests
     {
         // Baton.Vendors cannot reference Baton.Cli, so the tag is a literal on each side. This is the one
         // test that sees both, and it is what stops a rename on one side silently denying everything.
-        var contract = new Baton.Flow.Domain.WorkerContract("w", [], [], []);
+        var contract = new Baton.Domain.WorkerContract("w", [], [], []);
         var grant = new PermissionGrant(ReadFiles: true, WriteFiles: false);
 
         var claudeValue = new ClaudeWorkerAdapter()

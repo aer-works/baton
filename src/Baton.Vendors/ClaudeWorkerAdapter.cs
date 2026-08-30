@@ -1,9 +1,9 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Status;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Vendors;
 
@@ -369,16 +369,32 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// (#833's fork). This file is resolved once per worker-binding entry, before any execution's
     /// <c>BATON_OUTPUT_DIR</c> exists (<see cref="Resolve"/> runs once per binding, not per execution --
     /// see <see cref="Baton.Vendors.WorkerInvocation"/>'s own doc comment for why), so nothing baked in
-    /// here can vary per execution. The <c>--memory-proposal-tool</c> flag alone tells
-    /// <c>Baton.Mcp.Host</c> to enable the tool; the process derives its own per-execution capture
+    /// here can vary per execution. The <c>mcp --memory-proposal-tool</c> verb+flag pair alone tells
+    /// <c>Baton.Cli</c> to enable the tool; the process derives its own per-execution capture
     /// directory from <c>BATON_OUTPUT_DIR</c>, which it inherits from the <c>claude</c> process that
     /// spawns it as an MCP server -- the same inheritance <c>Baton.Cli.Program</c>'s <c>hook-check</c>
     /// branch already rests on for the identical reason.
+    /// <para>
+    /// #1458: <c>mcp</c> was a standalone <c>Baton.Mcp.Host.dll</c> before this file's own binary
+    /// folded it in as a verb -- <c>mcp</c> must be the first argument, ahead of the tool flag, same
+    /// as <see cref="BuildSettingsJson"/>'s <see cref="File.Exists"/> guard below it for the identical
+    /// fail-open-and-silent reason (#530): an MCP server that never starts fails at claude's own
+    /// spawn time, not loudly at dispatch.
+    /// </para>
     /// </remarks>
     private static string EnsureMemoryProposalMcpConfig()
     {
         Directory.CreateDirectory(BatonPaths.WorkerLaunchConfig);
-        var hostDllPath = Path.Combine(AppContext.BaseDirectory, "Baton.Mcp.Host.dll");
+        var hostDllPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        if (!File.Exists(hostDllPath))
+        {
+            throw new InvalidOperationException(
+                $"Cannot write the memory-proposal MCP config (#801): '{hostDllPath}' does not exist. " +
+                "Every deployment of baton must carry Baton.Cli.dll alongside its own binary -- an MCP " +
+                "config naming a path that does not exist fails open and silently (#530), so this fails " +
+                "loudly here instead, before any worker is dispatched.");
+        }
+
         var configPath = Path.Combine(BatonPaths.WorkerLaunchConfig, "claude-mcp-memory-proposal.json");
         var json = JsonSerializer.Serialize(new
         {
@@ -387,7 +403,7 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
                 ["baton-memory-proposal"] = new
                 {
                     command = "dotnet",
-                    args = new[] { hostDllPath, "--memory-proposal-tool" },
+                    args = new[] { hostDllPath, "mcp", "--memory-proposal-tool" },
                 },
             },
         });

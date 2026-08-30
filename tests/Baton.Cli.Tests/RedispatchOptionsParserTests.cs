@@ -107,6 +107,6 @@ public class RedispatchOptionsParserTests
         var options = RedispatchOptionsParser.Parse(["parent-room"]);
 
         Assert.StartsWith(
-            Path.GetFullPath(Baton.Flow.Status.BatonPaths.Rooms), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
+            Path.GetFullPath(Baton.Status.BatonPaths.Rooms), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -54,7 +54,7 @@ public class DirectoryDeleteHygieneTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            if (File.Exists(Path.Combine(dir.FullName, "AerFlow.slnx")))
+            if (File.Exists(Path.Combine(dir.FullName, "Baton.slnx")))
             {
                 return dir.FullName;
             }
@@ -63,6 +63,6 @@ public class DirectoryDeleteHygieneTests
         }
 
         throw new FileNotFoundException(
-            "Could not locate the repo root (AerFlow.slnx) by walking up from " + AppContext.BaseDirectory);
+            "Could not locate the repo root (Baton.slnx) by walking up from " + AppContext.BaseDirectory);
     }
 }

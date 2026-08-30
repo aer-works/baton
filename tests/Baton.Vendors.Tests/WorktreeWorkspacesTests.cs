@@ -1,7 +1,7 @@
 using Baton.Vendors;
-using Baton.Flow.Concurrency;
-using Baton.Flow.Domain;
-using Baton.Flow.Workspaces;
+using Baton.Concurrency;
+using Baton.Domain;
+using Baton.Workspaces;
 using Baton.Tests.Shared;
 
 namespace Baton.Vendors.Tests;

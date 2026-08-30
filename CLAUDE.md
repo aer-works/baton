@@ -1,6 +1,6 @@
 # Baton — Claude Code Instructions
 
-The product is **Baton**; "AER" stays the name of the ecosystem around it, and `aer-flow` stays this repo's engine layer. Built in .NET, that layer reads structured workflow definitions, dispatches them to Workers (via `aer-core`), and bridges outputs back to the engine. `spec/baton.md` is the system's sole behavioral register — read it first; its rulings govern everything below.
+The product is **Baton**; "AER" stays the name of the ecosystem around it, and this repo is Baton's engine layer (#1458 3b: its own identifiers — `Baton.slnx`, `pixi.toml`'s workspace name — moved off the legacy `aer-flow`/`AerFlow` spelling onto `baton`/`Baton` to match). Built in .NET, that layer reads structured workflow definitions, dispatches them to Workers (via `aer-core`), and bridges outputs back to the engine. `spec/baton.md` is the system's sole behavioral register — read it first; its rulings govern everything below.
 
 **This file is for developing Baton.** If your job is instead to *invoke* Baton — run a lane against
 some other repo and collect its output — read `docs/agents/invoking-baton.md` and stop there.
@@ -10,26 +10,32 @@ some other repo and collect its output — read `docs/agents/invoking-baton.md` 
 ## Repo structure
 
 ```
-aer-flow/
-├── src/
-│   ├── Baton.Flow/              The core execution engine and routing state machine
+baton/
+├── src/                        ONE shipped binary, three projects (#1458 3b — down from six):
+│   ├── Baton/                  The core execution engine and routing state machine (ex-Baton.Flow)
 │   ├── Baton.Vendors/          Vendor adapters (Claude/Gemini) + the built-in template catalog
-│   ├── Baton.Cli/               Command-line interface (baton run/dispatch/decide/cancel/supply/resume/status)
-│   ├── Baton.Daemon/            ASP.NET background runner — NARROWED to the 7-kept surface (#1420):
-│   │                          mutex, settings load, fleet-wide concurrency-cap apply, and
-│   │                          RoomRetentionSweep as a hosted service. No HTTP listener remains —
-│   │                          every REST/WS route, pairing, WebSocket broadcast, and sidecar
-│   │                          supervision are deleted, along with Baton.RoomSession and Baton.Sidecar
-│   │                          in full. The room-watcher (serving fleet_status/the registry), the
-│   │                          snapshot push loop, and the quota-runway ledger (spec/baton.md §7)
-│   │                          are unbuilt new work for a later PR, not something this narrowing
-│   │                          preserved — nothing in the pre-narrowing daemon actually served them
-│   ├── Baton.Mcp/               MCP server library — IMcpTool + the stdio host plumbing
-│   └── Baton.Mcp.Host/          The MCP executable workers connect to (fleet_status, baton yield,
-│                              memory proposals). PermissionGateTool/PermissionReturnShape (the
-│                              mid-lane ask machinery) are deleted (#1417, spec/baton.md §5)
+│   └── Baton.Cli/               Command-line interface (baton run/dispatch/decide/cancel/supply/
+│                              resume/status/templates), plus two folded-in verbs that used to be
+│                              their own shipped binaries:
+│                              - `baton mcp` (ex-Baton.Mcp + Baton.Mcp.Host) — the stdio MCP server
+│                                workers connect to (fleet_status, baton yield, memory proposals).
+│                                PermissionGateTool/PermissionReturnShape (the mid-lane ask
+│                                machinery) were deleted earlier (#1417, spec/baton.md §5)
+│                              - `baton daemon` (ex-Baton.Daemon) — the background runner NARROWED
+│                                to the 7-kept surface (#1420): mutex, settings load, fleet-wide
+│                                concurrency-cap apply, and RoomRetentionSweep as a hosted service.
+│                                No HTTP listener remains — every REST/WS route, pairing, WebSocket
+│                                broadcast, and sidecar supervision are deleted, along with
+│                                Baton.RoomSession and Baton.Sidecar in full. The room-watcher
+│                                (serving fleet_status/the registry), the snapshot push loop, and
+│                                the quota-runway ledger (spec/baton.md §7) are unbuilt new work for
+│                                a later PR, not something #1420's narrowing preserved
+│   └── Baton.Daemon/            CHANGELOG.md only (#1458 3b) — release-please's "simple" type has no
+│                              live package left to version, so the historical file stays at its old
+│                              path rather than being renamed or merged into another CHANGELOG; the
+│                              dir survives solely to hold it
 ├── tests/                     Unit/integration tests; live-smoke test projects (Baton.Cli.SmokeTests)
-│                              live outside AerFlow.slnx (default CI skips them) — see docs/runbooks/
+│                              live outside Baton.slnx (default CI skips them) — see docs/runbooks/
 ├── spec/
 │   └── baton.md                the sole register (§11) — system identity, dispatch contract,
 │                              gates, bindings/permissions, what's out of scope. Read it first;
@@ -41,7 +47,7 @@ aer-flow/
 │   └── core/                  aer-core, folded in as plain tracked files (#1458, native/core/PROVENANCE.md)
 │                              — the M5 .NET binding P/Invoked by the Core Dispatcher, plus its Rust source
 ├── tools/                     vendor-verify (re-runnable vendor checks; `--sentinels` runs only the
-│                              ones a design rests on), vendor-survey, Aer.VendorProbe,
+│                              ones a design rests on), vendor-survey, Baton.VendorProbe,
 │                              smoke-preflight (free gate on the smoke tasks), audit-completeness
 │                              (standing check, gate `record-once` below).
 │                              `ls tools/` is the authority — this line is a map, not a register
@@ -88,7 +94,7 @@ use it until that command has been run once per clone.
 
 Some milestones' completion gates are real, live runs against a vendor CLI (`pixi run
 smoke-claude`, `pixi run smoke-mixed-vendor`, …) — see `docs/runbooks/`. These live outside
-`AerFlow.slnx` and default CI on purpose.
+`Baton.slnx` and default CI on purpose.
 
 **Owner ruling, 2026-08-28.** Live-vendor gates may be run by an agent session when the vendor CLIs
 are **already authenticated on the machine** — disclose the expected spend before running one (see
@@ -286,7 +292,7 @@ question and the other needed a better probe.*
 ## Architecture Rules
 
 1. **Flow carries discipline, Workers carry intelligence**: The Flow engine must *never* parse conversation content, inspect prompt text, or attempt to understand LLM outputs to make routing decisions. Routing is exclusively defined by the structured workflow config and explicit tool returns from the Workers.
-2. **Adapter Isolation**: Vendor-specific quirks (e.g., Anthropic's block format vs Gemini's part format) MUST be isolated inside `Baton.Vendors`. The `Baton.Flow` core layer only understands a single, unified canonical message protocol.
+2. **Adapter Isolation**: Vendor-specific quirks (e.g., Anthropic's block format vs Gemini's part format) MUST be isolated inside `Baton.Vendors`. The `Baton` core layer only understands a single, unified canonical message protocol.
 3. **P/Invoke Layer**: Any interaction with `aer-core` for process execution must go through strict P/Invoke wrappers that match the M4 ABI (`BatonTask`, `BatonCancelHandle`, `BatonEvent`).
 4. **Credential Isolation**: AER never reads, copies, forwards, or stores a vendor credential. It spawns the vendor's own first-party CLI, which authenticates itself — AER is a keyboard, not a client. No API keys, no OAuth tokens, no OS credential store, and **AER never places a credential into a config directory**. This is the product premise made structural: AER works against **subscriptions**, not API keys, which is why both vendors' API-key-only SDKs were evaluated and rejected (`docs/vendor-doc-audit.md`). Enforced by `VendorCredentialIsolationTests` — **do not weaken that test to make something pass**; if a change appears to need a vendor key, the design is wrong, not the test.
    - **Corrected 2026-07-25 (#527).** This rule previously said "no redirecting the vendor CLIs' config directories", which was too broad and rested on a misreading. `CLAUDE_CONFIG_DIR` **is** usable: credentials live under the config root, and a fresh root is made usable by a one-time interactive `claude auth login` performed **by the operator**. That is a human signing in, not AER handling a credential, so per-worker config roots are permitted and are an available design option. What stays forbidden is AER *copying* credentials into a root, or otherwise obtaining one itself. `claude auth status` reports per-root, is structured, and spends no subscription usage — use it as a pre-dispatch readiness probe.

@@ -1,7 +1,7 @@
 using Baton.Vendors.Tests.TestSupport;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Store;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Store;
 using Xunit;
 
 namespace Baton.Vendors.Tests;

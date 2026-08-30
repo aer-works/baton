@@ -1,5 +1,5 @@
 using Baton.Vendors;
-using Baton.Flow.Domain;
+using Baton.Domain;
 
 namespace Baton.Vendors.Tests;
 

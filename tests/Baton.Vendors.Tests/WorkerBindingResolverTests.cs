@@ -1,7 +1,7 @@
 using Baton.Vendors.Tests.TestSupport;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Mutation;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Mutation;
 
 namespace Baton.Vendors.Tests;
 
@@ -278,7 +278,7 @@ public class WorkerBindingResolverTests
 
         // Both halves, because they are separately wrong-able: the binding carrying it while the
         // adapter does not is exactly the pre-#588 state, and that state looked entirely correct
-        // from Baton.Flow's side.
+        // from Baton's side.
         Assert.Equal(TimeSpan.FromMinutes(20), adapter.LastInvocation!.Timeout);
         Assert.Equal(TimeSpan.FromMinutes(20), Assert.IsType<WorkerBinding.Process>(bindings["architect"]).Timeout);
     }

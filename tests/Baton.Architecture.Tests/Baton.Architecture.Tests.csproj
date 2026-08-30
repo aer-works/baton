@@ -3,7 +3,7 @@
   <!--
     #370: the code sibling of the doc/spec guards (#367/#314/#315). Enforces CLAUDE.md's
     reference-direction architecture invariants against the actual project graph, so the room-model
-    churn (#333/#335) can't silently introduce a layering violation. IN AerFlow.slnx on purpose —
+    churn (#333/#335) can't silently introduce a layering violation. IN Baton.slnx on purpose —
     it must run in default CI (`pixi run test`) so a forbidden dependency fails the build the moment
     it is added. Mostly pure file reading over the repo, and no network — so it runs identically on
     every CI platform, the same shape as Baton.Plan.Tests.
@@ -32,7 +32,7 @@
       probe (which spends real subscription usage) — only the version flag is invoked, and only where
       a vendor CLI actually exists.
     -->
-    <ProjectReference Include="..\..\tools\Aer.VendorProbe\Aer.VendorProbe.csproj" />
+    <ProjectReference Include="..\..\tools\Baton.VendorProbe\Baton.VendorProbe.csproj" />
   </ItemGroup>
 
   <ItemGroup>

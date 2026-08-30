@@ -546,7 +546,7 @@ LANE_DIFF_OUTPUT_NAME = "branch.diff"
 def verdict_preamble() -> str:
     """The prompt half of spec §4.2's ReviewVerdict contract (#732).
 
-    The canonical field-level definition is `Baton.Flow.Domain.ReviewVerdict`; this block restates
+    The canonical field-level definition is `Baton.Domain.ReviewVerdict`; this block restates
     only what the worker must type, because the worker cannot read C# xmldoc from a prompt.
     """
     return (

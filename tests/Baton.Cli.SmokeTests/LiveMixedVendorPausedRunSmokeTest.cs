@@ -1,5 +1,5 @@
 using Baton.Vendors;
-using Baton.Flow.Domain;
+using Baton.Domain;
 
 namespace Baton.Cli.SmokeTests;
 
@@ -12,7 +12,7 @@ namespace Baton.Cli.SmokeTests;
 /// <c>claude</c> and <c>agy</c> CLIs via <see cref="WorkerAdapterRegistry.Default"/>, producing real
 /// artifacts from both vendors on disk.
 /// <para>
-/// <b>Deliberately excluded from <c>AerFlow.slnx</c></b>, exactly like <see cref="LiveClaudeRunSmokeTest"/>:
+/// <b>Deliberately excluded from <c>Baton.slnx</c></b>, exactly like <see cref="LiveClaudeRunSmokeTest"/>:
 /// this project never builds, restores, or runs as a side effect of <c>pixi run build</c>/<c>test</c>/
 /// <c>lint</c>/<c>fmt-check</c>. It requires an authenticated <c>claude</c> CLI and an authenticated
 /// <c>agy</c> CLI both on <c>PATH</c>, and outbound network access to both vendors' APIs. Invoke only

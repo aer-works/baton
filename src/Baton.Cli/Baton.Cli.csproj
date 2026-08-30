@@ -1,8 +1,17 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\Baton.Flow\Baton.Flow.csproj" />
+    <ProjectReference Include="..\Baton\Baton.csproj" />
     <ProjectReference Include="..\Baton.Vendors\Baton.Vendors.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- #1458: absorbed from the standalone Baton.Daemon project (the `baton daemon` verb).
+         Sdk.Web used to supply the generic-host types via its ASP.NET framework reference; after
+         #1420's narrowing the plain Sdk needs the hosting package explicitly. This is the one
+         PackageReference in Baton.Cli's project graph; see the CI `audit` job's own comment on
+         why its NuGet cache stays off. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -20,6 +29,13 @@
     <ToolCommandName>baton</ToolCommandName>
     <PackageId>baton</PackageId>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- #1458: absorbed Baton.Mcp.Tests/Baton.Daemon.Tests into Baton.Cli.Tests along with the
+         Mcp/Daemon sources. DaemonHost's test-only RunDaemonAsync(args, onHostBuilt) overload is
+         internal. -->
+    <InternalsVisibleTo Include="Baton.Cli.Tests" />
+  </ItemGroup>
 
   <!-- No separate native-lib packaging step needed: PackAsTool packs from a *publish* output
        (unlike plain library packing, which only picks up the primary DLL), and publish already

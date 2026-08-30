@@ -1,4 +1,5 @@
-"""Fleet Glass pusher: derive the fleet snapshot via Baton.Mcp.Host (stdio MCP) and scan ~/.baton/rooms
+"""Fleet Glass pusher: derive the fleet snapshot via `baton mcp` (stdio MCP, #1458: folded from the
+standalone Baton.Mcp.Host binary into a Baton.Cli verb) and scan ~/.baton/rooms
 for terminal-room deliverables, then POST both outbound to the Cloudflare mailbox Worker (worker.js)
 every ~25s. Moved into the repo, with the deliverables inbox added, by aer-works/baton#1413.
 
@@ -18,7 +19,7 @@ file below); a FAILED POST never persists the hash, so the next cycle retries. S
 Config comes from pusher.config.json next to this script (gitignored, machine-local -- ship
 pusher.config.example.json and copy it):
     {
-      "dll": "<path to Baton.Mcp.Host.dll>",
+      "dll": "<path to Baton.Cli.dll (baton mcp)>",
       "push_url": "https://.../push/<PUSH_TOKEN>",
       "deliver_url": "https://.../deliver/<PUSH_TOKEN>",   # optional; derived from push_url if absent
       "interval_seconds": 25,
@@ -94,7 +95,7 @@ def log(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------------------------
-# Fleet snapshot (unchanged pipeline: derive via Baton.Mcp.Host, drop stale rooms, gather underhood)
+# Fleet snapshot (unchanged pipeline: derive via `baton mcp`, drop stale rooms, gather underhood)
 # ---------------------------------------------------------------------------------------------
 
 def rpc(proc: subprocess.Popen, req_id: int, method: str, params=None):
@@ -117,8 +118,11 @@ def rpc(proc: subprocess.Popen, req_id: int, method: str, params=None):
 
 def derive_snapshot(dll: str, roots: list) -> str:
     """Returns the rooms JSON exactly as fleet_status produced it (content[0].text)."""
+    # #1458: dll now points at Baton.Cli.dll -- "mcp" is the verb that used to be the whole binary
+    # (Baton.Mcp.Host.dll's own Main). Argv shape mirrors ClaudeWorkerAdapter's own
+    # EnsureMemoryProposalMcpConfig, the canonical explanation of why the verb comes first.
     proc = subprocess.Popen(
-        ["dotnet", dll, "--fleet-status-tool"],
+        ["dotnet", dll, "mcp", "--fleet-status-tool"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True, encoding="utf-8",
     )

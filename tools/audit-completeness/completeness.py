@@ -842,7 +842,11 @@ def step13_structural_claims():
     src = os.path.join(ROOT, "src")
     on_disk = {d for d in os.listdir(src) if os.path.isdir(os.path.join(src, d))} if os.path.isdir(src) else set()
     block = re.search(r"## Repo structure.*?```(.*?)```", read("CLAUDE.md"), re.S)
-    mapped = set(re.findall(r"(Baton\.[A-Za-z.]+)/", block.group(1))) if block else set()
+    # #1458: the regex used to require a literal "." after "Baton" (every src/ project was
+    # "Baton.X"), which cannot match a bare "Baton/" entry -- the 3b consolidation introduced
+    # exactly one (src/Baton, the engine, ex-Baton.Flow). The trailing "?" is what widens the
+    # pattern to match both "Baton/" and "Baton.X/" without also matching an unrelated "Batonfoo/".
+    mapped = set(re.findall(r"(Baton(?:\.[A-Za-z.]+)?)/", block.group(1))) if block else set()
     # A check over an empty population passes vacuously — assert the anchors held before
     # trusting the comparison (found by #314's second reader).
     ok &= line("src/ directories found (a 0 here means the scan itself broke)", 1 if on_disk else 0, 1)

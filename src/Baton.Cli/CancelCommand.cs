@@ -1,11 +1,11 @@
 using Baton.Vendors;
-using Baton.Flow.Artifacts;
-using Baton.Flow.Dispatch;
-using Baton.Flow.Domain;
-using Baton.Flow.Mutation;
-using Baton.Flow.Store;
-using Baton.Flow.Templates;
-using Baton.Flow.Workspaces;
+using Baton.Artifacts;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Mutation;
+using Baton.Store;
+using Baton.Templates;
+using Baton.Workspaces;
 
 namespace Baton.Cli;
 
@@ -32,17 +32,17 @@ public static class CancelCommand
     /// The worker-binding config names an adapter not present in <paramref name="adapters"/>, for a
     /// worker the pump this call drives actually looks up (<see cref="WorkerBindingResolver.ResolveLazily"/>, #662).
     /// </exception>
-    /// <exception cref="Baton.Flow.Mutation.UnknownExecutionIdException">
+    /// <exception cref="Baton.Mutation.UnknownExecutionIdException">
     /// <paramref name="options"/>'s <c>ExecutionId</c> was never admitted for execution.
     /// </exception>
-    /// <exception cref="Baton.Flow.Concurrency.WorkflowLockedException">
+    /// <exception cref="Baton.Concurrency.WorkflowLockedException">
     /// record-once-ok: #443 src/Baton.Cli/RunCommand.cs
     /// Another Flow instance already holds this room directory's lock; see that exception's message
     /// for which holders are possible and how to reach an in-flight execution instead. (#857: this
     /// used to paraphrase the message as "most likely a live <c>baton run</c> pump" — a single cause
     /// the message itself no longer asserts, and the paraphrase is what would have gone stale.)
     /// </exception>
-    /// <exception cref="Baton.Flow.Store.FlowJournalHeldException">
+    /// <exception cref="Baton.Store.FlowJournalHeldException">
     /// #816, shared with every other command building a <c>FlowEventLogWriter</c> — see that
     /// type's own docs.
     /// </exception>

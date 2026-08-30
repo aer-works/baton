@@ -81,7 +81,7 @@ public static class RedispatchOptionsParser
         // rule DispatchOptionsParser documents: a redispatch is a NEW room, never a resume of one
         // (spec/baton.md §2).
         var uniqueName = $"redispatch-{Guid.NewGuid().ToString("N")[..8]}";
-        var freshRoomDirectoryPath = Path.Combine(Baton.Flow.Status.BatonPaths.Rooms, uniqueName);
+        var freshRoomDirectoryPath = Path.Combine(Baton.Status.BatonPaths.Rooms, uniqueName);
 
         return new RedispatchOptions(
             RoomDirectoryPath.Resolve(parentRoomDirectoryPath),

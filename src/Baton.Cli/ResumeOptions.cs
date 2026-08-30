@@ -16,7 +16,7 @@ namespace Baton.Cli;
 /// </summary>
 /// <param name="RoomDirectoryPath">An already-started room's durable state directory.</param>
 /// <param name="Worker">
-/// The worker role (<see cref="Baton.Flow.Domain.WorkflowStepDefinition.Worker"/>) to resume — the
+/// The worker role (<see cref="Baton.Domain.WorkflowStepDefinition.Worker"/>) to resume — the
 /// same name a bindings file keys the worker's entry under.
 /// </param>
 /// <param name="Message">

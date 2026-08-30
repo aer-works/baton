@@ -1,6 +1,6 @@
 [workspace]
 channels = ["conda-forge"]
-name = "aer-flow"
+name = "baton"
 # win-64 is the only support target (#1405, Windows-only). linux-64 stays solely as a dev-sandbox
 # accommodation -- Claude Code cloud sessions doing development work here -- not a support target.
 platforms = ["win-64", "linux-64"]
@@ -23,10 +23,10 @@ MSBUILDDISABLENODEREUSE = "1"
 # pixi-managed. CLAUDE.md's "Running tasks" section owns that fact and the install instructions;
 # stated here once rather than re-explained per task.
 #
-# Builds native/core's native library. The Baton.Core.csproj ProjectReference (Baton.Flow ->
+# Builds native/core's native library. The Baton.Core.csproj ProjectReference (Baton ->
 # Baton.Core, M7 Phase 6's Core Dispatcher) copies this binary from native/core/target/debug/
 # into the output directory only if it already exists there, so this must run before any dotnet
-# task that touches Baton.Flow. The fold-in (#1458 — what/why: CLAUDE.md's native/core section)
+# task that touches Baton. The fold-in (#1458 — what/why: CLAUDE.md's native/core section)
 # killed the #845 uninitialized-submodule guard this task used to run first: a fresh checkout or
 # worktree always has native/core populated now, so there is nothing left for a tripwire to catch.
 build-core = { cmd = "cargo build", cwd = "native/core" }
@@ -69,8 +69,8 @@ build = { cmd = "python tools/buildlock.py dotnet build", depends-on = ["build-c
 # absent from the inner loop, where a session runs this dozens of times.
 test = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build", depends-on = ["build-core"] }
 # Sharded test tasks for CI (#1363) — see .github/workflows/ci.yml
-test-flow = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName~Baton.Flow.Tests\"", depends-on = ["build-core"] }
-test-other = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName!~Baton.Flow.Tests\"", depends-on = ["build-core"] }
+test-flow = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName~Baton.Tests\"", depends-on = ["build-core"] }
+test-other = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName!~Baton.Tests\"", depends-on = ["build-core"] }
 # The gates-only test leg (#986): `gates` sequences this after `lint`, whose forced
 # `--no-incremental` build is the same protection `test`'s own build step buys (the "partial
 # cover" note under `lint` below) -- so building again inside the same run was pure duplication.
@@ -124,7 +124,7 @@ smoke-preflight = { cmd = "python -u tools/smoke-preflight/preflight.py" }
 # run in CI and are permanently a human action item; an agent session cannot close one. CLAUDE.md's
 # "Live-vendor smoke tests" section owns that rule and the reasoning; each task below adds only what
 # is specific to IT, and names the runbook to read first. `Baton.Cli.SmokeTests` sits outside
-# AerFlow.slnx so none of it runs as a side effect of `build`/`test`/`lint`.
+# Baton.slnx so none of it runs as a side effect of `build`/`test`/`lint`.
 #
 # Not in that set, despite the neighbouring names: smoke-preflight, vendor-survey and vendor-check
 # are all free and start no billable session -- each says so where it is defined.
@@ -151,7 +151,7 @@ smoke-mixed-vendor = { cmd = "dotnet test tests/Baton.Cli.SmokeTests --filter Fu
 # were ad-hoc shell, written once and thrown away; several rows were wrong as a result, most
 # expensively `--permission-prompt-tool`, which decision 0015 inverted its whole mechanism on.
 # See docs/runbooks/vendor-probe.md.
-vendor-probe = { cmd = "dotnet run --project tools/Aer.VendorProbe -- --out docs/vendor-capabilities.probe.json" }
+vendor-probe = { cmd = "dotnet run --project tools/Baton.VendorProbe -- --out docs/vendor-capabilities.probe.json" }
 
 # Vendor documentation survey (#527): the reading half of the same problem. `vendor-probe` above
 # measures the binaries; this mirrors both vendors' published documentation and harvests the
@@ -202,7 +202,7 @@ audit-completeness = { cmd = "python -u tools/audit-completeness/completeness.py
 # CLI-only build for the CI audit job (#887): audit-selfcheck's catalog checks read the role
 # catalog through `baton templates --json`, so the audit leg needs a built Baton.Cli. It does NOT
 # need cargo — the NATIVE lib is copy-if-exists and the templates path
-# touches no P/Invoke — but it DOES need native/core present: Baton.Flow hard-references its
+# touches no P/Invoke — but it DOES need native/core present: Baton hard-references its
 # managed binding project (Baton.Core.csproj), which is source, not a build product. Post-#1458 an
 # ordinary checkout already carries native/core, no submodule step. Deliberately no build-core
 # dependency: rust-free is what keeps the leg ~a minute.
@@ -275,7 +275,7 @@ setup-hooks = { cmd = "git config core.hooksPath .githooks" }
 # so it runs in the ordinary dev loop — `pixi run test` runs the same comparison via
 # Baton.Architecture.Tests, which is what actually makes a vendor self-update surface. Exits non-zero
 # when a CLI has moved; says so plainly, and does not pass, when no vendor CLI is present to inspect.
-vendor-check = { cmd = "python tools/buildlock.py dotnet run --project tools/Aer.VendorProbe -- --check" }
+vendor-check = { cmd = "python tools/buildlock.py dotnet run --project tools/Baton.VendorProbe -- --check" }
 
 # Dispatches one AER workflow step to a worker via a real `baton run` and prints its output -- the
 # scaffolding an ad-hoc Node one-liner stood in for three times during the #513 cross-vendor

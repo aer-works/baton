@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Baton.VendorProbe</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- In the solution as of #1088 so CI compiles it — the claude-shaped agy grammar bug survived
+         three versions because nothing ever built or tested this tool. Live probe RUNS stay human/paid;
+         only the pure helpers are unit-tested. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Baton.VendorProbe.Tests" />
+  </ItemGroup>
+
+</Project>

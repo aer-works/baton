@@ -21,7 +21,7 @@ public interface IPermissionGrantTranslator
     /// flag value. <see cref="IWorkerAdapter.Resolve"/> calls this same logic internally when an
     /// invocation carries a <see cref="WorkerInvocation.PermissionGrant"/> — this method also exists
     /// standalone so the builder UI can validate a grant before Save, without needing a full
-    /// <see cref="Baton.Flow.Domain.WorkerContract"/> to call <c>Resolve</c> with.
+    /// <see cref="Baton.Domain.WorkerContract"/> to call <c>Resolve</c> with.
     /// <para>
     /// Must refuse (return <see langword="false"/>) rather than approximate whenever the requested
     /// grant cannot be expressed exactly — granting more than requested is as much a bug here as

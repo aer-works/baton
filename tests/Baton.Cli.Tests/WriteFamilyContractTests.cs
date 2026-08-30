@@ -1,5 +1,5 @@
 using Baton.Vendors;
-using Baton.Flow.Domain;
+using Baton.Domain;
 
 namespace Baton.Cli.Tests;
 
@@ -156,7 +156,7 @@ public class WriteFamilyContractTests
             v => v.Name == HookCheckCommand.WorkspaceEnvironmentVariable);
     }
 
-    private static string? Arg(Baton.Flow.Dispatch.CoreDispatchTarget target, string flag)
+    private static string? Arg(Baton.Dispatch.CoreDispatchTarget target, string flag)
     {
         for (var i = 0; i < target.Args.Count - 1; i++)
         {
