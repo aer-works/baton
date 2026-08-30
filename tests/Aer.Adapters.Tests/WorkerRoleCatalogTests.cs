@@ -92,11 +92,23 @@ public class WorkerRoleCatalogTests
         Assert.Equal("sonnet", review.Model);
         Assert.Equal("high", review.Effort);
         Assert.False(review.Grant.WriteFiles);
-        // #1355: the read-shaped least-privilege default -- no network, no shell (the honest subset:
-        // agy has no scoped-shell-without-network grant to ask for, so this stays a flat refusal
-        // rather than a ShellCommandPatterns allowlist that would not actually enforce there).
+        // #1456 (spec/baton.md §9): review reverses #1355's flat shell refusal on claude specifically
+        // -- read-only git/gh, scoped by pattern and enforced by claude's measured --allowedTools/
+        // --disallowedTools ceiling, asserted read-only so it does not have to widen WriteFiles/
+        // NetworkAccess to satisfy PermissionGrant.CategoriesDefeatedByTheShell. NetworkAccess stays
+        // false -- gh's own reach to github.com is not the same thing as the categorical WebFetch/
+        // WebSearch grant, and ShellCommandsAreReadOnly is what lets the two coexist.
         Assert.False(review.Grant.NetworkAccess);
-        Assert.False(review.Grant.RunShellCommands);
+        Assert.True(review.Grant.RunShellCommands);
+        Assert.True(review.Grant.ShellCommandsAreReadOnly);
+        Assert.NotNull(review.Grant.ShellCommandPatterns);
+        Assert.Contains("git diff*", review.Grant.ShellCommandPatterns);
+        Assert.Contains("git log*", review.Grant.ShellCommandPatterns);
+        Assert.Contains("gh pr view*", review.Grant.ShellCommandPatterns);
+        Assert.DoesNotContain("gh api*", review.Grant.ShellCommandPatterns);
+        Assert.NotNull(review.Grant.DeniedShellCommandPatterns);
+        Assert.Contains("git commit*", review.Grant.DeniedShellCommandPatterns);
+        Assert.Contains("git push*", review.Grant.DeniedShellCommandPatterns);
         Assert.True(review.ProducesVerdict);
 
         var factCheck = WorkerRoleCatalog.For("fact-check");

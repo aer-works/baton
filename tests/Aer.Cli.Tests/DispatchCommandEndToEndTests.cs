@@ -454,7 +454,14 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
             Console.SetOut(originalOut);
 
-            Assert.Contains("Grant: read, no-write, no-shell, no-network", consoleOutput.ToString());
+            // #1456: review now carries a read-only-scoped shell grant (spec/baton.md §9), so the
+            // negated-arms baseline this test used to assert no longer describes it -- DescribeGrant
+            // spells out the scope rather than printing a bare "shell" that would understate it.
+            Assert.Contains(
+                "Grant: read, no-write, shell (scoped: git diff*, git log*, git show*, git blame*, "
+                + "git status*, git grep*, git rev-parse*, git merge-base*, git ls-files*, "
+                + "git branch --list*, gh pr view*, gh pr diff*, gh pr checks*, gh issue view*), no-network",
+                consoleOutput.ToString());
         }
         finally
         {

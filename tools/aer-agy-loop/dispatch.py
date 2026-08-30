@@ -406,6 +406,16 @@ def build_bindings(
             "RunShellCommands": s["run_shell_commands"],
             "NetworkAccess": s["network_access"],
         }
+        # #1456: only added when actually present -- an entry with these keys but empty/False values
+        # is indistinguishable from one that omits them (PermissionGrant's own constructor defaults),
+        # so there is nothing this loses by staying conditional; what it avoids is every OTHER step
+        # shape gaining three new PascalCase keys with null/false values for no reason.
+        if s.get("shell_command_patterns"):
+            permission_grant["ShellCommandPatterns"] = s["shell_command_patterns"]
+        if s.get("denied_shell_command_patterns"):
+            permission_grant["DeniedShellCommandPatterns"] = s["denied_shell_command_patterns"]
+        if s.get("shell_commands_are_read_only"):
+            permission_grant["ShellCommandsAreReadOnly"] = s["shell_commands_are_read_only"]
 
         produced_outputs = [{"Name": s["output_name"]}]
         if s.get("verdict_schema"):
@@ -687,6 +697,15 @@ BUILT_IN = {
     "run_shell_commands": False, "network_access": False,
     "timeout_minutes": 20,
     "verdict_schema": False,
+    # #1456: the review role's scoped-shell shape. None/False are the pre-#1456 default for every
+    # OTHER template -- these three only ever come from a template's own catalog entry (`aer templates
+    # --json`'s shell_command_patterns/denied_shell_command_patterns/shell_commands_are_read_only,
+    # RoleTemplateExport) or, rarely, an explicit flag on an ad-hoc dispatch. Nothing here derives a
+    # pattern list from a boolean; a mismatched pair (patterns with the flag left False) is refused by
+    # `grant_refusal` exactly like any other incoherent grant.
+    "shell_command_patterns": None,
+    "denied_shell_command_patterns": None,
+    "shell_commands_are_read_only": False,
 }
 
 
@@ -726,7 +745,15 @@ def grant_refusal(grant: dict) -> str | None:
     message that no longer tells the operator which problem they have. `selfcheck.py`'s
     `_templates_are_dispatchable` asserts that sum directly.
     """
-    if grant["run_shell_commands"] and not grant["network_access"]:
+    # #1456: the named, author-asserted escape hatch -- mirrors PermissionGrant.ShellCommandsAreReadOnly
+    # (src/Aer.Adapters/PermissionGrant.cs) exactly: WriteFiles/NetworkAccess are exemptable because the
+    # claim is "these patterns cannot write or exceed their own named network reach"; ReadFiles never
+    # is, because a read-only shell still performs reads. `.get` rather than `[...]` because this is the
+    # one grant key older callers (a hand-built dict, a hardcoded refusal_arms fixture) might omit --
+    # missing must read as False, not raise, or every pre-#1456 caller of this function breaks.
+    read_only_shell = grant.get("shell_commands_are_read_only", False)
+
+    if grant["run_shell_commands"] and not grant["network_access"] and not read_only_shell:
         # The network arm of the same #529 rule as the condition below, kept separate only because it
         # has a second reason on one vendor. THIS arm never branches on adapter -- #529 is a property
         # of the grant, not of the vendor -- so a message blaming gemini would be handed to an
@@ -737,10 +764,14 @@ def grant_refusal(grant: dict) -> str | None:
             "anyway (curl), so withholding it does not withhold it (#529), and AER refuses the same "
             "combination at bind time. On gemini it is additionally inexpressible -- "
             "--dangerously-skip-permissions is the only non-interactive shell unlock and it grants "
-            "network too. Pass --network-access, or drop --run-shell-commands."
+            "network too. Pass --network-access, --shell-commands-are-read-only (if the allowlist "
+            "genuinely cannot write or exceed its own commands' network reach), or drop "
+            "--run-shell-commands."
         )
 
-    if grant["run_shell_commands"] and not (grant["read_files"] and grant["write_files"]):
+    if grant["run_shell_commands"] and (
+        not grant["read_files"] or (not grant["write_files"] and not read_only_shell)
+    ):
         # `WorkerBindingResolver.RefuseIfShellDefeatsAWithheldCategory`'s rule, at the caller, so the
         # flags are refused before the operator commits rather than at bind time after. Network is
         # absent because the condition above already refuses shell-without-network.
@@ -748,7 +779,9 @@ def grant_refusal(grant: dict) -> str | None:
             "RunShellCommands with ReadFiles or WriteFiles withheld is refused: a granted shell "
             "reaches both anyway (cat, redirection), so withholding them does not withhold them "
             "(#529). AER refuses the same combination at bind time. Grant them, making the real "
-            "reach explicit, or drop --run-shell-commands."
+            "reach explicit; assert --shell-commands-are-read-only if the allowlist genuinely cannot "
+            "write (this does not exempt ReadFiles -- a read-only shell still reads); or drop "
+            "--run-shell-commands."
         )
 
     if (not grant["write_files"] and not grant["run_shell_commands"]
@@ -988,6 +1021,17 @@ def build_parser(argv=None) -> argparse.ArgumentParser:
     parser.add_argument("--no-run-shell-commands", dest="run_shell_commands", action="store_false")
     parser.add_argument("--network-access", action="store_true", default=None)
     parser.add_argument("--no-network-access", dest="network_access", action="store_false")
+    # #1456: the review template's own scoped-shell shape. Positive arm first (default=None), same
+    # ordering requirement the comment above --no-run-shell-commands already explains. Rarely set by
+    # hand -- a template (review) is the normal source -- but exposed for the same reason every other
+    # category flag is: an ad-hoc dispatch should not need a template just to compose one grant shape.
+    parser.add_argument("--shell-commands-are-read-only", action="store_true", default=None,
+                        help="Assert that --shell-command-patterns' allowlist cannot write a file, mutate git/gh state, or reach network beyond what the named commands need -- exempts WriteFiles/NetworkAccess (never ReadFiles) from the RunShellCommands coherence check (#529, spec/baton.md SS9). A false assertion on a pattern that actually writes/mutates is the caller's mistake, not something this flag catches.")
+    parser.add_argument("--no-shell-commands-are-read-only", dest="shell_commands_are_read_only", action="store_false")
+    parser.add_argument("--shell-command-patterns", default=None,
+                        help="Comma-separated Bash(pattern) allowlist scoping --run-shell-commands (e.g. 'git diff*,git log*'). Normally supplied by a template; ClaudeWorkerAdapter emits Bash(pattern) per entry.")
+    parser.add_argument("--denied-shell-command-patterns", default=None,
+                        help="Comma-separated standing-deny patterns (0022 DenyAlways) refused regardless of the allowlist.")
     parser.add_argument("--verdict-schema", action="store_true", default=None,
                         help="Also require a schema-checked verdict.json (spec §4.2). The review template sets this; the flag exists to add it to an ad-hoc dispatch or (--no-verdict-schema) drop it from one.")
     parser.add_argument("--no-verdict-schema", dest="verdict_schema", action="store_false")
@@ -1096,7 +1140,9 @@ def main() -> int:
         # in lane mode, so an explicit value would be silently ignored -- and a flag that looks
         # accepted but does nothing is worse than a refusal. Refuse each by name.
         for flag_name in ("adapter", "model", "effort", "timeout_minutes", "read_files",
-                          "write_files", "run_shell_commands", "network_access", "verdict_schema"):
+                          "write_files", "run_shell_commands", "network_access", "verdict_schema",
+                          "shell_commands_are_read_only", "shell_command_patterns",
+                          "denied_shell_command_patterns"):
             if getattr(args, flag_name) is not None:
                 print(f"error: --lane resolves every step's settings from its template; "
                       f"an explicit --{flag_name.replace('_', '-')} would be silently ignored, so it is refused.",
@@ -1133,6 +1179,17 @@ def main() -> int:
         for key, value in resolve(TEMPLATES.get(args.template, {})).items():
             if getattr(args, key) is None:
                 setattr(args, key, value)
+
+        # #1456: the two pattern flags arrive from --shell-command-patterns/--denied-shell-command-
+        # patterns as a comma-string (CLI convention, matching every other comma-joined channel in
+        # this codebase) but from a template (aer templates --json's shell_command_patterns) as an
+        # already-parsed JSON list -- the merge above just picked whichever source won and left its
+        # native shape alone. Normalize to a list here, once, so build_bindings never has to care
+        # which source it came from.
+        for list_key in ("shell_command_patterns", "denied_shell_command_patterns"):
+            value = getattr(args, list_key)
+            if isinstance(value, str):
+                setattr(args, list_key, [p.strip() for p in value.split(",") if p.strip()])
 
     repo_root = Path(__file__).resolve().parents[2]
     # A dry run keeps the plain repo-bin path: it never spawns the engine, and refreshing a copy
@@ -1181,6 +1238,9 @@ def main() -> int:
             "network_access": args.network_access,
             "verdict_schema": args.verdict_schema,
             "worktree_ref": args.review_ref,
+            "shell_command_patterns": args.shell_command_patterns,
+            "denied_shell_command_patterns": args.denied_shell_command_patterns,
+            "shell_commands_are_read_only": args.shell_commands_are_read_only,
         }]
     else:
         janitor_prompt_path = Path(__file__).resolve().parent / "janitor-prompt.md"

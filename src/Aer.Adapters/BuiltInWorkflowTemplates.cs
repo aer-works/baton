@@ -19,7 +19,14 @@ public sealed record RoleTemplateExport(
     [property: JsonPropertyName("timeout_minutes")] int TimeoutMinutes,
     [property: JsonPropertyName("verdict_schema")] bool VerdictSchema,
     [property: JsonPropertyName("_use")] string Use,
-    [property: JsonPropertyName("_outputs")] IReadOnlyList<RoleTemplateOutputExport> Outputs);
+    [property: JsonPropertyName("_outputs")] IReadOnlyList<RoleTemplateOutputExport> Outputs,
+    // #1456: exported so tools/aer-agy-loop/dispatch.py's own grant_refusal()/build_bindings() (the
+    // #836 shared-source pattern's other reader of this catalog) can see the same scoped-shell shape
+    // `aer dispatch review` resolves through WorkerRoleCatalog directly -- without these, `aer
+    // templates --json` would silently under-report the review role's grant to that tool.
+    [property: JsonPropertyName("shell_command_patterns")] IReadOnlyList<string>? ShellCommandPatterns = null,
+    [property: JsonPropertyName("denied_shell_command_patterns")] IReadOnlyList<string>? DeniedShellCommandPatterns = null,
+    [property: JsonPropertyName("shell_commands_are_read_only")] bool ShellCommandsAreReadOnly = false);
 
 /// <summary>
 /// Information describing a built-in workflow template (M22 Phase 1).
@@ -92,7 +99,10 @@ public static class BuiltInWorkflowTemplates
                         OutputSchema.Diff => "diff",
                         _ => "none",
                     },
-                    Instruction: o.Instruction)).ToList());
+                    Instruction: o.Instruction)).ToList(),
+                ShellCommandPatterns: role.Grant.ShellCommandPatterns,
+                DeniedShellCommandPatterns: role.Grant.DeniedShellCommandPatterns,
+                ShellCommandsAreReadOnly: role.Grant.ShellCommandsAreReadOnly);
         }
         return dict;
     }

@@ -664,6 +664,72 @@ and permission grant, resolvable at both dispatch time (writes the room's copy) 
 rule as `decide`: the bindings passed continue the room's own standing permissions — the
 composition never widens mid-room through any verb.
 
+**The `review` role's ceiling: read-only `git`/`gh`, enforced, not a flat shell refusal (#1456,
+operator-approved reversal of #1355).** `WorkerRoles.json`'s `review` entry now carries
+`run_shell_commands: true` scoped by `shell_command_patterns` to exactly: `git diff`, `log`, `show`,
+`blame`, `status`, `grep`, `rev-parse`, `merge-base`, `ls-files`, and `git branch --list`; and `gh pr
+view`/`diff`/`checks`, `gh issue view`. `denied_shell_command_patterns` closes the named mutating
+families (`commit`, `push`, `merge`, `checkout`, `switch`, `reset`, `clean`, `gh pr
+comment`/`edit`/`merge`, `gh issue comment`/`edit`, `gh label`) as a standing, subtractive "never"
+(0022's DenyAlways) on top of the allowlist. `gh api` is deliberately **not** granted: its HTTP
+method is a runtime flag/field (`-X`, `-f`), not something `ShellCommandPatternMatcher`'s glob
+prefix-match can bind to GET-only, so admitting it would be an unenforced hole wearing a scoped
+label rather than an actually-scoped grant.
+
+**The enforcement is claude's `--allowedTools`/`--disallowedTools`, and it is real for this shape —
+correcting this section's own earlier framing where it over-generalised.** §9 above (and
+`PermissionGrant.CategoriesDefeatedByTheShell`'s prior doc comment) said flatly that `--allowedTools`
+"pre-approves rather than restricts." That is accurate for **cross-tool substitution** — a withheld
+`Write` reached through a granted `Bash` (#529) — and for a **wholly omitted** tool name (#331: a
+`Bash` absent from both lists still ran). It is not the full picture for **same-tool Bash pattern
+discrimination**: `docs/vendor-capabilities.md`'s "canonical ceiling" measurement shows
+`--disallowedTools Bash(pattern)` enforced, with precedence over `--allowedTools`, and a Bash pattern
+*not* on the allow list denied outright (`Bash(npm *)` refused when only `Bash(git *)` was granted —
+the negative control that makes it a ceiling rather than a coincidence). `review`'s grant relies on
+exactly that: only the enumerated `Bash(git …*)`/`Bash(gh …*)` patterns are pre-approved (no bare
+`Bash`), and the deny-subset above is belt-and-braces on top. `PermissionGrant.ShellCommandsAreReadOnly`
+(new, #1456) is the named, author-asserted escape hatch that lets a grant like this one compose
+without widening `WriteFiles`/`NetworkAccess` just to satisfy `CategoriesDefeatedByTheShell`'s
+coherence check — see that type's own doc comment for exactly what the assertion claims and does not
+derive.
+
+**Network honesty: `review`'s `network_access` stays `false`, and `gh` reaches github.com anyway.**
+The categorical `NetworkAccess` grant (claude's `WebFetch`/`WebSearch`, arbitrary URLs) is
+deliberately **not** granted — that would be a materially larger surface than this role needs. But
+the allowed `gh pr view`/`diff`/`checks`/`gh issue view` patterns genuinely talk to github.com as
+part of doing their job. So `review`'s "no network" posture is true of the categorical grant and
+false of the worker's actual reach: state it that way rather than letting the flag imply a stronger
+guarantee than it gives. `ShellCommandsAreReadOnly` is what lets this narrow, command-scoped network
+reach coexist with `NetworkAccess: false` in the coherence check — see the field's own doc comment.
+
+**`agy` cannot express this at all, and the review role's shell reversal does not reach it.**
+`AgyWorkerAdapter.TryTranslatePermissionGrant` refuses `RunShellCommands` without `NetworkAccess`
+outright (no scoped-shell-without-network exists on that vendor, #1387 is the open ask for one) —
+unchanged by this work. `review`'s tier defaults to `claude` (`WorkerTiers.json`'s `frontier` entry),
+so a default dispatch is unaffected; an operator who overrides `--adapter agy` on `review` now gets
+`PermissionGrantUnsupportedException` at bind time — a loud refusal, not a silent drop back to
+`review`'s pre-#1456 no-shell shape. This is the same #529 coherence rule §9 already enforces
+everywhere else, applied to a grant that #1355 had previously kept flat specifically to avoid it;
+#1456 accepts the agy-side refusal as the honest cost of giving claude real scoped shell rather than
+declining both to keep the two vendors' capability identical.
+
+**Deferred, not shipped: `tools/aer-agy-loop/dispatch.py`'s own grant model was not extended to
+match.** That tool reads the same `WorkerRoles.json`/`WorkerTiers.json` catalog (`_load_worker_catalog`,
+the #836 shared-source pattern) but has its own `grant_refusal()` coherence check and its own
+`build_bindings()` permission-grant construction, neither of which knows about
+`shell_command_patterns`/`denied_shell_command_patterns`/`shell_commands_are_read_only` — those three
+fields are not in `BuiltInWorkflowTemplates.RoleTemplateExport`'s exported shape either, so
+`aer templates --json` does not carry them yet. The practical effect: `dispatch.py --template
+review` and a `--lane`'s `review` step now refuse to dispatch (`grant_refusal`'s `RunShellCommands
+without NetworkAccess`/`ReadFiles or WriteFiles withheld` rules fire, loudly, exactly as designed)
+until a follow-up teaches that tool the same `ShellCommandsAreReadOnly` exemption and threads the
+three new fields through to its own `PermissionGrant` construction. `pixi run gates`' `aer-dispatch-
+selftest` does not exercise `grant_refusal` against the catalog's `review` entry, so this refusal is
+a real, load-bearing gap in that tool rather than a gate failure — it fails closed (refuses to
+dispatch) rather than silently shipping an unscoped shell, which is why this was judged an acceptable
+deferral rather than a blocker for the `aer` CLI's own `dispatch review` path this section otherwise
+governs.
+
 ---
 
 ## §10 What is explicitly out of scope

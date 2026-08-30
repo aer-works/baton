@@ -204,11 +204,20 @@ public static class DispatchCommand
                 : "write"
             : "no-write";
 
+        // #1456: an unqualified "shell" would understate a pattern-scoped grant (review's) the same
+        // way an unqualified "write" would understate an audited one above -- this line exists so the
+        // invoking agent can relay the actual grant honestly, and "shell" alone reads as unscoped.
+        var shell = grant.RunShellCommands
+            ? grant.ShellCommandPatterns is { Count: > 0 } patterns
+                ? $"shell (scoped: {string.Join(", ", patterns)})"
+                : "shell"
+            : "no-shell";
+
         return string.Join(
             ", ",
             grant.ReadFiles ? "read" : "no-read",
             write,
-            grant.RunShellCommands ? "shell" : "no-shell",
+            shell,
             grant.NetworkAccess ? "network" : "no-network");
     }
 

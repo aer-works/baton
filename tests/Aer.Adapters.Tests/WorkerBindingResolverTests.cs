@@ -387,6 +387,38 @@ public class WorkerBindingResolverTests
     }
 
     [Fact]
+    public void ShellCommandsAreReadOnly_exempts_WriteFiles_and_NetworkAccess_from_the_refusal()
+    {
+        // #1456: the named, author-asserted escape hatch review's grant relies on -- a pattern list
+        // ALONE (the test above) still refuses, but a grant that additionally asserts the patterns
+        // are read-only resolves without widening WriteFiles/NetworkAccess just to satisfy this check.
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: false,
+            RunShellCommands: true, ShellCommandPatterns: ["git diff*"], NetworkAccess: false,
+            ShellCommandsAreReadOnly: true);
+
+        var bindings = WorkerBindingResolver.Resolve(ConfigWith(NoOutputsContract, grant), EchoAdapter());
+
+        Assert.IsType<WorkerBinding.Process>(bindings["architect"]);
+    }
+
+    [Fact]
+    public void ShellCommandsAreReadOnly_does_not_exempt_ReadFiles()
+    {
+        // A read-only-asserted shell still performs reads -- that is the point of it -- so withholding
+        // ReadFiles while granting one is still incoherent regardless of the new assertion.
+        var grant = new PermissionGrant(
+            ReadFiles: false, WriteFiles: true,
+            RunShellCommands: true, ShellCommandPatterns: ["git diff*"], NetworkAccess: true,
+            ShellCommandsAreReadOnly: true);
+
+        var thrown = Assert.Throws<IncoherentPermissionGrantException>(
+            () => WorkerBindingResolver.Resolve(ConfigWithGrant(grant), EchoAdapter()));
+
+        Assert.Equal(["ReadFiles"], thrown.WithheldCategories);
+    }
+
+    [Fact]
     public void Every_category_a_shell_defeats_is_named_at_once_rather_than_one_per_run()
     {
         // An operator fixing these one at a time would hit the refusal three times over.

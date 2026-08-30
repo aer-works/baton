@@ -67,12 +67,20 @@ public class RoleDispatchTests
     [Fact]
     public void The_binding_carries_the_roles_grant_timeout_model_and_effort()
     {
-        var binding = RoleDispatch.ToBinding(Review, "spec");
+        // Captured once: WorkerRoleCatalog.For (behind the Review property) resolves fresh on every
+        // call ("resolve, never capture" -- see its own doc comment) -- and since #1456 review's grant
+        // carries non-null ShellCommandPatterns/DeniedShellCommandPatterns lists, two separate
+        // resolutions produce reference-distinct list instances that record equality (which does not
+        // do element-wise comparison on IReadOnlyList<string>) reports as unequal, even with identical
+        // contents. Comparing binding.PermissionGrant against the SAME resolution's Grant, not a fresh
+        // one, is what this test is actually about.
+        var review = Review;
+        var binding = RoleDispatch.ToBinding(review, "spec");
 
-        Assert.Equal(Review.Grant, binding.PermissionGrant);
-        Assert.Equal(Review.Timeout, binding.Timeout);
-        Assert.Equal(Review.Model, binding.Model);
-        Assert.Equal(Review.Effort, binding.Effort);
+        Assert.Equal(review.Grant, binding.PermissionGrant);
+        Assert.Equal(review.Timeout, binding.Timeout);
+        Assert.Equal(review.Model, binding.Model);
+        Assert.Equal(review.Effort, binding.Effort);
     }
 
     /// <summary>#1442: --timeout is a fourth independent axis alongside adapter/model/effort.</summary>

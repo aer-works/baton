@@ -142,7 +142,10 @@ public static class WorkerRoleCatalog
                     ReadFiles: raw.ReadFiles,
                     WriteFiles: raw.WriteFiles,
                     RunShellCommands: raw.RunShellCommands,
-                    NetworkAccess: raw.NetworkAccess),
+                    ShellCommandPatterns: raw.ShellCommandPatterns,
+                    NetworkAccess: raw.NetworkAccess,
+                    DeniedShellCommandPatterns: raw.DeniedShellCommandPatterns,
+                    ShellCommandsAreReadOnly: raw.ShellCommandsAreReadOnly),
                 Timeout: TimeSpan.FromMinutes(raw.TimeoutMinutes),
                 ProducesVerdict: raw.VerdictSchema,
                 Purpose: raw.Purpose,
@@ -223,7 +226,15 @@ public static class WorkerRoleCatalog
         [property: JsonRequired] int TimeoutMinutes,
         [property: JsonRequired] bool VerdictSchema,
         [property: JsonRequired] string Purpose,
-        [property: JsonRequired] IReadOnlyList<RawOutput> Outputs);
+        [property: JsonRequired] IReadOnlyList<RawOutput> Outputs,
+        // Optional, unlike every field above: most roles never scope RunShellCommands and omitting
+        // these three is exactly "no patterns / not asserted read-only" — the same default
+        // PermissionGrant's own constructor already carries (#1456, spec/baton.md §9). Making them
+        // [JsonRequired] would force every existing role in the catalog to grow dead keys for a
+        // capability only `review` uses.
+        IReadOnlyList<string>? ShellCommandPatterns = null,
+        IReadOnlyList<string>? DeniedShellCommandPatterns = null,
+        bool ShellCommandsAreReadOnly = false);
 
     private sealed record RawOutput(
         [property: JsonRequired] string Name,

@@ -83,14 +83,24 @@ reads a grant at all — its phase gets no line printed, never a placeholder one
 **Read-shaped roles** (`review`, `fact-check` — both `write_files: false`) default to `claude`, whose
 withheld writes still reach the outbox through AER's own hook rather than the `AuditedNotEnforced`
 path above (`IWorkerAdapter.WithheldWritesReachTheOutbox`, `docs/decisions/0004-permission-scopes.md`)
-— that path is only entered on `--adapter agy`. Both also default to `no-shell`/`no-network`
-outright rather than a `RunShellCommands: true` scoped to a read-only command allowlist (`git log`/
-`show`/`diff`/`grep`, …): `agy`'s `IPermissionGrantTranslator` refuses `RunShellCommands` without
-`NetworkAccess` with no scoped exception (see `AgyWorkerAdapter.TryTranslatePermissionGrant`), so a
-grant narrowed by `ShellCommandPatterns` there would either be refused outright or (on a vendor that
-did resolve it) not actually be enforced as scoped — the exact "pretend allowlist" this default avoids
-shipping. A real read-command allowlist is follow-up work, tracked against whichever adapter first
-gains a shell grant that can express "these commands, no network" and have it mean something.
+— that path is only entered on `--adapter agy`.
+
+`fact-check` stays `no-shell`/`no-network` outright. `review` no longer does (#1456, reversing
+#1355's flat refusal for this role specifically — see spec/baton.md §9 for the full reasoning and the
+network-honesty caveat): it carries `run_shell_commands: true` scoped by `shell_command_patterns` to
+a read-only `git`/`gh` allowlist (`git diff`/`log`/`show`/`blame`/`status`/`grep`/`rev-parse`/
+`merge-base`/`ls-files`/`branch --list`, `gh pr view`/`diff`/`checks`, `gh issue view`), with
+`denied_shell_command_patterns` closing the mutating families and `shell_commands_are_read_only: true`
+asserting the allowlist can neither write nor exceed the network reach those specific `gh`
+subcommands need. This is enforced on claude via `--allowedTools`/`--disallowedTools` pattern
+matching — measured as a real same-tool ceiling in `docs/vendor-capabilities.md`, not mere
+pre-approval — not a `PreToolUse` hook change. `agy`'s `IPermissionGrantTranslator` still refuses
+`RunShellCommands` without `NetworkAccess` with no scoped exception, so this shell grant does not
+reach `--adapter agy`: `review` there now refuses to dispatch (`PermissionGrantUnsupportedException`)
+rather than falling back to its old no-shell shape. `tools/aer-agy-loop/dispatch.py` was not updated
+to match and will refuse `--template review`/a `--lane`'s review step until a follow-up threads the
+three new grant fields through its own `grant_refusal`/`build_bindings` — see spec/baton.md §9's own
+paragraph on this for why that was judged an acceptable deferral rather than a blocker.
 
 `advise` and `patch` are the same shape by outcome (no unscoped shell or network) but not by
 mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose` field in

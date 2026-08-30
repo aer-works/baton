@@ -492,6 +492,25 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
+    public void A_read_only_scoped_shell_grant_is_still_refused_shell_without_network_on_agy()
+    {
+        // #1456: review's exact claude-side grant shape (RunShellCommands scoped by read-only
+        // patterns, NetworkAccess false, ShellCommandsAreReadOnly true) has no equivalent here --
+        // agy's --dangerously-skip-permissions is all-or-nothing, and ShellCommandsAreReadOnly is a
+        // PermissionGrant-level coherence exemption (WorkerBindingResolver's #529 check), not a claim
+        // this adapter's own translator understands. It must still refuse, loudly, rather than
+        // silently resolving to an unscoped --dangerously-skip-permissions or a plain --mode.
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: false, RunShellCommands: true,
+            ShellCommandPatterns: ["git diff*"], NetworkAccess: false, ShellCommandsAreReadOnly: true);
+
+        var ex = Assert.Throws<PermissionGrantUnsupportedException>(() => new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract));
+
+        Assert.Equal("agy", ex.AdapterName);
+    }
+
+    [Fact]
     public void TryTranslatePermissionGrant_refuses_shell_commands_without_throwing()
     {
         var adapter = new AgyWorkerAdapter();
@@ -802,6 +821,17 @@ public class AgyWorkerAdapterTests
     /// enum or a host allowlist added later. That is not hypothetical drift: this adapter never reads
     /// the field at all, while <c>ClaudeWorkerAdapter</c> honours it, which is its own defect — #624. Widening the filter is not the fix, because a pattern list does not map onto
     /// "withheld → deny these names"; it needs a per-vendor answer.
+    /// <para>
+    /// <b><see cref="PermissionGrant.ShellCommandsAreReadOnly"/> (#1456) is a bool and is excluded by
+    /// name, not by type.</b> It is not a permission category this adapter withholds tools for at
+    /// all — it is a coherence-check assertion <c>PermissionGrant.CategoriesDefeatedByTheShell</c>/
+    /// <c>WorkerBindingResolver</c> read, consumed nowhere in <see cref="AgyWorkerAdapter"/>'s own
+    /// <c>BuildDeniedTools</c>/<c>TryTranslatePermissionGrant</c>. A "withholding arm" test for it
+    /// would be testing nothing this adapter does; see
+    /// <c>A_read_only_scoped_shell_grant_is_still_refused_shell_without_network_on_agy</c> for the
+    /// test that actually exercises this field's interaction with this adapter (it refuses, same as
+    /// any other shell-without-network grant, because agy's translator does not read the field either).
+    /// </para>
     /// </remarks>
     [Fact]
     public void Every_permission_category_has_a_withholding_arm_in_this_suite()
@@ -811,6 +841,7 @@ public class AgyWorkerAdapterTests
             .SelectMany(c => c.GetParameters())
             .Where(p => p.ParameterType == typeof(bool))
             .Select(p => p.Name!)
+            .Where(name => name != nameof(PermissionGrant.ShellCommandsAreReadOnly))
             .ToHashSet();
 
         // Each name here is asserted by a test in this file: reads and writes by the two

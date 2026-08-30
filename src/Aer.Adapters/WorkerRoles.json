@@ -40,11 +40,21 @@
     "tier": "frontier",
     "read_files": true,
     "write_files": false,
-    "run_shell_commands": false,
+    "run_shell_commands": true,
     "network_access": false,
+    "shell_command_patterns": [
+      "git diff*", "git log*", "git show*", "git blame*", "git status*", "git grep*",
+      "git rev-parse*", "git merge-base*", "git ls-files*", "git branch --list*",
+      "gh pr view*", "gh pr diff*", "gh pr checks*", "gh issue view*"
+    ],
+    "denied_shell_command_patterns": [
+      "git commit*", "git push*", "git merge*", "git checkout*", "git switch*", "git reset*", "git clean*",
+      "gh pr comment*", "gh pr edit*", "gh pr merge*", "gh issue comment*", "gh issue edit*", "gh label*"
+    ],
+    "shell_commands_are_read_only": true,
     "timeout_minutes": 25,
     "verdict_schema": true,
-    "purpose": "Adversarial review of CLAIMS -- a decision record, a measured finding, anything whose rationale asserts something. The default for any PR touching src/ or making a claim in docs/.",
+    "purpose": "Adversarial review of CLAIMS -- a decision record, a measured finding, anything whose rationale asserts something. The default for any PR touching src/ or making a claim in docs/. #1456 (spec/baton.md SS9) grants read-only git/gh so scope no longer has to be reconstructed from grep and .git ref reads: the allowlist above is claude's real, measured ceiling (docs/vendor-capabilities.md's 'canonical ceiling' -- --allowedTools patterns plus a --disallowedTools deny-subset, both enforced with precedence, not mere pre-approval) rather than a wider categorical run_shell_commands. gh api is deliberately excluded -- its method is a runtime flag/field this glob matcher cannot bind to GET-only, so admitting it would be an unenforced hole, not a scoped one. This reverses #1355's flat shell refusal for review specifically because that decision's own reasoning was agy's incoherence (no scoped-shell-without-network grant exists there); #1456 accepts that agy therefore refuses this role's grant outright (PermissionGrantUnsupportedException) rather than silently degrading it -- claude stays the tier's only adapter for review.",
     "outputs": [
       {
         "name": "report.md",
