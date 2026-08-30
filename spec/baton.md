@@ -713,22 +713,15 @@ everywhere else, applied to a grant that #1355 had previously kept flat specific
 #1456 accepts the agy-side refusal as the honest cost of giving claude real scoped shell rather than
 declining both to keep the two vendors' capability identical.
 
-**Deferred, not shipped: `tools/aer-agy-loop/dispatch.py`'s own grant model was not extended to
-match.** That tool reads the same `WorkerRoles.json`/`WorkerTiers.json` catalog (`_load_worker_catalog`,
-the #836 shared-source pattern) but has its own `grant_refusal()` coherence check and its own
-`build_bindings()` permission-grant construction, neither of which knows about
-`shell_command_patterns`/`denied_shell_command_patterns`/`shell_commands_are_read_only` — those three
-fields are not in `BuiltInWorkflowTemplates.RoleTemplateExport`'s exported shape either, so
-`aer templates --json` does not carry them yet. The practical effect: `dispatch.py --template
-review` and a `--lane`'s `review` step now refuse to dispatch (`grant_refusal`'s `RunShellCommands
-without NetworkAccess`/`ReadFiles or WriteFiles withheld` rules fire, loudly, exactly as designed)
-until a follow-up teaches that tool the same `ShellCommandsAreReadOnly` exemption and threads the
-three new fields through to its own `PermissionGrant` construction. `pixi run gates`' `aer-dispatch-
-selftest` does not exercise `grant_refusal` against the catalog's `review` entry, so this refusal is
-a real, load-bearing gap in that tool rather than a gate failure — it fails closed (refuses to
-dispatch) rather than silently shipping an unscoped shell, which is why this was judged an acceptable
-deferral rather than a blocker for the `aer` CLI's own `dispatch review` path this section otherwise
-governs.
+**`tools/aer-agy-loop/dispatch.py`'s own grant model is extended to match.** That tool reads the
+same `WorkerRoles.json`/`WorkerTiers.json` catalog (`_load_worker_catalog`, the #836 shared-source
+pattern) but has its own `grant_refusal()` coherence check and its own `build_bindings()`
+permission-grant construction. All three scoped-shell fields are exported on
+`BuiltInWorkflowTemplates.RoleTemplateExport` (so `aer templates --json` carries them),
+`grant_refusal()` mirrors `ShellCommandsAreReadOnly`'s exact exemption (WriteFiles/NetworkAccess
+only, never ReadFiles), and `build_bindings()` threads the fields into the `PermissionGrant` it
+actually sends — without that last step the tool would have dispatched `review` with an UNSCOPED
+shell grant, the silent hole the whole design refuses elsewhere.
 
 ---
 

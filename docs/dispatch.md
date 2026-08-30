@@ -94,10 +94,8 @@ spec/baton.md §9; this page does not restate them. Enforced on claude via
 pre-approval — not a `PreToolUse` hook change. `agy`'s `IPermissionGrantTranslator` still refuses
 `RunShellCommands` without `NetworkAccess` with no scoped exception, so this shell grant does not
 reach `--adapter agy`: `review` there now refuses to dispatch (`PermissionGrantUnsupportedException`)
-rather than falling back to its old no-shell shape. `tools/aer-agy-loop/dispatch.py` was not updated
-to match and will refuse `--template review`/a `--lane`'s review step until a follow-up threads the
-three new grant fields through its own `grant_refusal`/`build_bindings` — see spec/baton.md §9's own
-paragraph on this for why that was judged an acceptable deferral rather than a blocker.
+rather than falling back to its old no-shell shape. `tools/aer-agy-loop/dispatch.py` is extended to
+match — spec/baton.md §9's paragraph on that tool states what its extension covers.
 
 `advise` and `patch` are the same shape by outcome (no unscoped shell or network) but not by
 mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose` field in
