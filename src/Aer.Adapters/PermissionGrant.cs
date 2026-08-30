@@ -117,10 +117,10 @@ public sealed record PermissionGrant(
                 withheld.Add(nameof(ReadFiles));
             }
 
-            // The read-only assertion is a claim about a SPECIFIC, NAMED set of patterns — applied
-            // to an unscoped shell (null/empty ShellCommandPatterns means "any command") it is
-            // meaningless and dangerous, so it only counts when a non-empty pattern list backs it
-            // (#1456 second-reader finding 1: without this guard, RunShellCommands + the bare flag
+            // The read-only assertion is a claim about a SPECIFIC, NAMED set of patterns — against
+            // an unscoped shell (null/empty ShellCommandPatterns means "any command") it is
+            // meaningless, so it is honored only alongside a populated pattern list (#1456
+            // second-reader finding 1: without this guard, RunShellCommands + the bare flag
             // certified an unscoped shell as coherent and claude translated it to bare Bash).
             var readOnlyPatternedShell = ShellCommandsAreReadOnly && ShellCommandPatterns is { Count: > 0 };
 
