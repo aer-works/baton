@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Aer.Core/Aer.Core.csproj" />
+  <Project Path="Aer.Core.Tests/Aer.Core.Tests.csproj" />
+  <Project Path="Aer.Core.Example/Aer.Core.Example.csproj" />
+</Solution>

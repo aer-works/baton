@@ -7,11 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- aer-core .NET binding (P/Invoke wrapper over the FFI boundary), pulled in via the
-         external/aer-core submodule per CLAUDE.md's P/Invoke Layer rule. No package feed exists
-         for this yet — a single-developer project doesn't need one; `pixi run
+    <!-- aer-core .NET binding (P/Invoke wrapper over the FFI boundary), folded into native/core
+         (#1458, native/core/PROVENANCE.md) per CLAUDE.md's P/Invoke Layer rule. No package feed
+         exists for this yet — a single-developer project doesn't need one; `pixi run
          build-core` builds the native lib the ProjectReference below expects. -->
-    <ProjectReference Include="..\..\external\aer-core\bindings\dotnet\Aer.Core\Aer.Core.csproj" />
+    <ProjectReference Include="..\..\native\core\bindings\dotnet\Aer.Core\Aer.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

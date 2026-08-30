@@ -609,6 +609,12 @@ def excluded_from_comparison(path: str) -> str | None:
         return "changelog"
     if path.replace("\\", "/").startswith("docs/decisions/"):
         return "restored-decision"
+    if path.replace("\\", "/").startswith("native/core/"):
+        # #1458: the aer-core fold-in imports a byte-verified snapshot whose canonical register is
+        # the archived source repo (native/core/PROVENANCE.md names it). Its internal shared
+        # phrasing predates this repo's registers, and rewording vendored files to satisfy this
+        # gate would break snapshot fidelity — same restored-verbatim logic as docs/decisions/.
+        return "vendored-snapshot"
     return None
 
 
@@ -649,6 +655,12 @@ def main(argv: list[str]) -> int:
         del by_file[p]
     if restored:
         print(f" -- restored decision records, not compared (#1431): {len(restored)} file(s)")
+
+    vendored = sorted(p for p in by_file if excluded_from_comparison(p) == "vendored-snapshot")
+    for p in vendored:
+        del by_file[p]
+    if vendored:
+        print(f" -- vendored snapshot files, not compared (#1458): {len(vendored)} file(s)")
 
     print(f"record-once: {len(by_file)} changed file(s) against {base}")
     if not by_file:

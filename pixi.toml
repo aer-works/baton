@@ -23,12 +23,19 @@ MSBUILDDISABLENODEREUSE = "1"
 # pixi-managed. CLAUDE.md's "Running tasks" section owns that fact and the install instructions;
 # stated here once rather than re-explained per task.
 #
-# Builds external/aer-core's native library. The Aer.Core.csproj ProjectReference (Aer.Flow ->
-# Aer.Core, M7 Phase 6's Core Dispatcher) copies this binary from external/aer-core/target/debug/
+# Builds native/core's native library. The Aer.Core.csproj ProjectReference (Aer.Flow ->
+# Aer.Core, M7 Phase 6's Core Dispatcher) copies this binary from native/core/target/debug/
 # into the output directory only if it already exists there, so this must run before any dotnet
-# task that touches Aer.Flow. The guard fails loudly on an uninitialized submodule (#845) --
-# cargo alone exits 0 against the empty directory, deferring the failure downstream.
-build-core = { cmd = "python ../../tools/check-core-submodule.py && cargo build", cwd = "external/aer-core" }
+# task that touches Aer.Flow. The fold-in (#1458 — what/why: CLAUDE.md's native/core section)
+# killed the #845 uninitialized-submodule guard this task used to run first: a fresh checkout or
+# worktree always has native/core populated now, so there is nothing left for a tripwire to catch.
+build-core = { cmd = "cargo build", cwd = "native/core" }
+
+# Runs aer-core's own test suite (#1458). Folded in from aer-core's own CI (`pixi run test` there
+# meant `cargo test`, distinct from this repo's own `test` task below) -- this repo's CI only ever
+# built the native lib via build-core, never ran its tests; this task and the CI step that calls it
+# close that gap so the folded-in state is equivalent to what aer-core's own CI covered.
+test-core = { cmd = "cargo test", cwd = "native/core" }
 
 # Every `dotnet` invocation that starts MSBuild goes through tools/buildlock.py (#1402): a
 # host-global lock serializing builds across worktrees, so concurrent lanes queue at the build
@@ -73,8 +80,9 @@ test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build", depe
 # Coverage report (#199): collects per-test-project Cobertura via coverlet, merges into an HTML
 # report + text summary at artifacts/coverage/report/ (open index.html, or read Summary.txt).
 # Results are wiped first so stale collections never skew the merge. Excludes source-generated
-# code by attribute (coverage.runsettings); external/aer-core's Rust library is invisible to .NET
-# coverage by nature — its own `pixi run coverage` (cargo-llvm-cov) lives in the aer-core repo.
+# code by attribute (coverage.runsettings); native/core's Rust library is invisible to .NET
+# coverage by nature — its own `pixi run coverage` (cargo-llvm-cov) lives in native/core's own
+# pixi.toml (part of the folded-in snapshot, #1458; unused by this repo's own gates).
 coverage = { cmd = "rm -rf artifacts/coverage && dotnet tool restore && python tools/buildlock.py dotnet test --collect:\"XPlat Code Coverage\" --settings coverage.runsettings --results-directory artifacts/coverage && dotnet reportgenerator -reports:artifacts/coverage/**/coverage.cobertura.xml -targetdir:artifacts/coverage/report \"-reporttypes:Html;TextSummary\" \"-assemblyfilters:+Aer.*\"", depends-on = ["build-core"] }
 
 fmt = "python tools/buildlock.py dotnet format"
@@ -194,9 +202,10 @@ audit-completeness = { cmd = "python -u tools/audit-completeness/completeness.py
 # CLI-only build for the CI audit job (#887): audit-selfcheck's catalog checks read the role
 # catalog through `aer templates --json`, so the audit leg needs a built Aer.Cli. It does NOT
 # need cargo — the NATIVE lib is copy-if-exists and the templates path
-# touches no P/Invoke — but it DOES need the submodule checked out: Aer.Flow hard-references
-# the submodule's managed binding project (Aer.Core.csproj), which is source, not a build
-# product. Deliberately no build-core dependency: rust-free is what keeps the leg ~a minute.
+# touches no P/Invoke — but it DOES need native/core present: Aer.Flow hard-references its
+# managed binding project (Aer.Core.csproj), which is source, not a build product. Post-#1458 an
+# ordinary checkout already carries native/core, no submodule step. Deliberately no build-core
+# dependency: rust-free is what keeps the leg ~a minute.
 build-cli = { cmd = "python tools/buildlock.py dotnet build src/Aer.Cli" }
 audit-selfcheck = { cmd = "python -u tools/audit-completeness/selfcheck.py" }
 audit-controls = { cmd = "python -u tools/audit-completeness/controls.py" }

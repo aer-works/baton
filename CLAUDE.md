@@ -37,8 +37,9 @@ aer-flow/
 ├── docs/                      vendor-capabilities.md / vendor-doc-audit.md / vendor-coverage.md
 │                              (the vendor registers), runbooks/, agents/ (harness-facing docs),
 │                              dispatch.md. No decision or design register — spec/baton.md §11
-├── external/
-│   └── aer-core/              git submodule — aer-core's M5 .NET binding, P/Invoked by the Core Dispatcher
+├── native/
+│   └── core/                  aer-core, folded in as plain tracked files (#1458, native/core/PROVENANCE.md)
+│                              — the M5 .NET binding P/Invoked by the Core Dispatcher, plus its Rust source
 ├── tools/                     vendor-verify (re-runnable vendor checks; `--sentinels` runs only the
 │                              ones a design rests on), vendor-survey, Aer.VendorProbe,
 │                              smoke-preflight (free gate on the smoke tasks), audit-completeness
@@ -56,13 +57,14 @@ aer-flow/
 
 Always use `pixi run <task>`. Never invoke `dotnet` directly in CI or development.
 
-On a fresh clone, run two things: `git submodule update --init`, and **`pixi run setup-hooks`** — which
-points `core.hooksPath` at the committed `.githooks/`, so `pixi run gates-fast` runs on every push.
-The hook is in the repo but git does not use it until that command has been run once per clone.
+On a fresh clone, run **`pixi run setup-hooks`** — which points `core.hooksPath` at the committed
+`.githooks/`, so `pixi run gates-fast` runs on every push. The hook is in the repo but git does not
+use it until that command has been run once per clone.
 
 | Task | Command |
 |---|---|
-| `build-core` | `cargo build` in `external/aer-core` — builds the native lib `build`/`test`/`lint` depend on |
+| `build-core` | `cargo build` in `native/core` — builds the native lib `build`/`test`/`lint` depend on |
+| `test-core` | `cargo test` in `native/core` — aer-core's own test suite (#1458; folded into CI's `lint` job) |
 | `build` | `dotnet build` |
 | `test` | `dotnet test` |
 | `lint` | `dotnet build -warnaserror` |
@@ -76,9 +78,9 @@ The hook is in the repo but git does not use it until that command has been run 
 - Windows: `winget install Microsoft.DotNet.SDK.10`
 - Linux (Claude Code remote sandbox): `sudo apt-get install -y dotnet-sdk-10.0` directly, skipping `apt-get update` (or ignoring its exit code) — the sandbox's `deadsnakes`/`ondrej/php` PPAs are broken (403/unsigned) and make `apt-get update` fail, but that's unrelated to .NET: the `dotnet-sdk-10.0` package already resolves fine from `archive.ubuntu.com`/`security.ubuntu.com`, so `apt-get install` succeeds without a clean `update`. Installs straight to `/usr/bin/dotnet` — no `PATH` edit needed.
 
-**Rust toolchain** is required to build `external/aer-core`'s native library (`pixi run build-core`) — also installed separately, not pixi-managed, same convention as the .NET SDK above. GitHub Actions' `windows-latest` runner image already has one; for local dev, install via [rustup](https://rustup.rs).
+**Rust toolchain** is required to build `native/core`'s native library (`pixi run build-core`) — also installed separately, not pixi-managed, same convention as the .NET SDK above. GitHub Actions' `windows-latest` runner image already has one; for local dev, install via [rustup](https://rustup.rs).
 
-**aer-core** (`external/aer-core`) is a git submodule, not a package — there is no NuGet feed for it yet (a single-developer project doesn't need the auth/RID-packaging overhead a real feed would add; see AER Overview §6). `pixi run build-core` builds its native library from source via `cargo build`.
+**aer-core** (`native/core`) is folded into this repo as a snapshot import of plain tracked files (#1458, `native/core/PROVENANCE.md`) — not a package, and there is no NuGet feed for it yet (a single-developer project doesn't need the auth/RID-packaging overhead a real feed would add; see AER Overview §6). `pixi run build-core` builds its native library from source via `cargo build`.
 
 ---
 

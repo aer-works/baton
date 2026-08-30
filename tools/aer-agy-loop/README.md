@@ -147,7 +147,7 @@ to both.
 A worker that compiles and tests its own changes runs that `build+test` several processes deep in the
 dispatch tree, inside the Job Object aer-core creates for the worker subtree. That job is created with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and **no** memory or process cap
-(`external/aer-core/src/os/windows.rs`). Two consequences follow, and both point the same way:
+(`native/core/src/os/windows.rs`). Two consequences follow, and both point the same way:
 
 - The job cannot bound a runaway worker — a heavy in-tree `pixi run gates` (two MSBuild+Roslyn passes
   plus test hosts) has nothing capping what it allocates.

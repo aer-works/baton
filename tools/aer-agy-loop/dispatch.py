@@ -124,11 +124,14 @@ def refresh_published_engine(repo_root: Path) -> Path:
 def provision_worktree(repo: Path, branch: str) -> Path:
     """#717's --worktree: a dispatched worker that builds or tests never works in the live repo.
 
-    Creates (or reuses) a sibling worktree for an existing branch, then runs the two provisioning
-    steps whose absence has each burned a session: `git submodule update --init` (the native
-    binding is a submodule) and `pixi run build-core` (52 dispatch/e2e tests fail on the missing
-    native lib and none of the failures names it). Reuse requires the worktree to already be on
-    the requested branch — anything else is a wrong-repo accident, refused loudly.
+    Creates (or reuses) a sibling worktree for an existing branch, then runs the provisioning step
+    whose absence has burned a session: `pixi run build-core` (52 dispatch/e2e tests fail on the
+    missing native lib and none of the failures names it). Reuse requires the worktree to already
+    be on the requested branch — anything else is a wrong-repo accident, refused loudly.
+
+    Pre-#1458 this also ran `git submodule update --init` (the native binding, external/aer-core,
+    was a submodule); #1458 folded it into native/core as plain tracked files, so an ordinary
+    `git worktree add` now brings it along with no separate init step.
     """
     # Sanitized before it becomes a path segment: a branch like `feature/foo` would otherwise
     # smuggle a separator into the name and pathlib would silently nest the worktree one level
@@ -148,7 +151,6 @@ def provision_worktree(repo: Path, branch: str) -> Path:
         return path
 
     subprocess.run(["git", "-C", str(repo), "worktree", "add", str(path), branch], check=True)
-    subprocess.run(["git", "-C", str(path), "submodule", "update", "--init"], check=True)
     if (path / "pixi.toml").exists():
         subprocess.run(["pixi", "run", "build-core"], cwd=str(path), check=True)
     return path
@@ -1043,7 +1045,7 @@ def build_parser(argv=None) -> argparse.ArgumentParser:
                         help="Resolve the template, run every guard, generate workflow/bindings, then stop without dispatching. Spends nothing.")
     parser.add_argument("--scratch-root", type=Path, default=None, help="Where to write the generated workflow/bindings/room-dir. Default: <repo>/aer-agy-loop-scratch/runs/<uuid>.")
     parser.add_argument("--cli-path", type=Path, default=None, help="Path to Aer.Cli.exe. Default: a published COPY of the repo bin (refreshed when the repo bin is newer) so the engine never holds the repo's own binaries -- #717. Passing this flag skips the copy entirely.")
-    parser.add_argument("--worktree", metavar="BRANCH", default=None, help="Provision (or reuse) a sibling git worktree of --working-directory on this existing branch -- submodules initialised, native lib built -- and dispatch there instead. #717: a worker that builds or tests never works in the live repo.")
+    parser.add_argument("--worktree", metavar="BRANCH", default=None, help="Provision (or reuse) a sibling git worktree of --working-directory on this existing branch -- native lib built -- and dispatch there instead. #717: a worker that builds or tests never works in the live repo.")
     parser.add_argument("--review-ref", metavar="REF", default=None, help="Review a ref without checking it out: the ENGINE provisions a read-only worktree of --working-directory (defaults to the current directory) at REF and tears it down on completion (#669). No native build -- for reviews, which do not build. Mutually exclusive with --worktree; --working-directory becomes optional.")
     return parser
 

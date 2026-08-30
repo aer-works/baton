@@ -46,6 +46,14 @@ docs/vendor-capabilities.md
 docs/vendor-capabilities.probe.md
 docs/vendor-coverage.md
 docs/vendor-doc-audit.md
+native/core/CHANGELOG.md
+native/core/CLAUDE.md
+native/core/IMPLEMENTATION_PLAN.md
+native/core/PROVENANCE.md
+native/core/README.md
+native/core/spec/AER Overview.md
+native/core/spec/aer-core-behavioral-spec-v1.0.md
+native/core/spec/aer-core-behavioral-spec-v1.1.md
 spec/baton.md
 src/Aer.Adapters/CHANGELOG.md
 src/Aer.Cli/CHANGELOG.md

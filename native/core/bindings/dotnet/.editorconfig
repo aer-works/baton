@@ -1,0 +1,32 @@
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+# Promote all IDE style diagnostics to warnings so pixi run dotnet-lint matches the IDE
+dotnet_analyzer_diagnostic.category-Style.severity = warning
+# Already using file-scoped namespaces everywhere.
+dotnet_diagnostic.IDE0160.severity = none
+# Expression-bodied members are valid style and are used intentionally.
+dotnet_diagnostic.IDE0022.severity = none
+
+# ── NativeMethods.cs ─────────────────────────────────────────────────────────
+[Aer.Core/NativeMethods.cs]
+# P/Invoke method names mirror the C ABI exactly; snake_case is intentional here.
+dotnet_diagnostic.IDE1006.severity = none
+# Factory methods (aer_task_new, aer_task_make_cancel_handle) must stay as DllImport
+# because LibraryImport cannot marshal SafeHandle as a return type (SYSLIB1051).
+dotnet_diagnostic.SYSLIB1054.severity = none
+# [MarshalAs(UnmanagedType.LPUTF8Str)] already specifies UTF-8 marshaling explicitly;
+# adding CharSet would be incorrect (CharSet controls ANSI/Unicode, not UTF-8).
+dotnet_diagnostic.CA2101.severity = none
+
+# ── Test projects ─────────────────────────────────────────────────────────────
+[Aer.Core.Tests/*.cs]
+# xUnit naming convention uses underscores (Method_Behavior_Condition).
+dotnet_diagnostic.CA1707.severity = none
+# Test classes and methods do not need XML doc comments.
+dotnet_diagnostic.CS1591.severity = none

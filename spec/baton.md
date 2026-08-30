@@ -808,8 +808,11 @@ reach backward to reconstruct a numbering scheme that no longer exists.
 The owner runs everything on one Windows machine. Build, test, CI, and packaging are Windows-only:
 no ubuntu/macos CI legs, no non-Windows pixi platforms shipped as a support target, and no per-OS
 conditional kept alive for a platform that no longer builds (#1405). This is a statement about what
-this repo ships and is verified on, not about `external/aer-core` (a separate repo, pinned by SHA,
-out of this decision's scope) or about a vendor CLI's own OS support (`docs/vendor-doc-audit.md`,
+this repo ships and is verified on — which, since #1458 folded aer-core into this repo as
+`native/core`, now includes its Rust build and test, run Windows-only through this repo's own CI
+like everything else. It is not a statement about the archived `aer-works/aer-core` repo `native/core`
+was imported from (a separate, now-frozen repo whose own historical CI is out of this decision's
+scope) or about a vendor CLI's own OS support (`docs/vendor-doc-audit.md`,
 `docs/vendor-capabilities.md`).
 
 **Carve-out, so this entry and `pixi.toml` never contradict each other:** `pixi.toml`'s
