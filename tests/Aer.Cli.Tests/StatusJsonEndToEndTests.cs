@@ -226,10 +226,10 @@ public class StatusJsonEndToEndTests
     {
         // #1377: a human `aer decide reject` over a succeeded, paused step carries no failure event
         // (StateProjector never sets LatestFailureReason for a Reject), so `error` stays null exactly
-        // as it would for a healthy room -- `rejected` is the field that lets a machine caller tell
-        // "a person said no" apart from "the worker crashed and nobody recorded why" without parsing
-        // the (here, absent) error prose. `steps[].state` already reads "Rejected", a distinct token
-        // from "Failed" -- pinned here too, so both halves of the contract are proven together.
+        // as it would for a healthy room -- `rejected` is what makes the outcome branchable (the
+        // contract's rationale lives on WorkflowStatusView.Rejected). `steps[].state` already reads
+        // "Rejected", a distinct token from "Failed" -- pinned here too, so both halves of the
+        // contract are proven together.
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-rejected-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try

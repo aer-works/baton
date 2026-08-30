@@ -32,9 +32,8 @@ public sealed record WorkflowStatusStepView(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     ExecutionUsageView? LinkedFromUsage = null,
     // #1375: the SAME EngineLivenessProbe the human `aer status` rendering consults
-    // (StatusCommand.FormatStepStatus), never a second probe -- present only for a step this state
-    // projection itself calls Running, mirroring FormatStepStatus's own gate (a Paused step's engine
-    // has legitimately exited; a Pending step has no execution yet, so neither claims liveness).
+    // (StatusCommand.FormatStepStatus), never a second probe -- present only for a Running step,
+    // FormatStepStatus's own gate (why non-Running steps claim nothing: spec/baton.md §3).
     // "alive" | "dead" | "unknown", lower-cased from EngineLivenessStatus; omitted, never null, for
     // every non-Running step so the field's mere presence already answers "does liveness apply here".
     [property: JsonPropertyName("liveness")]
@@ -151,8 +150,8 @@ public static class WorkflowStatusProjector
                 : null;
 
             // Probe ONLY steps this projection itself calls Running -- same gate as
-            // FormatStepStatus's own (a Paused step's engine has legitimately exited; a step with no
-            // execution yet has nothing to probe). Unlike FormatStepStatus, a step with no recorded
+            // FormatStepStatus's own; the record parameter's comment above says why the gate exists.
+            // Unlike FormatStepStatus, a step with no recorded
             // ExecutionRequestAccepted identity still gets probed -- Probe(null, null) itself already
             // reads as EngineLivenessStatus.Unknown, so this always renders a value for a Running step
             // rather than silently omitting the field on a miss (review finding: the two renderings
