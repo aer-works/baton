@@ -317,13 +317,22 @@ snapshots plus `flow.jsonl` when no sentinel exists yet (`FleetStatusTool.cs`). 
 `AerPaths.Rooms` plus any caller-supplied extra `roots` and does not itself depend on a running daemon
 process — it opens files directly (`FleetStatusTool.cs`).
 
-**Two-level drill-down, both **(new build)** levels of `fleet_status` itself, never a second
-application:** the tool's per-room summary (level one) is what exists today; a room's own `stdout`
-tail and `flow.jsonl` timeline (level two, for debugging a specific lane) does not exist at HEAD — the
-tool currently reports only the terminal sentinel or a `state`+`error` projection
-(`FleetStatusTool.cs`), never live stdout. This settles the prior draft's open question:
-there is no separate diagnostic UI, dev or otherwise. Fleet Glass **is** the diagnostic story, and its
-second level is scoped work against the same MCP tool, not a new surface (tracked: #1427).
+**Two-level drill-down, both levels of `fleet_status`'s MCP host, never a second application:** the
+tool's per-room summary (level one, `fleet_status` itself) is what exists today. Level two — a room's
+own `stdout` tail and `flow.jsonl` timeline, for debugging a specific lane — is now `room_detail`
+(`src/Aer.Mcp.Host/RoomDetailTool.cs`, #1427): a sibling tool in the same MCP host, gated by its own
+`--room-detail-tool` flag in `Program.cs`, resolving a room by name or absolute path and returning a
+bounded (64 KiB) tail of an execution's `.stdout.log` plus a bounded (500-entry tail) projection of
+`flow.jsonl` (event type and writer-stamped timestamp per line, never the raw event payloads — both
+halves are capped for the same reason `fleet_status`'s own output stays MCP-friendly). Which
+execution's stdout: the most recently written one by default (a heuristic that can name the wrong
+lane after a retry, since the newest write is not necessarily the one being debugged), or a
+caller-pinned `execution` id to bypass the heuristic. Same direct-file-read posture as level one — no
+daemon dependency, and a missing or still-running room, a held-open ledger, or a malformed line all
+degrade to a partial view plus a `note`/`unreadable` marker, never a throw. This settles the prior
+draft's open question: there is no separate diagnostic UI, dev or otherwise. Fleet Glass **is** the
+diagnostic story, and its second level is scoped work against the same MCP tool surface, not a new
+one.
 
 The outbound push mailbox — the mechanism that would notify a harness of a state-change event without
 polling — is **(new build)**. There is no `push`, `mailbox`, or outbound-webhook-shaped
@@ -372,6 +381,35 @@ note on `linkedFrom` and `timestamp` for the concrete divergence.
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found today. §8
 depends on this fact directly.
+
+### §6 schema — `room_detail`
+
+Input:
+```
+{
+  "room": string,                 // room name (resolved under AerPaths.Rooms + roots) or an absolute path
+  "roots"?: [string],             // extra directories to search when 'room' is a name
+  "execution"?: string            // pin a specific execution id's stdout; default: most recently written
+}
+```
+Output:
+```
+{
+  "name": string,
+  "path"?: string,
+  "stdout"?: { "text": string, "truncated": boolean, "totalBytes": number, "source": string, "readError"?: string },
+  "timeline"?: { "entries": [ { "type": string, "timestamp"?: string, "detail"?: string } ],
+                 "truncated": boolean, "totalEntries": number },
+  "error"?: string,
+  "note"?: string
+}
+```
+(`RoomDetailTool.cs`). Optional fields are omitted, never emitted `null`, the same convention as
+`fleet_status`'s shapes. `stdout` is absent (not an error) for a room with no captured output yet;
+`timeline` is absent for a room with no `flow.jsonl` yet (pre-ledger). A held-open ledger or a
+malformed line surfaces as a single `timeline.entries` item with `"type": "unreadable"` and a
+`detail` message, rather than failing the call. `error` is set only when `room` itself does not
+resolve to a directory.
 
 ---
 

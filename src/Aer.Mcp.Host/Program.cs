@@ -7,6 +7,7 @@ var captureFilePath = ParseArgValue(args, "--capture-file");
 // env-inheritance mechanism this flag rests on). This flag only says whether to enable the tool.
 var enableMemoryProposalTool = args.Contains("--memory-proposal-tool");
 var enableFleetStatusTool = args.Contains("--fleet-status-tool");
+var enableRoomDetailTool = args.Contains("--room-detail-tool");
 
 List<IMcpTool> tools = [];
 if (captureFilePath is not null)
@@ -17,6 +18,11 @@ if (captureFilePath is not null)
 if (enableFleetStatusTool)
 {
     tools.Add(new FleetStatusTool());
+}
+
+if (enableRoomDetailTool)
+{
+    tools.Add(new RoomDetailTool());
 }
 
 if (enableMemoryProposalTool)
@@ -35,7 +41,7 @@ if (enableMemoryProposalTool)
 
 if (tools.Count == 0)
 {
-    Console.Error.WriteLine("Usage: Aer.Mcp.Host [--capture-file <path>] [--memory-proposal-tool] [--fleet-status-tool]");
+    Console.Error.WriteLine("Usage: Aer.Mcp.Host [--capture-file <path>] [--memory-proposal-tool] [--fleet-status-tool] [--room-detail-tool]");
     return 1;
 }
 
