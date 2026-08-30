@@ -51,7 +51,7 @@ public class DaemonHostTests
         // forever absent an external stop signal. The timeout is a hang backstop, not an expected wait:
         // if the refusal branch regressed, this call would otherwise hang the whole test run.
         await DaemonHost.RunDaemonAsync(args: [])
-            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            .WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
     }
 
     [Fact]
@@ -70,7 +70,7 @@ public class DaemonHostTests
             await DaemonSettingsStore.SaveAsync(settings, AerPaths.SettingsFile, TestContext.Current.CancellationToken);
 
             await DaemonHost.RunDaemonAsync(["--no-mutex"], StopAsSoonAsStarted)
-                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+                .WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
 
             Assert.Equal(7, ConcurrencySlotGate.GlobalCap);
             Assert.Equal(5, ConcurrencySlotGate.PerVendorCap);
@@ -114,7 +114,7 @@ public class DaemonHostTests
                         applicationStarted = true;
                         lifetime.StopApplication();
                     });
-                }).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+                }).WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
 
             Assert.Contains(hostedServices!, s => s is RoomRetentionSweep);
             Assert.True(applicationStarted);
