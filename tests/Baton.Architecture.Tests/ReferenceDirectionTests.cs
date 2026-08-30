@@ -21,22 +21,24 @@ public class ReferenceDirectionTests
 {
     // Baton is the pure engine (CLAUDE.md rule 2: the core layer understands only the single,
     // unified canonical protocol). It may depend on the aer-core binding and the framework — never on
-    // a vendor adapter, a client, or the daemon. This is the load-bearing invariant #335 rides: the
+    // a vendor adapter or a client. This is the load-bearing invariant #335 rides: the
     // engine needs no changes for multi-task precisely because nothing above it reaches back in.
+    // #1458: Baton.Daemon dropped from the forbidden list -- it is no longer a project (folded into
+    // Baton.Cli as a verb), so it can never appear as a ProjectReference to begin with.
     [Fact]
-    public void Baton_Flow_depends_on_nothing_above_the_engine()
+    public void Baton_depends_on_nothing_above_the_engine()
         => AssertNoForbiddenReferences(
             project: "Baton",
-            forbiddenProjects: ["Baton.Vendors", "Baton.Daemon", "Baton.Cli"],
+            forbiddenProjects: ["Baton.Vendors", "Baton.Cli"],
             forbiddenPackagePrefixes: ["Avalonia", "Microsoft.AspNetCore"]);
 
     // Adapter isolation (CLAUDE.md rule 2): vendor quirks live in Baton.Vendors, which depends only
-    // downward on the engine — never up into a client or the daemon.
+    // downward on the engine — never up into a client.
     [Fact]
-    public void Baton_Vendors_does_not_depend_on_clients_or_the_daemon()
+    public void Baton_Vendors_does_not_depend_on_clients()
         => AssertNoForbiddenReferences(
             project: "Baton.Vendors",
-            forbiddenProjects: ["Baton.Daemon", "Baton.Cli"],
+            forbiddenProjects: ["Baton.Cli"],
             forbiddenPackagePrefixes: []);
 
     // #543 added a positive-inclusion check here: Baton.Daemon transitively reached Baton.Cli (through
