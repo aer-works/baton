@@ -42,6 +42,8 @@ OVERLAP = [
     "audit-speccitations-selftest",
     "audit-commentspecrefs",
     "audit-commentspecrefs-selftest",
+    "audit-clitripwire",
+    "audit-clitripwire-selftest",
     "flake-watch-selftest",
     # #1402: pure python against an isolated temp lock file -- starts no MSBuild and never touches
     # the real build lock, so it cannot interfere with the build phase it overlaps.
