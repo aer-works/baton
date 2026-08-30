@@ -1,8 +1,5 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using Aer.Flow.Domain;
-using Aer.Flow.Store;
-using Aer.Flow.Templates;
 
 namespace Aer.Adapters;
 
@@ -88,29 +85,6 @@ public sealed record SessionMetadata(
     // synthesized on load, since a synthesized participant would have no corresponding WorkerJoined
     // journal entry.
     List<Participant>? Participants = null);
-
-public sealed record StartSessionRequest(
-    string? Adapter = null,
-    string? Model = null,
-    string? RoomName = null,
-    string? DirectoryPath = null,
-    string? WorkingDirectory = null,
-    string? InitialMessage = null,
-    int? SafetyCeiling = null,
-    PermissionGrant? PermissionGrant = null);
-
-public sealed record SendSessionMessageRequest(
-    string? SessionId = null,
-    string? DirectoryPath = null,
-    string Message = "",
-    string? Adapter = null,
-    string? Model = null,
-    // 0054 §4/#1307: the sticky-tag chip's addressee. Null (the default, and every caller before
-    // this field existed) is an untagged send -- "posted to the room" -- which /api/sessions/send
-    // resolves daemon-side to the current orchestrator (never stamped back onto the recorded turn;
-    // see SessionTurn.TargetParticipantId's own remarks). A non-null value must name an existing
-    // participant or the endpoint refuses with 400.
-    WorkerId? TargetParticipantId = null);
 
 public static class InteractiveSessionMaterializer
 {
@@ -300,20 +274,6 @@ public static class InteractiveSessionMaterializer
     /// </summary>
     public const string CustomMode = "custom";
 
-    /// <summary>
-    /// The directory a session's vendor process runs in (its cwd). When the session is attached to a
-    /// codebase that working directory is used; when it is directory-less the process runs in the
-    /// session's own directory (its room dir under <c>~/.aer/rooms/</c>) rather than inheriting the
-    /// daemon/app cwd (#407). Defense in depth alongside <see cref="DefaultGrantForWorkingDirectory"/>:
-    /// a directory-less session is already fail-closed (#321), so it cannot act on any cwd today, but
-    /// starting it in a neutral, session-owned dir means a future tool or vector that reads the cwd
-    /// independent of the file-tool grant still finds nothing nobody chose. The grant is deliberately
-    /// still derived from the (absent) working directory, never from this run directory — running in
-    /// its own dir must never widen what a directory-less session is allowed to do.
-    /// </summary>
-    public static string ResolveRunDirectory(string? workingDirectory, string sessionDirectoryPath) =>
-        string.IsNullOrWhiteSpace(workingDirectory) ? sessionDirectoryPath : workingDirectory;
-
     public static (WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings, SessionMetadata Metadata) Materialize(
         string sessionId,
         string roomDirectoryPath,
@@ -452,285 +412,21 @@ public static class InteractiveSessionMaterializer
     }
 
     /// <summary>
-    /// Computes a session's directory path the same way for every caller -- the daemon's
-    /// POST /api/sessions/start handler and the desktop's in-process fallback both need this, and
-    /// disagreeing between them is exactly the bug that made a session creatable but unreachable by
-    /// id (fixed in Aer.Daemon.Program's session lookups). A caller-supplied <paramref name="roomName"/>
-    /// produces a differently-named folder than the "session-{id}" fallback used when it is omitted.
-    /// </summary>
-    public static string ResolveRoomDirectoryPath(string sessionId, string? roomName, string? directoryPathOverride)
-    {
-        if (directoryPathOverride != null && Path.IsPathRooted(directoryPathOverride))
-        {
-            return directoryPathOverride;
-        }
-
-        var baseRoomsDir = AerPaths.Rooms;
-        var folderName = string.IsNullOrWhiteSpace(roomName) ? $"session-{sessionId}" : roomName.Trim();
-        return Path.GetFullPath(Path.Combine(baseRoomsDir, folderName));
-    }
-
-    public static async Task<SessionMetadata> MaterializeToDirectoryAsync(
-        string sessionId,
-        string roomDirectoryPath,
-        string adapter,
-        string? model = null,
-        string? workingDirectory = null,
-        string? initialMessage = null,
-        int safetyCeiling = DefaultSafetyCeiling,
-        PermissionGrant? grant = null,
-        CancellationToken cancellationToken = default)
-    {
-        var workflowFilePath = Path.Combine(roomDirectoryPath, "workflow.json");
-        if (File.Exists(workflowFilePath))
-        {
-            throw new RoomDirectoryAlreadyExistsException(
-                RoomLifecycle.IsArchived(roomDirectoryPath)
-                    ? $"A room already exists at '{roomDirectoryPath}' and is archived. Unarchive or delete it before reusing this name."
-                    : $"A room already exists at '{roomDirectoryPath}'. Choose a different room/session name.");
-        }
-
-        Directory.CreateDirectory(roomDirectoryPath);
-        var (definition, bindings, metadata) = Materialize(
-            sessionId, roomDirectoryPath, adapter, model, workingDirectory, initialMessage, safetyCeiling, grant);
-
-        var bindingsFilePath = AerPaths.RoomBindingsFile(roomDirectoryPath);
-        var metadataFilePath = Path.Combine(roomDirectoryPath, ".aer", AerPaths.RoomMetadataFileName);
-
-        await WorkflowDefinitionWriter.SaveToFileAsync(definition, workflowFilePath, cancellationToken).ConfigureAwait(false);
-        await WorkerBindingConfigWriter.SaveToFileAsync(bindings, bindingsFilePath, cancellationToken).ConfigureAwait(false);
-
-        var aerDir = Path.Combine(roomDirectoryPath, ".aer");
-        Directory.CreateDirectory(aerDir);
-        await File.WriteAllTextAsync(Path.Combine(aerDir, "workflow-path"), workflowFilePath, cancellationToken).ConfigureAwait(false);
-        await File.WriteAllTextAsync(Path.Combine(aerDir, "bindings-path"), bindingsFilePath, cancellationToken).ConfigureAwait(false);
-
-        await SaveMetadataAsync(metadata, metadataFilePath, cancellationToken).ConfigureAwait(false);
-
-        // 0054 §1/§6, #1305: journal the first participant's join and its implicit orchestrator
-        // assignment to room.jsonl, the same durable event log grants and escalations already use
-        // for this room. After the room.json write above, matching that file's own "the metadata is
-        // the source of truth callers read back; the journal is the derived history" ordering.
-        //
-        // An IOException here must not fail room creation (second-reader finding): by this point
-        // workflow.json already exists, so a thrown journal error would tell the caller creation
-        // failed while the existence check at the top of this method permanently blocks retrying the
-        // same room name -- an orphaned room nobody can use or recreate. The participant lives
-        // durably in room.json above; a missed journal line costs only this event's presence in the
-        // derived history, so warn and proceed.
-        var firstParticipant = metadata.Participants?.FirstOrDefault();
-        if (firstParticipant != null)
-        {
-            try
-            {
-                var roomLogPath = Path.Combine(roomDirectoryPath, "room.jsonl");
-                await using var writer = new RoomEventLogWriter(roomLogPath);
-                var joinedAt = DateTimeOffset.UtcNow;
-                await writer.AppendAsync(
-                    new RoomEvent.WorkerJoined(
-                        firstParticipant.Id, firstParticipant.Name, firstParticipant.Vendor,
-                        firstParticipant.Model, firstParticipant.Effort, joinedAt),
-                    cancellationToken).ConfigureAwait(false);
-                await writer.AppendAsync(
-                    new RoomEvent.OrchestratorAssigned(firstParticipant.Id, joinedAt),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch (IOException ex)
-            {
-                Console.Error.WriteLine(
-                    $"Could not journal the first participant's join for '{roomDirectoryPath}': {ex.Message}");
-            }
-        }
-
-        return metadata;
-    }
-
-    /// <summary>
-    /// How many times <see cref="SaveMetadataAsync"/> and <see cref="LoadMetadataAsync"/> retry a
-    /// sharing-violation before giving up, and how long they wait between attempts. Small on
-    /// purpose: the contended window is a single file replace, so anything that outlasts a handful
-    /// of these is a real fault rather than contention, and should surface as one.
+    /// How many times <see cref="ReadRoomKind"/>'s retry loop attempts a sharing-violation before
+    /// giving up, and how long it waits between attempts. Small on purpose: the contended window is a
+    /// single file replace, so anything that outlasts a handful of these is a real fault rather than
+    /// contention, and should surface as one.
     /// </summary>
     private const int MetadataIoAttempts = 12;
     private static readonly TimeSpan MetadataIoRetryDelay = TimeSpan.FromMilliseconds(25);
 
     /// <summary>
-    /// #1319: per-room mutex guarding every <see cref="SessionMetadata"/> read-modify-write --
-    /// <c>room.json</c> had no lock of its own before this; its safety rested entirely on
-    /// <c>Aer.Daemon.Program</c>'s <c>SessionTurnLockFor</c> serializing every chat-turn endpoint's
-    /// whole turn. Keyed via <see cref="AerPaths.RecordKey"/>/<see cref="AerPaths.RecordKeyComparer"/>,
-    /// the same normalisation <c>SessionTurnLockFor</c> itself uses, so two spellings of one directory
-    /// can never each acquire their own semaphore. Wherever a caller already holds the turn lock, this
-    /// one must nest INSIDE it, never the reverse -- see <see cref="UpdateMetadataAsync"/> for why it
-    /// is safe to acquire on its own where no turn lock is held at all.
-    /// </summary>
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> MetadataMutexes =
-        new(AerPaths.RecordKeyComparer);
-
-    private static SemaphoreSlim MetadataMutexFor(string roomDirectoryPath) =>
-        MetadataMutexes.GetOrAdd(AerPaths.RecordKey(roomDirectoryPath), _ => new SemaphoreSlim(1, 1));
-
-    /// <summary>
-    /// The one write path production code has to change an existing room's <c>room.json</c>: loads
-    /// the current file under this room's metadata mutex, applies <paramref name="mutate"/> to it, and
-    /// saves the result before releasing -- so two concurrent load-mutate-saves against the same room
-    /// can no longer interleave and silently drop one caller's change (#1319, PR A of #1306's
-    /// three-way split). <see cref="SaveMetadataAsync"/> is <c>internal</c> precisely so this is the
-    /// only write path reachable from <c>Aer.Daemon</c> endpoint code; the raw primitive stays
-    /// reachable in-assembly for <see cref="MaterializeToDirectoryAsync"/> (a brand-new file, not a
-    /// read-modify-write) and for test fixtures that need to seed an exact starting state.
-    /// <para>
-    /// Held only around the load-mutate-save, never across a vendor dispatch -- a turn-completion
-    /// caller reads metadata once at dispatch start (outside this lock; that read feeds decisions the
-    /// whole turn needs, long before there is anything to save) and folds its final write through here
-    /// once the vendor call returns, so this mutex's held duration is a single file replace, not the
-    /// length of a CLI invocation.
-    /// </para>
-    /// <para>
-    /// <paramref name="fallback"/> exists for the one legitimate case a fresh load returns null: a
-    /// caller that already holds its own pre-lock snapshot, mirroring the "current ?? metadata" idiom
-    /// every call site used before this helper existed. Neither the fresh load nor the fallback having
-    /// anything throws <see cref="InvalidOperationException"/> -- callers are expected to have already
-    /// confirmed the room exists before reaching this helper.
-    /// </para>
-    /// </summary>
-    public static async Task<SessionMetadata> UpdateMetadataAsync(
-        string roomDirectoryPath,
-        Func<SessionMetadata, SessionMetadata> mutate,
-        SessionMetadata? fallback = null,
-        CancellationToken cancellationToken = default)
-    {
-        var metadataFilePath = Path.Combine(roomDirectoryPath, ".aer", AerPaths.RoomMetadataFileName);
-        var mutex = MetadataMutexFor(roomDirectoryPath);
-        await mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var current = await LoadMetadataAsync(metadataFilePath, cancellationToken).ConfigureAwait(false)
-                ?? fallback
-                ?? throw new InvalidOperationException(
-                    $"'{roomDirectoryPath}' is not an interactive room directory (no room.json).");
-
-            var updated = mutate(current);
-            await SaveMetadataAsync(updated, metadataFilePath, cancellationToken).ConfigureAwait(false);
-            return updated;
-        }
-        finally
-        {
-            mutex.Release();
-        }
-    }
-
-    /// <summary>
-    /// Writes an interactive room's <c>room.json</c> so that a concurrent reader can neither fail the write nor observe
-    /// a half-written file.
-    /// <para>
-    /// Issue #341: this used a plain <c>File.WriteAllTextAsync</c> against the live path while
-    /// <see cref="LoadMetadataAsync"/> used a plain <c>File.ReadAllTextAsync</c>. <c>ReadAllText</c>
-    /// opens with <c>FileShare.Read</c>, which denies writers -- so on Windows any client polling
-    /// <c>GET /api/sessions/{id}</c> while a turn finished made the turn's own metadata write throw
-    /// <c>IOException</c>. That throw happened *after* the Supersede decision had already been
-    /// recorded, so the workflow was healthy and only <c>TurnCount</c> never persisted: the chat
-    /// stalled forever with an intact event log, and the exception died in a fire-and-forget task.
-    /// POSIX permits the concurrent open, which is why this only ever reproduced on Windows.
-    /// </para>
-    /// <para>
-    /// The fix is on the reader: once <see cref="LoadMetadataAsync"/> stops denying write access,
-    /// this ordinary write succeeds. A brief retry stays for the genuinely concurrent case (two
-    /// turns finishing at once), since the writer's own <c>FileShare.Read</c> excludes a second
-    /// writer. Replace-via-temp was tried first and is worse here: Windows'
-    /// <c>MOVEFILE_REPLACE_EXISTING</c> needs delete rights on the target and throws
-    /// <see cref="UnauthorizedAccessException"/> against a live reader, trading one race for another.
-    /// </para>
-    /// <para>
-    /// #1319: <c>internal</c> on purpose -- this is the raw, RMW-unsafe primitive. Production code
-    /// outside this assembly must go through <see cref="UpdateMetadataAsync"/>, which is the only
-    /// public path that guards the load this write depends on. Kept reachable in-assembly for
-    /// <see cref="MaterializeToDirectoryAsync"/> (writing a brand-new file, not a read-modify-write)
-    /// and, via <c>InternalsVisibleTo</c>, for test fixtures seeding an exact starting state.
-    /// </para>
-    /// </summary>
-    internal static async Task SaveMetadataAsync(SessionMetadata metadata, string filePath, CancellationToken cancellationToken = default)
-    {
-        var dir = Path.GetDirectoryName(filePath);
-        if (!string.IsNullOrEmpty(dir))
-        {
-            Directory.CreateDirectory(dir);
-        }
-
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-        };
-        var json = JsonSerializer.Serialize(metadata, options);
-
-        await RetryOnSharingViolationAsync(
-            () => File.WriteAllTextAsync(filePath, json, cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Reads an interactive room's <c>room.json</c> without denying a concurrent writer -- see
-    /// <see cref="SaveMetadataAsync"/> for why that matters. What permits that writer's open is the
-    /// <c>Write</c> bit; it writes the live path directly rather than renaming onto it.
-    /// <para>
-    /// #1267: this said <c>FileShare.Delete</c> "permits the replace this file's writer performs",
-    /// which credited the wrong flag for a rename that does not happen here -- and would tell whoever
-    /// next converts this writer to stage-and-move that the reader already tolerates it. It does not:
-    /// a delete-sharing handle blocks a rename exactly as a default-share one does (0057's
-    /// "Rests on"). The flag is kept because it costs nothing and is correct for a reader to offer.
-    /// </para>
-    /// </summary>
-    public static async Task<SessionMetadata?> LoadMetadataAsync(string filePath, CancellationToken cancellationToken = default)
-    {
-        if (!File.Exists(filePath)) return null;
-
-        var options = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        };
-
-        SessionMetadata? result = null;
-        await RetryOnSharingViolationAsync(
-            async () =>
-            {
-                using var stream = new FileStream(
-                    filePath, FileMode.Open, FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete,
-                    bufferSize: 4096, useAsync: true);
-                using var reader = new StreamReader(stream);
-                var json = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-
-                // Permitting a concurrent writer is what makes the write above succeed, and the
-                // cost is that this read can land mid-rewrite and see a truncated document. That
-                // state is always transient -- the writer completes -- so a torn parse is retried
-                // rather than surfaced. Deserialize inside the retry so both failures share it.
-                result = JsonSerializer.Deserialize<SessionMetadata>(json, options);
-            },
-            cancellationToken).ConfigureAwait(false);
-
-        // A workflow room's marker is a minimal { "Kind": "Workflow" } with no SessionId; it
-        // deserializes to a SessionMetadata whose required fields defaulted to null. That is not
-        // interactive-session metadata, so report it as absent -- identical to the pre-0013 world
-        // where a workflow room simply had no session.json. Every caller that gated on a non-null
-        // load (the /api/sessions endpoints, the by-id scan, the broadcast SessionId probe) then
-        // behaves exactly as before, without a per-site kind check.
-        if (result is not null && string.IsNullOrEmpty(result.SessionId))
-        {
-            return null;
-        }
-
-        return result;
-    }
-
-    /// <summary>
     /// Reads a room's <see cref="RoomKind"/> from its <c>.aer/room.json</c> marker without denying a
-    /// concurrent writer — opening with <c>FileShare.ReadWrite | FileShare.Delete</c> exactly as
-    /// <see cref="LoadMetadataAsync"/> does, because a plain <c>File.ReadAllText</c> reintroduces
-    /// #341's Windows write-denial. An absent marker is a workflow room; a present-but-unparseable
-    /// one is treated as interactive (its presence has always meant that) rather than crashing a
-    /// caller. This is the single seam the daemon, adapters, and UI route their old
-    /// <c>File.Exists(session.json)</c> kind-checks through.
+    /// concurrent writer — opening with <c>FileShare.ReadWrite | FileShare.Delete</c>, because a plain
+    /// <c>File.ReadAllText</c> reintroduces #341's Windows write-denial. An absent marker is a
+    /// workflow room; a present-but-unparseable one is treated as interactive (its presence has
+    /// always meant that) rather than crashing a caller. This is the single seam adapters route their
+    /// old <c>File.Exists(session.json)</c> kind-checks through.
     /// </summary>
     public static async Task<RoomKind> ReadRoomKindAsync(string roomDirectoryPath, CancellationToken cancellationToken = default)
     {
@@ -806,9 +502,10 @@ public static class InteractiveSessionMaterializer
 
     /// <summary>
     /// Writes a workflow room's minimal <c>.aer/room.json</c> marker (<c>{ "Kind": "Workflow" }</c>)
-    /// at materialization, using the same write discipline as <see cref="SaveMetadataAsync"/>. The
-    /// marker is defensive rather than load-bearing — an absent one already reads as a workflow room
-    /// — but it makes the room self-describing on disk instead of implied by a missing file.
+    /// at materialization, retrying through <see cref="RetryOnSharingViolationAsync"/> the same way
+    /// every other write into this file does. The marker is defensive rather than load-bearing — an
+    /// absent one already reads as a workflow room — but it makes the room self-describing on disk
+    /// instead of implied by a missing file.
     /// </summary>
     public static async Task WriteWorkflowRoomMarkerAsync(string roomDirectoryPath, CancellationToken cancellationToken = default)
     {

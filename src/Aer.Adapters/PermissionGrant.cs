@@ -31,8 +31,10 @@ namespace Aer.Adapters;
 /// next turn on both vendors — claude via <c>--disallowedTools Bash(pattern)</c>
 /// (<c>ClaudeWorkerAdapter.BuildDisallowedTools</c>, which the CLI applies with precedence over
 /// <c>--allowedTools</c>), agy via its <c>PreToolUse</c> hook's <c>IsDenied</c> check (agy has no
-/// vendor flag that can express a command family). Written only by <c>RuntimePermissionGrantAmender</c>
-/// when the operator answers the DenyAlways rung.
+/// vendor flag that can express a command family). Historically written when the operator answered
+/// the DenyAlways rung — that write path (0022's mid-lane ask/answer machinery) was retired in #1417
+/// (spec/baton.md §5); this field remains enforced on both vendors for any grant that already
+/// carries entries, e.g. from a hand-edited <c>bindings.json</c>.
 /// </param>
 public sealed record PermissionGrant(
     bool ReadFiles = false,

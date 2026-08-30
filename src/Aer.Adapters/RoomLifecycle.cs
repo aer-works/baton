@@ -1,13 +1,14 @@
 namespace Aer.Adapters;
 
 /// <summary>
-/// M24 Phase 5 (#278): archive/unarchive as a directory-native marker file, the same idiom
-/// <see cref="InteractiveSessionMaterializer"/> already uses for <c>.aer/workflow-path</c>/
-/// <c>.aer/bindings-path</c> (plain file, existence/content-checked, never a schema field) — applies
-/// uniformly to DAG rooms and interactive sessions without either type needing a metadata record.
-/// Archiving never touches <c>workflow.json</c>, so the existing collision guard
-/// (<see cref="RoomDirectoryAlreadyExistsException"/>) already blocks re-materializing an archived
-/// name — only <see cref="Directory.Delete(string, bool)"/> actually frees a name.
+/// M24 Phase 5 (#278): whether a room is archived, keyed off a directory-native marker file — the
+/// same idiom <see cref="InteractiveSessionMaterializer"/> uses for <c>.aer/workflow-path</c>/
+/// <c>.aer/bindings-path</c> (plain file, existence-checked, never a schema field). The writer/eraser
+/// half of this (the daemon's archive/unarchive routes) was deleted with the daemon's HTTP surface
+/// (#1420, #1421) — this stays because <see cref="BuiltInWorkflowTemplates"/> and
+/// <see cref="InteractiveSessionMaterializer"/> still read it to give a clearer collision message
+/// (<see cref="RoomDirectoryAlreadyExistsException"/>) than a bare "already exists" for a room a
+/// person meant to reuse.
 /// </summary>
 public static class RoomLifecycle
 {
@@ -16,27 +17,4 @@ public static class RoomLifecycle
     private static string MarkerFilePath(string roomDirectoryPath) => Path.Combine(roomDirectoryPath, ".aer", ArchivedMarkerFileName);
 
     public static bool IsArchived(string roomDirectoryPath) => File.Exists(MarkerFilePath(roomDirectoryPath));
-
-    public static async Task ArchiveAsync(string roomDirectoryPath, CancellationToken cancellationToken = default)
-    {
-        var markerPath = MarkerFilePath(roomDirectoryPath);
-        var dir = Path.GetDirectoryName(markerPath);
-        if (!string.IsNullOrEmpty(dir))
-        {
-            Directory.CreateDirectory(dir);
-        }
-
-        await File.WriteAllTextAsync(markerPath, DateTimeOffset.UtcNow.ToString("O"), cancellationToken).ConfigureAwait(false);
-    }
-
-    public static Task UnarchiveAsync(string roomDirectoryPath)
-    {
-        var markerPath = MarkerFilePath(roomDirectoryPath);
-        if (File.Exists(markerPath))
-        {
-            File.Delete(markerPath);
-        }
-
-        return Task.CompletedTask;
-    }
 }

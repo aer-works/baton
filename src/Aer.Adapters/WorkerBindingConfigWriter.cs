@@ -14,7 +14,7 @@ namespace Aer.Adapters;
 /// exactly mirroring <c>Aer.Flow.Templates.WorkflowDefinitionWriter</c>'s placement reasoning
 /// beside <c>WorkflowDefinitionParser</c> for templates (M16 Phase 1). Originally written for the
 /// desktop authoring surface (deleted, #1412); today's callers are the daemon, DispatchCommand,
-/// RuntimePermissionGrantAmender, and the built-in templates.
+/// and the built-in templates.
 /// </para>
 /// <para>
 /// <b>Validation decision of record:</b> there is no separate <c>WorkerBindingConfigValidator</c> —

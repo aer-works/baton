@@ -1,6 +1,4 @@
-using Aer.Adapters.Tests.TestSupport;
 using Aer.Flow.Domain;
-using Aer.Flow.Templates;
 
 namespace Aer.Adapters.Tests;
 
@@ -164,63 +162,5 @@ public class BuiltInWorkflowTemplatesTests
         Assert.Equal(role.Timeout, reviewBinding.Timeout);
         Assert.Null(reviewBinding.Model);
         Assert.Null(reviewBinding.Effort);
-    }
-
-    [Fact]
-    public async Task MaterializeToDirectoryAsync_PersistsValidFiles()
-    {
-        var tempDir = Path.Combine(Path.GetTempPath(), "aer_template_test_" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            await BuiltInWorkflowTemplates.MaterializeToDirectoryAsync("review-run", "claude", "agy", tempDir, cancellationToken: TestContext.Current.CancellationToken);
-
-            var workflowPath = Path.Combine(tempDir, "workflow.json");
-            var bindingsPath = Path.Combine(tempDir, "bindings.json");
-            var metaWorkflow = Path.Combine(tempDir, ".aer", "workflow-path");
-            var metaBindings = Path.Combine(tempDir, ".aer", "bindings-path");
-
-            Assert.True(File.Exists(workflowPath));
-            Assert.True(File.Exists(bindingsPath));
-            Assert.True(File.Exists(metaWorkflow));
-            Assert.True(File.Exists(metaBindings));
-
-            var loadedDef = await WorkflowDefinitionParser.LoadFromFileAsync(workflowPath, TestContext.Current.CancellationToken);
-            var loadedBindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsPath, TestContext.Current.CancellationToken);
-
-            Assert.Equal("review-run-template", loadedDef.WorkflowTemplateId.Value);
-            Assert.Equal(2, loadedBindings.Count);
-        }
-        finally
-        {
-            if (Directory.Exists(tempDir))
-            {
-                DirectoryCleanup.DeleteRecursively(tempDir);
-            }
-        }
-    }
-
-    [Fact]
-    public async Task MaterializeToDirectoryAsync_RejectsASecondTaskAtTheSameDirectoryInsteadOfOverwriting()
-    {
-        var tempDir = Path.Combine(Path.GetTempPath(), "aer_template_collision_test_" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            await BuiltInWorkflowTemplates.MaterializeToDirectoryAsync("solo-run", "claude", null, tempDir, "First prompt", cancellationToken: TestContext.Current.CancellationToken);
-
-            var ex = await Assert.ThrowsAsync<RoomDirectoryAlreadyExistsException>(() =>
-                BuiltInWorkflowTemplates.MaterializeToDirectoryAsync("review-run", "claude", "agy", tempDir, "Second prompt", cancellationToken: TestContext.Current.CancellationToken));
-            Assert.Contains(tempDir, ex.Message);
-
-            // The rejected second attempt must not have clobbered the first task's definition.
-            var loadedDef = await WorkflowDefinitionParser.LoadFromFileAsync(Path.Combine(tempDir, "workflow.json"), TestContext.Current.CancellationToken);
-            Assert.Equal("solo-run-template", loadedDef.WorkflowTemplateId.Value);
-        }
-        finally
-        {
-            if (Directory.Exists(tempDir))
-            {
-                DirectoryCleanup.DeleteRecursively(tempDir);
-            }
-        }
     }
 }

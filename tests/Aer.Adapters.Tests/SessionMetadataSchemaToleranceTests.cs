@@ -1,162 +1,22 @@
 using Aer.Adapters;
-using Aer.Flow.Domain;
 using Xunit;
 
 namespace Aer.Adapters.Tests;
 
-/// <summary>
-/// #521: removing <c>MinimalOverhead</c> deleted a field that had been serialized into every
-/// interactive room's marker (<c>room.json</c>, formerly <c>session.json</c>) ever written. This
-/// pins the property that makes such a removal safe.
-/// </summary>
-/// <remarks>
-/// <para>
-/// <see cref="InteractiveSessionMaterializer.LoadMetadataAsync"/> configures no
-/// <c>UnmappedMemberHandling</c>, so System.Text.Json's default (<c>Skip</c>) applies and an unknown
-/// key is ignored. That is a property of the loader's options, not of the record — flipping it to
-/// <c>Disallow</c>, or adding a converter that rejects unknown keys, would make every pre-existing
-/// session file throw on load. Nothing else in the suite would notice, because every other fixture
-/// is written by the current serializer and therefore never carries a key the current record lacks.
-/// </para>
-/// <para>
-/// The fixture deliberately carries two unknown keys: <c>MinimalOverhead</c>, the field this issue
-/// removed, and <c>AerNotARealField</c>, which never existed. Asserting on the removed field alone
-/// would still pass under a loader that special-cased it; the second key is a control against that,
-/// though a weak one -- both sit at the same nesting level under identical handling, so what it
-/// mainly guards against is a future back-compat shim that special-cases the removed key while
-/// tightening everything else. The assertion that actually discriminates is
-/// <c>VendorSessionEstablished</c>, a field declared AFTER the unknown keys in the record: it fails
-/// if the reader stops early instead of skipping them, which neither unknown key alone would catch.
-/// </para>
-/// </remarks>
 public class SessionMetadataSchemaToleranceTests
 {
-    [Fact]
-    public async Task A_session_file_carrying_removed_and_unknown_fields_still_loads()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "aer-schema-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, "room.json");
-
-        try
-        {
-            // PascalCase, matching what SaveMetadataAsync actually writes (it sets no
-            // PropertyNamingPolicy) -- a camelCase fixture here would still pass, because
-            // LoadMetadataAsync sets PropertyNameCaseInsensitive, but it would be pinning that
-            // setting instead of the unmapped-member tolerance this test claims to pin.
-            await File.WriteAllTextAsync(path, """
-                {
-                  "SessionId": "sess-legacy-001",
-                  "RoomDirectoryPath": "C:\\tmp\\legacy-room",
-                  "CurrentAdapter": "claude",
-                  "CurrentVendorSessionId": "vendor-abc",
-                  "Model": "claude-haiku-4-5-20251001",
-                  "WorkingDirectory": null,
-                  "TurnCount": 3,
-                  "SafetyCeiling": 200,
-                  "MinimalOverhead": true,
-                  "AerNotARealField": {"nested": ["anything", 1, null]},
-                  "CreatedAt": "2026-07-01T10:00:00+00:00",
-                  "UpdatedAt": "2026-07-01T10:05:00+00:00",
-                  "Turns": [],
-                  "VendorSessionEstablished": true
-                }
-                """, TestContext.Current.CancellationToken);
-
-            var metadata = await InteractiveSessionMaterializer.LoadMetadataAsync(
-                path, TestContext.Current.CancellationToken);
-
-            Assert.NotNull(metadata);
-
-            // The unknown keys must be skipped rather than throwing -- and the fields either side of
-            // them must survive, so a "load" that silently produced a default-everything record
-            // cannot pass.
-            Assert.Equal("sess-legacy-001", metadata.SessionId);
-            Assert.Equal("claude", metadata.CurrentAdapter);
-            Assert.Equal("vendor-abc", metadata.CurrentVendorSessionId);
-            Assert.Equal(3, metadata.TurnCount);
-            Assert.Equal(200, metadata.SafetyCeiling);
-            Assert.True(metadata.VendorSessionEstablished,
-                "a field declared AFTER the unknown keys was dropped, so the reader stopped early "
-                + "rather than skipping them");
-
-            // #1305: this fixture predates Participants -- it must load as null, never as a
-            // synthesized single-entry list. Why: SessionMetadata.Participants' own remarks.
-            Assert.Null(metadata.Participants);
-        }
-        finally
-        {
-            DirectoryCleanup.DeleteRecursively(dir);
-        }
-    }
-
     /// <summary>
-    /// 0054 §4/#1307: <c>SessionTurn.TargetParticipantId</c> is trailing-optional the same way
-    /// <c>ExhaustedUntil</c> is — this pins both directions of its round trip through the same
-    /// <c>SaveMetadataAsync</c>/<c>LoadMetadataAsync</c> pair every other trailing-optional field
-    /// above is proven against, rather than a fixture, since the field is new enough that no
-    /// pre-existing file could carry it either way.
-    /// </summary>
-    [Fact]
-    public async Task A_turn_round_trips_both_a_null_and_a_non_null_target_participant_id()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "aer-turn-addressing-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, "room.json");
-
-        try
-        {
-            var untaggedTurn = new SessionTurn(
-                TurnIndex: 1,
-                Vendor: "claude",
-                HumanMessage: "hello",
-                AssistantResponse: "hi",
-                ExecutedAt: DateTimeOffset.UnixEpoch,
-                NativeSessionResumed: false,
-                VendorHandoffSynthesized: false);
-            Assert.Null(untaggedTurn.TargetParticipantId);
-
-            var taggedTurn = untaggedTurn with { TurnIndex = 2, TargetParticipantId = new WorkerId("claude-2") };
-
-            var metadata = new SessionMetadata(
-                SessionId: "sess-addr-001",
-                RoomDirectoryPath: dir,
-                CurrentAdapter: "claude",
-                CurrentVendorSessionId: null,
-                Model: null,
-                WorkingDirectory: null,
-                TurnCount: 2,
-                SafetyCeiling: 100,
-                CreatedAt: DateTimeOffset.UnixEpoch,
-                UpdatedAt: DateTimeOffset.UnixEpoch,
-                Turns: [untaggedTurn, taggedTurn]);
-
-            await InteractiveSessionMaterializer.SaveMetadataAsync(metadata, path, TestContext.Current.CancellationToken);
-            var reloaded = await InteractiveSessionMaterializer.LoadMetadataAsync(path, TestContext.Current.CancellationToken);
-
-            Assert.NotNull(reloaded);
-            Assert.Equal(2, reloaded.Turns.Count);
-            // Ruling 3: an untagged turn's field stays null through the round trip -- it is never
-            // synthesized into a resolved orchestrator on save or load.
-            Assert.Null(reloaded.Turns[0].TargetParticipantId);
-            Assert.Equal(new WorkerId("claude-2"), reloaded.Turns[1].TargetParticipantId);
-        }
-        finally
-        {
-            DirectoryCleanup.DeleteRecursively(dir);
-        }
-    }
-
-    /// <summary>
-    /// The same tolerance, for the OTHER loader — an operator-authored <c>bindings.json</c>.
+    /// The tolerance an operator-authored <c>bindings.json</c> gets from its parser: an unknown key
+    /// (<c>MinimalOverhead</c>, removed by #521, plus a key that never existed) is skipped rather
+    /// than rejected, so config AER itself wrote before #521 keeps parsing.
     /// </summary>
     /// <remarks>
-    /// `session.json` and `bindings.json` are read by different code with different
-    /// <c>JsonSerializerOptions</c> (`LoadMetadataAsync` sets `PropertyNameCaseInsensitive`;
-    /// <see cref="WorkerBindingConfigParser"/> passes none at all). Two readers with independently
-    /// configurable strictness both had to tolerate the removed key, so both are pinned — testing
-    /// only one would leave the other free to start rejecting operator config that AER itself wrote
-    /// before #521.
+    /// This used to pin the same tolerance on the <c>session.json</c>/<c>room.json</c> reader too
+    /// (<c>InteractiveSessionMaterializer.LoadMetadataAsync</c>), since the two readers configure
+    /// their strictness independently. That reader was deleted as orphaned by the daemon narrowing
+    /// (#1421) — nothing in the tree persists or reads back an interactive room's <c>room.json</c>
+    /// any more — leaving <see cref="WorkerBindingConfigParser"/> as the one still-live reader this
+    /// tolerance matters for.
     /// </remarks>
     [Fact]
     public void A_bindings_file_carrying_the_removed_field_still_parses()
