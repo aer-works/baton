@@ -4,6 +4,17 @@ every ~25s. Moved into the repo, with the deliverables inbox added, by aer-works
 
 Outbound-only; the machine running this accepts no inbound connections.
 
+THE SNAPSHOT HALF -- change-gated (#1457)
+-------------------------------------------
+The wrapped {rooms, underhood} body is hashed (stable, sort_keys) before every POST; a hash that
+matches the last SUCCESSFUL push's (persisted in push_state_file, key SNAPSHOT_HASH_KEY) skips the
+POST. Cloudflare's KV free tier caps at 1,000 writes/day and worker.js's /push handler is an
+unconditional env.FLEET.put per POST -- pushing an unchanged snapshot every interval_seconds (default
+25s) burns 3,456 writes/day against that cap for nothing. A missing/unreadable persisted hash always
+re-pushes (fail toward one extra write, never toward silence, same posture as the deliverables state
+file below); a FAILED POST never persists the hash, so the next cycle retries. See `snapshot_hash` /
+`should_push_snapshot`.
+
 Config comes from pusher.config.json next to this script (gitignored, machine-local -- ship
 pusher.config.example.json and copy it):
     {
@@ -241,6 +252,29 @@ def post_json(url: str, body: str) -> None:
             raise RuntimeError(f"push status {resp.status}")
 
 
+SNAPSHOT_HASH_KEY = "__snapshot_hash__"
+
+
+def snapshot_hash(wrapped: dict) -> str:
+    """Stable hash of the wrapped {rooms, underhood} body -- sort_keys so the hash does not depend
+    on dict insertion order upstream, independent of the (unsorted) exact string actually POSTed."""
+    return sha256_hex(json.dumps(wrapped, sort_keys=True).encode("utf-8"))
+
+
+def should_push_snapshot(state: dict, current_hash: str) -> bool:
+    """True unless `current_hash` matches the last SUCCESSFUL push's hash persisted under
+    SNAPSHOT_HASH_KEY. A missing/unreadable persisted value (state.get returns None) always
+    pushes -- fail toward one extra write, never toward silence."""
+    return state.get(SNAPSHOT_HASH_KEY) != current_hash
+
+
+def should_log_skip(streak: int, log_every: int) -> bool:
+    """First skip in a streak logs immediately (so 'now skipping' is visible right away); after
+    that, only every `log_every`th cycle -- keeps pusher.log from being mostly skip lines across a
+    quiet fleet while still proving the loop is alive, given the 1MB truncation behavior."""
+    return streak == 1 or streak % log_every == 0
+
+
 def derive_deliver_url(cfg: dict) -> str | None:
     if cfg.get("deliver_url"):
         return cfg["deliver_url"]
@@ -476,6 +510,8 @@ def main() -> None:
     patterns_path = Path(cfg["secret_patterns_file"]).expanduser() if cfg.get("secret_patterns_file") else DEFAULT_SECRET_PATTERNS_FILE
     state_path = Path(cfg["push_state_file"]).expanduser() if cfg.get("push_state_file") else DEFAULT_PUSH_STATE_FILE
     deliver_url = derive_deliver_url(cfg)
+    skip_log_every = max(1, round(600 / interval)) if interval > 0 else 1
+    skip_streak = 0
 
     while True:
         try:
@@ -484,8 +520,20 @@ def main() -> None:
             rooms = json.loads(body)
             wrapped = {"rooms": rooms if isinstance(rooms, list) else rooms.get("rooms"),
                        "underhood": gather_underhood(cfg)}
-            post_json(cfg["push_url"], json.dumps(wrapped))
-            log(f"pushed {len(body)} bytes")
+            current_hash = snapshot_hash(wrapped)
+            snap_state = load_push_state(state_path)
+            if should_push_snapshot(snap_state, current_hash):
+                post_json(cfg["push_url"], json.dumps(wrapped))
+                snap_state[SNAPSHOT_HASH_KEY] = current_hash
+                save_push_state(state_path, snap_state)
+                if skip_streak:
+                    log(f"skipped {skip_streak} unchanged cycle(s) since last push")
+                    skip_streak = 0
+                log(f"pushed {len(body)} bytes")
+            else:
+                skip_streak += 1
+                if should_log_skip(skip_streak, skip_log_every):
+                    log(f"unchanged, skipped ({skip_streak} in a row)")
         except Exception as ex:  # noqa: BLE001 — loop must survive anything
             log(f"ERROR (snapshot) {type(ex).__name__}: {ex}")
 
@@ -619,6 +667,32 @@ def _selftest() -> int:
           derive_deliver_url({"push_url": "https://h/push/TOK", "deliver_url": "https://other/x"}) == "https://other/x")
     check("deliver_url is None when it cannot be derived or configured",
           derive_deliver_url({"push_url": "https://h/nope/TOK"}) is None)
+
+    # -- #1457: snapshot change-gate (KV daily quota) --
+    wrapped_a = {"rooms": [{"name": "room-a", "state": "Running"}], "underhood": []}
+    wrapped_a_reordered = {"underhood": [], "rooms": [{"state": "Running", "name": "room-a"}]}
+    wrapped_b = {"rooms": [{"name": "room-a", "state": "Succeeded"}], "underhood": []}
+    hash_a = snapshot_hash(wrapped_a)
+    check("snapshot_hash is stable across dict key/field order (sort_keys)",
+          hash_a == snapshot_hash(wrapped_a_reordered))
+    check("snapshot_hash changes when the wrapped body's content changes",
+          hash_a != snapshot_hash(wrapped_b))
+
+    check("a missing persisted hash always pushes (fail toward one extra write)",
+          should_push_snapshot({}, hash_a) is True)
+    check("an unreadable/missing state.get sentinel (None) never matches a real hash",
+          should_push_snapshot({SNAPSHOT_HASH_KEY: None}, hash_a) is True)
+    check("a matching persisted hash skips the push",
+          should_push_snapshot({SNAPSHOT_HASH_KEY: hash_a}, hash_a) is False)
+    check("a stale persisted hash (content changed since) triggers a push",
+          should_push_snapshot({SNAPSHOT_HASH_KEY: hash_a}, snapshot_hash(wrapped_b)) is True)
+
+    check("should_log_skip fires on the first skip of a streak",
+          should_log_skip(1, 24) is True)
+    check("should_log_skip is quiet between the coarse cadence points",
+          all(not should_log_skip(n, 24) for n in range(2, 24)))
+    check("should_log_skip fires again at the coarse cadence boundary",
+          should_log_skip(24, 24) is True and should_log_skip(48, 24) is True)
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)
