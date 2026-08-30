@@ -31,9 +31,8 @@ public sealed record BuiltInTemplateInfo(
     bool RequiresSecondaryVendor);
 
 /// <summary>
-/// Pre-authored workflow template catalog and materialization engine (M22 Phase 1).
-/// Provides Solo Run and Review Run templates that materialize valid workflow definitions
-/// and worker bindings against available vendor CLIs.
+/// Pre-authored workflow template catalog (M22 Phase 1): the built-in template and dispatch-role
+/// metadata <c>aer templates</c> reports.
 /// </summary>
 public static class BuiltInWorkflowTemplates
 {
@@ -96,126 +95,5 @@ public static class BuiltInWorkflowTemplates
                     Instruction: o.Instruction)).ToList());
         }
         return dict;
-    }
-
-    /// <summary>
-    /// Materializes a built-in template's <see cref="WorkflowDefinition"/> and worker bindings.
-    /// </summary>
-    public static (WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings) Materialize(
-        string templateId,
-        string primaryAdapter,
-        string? secondaryAdapter = null,
-        string? customPrompt = null,
-        string? secondaryCustomPrompt = null,
-        string? roomDirectoryPath = null)
-    {
-        var normalizedPrimary = string.IsNullOrWhiteSpace(primaryAdapter) ? "claude" : primaryAdapter.Trim().ToLowerInvariant();
-        var normalizedSecondary = string.IsNullOrWhiteSpace(secondaryAdapter) ? normalizedPrimary : secondaryAdapter.Trim().ToLowerInvariant();
-
-        if (string.Equals(templateId, ChatSession.Id, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(templateId, CodebaseSession.Id, StringComparison.OrdinalIgnoreCase))
-        {
-            var (def, bindings, _) = InteractiveSessionMaterializer.Materialize(
-                sessionId: Guid.NewGuid().ToString("N")[..12],
-                roomDirectoryPath: string.Empty,
-                adapter: normalizedPrimary,
-                initialMessage: customPrompt);
-            return (def, bindings);
-        }
-
-        if (string.Equals(templateId, SoloRun.Id, StringComparison.OrdinalIgnoreCase))
-        {
-            var definition = new WorkflowDefinition(
-                WorkflowTemplateId: new WorkflowTemplateId("solo-run-template"),
-                WorkflowTemplateVersion: 1,
-                Steps:
-                [
-                    new WorkflowStepDefinition(
-                        StepId: new StepId("solo-step"),
-                        Worker: "solo-worker",
-                        Inputs: [],
-                        Outputs: ["output.md"],
-                        DependsOn: [],
-                        RetryPolicy: new RetryPolicy(3),
-                        PausePoint: null)
-                ]);
-
-            var defaultGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false, ShellCommandPatterns: [], NetworkAccess: false);
-
-            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
-            {
-                ["solo-worker"] = new WorkerBindingConfigEntry(
-                    Adapter: normalizedPrimary,
-                    Contract: new WorkerContract(
-                        WorkerName: "solo-worker",
-                        RequiredInputs: [],
-                        ProducedOutputs: [new ProducedOutput("output.md")],
-                        OptionalMetadata: []),
-                    PromptTemplate: string.IsNullOrWhiteSpace(customPrompt) ? "Perform the requested solo task and write the output to output.md." : customPrompt,
-                    Timeout: TimeSpan.FromMinutes(10),
-                    PermissionGrant: defaultGrant)
-            };
-
-            return (definition, bindings);
-        }
-
-        if (string.Equals(templateId, ReviewRun.Id, StringComparison.OrdinalIgnoreCase))
-        {
-            // The review-worker binding is sourced from the catalog's review role via RoleDispatch.ToBinding.
-            // write_files: false is the role's intent and GrantAuditMode materializes the vendor-conditional
-            // realization (agy: audited write scoped to the role's declared outputs) (#901, #1146).
-            var defaultGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false, ShellCommandPatterns: [], NetworkAccess: false);
-
-            var definition = new WorkflowDefinition(
-                WorkflowTemplateId: new WorkflowTemplateId("review-run-template"),
-                WorkflowTemplateVersion: 1,
-                Steps:
-                [
-                    new WorkflowStepDefinition(
-                        StepId: new StepId("draft"),
-                        Worker: "draft-worker",
-                        Inputs: [],
-                        Outputs: ["draft.md"],
-                        DependsOn: [],
-                        RetryPolicy: new RetryPolicy(3),
-                        PausePoint: null),
-                    new WorkflowStepDefinition(
-                        StepId: new StepId("review"),
-                        Worker: "review-worker",
-                        Inputs: ["draft.md"],
-                        Outputs: ["report.md"],
-                        DependsOn: [new StepId("draft")],
-                        RetryPolicy: new RetryPolicy(3),
-                        PausePoint: new PausePoint([new StepId("draft")]))
-                ]);
-
-            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
-            {
-                ["draft-worker"] = new WorkerBindingConfigEntry(
-                    Adapter: normalizedPrimary,
-                    Contract: new WorkerContract(
-                        WorkerName: "draft-worker",
-                        RequiredInputs: [],
-                        ProducedOutputs: [new ProducedOutput("draft.md")],
-                        OptionalMetadata: []),
-                    PromptTemplate: string.IsNullOrWhiteSpace(customPrompt) ? "Draft initial content for the requested topic and write to draft.md." : customPrompt,
-                    Timeout: TimeSpan.FromMinutes(10),
-                    PermissionGrant: defaultGrant),
-                ["review-worker"] = RoleDispatch.ToBinding(
-                    WorkerRoleCatalog.For("review"),
-                    string.IsNullOrWhiteSpace(secondaryCustomPrompt)
-                        ? "Review draft.md carefully, provide feedback and recommendations."
-                        : secondaryCustomPrompt,
-                    adapterOverride: normalizedSecondary,
-                    workerName: "review-worker",
-                    requiredInputs: ["draft.md"])
-            };
-
-            return (definition, bindings);
-        }
-
-        throw new ArgumentException(
-            $"Unknown template ID '{templateId}'. Valid template IDs are: {string.Join(", ", Catalog.Select(t => t.Id))}.",
-            nameof(templateId));
     }
 }

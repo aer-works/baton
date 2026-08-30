@@ -12,9 +12,9 @@ namespace Aer.Adapters;
 /// </summary>
 /// <remarks>
 /// Deliberately surface-agnostic — it takes catalog and domain types only, never a CLI or UI type —
-/// so the built-in templates and the desktop's authoring both adopt it in place of their own
-/// hand-rolled bindings (#901), retiring the parallel <c>BuiltInWorkflowTemplates</c> source of truth.
-/// Until then this is the catalog's only consumer.
+/// so any future built-in template or desktop authoring surface can adopt it in place of hand-rolling
+/// its own bindings (#901), rather than growing a second parallel source of truth. Its other consumer
+/// today is <see cref="WorkflowTemplateComposer"/>.
 /// </remarks>
 public static class RoleDispatch
 {

@@ -53,18 +53,15 @@ public class RoleDispatchTests
     }
 
     /// <summary>
-    /// #1095 polarity: the dispatch prompt carries the one-shot execution contract (its rationale lives
-    /// on <see cref="RoleDispatch"/>'s <c>OneShotContract</c>), and the interactive chat path — a
-    /// different builder — must NOT inherit it, because a chat turn genuinely does continue.
+    /// #1095: the dispatch prompt carries the one-shot execution contract (its rationale lives on
+    /// <see cref="RoleDispatch"/>'s <c>OneShotContract</c>) — a dispatched worker's turn is never
+    /// resumed, unlike a chat turn.
     /// </summary>
     [Fact]
-    public void The_dispatch_prompt_states_the_one_shot_contract_but_the_chat_prompt_does_not()
+    public void The_dispatch_prompt_states_the_one_shot_contract()
     {
         var dispatch = RoleDispatch.ToBinding(Review, "Review the change.").PromptTemplate;
         Assert.Contains("non-interactive turn", dispatch);
-
-        var chat = InteractiveSessionMaterializer.BuildTurnPrompt("hello");
-        Assert.DoesNotContain("non-interactive turn", chat);
     }
 
     [Fact]
