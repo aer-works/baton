@@ -52,7 +52,23 @@ if (args.Length >= 1 && args[0] == "agy-hook-check")
         Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns);
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "supply", "resume", "status", "templates" };
+// #1458: folded from the standalone Baton.Mcp.Host executable -- a stdio MCP server (vendor CLIs
+// spawn it per turn via --mcp-config) and a client-facing verb alike, so it is intercepted here
+// rather than joining the CommandResult/FlowStateReporter shape every mutating command below shares.
+if (args.Length >= 1 && args[0] == "mcp")
+{
+    return await Baton.Cli.Mcp.McpCommand.RunAsync(args[1..]).ConfigureAwait(false);
+}
+
+// #1458: folded from the standalone Baton.Daemon executable -- a long-running background host, not
+// a one-shot command, so it never reaches the CommandResult/FlowStateReporter shape below either.
+if (args.Length >= 1 && args[0] == "daemon")
+{
+    await Baton.Cli.Daemon.DaemonHost.RunDaemonAsync(args[1..]).ConfigureAwait(false);
+    return 0;
+}
+
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "supply", "resume", "status", "templates", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -69,6 +85,9 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine($"       {ResumeOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {StatusOptionsParser.Usage[7..]}");
     Console.Error.WriteLine("       baton templates [--json]");
+    Console.Error.WriteLine(
+        "       baton mcp [--capture-file <path>] [--memory-proposal-tool] [--fleet-status-tool] [--room-detail-tool]");
+    Console.Error.WriteLine("       baton daemon [--no-mutex]");
     Console.Error.WriteLine("       baton --version");
     Console.Error.WriteLine();
     Console.Error.WriteLine($"  {RunOptionsParser.ResumeNote}");

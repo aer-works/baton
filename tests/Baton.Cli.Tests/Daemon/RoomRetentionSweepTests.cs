@@ -1,4 +1,4 @@
-using Baton.Daemon;
+using Baton.Cli.Daemon;
 using Baton.Artifacts;
 using Baton.Concurrency;
 using Baton.Domain;
@@ -6,7 +6,7 @@ using Baton.Store;
 using Baton.Templates;
 using Xunit;
 
-namespace Baton.Daemon.Tests;
+namespace Baton.Cli.Tests.Daemon;
 
 public class RoomRetentionSweepTests
 {

@@ -4,9 +4,9 @@ using Baton.Domain;
 using Baton.Status;
 using Baton.Store;
 using Baton.Templates;
-using Baton.Mcp.Host;
+using Baton.Cli.Mcp;
 
-namespace Baton.Mcp.Tests;
+namespace Baton.Cli.Tests.Mcp;
 
 /// <summary>
 /// Unit and integration coverage for <see cref="FleetStatusTool"/> (#1392 Spike 1).

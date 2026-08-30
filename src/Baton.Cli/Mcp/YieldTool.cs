@@ -1,7 +1,6 @@
 using System.Text.Json;
-using Baton.Mcp;
 
-namespace Baton.Mcp.Host;
+namespace Baton.Cli.Mcp;
 
 /// <summary>
 /// The <c>yield</c> tool (#585, decision 0035): a participant calls this when it believes a

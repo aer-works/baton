@@ -1,8 +1,7 @@
 using System.Text;
-using Baton.Mcp;
-using Baton.Mcp.Host;
+using Baton.Cli.Mcp;
 
-namespace Baton.Mcp.Tests;
+namespace Baton.Cli.Tests.Mcp;
 
 public class McpServerHostTests
 {

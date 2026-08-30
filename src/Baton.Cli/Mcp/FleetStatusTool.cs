@@ -6,9 +6,8 @@ using Baton.Projection;
 using Baton.Status;
 using Baton.Store;
 using Baton.Templates;
-using Baton.Mcp;
 
-namespace Baton.Mcp.Host;
+namespace Baton.Cli.Mcp;
 
 /// <summary>
 /// The <c>fleet_status</c> read-only MCP tool (Spike 1, #1392): scans rooms across the fleet,

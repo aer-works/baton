@@ -4,7 +4,7 @@ using Baton.Projection;
 using Baton.Status;
 using Microsoft.Extensions.Hosting;
 
-namespace Baton.Daemon;
+namespace Baton.Cli.Daemon;
 
 /// <summary>
 /// Background daemon service that periodically sweeps resident rooms to compact completed room journals (#1025)

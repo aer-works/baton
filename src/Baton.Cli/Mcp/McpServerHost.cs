@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace Baton.Mcp;
+namespace Baton.Cli.Mcp;
 
 /// <summary>
 /// AER's own MCP server host (#585) — the "server" side of a stdio-transport Model Context Protocol

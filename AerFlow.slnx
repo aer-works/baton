@@ -1,24 +1,19 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Baton/Baton.csproj" />
     <Project Path="src/Baton.Vendors/Baton.Vendors.csproj" />
     <Project Path="src/Baton.Cli/Baton.Cli.csproj" />
-    <Project Path="src/Baton.Daemon/Baton.Daemon.csproj" />
-    <Project Path="src/Baton/Baton.csproj" />
-    <Project Path="src/Baton.Mcp/Baton.Mcp.csproj" />
-    <Project Path="src/Baton.Mcp.Host/Baton.Mcp.Host.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/Aer.GateProbe/Aer.GateProbe.csproj" />
     <Project Path="tools/Aer.VendorProbe/Aer.VendorProbe.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Baton.Tests/Baton.Tests.csproj" />
     <Project Path="tests/Baton.Vendors.Tests/Baton.Vendors.Tests.csproj" />
     <Project Path="tests/Baton.Architecture.Tests/Baton.Architecture.Tests.csproj" />
     <Project Path="tests/Baton.Cli.Tests/Baton.Cli.Tests.csproj" />
-    <Project Path="tests/Baton.Daemon.Tests/Baton.Daemon.Tests.csproj" />
     <Project Path="tests/Baton.CrashTestHost/Baton.CrashTestHost.csproj" />
-    <Project Path="tests/Baton.Tests/Baton.Tests.csproj" />
-    <Project Path="tests/Baton.Mcp.Tests/Baton.Mcp.Tests.csproj" />
     <Project Path="tests/Aer.VendorProbe.Tests/Aer.VendorProbe.Tests.csproj" />
   </Folder>
 </Solution>

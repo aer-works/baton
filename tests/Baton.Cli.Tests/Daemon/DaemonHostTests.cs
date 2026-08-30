@@ -1,12 +1,12 @@
 using Baton.Vendors;
-using Baton.Daemon;
+using Baton.Cli.Daemon;
 using Baton.Concurrency;
 using Baton.Status;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
 
-namespace Baton.Daemon.Tests;
+namespace Baton.Cli.Tests.Daemon;
 
 /// <summary>
 /// #1425: <see cref="DaemonHost.RunDaemonAsync(string[])"/> had no direct coverage of the three kept

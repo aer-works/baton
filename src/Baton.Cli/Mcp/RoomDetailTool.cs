@@ -9,9 +9,8 @@ using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Status;
 using Baton.Store;
-using Baton.Mcp;
 
-namespace Baton.Mcp.Host;
+namespace Baton.Cli.Mcp;
 
 /// <summary>
 /// The <c>room_detail</c> read-only MCP tool (#1427): <c>fleet_status</c>'s level-two drill-down,

@@ -1,7 +1,7 @@
 using System.Text.Json;
-using Baton.Mcp.Host;
+using Baton.Cli.Mcp;
 
-namespace Baton.Mcp.Tests;
+namespace Baton.Cli.Tests.Mcp;
 
 public class YieldToolTests
 {

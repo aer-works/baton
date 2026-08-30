@@ -1,7 +1,6 @@
 using System.Text.Json;
-using Baton.Mcp;
 
-namespace Baton.Mcp.Host;
+namespace Baton.Cli.Mcp;
 
 /// <summary>
 /// The <c>memory-edit-proposal</c> tool (#801, per #672's "Minimal-form design" comment item 3): a

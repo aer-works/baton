@@ -1,4 +1,4 @@
-namespace Baton.Mcp.Tests;
+namespace Baton.Cli.Tests.Mcp;
 
 /// <summary>
 /// Serialises the classes that repoint <c>BATON_HOME</c> for their own per-test temp root
@@ -7,7 +7,7 @@ namespace Baton.Mcp.Tests;
 /// environment variable in their constructor/<see cref="IDisposable.Dispose"/> pair — without this,
 /// one class's temp root bleeds into the other mid-run (#1427's own test run first observed it: a
 /// room written under <see cref="RoomDetailToolTests"/>'s root read back as "not found" under
-/// <see cref="FleetStatusToolTests"/>'s). The <c>Baton.Cli.Tests</c> analogue is
+/// <see cref="FleetStatusToolTests"/>'s). The sibling analogue elsewhere in this assembly is
 /// <c>WorkerCatalogEnvCollection</c>, created for the same reason.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
