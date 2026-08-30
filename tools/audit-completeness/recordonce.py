@@ -630,6 +630,17 @@ def main(argv: list[str]) -> int:
     if skipped:
         print(f" -- generated changelog(s), not compared (#1367): {', '.join(skipped)}")
 
+    # #1431: docs/decisions/ holds decision records restored VERBATIM from the pre-reset tree,
+    # under an owner ruling that restored history is not edited — so the template boilerplate
+    # they share with each other (written before this checker existed) is not actionable
+    # duplication, and a marker inside one can point at a document that died in a reset. Only
+    # the records are exempt; every other changed file compares exactly as before.
+    restored = sorted(p for p in by_file if p.replace("\\", "/").startswith("docs/decisions/"))
+    for p in restored:
+        del by_file[p]
+    if restored:
+        print(f" -- restored decision records, not compared (#1431): {len(restored)} file(s)")
+
     print(f"record-once: {len(by_file)} changed file(s) against {base}")
     if not by_file:
         # An empty population passing looks exactly like a real pass, which is the failure this
