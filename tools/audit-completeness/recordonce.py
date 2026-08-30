@@ -595,6 +595,23 @@ def violations(by_file: dict[str, list[list[str]]], at=None) -> list[str]:
     return problems
 
 
+def excluded_from_comparison(path: str) -> str | None:
+    """main()'s population filters, extracted so the selfcheck can hold them still — they run
+    OUTSIDE the violations() path every other arm exercises, so a typo'd prefix here would
+    otherwise be invisible. Returns the reason a changed file is not compared, or None when it is:
+    "changelog" (#1367, release-please transcribes one commit line into every affected package's
+    changelog — mechanical duplication whose canonical home is the commit) or "restored-decision"
+    (#1431, docs/decisions/ holds records restored VERBATIM from the pre-reset tree under an owner
+    ruling that restored history is not edited, so their shared historical boilerplate is not
+    actionable). Filtered in main(), not added_lines_by_file, so --prove's historical
+    re-derivation sees exactly what it was pinned against."""
+    if generated_changelog(Path(path).name):
+        return "changelog"
+    if path.replace("\\", "/").startswith("docs/decisions/"):
+        return "restored-decision"
+    return None
+
+
 def main(argv: list[str]) -> int:
     if len(argv) > 1 and argv[1] == "--prove":
         ok, detail = prove(PROVEN_SHA, PROVEN_GROUPS)
@@ -620,15 +637,18 @@ def main(argv: list[str]) -> int:
         print("   CI needs actions/checkout with fetch-depth: 0 for this to work.", file=sys.stderr)
         return 1
 
-    # #1367: release-please transcribes ONE commit line into every affected package's
-    # changelog -- mechanical duplication of a record whose canonical home is the commit
-    # itself. Filtered here in main(), not in added_lines_by_file, so --prove's
-    # historical re-derivation sees exactly what it was pinned against.
-    skipped = sorted(p for p in by_file if generated_changelog(Path(p).name))
+    # Population filters — the why lives on excluded_from_comparison, which the selfcheck pins.
+    skipped = sorted(p for p in by_file if excluded_from_comparison(p) == "changelog")
     for p in skipped:
         del by_file[p]
     if skipped:
         print(f" -- generated changelog(s), not compared (#1367): {', '.join(skipped)}")
+
+    restored = sorted(p for p in by_file if excluded_from_comparison(p) == "restored-decision")
+    for p in restored:
+        del by_file[p]
+    if restored:
+        print(f" -- restored decision records, not compared (#1431): {len(restored)} file(s)")
 
     print(f"record-once: {len(by_file)} changed file(s) against {base}")
     if not by_file:

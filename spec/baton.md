@@ -563,9 +563,14 @@ composition never widens mid-room through any verb.
 
 ## §11 Register
 
-This document and the code it cites are the **only** registers. `docs/decisions/*`, `docs/design/*`,
-and the prior `spec/*` files are being deleted, not archived — there is nothing left to supersede or
-cross-reference, and a future reader will not find them. Every rule this document states was
+This document and the code it cites are the **only** registers. `docs/design/*` and the prior
+`spec/*` files are deleted, not archived — there is nothing left to supersede or cross-reference,
+and a future reader will not find them. `docs/decisions/*` was deleted the same way, then
+**partially restored** (#1431): the records still cited by live code are back verbatim under
+`docs/decisions/` as read-only history — never edited, resolved mechanically by the
+comment-citation gate — and the uncited rest remain reachable only through git history. A restored
+record is a citation target, not a register: this document still owns what is settled. Every rule
+this document states was
 previously justified by a decision record; that justification is now stated inline, in the section
 the rule belongs to, and the supersession apparatus (numbered decisions, "supersedes 0049"-style
 prose) is dropped entirely.

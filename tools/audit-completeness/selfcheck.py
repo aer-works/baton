@@ -1335,9 +1335,22 @@ def _recordonce_discriminates():
         f"record-once: {unmappable} no longer holds a byte cp1252 rejects, so neither this arm nor "
         "`audit-controls`' hostile-codec arm discriminates -- point both at a file that does")
 
+    # -- #1431/#1367: main()'s population filters run OUTSIDE the violations() path every arm
+    # above exercises, so a typo'd prefix or flipped branch there is invisible to all of them.
+    # Both directions per filter: what each must exclude, and near-miss paths it must not.
+    excl = rec.excluded_from_comparison
+    assert excl("docs/decisions/0001-two-nouns-workflow-and-session.md") == "restored-decision", (
+        "record-once: a restored decision record was not excluded from comparison")
+    assert excl("src/Aer.Flow/CHANGELOG.md") == "changelog", (
+        "record-once: a generated changelog was not excluded from comparison")
+    for near_miss in ("docs/decisionsx/0001-imposter.md", "docs/B.md", "src/A.cs",
+                      "docs/CHANGELOG-notes.md"):
+        assert excl(near_miss) is None, (
+            f"record-once: {near_miss} was excluded from comparison but is ordinary population")
+
     return (f"{len(polarities)} record-once polarities "
             f"({sum(1 for p in polarities if not p[2])} must NOT fire) + 9 exemption arms "
-            f"+ a non-cp1252 file read through git")
+            f"+ 6 population-filter polarities + a non-cp1252 file read through git")
 
 
 @check("the record-once checker still finds the passages it found in a real merge")
