@@ -872,7 +872,7 @@ reach:
 
 ---
 
-## Naming note (transitional)
+## Naming note
 
-The product converges on **Baton everywhere**: the CLI binary becomes `baton`, namespaces become `Baton.*`, state moves to `~/.baton`, and the surviving projects restructure to a one-binary, five-project tree (`src/Baton` engine, `src/Baton.Vendors`, `src/Baton.Cli` with `baton mcp` and `baton daemon` as verbs, `native/core`, two test projects). That rename lands as the FINAL PR of the reset series, after the code archives — every `Baton.*`/`baton` citation in this document refers to the current tree and is updated wholesale by that PR.
+The product converged on **Baton everywhere** (#1458): the CLI binary is `baton`, namespaces are `Baton.*`, state lives at `~/.baton`, and the tree is the one-binary, five-project shape this document describes throughout (`src/Baton` engine, `src/Baton.Vendors`, `src/Baton.Cli` with `baton mcp` and `baton daemon` as verbs, `native/core`, two test projects). Every `Baton.*`/`baton` citation in this document refers to the current tree.
 
