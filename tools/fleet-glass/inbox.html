@@ -1,0 +1,216 @@
+<!--
+  Fleet Glass — deliverables inbox (#1413, half 2 of the fleet-glass move-into-repo issue).
+
+  Sibling artifact to glass.html: same Claude.ai `mcp` capability, same "baton" connector, same
+  Worker + KV + auth. Newest-first list of lane deliverables pushed across rooms (title, room, age);
+  tap an item to render its markdown. A `?room=<name>` query string (as linked from glass.html's
+  room lanes) filters the list to one room -- clear it to see the whole fleet.
+
+  DATA CONTRACT (matches worker.js's deliverables_list / deliverable_read MCP tools):
+    deliverables_list({room?}) -> {items: [{id, room, artifact, title, pushed_at, content_hash,
+      withheld, stub_reason, verdict: {state, error, try}}, ...], count}
+    deliverable_read({id}) -> the item's full text: rendered markdown, or a withheld stub.
+
+  Navigation is client-side only (location.hash holds the selected id) -- there is no server-side
+  routing here, just two render modes over one fetched index.
+
+  Markdown rendering below is DELIBERATELY MINIMAL (headings, code fences, bold/italic, links,
+  bullet lists, paragraphs) -- enough for the artifact/report markdown this pipeline actually
+  produces, not a general CommonMark implementation. Everything is HTML-escaped before any markup is
+  applied, so unrecognised syntax degrades to plain, safe text rather than raw HTML injection.
+-->
+<title>Fleet Glass — Inbox</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FAFAF8; --ink:#232830; --ink-soft:#5A6372; --line:#E3E2DC; --card:#FFFFFF;
+  --accent:#0F766E;
+  --ok:#2E7D32; --run:#0B69C7; --warn:#B45309; --bad:#B3261E; --idle:#8A8F98;
+  --chip-ok:#E5F2E6; --chip-warn:#F8ECDD; --chip-bad:#F9E5E3; --chip-idle:#EEEFF1;
+  --mono:'IBM Plex Mono',ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#15181D; --ink:#E8EAEE; --ink-soft:#9AA3B0; --line:#2A2F38; --card:#1C2027;
+    --accent:#3FB8AC;
+    --ok:#66BB6A; --warn:#E0A458; --bad:#E57373; --idle:#7C828C;
+    --chip-ok:#1D2E1E; --chip-warn:#332818; --chip-bad:#331D1B; --chip-idle:#242830;
+  }
+}
+body{background:var(--paper); color:var(--ink); font:15px/1.55 'Public Sans',system-ui,sans-serif; margin:0; padding:20px 16px 60px;}
+main{max-width:38rem; margin:0 auto;}
+h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline;}
+h1 .fresh{font:400 .72rem var(--mono); color:var(--ink-soft);}
+h1 .navlink{font:500 .74rem 'Public Sans'; color:var(--accent); text-decoration:none;}
+.filter{font-size:.8rem; color:var(--ink-soft); margin:.4rem 0 1rem;}
+.filter a{color:var(--accent); text-decoration:none;}
+.item{border:1px solid var(--line); border-radius:12px; padding:.6rem .8rem; margin:.45rem 0; background:var(--card); cursor:pointer;}
+.item .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
+.item .title{font:500 .88rem 'Public Sans'; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.item .meta{font:400 .72rem var(--mono); color:var(--ink-soft); margin-top:.25rem;}
+.chip{font:600 .62rem/1 'Public Sans'; letter-spacing:.05em; padding:.28em .6em; border-radius:999px; white-space:nowrap;}
+.c-ok{background:var(--chip-ok); color:var(--ok);}
+.c-warn{background:var(--chip-warn); color:var(--warn);}
+.c-bad{background:var(--chip-bad); color:var(--bad);}
+.c-idle{background:var(--chip-idle); color:var(--idle);}
+.banner{border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:0 10px 10px 0; background:var(--card); padding:.7rem .9rem; margin:1rem 0; font-size:.85rem; color:var(--ink-soft);}
+.banner b{color:var(--ink);}
+.back{display:inline-block; margin-bottom:.8rem; font:500 .8rem 'Public Sans'; color:var(--accent); text-decoration:none; cursor:pointer;}
+.doc{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1rem 1.2rem;}
+.doc h1,.doc h2,.doc h3{font-family:'Sora',sans-serif; line-height:1.25;}
+.doc pre{background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:.7rem .9rem; overflow-x:auto;}
+.doc code{font-family:var(--mono); font-size:.86em;}
+.doc a{color:var(--accent);}
+.empty{color:var(--ink-soft); font-size:.85rem;}
+.mono{font-family:var(--mono); font-size:.9em;}
+footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:.6rem;}
+</style>
+<main>
+  <h1>Deliverables <span class="fresh" id="fresh">connecting…</span></h1>
+  <div><a class="navlink" href="glass.html">&larr; Fleet Glass</a></div>
+  <div class="filter" id="filter"></div>
+  <div id="banner"></div>
+  <div id="content"></div>
+  <footer>Fleet Glass inbox · same <span class="mono">baton</span> connector, same auth · read-only, no write verbs</footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function age(iso){
+  if(!iso) return null;
+  const ms = Date.now() - Date.parse(iso);
+  if(!isFinite(ms) || ms < 0) return null;
+  const m = Math.floor(ms/60000);
+  if(m < 1) return "just now";
+  if(m < 60) return m + "m";
+  const h = Math.floor(m/60);
+  if(h < 48) return h + "h";
+  return Math.floor(h/24) + "d";
+}
+
+function verdictChip(v){
+  const state = v && v.state;
+  if(state === "Succeeded") return ["OK","c-ok"];
+  if(state === "Failed") return ["FAILED","c-bad"];
+  if(!state) return ["?","c-idle"];
+  return [state.toUpperCase(),"c-idle"];
+}
+
+// Deliberately minimal — see the file header for what this does and does not render.
+function renderMarkdown(text){
+  const lines = esc(text ?? "").split("\n");
+  let html = "";
+  let inCode = false, inList = false;
+  const inline = (s) => s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/\*([^*]+)\*/g, "<i>$1</i>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, t, u) => /^https?:\/\//.test(u) ? `<a href="${u}" target="_blank" rel="noopener">${t}</a>` : m);
+  for(const raw of lines){
+    if(raw.trim().startsWith("```")){
+      html += inCode ? "</code></pre>" : "<pre><code>";
+      inCode = !inCode;
+      continue;
+    }
+    if(inCode){ html += raw + "\n"; continue; }
+    const heading = raw.match(/^(#{1,6})\s+(.*)$/);
+    if(heading){
+      if(inList){ html += "</ul>"; inList = false; }
+      const level = heading[1].length;
+      html += `<h${level}>${inline(heading[2])}</h${level}>`;
+      continue;
+    }
+    const bullet = raw.match(/^\s*[-*]\s+(.*)$/);
+    if(bullet){
+      if(!inList){ html += "<ul>"; inList = true; }
+      html += `<li>${inline(bullet[1])}</li>`;
+      continue;
+    }
+    if(inList){ html += "</ul>"; inList = false; }
+    if(raw.trim() === ""){ continue; }
+    html += `<p>${inline(raw)}</p>`;
+  }
+  if(inList) html += "</ul>";
+  if(inCode) html += "</code></pre>";
+  return html;
+}
+
+function itemRow(item){
+  const [label, cls] = verdictChip(item.verdict);
+  const a = age(item.pushed_at);
+  const withheld = item.withheld ? ` · <span title="${esc(item.stub_reason || "")}">withheld</span>` : "";
+  return `<div class="item" data-id="${esc(item.id)}">
+    <div class="top"><span class="title">${esc(item.title || item.artifact || item.id)}</span><span class="chip ${cls}">${label}</span></div>
+    <div class="meta">${esc(item.room)}${item.artifact ? " · " + esc(item.artifact) : ""} · ${a ? a + " ago" : "?"}${withheld}</div>
+  </div>`;
+}
+
+function renderList(items, roomFilter){
+  $("filter").innerHTML = roomFilter
+    ? `filtered to room <b>${esc(roomFilter)}</b> · <a href="inbox.html">clear</a>`
+    : "";
+  $("content").innerHTML = items.length
+    ? items.map(itemRow).join("")
+    : `<div class="empty">No deliverables ${roomFilter ? "for this room " : ""}yet.</div>`;
+  for(const el of document.querySelectorAll(".item")){
+    el.addEventListener("click", () => { location.hash = "#" + el.dataset.id; });
+  }
+}
+
+function renderDoc(item, text){
+  const [label, cls] = verdictChip(item && item.verdict);
+  const verdict = item && item.verdict;
+  const verdictLine = verdict
+    ? `<div class="meta">${esc(verdict.state || "?")}${verdict.error ? " — " + esc(verdict.error) : ""}${verdict.try ? " (" + esc(verdict.try) + ")" : ""}</div>`
+    : "";
+  $("content").innerHTML = `
+    <a class="back" id="back">&larr; back to inbox</a>
+    <h2>${esc((item && (item.title || item.artifact)) || "")} <span class="chip ${cls}">${label}</span></h2>
+    ${verdictLine}
+    <div class="doc">${renderMarkdown(text)}</div>`;
+  $("back").addEventListener("click", () => { location.hash = ""; });
+}
+
+(async () => {
+  const params = new URLSearchParams(location.search);
+  const roomFilter = params.get("room") || "";
+
+  const mcp = await claude.use("mcp");
+  if(!mcp){
+    $("banner").innerHTML = `<div class="banner"><b>No MCP in this view.</b> The deliverables feed comes from the <span class='mono'>baton</span> connector; this surface cannot reach connectors.</div>`;
+    $("fresh").textContent = "static";
+    return;
+  }
+
+  let index = [];
+  mcp.watchTool("baton", "deliverables_list", roomFilter ? { room: roomFilter } : {}, (ev) => {
+    if(ev.type === "data"){
+      let payload = ev.result.payload;
+      if(typeof payload === "string"){ try { payload = JSON.parse(payload); } catch { payload = null; } }
+      index = (payload && Array.isArray(payload.items)) ? payload.items : [];
+      $("fresh").textContent = `${index.length} item(s)`;
+      if(!location.hash) renderList(index, roomFilter);
+      return;
+    }
+    const e = ev.error || {};
+    $("banner").innerHTML = `<div class="banner"><b>Inbox feed unavailable</b> (${esc(e.code || "unknown")}). ${esc(e.message || "")}</div>`;
+  }, { refetchInterval: 30000, cache: { staleTime: 25000 } });
+
+  async function showSelected(){
+    const id = decodeURIComponent(location.hash.replace(/^#/, ""));
+    if(!id){ renderList(index, roomFilter); return; }
+    const item = index.find((m) => m.id === id) || { id };
+    mcp.watchTool("baton", "deliverable_read", { id }, (ev) => {
+      if(ev.type === "data"){
+        let text = ev.result.payload;
+        if(typeof text !== "string") text = JSON.stringify(text);
+        renderDoc(item, text);
+      }
+    }, { refetchInterval: 0 });
+  }
+  window.addEventListener("hashchange", showSelected);
+  showSelected();
+})();
+</script>
