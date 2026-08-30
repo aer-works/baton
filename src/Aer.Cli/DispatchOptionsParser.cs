@@ -15,17 +15,14 @@ public static class DispatchOptionsParser
         "Usage: aer dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]";
 
     /// <summary>
-    /// The hard ceiling <c>--timeout</c> refuses outright (#1442): a non-interactive CLI cannot ask
-    /// for the confirmation the issue proposed above 2h, so instead of an interactive prompt a value
-    /// this large is refused outright rather than risk a typo stranding a lane for a full day.
+    /// The hard ceiling <c>--timeout</c> refuses outright (#1442) — why refuse rather than confirm:
+    /// spec/baton.md §2.
     /// </summary>
     public const int MaxTimeoutMinutes = 24 * 60;
 
     /// <summary>
-    /// The caution threshold <c>--timeout</c> accepts but flags: <see cref="Aer.Cli.DispatchCommand"/>
-    /// prints a stderr warning above this, rather than refusing, since a value here is plausible for a
-    /// long-running orchestrator lane and not obviously a typo the way exceeding
-    /// <see cref="MaxTimeoutMinutes"/> is.
+    /// The caution threshold <c>--timeout</c> accepts but flags — <see cref="Aer.Cli.DispatchCommand"/>
+    /// prints the stderr warning above this; why warn rather than refuse: spec/baton.md §2.
     /// </summary>
     public const int WarnTimeoutMinutes = 120;
 

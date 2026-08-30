@@ -57,9 +57,7 @@ public static class DispatchCommand
             workspaceFact = $"Workspace: worktree of {workspace} at HEAD ({shortSha}) — uncommitted changes are not visible to the worker";
         }
 
-        // #1442: above the ceiling DispatchOptionsParser refuses outright; between the warn threshold
-        // and the ceiling it is merely disclosed, since a long-running orchestrator lane legitimately
-        // wants a value here and a non-interactive dispatch has no confirmation prompt to gate it behind.
+        // #1442: warn-don't-refuse above the caution threshold — rationale in spec/baton.md §2.
         if (options.Timeout is { } timeoutOverride && timeoutOverride > TimeSpan.FromMinutes(DispatchOptionsParser.WarnTimeoutMinutes))
         {
             Console.Error.WriteLine(
