@@ -4,7 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Baton.Status;
 
-// Lives in Baton, not Baton.Vendors: fleet_status (Baton.Mcp.Host) needs to read this registry
+// Lives in Baton, not Baton.Vendors: fleet_status (Baton.Cli's `baton mcp`, #1458: ex-Baton.Mcp.Host)
+// needs to read this registry
 // and deliberately has no Baton.Vendors project reference. The namespace stays Baton.Vendors so it
 // sits next to DaemonSettingsStore and the rest of AER's per-machine storage stores it is written from.
 namespace Baton.Vendors;

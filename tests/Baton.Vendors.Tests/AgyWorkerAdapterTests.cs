@@ -1349,9 +1349,8 @@ public class AgyWorkerAdapterTests
         var server = mcpDoc.RootElement.GetProperty("mcpServers").GetProperty("baton-memory-proposal");
         Assert.Equal("dotnet", server.GetProperty("command").GetString());
         var serverArgs = server.GetProperty("args").EnumerateArray().Select(a => a.GetString()).ToList();
-        // #1458: `mcp` is a verb on Baton.Cli.dll now, not its own Baton.Mcp.Host.dll -- asserted by
-        // exact args order, not just membership (a membership-only check is what let 3b ship this
-        // path with the verb missing and stay green).
+        // #1458: same args-order assertion as ClaudeWorkerAdapterTests' sibling test, and for the
+        // identical reason -- see that test's own doc comment (canonical).
         Assert.True(serverArgs.Count >= 3, "expected <dll path>, mcp, --memory-proposal-tool");
         Assert.EndsWith("Baton.Cli.dll", serverArgs[0], StringComparison.Ordinal);
         Assert.Equal("mcp", serverArgs[1]);

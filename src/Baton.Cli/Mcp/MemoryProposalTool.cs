@@ -5,8 +5,8 @@ namespace Baton.Cli.Mcp;
 /// <summary>
 /// The <c>memory-edit-proposal</c> tool (#801, per #672's "Minimal-form design" comment item 3): a
 /// worker calls this to propose an add/edit/delete against one fact file in the room's <c>memory/</c>
-/// directory. Composed the same way <see cref="YieldTool"/> is (decision 0035) — this project's
-/// composition root, not <see cref="Baton.Mcp.McpServerHost"/> itself, which has no idea this tool
+/// directory. Composed the same way <see cref="YieldTool"/> is (decision 0035) — <c>McpCommand</c>'s
+/// composition root, not <see cref="McpServerHost"/> itself, which has no idea this tool
 /// exists.
 /// <para>
 /// <b>This tool never writes <c>memory/</c>.</b> Decision 0044 owns the rule (its point 3:
@@ -24,8 +24,8 @@ public sealed class MemoryProposalTool(string captureDirectoryPath) : IMcpTool
 {
     /// <summary>
     /// The subdirectory name this tool's captures land under, relative to the execution's own
-    /// <c>BATON_OUTPUT_DIR</c> (#833). <c>Baton.Mcp.Host/Program.cs</c> is the only production caller
-    /// that combines this with an output directory; mirrored as a literal in
+    /// <c>BATON_OUTPUT_DIR</c> (#833). <c>McpCommand.cs</c> (#1458: ex-<c>Baton.Mcp.Host/Program.cs</c>)
+    /// is the only production caller that combines this with an output directory; mirrored as a literal in
     /// <see cref="Baton.Mutation.MemoryProposalEscalation"/>'s own constant of the same value
     /// (<c>Baton</c> cannot reference this project) -- the two must agree, which
     /// <c>MemoryProposalCaptureDirectoryNameTests</c> asserts on both sides.

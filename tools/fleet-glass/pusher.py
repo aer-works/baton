@@ -119,7 +119,8 @@ def rpc(proc: subprocess.Popen, req_id: int, method: str, params=None):
 def derive_snapshot(dll: str, roots: list) -> str:
     """Returns the rooms JSON exactly as fleet_status produced it (content[0].text)."""
     # #1458: dll now points at Baton.Cli.dll -- "mcp" is the verb that used to be the whole binary
-    # (Baton.Mcp.Host.dll's own Main), so it must be the first argument, ahead of the tool flags.
+    # (Baton.Mcp.Host.dll's own Main). Argv shape mirrors ClaudeWorkerAdapter's own
+    # EnsureMemoryProposalMcpConfig, the canonical explanation of why the verb comes first.
     proc = subprocess.Popen(
         ["dotnet", dll, "mcp", "--fleet-status-tool"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

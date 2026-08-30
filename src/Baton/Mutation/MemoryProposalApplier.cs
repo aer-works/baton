@@ -8,12 +8,12 @@ namespace Baton.Mutation;
 /// Applies one captured <see cref="MemoryProposalCapture"/> to a room's <c>memory/</c> directory
 /// (decision 0044 point 3, #672 item 2). Called ONLY on operator approval — see
 /// <see cref="MemoryProposalResolution"/>, the sole caller. Mirrors
-/// <c>Baton.Mcp.Host.MemoryProposalTool</c>'s capture shape as a duplicated record for the same
-/// cross-project-boundary reason <see cref="MemoryProposalEscalation.CaptureDirectoryName"/>
-/// documents: <c>Baton</c> cannot reference <c>Baton.Mcp.Host</c>. Both
-/// <c>MemoryProposalApplierTests</c> (this project) and <c>MemoryProposalToolTests</c>
-/// (<c>Baton.Mcp.Host</c>'s own) exercise the identical JSON shape so the two sides cannot drift
-/// unnoticed.
+/// <c>Baton.Cli.Mcp.MemoryProposalTool</c>'s (#1458: ex-<c>Baton.Mcp.Host.MemoryProposalTool</c>)
+/// capture shape as a duplicated record for the same cross-project-boundary reason
+/// <see cref="MemoryProposalEscalation.CaptureDirectoryName"/> documents: <c>Baton</c> cannot
+/// reference <c>Baton.Cli</c>. Both <c>MemoryProposalApplierTests</c> (this project) and
+/// <c>MemoryProposalToolTests</c> (<c>Baton.Cli.Tests</c>' own) exercise the identical JSON shape
+/// so the two sides cannot drift unnoticed.
 /// </summary>
 public static class MemoryProposalApplier
 {
@@ -468,5 +468,5 @@ public static class MemoryProposalApplier
     }
 }
 
-/// <summary>The structured shape a capture file holds, mirroring <c>Baton.Mcp.Host.MemoryProposalTool</c>'s own record of the same name.</summary>
+/// <summary>The structured shape a capture file holds, mirroring <c>Baton.Cli.Mcp.MemoryProposalTool</c>'s own record of the same name.</summary>
 public sealed record MemoryProposalCapture(string Operation, string TargetPath, string? Content, string Rationale);

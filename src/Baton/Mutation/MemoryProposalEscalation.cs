@@ -6,11 +6,11 @@ using Baton.Store;
 namespace Baton.Mutation;
 
 /// <summary>
-/// Turns a captured <c>Baton.Mcp.Host.MemoryProposalTool</c> call into room-journal held work (#801),
+/// Turns a captured <c>Baton.Cli.Mcp.MemoryProposalTool</c> call into room-journal held work (#801),
 /// so proposals reach the operator through the same escalation surface every other held item uses
 /// (<see cref="RoomMutationInterface"/>) rather than a new one -- for the design constraint, see
-/// <see cref="Baton.Mcp.Host.MemoryProposalTool"/> (#672 item 3).
-/// <!-- record-once-ok: #801 src/Baton.Mcp.Host/MemoryProposalTool.cs -->
+/// <c>Baton.Cli.Mcp.MemoryProposalTool</c> (#672 item 3, #1458: ex-<c>Baton.Mcp.Host.MemoryProposalTool</c>).
+/// <!-- record-once-ok: #801 src/Baton.Cli/Mcp/MemoryProposalTool.cs -->
 /// <para>
 /// Deliberately narrow: this class only turns a capture file into a dispatched <see cref="HeldWorkRef"/>.
 /// It never reads <c>memory/</c>, never applies a proposal, and never escalates or resolves one past
@@ -41,8 +41,8 @@ public static class MemoryProposalEscalation
 
     /// <summary>
     /// The capture subdirectory name relative to one execution's own <c>BATON_OUTPUT_DIR</c> (#833) --
-    /// mirrors <see cref="Baton.Mcp.Host.MemoryProposalTool.CaptureDirectoryName"/>'s own constant of
-    /// the identical value; <c>Baton</c> cannot reference <c>Baton.Mcp.Host</c> (the dependency runs
+    /// mirrors <c>Baton.Cli.Mcp.MemoryProposalTool.CaptureDirectoryName</c>'s own constant of
+    /// the identical value; <c>Baton</c> cannot reference <c>Baton.Cli</c> (the dependency runs
     /// the other way -- adapters and the tool host sit above the engine), so the literal is
     /// duplicated across the boundary rather than shared, the same way
     /// <c>HeldWorkReconciler.DefaultWorkflowJournalExistsProbe</c> already hardcodes <c>flow.jsonl</c>'s
@@ -104,7 +104,7 @@ public static class MemoryProposalEscalation
     /// mint a second ref for the same physical file under a different cwd (#801 review).
     /// Scope limit: dispatch keys on the file's presence alone; its JSON content is not validated
     /// here (a half-written file is never visible thanks to
-    /// <see cref="Baton.Mcp.Host.MemoryProposalTool"/>'s atomic write -- see its own remarks).
+    /// <c>Baton.Cli.Mcp.MemoryProposalTool</c>'s atomic write -- see its own remarks).
     /// </summary>
     public static async Task<RoomState> EscalateNewProposalsAsync(
         string captureDirectoryPath,
