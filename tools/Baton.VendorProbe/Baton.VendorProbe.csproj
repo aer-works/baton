@@ -5,7 +5,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>Aer.VendorProbe</RootNamespace>
+    <RootNamespace>Baton.VendorProbe</RootNamespace>
     <IsPackable>false</IsPackable>
     <!-- In the solution as of #1088 so CI compiles it — the claude-shaped agy grammar bug survived
          three versions because nothing ever built or tested this tool. Live probe RUNS stay human/paid;
@@ -14,7 +14,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="Aer.VendorProbe.Tests" />
+    <InternalsVisibleTo Include="Baton.VendorProbe.Tests" />
   </ItemGroup>
 
 </Project>

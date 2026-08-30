@@ -489,18 +489,18 @@ def _simple_mode_override():
     return PASS, "override restores the hook; =1 did not ungate on this version -- " + detail
 
 
-GATE_PROBE_PROJECT = os.path.join(HERE, "..", "Aer.GateProbe", "Aer.GateProbe.csproj")
+GATE_PROBE_PROJECT = os.path.join(HERE, "..", "Baton.GateProbe", "Baton.GateProbe.csproj")
 
 # The real hook handler, next to the probe's own output. `AgyWorkerAdapter.BuildHooksJson` names
 # exactly this assembly, so a check that runs it is running what ships rather than a stand-in.
 GATE_PROBE_HOOK_DLL = os.path.join(
-    HERE, "..", "Aer.GateProbe", "bin", "Debug", "net10.0", "Baton.Cli.dll")
+    HERE, "..", "Baton.GateProbe", "bin", "Debug", "net10.0", "Baton.Cli.dll")
 
 # What the adapter puts in BATON_HOOK_DENIED_TOOLS for a grant withholding the shell. The real handler
 # fail-closes without it (`agy.hook-env-inherited`), which would deny for the wrong reason.
 AGY_DENIED_TOOLS_FOR_A_SHELL_WITHHELD_GRANT = "agy:run_command"
 GATE_PROBE = os.path.join(
-    HERE, "..", "Aer.GateProbe", "bin", "Debug", "net10.0", "Aer.GateProbe.dll")
+    HERE, "..", "Baton.GateProbe", "bin", "Debug", "net10.0", "Baton.GateProbe.dll")
 
 
 def build_gate_probe():
@@ -524,7 +524,7 @@ def build_gate_probe():
         capture_output=True, text=True)
     if proc.returncode != 0:
         tail = (proc.stdout + proc.stderr).strip()[-400:]
-        return f"could not build Aer.GateProbe, so this arm would measure a stale binary: {tail}"
+        return f"could not build Baton.GateProbe, so this arm would measure a stale binary: {tail}"
     return None
 
 
@@ -541,7 +541,7 @@ def _adapter_flag_set_for(vendor):
 
     A check built on a hand-assembled flag list structurally cannot find the fifth, because the flag
     that suppresses the hook is by definition one the author did not think to include. So the argv
-    here is not written down anywhere in this file: Aer.GateProbeHost calls the real
+    here is not written down anywhere in this file: Baton.GateProbe calls the real
     ClaudeWorkerAdapter.Resolve and prints what it produced, placeholders and all.
 
     Polarity is on the WRITE PATH, not on the grant, and getting that wrong is instructive enough to
@@ -2287,7 +2287,7 @@ def _agy_hook_metacharacter_path():
     caught that too, along with the fact that nothing tied any arm to the adapter: FORMS was a
     literal, so a regression to the quoted form would have sailed past a check whose docstring calls
     itself the regression pin. Now the check runs the real `AgyWorkerAdapter.Resolve` via
-    Aer.GateProbe, reads the command out of the hooks.json it writes, FAILS if that command is no
+    Baton.GateProbe, reads the command out of the hooks.json it writes, FAILS if that command is no
     longer the bare three-token shape, and derives every arm from it:
 
     - shipped/bare      -- production's own command string, path substituted. The arm that matters.
@@ -2340,7 +2340,7 @@ def _agy_hook_metacharacter_path():
     try:
         rc, out, err = run(["dotnet", "exec", GATE_PROBE, "gemini", "--prompt", "Say OK."], cwd=wd)
         if rc != 0:
-            return INCONCLUSIVE, f"Aer.GateProbe failed rc={rc}: {(out + err)[-200:]}"
+            return INCONCLUSIVE, f"Baton.GateProbe failed rc={rc}: {(out + err)[-200:]}"
         target = json.loads(out.strip().splitlines()[-1])
         workspace = next(
             (a for a in target["args"]

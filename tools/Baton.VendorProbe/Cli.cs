@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace Aer.VendorProbe;
+namespace Baton.VendorProbe;
 
 /// <summary>
 /// Runs a vendor CLI. Deliberately <b>not</b> through a shell.

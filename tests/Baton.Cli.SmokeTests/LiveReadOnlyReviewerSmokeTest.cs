@@ -12,7 +12,7 @@ namespace Baton.Cli.SmokeTests;
 /// AER sees nothing but a missing artifact.
 /// </summary>
 /// <remarks>
-/// Excluded from <c>AerFlow.slnx</c> and default CI like its siblings. <c>pixi run smoke-readonly</c>;
+/// Excluded from <c>Baton.slnx</c> and default CI like its siblings. <c>pixi run smoke-readonly</c>;
 /// runbook at <c>docs/runbooks/live-claude-smoke.md</c>.
 /// </remarks>
 public class LiveReadOnlyReviewerSmokeTest

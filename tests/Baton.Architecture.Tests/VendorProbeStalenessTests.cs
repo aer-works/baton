@@ -1,4 +1,4 @@
-using Aer.VendorProbe;
+using Baton.VendorProbe;
 
 namespace Baton.Architecture.Tests;
 
@@ -92,7 +92,7 @@ public class VendorProbeStalenessTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            if (File.Exists(Path.Combine(dir.FullName, "AerFlow.slnx")))
+            if (File.Exists(Path.Combine(dir.FullName, "Baton.slnx")))
             {
                 return dir.FullName;
             }
@@ -100,6 +100,6 @@ public class VendorProbeStalenessTests
             dir = dir.Parent;
         }
 
-        throw new InvalidOperationException("Could not locate the repository root (no AerFlow.slnx found) from " + AppContext.BaseDirectory);
+        throw new InvalidOperationException("Could not locate the repository root (no Baton.slnx found) from " + AppContext.BaseDirectory);
     }
 }

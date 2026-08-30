@@ -23,7 +23,7 @@
     <!-- Pure-helper tests only. This project NEVER invokes a vendor CLI (no Cli.Invoke), so it is
          safe in CI where no vendor is authenticated; the live probe run stays `pixi run vendor-probe`,
          human and paid, exactly like the smoke tests. -->
-    <ProjectReference Include="..\..\tools\Aer.VendorProbe\Aer.VendorProbe.csproj" />
+    <ProjectReference Include="..\..\tools\Baton.VendorProbe\Baton.VendorProbe.csproj" />
   </ItemGroup>
 
 </Project>

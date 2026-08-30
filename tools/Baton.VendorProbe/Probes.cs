@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace Aer.VendorProbe;
+namespace Baton.VendorProbe;
 
 /// <summary>
 /// The capability checks. Each one names the surfaces it consulted, so an incomplete probe is

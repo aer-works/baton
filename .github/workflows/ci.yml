@@ -29,7 +29,7 @@ jobs:
               - 'src/**'
               - 'tests/**'
               - 'native/core/**'
-              - 'AerFlow.slnx'
+              - 'Baton.slnx'
               - 'Directory.Build.props'
               - 'coverage.runsettings'
               - 'pixi.toml'

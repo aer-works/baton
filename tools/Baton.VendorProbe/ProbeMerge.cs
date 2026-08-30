@@ -1,4 +1,4 @@
-namespace Aer.VendorProbe;
+namespace Baton.VendorProbe;
 
 /// <summary>
 /// Carries the findings a narrowed run did not re-probe (#647).

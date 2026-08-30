@@ -1,4 +1,4 @@
-using Aer.VendorProbe;
+using Baton.VendorProbe;
 
 namespace Baton.Architecture.Tests;
 

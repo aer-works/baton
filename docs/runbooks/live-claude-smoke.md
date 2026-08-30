@@ -26,7 +26,7 @@ a capability to rely on for future re-runs or for gates on other vendors (see
 pixi run smoke-claude
 ```
 
-This runs `dotnet test tests/Baton.Cli.SmokeTests`, which is **not** part of `AerFlow.slnx` — it
+This runs `dotnet test tests/Baton.Cli.SmokeTests`, which is **not** part of `Baton.slnx` — it
 never builds or runs as a side effect of `pixi run build`/`test`/`lint`, only from this task.
 
 The test (`LiveClaudeRunSmokeTest`) drives `RunCommand.ExecuteAsync` — the same call `Program.cs`

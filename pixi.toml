@@ -1,6 +1,6 @@
 [workspace]
 channels = ["conda-forge"]
-name = "aer-flow"
+name = "baton"
 # win-64 is the only support target (#1405, Windows-only). linux-64 stays solely as a dev-sandbox
 # accommodation -- Claude Code cloud sessions doing development work here -- not a support target.
 platforms = ["win-64", "linux-64"]
@@ -124,7 +124,7 @@ smoke-preflight = { cmd = "python -u tools/smoke-preflight/preflight.py" }
 # run in CI and are permanently a human action item; an agent session cannot close one. CLAUDE.md's
 # "Live-vendor smoke tests" section owns that rule and the reasoning; each task below adds only what
 # is specific to IT, and names the runbook to read first. `Baton.Cli.SmokeTests` sits outside
-# AerFlow.slnx so none of it runs as a side effect of `build`/`test`/`lint`.
+# Baton.slnx so none of it runs as a side effect of `build`/`test`/`lint`.
 #
 # Not in that set, despite the neighbouring names: smoke-preflight, vendor-survey and vendor-check
 # are all free and start no billable session -- each says so where it is defined.
@@ -151,7 +151,7 @@ smoke-mixed-vendor = { cmd = "dotnet test tests/Baton.Cli.SmokeTests --filter Fu
 # were ad-hoc shell, written once and thrown away; several rows were wrong as a result, most
 # expensively `--permission-prompt-tool`, which decision 0015 inverted its whole mechanism on.
 # See docs/runbooks/vendor-probe.md.
-vendor-probe = { cmd = "dotnet run --project tools/Aer.VendorProbe -- --out docs/vendor-capabilities.probe.json" }
+vendor-probe = { cmd = "dotnet run --project tools/Baton.VendorProbe -- --out docs/vendor-capabilities.probe.json" }
 
 # Vendor documentation survey (#527): the reading half of the same problem. `vendor-probe` above
 # measures the binaries; this mirrors both vendors' published documentation and harvests the
@@ -275,7 +275,7 @@ setup-hooks = { cmd = "git config core.hooksPath .githooks" }
 # so it runs in the ordinary dev loop — `pixi run test` runs the same comparison via
 # Baton.Architecture.Tests, which is what actually makes a vendor self-update surface. Exits non-zero
 # when a CLI has moved; says so plainly, and does not pass, when no vendor CLI is present to inspect.
-vendor-check = { cmd = "python tools/buildlock.py dotnet run --project tools/Aer.VendorProbe -- --check" }
+vendor-check = { cmd = "python tools/buildlock.py dotnet run --project tools/Baton.VendorProbe -- --check" }
 
 # Dispatches one AER workflow step to a worker via a real `baton run` and prints its output -- the
 # scaffolding an ad-hoc Node one-liner stood in for three times during the #513 cross-vendor

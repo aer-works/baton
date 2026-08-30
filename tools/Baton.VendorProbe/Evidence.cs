@@ -1,4 +1,4 @@
-namespace Aer.VendorProbe;
+namespace Baton.VendorProbe;
 
 /// <summary>
 /// Where a claim about a vendor CLI came from. The distinction exists because six claims in one

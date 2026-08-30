@@ -63,7 +63,7 @@ A room holds, at minimum: `room.json` (the room-kind marker — `BatonPaths.Room
 `BatonPaths.RoomBindingsFileName`, `BatonPaths.cs`), `flow.jsonl` (the workflow event log —
 §3), `artifacts/`, and, once terminal, `terminal.json` (§3). `snapshot.json` is present for any
 room that has been dispatched at least once — `fleet_status` treats its absence as "no bound
-snapshot" and reports it as an error entry rather than a state (`src/Baton.Mcp.Host/FleetStatusTool.cs`).
+snapshot" and reports it as an error entry rather than a state (`src/Baton.Cli/Mcp/FleetStatusTool.cs`).
 
 **There are two independent event logs, not one, and this spec states both honestly.**
 `flow.jsonl` is the workflow ledger — steps, executions, decisions — and everything in §3–§9 below
@@ -82,8 +82,8 @@ escalation, dormancy, and orchestrator assignment are the resident-orchestrator/
 `Baton.Daemon`'s `RoomTurnHost`/`RoomWakeBridge` implement, and that model has no referent left once
 the harness — not a resident presence — is the decider (§7). Worker join/rename and the workflow
 on/off switch belong to the interactive multi-participant chat room product `Baton.Ui`/`Baton.Mobile`
-served. I checked: neither `src/Baton.Cli` nor `src/Baton.Mcp.Host` reference
-`RoomMutationInterface`, `RoomEventLogReader`, or `RoomEventLogWriter` anywhere — the harness-facing
+served. I checked: `src/Baton.Cli` (including its folded-in `Mcp/` verb, the former standalone
+Baton.Mcp.Host project, #1458) references none of `RoomMutationInterface`, `RoomEventLogReader`, or `RoomEventLogWriter` — the harness-facing
 surface this spec describes has never touched `room.jsonl`, and `fleet_status` reads only the
 terminal sentinel, `snapshot.json`, and `flow.jsonl`
 (`FleetStatusTool.cs`) — never `room.jsonl`. Its type definitions stay in `Baton` because
@@ -296,7 +296,7 @@ write it `"field"?: Type`, not `Type | null` with a comment contradicting itself
 is **not** uniformly optional: `WorkflowStatusView` emits it as JSON `null` when absent (no
 `JsonIgnore` attribute, `WorkflowStatusView.cs`), while the `fleet_status` variant omits it
 entirely (`JsonIgnoreCondition.WhenWritingNull`, `FleetStepStatusView`,
-`src/Baton.Mcp.Host/FleetStatusTool.cs`), and the fleet variant additionally carries a
+`src/Baton.Cli/Mcp/FleetStatusTool.cs`), and the fleet variant additionally carries a
 `timestamp` field the terminal-sentinel shape does not have. `terminal.json` and `status --json` are
 one contract; `fleet_status` is a third, related shape with its own null-handling — see §6's schema.
 
@@ -348,7 +348,8 @@ whole of it.
 up to 180s for an `answer-<id>.json` to appear, denying via a `revoked-<id>.json` on timeout) and
 `PermissionReturnShape.cs` are gone, along with the daemon's `/api/rooms/permissions/answer` REST
 answerer and its own
-crash-reconciliation heal path (both previously in `src/Baton.Daemon/Program.cs`) — the two places that
+crash-reconciliation heal path (both previously in `DaemonHost.cs`, now `src/Baton.Cli/Daemon/DaemonHost.cs`
+after #1458 folded the standalone Baton.Daemon project's `Program.cs` into it) — the two places that
 ever wrote an `answer-<id>.json` file; `Baton.Cli` wrote none. Under this spec's harness-only surface,
 that tool had no answerer left; keeping it would have meant a worker blocking on a rendezvous file no
 code writes. **A lane is dispatched fully pre-cleared**: every capability a worker will need is
@@ -376,7 +377,7 @@ have. That gap is now moot rather than fixed, because the mechanism it was a gap
 ## §6 Fleet Glass — observability
 
 This is the entire user-facing surface, unconditionally. `fleet_status`
-(`src/Baton.Mcp.Host/FleetStatusTool.cs`) is a read-only MCP tool that scans rooms across the fleet: it
+(`src/Baton.Cli/Mcp/FleetStatusTool.cs`) is a read-only MCP tool that scans rooms across the fleet: it
 leverages the terminal-sentinel fast path for terminal rooms and projects active rooms from bound
 snapshots plus `flow.jsonl` when no sentinel exists yet (`FleetStatusTool.cs`). It reads
 `BatonPaths.Rooms` plus any caller-supplied extra `roots` and does not itself depend on a running daemon
@@ -385,7 +386,7 @@ process — it opens files directly (`FleetStatusTool.cs`).
 **Two-level drill-down, both levels of `fleet_status`'s MCP host, never a second application:** the
 tool's per-room summary (level one, `fleet_status` itself) is what exists today. Level two — a room's
 own `stdout` tail and `flow.jsonl` timeline, for debugging a specific lane — is now `room_detail`
-(`src/Baton.Mcp.Host/RoomDetailTool.cs`, #1427): a sibling tool in the same MCP host, gated by its own
+(`src/Baton.Cli/Mcp/RoomDetailTool.cs`, #1427): a sibling tool in the same MCP host, gated by its own
 `--room-detail-tool` flag in `Program.cs`, resolving a room by name or absolute path and returning a
 bounded (64 KiB) tail of an execution's `.stdout.log` plus a bounded (500-entry tail) projection of
 `flow.jsonl` (event type and writer-stamped timestamp per line, never the raw event payloads — both
@@ -401,7 +402,7 @@ one.
 
 The outbound push mailbox — the mechanism that would notify a harness of a state-change event without
 polling — is **(new build)**. There is no `push`, `mailbox`, or outbound-webhook-shaped
-component anywhere under `src/Baton.Mcp*` or `src/Baton.Daemon` at HEAD — nothing broadcast-shaped
+component anywhere under `src/Baton.Cli/Mcp` or `src/Baton.Cli/Daemon` at HEAD — nothing broadcast-shaped
 survives the daemon narrowing (`DaemonBroadcast` and `DoorbellMonitor` both died with it, #1417/#1420),
 so the "unbuilt" ruling stands with no surviving near-miss to distinguish it from. Quota data (§7)
 and gate-pending visibility both ride this mailbox once it exists; its transport (webhook,

@@ -5,13 +5,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>Aer.GateProbe</RootNamespace>
+    <RootNamespace>Baton.GateProbe</RootNamespace>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- The whole point: the argv this emits must come from the REAL adapter, not a copy of it.
-         That dependency is why this is NOT part of tools/Aer.VendorProbe, which deliberately
+         That dependency is why this is NOT part of tools/Baton.VendorProbe, which deliberately
          references nothing so it can interrogate a vendor CLI without depending on AER's build. -->
     <ProjectReference Include="../../src/Baton.Vendors/Baton.Vendors.csproj" />
     <!-- Referenced purely so MSBuild copies Baton.Cli.dll alongside this binary. ClaudeWorkerAdapter

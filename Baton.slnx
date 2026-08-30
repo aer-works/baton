@@ -5,8 +5,8 @@
     <Project Path="src/Baton.Cli/Baton.Cli.csproj" />
   </Folder>
   <Folder Name="/tools/">
-    <Project Path="tools/Aer.GateProbe/Aer.GateProbe.csproj" />
-    <Project Path="tools/Aer.VendorProbe/Aer.VendorProbe.csproj" />
+    <Project Path="tools/Baton.GateProbe/Baton.GateProbe.csproj" />
+    <Project Path="tools/Baton.VendorProbe/Baton.VendorProbe.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Baton.Tests/Baton.Tests.csproj" />
@@ -14,6 +14,6 @@
     <Project Path="tests/Baton.Architecture.Tests/Baton.Architecture.Tests.csproj" />
     <Project Path="tests/Baton.Cli.Tests/Baton.Cli.Tests.csproj" />
     <Project Path="tests/Baton.CrashTestHost/Baton.CrashTestHost.csproj" />
-    <Project Path="tests/Aer.VendorProbe.Tests/Aer.VendorProbe.Tests.csproj" />
+    <Project Path="tests/Baton.VendorProbe.Tests/Baton.VendorProbe.Tests.csproj" />
   </Folder>
 </Solution>

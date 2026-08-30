@@ -1,4 +1,4 @@
-namespace Aer.VendorProbe.Tests;
+namespace Baton.VendorProbe.Tests;
 
 /// <summary>
 /// The discriminating control the vendor probe never had (#1088). The suite recorded agy's structured

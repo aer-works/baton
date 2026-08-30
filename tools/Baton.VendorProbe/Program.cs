@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Aer.VendorProbe;
+namespace Baton.VendorProbe;
 
 /// <summary>
 /// Re-runnable probe of what each vendor CLI can actually do (#504).

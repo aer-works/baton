@@ -2,7 +2,7 @@ using System.Text.Json;
 using Baton.Vendors;
 using Baton.Domain;
 
-namespace Aer.GateProbe;
+namespace Baton.GateProbe;
 
 /// <summary>
 /// Prints the invocation a real <see cref="IWorkerAdapter"/> would dispatch, as JSON, so a check can
@@ -40,7 +40,7 @@ public static class Program
         if (args.Length < 1)
         {
             Console.Error.WriteLine(
-                "usage: Aer.GateProbe <claude|gemini> [--grant-writes] [--prompt <text>]\n" +
+                "usage: Baton.GateProbe <claude|gemini> [--grant-writes] [--prompt <text>]\n" +
                 "Prints {program, args, environment} for the adapter's resolved invocation.");
             return 2;
         }

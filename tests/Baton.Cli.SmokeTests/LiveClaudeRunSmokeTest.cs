@@ -12,7 +12,7 @@ namespace Baton.Cli.SmokeTests;
 /// aer-core M5 binding but to a stub or shell-stub worker; this is the first time this repo's own
 /// code ever reaches a live LLM.
 /// <para>
-/// <b>Deliberately excluded from <c>AerFlow.slnx</c>.</b> This project is not part of the solution
+/// <b>Deliberately excluded from <c>Baton.slnx</c>.</b> This project is not part of the solution
 /// <c>pixi run test</c>/<c>lint</c>/<c>fmt-check</c> or the CI workflow build against, so it never
 /// runs, builds, or restores as a side effect of any of those — matching Phase 4's plan ("cannot
 /// live in default CI"). It requires an authenticated <c>claude</c> CLI on PATH (a logged-in

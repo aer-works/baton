@@ -1,4 +1,4 @@
-namespace Aer.VendorProbe;
+namespace Baton.VendorProbe;
 
 /// <summary>
 /// Establishing whether a CLI <em>accepts</em> a flag, rather than whether its help mentions one.

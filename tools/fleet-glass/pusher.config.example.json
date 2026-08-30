@@ -1,6 +1,6 @@
 {
   "_comment": "Copy this file to pusher.config.json (gitignored) and fill in the real values. push_url/deliver_url embed the push token -- never commit the copy.",
-  "dll": "<absolute path to Baton.Mcp.Host.dll, e.g. C:\\path\\to\\aer-flow\\src\\Baton.Mcp.Host\\bin\\Debug\\net10.0\\Baton.Mcp.Host.dll>",
+  "dll": "<absolute path to Baton.Cli.dll (baton mcp), e.g. C:\\path\\to\\aer-flow\\src\\Baton.Cli\\bin\\Debug\\net10.0\\Baton.Cli.dll>",
   "push_url": "https://baton-fleet.<account-subdomain>.workers.dev/push/<PUSH_TOKEN>",
   "deliver_url": "",
   "interval_seconds": 25,
