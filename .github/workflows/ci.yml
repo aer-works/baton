@@ -214,9 +214,7 @@ jobs:
       - name: Lint
         run: pixi run lint
 
-      # #1458: native/core's own CI (aer-core, before the fold-in) ran `cargo test` on every push;
-      # this repo's CI only ever built the native lib (`build-core`, a plain `cargo build`). This
-      # step closes that gap so the folded-in state is equivalent to what aer-core's own CI covered.
+      # #1458: why this step exists is on pixi.toml's test-core task, the one canonical statement.
       - name: Rust test
         run: pixi run test-core
 

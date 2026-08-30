@@ -26,10 +26,9 @@ MSBUILDDISABLENODEREUSE = "1"
 # Builds native/core's native library. The Aer.Core.csproj ProjectReference (Aer.Flow ->
 # Aer.Core, M7 Phase 6's Core Dispatcher) copies this binary from native/core/target/debug/
 # into the output directory only if it already exists there, so this must run before any dotnet
-# task that touches Aer.Flow. aer-core was folded into this repo as plain tracked files (#1458,
-# native/core/PROVENANCE.md) -- the #845 uninitialized-submodule guard this task used to run first
-# is gone with the submodule it guarded: a fresh checkout of this repo (or worktree) always has
-# native/core populated, so there is nothing left for a tripwire to catch.
+# task that touches Aer.Flow. The fold-in (#1458 — what/why: CLAUDE.md's native/core section)
+# killed the #845 uninitialized-submodule guard this task used to run first: a fresh checkout or
+# worktree always has native/core populated now, so there is nothing left for a tripwire to catch.
 build-core = { cmd = "cargo build", cwd = "native/core" }
 
 # Runs aer-core's own test suite (#1458). Folded in from aer-core's own CI (`pixi run test` there
@@ -204,10 +203,9 @@ audit-completeness = { cmd = "python -u tools/audit-completeness/completeness.py
 # catalog through `aer templates --json`, so the audit leg needs a built Aer.Cli. It does NOT
 # need cargo — the NATIVE lib is copy-if-exists and the templates path
 # touches no P/Invoke — but it DOES need native/core present: Aer.Flow hard-references its
-# managed binding project (Aer.Core.csproj), which is source, not a build product. Since #1458
-# folded native/core into this repo as plain tracked files, an ordinary checkout already has it;
-# no submodule step is needed. Deliberately no build-core dependency: rust-free is what keeps the
-# leg ~a minute.
+# managed binding project (Aer.Core.csproj), which is source, not a build product. Post-#1458 an
+# ordinary checkout already carries native/core, no submodule step. Deliberately no build-core
+# dependency: rust-free is what keeps the leg ~a minute.
 build-cli = { cmd = "python tools/buildlock.py dotnet build src/Aer.Cli" }
 audit-selfcheck = { cmd = "python -u tools/audit-completeness/selfcheck.py" }
 audit-controls = { cmd = "python -u tools/audit-completeness/controls.py" }

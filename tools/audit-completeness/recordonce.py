@@ -609,6 +609,12 @@ def excluded_from_comparison(path: str) -> str | None:
         return "changelog"
     if path.replace("\\", "/").startswith("docs/decisions/"):
         return "restored-decision"
+    if path.replace("\\", "/").startswith("native/core/"):
+        # #1458: the aer-core fold-in imports a byte-verified snapshot whose canonical register is
+        # the archived source repo (native/core/PROVENANCE.md names it). Its internal shared
+        # phrasing predates this repo's registers, and rewording vendored files to satisfy this
+        # gate would break snapshot fidelity — same restored-verbatim logic as docs/decisions/.
+        return "vendored-snapshot"
     return None
 
 
