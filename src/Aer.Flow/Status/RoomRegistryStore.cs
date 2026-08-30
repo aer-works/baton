@@ -26,18 +26,16 @@ public sealed record RoomRegistryEntry(
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Append-only, not a rewritten JSON map.</b> Every worker-role/template dispatch that creates a
-/// room is a separate, potentially concurrent <c>aer</c> process — that concurrency is the entire
-/// reason a fleet-wide registry exists. A last-writer-wins map would need a read-modify-write cycle
-/// on every registration; the fix below is what makes that safe without one.
+/// <b>Append-only, not a rewritten JSON map.</b> Registrations come from separate, potentially
+/// concurrent <c>aer</c> processes (the very situation the registry exists for — spec/baton.md §8
+/// carries the design rationale); appending sidesteps the cross-process read-modify-write a
+/// rewritten map would force onto every registration.
 /// </para>
 /// <para>
 /// <b>Every access is serialized by a named, machine-wide <see cref="Mutex"/>.</b> <c>FileMode.Append</c>
 /// does <em>not</em> give atomic, non-interleaving writes across separate .NET processes on Windows —
-/// measured directly with no lock and no <c>FileShare</c> restriction at all: six concurrent processes
-/// each appending under <c>FileMode.Append</c>/<c>FileShare.ReadWrite</c> lost roughly a fifth of their
-/// lines, some surviving as two JSON objects concatenated with no newline between them (which then
-/// fails to parse and both entries vanish). <see cref="AppendAsync"/> itself opens with the narrower
+/// spec/baton.md §8 records the measurement (unlocked concurrent appenders losing ~1/5 of their
+/// lines, some corrupted into unparseable concatenations). <see cref="AppendAsync"/> itself opens with the narrower
 /// <c>FileShare.Read</c> (an exclusive write lock, the same choice <see cref="Aer.Flow.Store.FlowEventLogWriter"/>
 /// makes) — that alone stops the byte-level interleaving above, but it does not stop losses: without
 /// the <see cref="Mutex"/>, a second concurrent writer would get a sharing-violation
@@ -48,8 +46,7 @@ public sealed record RoomRegistryEntry(
 /// and writes, so a concurrent writer waits and then succeeds instead of losing its registration to a
 /// sharing violation — which is what actually delivers "last-writer-wins per room, folded on read"
 /// (<see cref="ReadDistinctByRoomAsync"/>) without a single registration lost.
-/// <c>RoomRegistryStoreTests.Concurrent_appends_from_many_tasks_lose_no_entries</c> drives this at the
-/// store's public API with many concurrent writers.
+/// The no-lost-entries guarantee is pinned by a many-writer test in <c>RoomRegistryStoreTests</c>.
 /// </para>
 /// <para>
 /// <b>Why every critical section is synchronous, wrapped in one <c>Task.Run</c>, rather than async all

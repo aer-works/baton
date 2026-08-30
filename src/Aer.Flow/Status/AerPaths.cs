@@ -123,9 +123,8 @@ public static class AerPaths
 
     /// <summary>
     /// <c>{Root}/room-registry.jsonl</c> — see <see cref="RoomRegistryStore"/> (spec/baton.md §8) for what
-    /// this holds: one append-only line per room registration (room path, project root, created-at),
-    /// letting <c>fleet_status</c> find rooms dispatched into a project directory nobody passed as a
-    /// scan root.
+    /// this holds: one append-only line per room registration (room path, project root, created-at).
+    /// The coverage guarantee this buys is stated once, in <c>FleetStatusTool</c>'s remarks.
     /// </summary>
     public static string RoomRegistryFile => Path.Combine(Root, RoomRegistryFileName);
 

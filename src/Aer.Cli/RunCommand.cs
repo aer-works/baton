@@ -298,20 +298,18 @@ public static class RunCommand
     /// <summary>
     /// spec/baton.md §8: records this room into the machine-local multi-project registry so
     /// <c>fleet_status</c> can find it even outside any root a caller happens to scan. Runs on every
-    /// call to <see cref="ExecuteAsync"/> — a fresh dispatch, or a repeated <c>aer run</c> against a
-    /// room this same pump already started — rather than only when <see cref="RunOptions.RoomDirectoryPath"/>
+    /// call to <see cref="ExecuteAsync"/> (first start and re-entry through this pump alike;
+    /// spec/baton.md §8 names which verbs those are) — rather than only when <see cref="RunOptions.RoomDirectoryPath"/>
     /// has no snapshot yet, so a registration lost to an earlier crash (the process died between
     /// <see cref="Directory.CreateDirectory(string)"/> above and this write) is repaired by the next
     /// call through this pump rather than staying permanently unregistered. Re-registering an
     /// already-registered room is harmless: <see cref="RoomRegistryStore.ReadDistinctByRoomAsync"/>
     /// folds repeats down to the last write per room path.
     /// <para>
-    /// This does <b>not</b> cover the separate <c>aer resume</c>/<c>decide</c>/<c>supply</c> mutation
-    /// verbs (<see cref="ResumeCommand"/> and friends) — those only ever act against a room <c>aer
-    /// run</c>/<c>dispatch</c> already created, never through this pump, so they never re-register. A
-    /// room whose very first registration attempt failed and is thereafter driven only through one of
-    /// those verbs stays unregistered until the next plain <c>aer run</c>/<c>dispatch</c> against it —
-    /// an accepted gap, not a claim this comment makes.
+    /// The mutation verbs (<see cref="ResumeCommand"/> and friends) bypass this pump and therefore
+    /// never re-register — spec/baton.md §8 spells out which verbs register and the accepted gap
+    /// that leaves (an initially-failed registration driven only by mutation verbs stays
+    /// unregistered until the pump next runs against that room).
     /// </para>
     /// <para>
     /// Never gates the run: the registry only adds <c>fleet_status</c> coverage, so a write failure

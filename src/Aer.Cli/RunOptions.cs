@@ -50,8 +50,8 @@ namespace Aer.Cli;
 /// open gap (see the PR this flag shipped in).
 /// </param>
 /// <param name="ProjectRootDirectory">
-/// The project/workspace directory this room's dispatch belongs to, recorded into the spec/baton.md §8
-/// multi-project room registry (<see cref="Aer.Adapters.RoomRegistryStore"/>) alongside <paramref name="RoomDirectoryPath"/>
+/// The project/workspace directory this room's dispatch belongs to, recorded by
+/// <see cref="Aer.Adapters.RoomRegistryStore"/> (spec/baton.md §8's registry) alongside <paramref name="RoomDirectoryPath"/>
 /// so <c>fleet_status</c> can find and group the room even when its directory sits outside every root
 /// a caller happens to scan. Null resolves to the process cwd at the moment <see cref="RunCommand.ExecuteAsync"/>
 /// runs — correct for a bare <c>aer run</c>, which has no separate workspace concept; <c>aer dispatch</c>
