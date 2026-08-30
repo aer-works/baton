@@ -9,7 +9,7 @@ pinned once in the reference's dated history table (#952).
 ## How coverage is established
 
 Both vendors publish a machine-readable index, mirrored locally and read from source rather than
-page-at-a-time (a summarizing fetch is lossy — see `documentation-lessons.md` #16):
+page-at-a-time (a summarizing fetch is lossy):
 
 - **`claude`** — `https://code.claude.com/docs/llms.txt`, **172 pages**, each fetchable as raw `.md`.
 - **`agy`** — `https://antigravity.google/llms.txt` + `sitemap.xml`, **77 doc pages**, server-rendered
@@ -178,7 +178,7 @@ reason it cannot be run. **Struck rows are re-runnable via `pixi run vendor-veri
 makes striking one safe across a vendor version bump.
 
 **Two rows turned out to be wrong as written**, not merely unverified. Both are corrected in place
-rather than deleted, so the wrong version does not get re-derived by a later reader (`documentation-lessons.md` #14).
+rather than deleted, so the wrong version does not get re-derived by a later reader.
 
 #### A. Shapes a decision currently in flight
 
