@@ -4,7 +4,7 @@ Baton is a vendor-neutral worker-room engine an agent harness drives: it dispatc
 agents (`claude`, `agy`) as workers inside durable, auditable rooms, and reports completion through
 a machine contract.
 
-Built in .NET, it reads structured workflow definitions, dispatches them to Workers, and bridges outputs back to the engine.
+Built in .NET, it parses a declared workflow, hands each step's work to a Worker, and folds the result back into the run.
 
 ## Documentation
 

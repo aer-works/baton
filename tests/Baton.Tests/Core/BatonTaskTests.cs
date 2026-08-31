@@ -5,9 +5,10 @@ namespace Baton.Tests.Core;
 
 /// <summary>
 /// Exercises the managed <see cref="BatonTask"/> surface: config validation, disposal, run-once
-/// enforcement, and happy-path event shape. Ported from the deleted aer-core .NET binding's own
-/// <c>Baton.Core.Tests\BatonTaskTests.cs</c> (#1474) — Windows-only now (spec/baton.md C-10), so the
-/// cross-platform command branching that file carried is gone; only the Windows arm survives.
+/// enforcement, and happy-path event shape. Carried over (#1474) from the same-named file the
+/// deleted aer-core .NET binding kept under <c>Baton.Core.Tests\</c> — Windows-only now
+/// (spec/baton.md C-10), so the cross-platform command branching that file carried is gone; only
+/// the Windows arm survives.
 /// </summary>
 public class BatonTaskTests
 {

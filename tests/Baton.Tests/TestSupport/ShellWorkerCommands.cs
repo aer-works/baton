@@ -51,9 +51,9 @@ internal static class ShellWorkerCommands
     /// </summary>
     public static CoreDispatchTarget FailOnFirstAttemptThenSucceed(string markerFilePath, string outputName, string content) => OperatingSystem.IsWindows()
         ? new CoreDispatchTarget(
-            // No quotes around markerFilePath: embedding a literal '"' in a single cmd argument
-            // does not survive the managed spawn path's own Windows argument quoting
-            // (ProcessStartInfo.ArgumentList) intact, and a GUID-based temp path never contains
+            // No quotes around markerFilePath: BatonTask's spawn path assembles each ArgumentList
+            // entry through .NET's own Windows quoting rules, which would rewrite an embedded '"'
+            // rather than pass it through untouched -- and a GUID-based temp path never contains
             // spaces, so quoting buys nothing here — matches
             // this file's other Windows commands, none of which quote a path either.
             "cmd",
