@@ -1,13 +1,15 @@
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Store;
 
 namespace Baton.Cli.Tests;
 
 /// <summary>
-/// #1495 second-reader finding: nothing exercised <see cref="CancelRequestPoller.TickAsync"/> directly
-/// before this file. Covers the too-late no-op (a request naming an execution that is not currently
-/// registered must be consumed, not left pending forever) and <see cref="CancelRequestPoller.RunAsync"/>'s
-/// own resilience contract (a single tick's fault must never escape the loop).
+/// #1495 / PR #1528: unit-level tests against <see cref="CancelRequestPoller.TickAsync"/> and
+/// <see cref="CancelRequestPoller.RunAsync"/>. Covers successful delivery, the false-but-settled
+/// consume path, the false-but-still-running retry and deferred delivery path, retry exhaustion
+/// rejecting with the #1530 reason, poller reject branches for <c>latest</c> with reason in body,
+/// and <see cref="CancelRequestPoller.RunAsync"/>'s own resilience contract.
 /// </summary>
 public class CancelRequestPollerTests
 {
@@ -17,19 +19,81 @@ public class CancelRequestPollerTests
         WorkflowTemplateVersion: 1,
         Steps: [new WorkflowStepDefinition(new StepId("a"), "a", [], ["out"], [], new RetryPolicy(1))]);
 
+    private static readonly WorkflowDefinitionSnapshot TwoStepSnapshot = new(
+        new WorkflowDefinitionSnapshotId("snapshot-2"),
+        new WorkflowTemplateId("poller-test-2"),
+        WorkflowTemplateVersion: 1,
+        Steps:
+        [
+            new WorkflowStepDefinition(new StepId("a"), "a", [], ["out_a"], [], new RetryPolicy(1)),
+            new WorkflowStepDefinition(new StepId("b"), "b", [], ["out_b"], [], new RetryPolicy(1)),
+        ]);
+
+    private static ExecutionRequest MakeRequest(ExecutionId executionId, StepId stepId)
+        => new(
+            executionId,
+            new WorkflowId("poller-test"),
+            stepId,
+            "worker",
+            Inputs: [],
+            Outputs: [],
+            Timeout: TimeSpan.FromMinutes(10),
+            Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
     [Fact]
-    public async Task A_request_naming_an_execution_not_currently_registered_is_consumed_as_a_too_late_no_op()
+    public async Task Successful_delivery_when_registry_holds_target_delivers_and_consumes()
     {
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
         Directory.CreateDirectory(roomDirectory);
         try
         {
             var logPath = Path.Combine(roomDirectory, "flow.jsonl");
-            await CancelRequestFile.WriteAsync(roomDirectory, "not-currently-in-flight", TestContext.Current.CancellationToken);
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                var execId = new ExecutionId("exec-1");
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
 
-            // An empty registry: nothing is registered under any ExecutionId, so
-            // RequestCancellationAsync necessarily returns false (InFlightExecutionRegistry.cs:44-47) --
-            // the too-late shape this test pins.
+                var registry = new InFlightExecutionRegistry();
+                registry.Bind(writer);
+                var token = registry.Register(execId);
+
+                await CancelRequestFile.WriteAsync(roomDirectory, "exec-1", TestContext.Current.CancellationToken);
+
+                await CancelRequestPoller.TickAsync(
+                    roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+                var requestPath = CancelRequestFile.GetPath(roomDirectory);
+                Assert.False(File.Exists(requestPath), "expected the request to be consumed");
+                Assert.True(File.Exists($"{requestPath}.consumed"), "expected .consumed sibling to exist");
+                Assert.True(token.IsCancellationRequested, "expected registry to signal cancellation");
+            }
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task A_request_naming_an_execution_not_currently_registered_and_not_running_is_consumed_as_a_too_late_no_op()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            // Settled execution in log (Succeeded):
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                var execId = new ExecutionId("exec-settled");
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionSucceeded(execId), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "exec-settled", TestContext.Current.CancellationToken);
+
+            // An empty registry: not in flight, but also no longer projecting Running -> genuinely settled.
             var registry = new InFlightExecutionRegistry();
 
             await CancelRequestPoller.TickAsync(
@@ -38,6 +102,171 @@ public class CancelRequestPollerTests
             var requestPath = CancelRequestFile.GetPath(roomDirectory);
             Assert.False(File.Exists(requestPath), "expected the request to be consumed, not left pending");
             Assert.True(File.Exists($"{requestPath}.consumed"));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task False_but_still_running_execution_is_left_pending_then_delivered_on_later_tick_after_registration()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-racing");
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "exec-racing", TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+            registry.Bind(writer);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+
+            // Tick 1: Not yet registered in registry, but STILL Running in projection -> left pending.
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+            Assert.True(File.Exists(requestPath), "request must remain pending while target still projects Running");
+            Assert.False(File.Exists($"{requestPath}.consumed"));
+            Assert.False(File.Exists($"{requestPath}.rejected"));
+
+            // Register the execution now (simulating registration closing the race gap).
+            var token = registry.Register(execId);
+
+            // Tick 2: Now registered -> delivered and consumed!
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+            Assert.False(File.Exists(requestPath), "request must be consumed on successful retry");
+            Assert.True(File.Exists($"{requestPath}.consumed"));
+            Assert.True(token.IsCancellationRequested);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task Retry_exhaustion_after_5_still_running_ticks_rejects_with_reason_in_body()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-non-process");
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "exec-non-process", TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+            registry.Bind(writer);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+
+            // Ticks 1 to 4: Left pending.
+            for (var i = 1; i <= 4; i++)
+            {
+                await CancelRequestPoller.TickAsync(
+                    roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+                Assert.True(File.Exists(requestPath), $"request must remain pending on tick {i}");
+            }
+
+            // Tick 5: Reaches 5th still-running tick -> rejected!
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+            Assert.False(File.Exists(requestPath), "request must not remain pending after 5 retries");
+            var rejectedPath = $"{requestPath}.rejected";
+            Assert.True(File.Exists(rejectedPath), "expected .rejected sibling to exist");
+
+            var rejected = await CancelRequestFile.TryReadRejectedAsync(rejectedPath, TestContext.Current.CancellationToken);
+            Assert.NotNull(rejected);
+            Assert.Equal("exec-non-process", rejected.Target);
+            Assert.Contains("target still running but not reachable through the in-flight registry (likely non-process work, #1530)", rejected.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task Latest_requested_with_zero_running_rejects_with_reason_in_body()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            // Empty log: no running steps.
+            await File.WriteAllTextAsync(logPath, string.Empty, TestContext.Current.CancellationToken);
+            await CancelRequestFile.WriteAsync(roomDirectory, CancelRequestFile.LatestTarget, TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.False(File.Exists(requestPath));
+            var rejectedPath = $"{requestPath}.rejected";
+            Assert.True(File.Exists(rejectedPath));
+
+            var rejected = await CancelRequestFile.TryReadRejectedAsync(rejectedPath, TestContext.Current.CancellationToken);
+            Assert.NotNull(rejected);
+            Assert.Equal(CancelRequestFile.LatestTarget, rejected.Target);
+            Assert.Contains("'latest' requested, but no execution is currently Running", rejected.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task Latest_requested_with_two_running_rejects_with_reason_in_body()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                var execA = new ExecutionId("exec-a");
+                var execB = new ExecutionId("exec-b");
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execA, new StepId("a"))), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execB, new StepId("b"))), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, CancelRequestFile.LatestTarget, TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, TwoStepSnapshot, registry, TestContext.Current.CancellationToken);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.False(File.Exists(requestPath));
+            var rejectedPath = $"{requestPath}.rejected";
+            Assert.True(File.Exists(rejectedPath));
+
+            var rejected = await CancelRequestFile.TryReadRejectedAsync(rejectedPath, TestContext.Current.CancellationToken);
+            Assert.NotNull(rejected);
+            Assert.Equal(CancelRequestFile.LatestTarget, rejected.Target);
+            Assert.Contains("2 executions are currently Running", rejected.Reason);
+            Assert.Contains("ambiguous", rejected.Reason);
         }
         finally
         {

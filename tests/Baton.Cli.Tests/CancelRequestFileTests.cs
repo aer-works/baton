@@ -97,7 +97,7 @@ public class CancelRequestFileTests
     }
 
     [Fact]
-    public void Reject_renames_the_file_to_a_rejected_sibling_and_never_throws()
+    public async Task Reject_writes_the_reason_and_target_to_the_rejected_sibling_and_never_throws()
     {
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
         Directory.CreateDirectory(roomDirectory);
@@ -106,10 +106,50 @@ public class CancelRequestFileTests
             var path = CancelRequestFile.GetPath(roomDirectory);
             File.WriteAllText(path, "garbage");
 
-            CancelRequestFile.Reject(path, "test reason");
+            CancelRequestFile.Reject(path, "exec-999", "test reason");
 
             Assert.False(File.Exists(path));
-            Assert.True(File.Exists($"{path}.rejected"));
+            var rejectedPath = $"{path}.rejected";
+            Assert.True(File.Exists(rejectedPath));
+            var rejected = await CancelRequestFile.TryReadRejectedAsync(rejectedPath, TestContext.Current.CancellationToken);
+            Assert.NotNull(rejected);
+            Assert.Equal("exec-999", rejected.Target);
+            Assert.Equal("test reason", rejected.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public void DeleteStalePendingRequest_sweeps_a_pending_request_to_swept_and_never_touches_siblings()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var pendingPath = CancelRequestFile.GetPath(roomDirectory);
+            var consumedPath = $"{pendingPath}.consumed";
+            var rejectedPath = $"{pendingPath}.rejected";
+            var sweptPath = $"{pendingPath}.swept";
+
+            File.WriteAllText(pendingPath, """{"Target":"pending-exec"}""");
+            File.WriteAllText(consumedPath, """{"Target":"consumed-exec"}""");
+            File.WriteAllText(rejectedPath, """{"Target":"rejected-exec","Reason":"prior rejection"}""");
+            File.WriteAllText(sweptPath, """{"Target":"prior-swept-exec"}""");
+
+            CancelRequestFile.DeleteStalePendingRequest(roomDirectory);
+
+            Assert.False(File.Exists(pendingPath), "pending cancel.request must be swept");
+            Assert.True(File.Exists(sweptPath), "cancel.request.swept must exist");
+            Assert.Equal("""{"Target":"pending-exec"}""", File.ReadAllText(sweptPath));
+
+            Assert.True(File.Exists(consumedPath), "consumed sibling must not be touched");
+            Assert.Equal("""{"Target":"consumed-exec"}""", File.ReadAllText(consumedPath));
+
+            Assert.True(File.Exists(rejectedPath), "rejected sibling must not be touched");
+            Assert.Equal("""{"Target":"rejected-exec","Reason":"prior rejection"}""", File.ReadAllText(rejectedPath));
         }
         finally
         {

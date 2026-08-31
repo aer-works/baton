@@ -187,12 +187,23 @@ public static class RunCommand
                 pollCancellation.Cancel();
                 try
                 {
+                    // Await the poller task before pollCancellation disposes so unobserved faults are drained cleanly while the CTS is still valid.
                     await pollTask.ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
                     // Expected: pollCancellation firing mid-tick (e.g. mid ReadAllAsync) surfaces here,
                     // not as a fault the run's own result should carry.
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        Console.Error.WriteLine($"cancel.request poller faulted during shutdown: {ex.Message}");
+                    }
+                    catch
+                    {
+                    }
                 }
             }
         }

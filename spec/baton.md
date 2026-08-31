@@ -201,10 +201,14 @@ one (`RunningExecutionResolver.cs`). Against a room whose `baton run` pump is st
 mutation call cannot win `flow.lock` — `cancel` catches that specific `WorkflowLockedException` and
 writes a room-scoped `cancel.request` file instead (`CancelRequestFile.cs`), which the pump itself
 polls at a modest cadence without ever contending the lock (`CancelRequestPoller.cs`) and delivers
-through the same `FlowEvent.CancellationRequested` path `MutationInterface` already uses. This is the
-arrest half of §10's "only cancellation-then-restart" ruling, not a reopening of it: nothing here
-reaches into a running worker to redirect it — it only makes the existing stop-then-`redispatch`
-sequence reachable from outside the lane's own process.
+through the same `FlowEvent.CancellationRequested` path `MutationInterface` already uses. The
+fall-through path re-resolves `latest` at poll time (arresting whatever is running then), whereas the
+direct path cancels the execution resolved at command time; on the fall-through path, zero or more
+than one Running at act time lands as a `.rejected` record in the room (with the diagnostic reason
+written in its body), rather than a terminal command-line refusal. This is the arrest half of §10's
+"only cancellation-then-restart" ruling, not a reopening of it: nothing here reaches into a running
+worker to redirect it — it only makes the existing stop-then-`redispatch` sequence reachable from
+outside the lane's own process.
 
 ---
 

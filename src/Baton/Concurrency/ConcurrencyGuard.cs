@@ -212,10 +212,14 @@ public sealed class ConcurrencyGuard : IDisposable
     {
         var baseMsg = $"Directory '{roomDirectoryPath}' is already locked ('{lockFileName}') by another Flow instance — either a live " +
             "'baton run' pump, or a background component that takes this directory's lock briefly (a room's " +
-            "memory-proposal sweep does this while escalating a new proposal). Against a live pump specifically, " +
-            "'baton cancel' from a second terminal (#1495) falls through to a room-scoped cancel.request file " +
-            "that pump polls on its own — not immediate, and not delivered at all if this hold turns out to be " +
-            "the brief, unrelated kind instead of a live pump.";
+            "memory-proposal sweep does this while escalating a new proposal).";
+
+        if (string.Equals(lockFileName, FlowLockFileName, StringComparison.Ordinal))
+        {
+            baseMsg += " Against a live pump specifically, 'baton cancel' from a second terminal (#1495) falls through to a room-scoped " +
+                "cancel.request file that pump polls on its own — not immediate, and not delivered at all if this hold turns out to be " +
+                "the brief, unrelated kind instead of a live pump.";
+        }
 
         if (holder != null && !string.IsNullOrWhiteSpace(holder.HolderDescription))
         {

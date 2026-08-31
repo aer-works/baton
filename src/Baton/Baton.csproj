@@ -27,7 +27,8 @@
          DaemonHostTests isolate BatonPaths.Root through a scope rather than mutating process
          environment. (Baton.Vendors' own readers, WorkerRoleCatalog, WorkflowTemplateCatalog and
          ClaudeWorkerAdapter, were tried against the snapshot and reverted, see the #1496 report;
-         add a matching Baton.Vendors.Tests grant only if a future PR actually folds one of them.) -->
+         add a matching Baton.Vendors.Tests grant only if a future PR actually folds one of them.)
+         #1495's poller tests share this same grant. -->
     <InternalsVisibleTo Include="Baton.Cli.Tests" />
   </ItemGroup>
 

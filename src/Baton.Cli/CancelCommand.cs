@@ -18,12 +18,13 @@ namespace Baton.Cli;
 /// only ever act against a room <c>baton run</c> has already started — and, like
 /// every mutation entry point, is itself a pump: recording the cancellation intent resumes driving
 /// the rest of the workflow to its next fixed point.
-/// <para>
 /// #1495 adds two things this room-idle description does not cover: room-level targeting (no
 /// <c>--execution</c> resolves "the running lane" via <see cref="RunningExecutionResolver"/>, fail
 /// closed on zero or more than one candidate) and a live-pump fall-through — catching
 /// <see cref="WorkflowLockedException"/> from the guarded call above and writing
-/// <see cref="CancelRequestFile"/> instead, so a room whose <c>baton run</c> is genuinely still live
+/// <see cref="CancelRequestFile"/> instead (writing <c>latest</c> for room-level targeting, which
+/// re-resolves at poll time to arrest whatever is running then, whereas the direct path cancels
+/// the execution resolved at command time), so a room whose <c>baton run</c> is genuinely still live
 /// is reachable too, not just the idle-room path the rest of this type's doc still describes
 /// accurately on its own.
 /// </para>
@@ -157,7 +158,7 @@ public static class CancelCommand
 
             var holderDescription = lockedException.HolderDescription ?? "an unnamed holder";
             Console.Out.WriteLine(
-                $"Requested — '{options.RoomDirectoryPath}''s {BatonPaths.FlowLockFileName} is currently held by '{holderDescription}'. " +
+                $"Requested — '{options.RoomDirectoryPath}'s {BatonPaths.FlowLockFileName} is currently held by '{holderDescription}'. " +
                 "If that is a live pump, it will act on this cancellation the next time its cancel.request poll " +
                 "ticks; if the hold is brief and unrelated, this request may sit unconsumed until one starts.");
 

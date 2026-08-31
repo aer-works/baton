@@ -4,9 +4,10 @@ namespace Baton.Cli;
 
 /// <summary>
 /// Resolves "the running lane" (#1495) from a room's own projected <see cref="FlowState"/> — the
-/// shared targeting rule both <see cref="CancelCommand"/>'s room-level <c>--execution</c>-omitted path
-/// and <see cref="CancelRequestPoller"/>'s <c>latest</c> literal resolve against, so the two callers
-/// never drift on what "the running lane" means. Fail closed: zero or more than one
+/// shared targeting rule for the two CLI callers: <see cref="CancelCommand"/>'s room-level
+/// <c>--execution</c>-omitted path and <see cref="CancelRequestPoller"/>'s <c>latest</c> literal,
+/// which must agree with the engine's own running-execution sites (<c>CoreEventAggregation</c>,
+/// <c>NonProcessCancellationDetector</c>). Fail closed: zero or more than one
 /// <see cref="StepStatus.Running"/> step is refused rather than guessed.
 /// </summary>
 public static class RunningExecutionResolver

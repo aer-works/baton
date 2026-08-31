@@ -15,8 +15,9 @@ namespace Baton.Cli;
 /// Same atomic-write discipline as <see cref="Baton.Status.TerminalSentinelWriter"/>: serialize to a
 /// per-call-GUID <c>.tmp</c> sibling, then <see cref="File.Move(string, string, bool)"/> into place, so
 /// a poller mid-tick never observes a torn write. Consumed by renaming to <c>.consumed</c> (a settled
-/// request, delivered or a too-late no-op) or <c>.rejected</c> (malformed content) rather than
-/// deleting outright — either rename lets a second, later <c>cancel.request</c> write land clean, and
+/// request, delivered or a too-late no-op), <c>.swept</c> (a stale pending request cleared at pump start),
+/// or <c>.rejected</c> (malformed content or undeliverable target, written with reason in body) rather
+/// than deleting outright — any rename lets a second, later <c>cancel.request</c> write land clean, and
 /// leaves the acted-on one on disk for a bystander to inspect.
 /// </remarks>
 public static class CancelRequestFile
@@ -30,6 +31,10 @@ public static class CancelRequestFile
 
     /// <param name="Target">Either <see cref="LatestTarget"/> or an explicit <c>ExecutionId</c> value.</param>
     public sealed record Content(string Target);
+
+    /// <param name="Target">The original target (either <see cref="LatestTarget"/>, an explicit <c>ExecutionId</c>, or empty if unparsed).</param>
+    /// <param name="Reason">The diagnostic explanation of why the request was rejected.</param>
+    public sealed record RejectedContent(string Target, string Reason);
 
     public static string GetPath(string roomDirectoryPath) => Path.Combine(roomDirectoryPath, FileName);
 
@@ -67,38 +72,86 @@ public static class CancelRequestFile
         }
     }
 
+    /// <summary>
+    /// Reads and parses a rejected request file at <paramref name="path"/>. Returns <c>null</c> if
+    /// absent or malformed.
+    /// </summary>
+    public static async Task<RejectedContent?> TryReadRejectedAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return await JsonSerializer.DeserializeAsync<RejectedContent>(stream, JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Marks a request as settled (delivered, or a too-late no-op) so a fresh write is expressible.</summary>
     public static void Consume(string path) => RenameBestEffort(path, $"{path}.consumed");
 
     /// <summary>
-    /// Best-effort delete of any PENDING request left over from a prior pump (#1495 review finding 5):
+    /// Best-effort rename to <c>.swept</c> of any PENDING request left over from a prior pump (#1495 review finding 5, F8):
     /// the file carries no timestamp/pid/generation, and a crash-recovery resubmission
     /// (<c>ProcessCrashRecoveryDetector</c>) can re-dispatch a step under the SAME <c>ExecutionId</c> a
     /// stale request already named — letting that request survive into the fresh pump risks arresting
     /// the resubmission instead of whatever it was actually asking to cancel. Called once, at pump
-    /// start, before this pump's own <see cref="CancelRequestPoller"/> begins — never touches an
-    /// already-settled <c>.consumed</c>/<c>.rejected</c> sibling, which is historical record, not a
-    /// pending request.
+    /// start, before this pump's own <see cref="CancelRequestPoller"/> begins — renames to <c>.swept</c>
+    /// rather than deleting outright to keep the inspect-the-record discipline, and never touches an
+    /// already-settled <c>.consumed</c>/<c>.rejected</c>/<c>.swept</c> sibling, which is historical record,
+    /// not a pending request.
     /// </summary>
     public static void DeleteStalePendingRequest(string roomDirectoryPath)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        var path = GetPath(roomDirectoryPath);
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        RenameBestEffort(path, $"{path}.swept");
+    }
+
+    /// <summary>Fail-closed outcome for unresolvable or undeliverable requests: logs why and records a rejected record with reason in body.</summary>
+    public static void Reject(string path, string? target, string reason)
+    {
         try
         {
-            File.Delete(GetPath(roomDirectoryPath));
+            Console.Error.WriteLine($"cancel.request at '{path}' rejected: {reason}");
+        }
+        catch
+        {
+            // F6: swallow broken stderr pipe
+        }
+
+        var rejectedPath = $"{path}.rejected";
+        var roomDirectory = Path.GetDirectoryName(path) ?? string.Empty;
+        var tempPath = Path.Combine(roomDirectory, $"{FileName}.{Guid.NewGuid():N}.rejected.tmp");
+        try
+        {
+            var json = JsonSerializer.Serialize(new RejectedContent(target ?? string.Empty, reason), JsonOptions);
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, rejectedPath, overwrite: true);
+            File.Delete(path);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine($"Could not delete a stale cancel.request under '{roomDirectoryPath}': {ex.Message}");
+            try
+            {
+                Console.Error.WriteLine($"Could not write rejected cancel.request at '{rejectedPath}': {ex.Message}");
+            }
+            catch
+            {
+            }
         }
     }
 
     /// <summary>Fail-closed outcome for malformed content: logs why, then gets it out of the poller's way.</summary>
-    public static void Reject(string path, string reason)
-    {
-        Console.Error.WriteLine($"cancel.request at '{path}' rejected: {reason}");
-        RenameBestEffort(path, $"{path}.rejected");
-    }
+    public static void Reject(string path, string reason) => Reject(path, null, reason);
 
     private static void RenameBestEffort(string path, string destinationPath)
     {
@@ -111,7 +164,13 @@ public static class CancelRequestFile
             // Best-effort, same doctrine as TerminalSentinelWriter.DeleteStaleSentinel: a rename that
             // cannot land (the file vanished, or is transiently held) must not crash the poll loop —
             // the worst case is this same request being read again next tick.
-            Console.Error.WriteLine($"Could not rename '{path}' to '{destinationPath}': {ex.Message}");
+            try
+            {
+                Console.Error.WriteLine($"Could not rename '{path}' to '{destinationPath}': {ex.Message}");
+            }
+            catch
+            {
+            }
         }
     }
 }

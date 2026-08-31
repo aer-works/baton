@@ -234,6 +234,34 @@ public class ConcurrencyGuardTests
     }
 
     [Fact]
+    public void The_cancel_falls_through_message_appears_only_for_flow_lock_contention()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        try
+        {
+            // Flow lock contention carries the cancel fall-through sentence:
+            using (ConcurrencyGuard.Acquire(roomDirectory))
+            {
+                var flowException = Assert.Throws<WorkflowLockedException>(() => ConcurrencyGuard.Acquire(roomDirectory));
+                Assert.Contains("cancel.request", flowException.Message, StringComparison.Ordinal);
+                Assert.Contains("falls through", flowException.Message, StringComparison.Ordinal);
+            }
+
+            // Room-events lock contention omits the cancel fall-through sentence:
+            using (ConcurrencyGuard.AcquireRoomEvents(roomDirectory))
+            {
+                var roomEventsException = Assert.Throws<WorkflowLockedException>(() => ConcurrencyGuard.AcquireRoomEvents(roomDirectory));
+                Assert.DoesNotContain("cancel.request", roomEventsException.Message, StringComparison.Ordinal);
+                Assert.DoesNotContain("falls through", roomEventsException.Message, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
     public void Acquire_writes_holder_sidecar_file_with_caller_description()
     {
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
