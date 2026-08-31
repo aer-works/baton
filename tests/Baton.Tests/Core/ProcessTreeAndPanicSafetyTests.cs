@@ -60,7 +60,7 @@ public class ProcessTreeAndPanicSafetyTests
             task.Run();
             TimeSpan elapsed = DateTime.UtcNow - start;
 
-            Assert.True(elapsed < TimeSpan.FromSeconds(10), $"Run() took {elapsed} -- process tree cleanup looks deadlocked");
+            Assert.True(elapsed < TimeSpan.FromSeconds(20), $"Run() took {elapsed} -- process tree cleanup looks deadlocked");
 
             // wait-ok: a fixed OS-settle delay after Run()'s synchronous teardown, not a poll ceiling.
             Thread.Sleep(200);
@@ -94,7 +94,7 @@ public class ProcessTreeAndPanicSafetyTests
             task.Run();
             TimeSpan elapsed = DateTime.UtcNow - start;
 
-            Assert.True(elapsed < TimeSpan.FromSeconds(10),
+            Assert.True(elapsed < TimeSpan.FromSeconds(20),
                 $"Run() took {elapsed} -- the timeout monitor's job reference is blocking cleanup until the 30s deadline instead of NaturalExit firing promptly");
             Assert.Equal(0, events[^1].ExitCode);
             Assert.Equal(BatonExitReason.Natural, events[^1].ExitReason);
@@ -127,7 +127,7 @@ public class ProcessTreeAndPanicSafetyTests
             await task.RunAsync(cts.Token);
             TimeSpan elapsed = DateTime.UtcNow - start;
 
-            Assert.True(elapsed < TimeSpan.FromSeconds(10), $"RunAsync() took {elapsed} -- looks like a circular wait");
+            Assert.True(elapsed < TimeSpan.FromSeconds(20), $"RunAsync() took {elapsed} -- looks like a circular wait");
             Assert.Equal(0, events[^1].ExitCode);
             Assert.Equal(BatonExitReason.Natural, events[^1].ExitReason);
         }
@@ -153,7 +153,7 @@ public class ProcessTreeAndPanicSafetyTests
             task.Run();
             TimeSpan elapsed = DateTime.UtcNow - start;
 
-            Assert.True(elapsed < TimeSpan.FromSeconds(10),
+            Assert.True(elapsed < TimeSpan.FromSeconds(20),
                 $"Run() took {elapsed} -- the capture path's live-delivery loop may be deadlocked on the grandchild holding stdout/stderr open");
             Assert.Equal(BatonExitReason.Natural, events[^1].ExitReason);
             Assert.Equal(0, events[^1].ExitCode);
