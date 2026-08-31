@@ -109,7 +109,7 @@ public class WorkingDirectoryEndToEndTests
                 (await RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken)).State;
 
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
-            Assert.Equal(StepStatus.Succeeded, Assert.Single(finalState.Steps).Status);
+            FlowAssert.Succeeded(Assert.Single(finalState.Steps));
 
             // The worker read notes.txt by its bare name — proof its cwd was the provisioned worktree,
             // which the engine created from the ref with nobody checking anything out.
@@ -139,7 +139,7 @@ public class WorkingDirectoryEndToEndTests
         var finalState = (await RunCommand.ExecuteAsync(options, Adapters)).State;
 
         Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
-        Assert.Equal(StepStatus.Succeeded, Assert.Single(finalState.Steps).Status);
+        FlowAssert.Succeeded(Assert.Single(finalState.Steps));
     }
 
     private static async Task<string> WriteSingleStepWorkflowAsync(string directory)

@@ -1,4 +1,5 @@
 using Baton.Vendors;
+using Baton.Cli.SmokeTests.TestSupport;
 using Baton.Domain;
 
 namespace Baton.Cli.SmokeTests;
@@ -50,7 +51,7 @@ public class LiveReadOnlyReviewerSmokeTest
             // All three together, because two of three is a different failure each way: an empty
             // workspace with no report is #629's pay-then-fail, and a report plus a leaked file is
             // the grant not being enforced at all.
-            Assert.Equal(StepStatus.Succeeded, step.Status);
+            FlowAssert.Succeeded(step);
 
             var outbox = Path.Combine(roomDirectory, "artifacts", $"execution_{step.LatestExecutionId}");
             var report = Path.Combine(outbox, "review.md");

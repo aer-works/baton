@@ -53,7 +53,7 @@ public class CrashRecoveryEndToEndTests
             var finalState = await RunRecoveryAsync(roomDirectory, artifactsRoot, logPath, ScenarioWorker.QuickSuccess);
 
             var stepState = finalState.Steps.Single();
-            Assert.Equal(StepStatus.Succeeded, stepState.Status);
+            FlowAssert.Succeeded(stepState);
             Assert.Equal(originalExecutionId, stepState.LatestExecutionId);
 
             // The same attempt, not a retry: still exactly one ExecutionRequestAccepted for it.
@@ -145,7 +145,7 @@ public class CrashRecoveryEndToEndTests
             var finalState = await RunRecoveryAsync(roomDirectory, artifactsRoot, logPath, ScenarioWorker.QuickSuccess);
 
             var stepState = finalState.Steps.Single();
-            Assert.Equal(StepStatus.Succeeded, stepState.Status);
+            FlowAssert.Succeeded(stepState);
             Assert.Equal(originalExecutionId, stepState.LatestExecutionId);
 
             var reader = new FlowEventLogReader(logPath);
@@ -200,7 +200,7 @@ public class CrashRecoveryEndToEndTests
             var finalState = await RunRecoveryAsync(roomDirectory, artifactsRoot, logPath, ScenarioWorker.QuickSuccess);
 
             var stepState = finalState.Steps.Single();
-            Assert.Equal(StepStatus.Succeeded, stepState.Status);
+            FlowAssert.Succeeded(stepState);
             Assert.NotEqual(orphanExecutionId, stepState.LatestExecutionId);
 
             var reader = new FlowEventLogReader(logPath);

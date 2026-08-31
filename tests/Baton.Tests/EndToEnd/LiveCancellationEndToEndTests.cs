@@ -71,7 +71,7 @@ public class LiveCancellationEndToEndTests
             var finalState = await AwaitWithTimeoutAsync(workflowTask);
 
             Assert.Equal(StepStatus.Cancelled, finalState.Steps.Single(s => s.StepId == B).Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == C).Status);
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == C));
             Assert.Equal(StepStatus.Pending, finalState.Steps.Single(s => s.StepId == D).Status);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
@@ -157,7 +157,7 @@ public class LiveCancellationEndToEndTests
                 hAfterRetry.LatestExecutionId!.Value, DecisionType.Resume, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single().Status);
+            FlowAssert.Succeeded(finalState.Steps.Single());
             var resultPath = Path.Combine(artifactsRoot, $"execution_{finalState.Steps.Single().LatestExecutionId}", "out");
             Assert.Equal("revised-result", (await File.ReadAllTextAsync(resultPath, TestContext.Current.CancellationToken)).Trim());
         }
@@ -190,13 +190,13 @@ public class LiveCancellationEndToEndTests
             var succeededState = await MutationInterface.StartWorkflowAsync(
                 workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
             var executionId = succeededState.Steps.Single().LatestExecutionId!.Value;
-            Assert.Equal(StepStatus.Succeeded, succeededState.Steps.Single().Status);
+            FlowAssert.Succeeded(succeededState.Steps.Single());
             var eventCountBefore = (await reader.ReadAllAsync(TestContext.Current.CancellationToken)).Count;
 
             var afterTooLateCancel = await MutationInterface.RequestCancellationAsync(
                 workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, executionId, cancellationToken: TestContext.Current.CancellationToken);
 
-            Assert.Equal(StepStatus.Succeeded, afterTooLateCancel.Steps.Single().Status);
+            FlowAssert.Succeeded(afterTooLateCancel.Steps.Single());
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             Assert.Equal(eventCountBefore + 1, events.Count);
             Assert.Single(events, e => e is FlowEvent.CancellationRequested cr && cr.ExecutionId == executionId);

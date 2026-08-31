@@ -82,7 +82,7 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
             Assert.Equal(
                 new[] { "implement", "janitor", "review-capture", "review" },
                 state.Steps.Select(s => s.StepId.Value).ToArray());
-            Assert.All(state.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(state.Steps, FlowAssert.Succeeded);
 
             // The base ref the capture adapter was handed is the workspace's HEAD at dispatch time --
             // the injection ran, captured THIS workspace (not an ambient one), and reached the adapter.

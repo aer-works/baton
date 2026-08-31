@@ -73,7 +73,7 @@ public class RunWaitEndToEndTests
             var waitedResult = await waitingRunTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, waitedResult.State.Status);
-            Assert.All(waitedResult.State.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(waitedResult.State.Steps, FlowAssert.Succeeded);
         }
         finally
         {

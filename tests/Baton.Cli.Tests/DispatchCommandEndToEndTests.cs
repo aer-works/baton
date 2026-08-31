@@ -67,7 +67,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             Assert.Equal(WorkflowStatus.Terminal, state.Status);
             var step = Assert.Single(state.Steps);
             Assert.Equal("advise", step.StepId.Value);
-            Assert.Equal(StepStatus.Succeeded, step.Status);
+            FlowAssert.Succeeded(step);
 
             // advise declares advice.md; the contract the engine enforced is the role's own.
             var advicePath = Path.Combine(
@@ -371,7 +371,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
 
             Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
             var step = Assert.Single(result.State.Steps);
-            Assert.Equal(StepStatus.Succeeded, step.Status);
+            FlowAssert.Succeeded(step);
             Assert.Contains("Could not copy", stderrCapture.ToString());
 
             // The declared output the copy tried to move still exists where the engine wrote it,

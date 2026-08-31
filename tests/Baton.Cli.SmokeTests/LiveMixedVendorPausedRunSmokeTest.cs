@@ -1,4 +1,5 @@
 using Baton.Vendors;
+using Baton.Cli.SmokeTests.TestSupport;
 using Baton.Domain;
 
 namespace Baton.Cli.SmokeTests;
@@ -40,7 +41,7 @@ public class LiveMixedVendorPausedRunSmokeTest
             Assert.Equal(WorkflowStatus.Paused, pausedResult.State.Status);
             var draftState = pausedResult.State.Steps.Single(s => s.StepId.Value == "draft");
             var reviewState = pausedResult.State.Steps.Single(s => s.StepId.Value == "review");
-            Assert.Equal(StepStatus.Succeeded, draftState.Status);
+            FlowAssert.Succeeded(draftState);
             Assert.Equal(StepStatus.Paused, reviewState.Status);
             Assert.Equal(StepStatus.Succeeded, reviewState.PausedOutcome);
 
@@ -52,7 +53,7 @@ public class LiveMixedVendorPausedRunSmokeTest
             var finalResult = await DecideCommand.ExecuteAsync(decideOptions, WorkerAdapterRegistry.Default, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalResult.State.Status);
-            Assert.All(finalResult.State.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(finalResult.State.Steps, FlowAssert.Succeeded);
 
             var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
             var stepStateById = finalResult.State.Steps.ToDictionary(s => s.StepId);

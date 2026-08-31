@@ -70,7 +70,7 @@ public class WorkflowEndToEndTests
                 new WorkflowId("wf-e2e"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(3, finalState.Steps.Count);
-            Assert.All(finalState.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(finalState.Steps, FlowAssert.Succeeded);
 
             var stepStateById = finalState.Steps.ToDictionary(s => s.StepId);
             await AssertOutputExistsAsync(artifactsRoot, stepStateById[Architect], "plan", "the-plan");
@@ -160,7 +160,7 @@ public class WorkflowEndToEndTests
                 new WorkflowId("wf-diamond"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(4, finalState.Steps.Count);
-            Assert.All(finalState.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(finalState.Steps, FlowAssert.Succeeded);
 
             var stepStateById = finalState.Steps.ToDictionary(s => s.StepId);
 
@@ -212,8 +212,8 @@ public class WorkflowEndToEndTests
                 new WorkflowId("wf-flaky"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
 
             var stepStateById = finalState.Steps.ToDictionary(s => s.StepId);
-            Assert.Equal(StepStatus.Succeeded, stepStateById[Flaky].Status);
-            Assert.Equal(StepStatus.Succeeded, stepStateById[Downstream].Status);
+            FlowAssert.Succeeded(stepStateById[Flaky]);
+            FlowAssert.Succeeded(stepStateById[Downstream]);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var flakyExecutionIds = GetAcceptedExecutionIds(events, Flaky);
@@ -271,7 +271,7 @@ public class WorkflowEndToEndTests
                 new WorkflowId("wf-self-iteration"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
 
             var reviewerState = finalState.Steps.Single(s => s.StepId == Reviewer);
-            Assert.Equal(StepStatus.Succeeded, reviewerState.Status);
+            FlowAssert.Succeeded(reviewerState);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var executionIds = GetAcceptedExecutionIds(events, Reviewer);

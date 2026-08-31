@@ -138,7 +138,7 @@ public class CancelCommandEndToEndTests
             var canceledState = (await CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken)).State;
 
             Assert.Equal(WorkflowStatus.Terminal, canceledState.Status);
-            Assert.All(canceledState.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(canceledState.Steps, FlowAssert.Succeeded);
 
             var reader = new FlowEventLogReader(Path.Combine(roomDirectory, "flow.jsonl"));
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);

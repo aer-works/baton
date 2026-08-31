@@ -44,7 +44,7 @@ public class DecideCommandEndToEndTests
             var finalResult = await DecideCommand.ExecuteAsync(decideOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalResult.State.Status);
-            Assert.All(finalResult.State.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(finalResult.State.Steps, FlowAssert.Succeeded);
         }
         finally
         {
@@ -260,8 +260,8 @@ public class DecideCommandEndToEndTests
             var finalResult = await DecideCommand.ExecuteAsync(resumeOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalResult.State.Status);
-            Assert.Equal(StepStatus.Succeeded, finalResult.State.Steps.Single(s => s.StepId.Value == "flaky").Status);
-            Assert.Equal(StepStatus.Succeeded, finalResult.State.Steps.Single(s => s.StepId.Value == "downstream").Status);
+            FlowAssert.Succeeded(finalResult.State.Steps.Single(s => s.StepId.Value == "flaky"));
+            FlowAssert.Succeeded(finalResult.State.Steps.Single(s => s.StepId.Value == "downstream"));
 
             var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
             var downstreamOutput = Path.Combine(
@@ -318,8 +318,8 @@ public class DecideCommandEndToEndTests
             var finalResult = await DecideCommand.ExecuteAsync(resumeOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalResult.State.Status);
-            Assert.Equal(StepStatus.Succeeded, finalResult.State.Steps.Single(s => s.StepId.Value == "source").Status);
-            Assert.Equal(StepStatus.Succeeded, finalResult.State.Steps.Single(s => s.StepId.Value == "reviewer").Status);
+            FlowAssert.Succeeded(finalResult.State.Steps.Single(s => s.StepId.Value == "source"));
+            FlowAssert.Succeeded(finalResult.State.Steps.Single(s => s.StepId.Value == "reviewer"));
         }
         finally
         {
