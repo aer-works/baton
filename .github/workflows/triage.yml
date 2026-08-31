@@ -1,0 +1,28 @@
+# Auto-labels any issue opened with ZERO labels as `needs-triage`, so a labeling gap is visibly
+# flagged instead of invisibly bare (#1519 — the labeling policy previously lived only in prose and
+# silently regressed). Issues created with labels are untouched. windows-latest to keep §11 C-10's
+# "no ubuntu CI legs" literally true even for this non-build job.
+name: triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label-unlabeled:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.payload.issue.labels.length === 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: ['needs-triage'],
+              });
+            }
