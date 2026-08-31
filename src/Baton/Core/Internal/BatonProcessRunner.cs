@@ -68,13 +68,40 @@ internal static class BatonProcessRunner
 
             if (!job.TryAssign(process.SafeHandle))
             {
-                // The no-orphans guarantee applies to spawn failures too, not
-                // just to teardown after a successful spawn: the child is alive but never made it
-                // into the job, so the job's own kill-on-close would never reach it. Kill it directly
-                // before reporting the failure.
                 int error = Marshal.GetLastWin32Error();
-                KillAndWait(process);
-                throw new BatonException(BatonErrorCode.SpawnFailed, $"Failed to assign '{program}' to its job object (Win32 error {error}).");
+
+                // ERROR_ACCESS_DENIED (5) is what AssignProcessToJobObject returns for a process
+                // that has already terminated -- a fast child (a sub-10ms `cmd /c echo`) can exit
+                // inside the Start->assign window, and that is a completed run whose exit code is
+                // sitting there to collect, not a spawn failure (#1484; bit CI intermittently as
+                // "Spawn refused ... Win32 error 5" on perfectly healthy steps). Fall through to the
+                // normal wait path -- but kill the PID tree first (below), never bare.
+                if (error != 5 || !process.HasExited)
+                {
+                    // The no-orphans guarantee applies to spawn failures too, not
+                    // just to teardown after a successful spawn: the child is alive but never made it
+                    // into the job, so the job's own kill-on-close would never reach it. Kill it directly
+                    // before reporting the failure.
+                    KillAndWait(process);
+                    throw new BatonException(BatonErrorCode.SpawnFailed, $"Failed to assign '{program}' to its job object (Win32 error {error}).");
+                }
+
+                // The exited child never made it into the job, so neither did anything it spawned:
+                // an escaped grandchild holding the inherited pipe write handles would block the
+                // drain threads FOREVER on this path -- Terminate at wait-return no-ops on the empty
+                // job, and the timeout monitor's IsTreeAlive reads that same empty job as dead, so
+                // no bound applies (#1485 review). .NET's PID-walk tree kill is the one mechanism
+                // that still reaches such a descendant; best-effort, swallowed like KillAndWait's --
+                // a fast no-op in the common no-grandchild case, and it cannot disturb the direct
+                // child's exit code, which is read from the still-held process handle.
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Best-effort: the tree may already be fully gone.
+                }
             }
 
             // Armed as soon as the child is inside the job -- before StandardInput.Close() below,
