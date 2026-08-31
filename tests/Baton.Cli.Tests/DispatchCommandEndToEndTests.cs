@@ -85,6 +85,55 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     }
 
     /// <summary>
+    /// #1499: <c>--label</c> is stamped onto the dispatched role's own <c>bindings.json</c> entry --
+    /// the room-scoped file <see cref="Baton.Cli.Mcp.FleetStatusTool"/> reads it back off, on both of
+    /// its own read paths (that half is <c>FleetStatusToolTests</c>'s job, not this one's).
+    /// </summary>
+    [Fact]
+    public async Task Dispatching_with_a_label_persists_it_onto_the_roles_bindings_entry()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake", Label: "env-snapshot lane");
+
+            await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(roomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("env-snapshot lane", bindings["advise"].Label);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_with_no_label_leaves_the_bindings_entry_unlabeled()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake");
+
+            await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(roomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Null(bindings["advise"].Label);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
     /// spec/baton.md §8's writer: <c>baton dispatch</c> registers the room into
     /// <see cref="RoomRegistryStore"/> keyed on its resolved workspace, not the process cwd -- the two
     /// can differ (<c>--workspace</c>), and it is exactly that difference the registry exists to close

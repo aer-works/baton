@@ -63,6 +63,7 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:.45rem 0; background:var(--card);}
 .lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
 .lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .roomid{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end;}
 .lane .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
@@ -328,7 +329,13 @@ function laneHtml(room, timelines){
   const ageLine = a ? `<div class="age">last event ${a} ago${room.state === "Running" && t && (Date.now()-Date.parse(t)) > 15*60000 ? " ⚠" : ""}</div>` : "";
   const deliverables = room.name
     ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(room.name)}">deliverables &rarr;</a></div>` : "";
-  return `<div class="lane"><div class="top"><span class="name">${esc(room.name)}</span><span class="chips">${chipsHtml(room, running, focusStep)}</span></div>
+  // #1499: a --label makes the room title the human-legible name (e.g. "the #1496 env-snapshot
+  // lane") instead of its bare dispatch-<role>-<hex8> directory name; the room name never disappears
+  // -- it drops to a secondary line so deliverables/redispatch/cancel still show what to paste.
+  const title = room.label ? esc(room.label) : esc(room.name);
+  const roomIdLine = room.label ? `<div class="roomid">${esc(room.name)}</div>` : "";
+  return `<div class="lane"><div class="top"><span class="name">${title}</span><span class="chips">${chipsHtml(room, running, focusStep)}</span></div>
+    ${roomIdLine}
     ${bindingLineHtml(room)}
     ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${tryLine}${err}${ageLine}
     ${timelineHtml(room, timelines)}

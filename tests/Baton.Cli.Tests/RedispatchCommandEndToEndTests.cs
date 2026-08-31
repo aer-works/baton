@@ -104,6 +104,48 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// #1499: the amended-spec path rebuilds through <c>RoleDispatch.Materialize</c>, which knows
+    /// nothing of the parent's label -- <c>RedispatchCommand.ExecuteAsync</c> stamps the
+    /// inherit-unless-overridden rule on afterward. This is the one inheritance path
+    /// <see cref="RedispatchBindingTests"/> cannot reach, since that suite only exercises
+    /// <see cref="RedispatchCommand.InheritBinding"/> directly (the no-spec path).
+    /// </summary>
+    [Fact]
+    public async Task A_label_survives_an_amended_spec_redispatch_unless_overridden()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", label: "env-snapshot lane");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(amendedSpecPath, "Weigh the options for Y instead.", TestContext.Current.CancellationToken);
+
+            var inheritedChildRoom = Path.Combine(testRoot, "child-inherited");
+            var inheritedResult = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, inheritedChildRoom, SpecFilePath: amendedSpecPath, Adapter: "fake"),
+                Adapters, TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, inheritedResult.State.Status);
+            var inheritedBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(inheritedChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("env-snapshot lane", inheritedBindings["advise"].Label);
+
+            var overriddenChildRoom = Path.Combine(testRoot, "child-overridden");
+            var overriddenResult = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, overriddenChildRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Label: "different lane"),
+                Adapters, TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, overriddenResult.State.Status);
+            var overriddenBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(overriddenChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("different lane", overriddenBindings["advise"].Label);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [Fact]
     public async Task An_explicit_override_wins_over_the_inherited_binding()
     {
@@ -251,11 +293,11 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
     }
 
     private static async Task<string> DispatchTerminalParentAsync(
-        string testRoot, string spec, string adapter = "fake", TimeSpan? timeout = null)
+        string testRoot, string spec, string adapter = "fake", TimeSpan? timeout = null, string? label = null)
     {
         var specPath = await WriteSpecAsync(testRoot, spec);
         var roomDirectory = Path.Combine(testRoot, "parent");
-        var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: adapter, Timeout: timeout);
+        var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: adapter, Timeout: timeout, Label: label);
 
         var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
 

@@ -1001,5 +1001,118 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(singleRoom.Project);
     }
 
+    /// <summary>
+    /// #1499: the terminal-sentinel fast path never reads <c>bindings.json</c> for
+    /// role/adapter/model/effort/timeout (#1503, spec/baton.md §6 schema), but a room's <c>--label</c>
+    /// is a room-level fact, not scoped to a Running step -- so it must still surface here, unlike
+    /// that quartet.
+    /// </summary>
+    [Fact]
+    public async Task TerminalFastPath_WithLabelInBindings_ReportsLabel()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "labeled-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["advise"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Weigh the options.",
+                TimeSpan.FromMinutes(5),
+                Label: "env-snapshot lane"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", singleRoom.State);
+        Assert.Equal("env-snapshot lane", singleRoom.Label);
+        // The sentinel fast path never resolves a Running binding -- the quartet stays absent even
+        // though the label, read independently, is present.
+        Assert.Null(singleRoom.Role);
+        Assert.Null(singleRoom.Adapter);
+    }
+
+    [Fact]
+    public async Task TerminalFastPath_WithNoBindingsFile_OmitsLabelFromTheWire()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "unlabeled-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Null(singleRoom.Label);
+        var wire = JsonSerializer.Serialize(singleRoom);
+        Assert.DoesNotContain("\"label\"", wire);
+    }
+
+    /// <summary>
+    /// #1499: an active room with NO Running step at all (no <c>flow.jsonl</c>, so the workflow
+    /// projects as Pending) -- <see cref="FleetStatusTool.TryResolveRunningBindingAsync"/> would never
+    /// even attempt a bindings read here, since role/adapter/model/effort/timeout are scoped to a
+    /// Running step this room does not have. The label read is a separate, ungated path, so it must
+    /// still come back present.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_WithNoRunningStep_StillReportsLabelButNotTheRunningStepQuartet()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "pending-labeled-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-pending"), "advise", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("pending-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["advise"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Weigh the options.",
+                TimeSpan.FromMinutes(5),
+                Label: "env-snapshot lane"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        // No flow.jsonl at all -- FlowEventLogReader.ReadAllEntriesWithTimestampsAsync treats a
+        // missing log as zero entries, so the STEP projects Pending, never Running. (The room's own
+        // top-level `state` still reads "Running" either way -- WorkflowOutcome.Describe reports the
+        // overall WorkflowStatus, which starts Running before any step's own state does; the gate that
+        // matters here is per-step.)
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.DoesNotContain(singleRoom.Steps ?? [], s => s.State == "Running");
+        Assert.Equal("env-snapshot lane", singleRoom.Label);
+        Assert.Null(singleRoom.Role);
+        Assert.Null(singleRoom.Adapter);
+    }
+
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
 }

@@ -132,6 +132,34 @@ public class RedispatchBindingTests
     }
 
     [Fact]
+    public void With_no_label_override_the_parents_label_is_inherited()
+    {
+        var parent = ParentEntry() with { Label = "env-snapshot lane" };
+        var entry = RedispatchCommand.InheritBinding(parent, new RedispatchOptions("parent-room", "new-room"));
+
+        Assert.Equal("env-snapshot lane", entry.Label);
+    }
+
+    [Fact]
+    public void An_explicit_label_override_wins_over_the_inherited_one()
+    {
+        var parent = ParentEntry() with { Label = "old label" };
+        var entry = RedispatchCommand.InheritBinding(
+            parent, new RedispatchOptions("parent-room", "new-room", Label: "new label"));
+
+        Assert.Equal("new label", entry.Label);
+    }
+
+    [Fact]
+    public void A_parent_with_no_label_stays_unlabeled_when_not_overridden()
+    {
+        var parent = ParentEntry();
+        var entry = RedispatchCommand.InheritBinding(parent, new RedispatchOptions("parent-room", "new-room"));
+
+        Assert.Null(entry.Label);
+    }
+
+    [Fact]
     public void A_workspace_override_replaces_a_plain_working_directory()
     {
         var parent = ParentEntry(workingDirectory: "/repo");

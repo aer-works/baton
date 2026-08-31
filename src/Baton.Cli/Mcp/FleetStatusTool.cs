@@ -219,7 +219,8 @@ public sealed class FleetStatusTool : IMcpTool
                 Outputs: sentinel.Outputs,
                 Error: sentinel.Error,
                 Try: sentinel.Try,
-                Rejected: sentinel.Rejected);
+                Rejected: sentinel.Rejected,
+                Label: await TryReadRoomLabelAsync(roomDir, cancellationToken).ConfigureAwait(false));
         }
 
         // 2. Active room: load snapshot + flow events and project
@@ -300,7 +301,8 @@ public sealed class FleetStatusTool : IMcpTool
                 Adapter: binding?.Entry.Adapter,
                 Model: binding?.Entry.Model,
                 Effort: binding?.Entry.Effort,
-                TimeoutMs: (long?)binding?.Entry.Timeout.TotalMilliseconds);
+                TimeoutMs: (long?)binding?.Entry.Timeout.TotalMilliseconds,
+                Label: await TryReadRoomLabelAsync(roomDir, cancellationToken).ConfigureAwait(false));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -364,6 +366,36 @@ public sealed class FleetStatusTool : IMcpTool
 
         return bindings.TryGetValue(role, out var entry) ? (role, entry) : null;
     }
+
+    /// <summary>
+    /// Reads a room's <c>--label</c> (#1499) off its own <c>bindings.json</c> — deliberately
+    /// independent of <see cref="TryResolveRunningBindingAsync"/>'s Running-step gate, since a label is
+    /// a room-level fact stamped onto every entry at dispatch time (<see cref="DispatchCommand"/>), not
+    /// scoped to whichever worker happens to be running right now. That independence is exactly why
+    /// this is called on BOTH <see cref="ProcessRoomAsync"/> paths — the terminal-sentinel fast path
+    /// never reads bindings.json for role/adapter/model/effort/timeout, but a terminal room's label is
+    /// no less real than a running one's. Fail-open, the same convention
+    /// <see cref="TryResolveRunningBindingAsync"/> uses: a missing, unparseable, or label-less
+    /// bindings file all degrade to an absent label, never a thrown error or a dropped room row.
+    /// </summary>
+    private static async Task<string?> TryReadRoomLabelAsync(string roomDir, CancellationToken cancellationToken)
+    {
+        var bindingsPath = BatonPaths.RoomBindingsFile(roomDir);
+        if (!File.Exists(bindingsPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsPath, cancellationToken).ConfigureAwait(false);
+            return bindings.Values.Select(entry => entry.Label).FirstOrDefault(label => label is not null);
+        }
+        catch (Exception ex) when (ex is WorkerBindingConfigException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 }
 
 /// <summary>
@@ -415,7 +447,15 @@ public sealed record FleetRoomStatusView(
     string? Effort = null,
     [property: JsonPropertyName("timeoutMs")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    long? TimeoutMs = null);
+    long? TimeoutMs = null,
+    // #1499: the operator's --label, read off bindings.json (WorkerBindingConfigEntry.Label) on BOTH
+    // paths in ProcessRoomAsync -- unlike role/adapter/model/effort/timeoutMs above, never gated on a
+    // Running step, since a label is a room-level fact rather than scoped to one worker. Absent when
+    // never supplied, when bindings.json is missing/unparseable, or (pre-#1499 rooms) when it predates
+    // this field -- fail-open for display metadata, same convention as the Running-step quartet.
+    [property: JsonPropertyName("label")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Label = null);
 
 /// <summary>
 /// Status of a single workflow step within a fleet room status report.

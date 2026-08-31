@@ -97,6 +97,10 @@ public static class RedispatchCommand
         {
             (definition, entry) = await RebuildFromAmendedSpecAsync(workerName, parentEntry, options, cancellationToken)
                 .ConfigureAwait(false);
+            // #1499: RoleDispatch.Materialize (the amended-spec rebuild path) knows nothing about the
+            // parent's label -- stamp the same inherit-unless-overridden rule InheritBinding applies on
+            // the no-spec path, so a label survives a `--spec` amendment too.
+            entry = entry with { Label = options.Label ?? parentEntry.Label };
         }
 
         if (options.Timeout is { } timeoutOverride && timeoutOverride > TimeSpan.FromMinutes(DispatchOptionsParser.WarnTimeoutMinutes))
@@ -180,6 +184,9 @@ public static class RedispatchCommand
             WorkingDirectory = workingDirectory,
             Worktree = worktree,
             Timeout = options.Timeout ?? parentEntry.Timeout,
+            // #1499: a label is a durable room-level fact, not a per-run axis -- it survives a
+            // redispatch the same way the rest of parentEntry does, unless the operator overrides it.
+            Label = options.Label ?? parentEntry.Label,
             // Adapter-derived, not role-derived, so it CAN be recomputed here — carrying the parent's
             // value across a vendor swap would stream-json a claude worker (or text-mode an agy one).
             // Grant/GrantAuditMode/worktree intent stay inherited: spec/baton.md §2 states why.

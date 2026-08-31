@@ -46,6 +46,17 @@ namespace Baton.Vendors;
 /// claims isolation that does not exist, and the post-run audit then fails closed against the
 /// shared directory's unrelated dirt (loud, not silent — but still a lie the run pays for).
 /// </param>
+/// <param name="Label">
+/// The operator-supplied <c>--label</c> (#1499) — display text only, never part of the room
+/// directory's own name (that stays the generated <c>dispatch-&lt;role&gt;-&lt;hex8&gt;</c>/
+/// <c>redispatch-&lt;hex8&gt;</c> hex identity). Persisted here, on the room's own
+/// <c>bindings.json</c>, rather than on a new file, because that file already exists for every room
+/// regardless of terminal state — unlike the Role/Adapter/Model/Effort quartet above, this is a
+/// room-level fact, not scoped to whichever step a projection currently calls Running, so
+/// <c>FleetStatusTool</c> reads it independently of that gate. Sanitized once at parse time
+/// (<see cref="Baton.Cli.DispatchOptionsParser"/>): trimmed, newline-stripped, capped at ~60 chars.
+/// Null when never supplied.
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -62,7 +73,8 @@ public sealed record WorkerBindingConfigEntry(
     string? Effort = null,
     WorktreeWorkspace? Worktree = null,
     GrantAuditMode GrantAuditMode = GrantAuditMode.Enforced,
-    bool IsWorktree = false);
+    bool IsWorktree = false,
+    string? Label = null);
 
 
 /// <summary>

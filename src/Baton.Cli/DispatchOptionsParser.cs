@@ -12,7 +12,13 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]";
+        "Usage: baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--label <text>]";
+
+    /// <summary>
+    /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
+    /// #1496 env-snapshot lane" and short enough to stay legible in a lane card next to the state chips.
+    /// </summary>
+    public const int MaxLabelLength = 60;
 
     /// <summary>
     /// The hard ceiling <c>--timeout</c> refuses outright (#1442) — why refuse rather than confirm:
@@ -38,6 +44,7 @@ public static class DispatchOptionsParser
         string? workflowId = null;
         string? outputPath = null;
         TimeSpan? timeout = null;
+        string? label = null;
 
         var i = 0;
         while (i < args.Count)
@@ -71,6 +78,9 @@ public static class DispatchOptionsParser
                     break;
                 case "--timeout":
                     timeout = ParseTimeout(RequireValue(args, ref i, arg));
+                    break;
+                case "--label":
+                    label = SanitizeLabel(RequireValue(args, ref i, arg));
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -117,7 +127,33 @@ public static class DispatchOptionsParser
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             model, effort,
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout);
+            timeout, label);
+    }
+
+    /// <summary>
+    /// <c>--label</c>'s sanitization (#1499): trimmed, embedded newlines folded to spaces (display
+    /// text renders on one line — a Fleet Glass lane card, never a paragraph), then capped at
+    /// <see cref="MaxLabelLength"/>. Nothing here needs to escape JSON or path characters: the label is
+    /// never written into a path (the hex room name stays the on-disk identity) and
+    /// <see cref="System.Text.Json.JsonSerializer"/> already escapes whatever the string contains when
+    /// it lands in <c>bindings.json</c>/the MCP payload. A blank result after trimming (an operator
+    /// passing <c>--label ""</c> or all-whitespace) is treated the same as never passing the flag at
+    /// all, rather than a typed refusal — there is no meaningful invocation this could be correcting.
+    /// Shared with <see cref="RedispatchOptionsParser"/>, which parses the identical flag.
+    /// </summary>
+    internal static string? SanitizeLabel(string rawValue)
+    {
+        var folded = rawValue.Replace("\r\n", " ", StringComparison.Ordinal)
+            .Replace('\r', ' ')
+            .Replace('\n', ' ')
+            .Trim();
+
+        if (folded.Length == 0)
+        {
+            return null;
+        }
+
+        return folded.Length > MaxLabelLength ? folded[..MaxLabelLength] : folded;
     }
 
     /// <summary>
