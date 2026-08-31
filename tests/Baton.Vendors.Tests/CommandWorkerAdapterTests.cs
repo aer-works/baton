@@ -133,10 +133,11 @@ public class CommandWorkerAdapterTests
 
             var ex = await Assert.ThrowsAsync<BatonException>(
                 async () => await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken));
-            // aer-core's own SpawnFailed wrapper text -- stable across platforms, unlike the OS
-            // message it wraps ("program not found" on Windows, "No such file or directory" on
-            // Linux; pinning the Windows one broke ubuntu CI on PR #963).
-            Assert.Contains("process spawn failed", ex.Message);
+            // BatonProcessRunner's own SpawnFailed wrapper text (#1474) -- stable regardless of the
+            // OS-specific message Win32Exception carries ("The system cannot find the file
+            // specified.", etc.), the same reason the deleted Rust wrapper text this replaced was
+            // pinned rather than the raw OS message it wrapped.
+            Assert.Contains("Failed to start", ex.Message);
         }
         finally
         {
