@@ -103,9 +103,20 @@ summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .back{display:inline-block; margin-bottom:.8rem; font:500 .8rem 'Public Sans'; color:var(--accent); text-decoration:none; cursor:pointer;}
 .doc{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1rem 1.2rem;}
 .doc h1,.doc h2,.doc h3{font-family:'Sora',sans-serif; line-height:1.25;}
+.doc h3{font-size:.88rem; margin:1.2rem 0 .4rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em;}
 .doc pre{background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:.7rem .9rem; overflow-x:auto;}
 .doc code{font-family:var(--mono); font-size:.86em;}
 .doc a{color:var(--accent);}
+.doc dl{margin:.4rem 0 1rem;}
+.doc dt{font:600 .72rem 'Public Sans'; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; margin-top:.6rem;}
+.doc dd{font-size:.84rem; color:var(--ink); margin:.15rem 0 .5rem 0; overflow-x:auto;}
+.doc dd pre{margin:.3rem 0;}
+.finding{border:1px solid var(--line); border-radius:10px; padding:.65rem .85rem; margin:.5rem 0; background:var(--paper);}
+.finding .finding-top{display:flex; justify-content:space-between; align-items:baseline; gap:.5rem;}
+.finding .finding-claim{font:600 .86rem 'Public Sans'; color:var(--ink);}
+.finding .finding-chips{display:flex; gap:.3rem; flex-wrap:wrap; flex-shrink:0;}
+.finding .finding-anchor{font:400 .72rem var(--mono); color:var(--ink-soft); margin-top:.25rem;}
+.finding .finding-detail{font-size:.82rem; color:var(--ink); margin-top:.45rem; line-height:1.5; white-space:pre-wrap; word-break:break-word; overflow-x:auto;}
 .empty{color:var(--ink-soft); font-size:.85rem;}
 footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:.6rem;}
 </style>
@@ -416,11 +427,79 @@ function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${htm
 // markup is applied.
 // -----------------------------------------------------------------------------------------------
 function verdictChip(v){
-  const state = v && v.state;
-  if(state === "Succeeded") return ["OK","c-ok"];
-  if(state === "Failed") return ["FAILED","c-bad"];
+  const state = typeof v === "string" ? v : (v && v.state);
   if(!state) return ["?","c-idle"];
-  return [state.toUpperCase(),"c-idle"];
+  const upper = state.toUpperCase();
+  if(upper === "SUCCEEDED" || upper === "OK" || upper === "APPROVE" || upper === "APPROVED" || upper === "PASS" || upper === "PASSED") return [typeof v === "string" ? upper : "OK", "c-ok"];
+  if(upper === "FAILED" || upper === "REQUEST-CHANGES" || upper === "REQUEST_CHANGES" || upper === "FAIL" || upper === "REJECT" || upper === "REJECTED") return [typeof v === "string" ? upper : "FAILED", "c-bad"];
+  if(upper === "WARN" || upper === "WARNING") return [upper, "c-warn"];
+  return [upper, "c-idle"];
+}
+function findingSeverityChip(sev){
+  if(!sev) return null;
+  const s = String(sev).toLowerCase();
+  if(s === "high" || s === "critical" || s === "error") return [s.toUpperCase(), "c-bad"];
+  if(s === "medium" || s === "med" || s === "warn" || s === "warning") return [s.toUpperCase(), "c-warn"];
+  if(s === "low" || s === "info") return [s.toUpperCase(), "c-idle"];
+  return [s.toUpperCase(), "c-idle"];
+}
+function findingStatusChip(st){
+  if(!st) return null;
+  const s = String(st).toLowerCase();
+  if(s === "confirmed") return [s.toUpperCase(), "c-ok"];
+  if(s === "refuted") return [s.toUpperCase(), "c-idle"];
+  if(s === "unverified") return [s.toUpperCase(), "c-warn"];
+  return [s.toUpperCase(), "c-idle"];
+}
+function findingHtml(f){
+  if(!f || typeof f !== "object") return `<div class="finding"><div class="finding-claim">${esc(String(f))}</div></div>`;
+  const claim = f.claim || f.title || "";
+  const chips = [];
+  const sev = findingSeverityChip(f.severity);
+  if(sev) chips.push(`<span class="chip ${sev[1]}">${esc(sev[0])}</span>`);
+  const st = findingStatusChip(f.status);
+  if(st) chips.push(`<span class="chip ${st[1]}">${esc(st[0])}</span>`);
+
+  let anchor = "";
+  if(f.anchor){
+    if(typeof f.anchor === "object"){
+      const file = f.anchor.file || "";
+      const line = f.anchor.line != null ? `:${f.anchor.line}` : "";
+      if(file) anchor = `<div class="finding-anchor mono">${esc(file + line)}</div>`;
+    } else if(typeof f.anchor === "string"){
+      anchor = `<div class="finding-anchor mono">${esc(f.anchor)}</div>`;
+    }
+  }
+  const detail = f.detail || f.body || "";
+  const detailHtml = detail ? `<div class="finding-detail">${esc(detail)}</div>` : "";
+  return `<div class="finding">
+    <div class="finding-top">
+      <span class="finding-claim">${esc(claim || "Finding")}</span>
+      ${chips.length ? `<span class="finding-chips">${chips.join("")}</span>` : ""}
+    </div>
+    ${anchor}
+    ${detailHtml}
+  </div>`;
+}
+function formatMetaValue(val){
+  if(val == null) return "—";
+  if(typeof val === "string") return esc(val);
+  if(typeof val === "number" || typeof val === "boolean") return esc(String(val));
+  return `<pre><code>${esc(JSON.stringify(val, null, 2))}</code></pre>`;
+}
+function renderVerdictDoc(data){
+  const dts = [];
+  for(const k of Object.keys(data)){
+    if(k === "findings" || k === "verdict") continue;
+    dts.push(`<dt>${esc(k)}</dt><dd>${formatMetaValue(data[k])}</dd>`);
+  }
+  const metaHtml = dts.length ? `<dl>${dts.join("")}</dl>` : "";
+  let findingsHtml = "";
+  if(Array.isArray(data.findings)){
+    const items = data.findings.map(findingHtml).join("");
+    findingsHtml = `<h3>Findings · ${data.findings.length}</h3>` + (items || `<div class="empty">No findings recorded.</div>`);
+  }
+  return metaHtml + findingsHtml;
 }
 function renderMarkdown(text){
   const lines = esc(text ?? "").split("\n");
@@ -482,16 +561,34 @@ function renderInboxList(items, roomFilter){
   }
 }
 function renderInboxDoc(item, text){
-  const [label, cls] = verdictChip(item && item.verdict);
+  let parsed = null;
+  if(typeof text === "string" && text.trim()){
+    try { parsed = JSON.parse(text); } catch { parsed = null; }
+  }
+  const isVerdictShaped = parsed && typeof parsed === "object" && !Array.isArray(parsed) && (
+    Array.isArray(parsed.findings) || typeof parsed.verdict === "string"
+  );
+  const verdictForChip = (isVerdictShaped && typeof parsed.verdict === "string") ? parsed.verdict : (item && item.verdict);
+  const [label, cls] = verdictChip(verdictForChip);
   const verdict = item && item.verdict;
   const verdictLine = verdict
     ? `<div class="meta">${esc(verdict.state || "?")}${verdict.error ? " — " + esc(verdict.error) : ""}${verdict.try ? " (" + esc(verdict.try) + ")" : ""}</div>`
     : "";
+
+  let docHtml = "";
+  if(isVerdictShaped){
+    docHtml = renderVerdictDoc(parsed);
+  } else if(parsed !== null){
+    docHtml = `<pre><code>${esc(JSON.stringify(parsed, null, 2))}</code></pre>`;
+  } else {
+    docHtml = renderMarkdown(text);
+  }
+
   $("inboxcontent").innerHTML = `
     <a class="back" id="inboxback">&larr; back to inbox</a>
     <h2>${esc((item && (item.title || item.artifact)) || "")} <span class="chip ${cls}">${label}</span></h2>
     ${verdictLine}
-    <div class="doc">${renderMarkdown(text)}</div>`;
+    <div class="doc">${docHtml}</div>`;
   $("inboxback").addEventListener("click", () => { location.hash = "#inbox"; });
 }
 
