@@ -43,10 +43,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native/core
-
       # Same one-bounded-retry shape as ci.yml's, and for the same measured reason (#1117): the
       # pixi download itself flaked four times on 2026-08-12. A watch that dies before running any
       # test reports nothing, which is the one outcome that would make this workflow worse than

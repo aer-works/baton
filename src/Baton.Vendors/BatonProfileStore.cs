@@ -15,8 +15,10 @@ namespace Baton.Vendors;
 /// that satisfies "a stable key per machine," no wrapper record needed. Not validated against the
 /// filesystem at load time (a profile naming a directory that doesn't exist yet, or doesn't exist on
 /// this particular machine, surfaces naturally as a dispatch-time <c>BatonException</c> with
-/// <c>SpawnFailed</c> — the aer-core native cwd primitive's own documented failure mode — the same
-/// way a raw rooted <see cref="WorkerBindingConfigEntry.WorkingDirectory"/> path would).
+/// <c>SpawnFailed</c> — <c>BatonTask.WithCwd</c>'s own documented failure mode for a directory that
+/// doesn't exist (see <c>WithCwd_InvalidDirectory_RunThrowsBatonExceptionWithSpawnFailed</c> in
+/// <c>BatonTaskTests</c>) — the same way a raw rooted
+/// <see cref="WorkerBindingConfigEntry.WorkingDirectory"/> path would).
 /// </para>
 /// <para>
 /// <b>Missing-file vs. malformed-file:</b> a missing file is "no profiles configured on this

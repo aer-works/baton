@@ -124,14 +124,15 @@ def refresh_published_engine(repo_root: Path) -> Path:
 def provision_worktree(repo: Path, branch: str) -> Path:
     """#717's --worktree: a dispatched worker that builds or tests never works in the live repo.
 
-    Creates (or reuses) a sibling worktree for an existing branch, then runs the provisioning step
-    whose absence has burned a session: `pixi run build-core` (52 dispatch/e2e tests fail on the
-    missing native lib and none of the failures names it). Reuse requires the worktree to already
-    be on the requested branch — anything else is a wrong-repo accident, refused loudly.
+    Creates (or reuses) a sibling worktree for an existing branch. Reuse requires the worktree to
+    already be on the requested branch — anything else is a wrong-repo accident, refused loudly.
 
     Pre-#1458 this also ran `git submodule update --init` (the native binding, external/aer-core,
     was a submodule); #1458 folded it into native/core as plain tracked files, so an ordinary
-    `git worktree add` now brings it along with no separate init step.
+    `git worktree add` brought it along with no separate init step. #1474 then deleted native/core
+    entirely — aer-core's process-execution engine is now plain C# inside src/Baton, built by the
+    same `dotnet build`/`pixi run build` any other change here already needs — so there is no
+    separate native-provisioning step left to run at all.
     """
     # Sanitized before it becomes a path segment: a branch like `feature/foo` would otherwise
     # smuggle a separator into the name and pathlib would silently nest the worktree one level
@@ -151,8 +152,6 @@ def provision_worktree(repo: Path, branch: str) -> Path:
         return path
 
     subprocess.run(["git", "-C", str(repo), "worktree", "add", str(path), branch], check=True)
-    if (path / "pixi.toml").exists():
-        subprocess.run(["pixi", "run", "build-core"], cwd=str(path), check=True)
     return path
 
 

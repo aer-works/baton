@@ -18,14 +18,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- aer-core .NET binding (P/Invoke wrapper over the FFI boundary), folded into native/core
-         (#1458, native/core/PROVENANCE.md) per CLAUDE.md's P/Invoke Layer rule. No package feed
-         exists for this yet — a single-developer project doesn't need one; `pixi run
-         build-core` builds the native lib the ProjectReference below expects. -->
-    <ProjectReference Include="..\..\native\core\bindings\dotnet\Baton.Core\Baton.Core.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
     <!-- Lets the test project exercise internal pump machinery (e.g. InFlightExecutionRegistry's
          Register/Unregister/RequestStopAsync) directly where a test needs to force an exact
          internal race deterministically, not just through the public mutation surface. -->

@@ -208,10 +208,10 @@ public class WorkerBindingConfigParserTests
 
     /// <summary>
     /// A non-positive <c>Timeout</c> is not a slow worker, it is an unrunnable one: it reaches
-    /// <c>BatonTask.WithTimeout</c> as <c>Duration::from_millis(0)</c>, and
-    /// <c>native/core/src/task.rs:265-269</c> arms a monitor thread that kills the process tree
-    /// as soon as <c>recv_timeout</c> returns. Before this check the file parsed happily and the
-    /// worker died on startup with nothing naming the cause.
+    /// <c>BatonTask.WithTimeout</c> as a zero (or negative) <see cref="TimeSpan"/>, and the timeout
+    /// monitor inside <c>BatonProcessRunner.Run</c> kills the process tree as soon as its delay
+    /// elapses -- immediately, for zero. Before this check the file parsed happily and the worker
+    /// died on startup with nothing naming the cause.
     /// </summary>
     [Theory]
     [InlineData("00:00:00")]

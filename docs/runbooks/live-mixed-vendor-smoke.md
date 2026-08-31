@@ -22,7 +22,7 @@ the gate pass.
   or an API key configured for it. `AgyWorkerAdapter` has no key-handling code of its own; it
   shells out to whatever `agy` invocation is already authenticated on this machine.
 - Outbound network access to both Anthropic's and Google's APIs.
-- Standard repo prerequisites, same as the claude smoke runbook (.NET 10 SDK plus a Rust toolchain).
+- Standard repo prerequisites, same as the claude smoke runbook (.NET 10 SDK).
 
 ## Running it
 

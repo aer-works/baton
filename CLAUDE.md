@@ -1,6 +1,6 @@
 # Baton — Claude Code Instructions
 
-The product is **Baton**; "AER" stays the name of the ecosystem around it, and this repo is Baton's engine layer (#1458 3b: its own identifiers — `Baton.slnx`, `pixi.toml`'s workspace name — moved off the legacy `aer-flow`/`AerFlow` spelling onto `baton`/`Baton` to match). Built in .NET, that layer reads structured workflow definitions, dispatches them to Workers (via `aer-core`), and bridges outputs back to the engine. `spec/baton.md` is the system's sole behavioral register — read it first; its rulings govern everything below.
+The product is **Baton**; "AER" stays the name of the ecosystem around it, and this repo is Baton's engine layer (#1458 3b: its own identifiers — `Baton.slnx`, `pixi.toml`'s workspace name — moved off the legacy `aer-flow`/`AerFlow` spelling onto `baton`/`Baton` to match). Built in .NET, that layer reads structured workflow definitions, dispatches them to Workers, and bridges outputs back to the engine. `spec/baton.md` is the system's sole behavioral register — read it first; its rulings govern everything below.
 
 **This file is for developing Baton.** If your job is instead to *invoke* Baton — run a lane against
 some other repo and collect its output — read `docs/agents/invoking-baton.md` and stop there.
@@ -43,9 +43,6 @@ baton/
 ├── docs/                      vendor-capabilities.md / vendor-doc-audit.md / vendor-coverage.md
 │                              (the vendor registers), runbooks/, agents/ (harness-facing docs),
 │                              dispatch.md. No decision or design register — spec/baton.md §11
-├── native/
-│   └── core/                  aer-core, folded in as plain tracked files (#1458, native/core/PROVENANCE.md)
-│                              — the M5 .NET binding P/Invoked by the Core Dispatcher, plus its Rust source
 ├── tools/                     vendor-verify (re-runnable vendor checks; `--sentinels` runs only the
 │                              ones a design rests on), vendor-survey, Baton.VendorProbe,
 │                              smoke-preflight (free gate on the smoke tasks), audit-completeness
@@ -69,8 +66,6 @@ use it until that command has been run once per clone.
 
 | Task | Command |
 |---|---|
-| `build-core` | `cargo build` in `native/core` — builds the native lib `build`/`test`/`lint` depend on |
-| `test-core` | `cargo test` in `native/core` — aer-core's own test suite (#1458; folded into CI's `lint` job) |
 | `build` | `dotnet build` |
 | `test` | `dotnet test` |
 | `lint` | `dotnet build -warnaserror` |
@@ -80,13 +75,15 @@ use it until that command has been run once per clone.
 | `gates-fast` | the same minus `test`. What the pre-push hook runs |
 | `setup-hooks` | one-time per clone: `git config core.hooksPath .githooks` |
 
-**.NET 10 SDK** is required and installed separately — pixi does not manage it (same convention as aer-core):
+**.NET 10 SDK** is required and installed separately — pixi does not manage it:
 - Windows: `winget install Microsoft.DotNet.SDK.10`
 - Linux (Claude Code remote sandbox): `sudo apt-get install -y dotnet-sdk-10.0` directly, skipping `apt-get update` (or ignoring its exit code) — the sandbox's `deadsnakes`/`ondrej/php` PPAs are broken (403/unsigned) and make `apt-get update` fail, but that's unrelated to .NET: the `dotnet-sdk-10.0` package already resolves fine from `archive.ubuntu.com`/`security.ubuntu.com`, so `apt-get install` succeeds without a clean `update`. Installs straight to `/usr/bin/dotnet` — no `PATH` edit needed.
 
-**Rust toolchain** is required to build `native/core`'s native library (`pixi run build-core`) — also installed separately, not pixi-managed, same convention as the .NET SDK above. GitHub Actions' `windows-latest` runner image already has one; for local dev, install via [rustup](https://rustup.rs).
-
-**aer-core** (`native/core`) is folded into this repo as a snapshot import of plain tracked files (#1458, `native/core/PROVENANCE.md`) — not a package, and there is no NuGet feed for it yet (a single-developer project doesn't need the auth/RID-packaging overhead a real feed would add; see AER Overview §6). `pixi run build-core` builds its native library from source via `cargo build`.
+No other toolchain is required: #1474 ported the process-execution engine (previously `native/core`, a
+Rust crate reached over an FFI boundary) into plain C# inside `src/Baton` (`Baton.Core` namespace,
+`src/Baton/Core/`) — no Rust toolchain, no native library to build. The archived `aer-works/aer-core`
+repo is that history, not a current dependency (Architecture Rule 3 below covers what P/Invoke
+surface remains).
 
 ---
 
@@ -293,7 +290,7 @@ question and the other needed a better probe.*
 
 1. **Flow carries discipline, Workers carry intelligence**: The Flow engine must *never* parse conversation content, inspect prompt text, or attempt to understand LLM outputs to make routing decisions. Routing is exclusively defined by the structured workflow config and explicit tool returns from the Workers.
 2. **Adapter Isolation**: Vendor-specific quirks (e.g., Anthropic's block format vs Gemini's part format) MUST be isolated inside `Baton.Vendors`. The `Baton` core layer only understands a single, unified canonical message protocol.
-3. **P/Invoke Layer**: Any interaction with `aer-core` for process execution must go through strict P/Invoke wrappers that match the M4 ABI (`BatonTask`, `BatonCancelHandle`, `BatonEvent`).
+3. **P/Invoke Layer**: `Baton.Core`'s process execution (`BatonTask`, `src/Baton/Core/`) is plain managed code since #1474 — no FFI boundary, no native library. The one P/Invoke it still owns is thin and internal: Windows Job Object calls (`CreateJobObject`/`AssignProcessToJobObject`/`TerminateJobObject`, `src/Baton/Core/Internal/SafeJobObjectHandle.cs`) for process-tree containment. That is Win32 surface, not a vendored ABI — any other interaction with a vendor CLI still goes through `BatonTask`'s own managed API, never a new P/Invoke of its own.
 4. **Credential Isolation**: AER never reads, copies, forwards, or stores a vendor credential. It spawns the vendor's own first-party CLI, which authenticates itself — AER is a keyboard, not a client. No API keys, no OAuth tokens, no OS credential store, and **AER never places a credential into a config directory**. This is the product premise made structural: AER works against **subscriptions**, not API keys, which is why both vendors' API-key-only SDKs were evaluated and rejected (`docs/vendor-doc-audit.md`). Enforced by `VendorCredentialIsolationTests` — **do not weaken that test to make something pass**; if a change appears to need a vendor key, the design is wrong, not the test.
    - **Corrected 2026-07-25 (#527).** This rule previously said "no redirecting the vendor CLIs' config directories", which was too broad and rested on a misreading. `CLAUDE_CONFIG_DIR` **is** usable: credentials live under the config root, and a fresh root is made usable by a one-time interactive `claude auth login` performed **by the operator**. That is a human signing in, not AER handling a credential, so per-worker config roots are permitted and are an available design option. What stays forbidden is AER *copying* credentials into a root, or otherwise obtaining one itself. `claude auth status` reports per-root, is structured, and spends no subscription usage — use it as a pre-dispatch readiness probe.
 

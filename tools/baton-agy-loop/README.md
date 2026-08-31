@@ -145,16 +145,16 @@ to both.
 ## Where the worker runs build+test
 
 A worker that compiles and tests its own changes runs that `build+test` several processes deep in the
-dispatch tree, inside the Job Object aer-core creates for the worker subtree. That job is created with
+dispatch tree, inside the Job Object `BatonTask` creates for the worker subtree. That job is created with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and **no** memory or process cap
-(`native/core/src/os/windows.rs`). Two consequences follow, and both point the same way:
+(`src/Baton/Core/Internal/SafeJobObjectHandle.cs`). Two consequences follow, and both point the same way:
 
 - The job cannot bound a runaway worker — a heavy in-tree `pixi run gates` (two MSBuild+Roslyn passes
   plus test hosts) has nothing capping what it allocates.
-- `KILL_ON_JOB_CLOSE` means the instant the job holder — the .NET engine that P/Invokes aer-core —
-  goes down, the whole worker subtree dies at once: **no terminal event**, and nothing in the killed
-  subtree gets the chance to log its own exit. Anything that takes the holder down presents as the
-  worker vanishing silently.
+- `KILL_ON_JOB_CLOSE` means the instant the job holder — the .NET engine spawning the process directly
+  (no P/Invoke into anything external) — goes down, the whole worker subtree dies at once: **no
+  terminal event**, and nothing in the killed subtree gets the chance to log its own exit. Anything
+  that takes the holder down presents as the worker vanishing silently.
 
 Measured twice ([#917](https://github.com/aer-works/baton/issues/917)): on a memory-starved box, both
 dispatches whose worker actually ran `pixi run gates` in-tree died mid-flight — `flow.jsonl` stopped
@@ -163,5 +163,5 @@ session survived. The initiating trigger stayed unproven, but the shape is clear
 cap to soften it.
 
 **So: workers write files; the orchestrator runs the one authoritative `pixi run gates`** in its own
-shallow tree, outside aer-core's job, and gates the worker output there. That is also the cleaner
+shallow tree, outside `BatonTask`'s job, and gates the worker output there. That is also the cleaner
 split — one authoritative gate run, not one per worker.

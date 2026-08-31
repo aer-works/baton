@@ -399,10 +399,9 @@ internal sealed class StdoutLineBuffer
 
 
 /// <summary>
-/// Calls the aer-core M5 <c>BatonTask</c> binding with an <see cref="ExecutionRequest"/> and records
-/// Core's lifecycle events to the combined log (M7 Phase 6). This is the P/Invoke Layer
-/// <c>CLAUDE.md</c> requires: the only place in <c>Baton</c> that touches <c>Baton.Core</c>
-/// directly.
+/// Calls the managed <c>BatonTask</c> engine with an <see cref="ExecutionRequest"/> and records
+/// Core's lifecycle events to the combined log (M7 Phase 6). This is the only place in
+/// <c>Baton</c> that touches <c>Baton.Core</c> directly.
 /// </summary>
 public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICoreDispatcher
 {
@@ -444,21 +443,22 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
     internal static int PlatformCommandLineCeiling => WindowsCommandLineCeiling;
 
     /// <summary>
-    /// An upper bound on the command line <c>std::process::Command</c> assembles from
-    /// <paramref name="program"/> and <paramref name="args"/> inside aer-core: each argument
-    /// contributes its own characters, a separating space, a surrounding quote pair, and the worst
-    /// case of std's escaping.
+    /// An upper bound on the command line <see cref="System.Diagnostics.ProcessStartInfo.ArgumentList"/>
+    /// assembles from <paramref name="program"/> and <paramref name="args"/> when <c>BatonTask</c>
+    /// spawns the process: each argument contributes its own characters, a separating space, a
+    /// surrounding quote pair, and the worst case of the runtime's escaping.
     /// </summary>
     /// <remarks>
     /// A bound rather than an exact reproduction, deliberately: being exact would mean reimplementing
-    /// rustc's Windows argument-quoting rules here and holding them in step with a toolchain this repo
-    /// does not pin — a claim about someone else's internals no test of ours could keep honest. But a
+    /// the BCL's Windows argument-quoting rules here and holding them in step with a runtime this repo
+    /// does not vendor — a claim about someone else's internals no test of ours could keep honest. But a
     /// bound only has to be an over-estimate to be sound, which needs far less than the real rules.
     /// <para>
     /// Escaping never adds more than one character per <c>"</c> plus one per <c>\</c> in an argument:
-    /// std emits <c>2n+1</c> backslashes for an interior quote preceded by <c>n</c> of them (<c>n+1</c>
-    /// beyond what the raw characters already contribute) and doubles a trailing backslash run
-    /// (<c>n</c> beyond). Counting one for each of those characters therefore cannot under-shoot.
+    /// the same MSVCRT-compatible convention the BCL follows emits <c>2n+1</c> backslashes for an
+    /// interior quote preceded by <c>n</c> of them (<c>n+1</c> beyond what the raw characters already
+    /// contribute) and doubles a trailing backslash run (<c>n</c> beyond). Counting one for each of
+    /// those characters therefore cannot under-shoot.
     /// </para>
     /// <para>
     /// This started as <c>Length + 3</c> with no escape term, on the reasoning that under-counting only
@@ -676,19 +676,21 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
 
         // Unconditional since #563. This used to be gated on `target.OnStdoutLine is not null`, i.e.
         // the live-streaming path only, which meant an ordinary `baton run` never captured — and
-        // aer-core's no-sink drain runs `io::copy(&mut reader, &mut io::sink())` (os/mod.rs:121), so
-        // every byte the worker wrote explaining its own failure was read and thrown away.
+        // BatonProcessRunner's discard-path drain thread (RunDiscardingOutput's `sink: null` case)
+        // reads and throws every byte away, so every byte the worker wrote explaining its own
+        // failure was read and discarded.
         //
-        // Nothing visible regresses by turning this on: both platforms already spawn the child with
-        // `.stderr(Stdio::piped())` unconditionally and explicitly never `Stdio::inherit`
-        // (os/unix.rs:26, os/windows.rs:78), so this output has never reached the operator's terminal
-        // and there is no inherited stream to take away.
+        // Nothing visible regresses by turning this on: BuildStartInfo already sets
+        // RedirectStandardError unconditionally and never lets the child inherit the console, so
+        // this output has never reached the operator's terminal and there is no inherited stream to
+        // take away.
         //
-        // aer-core has no stderr-only capture mode — one bool covers both streams — so this also
-        // starts delivering StdoutChunk for non-chat dispatches. That case is a no-op below, and the
-        // guard there is *decode-free*, not allocation-free: by the time it runs, the binding has
-        // already copied the chunk into a managed array (CallbackBridge.cs:36-37, unconditional for
-        // any chunk event with DataLen > 0) and allocated an BatonEventArgs. Those allocations are a
+        // BatonTask.WithCaptureOutput takes one bool covering both streams — there is no
+        // stderr-only capture mode — so this also starts delivering StdoutChunk for non-chat
+        // dispatches. That case is a no-op below, and the guard there is *decode-free*, not
+        // allocation-free: by the time it runs, BatonProcessRunner's drain thread has already
+        // copied the chunk into its own managed array (StartDrainThread's per-read `byte[] copy`)
+        // and RunWithLiveCapture has allocated a BatonEventArgs for it. Those allocations are a
         // layer below anything this file can suppress. Chunks are 8 KiB, and a `-p` style adapter
         // produces tens of KB, so it is a handful of short-lived arrays per dispatch — gen0 churn,
         // not a leak. Stated precisely because the earlier wording here claimed the non-chat path
@@ -723,9 +725,10 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         // "I finished, status success" line looks like; here we only invoke that predicate on each
         // complete stdout line and latch the flag. Combined with OnStdoutLine into one sink so a line is
         // decoded once, and non-null whenever EITHER a progress callback OR a detector is present -- so
-        // detection works on the dispatch path even when nothing consumes progress. Mutated on aer-core's
-        // single callback thread under stdoutLock (below); read after the post-run Flush, which takes the
-        // same lock, so the latch is visible.
+        // detection works on the dispatch path even when nothing consumes progress. Mutated on
+        // BatonTask's single event-delivery thread (BatonProcessRunner.RunWithLiveCapture's chunk
+        // loop) under stdoutLock (below); read after the post-run Flush, which takes the same lock,
+        // so the latch is visible.
         var terminalSuccessObserved = false;
         var detectsTerminalSuccess = target.DetectsTerminalSuccess;
         Action<string>? stdoutLineSink = target.OnStdoutLine;
@@ -749,9 +752,10 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         // #887 stage 2: a deterministic command step's stdout IS its declared artifact. Resolved
         // once here, not per chunk; per-chunk open-append-flush matches what
         // ExecutionStreamLogger already does for the stream logs. The lock is insurance against
-        // a future second writer, NOT against concurrent chunks -- aer-core's event pump invokes
-        // the callback synchronously on one thread (its own remark below on the decode says the
-        // same), so chunk appends are already serialized and ordered.
+        // a future second writer, NOT against concurrent chunks -- BatonTask's live-capture pump
+        // (BatonProcessRunner.RunWithLiveCapture) invokes EventRaised synchronously on one thread
+        // (its own remark below on the decode says the same), so chunk appends are already
+        // serialized and ordered.
         //
         // Created EAGERLY, before dispatch: a well-behaved command whose success case is empty
         // stdout (an empty `git diff`, a no-match grep) produces zero chunks, and a lazily

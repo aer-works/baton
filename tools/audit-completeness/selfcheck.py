@@ -1343,16 +1343,14 @@ def _recordonce_discriminates():
         "record-once: a restored decision record was not excluded from comparison")
     assert excl("src/Baton/CHANGELOG.md") == "changelog", (
         "record-once: a generated changelog was not excluded from comparison")
-    assert excl("native/core/src/lib.rs") == "vendored-snapshot", (
-        "record-once: a vendored aer-core snapshot file (#1458) was not excluded from comparison")
     for near_miss in ("docs/decisionsx/0001-imposter.md", "docs/B.md", "src/A.cs",
-                      "docs/CHANGELOG-notes.md", "native/corex/imposter.rs", "src/native/core.cs"):
+                      "docs/CHANGELOG-notes.md"):
         assert excl(near_miss) is None, (
             f"record-once: {near_miss} was excluded from comparison but is ordinary population")
 
     return (f"{len(polarities)} record-once polarities "
             f"({sum(1 for p in polarities if not p[2])} must NOT fire) + 9 exemption arms "
-            f"+ 9 population-filter polarities + a non-cp1252 file read through git")
+            f"+ 6 population-filter polarities + a non-cp1252 file read through git")
 
 
 @check("the record-once checker still finds the passages it found in a real merge")

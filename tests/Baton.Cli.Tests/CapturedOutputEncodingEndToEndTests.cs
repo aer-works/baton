@@ -54,7 +54,7 @@ public class CapturedOutputEncodingEndToEndTests
             var outputPath = Path.Combine(roomDirectory, "artifacts", $"execution_{stepState.LatestExecutionId}", "output1");
             Assert.True(File.Exists(outputPath), $"Expected output artifact at {outputPath}");
 
-            // The claim under test is capture fidelity: fixture bytes -> python stdout -> aer-core
+            // The claim under test is capture fidelity: fixture bytes -> python stdout -> BatonTask
             // capture -> CoreDispatcher's UTF-8 decode -> this callback's strings. Re-encoding the
             // captured strings must reproduce the exact original bytes; any codepage transcoding
             // anywhere in that pipeline breaks the round trip and fails here. Asserted on the
@@ -149,7 +149,8 @@ public class CapturedOutputEncodingEndToEndTests
         var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(pythonCode));
         // Two shells, two rules, and the base64 payload's spacelessness is load-bearing for both.
         // Windows: cmd re-splits the template, so the spaceless exec(...) expression survives BARE
-        // as one token — adding quotes breaks it (aer-core escapes them into literal characters in
+        // as one token — adding quotes breaks it (the managed spawn path's own Windows argument
+        // quoting, via ProcessStartInfo.ArgumentList, escapes them into literal characters in
         // python's -c payload; measured red). POSIX: sh parses the template as shell, where bare
         // parentheses are a syntax error (measured red on the Linux CI leg) — single quotes fix it,
         // with python's inner strings switched to double quotes.

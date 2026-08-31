@@ -20,8 +20,8 @@ namespace Baton.Architecture.Tests;
 public class ReferenceDirectionTests
 {
     // Baton is the pure engine (CLAUDE.md rule 2: the core layer understands only the single,
-    // unified canonical protocol). It may depend on the aer-core binding and the framework — never on
-    // a vendor adapter or a client. This is the load-bearing invariant #335 rides: the
+    // unified canonical protocol). It may depend on the managed BatonTask engine and the framework —
+    // never on a vendor adapter or a client. This is the load-bearing invariant #335 rides: the
     // engine needs no changes for multi-task precisely because nothing above it reaches back in.
     // #1458: Baton.Daemon dropped from the forbidden list -- it is no longer a project (folded into
     // Baton.Cli as a verb), so it can never appear as a ProjectReference to begin with.

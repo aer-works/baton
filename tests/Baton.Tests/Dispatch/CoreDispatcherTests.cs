@@ -9,7 +9,7 @@ using Baton.Store;
 namespace Baton.Tests.Dispatch;
 
 /// <summary>
-/// Integration tests: these spawn a real process through the aer-core M5 <c>BatonTask</c> binding
+/// Integration tests: these spawn a real process through the managed <c>BatonTask</c> engine
 /// (M7 Phase 6's acceptance criteria — a trivial worker, output file appears in the pre-allocated
 /// artifact directory, Core lifecycle events land in the log). No mocking of Baton.Core itself.
 /// </summary>
@@ -233,8 +233,9 @@ public class CoreDispatcherTests
     /// M23 Phase 3's own named verification bullet (#272): "an integration test asserting a spawned
     /// worker's actual cwd matches a configured WorkingDirectory" — through the real wiring
     /// (<see cref="CoreDispatchTarget.WorkingDirectory"/> → <see cref="CoreDispatcher.DispatchAsync"/>
-    /// → the aer-core <c>BatonTask.WithCwd</c> primitive), not the native primitive in isolation
-    /// (already proven by <c>aer-core</c>'s own <c>EnvironmentAndWorkingDirectoryTests</c>).
+    /// → <c>BatonTask.WithCwd</c>), not <c>WithCwd</c> in isolation (already proven by
+    /// <c>BatonTaskTests</c>'s own <c>WithCwd_ChangesChildWorkingDirectory</c> and
+    /// <c>WithCwd_InvalidDirectory_RunThrowsBatonExceptionWithSpawnFailed</c>).
     /// </summary>
     [Fact]
     public async Task DispatchAsync_spawns_the_worker_with_its_actual_cwd_set_to_the_configured_WorkingDirectory()
@@ -375,11 +376,15 @@ public class CoreDispatcherTests
     /// <b>It exists because a reviewer argued the negative arms could not fail on Linux or macOS,
     /// and running it settled that they can.</b> The argument was that .NET on Unix does not call
     /// <c>setenv</c> for <c>SetEnvironmentVariable</c> — it mutates a managed dictionary — while the
-    /// child is spawned by aer-core in Rust from the native <c>environ</c>, so the sentinel would
-    /// never arrive whether or not <see cref="Baton.Core.BatonTask.WithClearEnv"/> were called. All four
-    /// arms pass on ubuntu-latest (CI run 30472390670), so the plant does reach the child and the
-    /// negative arms were never vacuous. Recorded because the hypothesis was specific and plausible
-    /// enough to be worth someone else's time, and the measurement is cheaper than the argument.
+    /// child is spawned by <c>BatonProcessRunner</c> via <see cref="System.Diagnostics.Process"/>,
+    /// whose environment is built explicitly from <c>WithEnv</c>/<c>WithClearEnv</c>
+    /// (<c>ProcessStartInfo.EnvironmentVariables</c>) rather than by re-reading the operator's own
+    /// environment mutations at spawn time, so the sentinel would never arrive whether or not
+    /// <see cref="Baton.Core.BatonTask.WithClearEnv"/> were called. All four arms pass on
+    /// ubuntu-latest (CI run 30472390670, predating this repo's Windows-only pivot #1405), so the
+    /// plant does reach the child and the negative arms were never vacuous. Recorded because the
+    /// hypothesis was specific and plausible enough to be worth someone else's time, and the
+    /// measurement is cheaper than the argument.
     /// </para>
     /// <para>
     /// <c>LC_CTYPE</c> carries the sentinel because it is on the allowlist for its own reasons and
@@ -597,9 +602,10 @@ public class CoreDispatcherTests
         }
     }
 
-    // #563: a worker's stderr used to be read by aer-core's drain thread and passed to
-    // io::copy(.., io::sink()) — produced, consumed, and discarded. These spawn a real process that
-    // writes to a real stderr pipe; nothing here is stubbed.
+    // #563: a worker's stderr used to be read by the discard-path drain thread (today,
+    // BatonProcessRunner's RunDiscardingOutput with sink: null) and thrown away — produced,
+    // consumed, and discarded. These spawn a real process that writes to a real stderr pipe;
+    // nothing here is stubbed.
 
     [Fact]
     public async Task DispatchAsync_captures_what_the_worker_wrote_to_stderr()
@@ -1142,7 +1148,7 @@ public class CoreDispatcherTests
             : new CoreDispatchTarget("sh", ["-c", $"echo {message} >&2; exit {exitCode}"]);
 
     // Issue #598: an over-long command line is refused by AER, naming its size and the limit, rather
-    // than reaching aer-core and coming back as an OS-authored complaint about a filename.
+    // than reaching BatonTask and coming back as an OS-authored complaint about a filename.
 
     /// <summary>
     /// Pins the arithmetic the ceiling is compared against, so that a change to the accounting has to
@@ -1268,8 +1274,8 @@ public class CoreDispatcherTests
 
     /// <summary>
     /// The end-to-end arm: the guard is actually wired into <see cref="CoreDispatcher.DispatchAsync"/>
-    /// and refuses before aer-core is reached. The boundary itself is covered on every platform by the
-    /// tests above, which pass their own ceiling in.
+    /// and refuses before <c>BatonTask</c> is reached. The boundary itself is covered on every platform
+    /// by the tests above, which pass their own ceiling in.
     /// </summary>
     [Fact]
     public async Task DispatchAsync_refuses_an_over_long_command_line_before_spawning()
