@@ -527,6 +527,62 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// Regression, #1459 fix (PR #1506's adversarial security review): a raw <c>PermissionScope</c>
+    /// carrying a <c>Bash(pattern)</c> clause used to reach <c>--allowedTools</c> while leaving
+    /// <c>BATON_HOOK_SHELL_PATTERNS</c> tagged-and-empty, because the channel was built exclusively
+    /// from the (here, null) structured <c>PermissionGrant</c>. The channel must now carry the same
+    /// pattern the flag does.
+    /// </summary>
+    [Fact]
+    public void A_raw_PermissionScope_Bash_pattern_clause_populates_the_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*)"), ArchitectContract);
+
+        Assert.Equal("Write,Bash(git diff*)", ArgValue(target, "--allowedTools"));
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*"), target.Environment);
+        // The raw path has no denied-pattern concept to derive -- unchanged by this fix.
+        Assert.Contains(
+            (ClaudeWorkerAdapter.DeniedShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// Multiple <c>Bash(pattern)</c> clauses in the raw scope all reach the channel, comma-joined the
+    /// same way the structured-grant path already joins <c>PermissionGrant.ShellCommandPatterns</c>.
+    /// </summary>
+    [Fact]
+    public void Multiple_raw_PermissionScope_Bash_pattern_clauses_all_populate_the_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", PermissionScope: "Bash(git diff*),Read,Bash(gh pr view*)"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*,gh pr view*"),
+            target.Environment);
+    }
+
+    /// <summary>
+    /// A bare <c>Bash</c> clause in the raw scope (no parens) is the genuinely-unscoped-shell case --
+    /// extracting a pattern from it would deny an intentionally-unscoped grant, the opposite defect
+    /// from the one this fix closes. The channel must stay empty (unscoped no-op), not deny.
+    /// </summary>
+    [Fact]
+    public void A_bare_Bash_raw_scope_still_yields_an_empty_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash"), ArchitectContract);
+
+        Assert.Equal("Write,Bash", ArgValue(target, "--allowedTools"));
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
     /// #543, from review: an inherited `CLAUDE_CODE_SIMPLE=1` disables hooks the same way `--bare`
     /// does (see the doc comment above `SimpleModeVariable`'s declaration), and `BatonTask` inherits
     /// the full parent environment by default -- so this override has to actually be on the argv
@@ -593,6 +649,46 @@ public class ClaudeWorkerAdapterTests
         Assert.Empty(stderr);
     }
 
+    /// <summary>
+    /// End-to-end regression, #1459 fix: a raw <c>PermissionScope</c> dispatch (no
+    /// <c>PermissionGrant</c>) scoping its shell to <c>Bash(git diff*)</c> must have the #1461
+    /// chaining escape denied by the real spawned hook process, exactly as a structured-grant
+    /// dispatch already is. Before this fix the hook channel this test reads through
+    /// <see cref="RunResolvedHookCommand"/> came out tagged-and-empty for a raw-scope dispatch, so
+    /// <c>HookCheckCommand.Decide</c> took its deliberate unscoped-shell no-op branch and this command
+    /// was allowed.
+    /// </summary>
+    [Fact]
+    public void Regression_1459_the_resolved_hook_command_denies_the_1461_escape_under_a_raw_PermissionScope_dispatch()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*)"), ArchitectContract);
+
+        var (exitCode, stderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git diff; echo escaped"}}""");
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("scoped shell grant", stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Control for the regression above: the same raw-scope dispatch must still ALLOW a command that
+    /// actually matches the granted pattern, through the real spawned hook process -- proving the
+    /// fix denies the escape specifically, not shell use in general.
+    /// </summary>
+    [Fact]
+    public void The_resolved_hook_command_allows_a_matching_command_under_a_raw_PermissionScope_dispatch()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*)"), ArchitectContract);
+
+        var (exitCode, stderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git diff"}}""");
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(stderr);
+    }
+
     private static (int ExitCode, string Stderr) RunResolvedHookCommand(CoreDispatchTarget target, string stdin)
     {
         var settingsPath = ArgValue(target, "--settings")!;
@@ -613,8 +709,15 @@ public class ClaudeWorkerAdapterTests
             startInfo.ArgumentList.Add(arg!);
         }
 
-        var deniedToolsVar = target.Environment!.First(e => e.Name == ClaudeWorkerAdapter.DeniedToolsVariable);
-        startInfo.Environment[deniedToolsVar.Name] = deniedToolsVar.Value;
+        // Forward every environment variable Resolve prepared, not just the denied-tools one -- a
+        // real Claude Code spawn inherits the whole process environment, and #1459's own shell-pattern
+        // channels need to reach this real subprocess too for a scoped-shell dispatch to be provable
+        // end to end here (a partial simulation that only forwarded the denied-tools variable would
+        // have passed the pre-fix bypass just as easily as the fixed behaviour).
+        foreach (var (name, value) in target.Environment!)
+        {
+            startInfo.Environment[name] = value;
+        }
 
         using var process = Process.Start(startInfo)!;
         process.StandardInput.Write(stdin);

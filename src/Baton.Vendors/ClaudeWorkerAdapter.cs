@@ -233,11 +233,17 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             // unscoped-shell reading (HookCheckCommand.Decide skips the segment-level check), where an
             // absent/wrong-vendor one is a broken channel and also skips it (see that method's own
             // remarks for why claude's absent case reads opposite to agy's). Reuses
-            // AgyWorkerAdapter's builders rather than restating them -- both read the same
-            // PermissionGrant fields the same way; only the vendor tag differs, and that is applied
-            // here.
+            // AgyWorkerAdapter's builders when there's a structured grant to read; falls back to
+            // BuildShellPatternsFromRawScope for the raw PermissionScope escape hatch (#1459 fix --
+            // see that method's own doc comment for the bypass this closes).
             (ShellPatternsVariable,
-                $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildShellPatterns(invocation.PermissionGrant)}"),
+                $"{ShellPatternsVendorTag}:{(invocation.PermissionGrant is { } shellGrant
+                    ? AgyWorkerAdapter.BuildShellPatterns(shellGrant)
+                    : BuildShellPatternsFromRawScope(permissionScope))}"),
+            // The raw PermissionScope escape hatch has no denied-pattern concept to parse out of it
+            // (it feeds --allowedTools alone, never --disallowedTools) -- stays empty on that path,
+            // same as before this fix. Not a gap: BuildShellPatternsFromRawScope's doc comment records
+            // why an allow-only channel is still a strict improvement there.
             (DeniedShellPatternsVariable,
                 $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellPatterns(invocation.PermissionGrant)}"),
         };
@@ -563,6 +569,85 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         }
 
         return invocation.PermissionScope ?? DefaultPermissionScope;
+    }
+
+    /// <summary>
+    /// Derives the hook's ALLOWED shell-pattern channel from the raw <c>PermissionScope</c> escape
+    /// hatch, for when <see cref="WorkerInvocation.PermissionGrant"/> is null and
+    /// <see cref="AgyWorkerAdapter.BuildShellPatterns"/> has no structured
+    /// <see cref="PermissionGrant.ShellCommandPatterns"/> to read (#1459 fix, from PR #1506's
+    /// adversarial security review).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The bypass this closes.</b> A worker binding can scope its shell via the raw
+    /// <c>PermissionScope</c> string instead of a structured grant (e.g.
+    /// <c>PermissionScope: "Write,Bash(git diff*)"</c>, <c>PermissionGrant: null</c> --
+    /// <c>ClaudeWorkerAdapterTests.An_explicit_permission_scope_overrides_the_default</c> exercises
+    /// exactly this shape). Before this fix the shell-pattern channel was built exclusively from
+    /// <c>AgyWorkerAdapter.BuildShellPatterns(invocation.PermissionGrant)</c>, which returns empty for
+    /// a null grant -- so <c>BATON_HOOK_SHELL_PATTERNS</c> came out as the literal <c>"claude:"</c>
+    /// (tagged, zero patterns) regardless of what the raw scope actually granted.
+    /// <c>HookCheckCommand.Decide</c> reads that shape as <c>Present</c> with <c>Patterns.Count == 0</c>,
+    /// which is its deliberate no-op reading for an unscoped shell (see that method's own remarks) --
+    /// so the second enforcement layer #1459 added never engaged, while <c>--allowedTools
+    /// "Bash(git diff*)"</c> still reached claude and the #1461 chaining escape
+    /// (<c>git diff; echo escaped</c>) executed unblocked, identically to the pre-#1459 state.
+    /// </para>
+    /// <para>
+    /// <b>Single source of truth.</b> This parses <paramref name="resolvedScope"/> -- literally the
+    /// same string <see cref="Resolve"/> already computed via <see cref="ResolvePermissionScope"/> and
+    /// passes to <c>--allowedTools</c>, not a second, independently-derived copy of it -- so the hook
+    /// channel can never scope a shell more narrowly or more broadly than claude's own flag did; the
+    /// two are read from one value rather than kept in sync by hand. No existing parser in this
+    /// codebase tokenizes a raw permission-scope string into <c>Bash(pattern)</c> clauses (checked:
+    /// neither <c>Baton.Cli.ShellPatternList</c>/<c>DeniedToolList</c> -- which parse the
+    /// already-vendor-tagged <em>environment variable</em> shape, a different string, and live in a
+    /// project <c>Baton.Vendors</c> cannot reference -- nor anything in
+    /// <c>ShellCommandPatternMatcher</c>, which parses a shell *command line*, not a permission-scope
+    /// clause list); this is new, minimal, and reused nowhere else that would otherwise drift from it.
+    /// </para>
+    /// <para>
+    /// <b>Only <c>Bash(&lt;pattern&gt;)</c> clauses populate the channel.</b> A bare <c>Bash</c> clause
+    /// (no parens -- genuinely unscoped shell) is deliberately left out: extracting a pattern from it
+    /// would deny an intentionally-unscoped grant, which is the opposite defect from the one this
+    /// fixes. This mirrors <see cref="TryTranslatePermissionGrant"/>'s own structured-grant handling,
+    /// which likewise emits bare <c>Bash</c> only when <see cref="PermissionGrant.ShellCommandPatterns"/>
+    /// is empty.
+    /// </para>
+    /// <para>
+    /// <b>Denied patterns are not derivable from this path.</b> The raw scope string carries only what
+    /// is ALLOWED -- it feeds <c>--allowedTools</c> alone, and there is no raw-scope equivalent of
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> to parse out of it, so
+    /// <see cref="DeniedShellPatternsVariable"/> stays empty on this path, unchanged by this fix. That
+    /// is still a strict improvement over the pre-fix behaviour: the hook's own allow-list-and-segment
+    /// check (<see cref="ShellCommandPatternMatcher.EvaluateChainedCommand"/>) already denies anything
+    /// not explicitly allowed, so an allow-only channel closes the #1461 chaining escape without
+    /// needing a deny list of its own.
+    /// </para>
+    /// </remarks>
+    private static string BuildShellPatternsFromRawScope(string resolvedScope)
+    {
+        if (string.IsNullOrWhiteSpace(resolvedScope))
+        {
+            return string.Empty;
+        }
+
+        List<string> patterns = [];
+        foreach (var clause in resolvedScope.Split(
+            ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (clause.StartsWith("Bash(", StringComparison.Ordinal) && clause.EndsWith(')'))
+            {
+                var pattern = clause[5..^1];
+                if (pattern.Length > 0)
+                {
+                    patterns.Add(pattern);
+                }
+            }
+        }
+
+        return string.Join(',', patterns);
     }
 
     /// <summary>

@@ -753,6 +753,27 @@ segmentation rule and its fail-closed set, and `docs/vendor-capabilities.md`'s #
 the two measured rows this closes. Both rows are regression arms in `ShellCommandPatternMatcherTests`
 and `HookCheckCommandTests`.
 
+**#1459's own PR (#1506) shipped that layer wired to only one of the two ways a shell gets scoped —
+fixed in the same issue, from #1506's adversarial security review.** `ClaudeWorkerAdapter.Resolve`
+derived `BATON_HOOK_SHELL_PATTERNS` exclusively from a structured `PermissionGrant`; a binding
+scoping its shell through the raw `PermissionScope` escape hatch instead (`PermissionScope:
+"Write,Bash(git diff*)"`, `PermissionGrant: null` — the bindings editor's "Advanced" string field)
+fed `Bash(git diff*)` to `--allowedTools` as before, but the hook channel came out tagged-and-empty
+(`AgyWorkerAdapter.BuildShellPatterns(null)` is empty), which `HookCheckCommand.Decide` reads as the
+deliberate unscoped-shell no-op — so the #1461 chaining escape (`git diff; echo escaped`) still ran
+under a raw-scope dispatch, unblocked, exactly as before this section's fix. `Resolve` now derives the
+channel from whichever string actually reaches `--allowedTools` — the translated `PermissionGrant`
+when one exists, otherwise `Bash(<pattern>)` clauses parsed directly out of the raw `PermissionScope`
+(`ClaudeWorkerAdapter.BuildShellPatternsFromRawScope`) — so both paths populate the channel from one
+source and cannot drift apart. A bare `Bash` clause (no pattern) still yields an empty channel, same
+deliberate unscoped-shell reading as the structured path's empty pattern list. The raw path still
+carries no denied-pattern concept (it feeds `--allowedTools` alone), so
+`BATON_HOOK_DENIED_SHELL_PATTERNS` stays empty there — not a gap, since the allow-list-and-segment
+check above already denies anything not explicitly allowed. With this fix, **both** ways of scoping a
+claude worker's shell — the structured `PermissionGrant` and the raw `PermissionScope` string — now
+populate the second enforcement layer; the opening sentence's "closed that hole" is accurate against
+that full population as of this fix, not only the structured path #1459's original PR measured against.
+
 **One asymmetry against the denied-tools channel is worth flagging here rather than only in code:**
 `HookCheckCommand.Decide` reads an absent or wrong-vendor pattern channel as an unscoped grant, not a
 denial — the opposite of how it reads a missing denied-tools list (#600). See that method's own
