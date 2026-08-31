@@ -8,7 +8,7 @@ public sealed class BatonTimeoutException : BatonException
 {
     /// <summary>Creates a timeout exception with a default message.</summary>
     public BatonTimeoutException()
-        : base(BatonErrorCode.TimedOut, "AER task was killed because it exceeded its configured timeout.")
+        : base(BatonErrorCode.TimedOut, "Baton task was killed because it exceeded its configured timeout.")
     {
     }
 

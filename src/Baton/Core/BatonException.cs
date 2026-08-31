@@ -11,7 +11,7 @@ public class BatonException : Exception
 
     /// <summary>Creates an exception for the given error code with a default message.</summary>
     public BatonException(BatonErrorCode errorCode)
-        : this(errorCode, $"AER operation failed with error code {errorCode}.")
+        : this(errorCode, $"Baton operation failed with error code {errorCode}.")
     {
     }
 

@@ -66,13 +66,16 @@ public class BatonTaskTests
     }
 
     [Fact]
-    public void WithCwd_InvalidDirectory_RunThrowsBatonExceptionWithSpawnFailed()
+    public void WithCwd_InvalidDirectory_RunThrowsBatonExceptionWithSpawnFailedAndEmitsNoEvents()
     {
         (string prog, string[] args) = ExitZero();
+        List<BatonEventArgs> events = [];
         using BatonTask task = new BatonTask(prog, args).WithCwd("definitely_not_a_real_directory_xyzzy_aer");
+        task.EventRaised += (_, e) => events.Add(e);
 
         BatonException ex = Assert.Throws<BatonException>(task.Run);
         Assert.Equal(BatonErrorCode.SpawnFailed, ex.ErrorCode);
+        Assert.Empty(events);
     }
 
     [Fact]

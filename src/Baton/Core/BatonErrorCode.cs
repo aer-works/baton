@@ -14,8 +14,6 @@ public enum BatonErrorCode
     SpawnFailed,
     /// <summary>Waiting on the child process failed.</summary>
     WaitFailed,
-    /// <summary>Terminating the child process (or its job object) failed.</summary>
-    KillFailed,
     /// <summary>The task exceeded its configured wall-clock timeout.</summary>
     TimedOut,
     /// <summary>The task was cancelled via the <see cref="CancellationToken"/> passed to <see cref="BatonTask.RunAsync"/>.</summary>

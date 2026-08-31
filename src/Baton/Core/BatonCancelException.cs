@@ -8,7 +8,7 @@ public sealed class BatonCancelException : BatonException
 {
     /// <summary>Creates a cancellation exception with a default message.</summary>
     public BatonCancelException()
-        : base(BatonErrorCode.Cancelled, "AER task was cancelled.")
+        : base(BatonErrorCode.Cancelled, "Baton task was cancelled.")
     {
     }
 
