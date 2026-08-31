@@ -781,6 +781,11 @@ now parses that shape correctly and refuses (`PermissionGrantUnsupportedExceptio
 than degrading to empty; its own doc comment is the canonical record of the parsing rule and what
 distinguishes a genuinely-absent grant from a malformed one.
 
+**Round 4 of that same re-review tightened the rule further, to categorically fail-closed** (a
+whole-scope balance gate ahead of a fifth swallowed-grant shape, and refusing rather than honoring a
+comma-list inside one clause once #1514 found that reading unmeasured against claude's own parser) —
+`BuildShellPatternsFromRawScope`'s doc comment is again the canonical record; nothing here restates it.
+
 **One asymmetry against the denied-tools channel is worth flagging here rather than only in code:**
 `HookCheckCommand.Decide` reads an absent or wrong-vendor pattern channel as an unscoped grant, not a
 denial — the opposite of how it reads a missing denied-tools list (#600). See that method's own

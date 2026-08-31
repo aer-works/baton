@@ -597,23 +597,50 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
-    /// Regression, #1459 fix 2 (PR #1506's re-review): see
-    /// <c>ClaudeWorkerAdapter.BuildShellPatternsFromRawScope</c>'s own doc comment for the bug this
-    /// closes and why the old split lost this exact shape. Here: both patterns must reach the
-    /// channel, not just survive the split unmangled.
+    /// Fix 3 (round-4 re-review of PR #1506): #1514 is why this now throws where fix 2 granted both
+    /// patterns -- <c>ClaudeWorkerAdapter.BuildShellPatternsFromRawScope</c>'s own remarks carry the
+    /// reasoning.
     /// </summary>
     [Fact]
-    public void A_comma_list_inside_one_Bash_clause_populates_the_shell_pattern_channel_with_both_patterns()
+    public void A_comma_list_inside_one_Bash_clause_makes_Resolve_throw_instead_of_granting_both_patterns()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation(
+                    "Draft a plan.", PermissionScope: "Write,Bash(git diff*, git status*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Round-4 HIGH (PR #1506); <c>ClaudeWorkerAdapter.BuildShellPatternsFromRawScope</c>'s own remarks
+    /// record the swallowed-grant mechanism this closes. Must throw here, not reach an empty no-op
+    /// channel.
+    /// </summary>
+    [Fact]
+    public void An_unbalanced_non_Bash_clause_that_would_swallow_a_real_Bash_grant_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Read(,Bash(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// The balance gate's negative arm: it only fires when a <c>Bash(</c> grant is present at all, a
+    /// scope restriction <c>BuildShellPatternsFromRawScope</c>'s own remarks explain the reasoning for.
+    /// </summary>
+    [Fact]
+    public void A_stray_unbalanced_paren_with_no_Bash_clause_still_yields_an_empty_shell_pattern_channel()
     {
         var target = new ClaudeWorkerAdapter().Resolve(
-            new WorkerInvocation(
-                "Draft a plan.", PermissionScope: "Write,Bash(git diff*, git status*)"),
-            ArchitectContract);
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Read),Write"), ArchitectContract);
 
         Assert.NotNull(target.Environment);
-        Assert.Contains(
-            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*,git status*"),
-            target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
     }
 
     /// <summary>
@@ -778,18 +805,17 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
-    /// End-to-end regression, #1459 fix 2: the comma-list-inside-one-clause shape
-    /// (<c>Bash(git diff*, git status*)</c>) must, through the REAL spawned hook process, both DENY
-    /// the #1461 chaining escape and ALLOW each of the two patterns it granted -- proving the
-    /// paren-aware split reaches the actual enforcement layer, not just the C# object
-    /// <see cref="Resolve"/> builds.
+    /// End-to-end regression, #1459 fix 3: the multi-clause form <c>Bash(git diff*),Bash(git status*)</c>
+    /// (as opposed to the now-refused single-clause comma-list <c>Bash(git diff*, git status*)</c>) is
+    /// the shape the engine itself emits for multiple patterns, and must, through the REAL spawned hook
+    /// process, both DENY the #1461 chaining escape and ALLOW each of the two granted patterns.
     /// </summary>
     [Fact]
-    public void Regression_1459fix2_the_resolved_hook_command_denies_the_1461_escape_and_allows_both_comma_list_patterns()
+    public void Regression_1459fix3_the_resolved_hook_command_denies_the_1461_escape_and_allows_both_multi_clause_patterns()
     {
         var target = new ClaudeWorkerAdapter().Resolve(
             new WorkerInvocation(
-                "Draft a plan.", PermissionScope: "Write,Bash(git diff*, git status*)"),
+                "Draft a plan.", PermissionScope: "Write,Bash(git diff*),Bash(git status*)"),
             ArchitectContract);
 
         var (escapeExitCode, escapeStderr) = RunResolvedHookCommand(

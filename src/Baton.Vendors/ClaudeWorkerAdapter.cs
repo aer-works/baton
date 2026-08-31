@@ -616,19 +616,43 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// is empty.
     /// </para>
     /// <para>
-    /// <b>Paren-aware, and fail-closed on a malformed clause (#1459 fix 2, from PR #1506's re-review).</b>
-    /// The top-level split is on <em>comma at parenthesis depth 0</em>, not a bare <c>,</c>.Split -- a
-    /// comma-separated pattern list written inside one <c>Bash(...)</c> clause (<c>Bash(git diff*, git
-    /// status*)</c>, the advanced escape hatch's plausible way to grant two patterns) stays one clause
-    /// through the split instead of being severed into two half-clauses that both fail the
-    /// <c>Bash(</c>/<c>)</c> check and vanish. Once isolated, that clause's own interior is split the
-    /// same depth-aware way into one-or-more trimmed patterns, so <c>Bash(git diff*, git status*)</c>
-    /// grants both <c>git diff*</c> and <c>git status*</c>, and <c>Bash(foo(bar))</c> still yields the
-    /// single, balanced pattern <c>foo(bar)</c>. A clause that <em>starts</em> with <c>Bash(</c> but
-    /// whose parens never balance (no closing <c>)</c>, or trailing content after the one that closes
-    /// the outermost paren) is refused with <see cref="PermissionGrantUnsupportedException"/> rather
-    /// than silently dropped -- the pre-fix behaviour otherwise reached the exact same empty-channel
-    /// shape <see cref="HookCheckCommand.Decide"/> reads as "deliberately unscoped shell"
+    /// <b>Categorically fail-closed (#1459 fix 3, from PR #1506's round-4 re-review).</b> The channel
+    /// now accepts <em>only</em> the shape <see cref="TryTranslatePermissionGrant"/> itself ever emits:
+    /// top-level comma-separated clauses, each either non-<c>Bash(</c> (ignored, unchanged) or a
+    /// balanced <c>Bash(&lt;single pattern&gt;)</c>. Anything else throws
+    /// <see cref="PermissionGrantUnsupportedException"/> rather than being silently dropped or guessed
+    /// at. Two holes drove this:
+    /// </para>
+    /// <para>
+    /// <b>1. Whole-string balance gate, checked before any split.</b> An unbalanced clause elsewhere in
+    /// the scope can eat the top-level comma that should have separated it from a real <c>Bash(</c>
+    /// grant -- <c>"Read(,Bash(git diff*)"</c> merges into one blob starting <c>Read(</c>, fails the
+    /// <c>Bash(</c> prefix check, and the genuine <c>Bash(git diff*)</c> grant vanishes with no throw,
+    /// reopening #1461. So before any clause splitting, if the parentheses across the <em>whole</em>
+    /// <paramref name="resolvedScope"/> do not balance (tracked by the private <c>ParensBalance</c>
+    /// helper) <em>and</em> the scope contains the substring <c>"Bash("</c>, this throws immediately. A
+    /// scope with a stray unbalanced paren but no <c>Bash(</c> substring at all is still read as "no
+    /// Bash grant present" and stays a no-op -- the gate exists to protect a real grant from an
+    /// unrelated typo, not to reject every malformed scope on principle.
+    /// </para>
+    /// <para>
+    /// <b>2. No comma-list inside one clause, even a balanced one.</b> Fix 2 (below, now superseded)
+    /// read <c>Bash(git diff*, git status*)</c> as granting both patterns, on the assumption that
+    /// claude's own <c>--allowedTools</c> parser tokenizes an internal comma-list the same way. That
+    /// assumption was never measured (tracked as #1514), and this hook channel and claude's own grant
+    /// are two independently-maintained layers that must not silently drift apart on an unmeasured
+    /// parsing assumption. <see cref="TryTranslatePermissionGrant"/> itself never emits that shape --
+    /// multiple patterns always come out as separate <c>Bash(p1),Bash(p2)</c> clauses -- so a clause
+    /// whose balanced interior itself splits into more than one top-level piece is refused rather than
+    /// honored: write it as separate <c>Bash(...)</c> clauses instead, which this parser still accepts
+    /// and joins exactly as <see cref="TryTranslatePermissionGrant"/>'s own multi-pattern grants do.
+    /// </para>
+    /// <para>
+    /// A clause that <em>starts</em> with <c>Bash(</c> but whose parens never balance (no closing
+    /// <c>)</c>, or trailing content after the one that closes the outermost paren) is likewise refused
+    /// with <see cref="PermissionGrantUnsupportedException"/> rather than silently dropped -- the
+    /// pre-fix behaviour otherwise reached the exact same empty-channel shape
+    /// <see cref="HookCheckCommand.Decide"/> reads as "deliberately unscoped shell"
     /// (<c>Patterns.Count == 0</c>), reopening this method's own #1459 bypass for any hand-typed scope
     /// a human gets the parens wrong on. This is the resolve-time analogue of
     /// <see cref="ShellCommandPatternMatcher.EvaluateChainedCommand"/>'s <c>Unparseable</c> verdict,
@@ -661,6 +685,17 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             return string.Empty;
         }
 
+        // Whole-string balance gate, checked before any clause splitting -- this method's own remarks
+        // above record the round-4 HIGH it closes and the scope this gate is narrowed to.
+        if (!ParensBalance(resolvedScope) && resolvedScope.Contains("Bash(", StringComparison.Ordinal))
+        {
+            throw new PermissionGrantUnsupportedException(
+                "claude",
+                $"the raw PermissionScope '{resolvedScope}' has unbalanced parentheses somewhere in " +
+                "the scope and contains a Bash( grant -- refusing rather than risking an unrelated " +
+                "unbalanced clause silently swallowing the real Bash(...) grant");
+        }
+
         List<string> patterns = [];
         foreach (var rawClause in SplitAtTopLevelCommas(resolvedScope))
         {
@@ -672,7 +707,7 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
 
             // Not a Bash(...) clause at all -- bare `Bash` and every other category (Write, Read, ...)
             // are ignored here, unchanged from before this fix. Only a clause that STARTS a Bash(...)
-            // grant and then fails to parse falls into the throw below.
+            // grant and then fails to parse falls into a throw below.
             if (!clause.StartsWith("Bash(", StringComparison.Ordinal))
             {
                 continue;
@@ -688,13 +723,24 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
                     "exists to close");
             }
 
-            foreach (var rawPattern in SplitAtTopLevelCommas(inner))
+            // #1514: whether claude's own --allowedTools tokenizes a comma-list inside one Bash(...)
+            // clause the same way this channel would is unmeasured, and TryTranslatePermissionGrant
+            // itself never emits that shape -- it always emits separate Bash(p1),Bash(p2) clauses for
+            // multiple patterns. Refuse rather than let the two layers drift on a guess.
+            if (SplitAtTopLevelCommas(inner).Count > 1)
             {
-                var pattern = rawPattern.Trim();
-                if (pattern.Length > 0)
-                {
-                    patterns.Add(pattern);
-                }
+                throw new PermissionGrantUnsupportedException(
+                    "claude",
+                    $"the raw PermissionScope clause '{clause}' packs more than one pattern into a " +
+                    "single Bash(...) clause via an internal comma -- this channel only honors " +
+                    "single-pattern Bash(...) clauses; write separate Bash(p1),Bash(p2) clauses " +
+                    "instead (see #1514 for why the comma-list-inside-one-clause form isn't honored)");
+            }
+
+            var pattern = inner.Trim();
+            if (pattern.Length > 0)
+            {
+                patterns.Add(pattern);
             }
         }
 
@@ -702,13 +748,46 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     }
 
     /// <summary>
+    /// Whole-string parenthesis balance check used by <see cref="BuildShellPatternsFromRawScope"/>'s
+    /// balance gate: walks every character, incrementing depth on <c>(</c> and decrementing on
+    /// <c>)</c>; a <c>)</c> seen at depth zero (a stray close before any open) makes the string
+    /// unbalanced immediately, and any nonzero depth left at the end (an unclosed open) does too.
+    /// </summary>
+    private static bool ParensBalance(string text)
+    {
+        var depth = 0;
+        foreach (var c in text)
+        {
+            switch (c)
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')':
+                    if (depth == 0)
+                    {
+                        return false;
+                    }
+
+                    depth--;
+                    break;
+            }
+        }
+
+        return depth == 0;
+    }
+
+    /// <summary>
     /// Splits <paramref name="text"/> on <c>,</c> at parenthesis depth 0 only -- a comma nested inside
-    /// a <c>(...)</c> pair does not split. Shared by <see cref="BuildShellPatternsFromRawScope"/>'s
-    /// two split passes (clauses within the raw scope, then patterns within one clause's parens) so a
-    /// nested clause like <c>Bash(foo(bar))</c> parses the same way at both levels. Unbalanced input
-    /// (a <c>(</c> with no matching <c>)</c>) is not an error here -- everything from the unmatched
-    /// paren onward simply stays un-split, so the caller sees the malformed text as one piece and can
-    /// decide how to fail; only <see cref="TryExtractBalancedBashClauseInner"/> judges balance.
+    /// a <c>(...)</c> pair does not split. Shared by <see cref="BuildShellPatternsFromRawScope"/>'s two
+    /// uses: splitting the raw scope into clauses, and -- since fix 3 -- checking whether one clause's
+    /// already-balanced interior itself contains a top-level comma (which now makes the whole clause
+    /// throw rather than grant multiple patterns; see that method's own doc comment). A nested clause
+    /// like <c>Bash(foo(bar))</c> parses the same way at both call sites. Unbalanced input (a <c>(</c>
+    /// with no matching <c>)</c>) is not an error here -- everything from the unmatched paren onward
+    /// simply stays un-split, so the caller sees the malformed text as one piece; balance itself is
+    /// judged elsewhere, by <see cref="ParensBalance"/> for the whole scope and by
+    /// <see cref="TryExtractBalancedBashClauseInner"/> for one clause.
     /// </summary>
     private static List<string> SplitAtTopLevelCommas(string text)
     {
