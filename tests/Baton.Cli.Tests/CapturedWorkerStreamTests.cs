@@ -102,13 +102,12 @@ public class CapturedWorkerStreamTests
     /// runs <c>--output-format text</c> (<c>RoleDispatch.cs:155</c> only streams <c>agy</c>), and
     /// claude's text mode writes nothing to stdout until the entire response is composed, so
     /// <c>AppendChunk</c> was never called -- and on main, <c>.stdout.log</c> is only created lazily,
-    /// inside <c>AppendChunk</c>, on the first successful write. For the run's whole duration (measured
-    /// live: 50/51 real dispatch rooms on this machine, every completed one; the sole exception was
-    /// this very task's own room, still running) there is nothing at the path <c>RoomDetailTool</c>
-    /// tails, which is indistinguishable from "the tee is broken" to an operator drilling into a live
-    /// lane. This does not require a real vendor process to reproduce: the file's absence is a property
-    /// of <see cref="ExecutionStreamLogger"/> alone, independent of what (if anything) ever calls
-    /// <see cref="ExecutionStreamLogger.AppendStdout"/>.
+    /// inside <c>AppendChunk</c>, on the first successful write. Measured live: 50/51 real dispatch
+    /// rooms on this machine had the file, every completed one; the sole exception was this very
+    /// task's own room, still running. See <see cref="ExecutionStreamLogger"/>'s constructor comment
+    /// for why that gap matters operationally -- not restated here. This does not require a real
+    /// vendor process to reproduce: the file's absence is a property of <see cref="ExecutionStreamLogger"/>
+    /// alone, independent of what (if anything) ever calls <see cref="ExecutionStreamLogger.AppendStdout"/>.
     /// </summary>
     [Fact]
     public void Construction_CreatesBothStreamFilesEagerly_BeforeAnyChunkArrives()
