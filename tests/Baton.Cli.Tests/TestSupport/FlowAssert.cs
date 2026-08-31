@@ -2,10 +2,14 @@ using Baton.Domain;
 
 namespace Baton.Cli.Tests.TestSupport;
 
+// record-once-ok: #1492 tests/Baton.Tests/TestSupport/FlowAssert.cs
 /// <summary>
-/// Assertion helpers for E2E tests. Duplicated per test assembly (no project reference between
-/// them) rather than shared — see <c>Baton.Tests.TestSupport.FlowAssert</c> (in
-/// <c>tests/Baton.Tests/TestSupport/FlowAssert.cs</c>) for the rationale and full doc comment.
+/// Assertion helpers for E2E tests that drive a real workflow to a terminal <see cref="StepStatus"/>.
+/// A bare <c>Assert.Equal(StepStatus.Succeeded, step.Status)</c> only reports what the status
+/// ended up being — a red run then requires spelunking room artifacts to learn why. This surfaces
+/// <see cref="StepState.LatestFailureReason"/> (and the retry context sitting next to it) directly
+/// in the assertion failure instead. Duplicated per test assembly rather than shared, since the
+/// three test projects hold no project reference to each other.
 /// </summary>
 internal static class FlowAssert
 {
