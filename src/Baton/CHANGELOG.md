@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.25.0](https://github.com/philipreese/baton/compare/flow-v0.24.0...flow-v0.25.0) (2026-08-31)
+
+
+### Bug Fixes
+
+* **core:** Treat job assignment on an already-exited child as a completed run ([#1485](https://github.com/philipreese/baton/issues/1485)) ([3e25a45](https://github.com/philipreese/baton/commit/3e25a45560b6b6c45c579e1590846af2db529e69))
+
+
+### Miscellaneous
+
+* **reset:** Consolidate to one binary, five projects -- baton mcp and baton daemon verbs ([#1471](https://github.com/philipreese/baton/issues/1471)) ([1e7f297](https://github.com/philipreese/baton/commit/1e7f2971a7031329c58c8b81c8d8ac400c78a542))
+* **reset:** Port native/core to C# and delete the Rust crate ([#1479](https://github.com/philipreese/baton/issues/1479)) ([444bcfe](https://github.com/philipreese/baton/commit/444bcfef5b7e77cb0fe7f8defc8e89ecadf69cde))
+
 ## [0.21.0](https://github.com/aer-works/baton/compare/flow-v0.20.0...flow-v0.21.0) (2026-08-27)
 
 

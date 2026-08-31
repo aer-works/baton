@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.25.0](https://github.com/philipreese/baton/compare/vendors-v0.24.0...vendors-v0.25.0) (2026-08-31)
+
+
+### Bug Fixes
+
+* **ci:** Publish the verify-pack claude stub as a real exe the direct spawn can resolve ([#1473](https://github.com/philipreese/baton/issues/1473)) ([fcb8af8](https://github.com/philipreese/baton/commit/fcb8af8f702f123d44f7d438823a3a8192dc6aad))
+
+
+### Miscellaneous
+
+* **reset:** Baton everywhere -- the mechanical 1:1 token rename ([#1467](https://github.com/philipreese/baton/issues/1467)) ([fc08bac](https://github.com/philipreese/baton/commit/fc08bacc46968a0c94b82538c7a37ef74b142f1d))
+* **reset:** Consolidate to one binary, five projects -- baton mcp and baton daemon verbs ([#1471](https://github.com/philipreese/baton/issues/1471)) ([1e7f297](https://github.com/philipreese/baton/commit/1e7f2971a7031329c58c8b81c8d8ac400c78a542))
+* **reset:** Port native/core to C# and delete the Rust crate ([#1479](https://github.com/philipreese/baton/issues/1479)) ([444bcfe](https://github.com/philipreese/baton/commit/444bcfef5b7e77cb0fe7f8defc8e89ecadf69cde))
+
 ## [0.21.0](https://github.com/aer-works/baton/compare/adapters-v0.20.0...adapters-v0.21.0) (2026-08-27)
 
 
