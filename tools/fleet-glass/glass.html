@@ -143,7 +143,7 @@ function underhoodHtml(list){
   }).join("");
   return `<h2>Under the hood · ${list.length}</h2>` + rows;
 }
-function render(rooms, pushedAt, underhood){
+function render(rooms, pushedAt, underhood, heartbeatAt){
   const running = rooms.filter(r => r.state === "Running");
   const failed  = rooms.filter(r => r.state === "Failed");
   const done    = rooms.filter(r => r.state === "Succeeded");
@@ -156,8 +156,17 @@ function render(rooms, pushedAt, underhood){
   html += `<details><summary>Succeeded · ${done.length}</summary>${done.slice(0,40).map(laneHtml).join("")}</details>`;
   if(other.length) html += `<details><summary>Unreadable entries · ${other.length}</summary>${other.slice(0,20).map(laneHtml).join("")}</details>`;
   $("content").innerHTML = html;
-  const a = age(pushedAt);
-  $("fresh").textContent = pushedAt ? "pushed " + (a || new Date(pushedAt).toLocaleTimeString()) + (a && a !== "just now" ? " ago" : "") : "push time unknown";
+  $("fresh").textContent = freshLabel(pushedAt, "pushed ") || "push time unknown";
+  const hb = freshLabel(heartbeatAt, "pusher alive ");
+  if(hb) $("fresh").textContent += " · " + hb;
+}
+// "pushed X ago" measures the SNAPSHOT (legitimately stale on a quiet fleet, #1457's change-gate);
+// "pusher alive X ago" measures the PUSHER PROCESS itself (hourly heartbeat, #1486) -- the two are
+// deliberately independent so a quiet fleet with an old snapshot still reads as healthy.
+function freshLabel(iso, prefix){
+  if(!iso) return null;
+  const a = age(iso);
+  return prefix + (a || new Date(iso).toLocaleTimeString()) + (a && a !== "just now" ? " ago" : "");
 }
 function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${html}</div>` : ""; }
 
@@ -169,17 +178,30 @@ function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${htm
     return;
   }
   let lastGood = null;
+  // #1486: heartbeat_at (hourly ping, independent of the change-gated snapshot) is what tells a
+  // dead pusher apart from a quiet fleet whose pushed_at is legitimately stale. Loud only past
+  // ~2 missed beats + slop, so one delayed cycle doesn't cry wolf.
+  const HEARTBEAT_DEAD_MS = 2.5 * 60 * 60 * 1000;
+  const RUNNING_SUSPICION_MS = 10 * 60 * 1000;
   mcp.watchTool("baton", "fleet_status", {}, (ev) => {
     if(ev.type === "data"){
       let snap = ev.result.payload;
       if(typeof snap === "string"){ try { snap = JSON.parse(snap); } catch { snap = null; } }
       if(snap && Array.isArray(snap.rooms)){
         lastGood = snap;
-        const ageMs = snap.pushed_at ? Date.now() - Date.parse(snap.pushed_at) : null;
-        banner(ageMs != null && ageMs > 2*60000
-          ? `<b>Pusher stale.</b> The fleet machine last pushed ${esc(age(snap.pushed_at) || "?")} ago — it may be off or offline. Data below is from that push.`
-          : "");
-        render(snap.rooms, snap.pushed_at, snap.underhood);
+        const hbMs = snap.heartbeat_at ? Date.now() - Date.parse(snap.heartbeat_at) : null;
+        const pushMs = snap.pushed_at ? Date.now() - Date.parse(snap.pushed_at) : null;
+        const running = snap.rooms.some(r => r.state === "Running");
+        if(hbMs == null){
+          banner("<b>No heartbeat recorded yet.</b> heartbeat_at is unset — redeploy worker.js and the pusher for #1486, or the mailbox hasn't received one yet.");
+        } else if(!isFinite(hbMs) || hbMs > HEARTBEAT_DEAD_MS){
+          banner(`<b>Pusher likely dead.</b> No heartbeat in ${esc(age(snap.heartbeat_at) || "over 2.5h")} — the fleet machine may be off or the pusher process may have stopped. Data below is from the last push.`);
+        } else if(running && pushMs != null && isFinite(pushMs) && pushMs > RUNNING_SUSPICION_MS){
+          banner(`<b>Snapshot may be stuck.</b> The pusher is alive (heartbeat ${esc(age(snap.heartbeat_at))} ago) but the last push was ${esc(age(snap.pushed_at))} ago while rooms show Running — snapshot derivation itself may be wedged.`);
+        } else {
+          banner("");
+        }
+        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at);
       } else if(snap && snap.rooms === null){
         $("content").innerHTML = "";
         banner("<b>No snapshot pushed yet.</b> The mailbox is live but the fleet machine hasn't pushed data.");
