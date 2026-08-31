@@ -1,12 +1,11 @@
 namespace Baton.Vendors.Tests;
 
 /// <summary>
-/// This assembly's own enrollment point for the mechanism <c>Baton.Cli.Tests.SerializedEnvironmentCollection</c>
-/// documents in full (#1491) — every class here that flips a process-global environment variable
-/// belongs in this one <c>DisableParallelization</c> group instead of the default parallel pool. The
-/// concrete payoff in this assembly: the catalog lookups behind worker roles and workflow templates,
-/// plus the Claude config-root path, all resolve their variable fresh on each call rather than
-/// caching it, so a mutator left out of this group can bleed into any of them mid-run.
+/// See <c>Baton.Cli.Tests.SerializedEnvironmentCollection</c> for the full rationale (#1491); this is
+/// this assembly's copy of that same enrollment point. What it protects here specifically: the
+/// catalog lookups behind worker roles and workflow templates, plus the Claude config-root path, all
+/// go back to their env var on every call instead of caching it, so any class that mutates one of
+/// those vars without joining this group is free to bleed into a reader mid-run.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class SerializedEnvironmentCollection
