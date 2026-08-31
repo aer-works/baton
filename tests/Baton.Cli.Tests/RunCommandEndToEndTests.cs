@@ -15,7 +15,7 @@ namespace Baton.Cli.Tests;
 /// <see cref="IWorkerAdapter"/> resolving a real worker-binding config file, not a
 /// <see cref="Baton.Mutation.WorkerBinding"/> constructed directly by the test. The shell-stub
 /// adapter (<see cref="ShellCommandWorkerAdapter"/>) keeps every dispatch CI-safe while still
-/// going through the real aer-core M5 binding, same as <c>WorkflowEndToEndTests</c> itself.
+/// going through the real, managed <c>BatonTask</c> engine, same as <c>WorkflowEndToEndTests</c> itself.
 /// </summary>
 /// <remarks>
 /// In <see cref="WorkingDirectoryCollection"/> because the #882 echo tests swap the process-global

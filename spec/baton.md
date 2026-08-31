@@ -809,11 +809,13 @@ reach backward to reconstruct a numbering scheme that no longer exists.
 The owner runs everything on one Windows machine. Build, test, CI, and packaging are Windows-only:
 no ubuntu/macos CI legs, no non-Windows pixi platforms shipped as a support target, and no per-OS
 conditional kept alive for a platform that no longer builds (#1405). This is a statement about what
-this repo ships and is verified on — which, since #1458 folded aer-core into this repo as
-`native/core`, now includes its Rust build and test, run Windows-only through this repo's own CI
-like everything else. It is not a statement about the archived `aer-works/aer-core` repo `native/core`
-was imported from (a separate, now-frozen repo whose own historical CI is out of this decision's
-scope) or about a vendor CLI's own OS support (`docs/vendor-doc-audit.md`,
+this repo ships and is verified on. #1458 folded aer-core into this repo as `native/core`, a Rust
+crate built and tested Windows-only through this repo's own CI like everything else; #1474 then
+ported that engine into plain C# and deleted `native/core` outright, so there is no longer a second
+toolchain or a second CI leg to say this about — the whole engine is .NET, verified the one way this
+entry already describes. This was never a statement about the archived `aer-works/aer-core` repo
+`native/core` was imported from (a separate, now-frozen repo whose own historical CI is out of this
+decision's scope) or about a vendor CLI's own OS support (`docs/vendor-doc-audit.md`,
 `docs/vendor-capabilities.md`).
 
 **Carve-out, so this entry and `pixi.toml` never contradict each other:** `pixi.toml`'s
@@ -874,5 +876,5 @@ reach:
 
 ## Naming note
 
-The product converged on **Baton everywhere** (#1458): the CLI binary is `baton`, namespaces are `Baton.*`, state lives at `~/.baton`, and the tree is the one-binary, five-project shape this document describes throughout (`src/Baton` engine, `src/Baton.Vendors`, `src/Baton.Cli` with `baton mcp` and `baton daemon` as verbs, `native/core`, two test projects). Every `Baton.*`/`baton` citation in this document refers to the current tree.
+The product converged on **Baton everywhere** (#1458): the CLI binary is `baton`, namespaces are `Baton.*`, state lives at `~/.baton`, and the tree is the one-binary, five-project shape this document describes throughout (`src/Baton` engine — including the managed process-execution core since #1474 — `src/Baton.Vendors`, `src/Baton.Cli` with `baton mcp` and `baton daemon` as verbs, two test projects). Every `Baton.*`/`baton` citation in this document refers to the current tree.
 

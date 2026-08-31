@@ -37,10 +37,10 @@
     <InternalsVisibleTo Include="Baton.Cli.Tests" />
   </ItemGroup>
 
-  <!-- No separate native-lib packaging step needed: PackAsTool packs from a *publish* output
-       (unlike plain library packing, which only picks up the primary DLL), and publish already
-       folds in every referenced project's Content/CopyToOutputDirectory item, including
-       Baton.Core.csproj's aer_core copy (M7 Phase 6), landing it at tools/$(TargetFramework)/any/
-       next to the managed DLLs for free. Confirmed by inspecting the packed nupkg (#107). -->
+  <!-- No native-lib packaging step exists because there is no native lib to package: the
+       process-execution engine (BatonTask/BatonProcessRunner) is plain managed C#, not a native
+       library P/Invoked into. PackAsTool packs from a *publish* output regardless (unlike plain
+       library packing, which only picks up the primary DLL), so there is nothing further to
+       arrange either way. Confirmed by inspecting the packed nupkg (#107). -->
 
 </Project>

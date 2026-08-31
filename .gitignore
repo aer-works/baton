@@ -30,7 +30,9 @@ bld/
 # pixi
 .pixi/
 
-# M13 Phase 3 (#109): other-platform native libs gathered here before a multi-RID `pixi run pack`
+# M13 Phase 3 (#109): originally other-platform native libs gathered here before a multi-RID
+# `pixi run pack` (moot since #1474's managed port -- there is no native lib to gather); now also
+# holds `pixi run coverage`'s report output.
 /artifacts/
 
 # Claude Code local subagent worktrees (isolation: worktree). Narrowly scoped so shared config

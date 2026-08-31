@@ -4,7 +4,7 @@ Baton is a vendor-neutral worker-room engine an agent harness drives: it dispatc
 agents (`claude`, `agy`) as workers inside durable, auditable rooms, and reports completion through
 a machine contract.
 
-Built in .NET, it reads structured workflow definitions, dispatches them to Workers (via `aer-core`), and bridges outputs back to the engine.
+Built in .NET, it reads structured workflow definitions, dispatches them to Workers, and bridges outputs back to the engine.
 
 ## Documentation
 
@@ -38,7 +38,7 @@ Each vendor CLI remains subject to its own provider's terms, between the operato
 ## Prerequisites
 
 - **[pixi](https://pixi.sh)** — task runner.
-- **.NET 10 SDK** — install separately (not managed by pixi), same as aer-core:
+- **.NET 10 SDK** — install separately (not managed by pixi):
   - Windows: `winget install Microsoft.DotNet.SDK.10`
 
 ## Quickstart
@@ -59,7 +59,7 @@ pixi run fmt
 a single-developer project doesn't need one. Build a local nupkg and install from it directly:
 
 ```bash
-# Build the nupkg (embeds the native aer_core library the build itself produces; win-x64 only, #1405)
+# Build the nupkg (pure managed code since #1474; win-x64 only, #1405)
 pixi run pack
 
 # Install it as a global tool from that local folder

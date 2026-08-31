@@ -55,8 +55,9 @@ public class StreamJsonProgressPipelineIntegrationTests
             var dispatcher = new CoreDispatcher(writer);
 
             // Mirrors ExecuteSessionTurnAsync's own channel/pump exactly: OnStdoutLine only ever
-            // enqueues (it runs on aer-core's synchronous native callback thread), a separate task
-            // drains the channel and does the real parse off that thread.
+            // enqueues (it runs on BatonTask's callback thread — EventRaised is invoked
+            // synchronously on the thread running the spawn/wait loop), a separate task drains the
+            // channel and does the real parse off that thread.
             var channel = System.Threading.Channels.Channel.CreateBounded<string>(
                 new System.Threading.Channels.BoundedChannelOptions(500)
                 {

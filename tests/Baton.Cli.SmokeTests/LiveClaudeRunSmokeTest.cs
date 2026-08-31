@@ -8,9 +8,9 @@ namespace Baton.Cli.SmokeTests;
 /// <see cref="RunCommand.ExecuteAsync"/> — the exact call <c>Program.cs</c> makes — against the
 /// real headless <c>claude</c> CLI via <see cref="WorkerAdapterRegistry.Default"/>'s
 /// <see cref="ClaudeWorkerAdapter"/>, producing real artifacts on disk. Every prior end-to-end test
-/// (<c>WorkflowEndToEndTests</c>, <c>RunCommandEndToEndTests</c>) dispatches through the real
-/// aer-core M5 binding but to a stub or shell-stub worker; this is the first time this repo's own
-/// code ever reaches a live LLM.
+/// (<c>WorkflowEndToEndTests</c>, <c>RunCommandEndToEndTests</c>) dispatches through the real,
+/// managed <c>BatonTask</c> engine but to a stub or shell-stub worker; this is the first time this
+/// repo's own code ever reaches a live LLM.
 /// <para>
 /// <b>Deliberately excluded from <c>Baton.slnx</c>.</b> This project is not part of the solution
 /// <c>pixi run test</c>/<c>lint</c>/<c>fmt-check</c> or the CI workflow build against, so it never

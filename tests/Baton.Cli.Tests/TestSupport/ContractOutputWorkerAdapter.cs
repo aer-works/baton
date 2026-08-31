@@ -41,8 +41,9 @@ internal sealed class ContractOutputWorkerAdapter(
     {
         if (outputFixtures is not null && outputFixtures.TryGetValue(outputName, out var source))
         {
-            // Unquoted paths on Windows on purpose: aer-core wraps this whole space-containing script
-            // in quotes for CreateProcess, so inner quotes collide and cmd reports a bogus path. The
+            // Unquoted paths on Windows on purpose: the managed spawn path (ProcessStartInfo.ArgumentList)
+            // wraps this whole space-containing script in quotes for CreateProcess, so inner quotes
+            // collide and cmd reports a bogus path. The
             // rest of this fake already assumes space-free temp paths (its echo redirects are unquoted
             // too), so this keeps the same assumption rather than adding a new one.
             return OperatingSystem.IsWindows()

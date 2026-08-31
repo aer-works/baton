@@ -8,7 +8,7 @@ using static Baton.Tests.TestSupport.ShellWorkerCommands;
 namespace Baton.Tests.Mutation;
 
 /// <summary>
-/// Integration tests: these spawn real processes through the aer-core M5 <c>BatonTask</c> binding
+/// Integration tests: these spawn real processes through the managed <c>BatonTask</c> engine
 /// (M7 Phase 7's acceptance criteria — a three-step linear workflow runs end-to-end through
 /// <see cref="MutationInterface.StartWorkflowAsync"/> and a clean exit with no output is
 /// classified <c>ExecutionFailed</c>). No mocking of Baton.Core itself.

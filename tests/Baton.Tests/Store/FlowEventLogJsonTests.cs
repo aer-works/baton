@@ -198,9 +198,9 @@ public class FlowEventLogJsonTests
     /// <summary>
     /// <see cref="CoreExitReason"/> is persisted too, in <c>CoreEvent.ExecutionExited</c>, and its own
     /// doc comment claims it "must serialize stably in <c>flow.jsonl</c> independent of however
-    /// aer-core's own ABI numbering evolves". Storing it as an ordinal made that claim false by
-    /// re-coupling stability to this repo's declaration order instead. Asserted so the comment and
-    /// the code cannot drift apart again.
+    /// <c>BatonExitReason</c>'s own declared values might later be reordered or renumbered". Storing
+    /// it as an ordinal made that claim false by re-coupling stability to this repo's declaration
+    /// order instead. Asserted so the comment and the code cannot drift apart again.
     /// </summary>
     /// <summary>
     /// #759's second reader's C1 DEFECT: the additive-member compat pattern above existed only for

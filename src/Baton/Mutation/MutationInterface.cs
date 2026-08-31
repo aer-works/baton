@@ -715,13 +715,13 @@ public static class MutationInterface
 
                 // The orphan (the third crash state): ExecutionStarted with no ExecutionExited, this
                 // call's own registry proving it is not still genuinely in flight here. Nothing can
-                // re-attach (no daemon; the binding is spawn-and-await) and a second
+                // re-attach (no daemon; BatonTask is spawn-and-await) and a second
                 // execution for the same request is forbidden, so the attempt is finalized from recorded facts alone
                 // as abandoned — a real, chargeable failed attempt — regardless of whether a
                 // cancellation was also pending for it. There is no live handle left to re-issue a
                 // cancellation toward (this pump is not the one that dispatched it); the best-effort
-                // re-issue the spec allows for is therefore a documented no-op given aer-core's binding
-                // has no cross-process re-attach capability, not a new mechanism this phase introduces.
+                // re-issue the spec allows for is therefore a documented no-op given BatonTask has no
+                // cross-process re-attach capability, not a new mechanism this phase introduces.
                 if (crashRecovery.ToFinalizeAsAbandoned.Count > 0)
                 {
                     foreach (var executionId in crashRecovery.ToFinalizeAsAbandoned)

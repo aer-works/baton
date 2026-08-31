@@ -91,14 +91,17 @@ internal static class CrashTestHostLauncher
     /// <summary>
     /// Best-effort cleanup for a real orphaned child a crash test's killed run may have left
     /// running. <paramref name="processId"/> is the PID <see cref="CoreEvent.ExecutionStarted"/>
-    /// recorded for aer-core's immediate child — on Unix that process called <c>setsid()</c>
-    /// (aer-core's process-tree containment), making it its own process group leader, so a shell
-    /// worker command like <c>sh -c "sleep 120"</c> that forks rather than execs directly (as this
-    /// platform's <c>/bin/sh</c> does) leaves a grandchild sharing that same PGID — killing only
+    /// recorded for the worker's immediate child, spawned by <c>BatonTask</c>. This Unix branch
+    /// describes the pre-#1474 aer-core engine's own containment on that platform: that process
+    /// called <c>setsid()</c>, making it its own process group leader, so a shell worker command
+    /// like <c>sh -c "sleep 120"</c> that forks rather than execs directly (as this platform's
+    /// <c>/bin/sh</c> does) leaves a grandchild sharing that same PGID — killing only
     /// <paramref name="processId"/> itself would leave that grandchild running. Killing the whole
     /// process group (a negative PID in POSIX <c>kill</c>) takes down the leader and every
-    /// descendant sharing its group in one call, mirroring aer-core's own <c>killpg</c>-based
-    /// cleanup rather than reimplementing tree discovery here.
+    /// descendant sharing its group in one call — the same tree-kill outcome <c>BatonTask</c>'s own
+    /// Windows-only containment (a Job Object; see
+    /// <see cref="Baton.Core.Internal.SafeJobObjectHandle"/>) achieves on this repo's actual
+    /// platform, rather than reimplementing tree discovery here.
     /// </summary>
     public static void TryKillOrphanedChild(int processId)
     {

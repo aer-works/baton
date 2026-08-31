@@ -4,8 +4,8 @@ namespace Baton.Tests.TestSupport;
 
 /// <summary>
 /// Tiny cross-platform shell <see cref="CoreDispatchTarget"/>s standing in for real workers in
-/// integration tests that dispatch through the real aer-core M5 binding (no mocking of Baton.Core
-/// itself, per M7 Phase 7's acceptance criteria).
+/// integration tests that dispatch through the real, managed <c>BatonTask</c> engine (no mocking of
+/// Baton.Core itself, per M7 Phase 7's acceptance criteria).
 /// </summary>
 internal static class ShellWorkerCommands
 {
@@ -52,8 +52,9 @@ internal static class ShellWorkerCommands
     public static CoreDispatchTarget FailOnFirstAttemptThenSucceed(string markerFilePath, string outputName, string content) => OperatingSystem.IsWindows()
         ? new CoreDispatchTarget(
             // No quotes around markerFilePath: embedding a literal '"' in a single cmd argument
-            // does not survive aer-core's Windows process-spawn re-quoting intact, and a
-            // GUID-based temp path never contains spaces, so quoting buys nothing here — matches
+            // does not survive the managed spawn path's own Windows argument quoting
+            // (ProcessStartInfo.ArgumentList) intact, and a GUID-based temp path never contains
+            // spaces, so quoting buys nothing here — matches
             // this file's other Windows commands, none of which quote a path either.
             "cmd",
             ["/c", $"if exist {markerFilePath} (echo {content}>%BATON_OUTPUT_DIR%\\{outputName}) else (echo marker>{markerFilePath} & exit 1)"])
