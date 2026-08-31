@@ -66,6 +66,25 @@ public sealed class ExecutionStreamLogger
             var stdoutPath = Path.Combine(_outputDirectory, StdoutLogFileName);
             var stderrPath = Path.Combine(_outputDirectory, StderrLogFileName);
 
+            // #1525: created eagerly, before the first chunk, the same create-regardless-of-content
+            // reasoning CoreDispatcher.cs already applies to the #887 stdout artifact. A worker whose
+            // vendor CLI buffers its own stdout (a plain-text, non-streaming print mode has nothing to
+            // flush until it is done composing) can go the entire length of a long dispatch without a
+            // single AppendChunk call -- RoomDetailTool's tail then read "no file" for the whole run,
+            // which is indistinguishable from "the tee is broken" to an operator drilling into a live
+            // lane. An empty file that exists from t=0 is the honest state: nothing has arrived yet,
+            // not nothing ever will.
+            Directory.CreateDirectory(_outputDirectory);
+            if (!File.Exists(stdoutPath))
+            {
+                using var _ = new FileStream(stdoutPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+            }
+
+            if (!File.Exists(stderrPath))
+            {
+                using var _ = new FileStream(stderrPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+            }
+
             _stdoutSize = File.Exists(stdoutPath) ? new FileInfo(stdoutPath).Length : 0;
             _stderrSize = File.Exists(stderrPath) ? new FileInfo(stderrPath).Length : 0;
         }
@@ -155,11 +174,18 @@ public sealed class ExecutionStreamLogger
             }
             catch (Exception ex)
             {
-                _disabled = true;
+                // #1525 F4: NOT a permanent latch. Every chunk opens, writes, flushes, and closes its
+                // own handle (no state survives between calls), so a transient failure here -- an AV
+                // scanner's momentary lock, RoomRetentionSweep racing a move, a delete-pending file
+                // FileShare.Delete now makes reachable, a momentary ENOSPC -- corrupts nothing and the
+                // next chunk gets a clean attempt. Latching used to blind BOTH streams for the rest of
+                // what can be a multi-hour lane over one such blip; skipping the failed chunk keeps the
+                // tail surface alive instead. The warning still logs only once per stream, so a
+                // persistently broken sink (e.g. the directory-obstruction case below) does not spam.
                 if (!_failedOnce)
                 {
                     _failedOnce = true;
-                    Console.Error.WriteLine($"Warning: Failed to persist execution stream log in '{_outputDirectory}': {ex.Message}. Stream logging disabled for this execution.");
+                    Console.Error.WriteLine($"Warning: Failed to persist execution stream log in '{_outputDirectory}': {ex.Message}. Continuing to retry on subsequent chunks.");
                 }
             }
         }

@@ -801,12 +801,20 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                     {
                         try
                         {
+                            // #1525 F5: ExecutionStreamLogger.AppendChunk already absorbs every
+                            // ordinary IO failure internally (per-stream, per-chunk, never latching
+                            // permanently since the F4 fix) -- the only exception shape that can still
+                            // reach here is InvalidOperationException on a post-terminal append, which
+                            // BatonProcessRunner's drain-before-Exited ordering makes unreachable in
+                            // practice. This try/catch stays as defense against that invariant ever
+                            // breaking, but no longer nulls streamLogger out: doing so on a STDOUT
+                            // failure used to blind STDERR too (and vice versa below), duplicating the
+                            // same cross-stream coupling F4 removed one layer down.
                             streamLogger?.AppendStdout(e.Data);
                         }
                         catch (Exception ex)
                         {
-                            streamLogger = null;
-                            Console.Error.WriteLine($"Warning: Failed to append stdout stream log: {ex.Message}. Stream logging disabled for this execution.");
+                            Console.Error.WriteLine($"Warning: Failed to append stdout stream log: {ex.Message}.");
                         }
 
                         if (stdoutArtifactPath is not null)
@@ -840,12 +848,12 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                     {
                         try
                         {
+                            // See the matching stdout comment above -- same reasoning, same fix.
                             streamLogger?.AppendStderr(e.Data);
                         }
                         catch (Exception ex)
                         {
-                            streamLogger = null;
-                            Console.Error.WriteLine($"Warning: Failed to append stderr stream log: {ex.Message}. Stream logging disabled for this execution.");
+                            Console.Error.WriteLine($"Warning: Failed to append stderr stream log: {ex.Message}.");
                         }
 
                         lock (stderrLock)
@@ -860,9 +868,13 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                     {
                         streamLogger?.MarkTerminal();
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Best-effort terminal marking
+                        // CLAUDE.md: no silent catch. MarkTerminal only takes a lock and sets a bool,
+                        // so this is not expected to fire -- best-effort terminal marking means the
+                        // dispatch must not fail over it, not that a genuine exception here disappears
+                        // unlogged.
+                        Console.Error.WriteLine($"Warning: Failed to mark stream logger terminal: {ex.Message}.");
                     }
 
                     exitCode = e.ExitCode;
