@@ -616,6 +616,34 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// is empty.
     /// </para>
     /// <para>
+    /// <b>Paren-aware, and fail-closed on a malformed clause (#1459 fix 2, from PR #1506's re-review).</b>
+    /// The top-level split is on <em>comma at parenthesis depth 0</em>, not a bare <c>,</c>.Split -- a
+    /// comma-separated pattern list written inside one <c>Bash(...)</c> clause (<c>Bash(git diff*, git
+    /// status*)</c>, the advanced escape hatch's plausible way to grant two patterns) stays one clause
+    /// through the split instead of being severed into two half-clauses that both fail the
+    /// <c>Bash(</c>/<c>)</c> check and vanish. Once isolated, that clause's own interior is split the
+    /// same depth-aware way into one-or-more trimmed patterns, so <c>Bash(git diff*, git status*)</c>
+    /// grants both <c>git diff*</c> and <c>git status*</c>, and <c>Bash(foo(bar))</c> still yields the
+    /// single, balanced pattern <c>foo(bar)</c>. A clause that <em>starts</em> with <c>Bash(</c> but
+    /// whose parens never balance (no closing <c>)</c>, or trailing content after the one that closes
+    /// the outermost paren) is refused with <see cref="PermissionGrantUnsupportedException"/> rather
+    /// than silently dropped -- the pre-fix behaviour otherwise reached the exact same empty-channel
+    /// shape <see cref="HookCheckCommand.Decide"/> reads as "deliberately unscoped shell"
+    /// (<c>Patterns.Count == 0</c>), reopening this method's own #1459 bypass for any hand-typed scope
+    /// a human gets the parens wrong on. This is the resolve-time analogue of
+    /// <see cref="ShellCommandPatternMatcher.EvaluateChainedCommand"/>'s <c>Unparseable</c> verdict,
+    /// which fails closed on the same kind of ambiguity at decide-time instead -- that method returns a
+    /// sentinel because it runs per shell command inside the hook and a thrown exception there is not
+    /// a decision the hook process can act on the same way; this one runs once at dispatch construction,
+    /// the same place <see cref="TryTranslatePermissionGrant"/>'s own gap already throws
+    /// <see cref="PermissionGrantUnsupportedException"/>, so throwing here reuses that precedent rather
+    /// than inventing a second fail-closed vocabulary for the same adapter. A clause that is not a
+    /// <c>Bash(...)</c> clause at all (no <c>Bash(</c> prefix -- including bare <c>Bash</c>) is
+    /// untouched by any of this and stays excluded, per the paragraph above: "no <c>Bash(</c> clause
+    /// present" and "a <c>Bash(</c> clause present but unparseable" are different states, and only the
+    /// second one throws.
+    /// </para>
+    /// <para>
     /// <b>Denied patterns are not derivable from this path.</b> The raw scope string carries only what
     /// is ALLOWED -- it feeds <c>--allowedTools</c> alone, and there is no raw-scope equivalent of
     /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> to parse out of it, so
@@ -634,12 +662,35 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         }
 
         List<string> patterns = [];
-        foreach (var clause in resolvedScope.Split(
-            ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var rawClause in SplitAtTopLevelCommas(resolvedScope))
         {
-            if (clause.StartsWith("Bash(", StringComparison.Ordinal) && clause.EndsWith(')'))
+            var clause = rawClause.Trim();
+            if (clause.Length == 0)
             {
-                var pattern = clause[5..^1];
+                continue;
+            }
+
+            // Not a Bash(...) clause at all -- bare `Bash` and every other category (Write, Read, ...)
+            // are ignored here, unchanged from before this fix. Only a clause that STARTS a Bash(...)
+            // grant and then fails to parse falls into the throw below.
+            if (!clause.StartsWith("Bash(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!TryExtractBalancedBashClauseInner(clause, out var inner))
+            {
+                throw new PermissionGrantUnsupportedException(
+                    "claude",
+                    $"the raw PermissionScope clause '{clause}' opens a Bash(...) grant whose " +
+                    "parentheses never balance -- refusing to silently drop it from the " +
+                    "shell-pattern hook channel, which would reopen the #1459 bypass this method " +
+                    "exists to close");
+            }
+
+            foreach (var rawPattern in SplitAtTopLevelCommas(inner))
+            {
+                var pattern = rawPattern.Trim();
                 if (pattern.Length > 0)
                 {
                     patterns.Add(pattern);
@@ -648,6 +699,82 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         }
 
         return string.Join(',', patterns);
+    }
+
+    /// <summary>
+    /// Splits <paramref name="text"/> on <c>,</c> at parenthesis depth 0 only -- a comma nested inside
+    /// a <c>(...)</c> pair does not split. Shared by <see cref="BuildShellPatternsFromRawScope"/>'s
+    /// two split passes (clauses within the raw scope, then patterns within one clause's parens) so a
+    /// nested clause like <c>Bash(foo(bar))</c> parses the same way at both levels. Unbalanced input
+    /// (a <c>(</c> with no matching <c>)</c>) is not an error here -- everything from the unmatched
+    /// paren onward simply stays un-split, so the caller sees the malformed text as one piece and can
+    /// decide how to fail; only <see cref="TryExtractBalancedBashClauseInner"/> judges balance.
+    /// </summary>
+    private static List<string> SplitAtTopLevelCommas(string text)
+    {
+        List<string> result = [];
+        var depth = 0;
+        var start = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            switch (text[i])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')' when depth > 0:
+                    depth--;
+                    break;
+                case ',' when depth == 0:
+                    result.Add(text[start..i]);
+                    start = i + 1;
+                    break;
+            }
+        }
+
+        result.Add(text[start..]);
+        return result;
+    }
+
+    /// <summary>
+    /// Extracts the text between a <c>Bash(</c>-prefixed <paramref name="clause"/>'s outermost parens,
+    /// tracking depth so a nested <c>(...)</c> inside the pattern (<c>Bash(foo(bar))</c>) does not end
+    /// the clause early. Returns <see langword="false"/> -- the fail-closed signal
+    /// <see cref="BuildShellPatternsFromRawScope"/> turns into a thrown
+    /// <see cref="PermissionGrantUnsupportedException"/> -- when depth never returns to zero (no
+    /// closing paren for the one right after <c>Bash</c>) or when the paren that does close it is not
+    /// the clause's last character (trailing content after the grant this method cannot place).
+    /// </summary>
+    private static bool TryExtractBalancedBashClauseInner(string clause, out string inner)
+    {
+        var depth = 0;
+        for (var i = 4; i < clause.Length; i++) // clause[4] is the '(' right after "Bash"
+        {
+            switch (clause[i])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')':
+                    depth--;
+                    if (depth == 0)
+                    {
+                        if (i != clause.Length - 1)
+                        {
+                            inner = string.Empty;
+                            return false;
+                        }
+
+                        inner = clause[5..i];
+                        return true;
+                    }
+
+                    break;
+            }
+        }
+
+        inner = string.Empty;
+        return false;
     }
 
     /// <summary>

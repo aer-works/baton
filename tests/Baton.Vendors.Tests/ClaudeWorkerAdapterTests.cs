@@ -582,6 +582,98 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// The other half of the no-op case: a raw scope that names no <c>Bash(</c> clause at all (not
+    /// even a bare one). Must read identically to the bare-<c>Bash</c> case above -- an empty channel,
+    /// not a throw -- proving "no Bash( clause present" and "a Bash( clause present but unparseable"
+    /// (below) are genuinely different states in the parser, not the same branch reached two ways.
+    /// </summary>
+    [Fact]
+    public void A_raw_scope_with_no_Bash_clause_at_all_still_yields_an_empty_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Read"), ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// Regression, #1459 fix 2 (PR #1506's re-review): a comma-separated pattern list written INSIDE
+    /// one <c>Bash(...)</c> clause -- the advanced escape hatch's plausible way to grant two patterns
+    /// at once -- used to be severed by the old naive top-level <c>,</c>.Split into two half-clauses
+    /// (<c>"Bash(git diff*"</c>, <c>"git status*)"</c>), both of which failed the <c>Bash(</c>/<c>)</c>
+    /// check and were silently dropped, leaving the channel tagged-and-empty (the #1459 bypass,
+    /// reopened). The paren-aware split must keep the clause whole and grant both patterns.
+    /// </summary>
+    [Fact]
+    public void A_comma_list_inside_one_Bash_clause_populates_the_shell_pattern_channel_with_both_patterns()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", PermissionScope: "Write,Bash(git diff*, git status*)"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*,git status*"),
+            target.Environment);
+    }
+
+    /// <summary>
+    /// LOW finding fixed alongside the comma-list bug: interior whitespace around a single pattern
+    /// (<c>Bash( git diff* )</c>) used to reach the channel un-trimmed (<c>" git diff* "</c>), which
+    /// never matches any real command line -- a permanently-dead grant that looked populated. The
+    /// paren-aware split trims each extracted pattern the same way the structured-grant path already
+    /// does.
+    /// </summary>
+    [Fact]
+    public void Interior_whitespace_inside_a_single_Bash_clause_is_trimmed_from_the_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash( git diff* )"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*"), target.Environment);
+    }
+
+    /// <summary>
+    /// Nested, balanced parens inside a single pattern must survive whole rather than being cut at the
+    /// first inner <c>)</c> -- the depth-tracking split, not a naive <c>IndexOf(')')</c>.
+    /// </summary>
+    [Fact]
+    public void A_Bash_clause_with_nested_balanced_parens_yields_the_whole_pattern()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Bash(foo(bar))"), ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:foo(bar)"), target.Environment);
+    }
+
+    /// <summary>
+    /// Fail-closed half of #1459 fix 2: a clause that STARTS a <c>Bash(</c> grant but whose
+    /// parentheses never balance (no closing <c>)</c> anywhere) must not fall back to the pre-fix
+    /// silent-empty-channel behaviour -- that shape is indistinguishable from "deliberately unscoped
+    /// shell" once it reaches <see cref="HookCheckCommand.Decide"/>, which is the exact #1459 bypass
+    /// this fix closes. <see cref="Resolve"/> must throw <see cref="PermissionGrantUnsupportedException"/>
+    /// instead, matching <see cref="TryTranslatePermissionGrant"/>'s own resolve-time fail-closed
+    /// precedent for an untranslatable structured grant.
+    /// </summary>
+    [Fact]
+    public void An_unbalanced_Bash_clause_in_the_raw_scope_makes_Resolve_throw_instead_of_emitting_an_empty_channel()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
     /// #543, from review: an inherited `CLAUDE_CODE_SIMPLE=1` disables hooks the same way `--bare`
     /// does (see the doc comment above `SimpleModeVariable`'s declaration), and `BatonTask` inherits
     /// the full parent environment by default -- so this override has to actually be on the argv
@@ -686,6 +778,37 @@ public class ClaudeWorkerAdapterTests
 
         Assert.Equal(0, exitCode);
         Assert.Empty(stderr);
+    }
+
+    /// <summary>
+    /// End-to-end regression, #1459 fix 2: the comma-list-inside-one-clause shape
+    /// (<c>Bash(git diff*, git status*)</c>) must, through the REAL spawned hook process, both DENY
+    /// the #1461 chaining escape and ALLOW each of the two patterns it granted -- proving the
+    /// paren-aware split reaches the actual enforcement layer, not just the C# object
+    /// <see cref="Resolve"/> builds.
+    /// </summary>
+    [Fact]
+    public void Regression_1459fix2_the_resolved_hook_command_denies_the_1461_escape_and_allows_both_comma_list_patterns()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", PermissionScope: "Write,Bash(git diff*, git status*)"),
+            ArchitectContract);
+
+        var (escapeExitCode, escapeStderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git diff; echo escaped"}}""");
+        Assert.Equal(2, escapeExitCode);
+        Assert.Contains("scoped shell grant", escapeStderr, StringComparison.Ordinal);
+
+        var (diffExitCode, diffStderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git diff"}}""");
+        Assert.Equal(0, diffExitCode);
+        Assert.Empty(diffStderr);
+
+        var (statusExitCode, statusStderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git status"}}""");
+        Assert.Equal(0, statusExitCode);
+        Assert.Empty(statusStderr);
     }
 
     private static (int ExitCode, string Stderr) RunResolvedHookCommand(CoreDispatchTarget target, string stdin)

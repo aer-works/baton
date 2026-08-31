@@ -774,6 +774,16 @@ claude worker's shell — the structured `PermissionGrant` and the raw `Permissi
 populate the second enforcement layer; the opening sentence's "closed that hole" is accurate against
 that full population as of this fix, not only the structured path #1459's original PR measured against.
 
+**#1506's re-review found that population fails OPEN on a malformed advanced-scope `Bash(` clause —
+fixed in the same issue.** A naive top-level `,`-split severed a comma-list written inside one
+`Bash(...)` clause (`Bash(git diff*, git status*)`) into two half-clauses that both failed the
+`Bash(`/`)` check and vanished, landing on the exact tagged-and-empty shape the paragraph above reads
+as deliberate unscoped shell — reopening the bypass just fixed. `BuildShellPatternsFromRawScope` now
+splits paren-aware (comma depth tracked, so a clause's own comma-list stays whole) and throws
+`PermissionGrantUnsupportedException` at `Resolve` for a `Bash(` clause whose parens never balance,
+rather than silently emitting the empty channel; see that method's own doc comment for the full
+segmentation rule and the no-Bash-clause-vs-unparseable-clause distinction it turns on.
+
 **One asymmetry against the denied-tools channel is worth flagging here rather than only in code:**
 `HookCheckCommand.Decide` reads an absent or wrong-vendor pattern channel as an unscoped grant, not a
 denial — the opposite of how it reads a missing denied-tools list (#600). See that method's own
