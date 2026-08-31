@@ -85,8 +85,8 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine($"       {ResumeOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {StatusOptionsParser.Usage[7..]}");
     Console.Error.WriteLine("       baton templates [--json]");
-    Console.Error.WriteLine($"       {KeepOptionsParser.Usage}");
-    Console.Error.WriteLine($"       {UnkeepOptionsParser.Usage}");
+    Console.Error.WriteLine($"       {KeepOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {UnkeepOptionsParser.Usage[7..]}");
     Console.Error.WriteLine(
         "       baton mcp [--capture-file <path>] [--memory-proposal-tool] [--fleet-status-tool] [--room-detail-tool]");
     Console.Error.WriteLine("       baton daemon [--no-mutex]");
