@@ -408,7 +408,10 @@ daemon dependency, and a missing or still-running room, a held-open ledger, or a
 degrade to a partial view plus a `note`/`unreadable` marker, never a throw. This settles the prior
 draft's open question: there is no separate diagnostic UI, dev or otherwise. Fleet Glass **is** the
 diagnostic story, and its second level is scoped work against the same MCP tool surface, not a new
-one.
+one. One deliberate exception exists on a different plane entirely: C-11 (§11) rules in a
+daemon-served, tailnet-bound, read-only drill-down page for the payloads this ruling's plane cannot
+carry — the reasoning lives in that entry, and this ruling continues to govern everything reachable
+from a conversation.
 
 The outbound push mailbox — the mechanism that would notify a harness of a state-change event without
 polling — is **(new build)**. There is no `push`, `mailbox`, or outbound-webhook-shaped
@@ -875,14 +878,18 @@ shell grant, the silent hole the whole design refuses elsewhere.
   pause/decide (§5) exist.
 - **Phone pairing and remote *viewing* infrastructure built for a paired client.** `PairedClientsStore`
   and WebSocket broadcast (§7) are archived; the mailbox (§6) is the harness-era replacement for
-  "something remote learns what happened," not a client-pairing model.
+  "something remote learns what happened," not a client-pairing model. The tailnet drill-down page
+  (C-11, §11) is not this: no pairing state, no client registry — that entry records the distinction
+  and the narrow listener it prices back in.
 - **A resident orchestrator that decides on a human's behalf.** There is no room-resident presence;
   the harness is the decider, always (§5, §7).
 - **Remote *dispatch* triggering — closed, orchestrator-only.** Settled, not open: remote dispatch
   already exists as "talk to your harness from the phone" — a Claude Code mobile session (or any
   other agent that can run CLI verbs and read `terminal.json`/`fleet_status`) driving `baton dispatch`,
   which keeps one set of hands on the workers. A direct phone-to-worker control path would be a
-  second interaction surface outside the orchestrator, which the one-surface design retires.
+  second interaction surface outside the orchestrator, which the one-surface design retires. C-11
+  (§11) does not reopen this: the page it rules in may eventually **arrest** (cancel,
+  redispatch-unchanged) but never originate — the originate/arrest line is drawn in that entry.
   `Baton.Sidecar` — the Go tsnet component that existed solely to give a paired remote client
   zero-config Tailscale reach to the daemon's REST/WS API — is DELETED, done (#1420): it was a real,
   tracked Go module (an earlier draft claimed otherwise; a lane verified it existed — corrected), and
@@ -931,6 +938,59 @@ decision's scope) or about a vendor CLI's own OS support (`docs/vendor-doc-audit
 `platforms` list keeps `linux-64` alongside `win-64`. That is a dev-sandbox accommodation — a Claude
 Code cloud session doing *development* work on this repo from a Linux sandbox — not a second support
 target; nothing is built, tested, or packaged for it, and `osx-arm64` is dropped outright.
+
+### C-11 — The tailnet drill-down plane (glass v2.5)
+
+Ratified with the operator 2026-08-31, out of the glass v2 design session (#1502). This entry is the
+record §6's own tripwire demanded before any page could be built — written first, as the epic
+requires, and written honestly: the thing being ruled in **is** a maintained page, and this entry
+amends the ruling's reach rather than pretending the page slips under it.
+
+**The decision.** Observability splits into two planes by what the bytes are, not by preference. The
+**mailbox plane** (pusher → Worker KV/MCP → artifact, §6) owns the fleet row: small, curated,
+change-gated, secret-gated, reachable from a Claude conversation, working while the machine sleeps.
+The **tailnet plane** — a page served by the existing daemon (§7), bound to the tailnet/loopback
+interface only, never `0.0.0.0` — owns drill-down: live stdout tail, full timeline, room artifacts.
+Neither is a fallback for the other.
+
+**Why the mailbox cannot carry drill-down — the constraint that forced a second plane.** Two hard
+walls, not taste. The secret gate: the deliverables path exists to guarantee the mailbox never
+carries `prompt.txt` or `.stdout.log` — only declared outputs through a fail-closed denylist — and a
+live stdout tail is precisely the uncurated stream that design refuses, on a public repo. The write
+quota: Cloudflare's free KV tier caps at 1,000 writes/day; a live tail at the pusher's cadence is
+~3,456/day — the #1457 change-gate exists because even the *fleet row* brushes this ceiling. On the
+operator's own tailnet both walls vanish: the bytes never leave the network, and no third-party
+quota is in the path.
+
+**What §6's "never a second application" still governs, and what it no longer does.** That ruling
+stands, un-softened, for the mailbox plane: drill-down reachable from a conversation is `room_detail`
+in the same MCP host, and no page grows there. This entry rules in exactly one additional surface —
+a read-only diagnostic page on the private plane — because the mailbox physically cannot carry its
+payload. The tripwire this entry inherits from §6 is restated for the new plane: the page is a
+**diagnostic**, not an application. It renders what the room record already says; v2.5 ships it
+read-only. The only interactions it may ever gain are the two **arresting** reflexes — cancel and
+redispatch-unchanged — behind confirm, executed through the same engine verbs as any terminal and
+recorded as room facts, so every observer sees the transition through the room record. The
+conductor/orchestrator remains the only **originator** of work: dispatch-new-lane, amended re-briefs,
+and gate approvals stay closed from the page (§10's remote-dispatch ruling, unamended). If the page
+grows an origination affordance, this entry has been violated, not extended.
+
+**Why this is not the pairing infrastructure §10 archived.** `PairedClientsStore`, the WebSocket
+broadcast, and the tsnet sidecar existed to give a *paired remote client* a registry, reassignment,
+and zero-config reach. A bookmark on a tailnet holds no pairing state, has no client registry, and
+needs no reassignment — the network is the authenticator. What #1420 deleted is not what this entry
+adds; what it adds back is one HTTP listener on the daemon, priced and narrowed to this purpose.
+
+**Transport: SSE out, plain HTTP `POST` for the eventual arrest verbs — WebSocket considered and
+rejected.** The live view is one-directional; `EventSource` gives reconnect and `Last-Event-ID`
+resume for free, which matters because the primary client is a phone that sleeps constantly. The
+arrest verbs, when they arrive, are rare, discrete, and want request/response semantics — a status
+code, per-request auth, a log line — not a frame on a stream; routing them over `POST` is the better
+design even where a socket already exists. A bidirectional channel earns its machinery only under
+chatty two-way traffic, and the steering model settled alongside this entry (arrest + rehire;
+corrections travel as briefs through `redispatch --spec`, #1495/#1381) guarantees there is none.
+Revisit only if a genuinely interactive surface is ever ruled in — which §10's mid-run-steering
+ruling currently forbids.
 
 ---
 
