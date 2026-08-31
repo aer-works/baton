@@ -139,6 +139,39 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
             var overriddenBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
                 Path.Combine(overriddenChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
             Assert.Equal("different lane", overriddenBindings["advise"].Label);
+
+            var clearedChildRoom = Path.Combine(testRoot, "child-cleared");
+            var clearedResult = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, clearedChildRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Label: null, LabelSpecified: true),
+                Adapters, TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, clearedResult.State.Status);
+            var clearedBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(clearedChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Null(clearedBindings["advise"].Label);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_blank_label_clears_the_inherited_label_on_an_unchanged_spec_redispatch()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", label: "env-snapshot lane");
+
+            var childRoom = Path.Combine(testRoot, "child-cleared");
+            var options = new RedispatchOptions(parentRoom, childRoom, Label: null, LabelSpecified: true);
+
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var childBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Null(childBindings["advise"].Label);
         }
         finally
         {

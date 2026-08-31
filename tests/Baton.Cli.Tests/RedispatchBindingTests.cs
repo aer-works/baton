@@ -151,6 +151,16 @@ public class RedispatchBindingTests
     }
 
     [Fact]
+    public void A_specified_blank_label_clears_the_parents_inherited_label()
+    {
+        var parent = ParentEntry() with { Label = "old label" };
+        var entry = RedispatchCommand.InheritBinding(
+            parent, new RedispatchOptions("parent-room", "new-room", Label: null, LabelSpecified: true));
+
+        Assert.Null(entry.Label);
+    }
+
+    [Fact]
     public void A_parent_with_no_label_stays_unlabeled_when_not_overridden()
     {
         var parent = ParentEntry();

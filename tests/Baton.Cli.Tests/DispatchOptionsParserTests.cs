@@ -177,6 +177,15 @@ public class DispatchOptionsParserTests
     }
 
     [Fact]
+    public void A_label_cut_does_not_split_a_surrogate_pair()
+    {
+        var raw = new string('x', 59) + "\U0001F680";
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--label", raw]);
+        Assert.Equal(new string('x', 59), options.Label);
+        Assert.False(char.IsHighSurrogate(options.Label![^1]));
+    }
+
+    [Fact]
     public void The_default_room_directory_is_unique_per_invocation_so_a_redispatch_does_not_resume()
     {
         // A one-shot dispatch must run anew each time; two default directories that collided would

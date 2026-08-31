@@ -41,6 +41,7 @@ public class RedispatchOptionsParserTests
         Assert.Null(options.OutputPath);
         Assert.Null(options.Timeout);
         Assert.Null(options.Label);
+        Assert.False(options.LabelSpecified);
     }
 
     [Fact]
@@ -51,6 +52,15 @@ public class RedispatchOptionsParserTests
         var raw = new string('x', 90);
         var options = RedispatchOptionsParser.Parse(["parent-room", "--label", raw]);
         Assert.Equal(60, options.Label!.Length);
+        Assert.True(options.LabelSpecified);
+    }
+
+    [Fact]
+    public void A_blank_label_sets_LabelSpecified_true_and_Label_null()
+    {
+        var options = RedispatchOptionsParser.Parse(["parent-room", "--label", "   "]);
+        Assert.Null(options.Label);
+        Assert.True(options.LabelSpecified);
     }
 
     [Fact]

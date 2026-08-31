@@ -121,8 +121,9 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   a short human-readable name (e.g. "the #1496 env-snapshot lane") so Fleet Glass (§6) can show
   something legible instead of a bare `dispatch-<role>-<hex8>` directory name; it is never part of the
   room directory's own name, which stays the generated hex identity above. Sanitized at parse time
-  (`DispatchOptionsParser.SanitizeLabel`): trimmed, embedded newlines folded to spaces, capped at 60
-  chars; a blank result is treated as omitted rather than refused. Persisted onto every entry of that
+  (`DispatchOptionsParser.SanitizeLabel`): trimmed, embedded newlines folded to spaces, capped at
+  `DispatchOptionsParser.MaxLabelLength` chars; a blank result is treated as omitted rather than refused.
+  Persisted onto every entry of that
   room's own `bindings.json` (`WorkerBindingConfigEntry.Label`) rather than a new file, since bindings
   already exists for every room regardless of terminal state — see §6 schema for how `fleet_status`
   reads it back.
@@ -145,7 +146,8 @@ not persisted anywhere in the room (only the produced output's customized *name*
 entry's contract) — a redispatch's own `--output`, when given, works exactly like dispatch's own.
 `--label` inherits unlike `--output` does: the parent's label IS a persisted, durable room-level fact
 (`WorkerBindingConfigEntry.Label`), not a process-local copy target, so a redispatched lane keeps
-reading as the same human-named thing unless the operator names it something else. `--spec`
+reading as the same human-named thing — absent inherits the parent's label, specified-and-blank
+(`--label ""`) clears it, and specified-and-nonblank overrides it (`RedispatchCommand.InheritBinding`). `--spec`
 omitted reuses the parent's already-built prompt verbatim; given, the amended brief is rebuilt through
 the same `RoleDispatch.Materialize` a fresh dispatch uses, with the parent's recorded axes as defaults
 — including the inherited-unless-overridden label, applied after that rebuild since
@@ -501,7 +503,7 @@ this shape already emits; `timeoutMs` is not duplicated there.
 **`label` (#1499) is read from the same `bindings.json`, but deliberately NOT gated the way the
 quartet above is.** A room's `--label` is a room-level fact stamped onto every entry at dispatch time
 (`DispatchCommand.ExecuteAsync`), not scoped to one worker's Running step — so `FleetStatusTool`
-reads it off the first entry it finds regardless of whether any step is Running, on **both**
+reads it off the first entry whose Label is non-null regardless of whether any step is Running, on **both**
 `ProcessRoomAsync` paths, including the terminal-sentinel fast path that never reads `bindings.json`
 for `role`/`adapter`/`model`/`effort`/`timeoutMs` at all. Absent when never supplied, when
 `bindings.json` is missing or fails to parse, or on a pre-#1499 room whose `bindings.json` predates

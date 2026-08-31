@@ -26,6 +26,7 @@ public static class RedispatchOptionsParser
         string? outputPath = null;
         TimeSpan? timeout = null;
         string? label = null;
+        var labelSpecified = false;
 
         var i = 0;
         while (i < args.Count)
@@ -56,6 +57,7 @@ public static class RedispatchOptionsParser
                     break;
                 case "--label":
                     label = DispatchOptionsParser.SanitizeLabel(RequireValue(args, ref i, arg));
+                    labelSpecified = true;
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -94,7 +96,7 @@ public static class RedispatchOptionsParser
             adapter, model, effort,
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout, label);
+            timeout, label, labelSpecified);
     }
 
     /// <summary>Same ceiling/warn thresholds and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--timeout</c> (#1442).</summary>

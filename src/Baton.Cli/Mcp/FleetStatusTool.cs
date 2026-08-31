@@ -220,6 +220,10 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: sentinel.Error,
                 Try: sentinel.Try,
                 Rejected: sentinel.Rejected,
+                // The terminal fast path sits outside the per-room isolation try/catch below;
+                // this read sits outside it safely because WorkerBindingConfigParser funnels every
+                // data-driven failure into WorkerBindingConfigException, which TryReadRoomLabelAsync
+                // catches and swallows (fail-open), matching the sentinel read above it.
                 Label: await TryReadRoomLabelAsync(roomDir, cancellationToken).ConfigureAwait(false));
         }
 
@@ -286,7 +290,8 @@ public sealed class FleetStatusTool : IMcpTool
                     stepView.RetryEligible));
             }
 
-            var binding = await TryResolveRunningBindingAsync(roomDir, steps, events, cancellationToken).ConfigureAwait(false);
+            var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
+            var binding = TryResolveRunningBinding(bindings, steps, events);
 
             return new FleetRoomStatusView(
                 Name: roomName,
@@ -302,7 +307,7 @@ public sealed class FleetStatusTool : IMcpTool
                 Model: binding?.Entry.Model,
                 Effort: binding?.Entry.Effort,
                 TimeoutMs: (long?)binding?.Entry.Timeout.TotalMilliseconds,
-                Label: await TryReadRoomLabelAsync(roomDir, cancellationToken).ConfigureAwait(false));
+                Label: ExtractRoomLabel(bindings));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -317,14 +322,40 @@ public sealed class FleetStatusTool : IMcpTool
     }
 
     /// <summary>
+    /// Loads and parses <c>bindings.json</c> if present, degrading to <c>null</c> on any missing file
+    /// or load/parse error (fail-open display metadata contract, spec/baton.md §6 schema).
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, WorkerBindingConfigEntry>?> TryLoadBindingsAsync(
+        string roomDir, CancellationToken cancellationToken)
+    {
+        var bindingsPath = BatonPaths.RoomBindingsFile(roomDir);
+        if (!File.Exists(bindingsPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return await WorkerBindingConfigParser.LoadFromFileAsync(bindingsPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is WorkerBindingConfigException or IOException or UnauthorizedAccessException)
+        {
+            // spec/baton.md §6 schema states the contract this degrades to.
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Resolves the worker-binding config entry (issue #1503) for whichever step this room's
     /// projection currently calls <c>"Running"</c> — the same worker a caller would see live if they
     /// tailed <c>room_detail</c> right now. Picks the first Running step when a workflow has more than
     /// one in flight at once; a room row carries one binding, not a list. See spec/baton.md §6 schema
     /// for when this comes back absent and why.
     /// </summary>
-    private static async Task<(string Role, WorkerBindingConfigEntry Entry)?> TryResolveRunningBindingAsync(
-        string roomDir, IReadOnlyList<FleetStepStatusView> steps, IReadOnlyList<FlowEvent> events, CancellationToken cancellationToken)
+    private static (string Role, WorkerBindingConfigEntry Entry)? TryResolveRunningBinding(
+        IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings,
+        IReadOnlyList<FleetStepStatusView> steps,
+        IReadOnlyList<FlowEvent> events)
     {
         var runningExecution = steps.FirstOrDefault(s => s.State == "Running" && s.Execution is not null)?.Execution;
         if (runningExecution is null)
@@ -347,20 +378,8 @@ public sealed class FleetStatusTool : IMcpTool
             return null;
         }
 
-        var bindingsPath = BatonPaths.RoomBindingsFile(roomDir);
-        if (!File.Exists(bindingsPath))
+        if (bindings is null)
         {
-            return null;
-        }
-
-        IReadOnlyDictionary<string, WorkerBindingConfigEntry> bindings;
-        try
-        {
-            bindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsPath, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is WorkerBindingConfigException or IOException or UnauthorizedAccessException)
-        {
-            // spec/baton.md §6 schema states the contract this degrades to.
             return null;
         }
 
@@ -368,28 +387,19 @@ public sealed class FleetStatusTool : IMcpTool
     }
 
     /// <summary>
-    /// Reads a room's <c>--label</c> (#1499) off its own <c>bindings.json</c>, called on BOTH
-    /// <see cref="ProcessRoomAsync"/> paths — deliberately not gated by
-    /// <see cref="TryResolveRunningBindingAsync"/>'s Running-step lookup. Full rationale and the
-    /// fail-open contract: spec/baton.md §6 schema.
+    /// Extracts a room's <c>--label</c> (#1499) off its loaded <c>bindings.json</c> dictionary.
+    /// </summary>
+    private static string? ExtractRoomLabel(IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings) =>
+        bindings?.Values.Select(entry => entry.Label).FirstOrDefault(label => label is not null);
+
+    /// <summary>
+    /// Reads a room's <c>--label</c> (#1499) off its own <c>bindings.json</c> on the terminal sentinel
+    /// fast path. Full rationale and the fail-open contract: spec/baton.md §6 schema.
     /// </summary>
     private static async Task<string?> TryReadRoomLabelAsync(string roomDir, CancellationToken cancellationToken)
     {
-        var bindingsPath = BatonPaths.RoomBindingsFile(roomDir);
-        if (!File.Exists(bindingsPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsPath, cancellationToken).ConfigureAwait(false);
-            return bindings.Values.Select(entry => entry.Label).FirstOrDefault(label => label is not null);
-        }
-        catch (Exception ex) when (ex is WorkerBindingConfigException or IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
+        var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
+        return ExtractRoomLabel(bindings);
     }
 }
 
