@@ -5,10 +5,10 @@ namespace Baton.Core.Internal;
 
 /// <summary>
 /// Thin P/Invoke wrapper over the Windows Job Object API, used by <see cref="BatonTask"/> to hold the
-/// spawned process's entire descendant tree (§6 of the behavioral spec, M3's "no orphans" guarantee) —
-/// this is Win32 surface, not the aer-core Rust FFI CLAUDE.md's Architecture Rule 3 (P/Invoke Layer)
-/// scopes to the deleted ABI; CreateJobObject/AssignProcessToJobObject/TerminateJobObject calling
-/// Windows directly is the allowed exception it names.
+/// spawned process's entire descendant tree (the "no orphans" guarantee aer-core's M3 milestone
+/// established) — this is Win32 surface, not the aer-core Rust FFI CLAUDE.md's Architecture Rule 3
+/// (P/Invoke Layer) scopes to the deleted ABI; CreateJobObject/AssignProcessToJobObject/
+/// TerminateJobObject calling Windows directly is the allowed exception it names.
 /// </summary>
 /// <remarks>
 /// A <see cref="SafeHandle"/>, not a raw <c>nint</c>, for the same reason the deleted FFI binding used
@@ -26,8 +26,8 @@ internal sealed class SafeJobObjectHandle : SafeHandleZeroOrMinusOneIsInvalid
 
     /// <summary>
     /// Creates a Job Object configured with <c>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</c>: when the last
-    /// handle to the job closes, every process still in it is terminated — the mechanism the spec's
-    /// §6 table names for Windows.
+    /// handle to the job closes, every process still in it is terminated — the mechanism aer-core's
+    /// behavioral spec named for Windows process-tree containment.
     /// </summary>
     public static SafeJobObjectHandle Create()
     {
@@ -60,8 +60,8 @@ internal sealed class SafeJobObjectHandle : SafeHandleZeroOrMinusOneIsInvalid
 
     /// <summary>
     /// Kills every process currently in the job. There is no graceful phase on Windows —
-    /// <c>TerminateJobObject</c> is unconditional and immediate (spec §5's kill-sequence table);
-    /// unlike Unix's SIGTERM-then-SIGKILL escalation there is nothing to wait out here. Errors are
+    /// <c>TerminateJobObject</c> is unconditional and immediate; unlike Unix's SIGTERM-then-SIGKILL
+    /// escalation there is nothing to wait out here. Errors are
     /// swallowed: the job may already be empty (a prior timeout/cancel/natural-exit teardown already
     /// terminated it), which is harmless.
     /// </summary>
@@ -69,7 +69,7 @@ internal sealed class SafeJobObjectHandle : SafeHandleZeroOrMinusOneIsInvalid
 
     /// <summary>
     /// True if any process in the job is still alive — including a grandchild outstanding after the
-    /// root has exited (spec §6: "the whole tree, not just the root, must be gone"). On query failure,
+    /// root has exited: the whole tree, not just the root, must be gone. On query failure,
     /// fails toward "alive": killing an already-dead tree is harmless, skipping a kill on a live one
     /// is not (mirrors aer-core's <c>tree_alive</c>).
     /// </summary>

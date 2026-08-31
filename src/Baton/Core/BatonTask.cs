@@ -4,7 +4,7 @@ namespace Baton.Core;
 
 /// <summary>
 /// A single-shot process execution: one command, one run, a deterministic lifecycle. Owns the spawned
-/// process's entire descendant tree via a Windows Job Object (spec §6) for the duration of
+/// process's entire descendant tree via a Windows Job Object for the duration of
 /// <see cref="Run"/>/<see cref="RunAsync"/>, exposes configuration via fluent <c>With*</c> methods, and
 /// reports progress via the <see cref="EventRaised"/> event rather than a raw callback.
 /// </summary>
@@ -166,7 +166,7 @@ public sealed class BatonTask : IDisposable
     /// <param name="cancellationToken">
     /// When cancelled, kills the process tree the same way a timeout would, and the run then
     /// completes by throwing <see cref="BatonCancelException"/> — not <see cref="OperationCanceledException"/>.
-    /// A cancellation observed after the process has already exited is a no-op (spec §7).
+    /// A cancellation observed after the process has already exited is a no-op.
     /// </param>
     /// <exception cref="InvalidOperationException">This instance has already been run.</exception>
     /// <exception cref="BatonCancelException"><paramref name="cancellationToken"/> was cancelled.</exception>

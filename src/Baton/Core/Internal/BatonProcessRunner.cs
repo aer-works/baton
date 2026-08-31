@@ -73,7 +73,7 @@ internal static class BatonProcessRunner
 
             if (!job.TryAssign(process.SafeHandle))
             {
-                // No-orphans guarantee (spec §3 invariant 4 / §6) applies to spawn failures too, not
+                // The no-orphans guarantee applies to spawn failures too, not
                 // just to teardown after a successful spawn: the child is alive but never made it
                 // into the job, so the job's own kill-on-close would never reach it. Kill it directly
                 // before reporting the failure.
@@ -266,8 +266,8 @@ internal static class BatonProcessRunner
     }
 
     /// <summary>
-    /// Discard-path wait: drain threads run purely to prevent pipe-buffer deadlock (spec §4), nothing
-    /// is delivered to the caller. Equivalent to aer-core's <c>os/windows.rs::wait</c> with <c>None</c>
+    /// Discard-path wait: drain threads run purely to prevent pipe-buffer deadlock, nothing is
+    /// delivered to the caller. Equivalent to aer-core's <c>os/windows.rs::wait</c> with <c>None</c>
     /// sinks.
     /// </summary>
     private static int RunDiscardingOutput(Process process, SafeJobObjectHandle job)
@@ -293,8 +293,8 @@ internal static class BatonProcessRunner
 
     /// <summary>
     /// Capture-path wait: the calling thread pumps chunks live as they arrive instead of blocking
-    /// until exit, so a slow process's output is delivered while it is still running (spec §4;
-    /// aer-core regression #72). The actual OS wait runs on its own thread, mirroring aer-core's
+    /// until exit, so a slow process's output is delivered while it is still running (aer-core
+    /// regression #72). The actual OS wait runs on its own thread, mirroring aer-core's
     /// <c>run_impl</c> capture branch.
     /// </summary>
     private static int RunWithLiveCapture(Process process, SafeJobObjectHandle job, Action<BatonEventArgs> raiseEvent)

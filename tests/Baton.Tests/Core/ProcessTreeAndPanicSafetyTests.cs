@@ -7,7 +7,7 @@ namespace Baton.Tests.Core;
 /// Ports the process-tree (M3) and panic-safety (#75) coverage from the deleted aer-core Rust
 /// integration suite (<c>native/core/tests/integration_test.rs</c>) onto the managed Job Object
 /// implementation (#1474). These are the tests that actually exercise the no-orphans guarantee
-/// (spec §6 / Ordering Invariant 7) rather than merely asserting on the exit-code/reason shape --
+/// (aer-core's Ordering Invariant 7) rather than merely asserting on the exit-code/reason shape --
 /// they spawn a grandchild that outlives its immediate parent and prove the whole tree, not just the
 /// root, is dead once <see cref="BatonTask.Run"/> returns.
 /// </summary>
@@ -62,7 +62,8 @@ public class ProcessTreeAndPanicSafetyTests
 
             Assert.True(elapsed < TimeSpan.FromSeconds(10), $"Run() took {elapsed} -- process tree cleanup looks deadlocked");
 
-            Thread.Sleep(200); // job-object teardown is synchronous within Run(); give the OS a moment.
+            // wait-ok: a fixed OS-settle delay after Run()'s synchronous teardown, not a poll ceiling.
+            Thread.Sleep(200);
 
             int grandchildPid = ReadGrandchildPid(pidFile);
             Assert.False(ProcessIsAlive(grandchildPid), $"grandchild PID {grandchildPid} is still alive -- process tree cleanup failed");
@@ -195,10 +196,13 @@ public class ProcessTreeAndPanicSafetyTests
         Assert.Contains("simulated callback failure", thrown.Message, StringComparison.Ordinal);
         Assert.True(recordedPid > 0, "pid was not recorded before the callback threw");
 
+        // Polls for the OS to finish tearing the process down after a synchronous Terminate() call
+        // already fired inside Run()'s finally -- not a flake-prone wait for an unrelated async
+        // event, so a short poll interval and ceiling are the honest ones.
         DateTime start = DateTime.UtcNow;
         while (ProcessIsAlive(recordedPid) && DateTime.UtcNow - start < TimeSpan.FromSeconds(5))
         {
-            Thread.Sleep(100);
+            Thread.Sleep(100); // wait-ok: poll interval for the teardown check above, not a flaky wait
         }
 
         Assert.False(ProcessIsAlive(recordedPid), $"process {recordedPid} is still alive after the callback threw -- the process tree was orphaned");
