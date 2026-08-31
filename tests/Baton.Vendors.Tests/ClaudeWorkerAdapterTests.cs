@@ -779,6 +779,38 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// Round-5 re-review MEDIUM: an explicit but empty <c>Bash()</c> clause used to clear both the
+    /// balance gate and the fusion gate, then quietly vanish at the per-clause trim -- see
+    /// <see cref="ClaudeWorkerAdapter.BuildShellPatternsFromRawScope"/>'s own remarks and its
+    /// per-clause throw for the mechanism.
+    /// </summary>
+    [Fact]
+    public void An_empty_pattern_Bash_clause_makes_Resolve_throw_instead_of_silently_yielding_an_empty_channel()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash()"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Same shape as above with a whitespace-only interior -- <c>Trim()</c> reduces it to the same
+    /// empty pattern, so it must throw identically rather than being read as a non-empty grant.
+    /// </summary>
+    [Fact]
+    public void A_whitespace_only_pattern_Bash_clause_makes_Resolve_throw_instead_of_silently_yielding_an_empty_channel()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(   )"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
     /// #543, from review: an inherited `CLAUDE_CODE_SIMPLE=1` disables hooks the same way `--bare`
     /// does (see the doc comment above `SimpleModeVariable`'s declaration), and `BatonTask` inherits
     /// the full parent environment by default -- so this override has to actually be on the argv

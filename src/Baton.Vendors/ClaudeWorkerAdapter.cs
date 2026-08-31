@@ -613,7 +613,9 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// would deny an intentionally-unscoped grant, which is the opposite defect from the one this
     /// fixes. This mirrors <see cref="TryTranslatePermissionGrant"/>'s own structured-grant handling,
     /// which likewise emits bare <c>Bash</c> only when <see cref="PermissionGrant.ShellCommandPatterns"/>
-    /// is empty.
+    /// is empty. An empty-interior <c>Bash()</c> clause is a different case -- it opens the grant syntax
+    /// rather than omitting it -- and is refused rather than left out; see the per-clause throw below
+    /// for why (round-5 re-review of PR #1506).
     /// </para>
     /// <para>
     /// <b>Categorically fail-closed (#1459 fix 3, from PR #1506's round-4 re-review).</b> The channel
@@ -768,10 +770,17 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             }
 
             var pattern = inner.Trim();
-            if (pattern.Length > 0)
+            if (pattern.Length == 0)
             {
-                patterns.Add(pattern);
+                throw new PermissionGrantUnsupportedException(
+                    "claude",
+                    $"the raw PermissionScope clause '{clause}' opens a Bash(...) grant with an empty " +
+                    "pattern -- this channel yields an empty shell-pattern channel ONLY when no Bash( " +
+                    "grant is present at all, so an explicit-but-empty Bash() grant is refused rather " +
+                    "than silently read as unscoped, which would reopen the #1459 bypass this method closes");
             }
+
+            patterns.Add(pattern);
         }
 
         return string.Join(',', patterns);
