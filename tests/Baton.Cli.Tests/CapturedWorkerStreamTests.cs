@@ -8,6 +8,7 @@ using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Dispatch;
 using Baton.Domain;
+using Baton.Store;
 using Baton.Templates;
 using Xunit;
 
@@ -89,6 +90,46 @@ public class CapturedWorkerStreamTests
 
             var exStderr = Assert.Throws<InvalidOperationException>(() => logger.AppendStderr("chunk 2\n"u8.ToArray()));
             Assert.Contains("terminal event", exStderr.Message);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
+
+    /// <summary>
+    /// #1525 Phase 2 regression test -- fails on main. Root cause (Phase 1): a claude role dispatch
+    /// runs <c>--output-format text</c> (<c>RoleDispatch.cs:155</c> only streams <c>agy</c>), and
+    /// claude's text mode writes nothing to stdout until the entire response is composed, so
+    /// <c>AppendChunk</c> was never called -- and on main, <c>.stdout.log</c> is only created lazily,
+    /// inside <c>AppendChunk</c>, on the first successful write. For the run's whole duration (measured
+    /// live: 50/51 real dispatch rooms on this machine, every completed one; the sole exception was
+    /// this very task's own room, still running) there is nothing at the path <c>RoomDetailTool</c>
+    /// tails, which is indistinguishable from "the tee is broken" to an operator drilling into a live
+    /// lane. This does not require a real vendor process to reproduce: the file's absence is a property
+    /// of <see cref="ExecutionStreamLogger"/> alone, independent of what (if anything) ever calls
+    /// <see cref="ExecutionStreamLogger.AppendStdout"/>.
+    /// </summary>
+    [Fact]
+    public void Construction_CreatesBothStreamFilesEagerly_BeforeAnyChunkArrives()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"stream-eager-create-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var stdoutPath = Path.Combine(tempDir, ExecutionStreamLogger.StdoutLogFileName);
+            var stderrPath = Path.Combine(tempDir, ExecutionStreamLogger.StderrLogFileName);
+            Assert.False(File.Exists(stdoutPath));
+            Assert.False(File.Exists(stderrPath));
+
+            _ = new ExecutionStreamLogger(tempDir);
+
+            // Present, and empty -- the honest state before a slow/buffered worker's first chunk
+            // arrives, in place of main's "does not exist at all".
+            Assert.True(File.Exists(stdoutPath));
+            Assert.True(File.Exists(stderrPath));
+            Assert.Equal(0, new FileInfo(stdoutPath).Length);
+            Assert.Equal(0, new FileInfo(stderrPath).Length);
         }
         finally
         {
@@ -331,21 +372,38 @@ public class CapturedWorkerStreamTests
     }
 
     [Fact]
-    public void FailureIsolation_WhenWriteFails_DoesNotThrowAndDisablesFurtherWrites()
+    public void FailureIsolation_WhenWriteFails_DoesNotThrowAndKeepsRetrying()
     {
+        // #1525 F4: renamed from "...DisablesFurtherWrites" -- that used to be true (the latch was
+        // permanent and cross-stream) and no longer is. A single obstructed write must not throw, must
+        // not blind the OTHER stream, and must not stop a LATER write on the same stream from
+        // succeeding once the obstruction is gone -- per-chunk open/close means a failed chunk leaves
+        // no state for the next one to inherit.
         var tempDir = Path.Combine(Path.GetTempPath(), $"stream-failure-isolation-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
         try
         {
-            // Create .stdout.log as a directory so FileStream opening will fail
-            Directory.CreateDirectory(Path.Combine(tempDir, ExecutionStreamLogger.StdoutLogFileName));
+            var stdoutObstruction = Path.Combine(tempDir, ExecutionStreamLogger.StdoutLogFileName);
 
+            // Constructing the logger eager-creates both stream files (#1525) -- remove the stdout one
+            // and replace it with a directory so the FIRST AppendStdout's FileStream open fails.
             var logger = new ExecutionStreamLogger(tempDir);
+            FileCleanup.EnsureDeleted(stdoutObstruction);
+            Directory.CreateDirectory(stdoutObstruction);
 
-            // Should not throw, but safely catch, disable, and continue
+            // Obstructed stdout must not throw...
             logger.AppendStdout("first chunk\n"u8.ToArray());
-            logger.AppendStdout("second chunk\n"u8.ToArray());
+            // ...must not blind stderr, which was never obstructed...
             logger.AppendStderr("stderr chunk\n"u8.ToArray());
+            var stderrText = File.ReadAllText(Path.Combine(tempDir, ExecutionStreamLogger.StderrLogFileName));
+            Assert.Contains("stderr chunk", stderrText);
+
+            // ...and must not permanently disable stdout either: once the obstruction is cleared, the
+            // next chunk succeeds normally.
+            Directory.Delete(stdoutObstruction);
+            logger.AppendStdout("recovered chunk\n"u8.ToArray());
+            var stdoutText = File.ReadAllText(stdoutObstruction);
+            Assert.Contains("recovered chunk", stdoutText);
         }
         finally
         {
@@ -353,10 +411,22 @@ public class CapturedWorkerStreamTests
         }
     }
 
+    /// <summary>
+    /// #1525 F3: renamed from "FailureIsolation_InCoreDispatcher_WhenStreamLoggerFails_ExecutionStillSucceeds"
+    /// -- nothing in this body sabotages the logger, so it never exercised failure isolation and would
+    /// pass unchanged on a version of <c>main</c> with none of it. It is a happy-path end-to-end proof
+    /// that the tee reaches the room through the real <c>RunCommand</c>/<c>CoreDispatcher</c> pump, not
+    /// a unit-level fake. The actual fault-injected coverage for this class of bug lives in
+    /// <see cref="FailureIsolation_WhenWriteFails_DoesNotThrowAndKeepsRetrying"/> (this file, unit
+    /// level) and <c>Baton.Tests.Dispatch.CoreDispatcherTests.DispatchAsync_when_stream_logger_fails_execution_still_succeeds</c>
+    /// (Core level, which sabotages a deterministically-known output directory before dispatch --
+    /// something this CLI-level test cannot do because the execution ID, and therefore the output
+    /// directory, is not known until the engine allocates it during the run).
+    /// </summary>
     [Fact]
-    public async Task FailureIsolation_InCoreDispatcher_WhenStreamLoggerFails_ExecutionStillSucceeds()
+    public async Task EndToEnd_ViaRunCommand_StreamLoggerWritesRealStdoutIntoTheRoom()
     {
-        var testRoot = Path.Combine(Path.GetTempPath(), $"stream-dispatch-failure-isolation-{Guid.NewGuid():N}");
+        var testRoot = Path.Combine(Path.GetTempPath(), $"stream-dispatch-happy-path-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
         {
@@ -436,20 +506,69 @@ public class CapturedWorkerStreamTests
             await File.WriteAllTextAsync(workflowFile, JsonSerializer.Serialize(definition), TestContext.Current.CancellationToken);
             await File.WriteAllTextAsync(bindingsFile, JsonSerializer.Serialize(bindings), TestContext.Current.CancellationToken);
 
+            // #1525 F8: was cts.CancelAfter(1500ms) -- a cold `powershell -NoProfile` start on a
+            // loaded box regularly exceeds 1.5s, which would kill the child before it ever wrote the
+            // marker line, failing this test for a reason that has nothing to do with cancellation
+            // persistence. Wait on the marker instead: poll the execution directory this run allocates
+            // until its (now eagerly-created, #1525) .stdout.log actually contains the pre-cancel line,
+            // then cancel. Bounded so a genuine regression still fails the test instead of hanging it.
             using var cts = new CancellationTokenSource();
-            cts.CancelAfter(TimeSpan.FromMilliseconds(1500));
-
             var runOptions = new RunOptions(workflowFile, bindingsFile, roomDirectory);
+            var runTask = RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: cts.Token);
+
+            var artifactsDir = Path.Combine(roomDirectory, "artifacts");
+            var markerDeadline = DateTime.UtcNow.AddSeconds(20);
+            string? stdoutFileWithMarker = null;
+            while (DateTime.UtcNow < markerDeadline && stdoutFileWithMarker is null)
+            {
+                if (Directory.Exists(artifactsDir))
+                {
+                    foreach (var execDir in Directory.GetDirectories(artifactsDir, "execution_*"))
+                    {
+                        var candidate = Path.Combine(execDir, ExecutionStreamLogger.StdoutLogFileName);
+                        if (File.Exists(candidate))
+                        {
+                            string pollContent;
+                            try
+                            {
+                                pollContent = File.ReadAllText(candidate);
+                            }
+                            catch (IOException)
+                            {
+                                continue; // writer holds the handle mid-flush; try again next poll
+                            }
+
+                            if (pollContent.Contains("pre-cancel output line"))
+                            {
+                                stdoutFileWithMarker = candidate;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (stdoutFileWithMarker is null)
+                {
+                    // Poll interval inside a real-condition loop bounded by markerDeadline above
+                    // (20s), not a fixed sleep standing in for synchronization -- the loop exits the
+                    // instant the marker text appears, so 50ms only bounds how late the test notices.
+                    // wait-ok: poll interval, not a synchronization sleep -- see markerDeadline above
+                    await Task.Delay(50, TestContext.Current.CancellationToken);
+                }
+            }
+
+            Assert.NotNull(stdoutFileWithMarker); // the marker never arrived -- nothing to cancel mid-stream
+            cts.Cancel();
+
             try
             {
-                await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: cts.Token);
+                await runTask;
             }
             catch (OperationCanceledException)
             {
                 // Expected cancellation
             }
 
-            var artifactsDir = Path.Combine(roomDirectory, "artifacts");
             Assert.True(Directory.Exists(artifactsDir));
             var execDirs = Directory.GetDirectories(artifactsDir, "execution_*");
             Assert.NotEmpty(execDirs);
@@ -465,27 +584,50 @@ public class CapturedWorkerStreamTests
         }
     }
 
+    /// <summary>
+    /// #1525 F6: the prior version of this test ("...SucceedsWithDeleteShare") opened the reader with
+    /// <c>FileAccess.Read</c> and the writer per-chunk with <c>FileAccess.Write</c> -- neither side
+    /// requests <c>FILE_SHARE_DELETE</c>'s counterpart (delete access), so it passed whether or not the
+    /// <c>FileShare.Delete</c> flag was present on either open; it never exercised the flag at all.
+    /// <para>
+    /// What <c>FileShare.Delete</c> on the READER's open (<c>RoomDetailTool.cs</c>'s own share mode)
+    /// actually buys: <see cref="ExecutionStreamLogger"/>'s 8 MiB rollover renames <c>.stdout.log</c>
+    /// out from under a reader that may have it open for tailing (<c>RetryingFileMove.Move</c> inside
+    /// <c>AppendChunk</c>). On Windows, a rename is a delete-class operation, and it only succeeds
+    /// against a file another process has open if THAT process's open explicitly allowed delete
+    /// sharing. This test exercises that directly, with the negative control the original lacked:
+    /// the same move against a reader that did NOT request delete sharing must fail, proving the flag
+    /// is what discriminates rather than some incidental race.
+    /// </para>
+    /// </summary>
     [Fact]
-    public void ConcurrentRead_WhileWriterHoldsFile_SucceedsWithDeleteShare()
+    public void RolloverMove_WhileReaderHoldsFileOpen_SucceedsOnlyWhenReaderSharesDelete()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), $"stream-concurrent-read-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
         try
         {
-            var logger = new ExecutionStreamLogger(tempDir);
-            logger.AppendStdout("initial line\n"u8.ToArray());
-
             var stdoutPath = Path.Combine(tempDir, ExecutionStreamLogger.StdoutLogFileName);
+            File.WriteAllText(stdoutPath, "initial line\n");
+            var movedPath = Path.Combine(tempDir, ExecutionStreamLogger.StdoutRolloverFileName);
 
-            // Open reader with the FileShare.ReadWrite | FileShare.Delete mode that RoomDetailTool uses
+            // Positive arm: reader opens with the same share mode RoomDetailTool.cs uses.
             using (var readerStream = new FileStream(stdoutPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
-                // Appending while reader has the stream open should succeed
-                logger.AppendStdout("second line\n"u8.ToArray());
+                RetryingFileMove.Move(stdoutPath, movedPath, overwrite: true);
+                Assert.True(File.Exists(movedPath));
+                Assert.False(File.Exists(stdoutPath));
 
                 using var sr = new StreamReader(readerStream);
-                var text = sr.ReadToEnd();
-                Assert.Contains("initial line", text);
+                Assert.Contains("initial line", sr.ReadToEnd());
+            }
+
+            // Negative control: without FileShare.Delete on the reader, the same move must fail --
+            // this is what makes the positive arm above a real assertion about the flag, not a race.
+            File.Move(movedPath, stdoutPath);
+            using (var readerStream = new FileStream(stdoutPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                Assert.ThrowsAny<IOException>(() => File.Move(stdoutPath, movedPath));
             }
         }
         finally
