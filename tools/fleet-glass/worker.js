@@ -5,18 +5,27 @@
  *  - POST /push/<PUSH_TOKEN>    : the operator's machine pushes the latest fleet snapshot (JSON,
  *    from the fleet_status derivation). Outbound-only from the machine; this Worker never connects
  *    back to it.
+ *  - POST /heartbeat/<PUSH_TOKEN> : the operator's machine pings hourly, independent of the
+ *    change-gated snapshot above (#1486) -- see pusher.py's cadence comment for the write-budget
+ *    arithmetic. Body is ignored; the stored timestamp is this Worker's own receipt time, so it
+ *    carries no dependency on the pusher host's clock. Lets a reader tell "fleet is quiet" (snapshot
+ *    old, heartbeat fresh) apart from "pusher is dead" (both old) -- see fleet_status below.
  *  - POST /deliver/<PUSH_TOKEN> : the operator's machine pushes deliverable(s) -- a terminal room's
  *    declared output artifact(s) plus its verdict summary -- for the inbox surface (#1413). Body is
  *    `{"items": [...]}`; see `handleDeliver` for the item shape.
  *  - POST /mcp/<READ_SEGMENT>   : a minimal stateless MCP server (Streamable HTTP, JSON-RPC 2.0)
- *    exposing three read-only tools: `fleet_status` (the last pushed snapshot), `deliverables_list`
- *    (inbox index, newest-first, optionally filtered by room), and `deliverable_read` (one item's
- *    full content). Read auth is the unguessable URL segment -- same posture as the operator's
- *    private ntfy topics.
+ *    exposing three read-only tools: `fleet_status` (the last pushed snapshot, with `heartbeat_at`
+ *    merged in from the separate key below), `deliverables_list` (inbox index, newest-first,
+ *    optionally filtered by room), and `deliverable_read` (one item's full content). Read auth is
+ *    the unguessable URL segment -- same posture as the operator's private ntfy topics.
  *
  * Storage, all in one KV namespace:
  *  - "snapshot"          : the fleet snapshot, verbatim JSON, carrying pushed_at so consumers can
  *                          render honest staleness; absent data renders as absent, never fabricated.
+ *  - "heartbeat_at"      : bare ISO-8601 string, this Worker's receipt time of the last /heartbeat
+ *                          POST. Deliberately NOT part of the "snapshot" value or its hash -- a
+ *                          heartbeat must never count as a snapshot content change and trigger the
+ *                          change-gate (#1457) to push early.
  *  - "inbox:index"       : JSON array of deliverable METADATA (no content), newest-first, capped at
  *                          INBOX_CAP entries -- what deliverables_list returns.
  *  - "inbox:item:<id>"   : one deliverable's full content (or a withheld stub), keyed by the id the
@@ -29,7 +38,7 @@ const TOOLS = [
   {
     name: "fleet_status",
     description:
-      "Read-only snapshot of room statuses across the operator's baton fleet, as last pushed by the fleet machine. Includes pushed_at for staleness.",
+      "Read-only snapshot of room statuses across the operator's baton fleet, as last pushed by the fleet machine. Includes pushed_at for snapshot staleness and heartbeat_at for pusher liveness -- the two are independent (#1486): a quiet fleet lets pushed_at go stale on purpose, so heartbeat_at is what tells that apart from a dead pusher.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
   },
@@ -160,10 +169,14 @@ async function handleMcp(request, env) {
     const name = params?.name;
     if (name === "fleet_status") {
       const stored = await env.FLEET.get("snapshot");
+      const heartbeatAt = await env.FLEET.get("heartbeat_at");
       if (stored === null) {
-        return json(rpcResult(id, toolText(JSON.stringify({ pushed_at: null, rooms: null, note: "no snapshot pushed yet" }))));
+        return json(rpcResult(id, toolText(JSON.stringify({ pushed_at: null, rooms: null, heartbeat_at: heartbeatAt, note: "no snapshot pushed yet" }))));
       }
-      return json(rpcResult(id, toolText(stored)));
+      // heartbeat_at is merged in at read time, never written into the "snapshot" value itself --
+      // that keeps it out of pusher.py's change-gate hash (see this file's header).
+      const snapshot = { ...JSON.parse(stored), heartbeat_at: heartbeatAt };
+      return json(rpcResult(id, toolText(JSON.stringify(snapshot))));
     }
     if (name === "deliverables_list") {
       const index = await readInboxIndex(env);
@@ -221,6 +234,15 @@ export default {
       const payload = Array.isArray(parsed) ? { rooms: parsed } : parsed;
       const snapshot = JSON.stringify({ pushed_at: new Date().toISOString(), ...payload });
       await env.FLEET.put("snapshot", snapshot);
+      return new Response("ok", { status: 200 });
+    }
+
+    if (parts[0] === "heartbeat") {
+      if (!tokenMatches(parts[1], env.PUSH_TOKEN)) return new Response(null, { status: 404 });
+      if (request.method !== "POST") return new Response(null, { status: 405 });
+      // Body is ignored -- a heartbeat carries a timestamp and nothing else (#1486), and even that
+      // timestamp is this Worker's own receipt time (below), not anything read from the request.
+      await env.FLEET.put("heartbeat_at", new Date().toISOString());
       return new Response("ok", { status: 200 });
     }
 

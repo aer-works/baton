@@ -22,6 +22,7 @@ pusher.config.example.json and copy it):
       "dll": "<path to Baton.Cli.dll (baton mcp)>",
       "push_url": "https://.../push/<PUSH_TOKEN>",
       "deliver_url": "https://.../deliver/<PUSH_TOKEN>",   # optional; derived from push_url if absent
+      "heartbeat_url": "https://.../heartbeat/<PUSH_TOKEN>", # optional; derived from push_url if absent
       "interval_seconds": 25,
       "roots": [],
       "max_age_days": 3,
@@ -30,8 +31,24 @@ pusher.config.example.json and copy it):
       "push_state_file": "push-state.local.json",            # optional; defaults next to this script
       "underhood_dirs": [], "underhood_logs": []
     }
-push_url (and deliver_url, if set) embed the push token -- the config file is a local secret; never
-print or commit it.
+push_url (and deliver_url/heartbeat_url, if set) embed the push token -- the config file is a local
+secret; never print or commit it.
+
+THE HEARTBEAT HALF (#1486)
+-------------------------------------------
+The change-gate above makes pushed_at legitimately stale on a quiet fleet, and nothing distinguishes
+that from a dead pusher. Independent of the gated snapshot, this loop also POSTs a bare timestamp
+ping to worker.js's /heartbeat route at a coarse fixed cadence -- hourly, tracked in push_state_file
+under HEARTBEAT_STATE_KEY. Arithmetic: 24 writes/day at hourly cadence, against the same 1,000/day KV
+free-tier cap the change-gate protects; combined with the change-gated snapshot writes (worst case
+one per interval_seconds when the fleet is constantly changing) this adds a small, fixed floor that
+never scales with polling frequency. Same save-only-after-success discipline as
+push_snapshot_and_record: POST first, record the timestamp only afterwards, so a failed heartbeat
+retries next cycle instead of silently going stale. Heartbeat failures are logged and never raise
+into the snapshot path -- see main()'s heartbeat try/except, which runs in its own block after the
+snapshot has already been sent. A heartbeat body carries a timestamp and nothing else -- no room or
+deliverable content -- so it is not a deliverable and does not pass through the secret gate below;
+there is nothing in it that gate exists to catch.
 
 THE DELIVERABLES HALF (#1413 half 2)
 -------------------------------------
@@ -298,6 +315,41 @@ def derive_deliver_url(cfg: dict) -> str | None:
     return None
 
 
+HEARTBEAT_STATE_KEY = "__last_heartbeat_ts__"
+HEARTBEAT_INTERVAL_SECONDS = 3600  # hourly: 24 writes/day + the change-gated snapshot writes (worst
+                                    # case one per interval_seconds) against the 1,000/day KV
+                                    # free-tier cap the change-gate (#1457) protects -- see the
+                                    # module docstring's "THE HEARTBEAT HALF" section.
+
+
+def derive_heartbeat_url(cfg: dict) -> str | None:
+    if cfg.get("heartbeat_url"):
+        return cfg["heartbeat_url"]
+    push_url = cfg.get("push_url", "")
+    if "/push/" in push_url:
+        return push_url.replace("/push/", "/heartbeat/", 1)
+    return None
+
+
+def should_send_heartbeat(state: dict, now_ts: float, interval: float = HEARTBEAT_INTERVAL_SECONDS) -> bool:
+    """True once at least `interval` seconds have elapsed since the last recorded heartbeat.
+    A missing/unreadable persisted timestamp always sends -- same fail-toward-one-extra-write
+    posture as should_push_snapshot."""
+    last = state.get(HEARTBEAT_STATE_KEY)
+    if not isinstance(last, (int, float)):
+        return True
+    return (now_ts - last) >= interval
+
+
+def send_heartbeat_and_record(post, state: dict, state_path, now_ts: float) -> None:
+    """POST first, record only afterwards -- same ordering discipline as push_snapshot_and_record
+    (a raising `post` must leave `state` untouched, so a failed heartbeat retries next cycle
+    instead of going silent)."""
+    post()
+    state[HEARTBEAT_STATE_KEY] = now_ts
+    save_push_state(state_path, state)
+
+
 # ---------------------------------------------------------------------------------------------
 # Deliverables: terminal-room scan, secret gate, dedupe (#1413 half 2)
 # ---------------------------------------------------------------------------------------------
@@ -524,6 +576,7 @@ def main() -> None:
     patterns_path = Path(cfg["secret_patterns_file"]).expanduser() if cfg.get("secret_patterns_file") else DEFAULT_SECRET_PATTERNS_FILE
     state_path = Path(cfg["push_state_file"]).expanduser() if cfg.get("push_state_file") else DEFAULT_PUSH_STATE_FILE
     deliver_url = derive_deliver_url(cfg)
+    heartbeat_url = derive_heartbeat_url(cfg)
     skip_log_every = max(1, round(600 / interval)) if interval > 0 else 1
     skip_streak = 0
 
@@ -550,6 +603,22 @@ def main() -> None:
                     log(f"unchanged, skipped ({skip_streak} in a row)")
         except Exception as ex:  # noqa: BLE001 — loop must survive anything
             log(f"ERROR (snapshot) {type(ex).__name__}: {ex}")
+
+        # Own try/except, runs AFTER the snapshot has already been sent above -- a slow or failing
+        # heartbeat POST must never block or delay the snapshot path (#1486).
+        try:
+            if heartbeat_url is None:
+                pass  # no heartbeat_url configured and none derivable from push_url — skip quietly
+            else:
+                hb_state = load_push_state(state_path)
+                now_ts = time.time()
+                if should_send_heartbeat(hb_state, now_ts):
+                    send_heartbeat_and_record(
+                        lambda: post_json(heartbeat_url, "{}"),
+                        hb_state, state_path, now_ts)
+                    log("heartbeat sent")
+        except Exception as ex:  # noqa: BLE001 — loop must survive anything
+            log(f"ERROR (heartbeat) {type(ex).__name__}: {ex}")
 
         try:
             if deliver_url is None:
@@ -681,6 +750,42 @@ def _selftest() -> int:
           derive_deliver_url({"push_url": "https://h/push/TOK", "deliver_url": "https://other/x"}) == "https://other/x")
     check("deliver_url is None when it cannot be derived or configured",
           derive_deliver_url({"push_url": "https://h/nope/TOK"}) is None)
+
+    # -- #1486: heartbeat --
+    check("heartbeat_url derives from push_url by swapping the path segment",
+          derive_heartbeat_url({"push_url": "https://h/push/TOK"}) == "https://h/heartbeat/TOK")
+    check("heartbeat_url respects an explicit override",
+          derive_heartbeat_url({"push_url": "https://h/push/TOK", "heartbeat_url": "https://other/x"}) == "https://other/x")
+    check("heartbeat_url is None when it cannot be derived or configured",
+          derive_heartbeat_url({"push_url": "https://h/nope/TOK"}) is None)
+
+    check("a missing persisted heartbeat timestamp always sends (fail toward one extra write)",
+          should_send_heartbeat({}, 10_000.0) is True)
+    check("cadence: no beat before the hour is up",
+          should_send_heartbeat({HEARTBEAT_STATE_KEY: 10_000.0}, 10_000.0 + HEARTBEAT_INTERVAL_SECONDS - 1) is False)
+    check("cadence: a beat is due once the interval has fully elapsed",
+          should_send_heartbeat({HEARTBEAT_STATE_KEY: 10_000.0}, 10_000.0 + HEARTBEAT_INTERVAL_SECONDS) is True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sp = Path(tmp) / "push-state.json"
+
+        def _hb_boom():
+            raise RuntimeError("heartbeat post failed")
+
+        hb_state = {SNAPSHOT_HASH_KEY: "unrelated-untouched-hash"}
+        try:
+            send_heartbeat_and_record(_hb_boom, hb_state, sp, 10_000.0)
+        except RuntimeError:
+            pass
+        check("a FAILED heartbeat post persists nothing (no state file written)", not sp.exists())
+        check("a FAILED heartbeat post leaves the in-memory state dict untouched",
+              HEARTBEAT_STATE_KEY not in hb_state and hb_state[SNAPSHOT_HASH_KEY] == "unrelated-untouched-hash")
+
+        send_heartbeat_and_record(lambda: None, hb_state, sp, 10_000.0)
+        check("a successful heartbeat records the timestamp for the next cycle's cadence gate",
+              load_push_state(sp).get(HEARTBEAT_STATE_KEY) == 10_000.0)
+        check("a successful heartbeat leaves the unrelated snapshot-hash key alone (snapshot path unaffected)",
+              load_push_state(sp).get(SNAPSHOT_HASH_KEY) == "unrelated-untouched-hash")
 
     # -- #1457: snapshot change-gate (KV daily quota) --
     wrapped_a = {"rooms": [{"name": "room-a", "state": "Running"}], "underhood": []}
