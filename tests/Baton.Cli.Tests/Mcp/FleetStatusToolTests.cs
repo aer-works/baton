@@ -377,6 +377,248 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Equal("room-act", singleRoom.Name);
     }
 
+    /// <summary>
+    /// #1503: the Running step's role/adapter/model/effort/timeout pass through from the room's real
+    /// <c>bindings.json</c>, keyed by the same worker name <c>FlowEvent.ExecutionRequestAccepted</c>
+    /// names for the Running step's execution.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_RunningStepWithBindings_ReportsRoleAdapterModelEffortAndTimeoutFromBindingsJson()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "bound-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-bound"), "architect", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("bound-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("architect", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Draft a plan.",
+                TimeSpan.FromMinutes(5),
+                Model: "claude-opus-4",
+                Effort: "high"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-bound-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("bound-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromMinutes(5),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(new CoreEvent.ExecutionStarted(execId, Pid: 6001), TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        Assert.Equal("architect", singleRoom.Role);
+        Assert.Equal("claude", singleRoom.Adapter);
+        Assert.Equal("claude-opus-4", singleRoom.Model);
+        Assert.Equal("high", singleRoom.Effort);
+        Assert.Equal((long)TimeSpan.FromMinutes(5).TotalMilliseconds, singleRoom.TimeoutMs);
+    }
+
+    /// <summary>
+    /// #1503 fail-open arm: a room with no <c>bindings.json</c> at all (pre-#153, or simply never
+    /// written for this room) must still render its row -- role/adapter/model/effort/timeout are
+    /// just absent, never a thrown error or a missing room.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_RunningStepWithNoBindingsFile_OmitsBindingFieldsButStillRendersRow()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "unbound-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-unbound"), "agent-worker", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("unbound-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-unbound-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("unbound-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        Assert.Null(singleRoom.Role);
+        Assert.Null(singleRoom.Adapter);
+        Assert.Null(singleRoom.Model);
+        Assert.Null(singleRoom.Effort);
+        Assert.Null(singleRoom.TimeoutMs);
+        AssertBindingFieldsAbsentFromWire(singleRoom);
+    }
+
+    /// <summary>
+    /// Wire-level "absent, not emitted null" for all five binding fields — object-level
+    /// <c>Assert.Null</c> cannot distinguish an omitted key from a serialized <c>"field": null</c>
+    /// round-tripped back, which is exactly what a dropped <c>JsonIgnore(WhenWritingNull)</c> would
+    /// ship silently (PR #1504 review finding A).
+    /// </summary>
+    private static void AssertBindingFieldsAbsentFromWire(FleetRoomStatusView room)
+    {
+        var wire = JsonSerializer.Serialize(room);
+        Assert.DoesNotContain("\"role\"", wire);
+        Assert.DoesNotContain("\"adapter\"", wire);
+        Assert.DoesNotContain("\"model\"", wire);
+        Assert.DoesNotContain("\"effort\"", wire);
+        Assert.DoesNotContain("\"timeoutMs\"", wire);
+    }
+
+    /// <summary>
+    /// #1503 fail-open arm, opposite corruption mode: a <c>bindings.json</c> that exists but is not
+    /// valid JSON must degrade the same way a missing file does -- the room row still renders with
+    /// everything else intact, only the binding fields absent.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_RunningStepWithCorruptBindingsFile_OmitsBindingFieldsButStillRendersRow()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "corrupt-bindings-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-corrupt"), "agent-worker", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("corrupt-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        await File.WriteAllTextAsync(
+            BatonPaths.RoomBindingsFile(room), "{ not valid json", TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-corrupt-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("corrupt-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        Assert.Null(singleRoom.Error);
+        Assert.Null(singleRoom.Role);
+        Assert.Null(singleRoom.Adapter);
+        Assert.Null(singleRoom.Model);
+        Assert.Null(singleRoom.Effort);
+        Assert.Null(singleRoom.TimeoutMs);
+        AssertBindingFieldsAbsentFromWire(singleRoom);
+    }
+
+    /// <summary>
+    /// #1503 fail-open arm three (PR #1504 review finding B): a VALID <c>bindings.json</c> whose
+    /// dictionary simply lacks the Running step's worker role degrades identically to a missing
+    /// file — display metadata fails open where <c>ResumeCommand</c> treats the same situation as a
+    /// hard error, because a fleet row without chips beats a fleet call that throws.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_ValidBindingsWithoutTheRunningRolesKey_OmitsBindingFieldsButStillRendersRow()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "role-missing-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-role-missing"), "agent-worker", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("role-missing-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["some-other-role"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("some-other-role", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Do something else.",
+                TimeSpan.FromMinutes(5),
+                Model: "claude-opus-4",
+                Effort: "high"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-role-missing-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("role-missing-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        Assert.Null(singleRoom.Error);
+        AssertBindingFieldsAbsentFromWire(singleRoom);
+    }
+
     [Fact]
     public async Task MalformedRoom_ReturnsErrorEntryWithoutFailingWholeResponse()
     {
