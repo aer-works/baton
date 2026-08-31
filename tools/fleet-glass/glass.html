@@ -1,15 +1,28 @@
 <!--
   Fleet Glass — the operator's primary observability surface (Baton Spike 1;
-  provenance in worker.js's header).
+  provenance in worker.js's header). #1505 (glass v2 core, epic #1502) merged the deliverables
+  inbox into this same artifact as a second tab -- ONE artifact URL identity now, never two
+  bookmarks/connector prompts for one operator (menu item #45). inbox.html is deleted; this file's
+  own name is the artifact's filename identity and does not change.
 
   This is a Claude.ai ARTIFACT, not a plain static page: it declares the `mcp` capability and
-  watches the `fleet_status` tool on a custom MCP connector named "baton" (Settings -> Connectors
-  -> Add custom -> the Worker's /mcp/<READ_SEGMENT> URL from tools/fleet-glass/secrets.local.json).
-  Data flows fleet machine -> pusher.py -> Worker (worker.js) -> KV -> this page, on a 30s poll,
-  with the viewer's own connector credentials. Read-only: no write verbs anywhere in this file.
+  watches the `fleet_status` / `deliverables_list` / `deliverable_read` tools on a custom MCP
+  connector named "baton" (Settings -> Connectors -> Add custom -> the Worker's
+  /mcp/<READ_SEGMENT> URL from tools/fleet-glass/secrets.local.json). Data flows fleet machine ->
+  pusher.py -> Worker (worker.js) -> KV -> this page, on a 30s poll, with the viewer's own
+  connector credentials. Read-only: no write verbs execute anywhere in this file -- the two
+  clipboard buttons per room COPY a CLI verb string for the operator to paste into their own
+  Claude Code mobile session; nothing here calls baton or the engine directly (spec/baton.md §10:
+  origination and arrest both stay orchestrator-only from this page).
 
-  Each room lane links to that room's deliverables in inbox.html (same MCP connector, same auth) --
-  see inbox.html's header for the newest-first / tap-to-read contract.
+  role/adapter/model/effort/timeoutMs (engine PR #1504, epic #1502 item #5/#6/#7) are read
+  ABSENT-SAFE throughout: every reference below is behind a truthiness/null check, so this page
+  renders identically whether or not #1504 has merged -- before merge those five fields are simply
+  never present on any room object, same as any other optional fleet_status field.
+
+  Timeline entries (menu item #1/#2) are content-free by construction (pusher.py's
+  `extract_timeline`, event type + timestamp only, no stdout) and only exist for rooms pusher.py
+  judged NON-TERMINAL at push time -- a terminal room's lane will not show a Timeline section here.
 -->
 <title>Fleet Glass</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -37,18 +50,33 @@
   --chip-ok:#1D2E1E; --chip-run:#1A2735; --chip-warn:#332818; --chip-bad:#331D1B; --chip-idle:#242830;
 }
 body{background:var(--paper); color:var(--ink); font:15px/1.55 'Public Sans',system-ui,sans-serif; margin:0; padding:20px 16px 60px;}
-main{max-width:34rem; margin:0 auto;}
+main{max-width:36rem; margin:0 auto;}
 h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline;}
 h1 .fresh{font:400 .72rem var(--mono); color:var(--ink-soft);}
-h1 .navlink{font:500 .74rem 'Public Sans'; color:var(--accent); text-decoration:none;}
 h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.08em;}
+.tabs{display:flex; gap:.35rem; margin:.7rem 0 .3rem;}
+.tabbtn{font:600 .74rem 'Public Sans'; padding:.35em 1em; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--ink-soft); cursor:pointer;}
+.tabbtn.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+.tabpanel{display:none;}
+.tabpanel.active{display:block;}
+.stalenote{font-size:.74rem; color:var(--ink-soft); margin:.2rem 0 .4rem;}
 .lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:.45rem 0; background:var(--card);}
 .lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
 .lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end;}
 .lane .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
 .lane .deliverables{font-size:.74rem; margin-top:.3rem;}
-.lane .deliverables a{color:var(--accent); text-decoration:none;}
+.lane .deliverables a{color:var(--accent); text-decoration:none; cursor:pointer;}
+.lane details{margin:.4rem 0 0; font-size:.74rem;}
+.lane details summary{font:600 .72rem 'Public Sans'; color:var(--ink-soft);}
+.tl-entry{display:flex; justify-content:space-between; gap:.5rem; padding:.15rem 0; border-top:1px solid var(--line); font-size:.7rem;}
+.tl-entry .tl-type{color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.tl-entry .tl-age{color:var(--ink-soft); white-space:nowrap;}
+.verbs{margin-top:.35rem; display:flex; gap:.4rem; flex-wrap:wrap; align-items:center;}
+.copybtn{font:500 .68rem 'Public Sans'; padding:.25em .65em; border-radius:8px; border:1px solid var(--line); background:var(--paper); color:var(--ink-soft); cursor:pointer;}
+.copybtn:active{background:var(--chip-idle);}
+.revealbox{font:400 .68rem var(--mono); padding:.22em .4em; border-radius:6px; border:1px solid var(--line); background:var(--paper); color:var(--ink); width:12rem;}
 .chip{font:600 .62rem/1 'Public Sans'; letter-spacing:.05em; padding:.28em .6em; border-radius:999px; white-space:nowrap;}
 .c-run{background:var(--chip-run); color:var(--run);}
 .c-ok{background:var(--chip-ok); color:var(--ok);}
@@ -60,14 +88,38 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 details{margin:.6rem 0;}
 summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .mono{font-family:var(--mono); font-size:.9em;}
+.filter{font-size:.8rem; color:var(--ink-soft); margin:.4rem 0 1rem;}
+.filter a{color:var(--accent); text-decoration:none; cursor:pointer;}
+.item{border:1px solid var(--line); border-radius:12px; padding:.6rem .8rem; margin:.45rem 0; background:var(--card); cursor:pointer;}
+.item .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
+.item .title{font:500 .88rem 'Public Sans'; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.item .meta{font:400 .72rem var(--mono); color:var(--ink-soft); margin-top:.25rem;}
+.back{display:inline-block; margin-bottom:.8rem; font:500 .8rem 'Public Sans'; color:var(--accent); text-decoration:none; cursor:pointer;}
+.doc{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1rem 1.2rem;}
+.doc h1,.doc h2,.doc h3{font-family:'Sora',sans-serif; line-height:1.25;}
+.doc pre{background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:.7rem .9rem; overflow-x:auto;}
+.doc code{font-family:var(--mono); font-size:.86em;}
+.doc a{color:var(--accent);}
+.empty{color:var(--ink-soft); font-size:.85rem;}
 footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:.6rem;}
 </style>
 <main>
   <h1>Fleet Glass <span class="fresh" id="fresh">connecting…</span></h1>
-  <div><a class="navlink" href="inbox.html">Deliverables inbox &rarr;</a></div>
+  <div class="tabs">
+    <button class="tabbtn" id="tab-btn-fleet" data-tab="fleet">Fleet</button>
+    <button class="tabbtn" id="tab-btn-inbox" data-tab="inbox">Deliverables</button>
+  </div>
   <div id="banner"></div>
-  <div id="content"></div>
-  <footer>Spike 1 · watches <span class="mono">baton / fleet_status</span> every 30s · push-fed mailbox, read-only, no write verbs · rulings happen in chat</footer>
+  <div class="tabpanel" id="tab-fleet">
+    <div class="stalenote" id="stalenote"></div>
+    <div id="content"></div>
+  </div>
+  <div class="tabpanel" id="tab-inbox">
+    <div class="filter" id="filter"></div>
+    <div id="inboxbanner"></div>
+    <div id="inboxcontent"></div>
+  </div>
+  <footer>Spike 1 · watches <span class="mono">baton / fleet_status</span> every 30s · push-fed mailbox, read-only, no write verbs · copy buttons only copy text to the clipboard · rulings happen in chat</footer>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -101,33 +153,159 @@ function newestStepTime(room){
   }
   return newest;
 }
-function laneHtml(room){
+
+// -----------------------------------------------------------------------------------------------
+// #1505 item 1: binding fields (role/adapter/model/effort, engine PR #1504) + client-derived
+// timebox remaining (timeoutMs - (now - the Running step's own timestamp), both absent-safe).
+// -----------------------------------------------------------------------------------------------
+function bindingLineHtml(room){
+  const bits = [];
+  if(room.role) bits.push(esc(room.role));
+  if(room.adapter) bits.push(esc(room.adapter));
+  if(room.model) bits.push(esc(room.model));
+  if(room.effort) bits.push(esc(room.effort));
+  return bits.length ? `<div class="ev mono">${bits.join(" · ")}</div>` : "";
+}
+function timeboxChip(room, running){
+  if(!running || room.timeoutMs == null || !running.timestamp) return null;
+  const elapsedMs = Date.now() - Date.parse(running.timestamp);
+  if(!isFinite(elapsedMs)) return null;
+  const remainingMs = room.timeoutMs - elapsedMs;
+  const mins = Math.round(Math.abs(remainingMs)/60000);
+  return remainingMs >= 0 ? [`⏳ ${mins}m left`, "c-idle"] : [`overdue ${mins}m`, "c-bad"];
+}
+
+// -----------------------------------------------------------------------------------------------
+// #1505 item 2: honest failure rendering. `try` is corrected-invocation text (a pre-ledger
+// refusal's suggested command, spec/baton.md §3), NOT a retry-attempt counter -- the epic
+// brainstorm's "try counter" framing does not match what FleetStatusTool actually emits, and this
+// page does not pretend otherwise (see report-1505.md for the full finding). `liveness: "dead"`
+// becomes an explicit ZOMBIE chip instead of inline text. There is no four-value failure-taxonomy
+// field (Retryable/Permanent/ExhaustedUntil/ToolDenied) anywhere in fleet_status's payload today --
+// `error` is a plain string, so this page renders that string honestly rather than inventing
+// classification colouring the payload cannot support (same ratified principle as #41's removal
+// below: wrong-and-confident is worse than absent).
+// -----------------------------------------------------------------------------------------------
+function chipsHtml(room, running){
   const st = room.state;
-  const chip = st === "Running" ? ["RUNNING","c-run"]
+  const chips = [];
+  chips.push(st === "Running" ? ["RUNNING","c-run"]
     : st === "Failed" && room.rejected ? ["REJECTED","c-warn"]
     : st === "Succeeded" ? ["SUCCEEDED","c-ok"]
     : st === "Failed" ? ["FAILED","c-bad"]
-    : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"];
+    : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"]);
+  if(running && running.liveness === "dead") chips.push(["ZOMBIE","c-bad"]);
+  const tb = timeboxChip(room, running);
+  if(tb) chips.push(tb);
+  return chips.map(([label,cls]) => `<span class="chip ${cls}">${esc(label)}</span>`).join("");
+}
+
+// -----------------------------------------------------------------------------------------------
+// #1505 item 3: per-room event timeline, content-free (pusher.py's extract_timeline keeps only
+// type+timestamp), keyed by room PATH (never name -- fleet_status dedupes by path, and a
+// name-keyed join could hand one room's timeline to a differently-rooted same-named room). Only
+// present for rooms pusher.py judged non-terminal at push time.
+// -----------------------------------------------------------------------------------------------
+function timelineHtml(room, timelines){
+  const entries = timelines && room.path ? timelines[room.path] : null;
+  if(!Array.isArray(entries) || !entries.length) return "";
+  const rows = entries.map(e => {
+    const a = age(e.timestamp);
+    return `<div class="tl-entry"><span class="tl-type mono">${esc(e.type)}</span><span class="tl-age">${a ? a + " ago" : ""}</span></div>`;
+  }).join("");
+  return `<details><summary>Timeline · ${entries.length}</summary>${rows}</details>`;
+}
+
+// -----------------------------------------------------------------------------------------------
+// #1505 item 6: copy-the-verb. Never executes anything -- copies a CLI verb string to the
+// clipboard for the operator to paste into their own Claude Code mobile session (spec/baton.md
+// §10: origination and arrest both stay orchestrator-only). `redispatch` needs only the room
+// path; `cancel`'s actual parser (CancelOptionsParser.cs) hard-requires --execution and
+// --bindings, so the copied command only appears once a Running step's execution id is known,
+// and always carries the full working invocation rather than a bare path that would fail if
+// pasted verbatim -- see report-1505.md's labeled deviation note.
+// -----------------------------------------------------------------------------------------------
+function bindingsPathFor(roomPath){
+  const sep = roomPath.includes("\\") && !roomPath.includes("/") ? "\\" : "/";
+  return roomPath.replace(/[\\/]+$/, "") + sep + "bindings.json";
+}
+function copyButtonHtml(verb, label){
+  return `<button class="copybtn" data-verb="${esc(verb)}">${esc(label)}</button><input class="revealbox mono" readonly hidden>`;
+}
+function copyButtonsHtml(room, running){
+  if(!room.path) return "";
+  const buttons = [copyButtonHtml(`baton redispatch "${room.path}"`, "copy redispatch")];
+  if(room.state === "Running" && running && running.execution){
+    const cancelVerb = `baton cancel "${room.path}" --execution ${running.execution} --bindings "${bindingsPathFor(room.path)}"`;
+    buttons.push(copyButtonHtml(cancelVerb, "copy cancel"));
+  }
+  return `<div class="verbs">${buttons.join("")}</div>`;
+}
+async function copyToClipboard(text){
+  try {
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch(e) { /* fall through to the execCommand fallback */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed"; ta.style.top = "0"; ta.style.left = "0"; ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch(e) {
+    return false;
+  }
+}
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest(".copybtn");
+  if(!btn) return;
+  const verb = btn.dataset.verb;
+  const ok = await copyToClipboard(verb);
+  const reveal = btn.nextElementSibling;
+  if(ok){
+    const orig = btn.textContent;
+    btn.textContent = "copied";
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+    if(reveal) reveal.hidden = true;
+  } else if(reveal){
+    // Sandboxed artifact contexts can deny both clipboard paths -- degrade to a tap-to-reveal,
+    // select-all text field rather than silently doing nothing.
+    reveal.hidden = false;
+    reveal.value = verb;
+    reveal.focus(); reveal.select();
+  }
+});
+
+function laneHtml(room, timelines){
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   const bits = [];
   if(running){
     bits.push("step: " + esc(running.id));
-    if(running.liveness === "dead") bits.push("⚠ dead engine");
-    else if(running.liveness === "unknown") bits.push("engine: unknown");
+    if(running.liveness === "unknown") bits.push("engine: unknown");
   }
   else if(lastStep) bits.push(esc(lastStep.id) + " " + esc(lastStep.state));
   const u = lastStep && (lastStep.usage || lastStep.linkedFromUsage);
   const tk = tokens(u); if(tk) bits.push(tk);
   const wc = u && dur(u.wallClockMs); if(wc) bits.push(wc);
   const err = room.error ? `<div class="ev" title="${esc(room.error)}">⛔ ${esc(room.error.slice(0,110))}</div>` : "";
+  const tryLine = room.try ? `<div class="ev" title="${esc(room.try)}">↻ suggested: ${esc(room.try.slice(0,110))}</div>` : "";
   const t = newestStepTime(room);
   const a = age(t);
-  const ageLine = a ? `<div class="age">last event ${a} ago${st==="Running" && t && (Date.now()-Date.parse(t)) > 15*60000 ? " ⚠" : ""}</div>` : "";
+  const ageLine = a ? `<div class="age">last event ${a} ago${room.state === "Running" && t && (Date.now()-Date.parse(t)) > 15*60000 ? " ⚠" : ""}</div>` : "";
   const deliverables = room.name
-    ? `<div class="deliverables"><a href="inbox.html?room=${encodeURIComponent(room.name)}">deliverables &rarr;</a></div>` : "";
-  return `<div class="lane"><div class="top"><span class="name">${esc(room.name)}</span><span class="chip ${chip[1]}">${chip[0]}</span></div>
-    ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${err}${ageLine}${deliverables}</div>`;
+    ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(room.name)}">deliverables &rarr;</a></div>` : "";
+  return `<div class="lane"><div class="top"><span class="name">${esc(room.name)}</span><span class="chips">${chipsHtml(room, running)}</span></div>
+    ${bindingLineHtml(room)}
+    ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${tryLine}${err}${ageLine}
+    ${timelineHtml(room, timelines)}
+    ${copyButtonsHtml(room, running)}
+    ${deliverables}</div>`;
 }
 function underhoodHtml(list){
   if(!Array.isArray(list) || !list.length) return "";
@@ -137,13 +315,12 @@ function underhoodHtml(list){
     if(w.branch) bits.push(`<span class="mono">${esc(w.branch)}</span>`);
     if(w.uncommitted) bits.push(esc(w.uncommitted));
     const commit = w.last_commit ? `<div class="ev">last commit: ${esc(w.last_commit)}${commitAge ? ` · ${esc(commitAge)} ago` : ""}</div>` : "";
-    const act = w.activity ? `<div class="age" title="${esc(w.activity)}">${esc(w.activity)}</div>` : "";
     return `<div class="lane"><div class="top"><span class="name">${esc(w.name)}</span></div>
-      <div class="ev">${bits.join(" · ")}</div>${commit}${act}</div>`;
+      <div class="ev">${bits.join(" · ")}</div>${commit}</div>`;
   }).join("");
   return `<h2>Under the hood · ${list.length}</h2>` + rows;
 }
-function render(rooms, pushedAt, underhood, heartbeatAt){
+function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount){
   const running = rooms.filter(r => r.state === "Running");
   const failed  = rooms.filter(r => r.state === "Failed");
   const done    = rooms.filter(r => r.state === "Succeeded");
@@ -151,14 +328,18 @@ function render(rooms, pushedAt, underhood, heartbeatAt){
   const byNewest = (a,b) => (newestStepTime(b)||"").localeCompare(newestStepTime(a)||"");
   running.sort(byNewest); failed.sort(byNewest); done.sort(byNewest);
   let html = underhoodHtml(underhood);
-  html += `<h2>Running · ${running.length}</h2>` + (running.map(laneHtml).join("") || `<div class="lane"><div class="ev">none</div></div>`);
-  html += `<h2>Failed · ${failed.length}</h2>` + (failed.slice(0,12).map(laneHtml).join("") || `<div class="lane"><div class="ev">none</div></div>`);
-  html += `<details><summary>Succeeded · ${done.length}</summary>${done.slice(0,40).map(laneHtml).join("")}</details>`;
-  if(other.length) html += `<details><summary>Unreadable entries · ${other.length}</summary>${other.slice(0,20).map(laneHtml).join("")}</details>`;
+  html += `<h2>Running · ${running.length}</h2>` + (running.map(r => laneHtml(r, timelines)).join("") || `<div class="lane"><div class="ev">none</div></div>`);
+  html += `<h2>Failed · ${failed.length}</h2>` + (failed.slice(0,12).map(r => laneHtml(r, timelines)).join("") || `<div class="lane"><div class="ev">none</div></div>`);
+  html += `<details><summary>Succeeded · ${done.length}</summary>${done.slice(0,40).map(r => laneHtml(r, timelines)).join("")}</details>`;
+  if(other.length) html += `<details><summary>Unreadable entries · ${other.length}</summary>${other.slice(0,20).map(r => laneHtml(r, timelines)).join("")}</details>`;
   $("content").innerHTML = html;
   $("fresh").textContent = freshLabel(pushedAt, "pushed ") || "push time unknown";
   const hb = freshLabel(heartbeatAt, "pusher alive ");
   if(hb) $("fresh").textContent += " · " + hb;
+  // #1505 landmine #43: a stale-room drop is now a visible count, never silence.
+  $("stalenote").textContent = staleHiddenCount
+    ? `${staleHiddenCount} room(s) hidden — older than the pusher's retention window`
+    : "";
 }
 // "pushed X ago" measures the SNAPSHOT (legitimately stale on a quiet fleet, #1457's change-gate);
 // "pusher alive X ago" measures the PUSHER PROCESS itself (hourly heartbeat, #1486) -- the two are
@@ -170,13 +351,148 @@ function freshLabel(iso, prefix){
 }
 function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${html}</div>` : ""; }
 
+// -----------------------------------------------------------------------------------------------
+// Deliverables inbox (#1413, merged into this artifact as a tab by #1505 item 4). Same data
+// contract as the deleted inbox.html: deliverables_list({room?}) -> {items, count},
+// deliverable_read({id}) -> full text. Markdown rendering stays DELIBERATELY MINIMAL (headings,
+// code fences, bold/italic, links, bullet lists, paragraphs) -- enough for this pipeline's own
+// report markdown, not a general CommonMark implementation. Everything is HTML-escaped before any
+// markup is applied.
+// -----------------------------------------------------------------------------------------------
+function verdictChip(v){
+  const state = v && v.state;
+  if(state === "Succeeded") return ["OK","c-ok"];
+  if(state === "Failed") return ["FAILED","c-bad"];
+  if(!state) return ["?","c-idle"];
+  return [state.toUpperCase(),"c-idle"];
+}
+function renderMarkdown(text){
+  const lines = esc(text ?? "").split("\n");
+  let html = "";
+  let inCode = false, inList = false;
+  const inline = (s) => s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/\*([^*]+)\*/g, "<i>$1</i>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, t, u) => /^https?:\/\//.test(u) ? `<a href="${u}" target="_blank" rel="noopener">${t}</a>` : m);
+  for(const raw of lines){
+    if(raw.trim().startsWith("```")){
+      html += inCode ? "</code></pre>" : "<pre><code>";
+      inCode = !inCode;
+      continue;
+    }
+    if(inCode){ html += raw + "\n"; continue; }
+    const heading = raw.match(/^(#{1,6})\s+(.*)$/);
+    if(heading){
+      if(inList){ html += "</ul>"; inList = false; }
+      const level = heading[1].length;
+      html += `<h${level}>${inline(heading[2])}</h${level}>`;
+      continue;
+    }
+    const bullet = raw.match(/^\s*[-*]\s+(.*)$/);
+    if(bullet){
+      if(!inList){ html += "<ul>"; inList = true; }
+      html += `<li>${inline(bullet[1])}</li>`;
+      continue;
+    }
+    if(inList){ html += "</ul>"; inList = false; }
+    if(raw.trim() === ""){ continue; }
+    html += `<p>${inline(raw)}</p>`;
+  }
+  if(inList) html += "</ul>";
+  if(inCode) html += "</code></pre>";
+  return html;
+}
+function itemRow(item){
+  const [label, cls] = verdictChip(item.verdict);
+  const a = age(item.pushed_at);
+  const withheld = item.withheld ? ` · <span title="${esc(item.stub_reason || "")}">withheld</span>` : "";
+  return `<div class="item" data-id="${esc(item.id)}">
+    <div class="top"><span class="title">${esc(item.title || item.artifact || item.id)}</span><span class="chip ${cls}">${label}</span></div>
+    <div class="meta">${esc(item.room)}${item.artifact ? " · " + esc(item.artifact) : ""} · ${a ? a + " ago" : "?"}${withheld}</div>
+  </div>`;
+}
+function renderInboxList(items, roomFilter){
+  $("filter").innerHTML = roomFilter
+    ? `filtered to room <b>${esc(roomFilter)}</b> · <a id="clearfilter">clear</a>`
+    : "";
+  const clear = $("clearfilter");
+  if(clear) clear.addEventListener("click", () => { inboxRoomFilter = ""; location.hash = "#inbox"; applyRoute(); });
+  $("inboxcontent").innerHTML = items.length
+    ? items.map(itemRow).join("")
+    : `<div class="empty">No deliverables ${roomFilter ? "for this room " : ""}yet.</div>`;
+  for(const el of document.querySelectorAll("#inboxcontent .item")){
+    el.addEventListener("click", () => { location.hash = "#inbox:" + encodeURIComponent(el.dataset.id); });
+  }
+}
+function renderInboxDoc(item, text){
+  const [label, cls] = verdictChip(item && item.verdict);
+  const verdict = item && item.verdict;
+  const verdictLine = verdict
+    ? `<div class="meta">${esc(verdict.state || "?")}${verdict.error ? " — " + esc(verdict.error) : ""}${verdict.try ? " (" + esc(verdict.try) + ")" : ""}</div>`
+    : "";
+  $("inboxcontent").innerHTML = `
+    <a class="back" id="inboxback">&larr; back to inbox</a>
+    <h2>${esc((item && (item.title || item.artifact)) || "")} <span class="chip ${cls}">${label}</span></h2>
+    ${verdictLine}
+    <div class="doc">${renderMarkdown(text)}</div>`;
+  $("inboxback").addEventListener("click", () => { location.hash = "#inbox"; });
+}
+
+// -----------------------------------------------------------------------------------------------
+// Tabs + hash routing. "" = Fleet; "#inbox" = inbox list; "#inbox:<id>" = one inbox item. Clicking
+// a room's "deliverables →" link sets the in-memory room filter and switches tabs client-side --
+// no navigation, since this is one page now (#1505 item 4).
+// -----------------------------------------------------------------------------------------------
+let inboxRoomFilter = new URLSearchParams(location.search).get("room") || "";
+let inboxIndex = [];
+function applyRoute(){
+  const h = location.hash;
+  const onInbox = h === "#inbox" || h.startsWith("#inbox:");
+  $("tab-fleet").classList.toggle("active", !onInbox);
+  $("tab-inbox").classList.toggle("active", onInbox);
+  $("tab-btn-fleet").classList.toggle("active", !onInbox);
+  $("tab-btn-inbox").classList.toggle("active", onInbox);
+  if(!onInbox) return;
+  if(h.startsWith("#inbox:")){
+    const id = decodeURIComponent(h.slice(7));
+    const item = inboxIndex.find((m) => m.id === id) || { id };
+    if(!window.mcpHandle) return;
+    window.mcpHandle.watchTool("baton", "deliverable_read", { id }, (ev) => {
+      if(ev.type === "data"){
+        let text = ev.result.payload;
+        if(typeof text !== "string") text = JSON.stringify(text);
+        renderInboxDoc(item, text);
+      }
+    }, { refetchInterval: 0 });
+  } else {
+    const items = inboxRoomFilter ? inboxIndex.filter((m) => m.room === inboxRoomFilter) : inboxIndex;
+    renderInboxList(items, inboxRoomFilter);
+  }
+}
+document.addEventListener("click", (ev) => {
+  const tabBtn = ev.target.closest(".tabbtn");
+  if(tabBtn){
+    location.hash = tabBtn.dataset.tab === "inbox" ? "#inbox" : "";
+    return;
+  }
+  const inboxLink = ev.target.closest(".inboxlink");
+  if(inboxLink){
+    inboxRoomFilter = inboxLink.dataset.room || "";
+    location.hash = "#inbox";
+  }
+});
+window.addEventListener("hashchange", applyRoute);
+
 (async () => {
   const mcp = await claude.use("mcp");
   if(!mcp){
     banner("<b>No MCP in this view.</b> The fleet feed comes from the <span class='mono'>baton</span> connector; this surface cannot reach connectors.");
     $("fresh").textContent = "static";
+    applyRoute();
     return;
   }
+  window.mcpHandle = mcp;
   let lastGood = null;
   // #1486: heartbeat_at (hourly ping, independent of the change-gated snapshot) is what tells a
   // dead pusher apart from a quiet fleet whose pushed_at is legitimately stale. Loud only past
@@ -201,7 +517,7 @@ function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${htm
         } else {
           banner("");
         }
-        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at);
+        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, snap.timelines, snap.stale_hidden_count);
       } else if(snap && snap.rooms === null){
         $("content").innerHTML = "";
         banner("<b>No snapshot pushed yet.</b> The mailbox is live but the fleet machine hasn't pushed data.");
@@ -223,5 +539,19 @@ function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${htm
       if(!lastGood){ banner(`<b>No data yet</b> (${esc(e.code || "unknown")}). ${esc(e.message || "")}`); }
     }
   }, { refetchInterval: 30000, cache: { staleTime: 25000 } });
+
+  mcp.watchTool("baton", "deliverables_list", {}, (ev) => {
+    if(ev.type === "data"){
+      let payload = ev.result.payload;
+      if(typeof payload === "string"){ try { payload = JSON.parse(payload); } catch { payload = null; } }
+      inboxIndex = (payload && Array.isArray(payload.items)) ? payload.items : [];
+      if(!location.hash.startsWith("#inbox:")) applyRoute();
+      return;
+    }
+    const e = ev.error || {};
+    $("inboxbanner").innerHTML = `<div class="banner"><b>Inbox feed unavailable</b> (${esc(e.code || "unknown")}). ${esc(e.message || "")}</div>`;
+  }, { refetchInterval: 30000, cache: { staleTime: 25000 } });
+
+  applyRoute();
 })();
 </script>

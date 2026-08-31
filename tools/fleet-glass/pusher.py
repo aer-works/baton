@@ -7,14 +7,20 @@ Outbound-only; the machine running this accepts no inbound connections.
 
 THE SNAPSHOT HALF -- change-gated (#1457)
 -------------------------------------------
-The wrapped {rooms, underhood} body is hashed (stable, sort_keys) before every POST; a hash that
-matches the last SUCCESSFUL push's (persisted in push_state_file, key SNAPSHOT_HASH_KEY) skips the
-POST. Cloudflare's KV free tier caps at 1,000 writes/day and worker.js's /push handler is an
-unconditional env.FLEET.put per POST -- pushing an unchanged snapshot every interval_seconds (default
-25s) burns 3,456 writes/day against that cap for nothing. A missing/unreadable persisted hash always
-re-pushes (fail toward one extra write, never toward silence, same posture as the deliverables state
-file below); a FAILED POST never persists the hash, so the next cycle retries. See `snapshot_hash` /
-`should_push_snapshot`.
+The wrapped {rooms, underhood, timelines, stale_hidden_count} body is hashed (stable, sort_keys)
+before every POST; a hash that matches the last SUCCESSFUL push's (persisted in push_state_file, key
+SNAPSHOT_HASH_KEY) skips the POST. Cloudflare's KV free tier caps at 1,000 writes/day and worker.js's
+/push handler is an unconditional env.FLEET.put per POST -- pushing an unchanged snapshot every
+interval_seconds (default 25s) burns 3,456 writes/day against that cap for nothing. A missing/
+unreadable persisted hash always re-pushes (fail toward one extra write, never toward silence, same
+posture as the deliverables state file below); a FAILED POST never persists the hash, so the next
+cycle retries. See `snapshot_hash` / `should_push_snapshot`.
+
+`timelines` and `stale_hidden_count` (#1505) are both frozen, append-only-derived facts computed
+once per cycle from on-disk state (flow.jsonl event counts, the stale-room filter) -- neither reads
+`now()` beyond what `drop_stale_rooms`'s own cutoff already did, so neither field makes the hash
+churn on wall-clock time alone; the change-gate above still only re-pushes on a real content change.
+See "THE TIMELINE HALF" below for the KV-write arithmetic this adds.
 
 Config comes from pusher.config.json next to this script (gitignored, machine-local -- ship
 pusher.config.example.json and copy it):
@@ -29,10 +35,29 @@ pusher.config.example.json and copy it):
       "rooms_root": "~/.baton/rooms",                         # optional; defaults there
       "secret_patterns_file": "secretpatterns.local.txt",    # optional; defaults next to this script
       "push_state_file": "push-state.local.json",            # optional; defaults next to this script
-      "underhood_dirs": [], "underhood_logs": []
+      "underhood_dirs": []
     }
 push_url (and deliver_url/heartbeat_url, if set) embed the push token -- the config file is a local
 secret; never print or commit it.
+
+THE TIMELINE HALF (#1505)
+-------------------------------------------
+Pre-#42 (the daemon has not yet been given the projection job, spec/baton.md §7), this pusher gets
+per-room timelines the same way it gets the fleet snapshot: one `room_detail` call per NON-TERMINAL
+room, through the SAME dotnet-mcp process `derive_snapshot_and_timelines` already spawns for
+`fleet_status` -- never a second `dotnet` spawn per room. `extract_timeline` keeps ONLY each entry's
+`type` and `timestamp`; `room_detail`'s `stdout` field and any `note`/`detail`/`error` text are
+dropped unconditionally, by construction (the function reads exactly two named keys off each entry
+and nothing else), so stdout can never ride the mailbox through this path -- see the module's secret
+gate above for why that boundary exists at all. Capped at the last TIMELINE_CAP (30) entries per
+room: a lane's timeline is step-level transitions (dispatch, execution start/exit, retries, decisions)
+written a handful of times per step, not a line per stdout write -- a lane produces tens of these
+over its life, not thousands, so this rides the mailbox safely under the same 1,000-write/day KV
+budget the change-gate above protects, and 30 is generous headroom over what a normal lane emits
+before terminating. Keyed by room PATH, never room NAME (#1505 review note: fleet_status dedupes
+rooms by path, so two same-named rooms under different roots are distinct entries; a name-keyed join
+would hand one room's timeline to the other -- exactly the wrong-and-confident failure mode #41's
+removal below exists to stop, reintroduced by a careless join).
 
 THE HEARTBEAT HALF (#1486)
 -------------------------------------------
@@ -134,13 +159,64 @@ def rpc(proc: subprocess.Popen, req_id: int, method: str, params=None):
             return resp
 
 
-def derive_snapshot(dll: str, roots: list) -> str:
-    """Returns the rooms JSON exactly as fleet_status produced it (content[0].text)."""
+TIMELINE_CAP = 30  # last N timeline entries kept per room -- see module docstring's "THE TIMELINE
+                    # HALF" for why a lane's step-level event count stays well under this.
+
+
+def is_terminal_room(room_path: str) -> bool:
+    """A room is terminal once terminal.json exists -- the same fast-path fleet_status itself
+    uses (spec/baton.md §6). Non-terminal is exactly the population room_detail timelines are
+    fetched for: a terminal room's flow.jsonl is already frozen and its verdict is carried in the
+    deliverables half below, so re-fetching its timeline every cycle would be pure waste."""
+    try:
+        return (Path(room_path) / "terminal.json").is_file()
+    except (OSError, TypeError):
+        return False
+
+
+def extract_timeline(room_detail_result: dict) -> list[dict]:
+    """Content-free timeline projection from one room_detail response: KEEP ONLY `type` and
+    `timestamp` off each timeline entry. Does not enumerate fields to DROP (stdout, note, error,
+    detail) -- it enumerates the two fields it KEEPS, so a future room_detail field never leaks
+    through by accident of this function failing to name it. `stdout` is never read at all, whether
+    or not room_detail's response carries one.
+
+    The synthetic "unreadable" entry (RoomDetailTool.ReadTimelineAsync, e.g. a held-open ledger) is
+    kept as a type-only marker -- its `detail` (an exception message) is dropped like any other
+    entry's, so the timeline still shows "something is wrong here" without smuggling free text.
+    """
+    timeline = room_detail_result.get("timeline")
+    if not isinstance(timeline, dict):
+        return []
+    entries = timeline.get("entries")
+    if not isinstance(entries, list):
+        return []
+    out = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        event_type = entry.get("type")
+        if not isinstance(event_type, str):
+            continue
+        kept = {"type": event_type}
+        timestamp = entry.get("timestamp")
+        if isinstance(timestamp, str):
+            kept["timestamp"] = timestamp
+        out.append(kept)
+    return out[-TIMELINE_CAP:]
+
+
+def derive_snapshot_and_timelines(dll: str, roots: list) -> tuple[str, dict]:
+    """Returns (the rooms JSON exactly as fleet_status produced it, {room_path: [timeline entries]}
+    for every NON-TERMINAL room) -- ONE dotnet-mcp process for both, reused across every room_detail
+    call in this cycle (module docstring's "THE TIMELINE HALF"): spawning a fresh `dotnet` per room
+    would multiply the exact per-cycle subprocess cost the daemon-owns-the-projection design (#1502
+    menu #42) exists to kill."""
     # #1458: dll now points at Baton.Cli.dll -- "mcp" is the verb that used to be the whole binary
     # (Baton.Mcp.Host.dll's own Main). Argv shape mirrors ClaudeWorkerAdapter's own
     # EnsureMemoryProposalMcpConfig, the canonical explanation of why the verb comes first.
     proc = subprocess.Popen(
-        ["dotnet", dll, "mcp", "--fleet-status-tool"],
+        ["dotnet", dll, "mcp", "--fleet-status-tool", "--room-detail-tool"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True, encoding="utf-8",
     )
@@ -156,14 +232,42 @@ def derive_snapshot(dll: str, roots: list) -> str:
             "name": "fleet_status",
             "arguments": {"roots": roots} if roots else {},
         })
+        result = resp.get("result")
+        if result is None:
+            raise RuntimeError(f"tools/call error: {resp.get('error')}")
+        text = result["content"][0]["text"]
+        rooms = json.loads(text)  # validate before pushing; raises on garbage
+        room_list = rooms if isinstance(rooms, list) else (rooms.get("rooms") or [])
+
+        timelines = {}
+        next_id = 3
+        for room in room_list:
+            if not isinstance(room, dict):
+                continue
+            room_path = room.get("path")
+            if not isinstance(room_path, str) or not room_path:
+                continue
+            if is_terminal_room(room_path):
+                continue
+            try:
+                detail_resp = rpc(proc, next_id, "tools/call", {
+                    "name": "room_detail",
+                    "arguments": {"room": room_path},
+                })
+                next_id += 1
+                detail_result = detail_resp.get("result")
+                if detail_result is None:
+                    log(f"room_detail error for {room_path}: {detail_resp.get('error')}")
+                    continue
+                detail = json.loads(detail_result["content"][0]["text"])
+                entries = extract_timeline(detail)
+                if entries:
+                    timelines[room_path] = entries
+            except Exception as ex:  # noqa: BLE001 — one room's timeline must not sink the cycle
+                log(f"room_detail failed for {room_path}: {type(ex).__name__}: {ex}")
     finally:
         proc.terminate()
-    result = resp.get("result")
-    if result is None:
-        raise RuntimeError(f"tools/call error: {resp.get('error')}")
-    text = result["content"][0]["text"]
-    json.loads(text)  # validate before pushing; raises on garbage
-    return text
+    return text, timelines
 
 
 def newest_timestamp(node) -> str:
@@ -181,17 +285,23 @@ def newest_timestamp(node) -> str:
     return best
 
 
-def drop_stale_rooms(body: str, max_age_days: float) -> str:
+def drop_stale_rooms(body: str, max_age_days: float) -> tuple[str, int]:
     """Filter rooms whose newest timestamp is older than the cutoff -- zombie RUNNING rooms
     included (a room that died without terminal.json shows Running forever; age is the only
     honest signal). Rooms with no parseable timestamp are KEPT: unreadable is a finding the
-    glass should show, not silently drop."""
+    glass should show, not silently drop.
+
+    Returns (filtered body, dropped count). #1505 landmine #43: a dropped room used to be logged
+    ONLY to pusher.log -- a room that vanished and a room that never existed looked identical on the
+    glass. The count is now the caller's to carry into the pushed snapshot (as
+    `stale_hidden_count`), so the page can show "N older than {max_age_days}d hidden" instead of
+    silence."""
     data = json.loads(body)
     # fleet_status emits a bare room list; tolerate a {rooms: [...]} wrapper too.
     bare = isinstance(data, list)
     rooms = data if bare else data.get("rooms")
     if not isinstance(rooms, list):
-        return body
+        return body, 0
     cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400
     kept = []
     for room in rooms:
@@ -204,12 +314,13 @@ def drop_stale_rooms(body: str, max_age_days: float) -> str:
             except ValueError:
                 pass
         kept.append(room)
-    if len(kept) != len(rooms):
-        log(f"filtered {len(rooms) - len(kept)} stale room(s) older than {max_age_days}d")
+    dropped = len(rooms) - len(kept)
+    if dropped:
+        log(f"filtered {dropped} stale room(s) older than {max_age_days}d")
     if bare:
-        return json.dumps(kept)
+        return json.dumps(kept), dropped
     data["rooms"] = kept
-    return json.dumps(data)
+    return json.dumps(data), dropped
 
 
 def _git(cwd: str, *args: str) -> str:
@@ -223,12 +334,16 @@ def _git(cwd: str, *args: str) -> str:
 
 
 def gather_underhood(cfg: dict) -> list:
-    """Worktree telemetry for active lanes: branch, diff shape, newest commit, activity line.
+    """Worktree telemetry for active lanes: branch, diff shape, newest commit.
 
-    CONTENT-FREE BY DESIGN except the log tail: branch names, file counts, and +/- totals only --
-    no diff hunks, so nothing here can leak a secret VALUE. The optional activity line is the
-    last line of a lane's echo-worker log (worker narration), capped at 160 chars; drop the
-    'underhood_logs' config key to turn that part off."""
+    CONTENT-FREE BY DESIGN: branch names, file counts, and +/- totals only -- no diff hunks, so
+    nothing here can leak a secret VALUE. Fleet-level only, never attached to a specific room row --
+    #1505 removed the `underhood_logs` name-matching heuristic that used to do that (`name.endswith(
+    e["name"].lstrip("w")) or e["name"].lstrip("w") in name`, a substring match on a w-stripped
+    directory name): two similarly-named lanes could silently attach the WRONG lane's log tail to a
+    worktree entry. Wrong-and-confident is worse than absent (spec/baton.md's epic #1502 ratified
+    decisions) -- this stays a fleet-level section with no per-room attribution until a real
+    room<->worktree key exists to replace the guess, not before."""
     import glob as globmod
 
     entries = []
@@ -248,18 +363,6 @@ def gather_underhood(cfg: dict) -> list:
                 "last_commit": subject[:120],
                 "last_commit_at": committed,
             })
-    for pattern in cfg.get("underhood_logs", []):
-        for f in sorted(globmod.glob(pattern)):
-            try:
-                lines = [ln.strip() for ln in Path(f).read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
-            except OSError:
-                continue
-            if lines:
-                name = Path(f).stem
-                for e in entries:
-                    if name.endswith(e["name"].lstrip("w")) or e["name"].lstrip("w") in name:
-                        e["activity"] = lines[-1][:160]
-                        break
     return entries
 
 
@@ -583,11 +686,18 @@ def main() -> None:
 
     while True:
         try:
-            body = derive_snapshot(cfg["dll"], cfg.get("roots", []))
-            body = drop_stale_rooms(body, cfg.get("max_age_days", 3))
+            body, timelines = derive_snapshot_and_timelines(cfg["dll"], cfg.get("roots", []))
+            body, stale_hidden_count = drop_stale_rooms(body, cfg.get("max_age_days", 3))
             rooms = json.loads(body)
-            wrapped = {"rooms": rooms if isinstance(rooms, list) else rooms.get("rooms"),
-                       "underhood": gather_underhood(cfg)}
+            room_list = rooms if isinstance(rooms, list) else rooms.get("rooms")
+            # Timelines were fetched pre-stale-filter, keyed by path; only carry forward the ones
+            # for rooms that survived drop_stale_rooms above, so a hidden room's timeline is hidden
+            # with it rather than riding along as orphaned payload.
+            surviving_paths = {r.get("path") for r in (room_list or []) if isinstance(r, dict)}
+            wrapped = {"rooms": room_list,
+                       "underhood": gather_underhood(cfg),
+                       "timelines": {p: t for p, t in timelines.items() if p in surviving_paths},
+                       "stale_hidden_count": stale_hidden_count}
             current_hash = snapshot_hash(wrapped)
             snap_state = load_push_state(state_path)
             if should_push_snapshot(snap_state, current_hash):
@@ -831,6 +941,81 @@ def _selftest() -> int:
         push_snapshot_and_record(lambda _body: None, "{}", {}, sp, hash_a)
         check("a successful post persists the hash for the next cycle's gate",
               load_push_state(sp).get(SNAPSHOT_HASH_KEY) == hash_a)
+
+    # -- #1505: timeline extraction strips content-bearing fields (the mailbox's stdout boundary) --
+    stdout_leak = "SECRET_STDOUT_LINE_THAT_MUST_NEVER_RIDE_THE_MAILBOX"
+    fake_room_detail = {
+        "name": "room-x",
+        "stdout": {"text": stdout_leak, "truncated": False, "totalBytes": 999, "source": "execution_1"},
+        "timeline": {
+            "entries": [
+                {"type": "flow.ExecutionRequestAccepted", "timestamp": "2026-08-31T00:00:00Z"},
+                {"type": "core.ExecutionStarted", "timestamp": "2026-08-31T00:00:01Z", "detail": stdout_leak},
+            ],
+            "truncated": False,
+            "totalEntries": 2,
+        },
+        "note": stdout_leak,
+    }
+    extracted = extract_timeline(fake_room_detail)
+    check("extract_timeline keeps real type+timestamp entries (positive control)",
+          extracted == [
+              {"type": "flow.ExecutionRequestAccepted", "timestamp": "2026-08-31T00:00:00Z"},
+              {"type": "core.ExecutionStarted", "timestamp": "2026-08-31T00:00:01Z"},
+          ])
+    check("extract_timeline drops an entry's `detail` field even when populated",
+          all("detail" not in e for e in extracted))
+    # The claim under test is "none of it touches the SNAPSHOT" -- prove it against the fully
+    # serialized wrapped body main() actually pushes, not just this function's return value.
+    wrapped_with_timeline = {"rooms": [], "underhood": [],
+                              "timelines": {"/rooms/room-x": extracted}, "stale_hidden_count": 0}
+    serialized = json.dumps(wrapped_with_timeline)
+    check("the stdout/detail/note leak string is absent from the fully serialized pushed body",
+          stdout_leak not in serialized)
+
+    # Negative control for the positive-control claim above: an extractor that always returns []
+    # would also pass the leak check for the wrong reason -- prove real entries actually survive.
+    check("(control) a non-empty timeline still carries its real entries into the serialized body",
+          "flow.ExecutionRequestAccepted" in serialized)
+
+    unreadable_detail = extract_timeline({
+        "timeline": {"entries": [{"type": "unreadable", "detail": "ledger held by pid 1234, path C:\\secret\\room"}],
+                     "truncated": False, "totalEntries": 1}
+    })
+    check("an 'unreadable' marker entry survives as a type-only marker",
+          unreadable_detail == [{"type": "unreadable"}])
+
+    check("extract_timeline caps at TIMELINE_CAP entries, keeping the newest tail",
+          extract_timeline({"timeline": {"entries": [{"type": f"e{i}"} for i in range(TIMELINE_CAP + 5)],
+                                          "truncated": False, "totalEntries": TIMELINE_CAP + 5}}) ==
+          [{"type": f"e{i}"} for i in range(5, TIMELINE_CAP + 5)])
+
+    check("extract_timeline degrades to [] for a room_detail response with no timeline at all",
+          extract_timeline({"name": "room-y", "note": "no flow.jsonl yet"}) == [])
+
+    # -- #1505: stale-room drop becomes a visible count, never a silent disappearance (landmine #43) --
+    now_iso = datetime.now(timezone.utc).isoformat()
+    old_iso = (datetime.now(timezone.utc).timestamp() - 10 * 86400)
+    old_iso = datetime.fromtimestamp(old_iso, tz=timezone.utc).isoformat()
+    stale_body = json.dumps([
+        {"name": "fresh", "state": "Running", "steps": [{"id": "s1", "state": "Running", "timestamp": now_iso}]},
+        {"name": "zombie", "state": "Running", "steps": [{"id": "s1", "state": "Running", "timestamp": old_iso}]},
+        {"name": "no-timestamp", "state": "Failed"},
+    ])
+    filtered_body, dropped_count = drop_stale_rooms(stale_body, max_age_days=3)
+    check("drop_stale_rooms reports a non-zero dropped count for an aged zombie room",
+          dropped_count == 1)
+    filtered_rooms = json.loads(filtered_body)
+    check("the dropped count matches what's actually missing from the filtered list",
+          len(filtered_rooms) == 2 and not any(r["name"] == "zombie" for r in filtered_rooms))
+    check("a room with no parseable timestamp is kept, not silently dropped",
+          any(r["name"] == "no-timestamp" for r in filtered_rooms))
+
+    fresh_body, fresh_dropped = drop_stale_rooms(
+        json.dumps([{"name": "fresh", "state": "Running",
+                     "steps": [{"id": "s1", "state": "Running", "timestamp": now_iso}]}]),
+        max_age_days=3)
+    check("(control) nothing dropped when every room is recent", fresh_dropped == 0)
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)
