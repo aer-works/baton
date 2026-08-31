@@ -14,6 +14,16 @@ namespace Baton.Tests.Core;
 public class ProcessTreeAndPanicSafetyTests
 {
     /// <summary>
+    /// The "returned promptly" bound. Its only job is discriminating "returned without waiting for
+    /// the grandchild" (which lives ~2.7 hours, <c>ping -n 9999</c>) from a genuine wait on the
+    /// tree, so generosity costs nothing. It must absorb the whole spawn too: the root here is a
+    /// cold <c>powershell</c>, measured at 46s on a contended CI runner (#1480) — the two CI
+    /// failures that looked like circular waits were spawn latency, since a real circular wait
+    /// cannot return in under hours.
+    /// </summary>
+    private static readonly TimeSpan PromptReturnBound = TimeSpan.FromSeconds(120);
+
+    /// <summary>
     /// A command that spawns a long-lived grandchild (via PowerShell's <c>Start-Process</c>, itself
     /// spawned by <c>cmd</c>), writes its PID to <paramref name="pidFile"/>, then exits immediately.
     /// Mirrors the Rust suite's <c>orphan_cmd</c> helper.
@@ -60,7 +70,7 @@ public class ProcessTreeAndPanicSafetyTests
             task.Run();
             TimeSpan elapsed = DateTime.UtcNow - start;
 
-            Assert.True(elapsed < TimeSpan.FromSeconds(20), $"Run() took {elapsed} -- process tree cleanup looks deadlocked");
+            Assert.True(elapsed < PromptReturnBound, $"Run() took {elapsed} -- process tree cleanup looks deadlocked");
 
             // wait-ok: a fixed OS-settle delay after Run()'s synchronous teardown, not a poll ceiling.
             Thread.Sleep(200);
@@ -94,7 +104,7 @@ public class ProcessTreeAndPanicSafetyTests
             task.Run();
             TimeSpan elapsed = DateTime.UtcNow - start;
 
-            Assert.True(elapsed < TimeSpan.FromSeconds(20),
+            Assert.True(elapsed < PromptReturnBound,
                 $"Run() took {elapsed} -- the timeout monitor's job reference is blocking cleanup until the 30s deadline instead of NaturalExit firing promptly");
             Assert.Equal(0, events[^1].ExitCode);
             Assert.Equal(BatonExitReason.Natural, events[^1].ExitReason);
@@ -127,7 +137,7 @@ public class ProcessTreeAndPanicSafetyTests
             await task.RunAsync(cts.Token);
             TimeSpan elapsed = DateTime.UtcNow - start;
 
-            Assert.True(elapsed < TimeSpan.FromSeconds(20), $"RunAsync() took {elapsed} -- looks like a circular wait");
+            Assert.True(elapsed < PromptReturnBound, $"RunAsync() took {elapsed} -- looks like a circular wait");
             Assert.Equal(0, events[^1].ExitCode);
             Assert.Equal(BatonExitReason.Natural, events[^1].ExitReason);
         }
@@ -153,7 +163,7 @@ public class ProcessTreeAndPanicSafetyTests
             task.Run();
             TimeSpan elapsed = DateTime.UtcNow - start;
 
-            Assert.True(elapsed < TimeSpan.FromSeconds(20),
+            Assert.True(elapsed < PromptReturnBound,
                 $"Run() took {elapsed} -- the capture path's live-delivery loop may be deadlocked on the grandchild holding stdout/stderr open");
             Assert.Equal(BatonExitReason.Natural, events[^1].ExitReason);
             Assert.Equal(0, events[^1].ExitCode);
