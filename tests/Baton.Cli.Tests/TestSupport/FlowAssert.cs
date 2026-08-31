@@ -2,8 +2,8 @@ using Baton.Domain;
 
 namespace Baton.Cli.Tests.TestSupport;
 
-// record-once-ok: #1492 tests/Baton.Tests/TestSupport/FlowAssert.cs
 /// <summary>
+// record-once-ok: #1492 tests/Baton.Tests/TestSupport/FlowAssert.cs
 /// Assertion helpers for E2E tests that drive a real workflow to a terminal <see cref="StepStatus"/>.
 /// A bare <c>Assert.Equal(StepStatus.Succeeded, step.Status)</c> only reports what the status
 /// ended up being — a red run then requires spelunking room artifacts to learn why. This surfaces
