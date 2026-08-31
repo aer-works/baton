@@ -310,9 +310,8 @@ public sealed class FleetStatusTool : IMcpTool
     /// Resolves the worker-binding config entry (issue #1503) for whichever step this room's
     /// projection currently calls <c>"Running"</c> — the same worker a caller would see live if they
     /// tailed <c>room_detail</c> right now. Picks the first Running step when a workflow has more than
-    /// one in flight at once; a room row carries one binding, not a list. Rooms with no Running step
-    /// (pending, paused between steps, or terminal — the sentinel fast path never calls this) report no
-    /// binding at all rather than guessing at a stale or future one.
+    /// one in flight at once; a room row carries one binding, not a list. See spec/baton.md §6 schema
+    /// for when this comes back absent and why.
     /// </summary>
     private static async Task<(string Role, WorkerBindingConfigEntry Entry)?> TryResolveRunningBindingAsync(
         string roomDir, IReadOnlyList<FleetStepStatusView> steps, IReadOnlyList<FlowEvent> events, CancellationToken cancellationToken)
@@ -351,9 +350,7 @@ public sealed class FleetStatusTool : IMcpTool
         }
         catch (Exception ex) when (ex is WorkerBindingConfigException or IOException or UnauthorizedAccessException)
         {
-            // Fail open for DISPLAY metadata only: a missing (pre-bindings room) or corrupt
-            // bindings.json must never break fleet_status for the whole fleet -- this row's
-            // adapter/model/effort/role/timeout fields are simply absent.
+            // spec/baton.md §6 schema states the contract this degrades to.
             return null;
         }
 
@@ -392,10 +389,10 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("rejected")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     bool Rejected = false,
-    // #1503: the worker role (bindings.json's own dictionary key) currently bound to this room's
-    // Running step -- see TryResolveRunningBindingAsync. Absent whenever no step is Running (pending,
-    // paused between steps, terminal) or bindings.json is missing/unreadable (fail-open for display
-    // metadata: a corrupt binding file must never break fleet_status for the whole fleet).
+    // #1503: worker role/adapter/model/effort/timeout for this room's Running step, read off
+    // bindings.json via TryResolveRunningBindingAsync -- see spec/baton.md §6 schema for exactly
+    // which step this reads, when the five fields come back absent, and why timeoutMs isn't a
+    // countdown.
     [property: JsonPropertyName("role")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Role = null,
@@ -408,12 +405,6 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("effort")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Effort = null,
-    // The role's configured timeout, in milliseconds -- a raw fact, deliberately not a
-    // "remaining" countdown: that number would be stale the instant this projection is written and
-    // cached anywhere. A renderer that wants remaining time combines this with the Running step's own
-    // `steps[].timestamp` (already emitted above, never duplicated here) -- timeoutMs - (now - that
-    // timestamp). Same reasoning ExecutionUsageView documents for why it stops at wallClockMs rather
-    // than rendering a duration string.
     [property: JsonPropertyName("timeoutMs")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     long? TimeoutMs = null);
