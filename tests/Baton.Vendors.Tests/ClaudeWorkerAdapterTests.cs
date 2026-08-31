@@ -598,12 +598,10 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
-    /// Regression, #1459 fix 2 (PR #1506's re-review): a comma-separated pattern list written INSIDE
-    /// one <c>Bash(...)</c> clause -- the advanced escape hatch's plausible way to grant two patterns
-    /// at once -- used to be severed by the old naive top-level <c>,</c>.Split into two half-clauses
-    /// (<c>"Bash(git diff*"</c>, <c>"git status*)"</c>), both of which failed the <c>Bash(</c>/<c>)</c>
-    /// check and were silently dropped, leaving the channel tagged-and-empty (the #1459 bypass,
-    /// reopened). The paren-aware split must keep the clause whole and grant both patterns.
+    /// Regression, #1459 fix 2 (PR #1506's re-review): see
+    /// <c>ClaudeWorkerAdapter.BuildShellPatternsFromRawScope</c>'s own doc comment for the bug this
+    /// closes and why the old split lost this exact shape. Here: both patterns must reach the
+    /// channel, not just survive the split unmangled.
     /// </summary>
     [Fact]
     public void A_comma_list_inside_one_Bash_clause_populates_the_shell_pattern_channel_with_both_patterns()
