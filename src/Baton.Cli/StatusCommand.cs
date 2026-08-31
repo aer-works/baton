@@ -35,9 +35,6 @@ namespace Baton.Cli;
 /// </summary>
 public static class StatusCommand
 {
-    private const string SnapshotFileName = "snapshot.json";
-    private const string LogFileName = "flow.jsonl";
-
     /// <summary>
     /// How often <c>--follow</c> re-checks <c>flow.jsonl</c>'s length for growth. A modest,
     /// fixed interval rather than a <see cref="FileSystemWatcher"/> — file-system change
@@ -63,8 +60,8 @@ public static class StatusCommand
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(output);
 
-        var snapshotPath = Path.Combine(options.RoomDirectoryPath, SnapshotFileName);
-        var logPath = Path.Combine(options.RoomDirectoryPath, LogFileName);
+        var snapshotPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.SnapshotFileName);
+        var logPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.FlowLogFileName);
 
         // #1356 point 3: a room that fails during provisioning/validation may never get a
         // flow.jsonl (bindings/workflow validation can fail before snapshot.json exists too, e.g. a

@@ -184,7 +184,7 @@ public sealed class RoomRetentionSweep : BackgroundService
         long thresholdBytes,
         CancellationToken cancellationToken = default)
     {
-        var roomLogPath = Path.Combine(roomDirectoryPath, "room.jsonl");
+        var roomLogPath = Path.Combine(roomDirectoryPath, BatonPaths.RoomLogFileName);
         if (!File.Exists(roomLogPath))
         {
             return false;
@@ -207,7 +207,7 @@ public sealed class RoomRetentionSweep : BackgroundService
         // Localized terminal-time proxy: flow.jsonl last-write time (mtime).
         // This proxy is acceptable because the grace window is observability-only and pruning is fully
         // recoverable + idempotent (artifacts move to pruned/, not deleted).
-        var flowLogPath = Path.Combine(roomDirectoryPath, "flow.jsonl");
+        var flowLogPath = Path.Combine(roomDirectoryPath, BatonPaths.FlowLogFileName);
         if (!File.Exists(flowLogPath))
         {
             return false;

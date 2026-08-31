@@ -1,5 +1,6 @@
 using Baton.Concurrency;
 using Baton.Domain;
+using Baton.Status;
 using Baton.Store;
 
 namespace Baton.Projection;
@@ -24,8 +25,6 @@ namespace Baton.Projection;
 /// </summary>
 public static class RoomJournalCompactor
 {
-    private const string RoomLogFileName = "room.jsonl";
-
     /// <summary>
     /// Compacts the room journal at <paramref name="roomDirectoryPath"/> if present.
     /// Returns <c>true</c> if the journal was compacted (shrunk), or <c>false</c> if no compaction was needed.
@@ -36,7 +35,7 @@ public static class RoomJournalCompactor
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
 
-        var roomLogPath = Path.Combine(roomDirectoryPath, RoomLogFileName);
+        var roomLogPath = Path.Combine(roomDirectoryPath, BatonPaths.RoomLogFileName);
         if (!File.Exists(roomLogPath))
         {
             return false;

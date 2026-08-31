@@ -25,7 +25,9 @@ namespace Baton.Concurrency;
 /// </summary>
 public sealed class ConcurrencyGuard : IDisposable
 {
-    public const string FlowLockFileName = "flow.lock";
+    /// <summary>Mirrors <see cref="Baton.Status.BatonPaths.FlowLockFileName"/> — see that member's
+    /// remarks for why the name lives there and the mechanism here.</summary>
+    public const string FlowLockFileName = Baton.Status.BatonPaths.FlowLockFileName;
     public const string FlowHolderFileName = "flow.lock.holder";
     public const string RoomEventsLockFileName = "room-events.lock";
     public const string RoomEventsHolderFileName = "room-events.lock.holder";

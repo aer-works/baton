@@ -19,8 +19,6 @@ namespace Baton.Cli;
 /// </summary>
 public static class RunCommand
 {
-    private const string SnapshotFileName = "snapshot.json";
-    private const string LogFileName = "flow.jsonl";
     private const string ArtifactsDirectoryName = ArtifactManager.ArtifactsDirectoryName;
 
     /// <summary>
@@ -78,8 +76,8 @@ public static class RunCommand
         Directory.CreateDirectory(options.RoomDirectoryPath);
         await RegisterRoomAsync(options, cancellationToken).ConfigureAwait(false);
 
-        var snapshotPath = Path.Combine(options.RoomDirectoryPath, SnapshotFileName);
-        var logPath = Path.Combine(options.RoomDirectoryPath, LogFileName);
+        var snapshotPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.SnapshotFileName);
+        var logPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.FlowLogFileName);
         var artifactsRootPath = Path.Combine(options.RoomDirectoryPath, ArtifactsDirectoryName);
 
         var resumedFromSnapshot = File.Exists(snapshotPath);

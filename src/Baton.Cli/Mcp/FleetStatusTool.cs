@@ -219,7 +219,7 @@ public sealed class FleetStatusTool : IMcpTool
         }
 
         // 2. Active room: load snapshot + flow events and project
-        var snapshotPath = Path.Combine(roomDir, "snapshot.json");
+        var snapshotPath = Path.Combine(roomDir, BatonPaths.SnapshotFileName);
         if (!File.Exists(snapshotPath))
         {
             return new FleetRoomStatusView(
@@ -231,7 +231,7 @@ public sealed class FleetStatusTool : IMcpTool
         try
         {
             var snapshot = await SnapshotBinder.LoadFromFileAsync(snapshotPath, cancellationToken).ConfigureAwait(false);
-            var logPath = Path.Combine(roomDir, "flow.jsonl");
+            var logPath = Path.Combine(roomDir, BatonPaths.FlowLogFileName);
             var reader = new FlowEventLogReader(logPath);
             var entries = await reader.ReadAllEntriesWithTimestampsAsync(cancellationToken).ConfigureAwait(false);
 

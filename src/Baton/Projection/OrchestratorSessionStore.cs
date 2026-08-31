@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Baton.Status;
 using Baton.Store;
 
 namespace Baton.Projection;
@@ -14,7 +15,6 @@ public static class OrchestratorSessionStore
 {
     private const string BatonDirectoryName = ".baton";
     private const string CursorFileName = "orchestrator-session.json";
-    private const string RoomLogFileName = "room.jsonl";
 
     public static string GetCursorFilePath(string roomDirectoryPath)
         => Path.Combine(roomDirectoryPath, BatonDirectoryName, CursorFileName);
@@ -40,7 +40,7 @@ public static class OrchestratorSessionStore
             return [];
         }
 
-        var roomLogPath = Path.Combine(roomDirectoryPath, RoomLogFileName);
+        var roomLogPath = Path.Combine(roomDirectoryPath, BatonPaths.RoomLogFileName);
         if (!File.Exists(roomLogPath))
         {
             return [];

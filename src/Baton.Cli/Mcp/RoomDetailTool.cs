@@ -71,7 +71,7 @@ public sealed class RoomDetailTool : IMcpTool
 
     public string Description =>
         "Read-only drill-down into one room: its most recent (or a pinned) execution's stdout tail " +
-        "and a bounded flow.jsonl timeline projection (event type + timestamp per line), for " +
+        "and a bounded " + BatonPaths.FlowLogFileName + " timeline projection (event type + timestamp per line), for " +
         "debugging one lane.";
 
     public string? AnnotationsJson => """{"readOnlyHint": true}""";
@@ -151,7 +151,7 @@ public sealed class RoomDetailTool : IMcpTool
         string? note = null;
         if (stdout is null && timeline is null)
         {
-            note = "Room exists but has no captured stdout and no flow.jsonl yet.";
+            note = $"Room exists but has no captured stdout and no {BatonPaths.FlowLogFileName} yet.";
         }
         else if (stdout is null)
         {
@@ -159,7 +159,7 @@ public sealed class RoomDetailTool : IMcpTool
         }
         else if (timeline is null)
         {
-            note = "Room has no flow.jsonl yet (pre-ledger).";
+            note = $"Room has no {BatonPaths.FlowLogFileName} yet (pre-ledger).";
         }
 
         var view = new RoomDetailView(
@@ -353,7 +353,7 @@ public sealed class RoomDetailTool : IMcpTool
 
     private static async Task<RoomTimelineView?> ReadTimelineAsync(string roomDir, CancellationToken cancellationToken)
     {
-        var logPath = Path.Combine(roomDir, "flow.jsonl");
+        var logPath = Path.Combine(roomDir, BatonPaths.FlowLogFileName);
         if (!File.Exists(logPath))
         {
             return null;
