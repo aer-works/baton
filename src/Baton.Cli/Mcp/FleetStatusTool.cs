@@ -204,7 +204,11 @@ public sealed class FleetStatusTool : IMcpTool
                 Timestamp: null,
                 s.Usage,
                 s.LinkedFromUsage,
-                Liveness: s.Liveness
+                Liveness: s.Liveness,
+                Attempt: s.Attempt,
+                MaxAttempts: s.MaxAttempts,
+                FailureKind: s.FailureKind,
+                RetryEligible: s.RetryEligible
             )).ToList();
 
             return new FleetRoomStatusView(
@@ -274,7 +278,11 @@ public sealed class FleetStatusTool : IMcpTool
                     timestamp,
                     stepView.Usage,
                     stepView.LinkedFromUsage,
-                    stepView.Liveness));
+                    stepView.Liveness,
+                    stepView.Attempt,
+                    stepView.MaxAttempts,
+                    stepView.FailureKind,
+                    stepView.RetryEligible));
             }
 
             var binding = await TryResolveRunningBindingAsync(roomDir, steps, events, cancellationToken).ConfigureAwait(false);
@@ -436,4 +444,22 @@ public sealed record FleetStepStatusView(
     // the identical gate WorkflowStatusProjector.Project already applies before probing.
     [property: JsonPropertyName("liveness")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Liveness = null);
+    string? Liveness = null,
+    // #1509: copied verbatim from WorkflowStatusStepView.Attempt/.MaxAttempts -- see that record's
+    // remarks for the derivation (ConsecutiveFailureCount-based, never fabricated for a step with no
+    // retry history) and its two known undercounting cases (ExhaustedUntil, RetryWithRevision).
+    [property: JsonPropertyName("attempt")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? Attempt = null,
+    [property: JsonPropertyName("maxAttempts")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? MaxAttempts = null,
+    // #1510: copied verbatim from WorkflowStatusStepView.FailureKind/.RetryEligible -- the engine's
+    // own FailureClassification enum member name and RetryEngine.MayRetry's verdict, never
+    // re-derived here.
+    [property: JsonPropertyName("failureKind")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? FailureKind = null,
+    [property: JsonPropertyName("retryEligible")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? RetryEligible = null);

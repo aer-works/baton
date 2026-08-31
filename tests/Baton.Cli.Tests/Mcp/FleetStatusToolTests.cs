@@ -156,6 +156,207 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Equal("Running", singleStep.State);
         Assert.Equal("exec-active-1", singleStep.Execution);
         Assert.NotNull(singleStep.Timestamp);
+        // #1509/#1510: a step's very first execution has no failure history to derive a real
+        // attempt ordinal or failure classification from -- both fields must be OMITTED, never
+        // defaulted to "attempt 1" or a fabricated classification. Object-level Assert.Null cannot
+        // tell an omitted key apart from a serialized null, so also pin the wire shape directly
+        // (PR #1504 review finding A: only a serialized assertion catches a dropped
+        // JsonIgnore(WhenWritingNull)).
+        Assert.Null(singleStep.Attempt);
+        Assert.Null(singleStep.MaxAttempts);
+        Assert.Null(singleStep.FailureKind);
+        Assert.Null(singleStep.RetryEligible);
+        var wire = JsonSerializer.Serialize(singleRoom);
+        Assert.DoesNotContain("\"attempt\"", wire);
+        Assert.DoesNotContain("\"maxAttempts\"", wire);
+        Assert.DoesNotContain("\"failureKind\"", wire);
+        Assert.DoesNotContain("\"retryEligible\"", wire);
+    }
+
+    [Fact]
+    public async Task ExhaustedUntilFailure_AttemptUndercountsByOne_AKnownFinding()
+    {
+        // #1509 finding (see report-1509.md): StateProjector deliberately does NOT increment
+        // ConsecutiveFailureCount for FailureClassification.ExhaustedUntil (0026: a paced,
+        // quota-exhausted wait is not a spent retry-budget attempt). Since `attempt` is derived
+        // from that same count, the execution that actually reported ExhaustedUntil renders one
+        // ordinal LOW -- here, a step's first-ever execution reports ExhaustedUntil and therefore
+        // renders no `attempt` at all (count stays 0), even though `failureKind`/`retryEligible`
+        // both correctly surface. This test pins the actual (imperfect but never-fabricated)
+        // behavior, not an idealized one.
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "exhausted-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-exhausted"), "agent-worker", [], ["plan.md"], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("exhausted-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-exhausted-1");
+        var req = new ExecutionRequest(
+            execId, new WorkflowId("exhausted-wf"), stepDef.StepId, stepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted"),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
+        Assert.Equal("ExhaustedUntil", singleStep.FailureKind);
+        Assert.True(singleStep.RetryEligible);
+        Assert.Null(singleStep.Attempt);
+    }
+
+    [Fact]
+    public async Task FailedStep_SurfacesFailureKindAndRetryEligible_FromEngineClassification()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "failed-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-failed"), "agent-worker", [], ["plan.md"], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("failed-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-failed-1");
+        var req = new ExecutionRequest(
+            execId, new WorkflowId("failed-wf"), stepDef.StepId, stepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(execId, FailureClassification.Retryable, "worker crashed"),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
+        Assert.Equal("Failed", singleStep.State);
+        // One consecutive failure recorded -> this failed execution WAS attempt 1, out of 3 allowed.
+        Assert.Equal(1, singleStep.Attempt);
+        Assert.Equal(3, singleStep.MaxAttempts);
+        Assert.Equal("Retryable", singleStep.FailureKind);
+        Assert.True(singleStep.RetryEligible);
+    }
+
+    [Fact]
+    public async Task PermanentFailure_SurfacesRetryEligibleFalse()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "permanent-fail-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-permanent"), "agent-worker", [], ["plan.md"], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("permanent-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-permanent-1");
+        var req = new ExecutionRequest(
+            execId, new WorkflowId("permanent-wf"), stepDef.StepId, stepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(execId, FailureClassification.Permanent, "invalid config"),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
+        Assert.Equal("Permanent", singleStep.FailureKind);
+        Assert.False(singleStep.RetryEligible);
+    }
+
+    [Fact]
+    public async Task RunningStep_SurfacesAttemptOrdinalAfterAPriorFailure()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "retrying-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-retrying"), "agent-worker", [], ["plan.md"], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("retrying-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var firstExecId = new ExecutionId("exec-retrying-1");
+        var firstReq = new ExecutionRequest(
+            firstExecId, new WorkflowId("retrying-wf"), stepDef.StepId, stepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(firstReq), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(firstExecId, FailureClassification.Retryable, "transient"),
+            TestContext.Current.CancellationToken);
+
+        var secondExecId = new ExecutionId("exec-retrying-2");
+        var secondReq = firstReq with { ExecutionId = secondExecId };
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(secondReq), TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
+        Assert.Equal("Running", singleStep.State);
+        Assert.Equal("exec-retrying-2", singleStep.Execution);
+        // One prior consecutive failure -> this running execution is attempt 2 of 3.
+        Assert.Equal(2, singleStep.Attempt);
+        Assert.Equal(3, singleStep.MaxAttempts);
+        Assert.Null(singleStep.FailureKind);
+        Assert.Null(singleStep.RetryEligible);
+    }
+
+    [Fact]
+    public async Task TerminalSentinel_CarriesAttemptAndFailureKindThroughVerbatim()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "sentinel-retry-room");
+        Directory.CreateDirectory(room);
+
+        var step = new WorkflowStatusStepView(
+            "step-a", "Failed", "exec-1", null, null, null, null, Attempt: 2, MaxAttempts: 3,
+            FailureKind: "Permanent", RetryEligible: false);
+        var sentinel = new WorkflowStatusView("Failed", [step], [], "invalid config", null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
+        Assert.Equal(2, singleStep.Attempt);
+        Assert.Equal(3, singleStep.MaxAttempts);
+        Assert.Equal("Permanent", singleStep.FailureKind);
+        Assert.False(singleStep.RetryEligible);
     }
 
     /// <summary>Same technique as <c>WorkflowStatusProjectorLivenessTests.DeadProcessIdentity</c>:
