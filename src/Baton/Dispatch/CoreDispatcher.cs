@@ -745,9 +745,18 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             };
         }
 
-        ExecutionStreamLogger? streamLogger = pathVariables.TryGetValue("BATON_OUTPUT_DIR", out var outputDir)
-            ? new ExecutionStreamLogger(outputDir)
-            : null;
+        ExecutionStreamLogger? streamLogger = null;
+        if (pathVariables.TryGetValue("BATON_OUTPUT_DIR", out var outputDir))
+        {
+            try
+            {
+                streamLogger = new ExecutionStreamLogger(outputDir);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Warning: Failed to create execution stream logger for '{outputDir}': {ex.Message}. Stream logging disabled for this execution.");
+            }
+        }
 
         // #887 stage 2: a deterministic command step's stdout IS its declared artifact. Resolved
         // once here, not per chunk; per-chunk open-append-flush matches what
@@ -790,7 +799,16 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                 case BatonTaskEventKind.StdoutChunk:
                     if (e.Data is { Length: > 0 })
                     {
-                        streamLogger?.AppendStdout(e.Data);
+                        try
+                        {
+                            streamLogger?.AppendStdout(e.Data);
+                        }
+                        catch (Exception ex)
+                        {
+                            streamLogger = null;
+                            Console.Error.WriteLine($"Warning: Failed to append stdout stream log: {ex.Message}. Stream logging disabled for this execution.");
+                        }
+
                         if (stdoutArtifactPath is not null)
                         {
                             lock (stdoutArtifactLock)
@@ -820,7 +838,16 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                 case BatonTaskEventKind.StderrChunk:
                     if (e.Data is { Length: > 0 })
                     {
-                        streamLogger?.AppendStderr(e.Data);
+                        try
+                        {
+                            streamLogger?.AppendStderr(e.Data);
+                        }
+                        catch (Exception ex)
+                        {
+                            streamLogger = null;
+                            Console.Error.WriteLine($"Warning: Failed to append stderr stream log: {ex.Message}. Stream logging disabled for this execution.");
+                        }
+
                         lock (stderrLock)
                         {
                             stderrTail.Append(e.Data);
@@ -829,7 +856,15 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                     break;
 
                 case BatonTaskEventKind.Exited:
-                    streamLogger?.MarkTerminal();
+                    try
+                    {
+                        streamLogger?.MarkTerminal();
+                    }
+                    catch
+                    {
+                        // Best-effort terminal marking
+                    }
+
                     exitCode = e.ExitCode;
                     reason = ToCoreExitReason(e.ExitReason);
                     string? capturedStderrTail;

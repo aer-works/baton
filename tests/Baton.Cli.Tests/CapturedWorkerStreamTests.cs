@@ -329,4 +329,168 @@ public class CapturedWorkerStreamTests
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
     }
+
+    [Fact]
+    public void FailureIsolation_WhenWriteFails_DoesNotThrowAndDisablesFurtherWrites()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"stream-failure-isolation-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Create .stdout.log as a directory so FileStream opening will fail
+            Directory.CreateDirectory(Path.Combine(tempDir, ExecutionStreamLogger.StdoutLogFileName));
+
+            var logger = new ExecutionStreamLogger(tempDir);
+
+            // Should not throw, but safely catch, disable, and continue
+            logger.AppendStdout("first chunk\n"u8.ToArray());
+            logger.AppendStdout("second chunk\n"u8.ToArray());
+            logger.AppendStderr("stderr chunk\n"u8.ToArray());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
+
+    [Fact]
+    public async Task FailureIsolation_InCoreDispatcher_WhenStreamLoggerFails_ExecutionStillSucceeds()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"stream-dispatch-failure-isolation-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+
+            var definition = new WorkflowDefinition(
+                new WorkflowTemplateId("stream-failure-flow"),
+                1,
+                [new WorkflowStepDefinition(new StepId("worker"), "worker", [], ["out.txt"], [], new RetryPolicy(1))]);
+
+            var cmdLine = OperatingSystem.IsWindows()
+                ? "powershell -NoProfile -Command \"Write-Output 'Hello from failing-logger worker'\" & echo done > %BATON_OUTPUT_DIR%\\out.txt"
+                : "echo 'Hello from failing-logger worker' && echo done > \"$BATON_OUTPUT_DIR/out.txt\"";
+
+            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["worker"] = new WorkerBindingConfigEntry(
+                    "shell",
+                    new WorkerContract("worker", [], [new ProducedOutput("out.txt")], []),
+                    cmdLine,
+                    TimeSpan.FromSeconds(90))
+            };
+
+            var workflowFile = Path.Combine(testRoot, "workflow.json");
+            var bindingsFile = Path.Combine(testRoot, "bindings.json");
+            await File.WriteAllTextAsync(workflowFile, JsonSerializer.Serialize(definition), TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(bindingsFile, JsonSerializer.Serialize(bindings), TestContext.Current.CancellationToken);
+
+            var runOptions = new RunOptions(workflowFile, bindingsFile, roomDirectory);
+            var runResult = await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, runResult.State.Status);
+            Assert.Equal(StepStatus.Succeeded, runResult.State.Steps[0].Status);
+
+            var execId = runResult.State.Steps[0].LatestExecutionId!.Value.Value;
+            var execDir = Path.Combine(roomDirectory, "artifacts", $"execution_{execId}");
+            var stdoutFile = Path.Combine(execDir, ExecutionStreamLogger.StdoutLogFileName);
+            Assert.True(File.Exists(stdoutFile));
+            var text = await File.ReadAllTextAsync(stdoutFile, TestContext.Current.CancellationToken);
+            Assert.Contains("Hello from failing-logger worker", text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task CancelledExecution_PersistsStdoutEmittedBeforeCancellation()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"stream-cancel-persist-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+
+            var definition = new WorkflowDefinition(
+                new WorkflowTemplateId("cancel-persist-flow"),
+                1,
+                [new WorkflowStepDefinition(new StepId("worker"), "worker", [], ["out.txt"], [], new RetryPolicy(1))]);
+
+            var cmdLine = OperatingSystem.IsWindows()
+                ? "powershell -NoProfile -Command \"Write-Output 'pre-cancel output line'; Start-Sleep -Seconds 30\" & echo done > %BATON_OUTPUT_DIR%\\out.txt"
+                : "echo 'pre-cancel output line' && sleep 30 && echo done > \"$BATON_OUTPUT_DIR/out.txt\"";
+
+            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["worker"] = new WorkerBindingConfigEntry(
+                    "shell",
+                    new WorkerContract("worker", [], [new ProducedOutput("out.txt")], []),
+                    cmdLine,
+                    TimeSpan.FromSeconds(90))
+            };
+
+            var workflowFile = Path.Combine(testRoot, "workflow.json");
+            var bindingsFile = Path.Combine(testRoot, "bindings.json");
+            await File.WriteAllTextAsync(workflowFile, JsonSerializer.Serialize(definition), TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(bindingsFile, JsonSerializer.Serialize(bindings), TestContext.Current.CancellationToken);
+
+            using var cts = new CancellationTokenSource();
+            cts.CancelAfter(TimeSpan.FromMilliseconds(1500));
+
+            var runOptions = new RunOptions(workflowFile, bindingsFile, roomDirectory);
+            try
+            {
+                await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected cancellation
+            }
+
+            var artifactsDir = Path.Combine(roomDirectory, "artifacts");
+            Assert.True(Directory.Exists(artifactsDir));
+            var execDirs = Directory.GetDirectories(artifactsDir, "execution_*");
+            Assert.NotEmpty(execDirs);
+            var stdoutFile = Path.Combine(execDirs[0], ExecutionStreamLogger.StdoutLogFileName);
+            Assert.True(File.Exists(stdoutFile), $"Expected .stdout.log at {stdoutFile}");
+
+            var content = await File.ReadAllTextAsync(stdoutFile, TestContext.Current.CancellationToken);
+            Assert.Contains("pre-cancel output line", content);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void ConcurrentRead_WhileWriterHoldsFile_SucceedsWithDeleteShare()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"stream-concurrent-read-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var logger = new ExecutionStreamLogger(tempDir);
+            logger.AppendStdout("initial line\n"u8.ToArray());
+
+            var stdoutPath = Path.Combine(tempDir, ExecutionStreamLogger.StdoutLogFileName);
+
+            // Open reader with the FileShare.ReadWrite | FileShare.Delete mode that RoomDetailTool uses
+            using (var readerStream = new FileStream(stdoutPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                // Appending while reader has the stream open should succeed
+                logger.AppendStdout("second line\n"u8.ToArray());
+
+                using var sr = new StreamReader(readerStream);
+                var text = sr.ReadToEnd();
+                Assert.Contains("initial line", text);
+            }
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
 }

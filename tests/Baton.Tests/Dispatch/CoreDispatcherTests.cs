@@ -46,6 +46,37 @@ public class CoreDispatcherTests
         }
     }
 
+    [Fact]
+    public async Task DispatchAsync_when_stream_logger_fails_execution_still_succeeds()
+    {
+        var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
+            // Create .stdout.log as a directory to force ExecutionStreamLogger write failure
+            Directory.CreateDirectory(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName));
+
+            var environment = ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot);
+            var request = MakeRequest(environment);
+            var target = EchoHelloToOutputFile();
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Equal(CoreExitReason.Natural, result.Reason);
+            Assert.True(File.Exists(Path.Combine(outputDirectory, "hello.txt")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(artifactsRoot);
+            FileCleanup.Delete(logPath);
+        }
+    }
+
     /// <summary>
     /// #533: <see cref="CoreDispatchTarget.Environment"/> is the seam a vendor adapter uses to set a
     /// vendor-specific variable (e.g. Claude Code's subagent depth cap) without <c>Baton</c> ever

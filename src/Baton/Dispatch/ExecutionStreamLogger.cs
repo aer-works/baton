@@ -50,6 +50,8 @@ public sealed class ExecutionStreamLogger
     private readonly object _lock = new();
 
     private bool _isTerminal;
+    private bool _disabled;
+    private bool _failedOnce;
     private long _stdoutSize;
     private long _stderrSize;
 
@@ -59,11 +61,20 @@ public sealed class ExecutionStreamLogger
         _outputDirectory = outputDirectory;
         _maxSizeBytes = maxSizeBytes;
 
-        var stdoutPath = Path.Combine(_outputDirectory, StdoutLogFileName);
-        var stderrPath = Path.Combine(_outputDirectory, StderrLogFileName);
+        try
+        {
+            var stdoutPath = Path.Combine(_outputDirectory, StdoutLogFileName);
+            var stderrPath = Path.Combine(_outputDirectory, StderrLogFileName);
 
-        _stdoutSize = File.Exists(stdoutPath) ? new FileInfo(stdoutPath).Length : 0;
-        _stderrSize = File.Exists(stderrPath) ? new FileInfo(stderrPath).Length : 0;
+            _stdoutSize = File.Exists(stdoutPath) ? new FileInfo(stdoutPath).Length : 0;
+            _stderrSize = File.Exists(stderrPath) ? new FileInfo(stderrPath).Length : 0;
+        }
+        catch (Exception ex)
+        {
+            _disabled = true;
+            _failedOnce = true;
+            Console.Error.WriteLine($"Warning: Failed to initialize execution stream logger for '{outputDirectory}': {ex.Message}. Stream logging disabled for this execution.");
+        }
     }
 
     public bool IsTerminal
@@ -104,32 +115,53 @@ public sealed class ExecutionStreamLogger
 
         lock (_lock)
         {
+            if (_disabled)
+            {
+                return;
+            }
+
             if (_isTerminal)
             {
                 throw new InvalidOperationException("Cannot append to stream log after execution has reached a terminal event.");
             }
 
-            var logPath = Path.Combine(_outputDirectory, logFileName);
-            var rolloverPath = Path.Combine(_outputDirectory, rolloverFileName);
-
-            if (currentSize > 0 && (currentSize + data.Length > _maxSizeBytes))
+            try
             {
-                if (File.Exists(logPath))
+                var logPath = Path.Combine(_outputDirectory, logFileName);
+                var rolloverPath = Path.Combine(_outputDirectory, rolloverFileName);
+
+                if (currentSize > 0 && (currentSize + data.Length > _maxSizeBytes))
                 {
-                    RetryingFileMove.Move(logPath, rolloverPath, overwrite: true);
+                    if (File.Exists(logPath))
+                    {
+                        RetryingFileMove.Move(logPath, rolloverPath, overwrite: true);
+                    }
+
+                    currentSize = 0;
                 }
 
-                currentSize = 0;
-            }
+                Directory.CreateDirectory(_outputDirectory);
+                using (var fs = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    fs.Write(data, 0, data.Length);
+                    fs.Flush();
+                }
 
-            Directory.CreateDirectory(_outputDirectory);
-            using (var fs = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                currentSize += data.Length;
+            }
+            catch (InvalidOperationException)
             {
-                fs.Write(data, 0, data.Length);
-                fs.Flush();
+                throw;
             }
-
-            currentSize += data.Length;
+            catch (Exception ex)
+            {
+                _disabled = true;
+                if (!_failedOnce)
+                {
+                    _failedOnce = true;
+                    Console.Error.WriteLine($"Warning: Failed to persist execution stream log in '{_outputDirectory}': {ex.Message}. Stream logging disabled for this execution.");
+                }
+            }
         }
     }
 }

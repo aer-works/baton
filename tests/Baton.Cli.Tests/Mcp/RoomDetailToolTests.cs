@@ -2,10 +2,12 @@ using System.Text;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Artifacts;
+using Baton.Cli.Tests.TestSupport;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Status;
 using Baton.Store;
+using Baton.Templates;
 using Baton.Cli.Mcp;
 
 namespace Baton.Cli.Tests.Mcp;
@@ -331,6 +333,60 @@ public sealed class RoomDetailToolTests : IDisposable
                 DirectoryCleanup.DeleteRecursively(extraRoot);
             }
         }
+    }
+
+    [Fact]
+    public async Task DispatchAndRun_RealStdoutLogWritten_RoomDetailToolReturnsRealTail()
+    {
+        var roomDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName, "real-dispatch-room");
+        Directory.CreateDirectory(roomDir);
+
+        var definition = new WorkflowDefinition(
+            new WorkflowTemplateId("real-dispatch-flow"),
+            1,
+            [new WorkflowStepDefinition(new StepId("worker"), "worker", [], ["out.txt"], [], new RetryPolicy(1))]);
+
+        var cmdLine = OperatingSystem.IsWindows()
+            ? "powershell -NoProfile -Command \"Write-Output 'live worker stdout line 1'; Write-Output 'live worker stdout line 2'\" & echo output > %BATON_OUTPUT_DIR%\\out.txt"
+            : "echo 'live worker stdout line 1' && echo 'live worker stdout line 2' && echo output > \"$BATON_OUTPUT_DIR/out.txt\"";
+
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["shell"] = new ShellCommandWorkerAdapter() };
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["worker"] = new WorkerBindingConfigEntry(
+                "shell",
+                new WorkerContract("worker", [], [new ProducedOutput("out.txt")], []),
+                cmdLine,
+                TimeSpan.FromSeconds(90))
+        };
+
+        var workflowFile = Path.Combine(roomDir, "workflow.json");
+        var bindingsFile = Path.Combine(roomDir, "bindings.json");
+        await File.WriteAllTextAsync(workflowFile, JsonSerializer.Serialize(definition), TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(bindingsFile, JsonSerializer.Serialize(bindings), TestContext.Current.CancellationToken);
+
+        var runOptions = new RunOptions(workflowFile, bindingsFile, roomDir);
+        var runResult = await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(WorkflowStatus.Terminal, runResult.State.Status);
+        Assert.Equal(StepStatus.Succeeded, runResult.State.Steps[0].Status);
+
+        var tool = new RoomDetailTool();
+        var result = await tool.CallAsync(Parse("""{ "room": "real-dispatch-room" }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var view = JsonSerializer.Deserialize<RoomDetailView>(result.Text);
+        Assert.NotNull(view);
+        Assert.Equal("real-dispatch-room", view!.Name);
+        Assert.Null(view.Error);
+
+        Assert.NotNull(view.Stdout);
+        Assert.Contains("live worker stdout line 1", view.Stdout!.Text);
+        Assert.Contains("live worker stdout line 2", view.Stdout.Text);
+        Assert.False(view.Stdout.Truncated);
+        Assert.True(view.Stdout.TotalBytes > 0);
+        var execId = runResult.State.Steps[0].LatestExecutionId!.Value.Value;
+        Assert.Equal($"execution_{execId}", view.Stdout.Source);
     }
 
     [Fact]
