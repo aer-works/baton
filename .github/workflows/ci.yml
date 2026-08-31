@@ -28,7 +28,6 @@ jobs:
             dotnet:
               - 'src/**'
               - 'tests/**'
-              - 'native/core/**'
               - 'Baton.slnx'
               - 'Directory.Build.props'
               - 'coverage.runsettings'
@@ -62,15 +61,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Caches ~/.cargo and native/core/target, keyed off native/core/Cargo.lock, so
-      # `pixi run build-core`'s cargo build only recompiles when native/core actually changes.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native/core
-
-      # run-install/cache are off: the pixi env is deliberately empty (the .NET SDK and, since M7
-      # Phase 6, the Rust toolchain used to build native/core are both system
-      # installs, not conda packages — GitHub's standard runner images ship both already), and
+      # run-install/cache are off: the pixi env is deliberately empty (the .NET SDK is a system
+      # install, not a conda package — GitHub's standard runner images ship it already), and
       # setup-pixi's `pixi list` step fails hard on an empty environment. `pixi run` performs the
       # (trivial) implicit install on first use instead.
       # #1117: the pixi binary download itself flaked ("socket hang up") four times on
@@ -183,10 +175,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native/core
-
       - uses: prefix-dev/setup-pixi@v0.8.0
         id: pixi-attempt-1
         continue-on-error: true
@@ -214,10 +202,6 @@ jobs:
       - name: Lint
         run: pixi run lint
 
-      # #1458: why this step exists is on pixi.toml's test-core task, the one canonical statement.
-      - name: Rust test
-        run: pixi run test-core
-
       - name: Shutdown dotnet build server
         run: pixi run dotnet build-server shutdown
         if: always()
@@ -241,10 +225,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native/core
 
       # #1117: the pixi binary download itself flaked ("socket hang up") four times on
       # 2026-08-12, failing runs before any repo code executed. One bounded retry; a second
@@ -275,9 +255,8 @@ jobs:
           cache: true
           cache-dependency-path: "**/packages.lock.json"
 
-      # This job's own host (Windows) is folded in automatically by `pixi run pack`'s build-core
-      # dependency + Baton.Core.csproj's existing build-time copy (M7 Phase 6) — win-x64 is the only
-      # RID now, so there is nothing left to fetch from another leg's artifact.
+      # Pure managed code since #1474 — no native library to build or embed, so nothing to fetch
+      # from another leg's artifact.
       - name: Pack baton
         run: pixi run pack
 
@@ -315,8 +294,7 @@ jobs:
         with:
           # The record-once check below diffs against origin/main. A shallow clone cannot see it, and
           # the check fails closed rather than passing on an unreadable diff -- so the depth is what
-          # makes it run at all. native/core (needed by build-cli below, source only, no cargo) is
-          # plain tracked files since #1458, so no submodule flag is needed to bring it along.
+          # makes it run at all.
           fetch-depth: 0
       # Same setup the test and pack jobs use, for the reason recorded there: pinning a pixi version
       # pinned one too old to read this repo's lock file (version 7), and setup-pixi's own install
