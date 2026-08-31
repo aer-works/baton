@@ -470,7 +470,9 @@ identical values across all three shapes (§3).
 whichever step this same projection currently calls `"Running"` — never a separate probe, and never
 one entry per worker role the room happens to define. All five are absent together whenever no step
 is Running (pending, paused between steps, or a terminal room — the sentinel fast path never reads
-bindings.json at all), or whenever `bindings.json` is missing (a pre-#153 room) or fails to parse:
+bindings.json at all), whenever `bindings.json` is missing (a room predating bindings files) or
+fails to parse, or whenever a valid bindings file simply lacks the Running step's worker role as a
+key (where `resume` treats that as a hard error, this display path degrades):
 fail-open for display metadata, so one unreadable bindings file degrades this row, never the whole
 `fleet_status` call. `timeoutMs` is deliberately the raw configured timeout, not a
 countdown — a "remaining" figure would already be stale by the time a caller reads it. A renderer

@@ -487,9 +487,23 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(singleRoom.Model);
         Assert.Null(singleRoom.Effort);
         Assert.Null(singleRoom.TimeoutMs);
-        // Wire-level: absent, not emitted null.
-        Assert.DoesNotContain("\"role\"", JsonSerializer.Serialize(singleRoom));
-        Assert.DoesNotContain("\"timeoutMs\"", JsonSerializer.Serialize(singleRoom));
+        AssertBindingFieldsAbsentFromWire(singleRoom);
+    }
+
+    /// <summary>
+    /// Wire-level "absent, not emitted null" for all five binding fields — object-level
+    /// <c>Assert.Null</c> cannot distinguish an omitted key from a serialized <c>"field": null</c>
+    /// round-tripped back, which is exactly what a dropped <c>JsonIgnore(WhenWritingNull)</c> would
+    /// ship silently (PR #1504 review finding A).
+    /// </summary>
+    private static void AssertBindingFieldsAbsentFromWire(FleetRoomStatusView room)
+    {
+        var wire = JsonSerializer.Serialize(room);
+        Assert.DoesNotContain("\"role\"", wire);
+        Assert.DoesNotContain("\"adapter\"", wire);
+        Assert.DoesNotContain("\"model\"", wire);
+        Assert.DoesNotContain("\"effort\"", wire);
+        Assert.DoesNotContain("\"timeoutMs\"", wire);
     }
 
     /// <summary>
@@ -543,6 +557,66 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(singleRoom.Model);
         Assert.Null(singleRoom.Effort);
         Assert.Null(singleRoom.TimeoutMs);
+        AssertBindingFieldsAbsentFromWire(singleRoom);
+    }
+
+    /// <summary>
+    /// #1503 fail-open arm three (PR #1504 review finding B): a VALID <c>bindings.json</c> whose
+    /// dictionary simply lacks the Running step's worker role degrades identically to a missing
+    /// file — display metadata fails open where <c>ResumeCommand</c> treats the same situation as a
+    /// hard error, because a fleet row without chips beats a fleet call that throws.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_ValidBindingsWithoutTheRunningRolesKey_OmitsBindingFieldsButStillRendersRow()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "role-missing-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-role-missing"), "agent-worker", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("role-missing-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["some-other-role"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("some-other-role", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Do something else.",
+                TimeSpan.FromMinutes(5),
+                Model: "claude-opus-4",
+                Effort: "high"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-role-missing-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("role-missing-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        Assert.Null(singleRoom.Error);
+        AssertBindingFieldsAbsentFromWire(singleRoom);
     }
 
     [Fact]
