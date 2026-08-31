@@ -48,12 +48,15 @@ public static class RunCommand
     /// </exception>
     /// <exception cref="Baton.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
     /// <param name="inFlightExecutions">
-    /// M15 Phase 4's (issue #140) additive caller-retained delivery point — forwarded, unchanged, to
-    /// <see cref="MutationInterface.StartWorkflowAsync"/>. <c>null</c> for every caller (the CLI
-    /// included) that has no need to reach a live execution mid-pump; a caller that retains one can
-    /// signal a targeted Cancel to a specific in-flight execution this same call dispatched, without
-    /// a second mutation-surface call racing the same guard (originally <c>Baton.RoomSession</c>'s
-    /// <c>RoomClient</c>, itself since deleted, #1420).
+    /// M15 Phase 4's (issue #140) caller-retained delivery point — forwarded to
+    /// <see cref="MutationInterface.StartWorkflowAsync"/>. A caller that retains one can signal a
+    /// targeted Cancel to a specific in-flight execution this same call dispatched, without a second
+    /// mutation-surface call racing the same guard (originally <c>Baton.RoomSession</c>'s
+    /// <c>RoomClient</c>, itself since deleted, #1420). <c>null</c> (every CLI caller today) no longer
+    /// means "unreachable mid-pump" as of #1495: this method retains its own instance either way and
+    /// runs <see cref="CancelRequestPoller"/> against <paramref name="options"/>'s <c>RoomDirectoryPath</c>
+    /// for this call's whole duration — the out-of-band channel <c>baton cancel</c> falls through to
+    /// once it finds this room's <c>flow.lock</c> already held.
     /// </param>
     /// <param name="onWorkerStdoutLine">
     /// M24 Phase 1's live in-turn streaming — forwarded verbatim to <see cref="WorkerBindingResolver.Resolve"/>.
@@ -128,6 +131,17 @@ public static class RunCommand
             TerminalSentinelWriter.DeleteStaleSentinel(options.RoomDirectoryPath);
         }
 
+        // #1495 review finding 5: clear any unconsumed pending cancel.request from a crashed prior
+        // pump before this attempt's poller starts — see CancelRequestFile.DeleteStalePendingRequest.
+        CancelRequestFile.DeleteStalePendingRequest(options.RoomDirectoryPath);
+
+        // #1495: retained regardless of whether the caller supplied one, so THIS call can poll
+        // cancel.request against it below — a caller-supplied instance is still honoured (forwarded
+        // to MutationInterface unchanged), but a null one no longer means "unreachable mid-pump": every
+        // baton run/dispatch/redispatch invocation (they all funnel through this method) is now a live
+        // arrest target via the file channel, not just whichever caller happens to retain the registry.
+        var liveInFlightExecutions = inFlightExecutions ?? new InFlightExecutionRegistry();
+
         FlowState state;
         {
             // Scoped, not the method-wide `await using` this used to be: a Paused return must
@@ -138,24 +152,49 @@ public static class RunCommand
             var reader = new FlowEventLogReader(logPath);
             var dispatcher = new CoreDispatcher(writer);
 
-            state = await MutationInterface.StartWorkflowAsync(
-                    workflowId,
-                    options.RoomDirectoryPath,
-                    snapshot,
-                    workerBindings,
-                    artifactsRootPath,
-                    reader,
-                    writer,
-                    dispatcher,
-                    inFlightExecutions,
-                    cancellationToken,
-                    holderDescription: $"baton run pump (pid {Environment.ProcessId})",
-                    // #1094: a foreground run that quota-parks would otherwise sit silently until the
-                    // reset (~a day out); surface it so the paced wait is legible. To stderr — it is a
-                    // status notice, not run output.
-                    onVendorQuotaPark: resumesAt => Console.Error.WriteLine(FormatVendorQuotaParkNotice(resumesAt)),
-                    settleOnVendorExhaustion: options.SettleOnVendorExhaustion)
-                .ConfigureAwait(false);
+            // #1495: the out-of-band arrest channel's pump-side reader — polls cancel.request at a
+            // modest cadence (never flow.lock) for this call's own duration, routing a found request to
+            // liveInFlightExecutions. Cancelled the instant the pump call below returns (success,
+            // exception, or host stop alike), never left running past this method's own lifetime.
+            using var pollCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var pollTask = CancelRequestPoller.RunAsync(
+                options.RoomDirectoryPath, logPath, snapshot, liveInFlightExecutions,
+                CancelRequestPoller.DefaultPollInterval, pollCancellation.Token);
+
+            try
+            {
+                state = await MutationInterface.StartWorkflowAsync(
+                        workflowId,
+                        options.RoomDirectoryPath,
+                        snapshot,
+                        workerBindings,
+                        artifactsRootPath,
+                        reader,
+                        writer,
+                        dispatcher,
+                        liveInFlightExecutions,
+                        cancellationToken,
+                        holderDescription: $"baton run pump (pid {Environment.ProcessId})",
+                        // #1094: a foreground run that quota-parks would otherwise sit silently until the
+                        // reset (~a day out); surface it so the paced wait is legible. To stderr — it is a
+                        // status notice, not run output.
+                        onVendorQuotaPark: resumesAt => Console.Error.WriteLine(FormatVendorQuotaParkNotice(resumesAt)),
+                        settleOnVendorExhaustion: options.SettleOnVendorExhaustion)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                pollCancellation.Cancel();
+                try
+                {
+                    await pollTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected: pollCancellation firing mid-tick (e.g. mid ReadAllAsync) surfaces here,
+                    // not as a fault the run's own result should carry.
+                }
+            }
         }
 
         // See RunOptions.Wait's own doc for the full contract; this just implements it.

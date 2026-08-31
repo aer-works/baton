@@ -43,9 +43,13 @@ public class CancelOptionsParserTests
     }
 
     [Fact]
-    public void A_missing_execution_option_throws()
+    public void An_omitted_execution_option_parses_as_null_room_level_targeting_1495()
     {
-        Assert.Throws<CliArgumentException>(() => CancelOptionsParser.Parse(["task", "--bindings", "bindings.json"]));
+        var options = CancelOptionsParser.Parse(["task", "--bindings", "bindings.json"]);
+
+        Assert.Equal(Path.GetFullPath("task"), options.RoomDirectoryPath);
+        Assert.Null(options.ExecutionId);
+        Assert.Equal("bindings.json", options.BindingsFilePath);
     }
 
     [Fact]
