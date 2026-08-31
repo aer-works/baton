@@ -49,9 +49,23 @@ public static class HookCheckCommand
     public const string DeniedToolsEnvironmentVariable = "BATON_HOOK_DENIED_TOOLS";
 
     /// <summary>
-    /// The environment variable carried for pattern-scoped shell grants (#659).
+    /// The environment variable carried for pattern-scoped shell grants (#659). Wired into a claude
+    /// worker's environment since #1459 (<c>ClaudeWorkerAdapter.ShellPatternsVariable</c>, same
+    /// literal) — before that this name was declared on the adapter side and never set, so this
+    /// channel always read <see cref="ShellPatternListStatus.Absent"/>.
     /// </summary>
     public const string ShellPatternsEnvironmentVariable = "BATON_HOOK_SHELL_PATTERNS";
+
+    /// <summary>
+    /// The environment variable carrying this invocation's standing-deny shell patterns (0022's
+    /// DenyAlways rung, #390) — same literal as <c>AgyHookCheckCommand.DeniedShellPatternsEnvironmentVariable</c>
+    /// and <c>ClaudeWorkerAdapter.DeniedShellPatternsVariable</c> (record-once). Belt-and-braces here:
+    /// claude's primary enforcement of this rung is <c>--disallowedTools Bash(pattern)</c>, which
+    /// survives a silently-dead hook (#530); this channel lets the segment-level check below also
+    /// refuse a denied family riding a chain, which <c>--disallowedTools</c>' own whole-line matching
+    /// does not provably reach (spec/baton.md §9).
+    /// </summary>
+    public const string DeniedShellPatternsEnvironmentVariable = "BATON_HOOK_DENIED_SHELL_PATTERNS";
 
     /// <summary>
     /// Exit code 2, fed back to Claude Code as a blocking <c>PreToolUse</c> error (stderr becomes
@@ -80,14 +94,17 @@ public static class HookCheckCommand
     /// </param>
     public static int Execute(
         TextReader stdin, TextWriter stderr, string? deniedToolsRaw, string? outboxDirectory = null,
-        string? workspaceDirectory = null)
+        string? workspaceDirectory = null, string? shellPatternsRaw = null,
+        string? deniedShellPatternsRaw = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stderr);
 
         try
         {
-            return Decide(stdin, stderr, deniedToolsRaw, outboxDirectory, workspaceDirectory);
+            return Decide(
+                stdin, stderr, deniedToolsRaw, outboxDirectory, workspaceDirectory, shellPatternsRaw,
+                deniedShellPatternsRaw);
         }
         catch (Exception ex)
         {
@@ -119,7 +136,7 @@ public static class HookCheckCommand
 
     private static int Decide(
         TextReader stdin, TextWriter stderr, string? deniedToolsRaw, string? outboxDirectory,
-        string? workspaceDirectory)
+        string? workspaceDirectory, string? shellPatternsRaw, string? deniedShellPatternsRaw)
     {
         // Always drain stdin before deciding anything, even when there is nothing to check
         // against below: Claude Code is the writer on the other end of this pipe, and exiting
@@ -163,6 +180,7 @@ public static class HookCheckCommand
 
         string? toolName;
         string? writeTarget = null;
+        string? shellCommandLine = null;
         try
         {
             using var doc = JsonDocument.Parse(input);
@@ -174,6 +192,7 @@ public static class HookCheckCommand
 
             toolName = toolNameProp.GetString();
             writeTarget = ReadWriteTarget(doc.RootElement, toolName);
+            shellCommandLine = ReadShellCommandLine(doc.RootElement, toolName);
         }
         catch (JsonException)
         {
@@ -250,6 +269,43 @@ public static class HookCheckCommand
             return DeniedExitCode;
         }
 
+        // #1459: the second enforcement layer for a scoped shell grant. Bash's own presence/absence
+        // in `denied` above is the category gate; this evaluates the ACTUAL command claude granted
+        // Bash for. See ShellCommandPatternMatcher.EvaluateChainedCommand for the measured hole this
+        // closes and the segmentation rule that closes it (spec/baton.md §9).
+        if (toolName == "Bash")
+        {
+            var shellPatternList = ShellPatternList.Parse(shellPatternsRaw, VendorTag);
+
+            // Absent or another vendor's list reads OPPOSITE to how the denied-tool channel above
+            // reads its own absence. That channel denies on Absent because it is the sole record of
+            // what Bash-adjacent categories were withheld, and a silently-dead copy of it would look
+            // exactly like nothing withheld. This channel is a SECOND layer on top of claude's own
+            // --allowedTools/--disallowedTools (which still ran and already decided Bash is reachable
+            // at all) -- so a channel that never arrived here is read as "no scoped pattern list was
+            // ever wired for this dispatch", i.e. an unscoped shell grant, not a broken deny. Making it
+            // deny-on-absent would fail every existing unscoped `RunShellCommands: true` claude role
+            // (`implement`, `janitor`) the moment this shipped, which is exactly what #1459's own issue
+            // body flags as the reason this was deferred out of #1456.
+            if (shellPatternList.Status == ShellPatternListStatus.Present && shellPatternList.Patterns.Count > 0)
+            {
+                var deniedShellPatternList = ShellPatternList.Parse(deniedShellPatternsRaw, VendorTag);
+                var deniedShellPatterns = deniedShellPatternList.Status == ShellPatternListStatus.Present
+                    ? deniedShellPatternList.Patterns
+                    : Array.Empty<string>();
+
+                var result = Baton.Vendors.ShellCommandPatternMatcher.EvaluateChainedCommand(
+                    shellCommandLine, shellPatternList.Patterns, deniedShellPatterns);
+
+                if (!result.IsAllowed)
+                {
+                    stderr.WriteLine($"AER: the 'Bash' command is denied under this session's scoped " +
+                                     $"shell grant — {result.Reason}.");
+                    return DeniedExitCode;
+                }
+            }
+        }
+
         return AllowedExitCode;
     }
 
@@ -310,6 +366,32 @@ public static class HookCheckCommand
     }
 
     private static readonly string[] WriteTargetProperties = ["file_path", "notebook_path"];
+
+    /// <summary>
+    /// The raw shell command line a <c>Bash</c> call carries, or <see langword="null"/> for any other
+    /// tool or an unreadable payload. claude's Bash tool_input key is <c>command</c> (#1459) — the
+    /// same key <see cref="Baton.Vendors.ShellCommandPatternMatcher.TryReadCommandLine"/> reads, not
+    /// reused here directly because that helper wants the raw tool_input JSON text rather than an
+    /// already-parsed <see cref="JsonElement"/>, and re-serializing one back to text just to re-parse
+    /// it is wasted work this hook runs on every single tool call.
+    /// </summary>
+    private static string? ReadShellCommandLine(JsonElement root, string? toolName)
+    {
+        if (toolName != "Bash")
+        {
+            return null;
+        }
+
+        if (!root.TryGetProperty("tool_input", out var toolInput) ||
+            toolInput.ValueKind != JsonValueKind.Object ||
+            !toolInput.TryGetProperty("command", out var commandProp) ||
+            commandProp.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return commandProp.GetString();
+    }
 
     /// <summary>
     /// The write family this gate judges: the tools the outbox exemption applies to when a write is

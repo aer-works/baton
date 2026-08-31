@@ -229,6 +229,23 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             // #600 tags it with the vendor; #649 makes its contents differ from the flag.
             (DeniedToolsVariable, $"{DeniedToolsVendorTag}:{withheld}"),
             (SimpleModeVariable, "0"),
+            // #1459: always set, even empty -- an empty-but-tagged list is the deliberate
+            // unscoped-shell reading (HookCheckCommand.Decide skips the segment-level check), where an
+            // absent/wrong-vendor one is a broken channel and also skips it (see that method's own
+            // remarks for why claude's absent case reads opposite to agy's). Reuses
+            // AgyWorkerAdapter's builders when there's a structured grant to read; falls back to
+            // BuildShellPatternsFromRawScope for the raw PermissionScope escape hatch (#1459 fix --
+            // see that method's own doc comment for the bypass this closes).
+            (ShellPatternsVariable,
+                $"{ShellPatternsVendorTag}:{(invocation.PermissionGrant is { } shellGrant
+                    ? AgyWorkerAdapter.BuildShellPatterns(shellGrant)
+                    : BuildShellPatternsFromRawScope(permissionScope))}"),
+            // The raw PermissionScope escape hatch has no denied-pattern concept to parse out of it
+            // (it feeds --allowedTools alone, never --disallowedTools) -- stays empty on that path,
+            // same as before this fix. Not a gap: BuildShellPatternsFromRawScope's doc comment records
+            // why an allow-only channel is still a strict improvement there.
+            (DeniedShellPatternsVariable,
+                $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellPatterns(invocation.PermissionGrant)}"),
         };
 
         if (Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable) is { Length: > 0 } configRoot)
@@ -303,9 +320,29 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
 
     /// <summary>
     /// The environment variable carrying shell command patterns for pattern-scoped grants (#659).
+    /// Declared but never set into a spawned worker's environment until #1459 — see
+    /// <see cref="ShellPatternsVendorTag"/> and <c>Resolve</c>'s environment list below for the wiring,
+    /// and <c>HookCheckCommand.Decide</c> for what reads it.
     /// </summary>
     public const string ShellPatternsVariable = "BATON_HOOK_SHELL_PATTERNS";
 
+    /// <summary>
+    /// The vendor tag prefixing <see cref="ShellPatternsVariable"/>'s and
+    /// <see cref="DeniedShellPatternsVariable"/>'s values (#600's pattern, applied here by #1459).
+    /// </summary>
+    public const string ShellPatternsVendorTag = "claude";
+
+    /// <summary>
+    /// The environment variable carrying this invocation's <b>denied</b> shell command patterns —
+    /// 0022's DenyAlways rung (#390), same literal as <c>AgyWorkerAdapter.DeniedShellPatternsVariable</c>
+    /// (record-once: declared there first, referenced here rather than restated). claude's OWN
+    /// enforcement for that rung is <c>--disallowedTools Bash(pattern)</c>
+    /// (<see cref="StandingShellDenials"/>), which the CLI applies with precedence over
+    /// <c>--allowedTools</c> and which survives a silently-dead hook (#530) — so this channel is
+    /// belt-and-braces for the hook's own segment-level check (#1459, spec/baton.md §9), not this
+    /// vendor's only enforcement of a standing "never" the way it is on agy.
+    /// </summary>
+    public const string DeniedShellPatternsVariable = AgyWorkerAdapter.DeniedShellPatternsVariable;
 
     /// <summary>
     /// The environment variable name Claude Code reads for its subagent fan-out depth cap.
@@ -532,6 +569,349 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         }
 
         return invocation.PermissionScope ?? DefaultPermissionScope;
+    }
+
+    /// <summary>
+    /// Derives the hook's ALLOWED shell-pattern channel from the raw <c>PermissionScope</c> escape
+    /// hatch, for when <see cref="WorkerInvocation.PermissionGrant"/> is null and
+    /// <see cref="AgyWorkerAdapter.BuildShellPatterns"/> has no structured
+    /// <see cref="PermissionGrant.ShellCommandPatterns"/> to read (#1459 fix, from PR #1506's
+    /// adversarial security review).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The bypass this closes.</b> A worker binding can scope its shell via the raw
+    /// <c>PermissionScope</c> string instead of a structured grant (e.g.
+    /// <c>PermissionScope: "Write,Bash(git diff*)"</c>, <c>PermissionGrant: null</c> --
+    /// <c>ClaudeWorkerAdapterTests.An_explicit_permission_scope_overrides_the_default</c> exercises
+    /// exactly this shape). Before this fix the shell-pattern channel was built exclusively from
+    /// <c>AgyWorkerAdapter.BuildShellPatterns(invocation.PermissionGrant)</c>, which returns empty for
+    /// a null grant -- so <c>BATON_HOOK_SHELL_PATTERNS</c> came out as the literal <c>"claude:"</c>
+    /// (tagged, zero patterns) regardless of what the raw scope actually granted.
+    /// <c>HookCheckCommand.Decide</c> reads that shape as <c>Present</c> with <c>Patterns.Count == 0</c>,
+    /// which is its deliberate no-op reading for an unscoped shell (see that method's own remarks) --
+    /// so the second enforcement layer #1459 added never engaged, while <c>--allowedTools
+    /// "Bash(git diff*)"</c> still reached claude and the #1461 chaining escape
+    /// (<c>git diff; echo escaped</c>) executed unblocked, identically to the pre-#1459 state.
+    /// </para>
+    /// <para>
+    /// <b>Single source of truth.</b> This parses <paramref name="resolvedScope"/> -- literally the
+    /// same string <see cref="Resolve"/> already computed via <see cref="ResolvePermissionScope"/> and
+    /// passes to <c>--allowedTools</c>, not a second, independently-derived copy of it -- so the hook
+    /// channel can never scope a shell more narrowly or more broadly than claude's own flag did; the
+    /// two are read from one value rather than kept in sync by hand. No existing parser in this
+    /// codebase tokenizes a raw permission-scope string into <c>Bash(pattern)</c> clauses (checked:
+    /// neither <c>Baton.Cli.ShellPatternList</c>/<c>DeniedToolList</c> -- which parse the
+    /// already-vendor-tagged <em>environment variable</em> shape, a different string, and live in a
+    /// project <c>Baton.Vendors</c> cannot reference -- nor anything in
+    /// <c>ShellCommandPatternMatcher</c>, which parses a shell *command line*, not a permission-scope
+    /// clause list); this is new, minimal, and reused nowhere else that would otherwise drift from it.
+    /// </para>
+    /// <para>
+    /// <b>Only <c>Bash(&lt;pattern&gt;)</c> clauses populate the channel.</b> A bare <c>Bash</c> clause
+    /// (no parens -- genuinely unscoped shell) is deliberately left out: extracting a pattern from it
+    /// would deny an intentionally-unscoped grant, which is the opposite defect from the one this
+    /// fixes. This mirrors <see cref="TryTranslatePermissionGrant"/>'s own structured-grant handling,
+    /// which likewise emits bare <c>Bash</c> only when <see cref="PermissionGrant.ShellCommandPatterns"/>
+    /// is empty. An empty-interior <c>Bash()</c> clause is a different case -- it opens the grant syntax
+    /// rather than omitting it -- and is refused rather than left out; see the per-clause throw below
+    /// for why (round-5 re-review of PR #1506).
+    /// </para>
+    /// <para>
+    /// <b>Categorically fail-closed (#1459 fix 3, from PR #1506's round-4 re-review).</b> The channel
+    /// now accepts <em>only</em> the shape <see cref="TryTranslatePermissionGrant"/> itself ever emits:
+    /// top-level comma-separated clauses, each either non-<c>Bash(</c> (ignored, unchanged) or a
+    /// balanced <c>Bash(&lt;single pattern&gt;)</c>. Anything else throws
+    /// <see cref="PermissionGrantUnsupportedException"/> rather than being silently dropped or guessed
+    /// at. Two holes drove this:
+    /// </para>
+    /// <para>
+    /// <b>1. Whole-string balance gate, checked before any split.</b> An unbalanced clause elsewhere in
+    /// the scope can eat the top-level comma that should have separated it from a real <c>Bash(</c>
+    /// grant -- <c>"Read(,Bash(git diff*)"</c> merges into one blob starting <c>Read(</c>, fails the
+    /// <c>Bash(</c> prefix check, and the genuine <c>Bash(git diff*)</c> grant vanishes with no throw,
+    /// reopening #1461. So before any clause splitting, if the parentheses across the <em>whole</em>
+    /// <paramref name="resolvedScope"/> do not balance (tracked by the private <c>ParensBalance</c>
+    /// helper) <em>and</em> the scope contains the substring <c>"Bash("</c>, this throws immediately. A
+    /// scope with a stray unbalanced paren but no <c>Bash(</c> substring at all is still read as "no
+    /// Bash grant present" and stays a no-op -- the gate exists to protect a real grant from an
+    /// unrelated typo, not to reject every malformed scope on principle.
+    /// </para>
+    /// <para>
+    /// <b>2. No comma-list inside one clause, even a balanced one.</b> Fix 2 (below, now superseded)
+    /// read <c>Bash(git diff*, git status*)</c> as granting both patterns, on the assumption that
+    /// claude's own <c>--allowedTools</c> parser tokenizes an internal comma-list the same way. That
+    /// assumption was never measured (tracked as #1514), and this hook channel and claude's own grant
+    /// are two independently-maintained layers that must not silently drift apart on an unmeasured
+    /// parsing assumption. <see cref="TryTranslatePermissionGrant"/> itself never emits that shape --
+    /// multiple patterns always come out as separate <c>Bash(p1),Bash(p2)</c> clauses -- so a clause
+    /// whose balanced interior itself splits into more than one top-level piece is refused rather than
+    /// honored: write it as separate <c>Bash(...)</c> clauses instead, which this parser still accepts
+    /// and joins exactly as <see cref="TryTranslatePermissionGrant"/>'s own multi-pattern grants do.
+    /// </para>
+    /// <para>
+    /// A clause that <em>starts</em> with <c>Bash(</c> but whose parens never balance (no closing
+    /// <c>)</c>, or trailing content after the one that closes the outermost paren) is likewise refused
+    /// with <see cref="PermissionGrantUnsupportedException"/> rather than silently dropped -- the
+    /// pre-fix behaviour otherwise reached the exact same empty-channel shape
+    /// <see cref="HookCheckCommand.Decide"/> reads as "deliberately unscoped shell"
+    /// (<c>Patterns.Count == 0</c>), reopening this method's own #1459 bypass for any hand-typed scope
+    /// a human gets the parens wrong on. This is the resolve-time analogue of
+    /// <see cref="ShellCommandPatternMatcher.EvaluateChainedCommand"/>'s <c>Unparseable</c> verdict,
+    /// which fails closed on the same kind of ambiguity at decide-time instead -- that method returns a
+    /// sentinel because it runs per shell command inside the hook and a thrown exception there is not
+    /// a decision the hook process can act on the same way; this one runs once at dispatch construction,
+    /// the same place <see cref="TryTranslatePermissionGrant"/>'s own gap already throws
+    /// <see cref="PermissionGrantUnsupportedException"/>, so throwing here reuses that precedent rather
+    /// than inventing a second fail-closed vocabulary for the same adapter. A clause that is not a
+    /// <c>Bash(...)</c> clause at all (no <c>Bash(</c> prefix -- including bare <c>Bash</c>) is
+    /// untouched by any of this and stays excluded, per the paragraph above: "no <c>Bash(</c> clause
+    /// present" and "a <c>Bash(</c> clause present but unparseable" are different states, and only the
+    /// second one throws.
+    /// </para>
+    /// <para>
+    /// <b>Denied patterns are not derivable from this path.</b> The raw scope string carries only what
+    /// is ALLOWED -- it feeds <c>--allowedTools</c> alone, and there is no raw-scope equivalent of
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> to parse out of it, so
+    /// <see cref="DeniedShellPatternsVariable"/> stays empty on this path, unchanged by this fix. That
+    /// is still a strict improvement over the pre-fix behaviour: the hook's own allow-list-and-segment
+    /// check (<see cref="ShellCommandPatternMatcher.EvaluateChainedCommand"/>) already denies anything
+    /// not explicitly allowed, so an allow-only channel closes the #1461 chaining escape without
+    /// needing a deny list of its own.
+    /// </para>
+    /// </remarks>
+    private static string BuildShellPatternsFromRawScope(string resolvedScope)
+    {
+        if (string.IsNullOrWhiteSpace(resolvedScope))
+        {
+            return string.Empty;
+        }
+
+        // Whole-string balance gate, checked before any clause splitting -- this method's own remarks
+        // above record the round-4 HIGH it closes and the scope this gate is narrowed to.
+        if (!ParensBalance(resolvedScope) && resolvedScope.Contains("Bash(", StringComparison.Ordinal))
+        {
+            throw new PermissionGrantUnsupportedException(
+                "claude",
+                $"the raw PermissionScope '{resolvedScope}' has unbalanced parentheses somewhere in " +
+                "the scope and contains a Bash( grant -- refusing rather than risking an unrelated " +
+                "unbalanced clause silently swallowing the real Bash(...) grant");
+        }
+
+        // Fusion gate: every Bash( grant must head its own top-level clause. SplitAtTopLevelCommas can
+        // only separate grants a top-level comma actually divides, and the loop below drops any clause
+        // that doesn't START with Bash( -- so a Bash( grant fused into another clause with no separating
+        // comma ("Read()Bash(git diff*)", "Bash(a)Bash(b)", "x Bash(git diff*)") is perfectly balanced,
+        // passes the balance gate above, then vanishes silently on the StartsWith continue. The balance
+        // gate cannot see this (the string balances); only a count can. If the scope names more Bash(
+        // grants than there are top-level clauses that start with Bash(, at least one is buried inside a
+        // clause we would drop -- refuse rather than lose it. This is the round-5 closure that makes the
+        // no-op path reachable ONLY when no Bash( grant is present at all.
+        var clauses = SplitAtTopLevelCommas(resolvedScope);
+        var bashGrantOccurrences = CountOccurrences(resolvedScope, "Bash(");
+        var bashHeadedClauses = 0;
+        foreach (var rawClause in clauses)
+        {
+            if (rawClause.Trim().StartsWith("Bash(", StringComparison.Ordinal))
+            {
+                bashHeadedClauses++;
+            }
+        }
+
+        if (bashGrantOccurrences != bashHeadedClauses)
+        {
+            throw new PermissionGrantUnsupportedException(
+                "claude",
+                $"the raw PermissionScope '{resolvedScope}' fuses a Bash(...) grant into another " +
+                "clause without a separating top-level comma, where it would be silently dropped from " +
+                "the shell-pattern hook channel -- write each Bash(...) grant as its own top-level " +
+                "clause (Bash(p1),Bash(p2)) so the #1459 bypass this method exists to close stays shut");
+        }
+
+        List<string> patterns = [];
+        foreach (var rawClause in clauses)
+        {
+            var clause = rawClause.Trim();
+            if (clause.Length == 0)
+            {
+                continue;
+            }
+
+            // Not a Bash(...) clause at all -- bare `Bash` and every other category (Write, Read, ...)
+            // are ignored here, unchanged from before this fix. Only a clause that STARTS a Bash(...)
+            // grant and then fails to parse falls into a throw below.
+            if (!clause.StartsWith("Bash(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!TryExtractBalancedBashClauseInner(clause, out var inner))
+            {
+                throw new PermissionGrantUnsupportedException(
+                    "claude",
+                    $"the raw PermissionScope clause '{clause}' opens a Bash(...) grant whose " +
+                    "parentheses never balance -- refusing to silently drop it from the " +
+                    "shell-pattern hook channel, which would reopen the #1459 bypass this method " +
+                    "exists to close");
+            }
+
+            // #1514: whether claude's own --allowedTools tokenizes a comma-list inside one Bash(...)
+            // clause the same way this channel would is unmeasured, and TryTranslatePermissionGrant
+            // itself never emits that shape -- it always emits separate Bash(p1),Bash(p2) clauses for
+            // multiple patterns. Refuse rather than let the two layers drift on a guess.
+            if (SplitAtTopLevelCommas(inner).Count > 1)
+            {
+                throw new PermissionGrantUnsupportedException(
+                    "claude",
+                    $"the raw PermissionScope clause '{clause}' packs more than one pattern into a " +
+                    "single Bash(...) clause via an internal comma -- this channel only honors " +
+                    "single-pattern Bash(...) clauses; write separate Bash(p1),Bash(p2) clauses " +
+                    "instead (see #1514 for why the comma-list-inside-one-clause form isn't honored)");
+            }
+
+            var pattern = inner.Trim();
+            if (pattern.Length == 0)
+            {
+                throw new PermissionGrantUnsupportedException(
+                    "claude",
+                    $"the raw PermissionScope clause '{clause}' opens a Bash(...) grant with an empty " +
+                    "pattern -- this channel yields an empty shell-pattern channel ONLY when no Bash( " +
+                    "grant is present at all, so an explicit-but-empty Bash() grant is refused rather " +
+                    "than silently read as unscoped, which would reopen the #1459 bypass this method closes");
+            }
+
+            patterns.Add(pattern);
+        }
+
+        return string.Join(',', patterns);
+    }
+
+    /// <summary>
+    /// Whole-string parenthesis balance check used by <see cref="BuildShellPatternsFromRawScope"/>'s
+    /// balance gate: walks every character, incrementing depth on <c>(</c> and decrementing on
+    /// <c>)</c>; a <c>)</c> seen at depth zero (a stray close before any open) makes the string
+    /// unbalanced immediately, and any nonzero depth left at the end (an unclosed open) does too.
+    /// </summary>
+    private static bool ParensBalance(string text)
+    {
+        var depth = 0;
+        foreach (var c in text)
+        {
+            switch (c)
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')':
+                    if (depth == 0)
+                    {
+                        return false;
+                    }
+
+                    depth--;
+                    break;
+            }
+        }
+
+        return depth == 0;
+    }
+
+    /// <summary>
+    /// Counts non-overlapping occurrences of <paramref name="needle"/> in <paramref name="text"/>. Used
+    /// by <see cref="BuildShellPatternsFromRawScope"/>'s fusion gate to count how many <c>Bash(</c>
+    /// grants the raw scope names, which must equal the number of top-level clauses that START with
+    /// <c>Bash(</c> -- any surplus is a grant fused into a clause that would be silently dropped.
+    /// </summary>
+    private static int CountOccurrences(string text, string needle)
+    {
+        var count = 0;
+        var index = text.IndexOf(needle, StringComparison.Ordinal);
+        while (index >= 0)
+        {
+            count++;
+            index = text.IndexOf(needle, index + needle.Length, StringComparison.Ordinal);
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Splits <paramref name="text"/> on <c>,</c> at parenthesis depth 0 only -- a comma nested inside
+    /// a <c>(...)</c> pair does not split. Shared by <see cref="BuildShellPatternsFromRawScope"/>'s two
+    /// uses: splitting the raw scope into clauses, and -- since fix 3 -- checking whether one clause's
+    /// already-balanced interior itself contains a top-level comma (which now makes the whole clause
+    /// throw rather than grant multiple patterns; see that method's own doc comment). A nested clause
+    /// like <c>Bash(foo(bar))</c> parses the same way at both call sites. Unbalanced input (a <c>(</c>
+    /// with no matching <c>)</c>) is not an error here -- everything from the unmatched paren onward
+    /// simply stays un-split, so the caller sees the malformed text as one piece; balance itself is
+    /// judged elsewhere, by <see cref="ParensBalance"/> for the whole scope and by
+    /// <see cref="TryExtractBalancedBashClauseInner"/> for one clause.
+    /// </summary>
+    private static List<string> SplitAtTopLevelCommas(string text)
+    {
+        List<string> result = [];
+        var depth = 0;
+        var start = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            switch (text[i])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')' when depth > 0:
+                    depth--;
+                    break;
+                case ',' when depth == 0:
+                    result.Add(text[start..i]);
+                    start = i + 1;
+                    break;
+            }
+        }
+
+        result.Add(text[start..]);
+        return result;
+    }
+
+    /// <summary>
+    /// Extracts the text between a <c>Bash(</c>-prefixed <paramref name="clause"/>'s outermost parens,
+    /// tracking depth so a nested <c>(...)</c> inside the pattern (<c>Bash(foo(bar))</c>) does not end
+    /// the clause early. Returns <see langword="false"/> -- the fail-closed signal
+    /// <see cref="BuildShellPatternsFromRawScope"/> turns into a thrown
+    /// <see cref="PermissionGrantUnsupportedException"/> -- when depth never returns to zero (no
+    /// closing paren for the one right after <c>Bash</c>) or when the paren that does close it is not
+    /// the clause's last character (trailing content after the grant this method cannot place).
+    /// </summary>
+    private static bool TryExtractBalancedBashClauseInner(string clause, out string inner)
+    {
+        var depth = 0;
+        for (var i = 4; i < clause.Length; i++) // clause[4] is the '(' right after "Bash"
+        {
+            switch (clause[i])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')':
+                    depth--;
+                    if (depth == 0)
+                    {
+                        if (i != clause.Length - 1)
+                        {
+                            inner = string.Empty;
+                            return false;
+                        }
+
+                        inner = clause[5..i];
+                        return true;
+                    }
+
+                    break;
+            }
+        }
+
+        inner = string.Empty;
+        return false;
     }
 
     /// <summary>

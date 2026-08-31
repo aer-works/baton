@@ -490,6 +490,327 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// #1459: closes the gap <c>ShellPatternsVariable</c>'s own doc comment names. Both channels now
+    /// reach the hook subprocess, tagged and comma-joined the same way the denied-tools channel is.
+    /// </summary>
+    [Fact]
+    public void The_shell_pattern_channels_carry_the_grants_allowed_and_denied_patterns()
+    {
+        var grant = new PermissionGrant(
+            RunShellCommands: true, ShellCommandPatterns: ["git diff*", "gh pr view*"],
+            DeniedShellCommandPatterns: ["git commit*", "git push*"]);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*,gh pr view*"), target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.DeniedShellPatternsVariable, "claude:git commit*,git push*"),
+            target.Environment);
+    }
+
+    /// <summary>
+    /// #1459: an unscoped shell (no pattern list, or no grant at all) must still set both channels,
+    /// tagged and empty -- that is the "unscoped, not broken" reading <c>HookCheckCommand.Decide</c>
+    /// depends on. A missing variable and an empty-but-tagged one must stay tellable apart the same
+    /// way #600 already made the denied-tools channel tellable apart.
+    /// </summary>
+    [Fact]
+    public void The_shell_pattern_channels_are_set_even_when_unscoped_or_absent()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.DeniedShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// Regression, #1459 fix (PR #1506's adversarial security review): a raw <c>PermissionScope</c>
+    /// carrying a <c>Bash(pattern)</c> clause used to reach <c>--allowedTools</c> while leaving
+    /// <c>BATON_HOOK_SHELL_PATTERNS</c> tagged-and-empty, because the channel was built exclusively
+    /// from the (here, null) structured <c>PermissionGrant</c>. The channel must now carry the same
+    /// pattern the flag does.
+    /// </summary>
+    [Fact]
+    public void A_raw_PermissionScope_Bash_pattern_clause_populates_the_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*)"), ArchitectContract);
+
+        Assert.Equal("Write,Bash(git diff*)", ArgValue(target, "--allowedTools"));
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*"), target.Environment);
+        // The raw path has no denied-pattern concept to derive -- unchanged by this fix.
+        Assert.Contains(
+            (ClaudeWorkerAdapter.DeniedShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// Multiple <c>Bash(pattern)</c> clauses in the raw scope all reach the channel, comma-joined the
+    /// same way the structured-grant path already joins <c>PermissionGrant.ShellCommandPatterns</c>.
+    /// </summary>
+    [Fact]
+    public void Multiple_raw_PermissionScope_Bash_pattern_clauses_all_populate_the_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", PermissionScope: "Bash(git diff*),Read,Bash(gh pr view*)"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*,gh pr view*"),
+            target.Environment);
+    }
+
+    /// <summary>
+    /// The genuinely-unscoped-shell case (see <c>BuildShellPatternsFromRawScope</c>'s own doc
+    /// comment for why a bare clause must stay excluded). The channel must stay empty, not deny.
+    /// </summary>
+    [Fact]
+    public void A_bare_Bash_raw_scope_still_yields_an_empty_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash"), ArchitectContract);
+
+        Assert.Equal("Write,Bash", ArgValue(target, "--allowedTools"));
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// The other half of the no-op case: a raw scope that names no <c>Bash(</c> clause at all (not
+    /// even a bare one). Must read identically to the bare-<c>Bash</c> case above -- an empty channel,
+    /// never the throw the unparseable-clause arm below asserts.
+    /// </summary>
+    [Fact]
+    public void A_raw_scope_with_no_Bash_clause_at_all_still_yields_an_empty_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Read"), ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// Fix 3 (round-4 re-review of PR #1506): #1514 is why this now throws where fix 2 granted both
+    /// patterns -- <c>ClaudeWorkerAdapter.BuildShellPatternsFromRawScope</c>'s own remarks carry the
+    /// reasoning.
+    /// </summary>
+    [Fact]
+    public void A_comma_list_inside_one_Bash_clause_makes_Resolve_throw_instead_of_granting_both_patterns()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation(
+                    "Draft a plan.", PermissionScope: "Write,Bash(git diff*, git status*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Round-4 HIGH (PR #1506); <c>ClaudeWorkerAdapter.BuildShellPatternsFromRawScope</c>'s own remarks
+    /// record the swallowed-grant mechanism this closes. Must throw here, not reach an empty no-op
+    /// channel.
+    /// </summary>
+    [Fact]
+    public void An_unbalanced_non_Bash_clause_that_would_swallow_a_real_Bash_grant_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Read(,Bash(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// The balance gate's negative arm: it only fires when a <c>Bash(</c> grant is present at all, a
+    /// scope restriction <c>BuildShellPatternsFromRawScope</c>'s own remarks explain the reasoning for.
+    /// </summary>
+    [Fact]
+    public void A_stray_unbalanced_paren_with_no_Bash_clause_still_yields_an_empty_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Read),Write"), ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// LOW finding fixed alongside the comma-list bug: interior whitespace around a single pattern
+    /// (<c>Bash( git diff* )</c>) used to reach the channel un-trimmed (<c>" git diff* "</c>), which
+    /// never matches any real command line -- a permanently-dead grant that looked populated. The
+    /// paren-aware split trims each extracted pattern the same way the structured-grant path already
+    /// does.
+    /// </summary>
+    [Fact]
+    public void Interior_whitespace_inside_a_single_Bash_clause_is_trimmed_from_the_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash( git diff* )"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*"), target.Environment);
+    }
+
+    /// <summary>
+    /// Nested, balanced parens inside a single pattern must survive whole rather than being cut at the
+    /// first inner <c>)</c> -- the depth-tracking split, not a naive <c>IndexOf(')')</c>.
+    /// </summary>
+    [Fact]
+    public void A_Bash_clause_with_nested_balanced_parens_yields_the_whole_pattern()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Bash(foo(bar))"), ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:foo(bar)"), target.Environment);
+    }
+
+    /// <summary>
+    /// Fail-closed half of #1459 fix 2: a clause that STARTS a <c>Bash(</c> grant but whose
+    /// parentheses never balance (no closing <c>)</c> anywhere) must not fall back to the pre-fix
+    /// silent-empty-channel behaviour -- that shape is indistinguishable from "deliberately unscoped
+    /// shell" once it reaches <see cref="HookCheckCommand.Decide"/>, which is the exact #1459 bypass
+    /// this fix closes. <see cref="Resolve"/> must throw <see cref="PermissionGrantUnsupportedException"/>
+    /// instead, matching <see cref="TryTranslatePermissionGrant"/>'s own resolve-time fail-closed
+    /// precedent for an untranslatable structured grant.
+    /// </summary>
+    [Fact]
+    public void An_unbalanced_Bash_clause_in_the_raw_scope_makes_Resolve_throw_instead_of_emitting_an_empty_channel()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Round-5 HIGH: a balanced string with no top-level comma is one clause -- when that clause
+    /// starts with something other than <c>Bash(</c>, the loop's <c>StartsWith("Bash(")</c> drops it
+    /// whole, taking a fused <c>Bash(</c> grant down with it. <c>ClaudeWorkerAdapter
+    /// .BuildShellPatternsFromRawScope</c>'s own "Fusion gate" remarks record the conservation-count
+    /// mechanism that now catches this instead of silently emitting an empty channel.
+    /// </summary>
+    [Fact]
+    public void A_Bash_grant_fused_after_a_balanced_leading_clause_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Read()Bash(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Two <c>Bash(</c> grants with no separating top-level comma are still one clause by
+    /// <c>SplitAtTopLevelCommas</c>'s count -- the fusion gate's occurrence-vs-headed-clause count
+    /// (2 vs 1) is what catches this, not the balance gate (the string balances).
+    /// </summary>
+    [Fact]
+    public void Two_Bash_grants_fused_together_with_no_separating_comma_make_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation(
+                    "Draft a plan.", PermissionScope: "Bash(git diff*)Bash(git status*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Leading text before a <c>Bash(</c> grant, with no separating comma, fuses the grant into a
+    /// clause that does not start with <c>Bash(</c> -- must throw rather than drop it.
+    /// </summary>
+    [Fact]
+    public void Leading_text_fused_before_a_Bash_grant_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "x Bash(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Same shape as the leading-text case with no whitespace at all -- the fused text sits directly
+    /// against the grant, so the clause still does not start with <c>Bash(</c> after trimming.
+    /// </summary>
+    [Fact]
+    public void A_Bash_grant_fused_directly_after_leading_text_with_no_space_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "XBash(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// A <c>Bash(</c> grant nested inside a non-<c>Bash</c> clause's parens -- balanced, one top-level
+    /// clause, headed by <c>Read(</c> rather than <c>Bash(</c>. The fusion gate must catch this the
+    /// same way as the unnested fusion shapes above rather than treating "nested" as safe.
+    /// </summary>
+    [Fact]
+    public void A_Bash_grant_nested_inside_a_non_Bash_clause_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Read(Bash(x))"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Round-5 re-review MEDIUM: an explicit but empty <c>Bash()</c> clause used to clear both the
+    /// balance gate and the fusion gate, then quietly vanish at the per-clause trim -- see
+    /// <see cref="ClaudeWorkerAdapter.BuildShellPatternsFromRawScope"/>'s own remarks and its
+    /// per-clause throw for the mechanism.
+    /// </summary>
+    [Fact]
+    public void An_empty_pattern_Bash_clause_makes_Resolve_throw_instead_of_silently_yielding_an_empty_channel()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash()"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Same shape as above with a whitespace-only interior -- <c>Trim()</c> reduces it to the same
+    /// empty pattern, so it must throw identically rather than being read as a non-empty grant.
+    /// </summary>
+    [Fact]
+    public void A_whitespace_only_pattern_Bash_clause_makes_Resolve_throw_instead_of_silently_yielding_an_empty_channel()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(   )"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
     /// #543, from review: an inherited `CLAUDE_CODE_SIMPLE=1` disables hooks the same way `--bare`
     /// does (see the doc comment above `SimpleModeVariable`'s declaration), and `BatonTask` inherits
     /// the full parent environment by default -- so this override has to actually be on the argv
@@ -556,6 +877,76 @@ public class ClaudeWorkerAdapterTests
         Assert.Empty(stderr);
     }
 
+    /// <summary>
+    /// End-to-end regression, #1459 fix: a raw <c>PermissionScope</c> dispatch (no
+    /// <c>PermissionGrant</c>) scoping its shell to <c>Bash(git diff*)</c> must have the #1461
+    /// chaining escape denied by the real spawned hook process, exactly as a structured-grant
+    /// dispatch already is. Before this fix the hook channel this test reads through
+    /// <see cref="RunResolvedHookCommand"/> came out tagged-and-empty for a raw-scope dispatch, so
+    /// <c>HookCheckCommand.Decide</c> took its deliberate unscoped-shell no-op branch and this command
+    /// was allowed.
+    /// </summary>
+    [Fact]
+    public void Regression_1459_the_resolved_hook_command_denies_the_1461_escape_under_a_raw_PermissionScope_dispatch()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*)"), ArchitectContract);
+
+        var (exitCode, stderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git diff; echo escaped"}}""");
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("scoped shell grant", stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Control for the regression above: the same raw-scope dispatch must still ALLOW a command that
+    /// actually matches the granted pattern, through the real spawned hook process -- proving the
+    /// fix denies the escape specifically, not shell use in general.
+    /// </summary>
+    [Fact]
+    public void The_resolved_hook_command_allows_a_matching_command_under_a_raw_PermissionScope_dispatch()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*)"), ArchitectContract);
+
+        var (exitCode, stderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git diff"}}""");
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(stderr);
+    }
+
+    /// <summary>
+    /// End-to-end regression, #1459 fix 3: the multi-clause form <c>Bash(git diff*),Bash(git status*)</c>
+    /// (as opposed to the now-refused single-clause comma-list <c>Bash(git diff*, git status*)</c>) is
+    /// the shape the engine itself emits for multiple patterns, and must, through the REAL spawned hook
+    /// process, both DENY the #1461 chaining escape and ALLOW each of the two granted patterns.
+    /// </summary>
+    [Fact]
+    public void Regression_1459fix3_the_resolved_hook_command_denies_the_1461_escape_and_allows_both_multi_clause_patterns()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", PermissionScope: "Write,Bash(git diff*),Bash(git status*)"),
+            ArchitectContract);
+
+        var (escapeExitCode, escapeStderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git diff; echo escaped"}}""");
+        Assert.Equal(2, escapeExitCode);
+        Assert.Contains("scoped shell grant", escapeStderr, StringComparison.Ordinal);
+
+        var (diffExitCode, diffStderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git diff"}}""");
+        Assert.Equal(0, diffExitCode);
+        Assert.Empty(diffStderr);
+
+        var (statusExitCode, statusStderr) = RunResolvedHookCommand(
+            target, """{"tool_name": "Bash", "tool_input": {"command": "git status"}}""");
+        Assert.Equal(0, statusExitCode);
+        Assert.Empty(statusStderr);
+    }
+
     private static (int ExitCode, string Stderr) RunResolvedHookCommand(CoreDispatchTarget target, string stdin)
     {
         var settingsPath = ArgValue(target, "--settings")!;
@@ -576,8 +967,15 @@ public class ClaudeWorkerAdapterTests
             startInfo.ArgumentList.Add(arg!);
         }
 
-        var deniedToolsVar = target.Environment!.First(e => e.Name == ClaudeWorkerAdapter.DeniedToolsVariable);
-        startInfo.Environment[deniedToolsVar.Name] = deniedToolsVar.Value;
+        // Forward every environment variable Resolve prepared, not just the denied-tools one -- a
+        // real Claude Code spawn inherits the whole process environment, and #1459's own shell-pattern
+        // channels need to reach this real subprocess too for a scoped-shell dispatch to be provable
+        // end to end here (a partial simulation that only forwarded the denied-tools variable would
+        // have passed the pre-fix bypass just as easily as the fixed behaviour).
+        foreach (var (name, value) in target.Environment!)
+        {
+            startInfo.Environment[name] = value;
+        }
 
         using var process = Process.Start(startInfo)!;
         process.StandardInput.Write(stdin);
