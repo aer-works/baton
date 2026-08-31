@@ -32,7 +32,7 @@ negative: `/usage`, which is absent from `--help` and works perfectly as a slash
 | | cost | who runs it |
 |---|---|---|
 | `pixi run vendor-probe` | **real subscription usage**, a few minutes | you, deliberately |
-| `pixi run vendor-check` | **nothing** | every `pixi run test`, automatically |
+| `pixi run vendor-check` | **nothing** | every `pixi run test`; also `gates`/`gates-fast` since #1487 |
 
 The probe drives live authenticated CLIs, so it is permanently a human action item (CLAUDE.md) — the
 same rule as the `smoke-*` tasks, for the same reason. But asking *"has the CLI moved since we last
@@ -40,8 +40,11 @@ looked?"* costs nothing: `--version` is a local string that starts no session.
 
 So the free check is the trigger for the paid one. The probe records the versions it ran against in
 `docs/vendor-probe.lock.json`; `VendorProbeStalenessTests` (in `Baton.Architecture.Tests`, which *is*
-in the default suite) compares that against what is installed. The day `claude` self-updates, the
-test goes red and tells you to re-probe.
+in the default suite) and the `vendor-check` task compare that against what is installed, through the
+same `DriftGrace.Evaluate` call. The day a CLI self-updates, both go **WARN** — loud, but still exit
+0 — for `DriftGrace.Window` (seven days as of #1487), then hard-fail past it. See "Turning drift
+deliberate" below for the tempo this replaced and how the grace window works; the duration itself is
+cited here once and not restated below.
 
 ### Why none of this is in CI
 
@@ -52,6 +55,53 @@ and it is precisely the false negative this suite exists to stop us reporting as
 
 So the check runs where the CLIs actually live, and where they actually self-update: the operator's
 machine. Where it cannot know, it **skips** — never passes.
+
+## Turning drift deliberate (#1487)
+
+**The incident this fixed.** `claude` auto-updated 2.1.247→2.1.251 on 2026-08-30, and
+`VendorProbeStalenessTests` correctly hard-failed every `pixi run gates` on this machine until the
+operator ran `vendor-probe` and re-pinned — correct pressure (the findings really were unverified),
+wrong tempo (it red-washed five PR reports over a weekend for drift nobody had chosen to accept yet).
+
+Two changes:
+
+**1. Auto-update goes off on both CLIs**, so drift only happens when someone updates on purpose. Set
+per `docs/vendor-capabilities.md`'s dated entry for this measurement:
+
+- `claude`: `DISABLE_AUTOUPDATER: "1"` under the `env` key of `settings.json` (**not** a top-level
+  `autoUpdates` key — that key does not exist in the settings reference at all; see the dated row for
+  what was checked). Stops the background check only — `claude update` still works, which is exactly
+  what the loop below wants.
+- `agy`: `AGY_CLI_DISABLE_AUTO_UPDATE=1` as an environment variable. Undocumented (not in the public
+  CLI settings or reference pages); found by inspecting the shipped binary, the same `Surfaces.Binary`
+  evidence class the probes use for exactly this reason.
+
+Neither was flipped by this change — see the dated row for why (spend/environment-mutation policy,
+CLAUDE.md) — this is the measured setting for the operator's own runbook step.
+
+**2. The staleness tripwire grew a grace window** instead of hard-failing the instant a CLI moves.
+`DriftGrace` (`tools/Baton.VendorProbe/DriftGrace.cs`) records the drift instant the first time it is
+seen, in a machine-local, gitignored file beside the lock file
+(`docs/vendor-probe.drift.local.json` — gitignored because the clock is a property of *this machine's*
+installed CLI, not something to commit). WARN-and-pass within the grace window (see above),
+hard-fail past it, hard-fail if the bookkeeping file exists but cannot be read or cleared (fail closed
+on broken bookkeeping, never on fresh drift), and clear the bookkeeping the moment `vendor-probe`
+re-pins and drift is gone.
+
+### The deliberate-update loop
+
+With auto-update off, a CLI only moves when you choose to move it:
+
+1. Update the CLI yourself (`claude update`, `agy update`, or your package manager's upgrade command).
+2. `pixi run vendor-probe` — re-establishes every finding against the new version and rewrites the
+   lock file.
+3. PR the refreshed pins (the #1483 shape: `docs/vendor-capabilities.probe.json`,
+   `docs/vendor-capabilities.probe.md`, `docs/vendor-probe.lock.json`, and any hand-edited row in
+   `docs/vendor-capabilities.md` the new findings warrant).
+
+The grace window exists for the gap between step 1 happening (deliberately, or on a machine where
+auto-update could not be turned off) and step 2 landing — time to notice the WARN and re-probe before
+it becomes a hard-fail, rather than either extreme this replaced.
 
 ## Running the probe
 

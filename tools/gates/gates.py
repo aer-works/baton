@@ -67,6 +67,11 @@ AFTER_BUILD_FAST = [
     "audit-selfcheck",
     "audit-controls",
     "baton-dispatch-selftest",
+    # #1487: the loud half of the drift grace window. Console.WriteLine here is inherited straight to
+    # the gates output (run_gates -> pixi_runner), which a passing xunit test's ITestOutputHelper is
+    # not -- dotnet test only prints a test's output when it fails, so this is the layer that can
+    # actually make a fresh, still-within-grace drift visible without turning the run red.
+    "vendor-check",
 ]
 
 # The full run's test leg. `test-no-build` reuses the assemblies `lint` just built; if `lint`
