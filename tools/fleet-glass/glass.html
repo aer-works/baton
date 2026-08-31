@@ -106,6 +106,7 @@ summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .doc h3{font-size:.88rem; margin:1.2rem 0 .4rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em;}
 .doc pre{background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:.7rem .9rem; overflow-x:auto;}
 .doc code{font-family:var(--mono); font-size:.86em;}
+.doc :not(pre) > code{background:var(--chip-idle); color:var(--accent); padding:.1em .35em; border-radius:4px;}
 .doc a{color:var(--accent);}
 .doc dl{margin:.4rem 0 1rem;}
 .doc dt{font:600 .72rem 'Public Sans'; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; margin-top:.6rem;}
@@ -505,6 +506,19 @@ function renderMarkdown(text){
   const lines = esc(text ?? "").split("\n");
   let html = "";
   let inCode = false, inList = false;
+  let para = [], table = [];
+  const flushPara = () => {
+    if(para.length){
+      html += `<p>${inline(para.join(" "))}</p>`;
+      para = [];
+    }
+  };
+  const flushTable = () => {
+    if(table.length){
+      html += `<pre><code>${table.join("\n")}</code></pre>`;
+      table = [];
+    }
+  };
   const inline = (s) => s
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
@@ -512,6 +526,9 @@ function renderMarkdown(text){
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, t, u) => /^https?:\/\//.test(u) ? `<a href="${u}" target="_blank" rel="noopener">${t}</a>` : m);
   for(const raw of lines){
     if(raw.trim().startsWith("```")){
+      flushPara();
+      flushTable();
+      if(inList){ html += "</ul>"; inList = false; }
       html += inCode ? "</code></pre>" : "<pre><code>";
       inCode = !inCode;
       continue;
@@ -519,6 +536,8 @@ function renderMarkdown(text){
     if(inCode){ html += raw + "\n"; continue; }
     const heading = raw.match(/^(#{1,6})\s+(.*)$/);
     if(heading){
+      flushPara();
+      flushTable();
       if(inList){ html += "</ul>"; inList = false; }
       const level = heading[1].length;
       html += `<h${level}>${inline(heading[2])}</h${level}>`;
@@ -526,14 +545,30 @@ function renderMarkdown(text){
     }
     const bullet = raw.match(/^\s*[-*]\s+(.*)$/);
     if(bullet){
+      flushPara();
+      flushTable();
       if(!inList){ html += "<ul>"; inList = true; }
       html += `<li>${inline(bullet[1])}</li>`;
       continue;
     }
+    if(raw.trim() === ""){
+      flushPara();
+      flushTable();
+      if(inList){ html += "</ul>"; inList = false; }
+      continue;
+    }
+    if(/^\s*\|/.test(raw)){
+      flushPara();
+      if(inList){ html += "</ul>"; inList = false; }
+      table.push(raw);
+      continue;
+    }
+    flushTable();
     if(inList){ html += "</ul>"; inList = false; }
-    if(raw.trim() === ""){ continue; }
-    html += `<p>${inline(raw)}</p>`;
+    para.push(raw.trim());
   }
+  flushPara();
+  flushTable();
   if(inList) html += "</ul>";
   if(inCode) html += "</code></pre>";
   return html;
