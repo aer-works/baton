@@ -19,6 +19,11 @@ on:
 
 jobs:
   pr-body-lint:
+    # release-please's own PRs carry a generated body quoting changelog lines ("...can
+    # resolve (#1473)"), which the negated-close rule rightly flags in human-authored text but
+    # nobody wrote here, and release-please overwrites any hand edit on its next push. Skip the
+    # job for those branches -- a skipped required check still satisfies branch protection (#1475).
+    if: ${{ !startsWith(github.event.pull_request.head.ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
     # Declared rather than inherited: the closures step reads issues via the job token, and an org
     # tightening the default token scope later should not silently break it (#975 review).
