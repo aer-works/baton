@@ -449,7 +449,12 @@ Output: a JSON array of
   "outputs"?: [string],
   "error"?: string,
   "try"?: string,
-  "rejected"?: boolean
+  "rejected"?: boolean,
+  "role"?: string,        // bindings.json's own key for the Running step's worker
+  "adapter"?: string,     // that role's WorkerBindingConfigEntry.Adapter
+  "model"?: string,       // that role's WorkerBindingConfigEntry.Model
+  "effort"?: string,      // that role's WorkerBindingConfigEntry.Effort
+  "timeoutMs"?: number    // that role's WorkerBindingConfigEntry.Timeout, in milliseconds
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
@@ -459,6 +464,18 @@ Output: a JSON array of
 **third shape**, related to but not identical with `terminal.json`/`status --json` — see §3's note on
 `linkedFrom` and `timestamp` for the concrete divergence; `liveness`/`rejected` themselves are
 identical values across all three shapes (§3).
+
+**`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503)** are read from the room's own
+`bindings.json` (`WorkerBindingConfigWriter`/`WorkerBindingConfigParser`, `Baton.Vendors`), scoped to
+whichever step this same projection currently calls `"Running"` — never a separate probe, and never
+one entry per worker role the room happens to define. All five are absent together whenever no step
+is Running (pending, paused between steps, or a terminal room — the sentinel fast path never reads
+bindings.json at all), or whenever `bindings.json` is missing (a pre-#153 room) or fails to parse:
+fail-open for display metadata, so one unreadable bindings file degrades this row, never the whole
+`fleet_status` call. `timeoutMs` is deliberately the raw configured timeout, not a
+countdown — a "remaining" figure would already be stale by the time a caller reads it. A renderer
+wanting remaining time pairs it with the same Running step's own `steps[].timestamp` above, which
+this shape already emits; `timeoutMs` is not duplicated there.
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan
