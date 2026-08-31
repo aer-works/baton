@@ -19,10 +19,10 @@ public enum RunExitCode
 
     /// <summary>
     /// Either a step's own failure was a binding timeout (<see cref="RunExitCodeResolver.ResolveFailed"/>),
-    /// or — #1378 — <c>baton run --wait --wait-timeout &lt;minutes&gt;</c>'s poll loop hit that bound
-    /// before the room reached Terminal (<see cref="CommandResult.WaitTimedOut"/>). The room's own
-    /// ledger state differs between the two: the first is a genuinely Terminal, Failed room; the
-    /// second is still Paused/Running — read <c>baton status</c> to tell them apart.
+    /// or — #1378 — the wait bound expired first (<see cref="CommandResult.WaitTimedOut"/>, which
+    /// carries the mechanism). The room's own ledger state differs between the two: the first is a
+    /// genuinely Terminal, Failed room; the second is still Paused/Running — read <c>baton status</c>
+    /// to tell them apart.
     /// </summary>
     Timeout = 3,
     Cancelled = 4,

@@ -315,7 +315,7 @@ sentinel §3 describes. **Do not background an `baton run` and poll `baton statu
 wait on the process, or watch `terminal.json`.**
 
 **`--wait-timeout <minutes>` (#1378)** bounds how long `--wait` is willing to sit on an undecided
-pause — ignored without `--wait`, since there is no poll loop for it to bound. Without it, `--wait`
+pause — without `--wait` the flag is accepted but does nothing. Without it, `--wait`
 still waits forever for a separate `baton decide` (from anywhere — another process, another
 operator); a lane with nobody watching for that decision hangs the invocation indefinitely. When the
 bound elapses first, the call stops waiting and exits 3 (`Timeout`, above) rather than 1 — the room

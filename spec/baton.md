@@ -249,6 +249,7 @@ surface (`FlowEvent.ExternalDecisionRecorded` carries none), so `rejected` stays
 | 4 | `Cancelled` | — |
 | 5 | `RoomHeld` | Another Flow instance already holds this room — retry later, not a terminal outcome; no sentinel is written (`Program.cs`) |
 
+<!-- record-once-ok: #1378 src/Baton.Cli/RunExitCodeResolver.cs -->
 **Exit code 1 is not "terminal, a step failed."** `RunExitCodeResolver.Resolve` falls through to
 `Failed` for **`Running` and `Paused` too** — any outcome that is not `Succeeded`, `Cancelled`, or the
 resolved `Failed`/`Timeout` split (`RunExitCodeResolver.cs`, comment verbatim: *"Running or
