@@ -54,6 +54,11 @@ main{max-width:36rem; margin:0 auto;}
 h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline;}
 h1 .fresh{font:400 .72rem var(--mono); color:var(--ink-soft);}
 h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.08em;}
+.masthead{display:flex; align-items:flex-start; gap:.55rem;}
+.batonmark{flex:0 0 auto; margin-top:.1rem;}
+.titleblock{flex:1; min-width:0;}
+.kicker{margin:.15rem 0 0; font:500 .72rem 'Public Sans'; color:var(--ink-soft); letter-spacing:.04em;}
+.downbeat{height:2px; margin:.55rem 0 .15rem; background:linear-gradient(90deg, var(--accent), var(--line) 60%, transparent); border-radius:2px;}
 .tabs{display:flex; gap:.35rem; margin:.7rem 0 .3rem;}
 .tabbtn{font:600 .74rem 'Public Sans'; padding:.35em 1em; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--ink-soft); cursor:pointer;}
 .tabbtn.active{background:var(--accent); color:#fff; border-color:var(--accent);}
@@ -104,7 +109,19 @@ summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:.6rem;}
 </style>
 <main>
-  <h1>Fleet Glass <span class="fresh" id="fresh">connecting…</span></h1>
+  <div class="masthead">
+    <svg class="batonmark" width="27" height="27" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+      <path d="M9 17.5 A9.2 9.2 0 0 1 17.5 8.5" stroke="var(--accent)" stroke-width="1.1" stroke-linecap="round" opacity=".4"/>
+      <path d="M5.3 20.7 L19 7" stroke="var(--ink)" stroke-width="2.25" stroke-linecap="round"/>
+      <circle cx="5.3" cy="20.7" r="2.1" fill="var(--ink-soft)"/>
+      <circle cx="19.6" cy="6.4" r="2.6" fill="var(--accent)"/>
+    </svg>
+    <div class="titleblock">
+      <h1>Fleet Glass <span class="fresh" id="fresh">connecting…</span></h1>
+      <p class="kicker">the conductor's view</p>
+    </div>
+  </div>
+  <div class="downbeat" aria-hidden="true"></div>
   <div class="tabs">
     <button class="tabbtn" id="tab-btn-fleet" data-tab="fleet">Fleet</button>
     <button class="tabbtn" id="tab-btn-inbox" data-tab="inbox">Deliverables</button>
