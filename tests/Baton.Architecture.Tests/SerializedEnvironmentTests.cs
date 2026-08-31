@@ -3,15 +3,14 @@ using System.Text.RegularExpressions;
 namespace Baton.Architecture.Tests;
 
 /// <summary>
-/// #1491: a test class that calls <c>Environment.SetEnvironmentVariable</c> mutates a process-global
-/// value that several production readers (<c>BatonPaths.Root</c>, the worker-role / workflow-template
-/// catalog resolvers) re-read on every access rather than caching — so an env mutator running under
-/// xUnit's default parallel pool can have its value read mid-mutation by an unrelated test in another
-/// class, or have its own restore raced by a sibling's set. That race is the #1480 flake family. The
-/// fix is enrollment in the <c>SerializedEnvironmentCollection</c> per assembly (<c>DisableParallelization
-/// = true</c>, so no member ever overlaps the parallel pool or another such collection) rather than
-/// fixing each flake as it's next observed; this test is the build-time guard that a new mutator can't
-/// land unenrolled and silently rejoin the class of bug the collection closed.
+/// #1491: a test class that calls <c>Environment.SetEnvironmentVariable</c> flips a value the whole
+/// process shares, and a handful of production call sites (<c>BatonPaths.Root</c>, the lookups behind
+/// the shipped worker-role and workflow-template catalogs) go back to that shared value fresh on every
+/// call instead of caching it once. Left to xUnit's default parallel pool, a mutator's edit can land in
+/// the middle of one of those lookups running in an unrelated class, or have its own cleanup overtaken
+/// by a sibling's edit — the #1480 flake family. Enrolling every such class in the per-assembly
+/// <c>SerializedEnvironmentCollection</c> closes it structurally; this test is the build-time guard
+/// that a class added later can't skip that enrollment and quietly reopen the same failure mode.
 /// </summary>
 public class SerializedEnvironmentTests
 {
