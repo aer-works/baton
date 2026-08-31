@@ -3,12 +3,11 @@ using Baton.Domain;
 namespace Baton.Cli.SmokeTests.TestSupport;
 
 /// <summary>
-/// Assertion helpers for E2E tests that drive a real workflow to a terminal <see cref="StepStatus"/>.
-/// A bare <c>Assert.Equal(StepStatus.Succeeded, step.Status)</c> only reports what the status
-/// ended up being — a red run then requires spelunking room artifacts to learn why. This surfaces
-/// <see cref="StepState.LatestFailureReason"/> (and the retry context sitting next to it) directly
-/// in the assertion failure instead. Most valuable here of anywhere in the repo: a red live-vendor
-/// smoke test is also a spent, non-reproducible run.
+/// Assertion helpers for E2E tests. Duplicated per test assembly (no project reference between
+/// them) rather than shared — see <c>Baton.Tests.TestSupport.FlowAssert</c> (in
+/// <c>tests/Baton.Tests/TestSupport/FlowAssert.cs</c>) for the rationale and full doc comment.
+/// Most valuable here of anywhere in the repo: a red live-vendor smoke test is also a spent,
+/// non-reproducible run.
 /// </summary>
 internal static class FlowAssert
 {
