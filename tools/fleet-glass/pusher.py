@@ -5,8 +5,8 @@ every ~25s. Moved into the repo, with the deliverables inbox added, by aer-works
 
 Outbound-only; the machine running this accepts no inbound connections.
 
-THE SNAPSHOT HALF -- change-gated (#1457)
--------------------------------------------
+THE SNAPSHOT HALF -- change-gated (#1457) and coalescing-floored (#1538)
+-------------------------------------------------------------------------
 The wrapped {rooms, underhood, timelines, stale_hidden_count} body is hashed (stable, sort_keys)
 before every POST; a hash that matches the last SUCCESSFUL push's (persisted in push_state_file, key
 SNAPSHOT_HASH_KEY) skips the POST. Cloudflare's KV free tier caps at 1,000 writes/day and worker.js's
@@ -15,6 +15,14 @@ interval_seconds (default 25s) burns 3,456 writes/day against that cap for nothi
 unreadable persisted hash always re-pushes (fail toward one extra write, never toward silence, same
 posture as the deliverables state file below); a FAILED POST never persists the hash, so the next
 cycle retries. See `snapshot_hash` / `should_push_snapshot`.
+
+COALESCING FLOOR (#1538): when the change-gate says CHANGED, push only if >= min_push_interval_s
+(default 90s) since the last actual push; otherwise log `coalesced (Ns since last push)` and let
+the next cycle retry. Continuous-change days are capped at <=960 writes/day worst case.
+
+SINGLE-INSTANCE GUARD (#1538): on startup, atomically claim pusher.lock (O_EXCL-style create).
+If the lock exists and its PID is alive with 'pusher' in its command line, terminate-and-replace it
+(deploys always win). If the PID is dead or not a pusher, log and reclaim. Release on clean exit.
 
 `timelines` and `stale_hidden_count` (#1505) are both frozen, append-only-derived facts computed
 once per cycle from on-disk state (flow.jsonl event counts, the stale-room filter) -- neither reads
@@ -30,6 +38,8 @@ pusher.config.example.json and copy it):
       "deliver_url": "https://.../deliver/<PUSH_TOKEN>",   # optional; derived from push_url if absent
       "heartbeat_url": "https://.../heartbeat/<PUSH_TOKEN>", # optional; derived from push_url if absent
       "interval_seconds": 25,
+      "min_push_interval_s": 90,                          # optional; coalescing floor for snapshot pushes
+      "lock_file": "pusher.lock",                          # optional; defaults next to this script
       "roots": [],
       "max_age_days": 3,
       "rooms_root": "~/.baton/rooms",                         # optional; defaults there
@@ -109,9 +119,12 @@ Writes pusher.log (rotating-ish: truncated at 1MB) next to this script.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -125,6 +138,7 @@ LOG = HERE / "pusher.log"
 DEFAULT_ROOMS_ROOT = Path.home() / ".baton" / "rooms"
 DEFAULT_SECRET_PATTERNS_FILE = HERE / "secretpatterns.local.txt"
 DEFAULT_PUSH_STATE_FILE = HERE / "push-state.local.json"
+DEFAULT_LOCK_FILE = HERE / "pusher.lock"
 
 
 def log(msg: str) -> None:
@@ -133,6 +147,160 @@ def log(msg: str) -> None:
             LOG.write_text("", encoding="utf-8")
         with LOG.open("a", encoding="utf-8") as f:
             f.write(f"{datetime.now(timezone.utc).isoformat()} {msg}\n")
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------------------------
+# Single-instance guard (#1538)
+# ---------------------------------------------------------------------------------------------
+
+def _try_create_lock(lock_path: Path, pid: int) -> bool:
+    try:
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        fd = os.open(str(lock_path), flags)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(f"{pid}\n")
+        except Exception:
+            pass
+        return True
+    except (FileExistsError, OSError):
+        return False
+
+
+def read_lock_pid(lock_path: Path) -> int | None:
+    try:
+        raw = lock_path.read_text(encoding="utf-8").strip()
+        return int(raw)
+    except (OSError, ValueError):
+        return None
+
+
+def is_pid_alive(pid: int | None) -> bool:
+    if pid is None or pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        SYNCHRONIZE = 0x00100000
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+        if not handle:
+            if kernel32.GetLastError() == 5:  # ERROR_ACCESS_DENIED
+                return True
+            return False
+        try:
+            # 258 is WAIT_TIMEOUT (still active); 0 is WAIT_OBJECT_0 (signaled / exited)
+            res = kernel32.WaitForSingleObject(handle, 0)
+            return res == 258
+        finally:
+            kernel32.CloseHandle(handle)
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+
+def get_process_cmdline(pid: int) -> str:
+    if pid <= 0:
+        return ""
+    if sys.platform == "win32":
+        try:
+            out = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip() and ln.strip().lower() != "commandline"]
+            if lines:
+                return lines[0]
+        except Exception:
+            pass
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except Exception:
+            pass
+        return ""
+    else:
+        try:
+            return Path(f"/proc/{pid}/cmdline").read_text().replace("\x00", " ")
+        except Exception:
+            return ""
+
+
+def terminate_process(pid: int) -> None:
+    if pid <= 0 or pid == os.getpid():
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+    for _ in range(20):
+        if not is_pid_alive(pid):
+            return
+        time.sleep(0.05)
+    if sys.platform == "win32" and is_pid_alive(pid):
+        try:
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5, check=False)
+        except Exception:
+            pass
+
+
+def acquire_lock(lock_path: Path, pid: int | None = None) -> bool:
+    """Atomically claim lock_path with `pid`. If lock exists, check whether the holder is alive:
+    if alive and its command line contains 'pusher', terminate-and-replace it (deploys always win);
+    if dead or not a pusher, log and reclaim."""
+    if pid is None:
+        pid = os.getpid()
+
+    if _try_create_lock(lock_path, pid):
+        return True
+
+    old_pid = read_lock_pid(lock_path)
+    if old_pid is not None and old_pid != pid:
+        if is_pid_alive(old_pid):
+            cmdline = get_process_cmdline(old_pid)
+            if "pusher" in cmdline.lower() and "claude" not in cmdline.lower():
+                terminate_process(old_pid)
+                log(f"replaced stale instance pid={old_pid}")
+            else:
+                log(f"reclaimed stale lock (pid={old_pid} not a pusher)")
+        else:
+            log(f"reclaimed stale lock (pid={old_pid} dead)")
+    else:
+        log("reclaimed unreadable stale lock")
+
+    try:
+        if lock_path.exists():
+            lock_path.unlink()
+    except OSError:
+        pass
+
+    if _try_create_lock(lock_path, pid):
+        return True
+    try:
+        lock_path.write_text(f"{pid}\n", encoding="utf-8")
+        return True
+    except OSError as ex:
+        log(f"failed to write lock file: {ex}")
+        return False
+
+
+def release_lock(lock_path: Path, pid: int | None = None) -> None:
+    if pid is None:
+        pid = os.getpid()
+    try:
+        if lock_path.is_file():
+            cur_pid = read_lock_pid(lock_path)
+            if cur_pid == pid:
+                lock_path.unlink()
     except OSError:
         pass
 
@@ -402,13 +570,29 @@ def should_push_snapshot(state: dict, current_hash: str) -> bool:
     return state.get(SNAPSHOT_HASH_KEY) != current_hash
 
 
-def push_snapshot_and_record(post, body: str, state: dict, state_path, current_hash: str) -> None:
-    """POST first, record the hash ONLY afterwards. This ordering is the change-gate's single most
-    safety-critical property (a hash persisted for a FAILED push would gate every retry and go
-    silent until the next content change), so it lives in one testable function instead of inline
-    in main()'s loop -- the selftest proves a raising `post` leaves the state file untouched."""
+LAST_PUSH_TS_KEY = "__last_push_ts__"
+DEFAULT_MIN_PUSH_INTERVAL_S = 90
+
+
+def should_coalesce_push(state: dict, now_ts: float, min_interval_s: float = DEFAULT_MIN_PUSH_INTERVAL_S) -> bool:
+    """True if less than min_interval_s has elapsed since the last actual snapshot push."""
+    last = state.get(LAST_PUSH_TS_KEY)
+    if not isinstance(last, (int, float)):
+        return False
+    return (now_ts - last) < min_interval_s
+
+
+def push_snapshot_and_record(post, body: str, state: dict, state_path, current_hash: str, now_ts: float | None = None) -> None:
+    """POST first, record the hash and push timestamp ONLY afterwards. This ordering is the
+    change-gate's single most safety-critical property (a hash persisted for a FAILED push would
+    gate every retry and go silent until the next content change), so it lives in one testable
+    function instead of inline in main()'s loop -- the selftest proves a raising `post` leaves the
+    state file untouched."""
     post(body)
     state[SNAPSHOT_HASH_KEY] = current_hash
+    if now_ts is None:
+        now_ts = time.time()
+    state[LAST_PUSH_TS_KEY] = now_ts
     save_push_state(state_path, state)
 
 
@@ -697,6 +881,8 @@ def main() -> None:
     cfg = json.loads((HERE / "pusher.config.json").read_text(encoding="utf-8"))
     once = "--once" in sys.argv
     interval = cfg.get("interval_seconds", 25)
+    min_push_interval_s = cfg.get("min_push_interval_s", DEFAULT_MIN_PUSH_INTERVAL_S)
+    lock_path = Path(cfg["lock_file"]).expanduser() if cfg.get("lock_file") else DEFAULT_LOCK_FILE
     rooms_root = Path(cfg["rooms_root"]).expanduser() if cfg.get("rooms_root") else DEFAULT_ROOMS_ROOT
     patterns_path = Path(cfg["secret_patterns_file"]).expanduser() if cfg.get("secret_patterns_file") else DEFAULT_SECRET_PATTERNS_FILE
     state_path = Path(cfg["push_state_file"]).expanduser() if cfg.get("push_state_file") else DEFAULT_PUSH_STATE_FILE
@@ -705,73 +891,85 @@ def main() -> None:
     skip_log_every = max(1, round(600 / interval)) if interval > 0 else 1
     skip_streak = 0
 
-    while True:
-        try:
-            body, timelines = derive_snapshot_and_timelines(cfg["dll"], cfg.get("roots", []))
-            body, stale_hidden_count = drop_stale_rooms(body, cfg.get("max_age_days", 3))
-            rooms = json.loads(body)
-            room_list = rooms if isinstance(rooms, list) else rooms.get("rooms")
-            # Timelines were fetched pre-stale-filter, keyed by path; only carry forward the ones
-            # for rooms that survived drop_stale_rooms above, so a hidden room's timeline is hidden
-            # with it rather than riding along as orphaned payload.
-            surviving_paths = {r.get("path") for r in (room_list or []) if isinstance(r, dict)}
-            wrapped = build_wrapped(
-                room_list,
-                gather_underhood(cfg),
-                {p: t for p, t in timelines.items() if p in surviving_paths},
-                stale_hidden_count)
-            current_hash = snapshot_hash(wrapped)
-            snap_state = load_push_state(state_path)
-            if should_push_snapshot(snap_state, current_hash):
-                push_snapshot_and_record(
-                    lambda b: post_json(cfg["push_url"], b),
-                    json.dumps(wrapped), snap_state, state_path, current_hash)
-                if skip_streak:
-                    log(f"skipped {skip_streak} unchanged cycle(s) since last push")
-                    skip_streak = 0
-                log(f"pushed {len(body)} bytes")
-            else:
-                skip_streak += 1
-                if should_log_skip(skip_streak, skip_log_every):
-                    log(f"unchanged, skipped ({skip_streak} in a row)")
-        except Exception as ex:  # noqa: BLE001 — loop must survive anything
-            log(f"ERROR (snapshot) {type(ex).__name__}: {ex}")
+    acquire_lock(lock_path)
+    atexit.register(release_lock, lock_path)
 
-        # Own try/except, runs AFTER the snapshot has already been sent above -- a slow or failing
-        # heartbeat POST must never block or delay the snapshot path (#1486).
-        try:
-            if heartbeat_url is None:
-                pass  # no heartbeat_url configured and none derivable from push_url — skip quietly
-            else:
-                hb_state = load_push_state(state_path)
-                now_ts = time.time()
-                if should_send_heartbeat(hb_state, now_ts):
-                    send_heartbeat_and_record(
-                        lambda: post_json(heartbeat_url, "{}"),
-                        hb_state, state_path, now_ts)
-                    log("heartbeat sent")
-        except Exception as ex:  # noqa: BLE001 — loop must survive anything
-            log(f"ERROR (heartbeat) {type(ex).__name__}: {ex}")
+    try:
+        while True:
+            try:
+                body, timelines = derive_snapshot_and_timelines(cfg["dll"], cfg.get("roots", []))
+                body, stale_hidden_count = drop_stale_rooms(body, cfg.get("max_age_days", 3))
+                rooms = json.loads(body)
+                room_list = rooms if isinstance(rooms, list) else rooms.get("rooms")
+                # Timelines were fetched pre-stale-filter, keyed by path; only carry forward the ones
+                # for rooms that survived drop_stale_rooms above, so a hidden room's timeline is hidden
+                # with it rather than riding along as orphaned payload.
+                surviving_paths = {r.get("path") for r in (room_list or []) if isinstance(r, dict)}
+                wrapped = build_wrapped(
+                    room_list,
+                    gather_underhood(cfg),
+                    {p: t for p, t in timelines.items() if p in surviving_paths},
+                    stale_hidden_count)
+                current_hash = snapshot_hash(wrapped)
+                snap_state = load_push_state(state_path)
+                if should_push_snapshot(snap_state, current_hash):
+                    now_ts = time.time()
+                    if should_coalesce_push(snap_state, now_ts, min_push_interval_s):
+                        last_ts = snap_state[LAST_PUSH_TS_KEY]
+                        elapsed = int(now_ts - last_ts)
+                        log(f"coalesced ({elapsed}s since last push)")
+                    else:
+                        push_snapshot_and_record(
+                            lambda b: post_json(cfg["push_url"], b),
+                            json.dumps(wrapped), snap_state, state_path, current_hash, now_ts=now_ts)
+                        if skip_streak:
+                            log(f"skipped {skip_streak} unchanged cycle(s) since last push")
+                            skip_streak = 0
+                        log(f"pushed {len(body)} bytes")
+                else:
+                    skip_streak += 1
+                    if should_log_skip(skip_streak, skip_log_every):
+                        log(f"unchanged, skipped ({skip_streak} in a row)")
+            except Exception as ex:  # noqa: BLE001 — loop must survive anything
+                log(f"ERROR (snapshot) {type(ex).__name__}: {ex}")
 
-        try:
-            if deliver_url is None:
-                log("deliver: no deliver_url (set one, or a push_url containing /push/) — skipped")
-            else:
-                state = load_push_state(state_path)
-                patterns = load_secret_patterns(patterns_path)
-                items = gather_deliverables(rooms_root, state, patterns)
-                if items:
-                    post_json(deliver_url, json.dumps({"items": items}))
-                    if patterns is not None:
-                        save_push_state(state_path, mark_pushed(state, items))
-                    log(f"delivered {len(items)} item(s) "
-                        f"({sum(1 for i in items if i['withheld'])} withheld)")
-        except Exception as ex:  # noqa: BLE001 — loop must survive anything
-            log(f"ERROR (deliver) {type(ex).__name__}: {ex}")
+            # Own try/except, runs AFTER the snapshot has already been sent above -- a slow or failing
+            # heartbeat POST must never block or delay the snapshot path (#1486).
+            try:
+                if heartbeat_url is None:
+                    pass  # no heartbeat_url configured and none derivable from push_url — skip quietly
+                else:
+                    hb_state = load_push_state(state_path)
+                    now_ts = time.time()
+                    if should_send_heartbeat(hb_state, now_ts):
+                        send_heartbeat_and_record(
+                            lambda: post_json(heartbeat_url, "{}"),
+                            hb_state, state_path, now_ts)
+                        log("heartbeat sent")
+            except Exception as ex:  # noqa: BLE001 — loop must survive anything
+                log(f"ERROR (heartbeat) {type(ex).__name__}: {ex}")
 
-        if once:
-            break
-        time.sleep(interval)
+            try:
+                if deliver_url is None:
+                    log("deliver: no deliver_url (set one, or a push_url containing /push/) — skipped")
+                else:
+                    state = load_push_state(state_path)
+                    patterns = load_secret_patterns(patterns_path)
+                    items = gather_deliverables(rooms_root, state, patterns)
+                    if items:
+                        post_json(deliver_url, json.dumps({"items": items}))
+                        if patterns is not None:
+                            save_push_state(state_path, mark_pushed(state, items))
+                        log(f"delivered {len(items)} item(s) "
+                            f"({sum(1 for i in items if i['withheld'])} withheld)")
+            except Exception as ex:  # noqa: BLE001 — loop must survive anything
+                log(f"ERROR (deliver) {type(ex).__name__}: {ex}")
+
+            if once:
+                break
+            time.sleep(interval)
+    finally:
+        release_lock(lock_path)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1047,6 +1245,118 @@ def _selftest() -> int:
                      "steps": [{"id": "s1", "state": "Running", "timestamp": now_iso}]}]),
         max_age_days=3)
     check("(control) nothing dropped when every room is recent", fresh_dropped == 0)
+
+    # -- #1538: single-instance guard --
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        lock_file = tmp_dir / "pusher.lock"
+
+        # 1. Clean acquisition and release
+        check("acquire_lock succeeds on fresh lock file",
+              acquire_lock(lock_file, pid=11111) is True)
+        check("lock file holds the claimed PID",
+              read_lock_pid(lock_file) == 11111)
+        # Release with wrong PID must not delete lock file
+        release_lock(lock_file, pid=22222)
+        check("release_lock ignores non-matching PID",
+              lock_file.is_file() and read_lock_pid(lock_file) == 11111)
+        # Release with matching PID deletes lock file
+        release_lock(lock_file, pid=11111)
+        check("release_lock cleans up when PID matches",
+              not lock_file.exists())
+
+        # 2. Reclaim stale lock from a fake dead PID
+        lock_file.write_text("99999999\n", encoding="utf-8")
+        check("dead PID is recognized as not alive",
+              is_pid_alive(99999999) is False)
+        check("acquire_lock reclaims lock from dead PID",
+              acquire_lock(lock_file, pid=33333) is True)
+        check("reclaimed lock now holds the new PID",
+              read_lock_pid(lock_file) == 33333)
+        release_lock(lock_file, pid=33333)
+
+        # 3. Reclaim from corrupted lock file
+        lock_file.write_text("not-a-pid\n", encoding="utf-8")
+        check("acquire_lock reclaims unreadable lock file",
+              acquire_lock(lock_file, pid=44444) is True)
+        check("reclaimed lock holds new PID after corruption",
+              read_lock_pid(lock_file) == 44444)
+        release_lock(lock_file, pid=44444)
+
+        # 4. Replace running pusher instance
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(15) # pusher_test_subproc"])
+        try:
+            lock_file.write_text(f"{proc.pid}\n", encoding="utf-8")
+            check("child process is alive", is_pid_alive(proc.pid) is True)
+            check("child process command line contains pusher", "pusher" in get_process_cmdline(proc.pid).lower())
+            check("acquire_lock terminates and replaces running pusher",
+                  acquire_lock(lock_file, pid=55555) is True)
+            for _ in range(30):
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.05)
+            check("stale pusher process was terminated", proc.poll() is not None)
+            check("lock now belongs to new PID", read_lock_pid(lock_file) == 55555)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+            release_lock(lock_file, pid=55555)
+
+        # 5. Non-pusher process is NOT killed when lock is reclaimed
+        proc_unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(15) # unrelated_task"])
+        try:
+            lock_file.write_text(f"{proc_unrelated.pid}\n", encoding="utf-8")
+            check("acquire_lock reclaims lock from non-pusher without killing it",
+                  acquire_lock(lock_file, pid=66666) is True)
+            check("non-pusher process remains alive", proc_unrelated.poll() is None)
+        finally:
+            if proc_unrelated.poll() is None:
+                proc_unrelated.terminate()
+            release_lock(lock_file, pid=66666)
+
+    # -- #1538: coalescing floor (KV daily cap protection) --
+    check("should_coalesce_push is False when no prior push recorded",
+          should_coalesce_push({}, 1000.0, 90) is False)
+    check("should_coalesce_push is True within min_interval window",
+          should_coalesce_push({LAST_PUSH_TS_KEY: 1000.0}, 1050.0, 90) is True)
+    check("should_coalesce_push is False once min_interval has elapsed",
+          should_coalesce_push({LAST_PUSH_TS_KEY: 1000.0}, 1090.0, 90) is False)
+    check("should_coalesce_push is False past min_interval window",
+          should_coalesce_push({LAST_PUSH_TS_KEY: 1000.0}, 1150.0, 90) is False)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sp = Path(tmp) / "push-state.json"
+        state = {}
+
+        # Cycle 1: initial push at t=0
+        h1 = "hash_1"
+        check("cycle 1: should push new content", should_push_snapshot(state, h1) is True)
+        check("cycle 1: should not coalesce first push", should_coalesce_push(state, 0.0, 90) is False)
+        push_snapshot_and_record(lambda _b: None, "{}", state, sp, h1, now_ts=0.0)
+        check("cycle 1: state records snapshot hash", state.get(SNAPSHOT_HASH_KEY) == h1)
+        check("cycle 1: state records push timestamp", state.get(LAST_PUSH_TS_KEY) == 0.0)
+
+        # Cycle 2: unchanged content at t=25
+        check("cycle 2: unchanged content is skipped by change-gate",
+              should_push_snapshot(state, h1) is False)
+
+        # Cycle 3: changed content at t=50 (within 90s floor)
+        h2 = "hash_2"
+        check("cycle 3: change-gate detects new hash", should_push_snapshot(state, h2) is True)
+        check("cycle 3: floor coalesces push (50s < 90s)", should_coalesce_push(state, 50.0, 90) is True)
+        check("cycle 3: persisted hash remains unchanged across coalesced cycle",
+              state.get(SNAPSHOT_HASH_KEY) == h1 and state.get(LAST_PUSH_TS_KEY) == 0.0)
+
+        # Cycle 4: changed content still waiting at t=75 (within 90s floor)
+        check("cycle 4: change-gate still wants to push", should_push_snapshot(state, h2) is True)
+        check("cycle 4: floor still coalesces (75s < 90s)", should_coalesce_push(state, 75.0, 90) is True)
+
+        # Cycle 5: floor expires at t=95 (>= 90s)
+        check("cycle 5: change-gate still wants to push", should_push_snapshot(state, h2) is True)
+        check("cycle 5: floor allows push (95s >= 90s)", should_coalesce_push(state, 95.0, 90) is False)
+        push_snapshot_and_record(lambda _b: None, "{}", state, sp, h2, now_ts=95.0)
+        check("cycle 5: state updated with new hash", state.get(SNAPSHOT_HASH_KEY) == h2)
+        check("cycle 5: state updated with new push timestamp", state.get(LAST_PUSH_TS_KEY) == 95.0)
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)
