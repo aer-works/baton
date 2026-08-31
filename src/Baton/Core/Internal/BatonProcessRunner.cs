@@ -68,13 +68,26 @@ internal static class BatonProcessRunner
 
             if (!job.TryAssign(process.SafeHandle))
             {
-                // The no-orphans guarantee applies to spawn failures too, not
-                // just to teardown after a successful spawn: the child is alive but never made it
-                // into the job, so the job's own kill-on-close would never reach it. Kill it directly
-                // before reporting the failure.
                 int error = Marshal.GetLastWin32Error();
-                KillAndWait(process);
-                throw new BatonException(BatonErrorCode.SpawnFailed, $"Failed to assign '{program}' to its job object (Win32 error {error}).");
+
+                // ERROR_ACCESS_DENIED (5) is what AssignProcessToJobObject returns for a process
+                // that has already terminated -- a fast child (a sub-10ms `cmd /c echo`) can exit
+                // inside the Start->assign window, and that is a completed run whose exit code is
+                // sitting there to collect, not a spawn failure (#1484; bit CI intermittently as
+                // "Spawn refused ... Win32 error 5" on perfectly healthy steps). Fall through to the
+                // normal wait path: Terminate at wait-return no-ops on the empty job. Residual,
+                // documented hole: a child that both spawned a grandchild AND exited inside that
+                // window escapes containment -- inherent to assigning after Start; closing it fully
+                // needs a CREATE_SUSPENDED-style native spawn.
+                if (error != 5 || !process.HasExited)
+                {
+                    // The no-orphans guarantee applies to spawn failures too, not
+                    // just to teardown after a successful spawn: the child is alive but never made it
+                    // into the job, so the job's own kill-on-close would never reach it. Kill it directly
+                    // before reporting the failure.
+                    KillAndWait(process);
+                    throw new BatonException(BatonErrorCode.SpawnFailed, $"Failed to assign '{program}' to its job object (Win32 error {error}).");
+                }
             }
 
             // Armed as soon as the child is inside the job -- before StandardInput.Close() below,
