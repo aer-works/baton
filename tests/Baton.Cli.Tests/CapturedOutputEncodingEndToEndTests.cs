@@ -47,7 +47,7 @@ public class CapturedOutputEncodingEndToEndTests
 
             var finalState = (await RunCommand.ExecuteAsync(options, Adapters, onWorkerStdoutLine: onWorkerStdoutLine, cancellationToken: TestContext.Current.CancellationToken)).State;
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
-            Assert.All(finalState.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(finalState.Steps, FlowAssert.Succeeded);
 
             // Verify output artifact was produced
             var stepState = finalState.Steps.First(s => s.StepId.Value == "step1");

@@ -115,7 +115,7 @@ public class TerminalSentinelEndToEndTests
             var result = await RunCommand.ExecuteAsync(secondOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
-            Assert.All(result.State.Steps, s => Assert.Equal(StepStatus.Succeeded, s.Status));
+            Assert.All(result.State.Steps, FlowAssert.Succeeded);
             // Nothing in this test calls TerminalSentinelWriter.WriteAsync for the second attempt --
             // if the file is still here, it is necessarily the FIRST attempt's stale content.
             Assert.False(File.Exists(sentinelPath), "RunCommand must invalidate a stale sentinel before a fresh dispatch.");

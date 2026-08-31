@@ -49,7 +49,7 @@ public class ResumeCommandEndToEndTests
 
             Assert.Equal(WorkflowStatus.Terminal, resumeResult.State.Status);
             var resumedStep = resumeResult.State.Steps.Single();
-            Assert.Equal(StepStatus.Succeeded, resumedStep.Status);
+            FlowAssert.Succeeded(resumedStep);
             Assert.NotEqual(firstExecutionId, resumedStep.LatestExecutionId);
 
             // The ledger shows both executions -- the issue's own acceptance wording -- via the same

@@ -1,4 +1,5 @@
 using Baton.Vendors;
+using Baton.Cli.SmokeTests.TestSupport;
 using Baton.Domain;
 
 namespace Baton.Cli.SmokeTests;
@@ -40,7 +41,7 @@ public class LiveClaudeRunSmokeTest
 
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
             Assert.Equal(2, finalState.Steps.Count);
-            Assert.All(finalState.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(finalState.Steps, FlowAssert.Succeeded);
 
             var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
             var stepStateById = finalState.Steps.ToDictionary(s => s.StepId);

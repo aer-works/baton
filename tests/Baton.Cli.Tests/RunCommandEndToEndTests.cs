@@ -43,7 +43,7 @@ public class RunCommandEndToEndTests
 
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
             Assert.Equal(3, finalState.Steps.Count);
-            Assert.All(finalState.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(finalState.Steps, FlowAssert.Succeeded);
 
             var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
             var stepStateById = finalState.Steps.ToDictionary(s => s.StepId);
@@ -106,7 +106,7 @@ public class RunCommandEndToEndTests
             var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
 
             var firstRun = (await RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken)).State;
-            Assert.All(firstRun.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(firstRun.Steps, FlowAssert.Succeeded);
 
             var logPath = Path.Combine(roomDirectory, "flow.jsonl");
             var eventCountAfterFirstRun = (await new FlowEventLogReader(logPath).ReadAllAsync(TestContext.Current.CancellationToken)).Count;
@@ -114,7 +114,7 @@ public class RunCommandEndToEndTests
             var secondRun = (await RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken)).State;
 
             Assert.Equal(WorkflowStatus.Terminal, secondRun.Status);
-            Assert.All(secondRun.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(secondRun.Steps, FlowAssert.Succeeded);
 
             var eventCountAfterSecondRun = (await new FlowEventLogReader(logPath).ReadAllAsync(TestContext.Current.CancellationToken)).Count;
             Assert.Equal(eventCountAfterFirstRun, eventCountAfterSecondRun);
@@ -332,7 +332,7 @@ public class RunCommandEndToEndTests
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
-            Assert.All(result.State.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+            Assert.All(result.State.Steps, FlowAssert.Succeeded);
         }
         finally
         {
@@ -504,7 +504,7 @@ public class RunCommandEndToEndTests
             var succStepState = result.State.Steps.Single(s => s.StepId.Value == "succ_step");
             var failStepState = result.State.Steps.Single(s => s.StepId.Value == "fail_step");
 
-            Assert.Equal(StepStatus.Succeeded, succStepState.Status);
+            FlowAssert.Succeeded(succStepState);
             Assert.Equal(StepStatus.Failed, failStepState.Status);
 
             var expectedPlanPath = Path.GetFullPath(Path.Combine(roomDirectory, "artifacts", $"execution_{succStepState.LatestExecutionId}", "plan"));

@@ -67,8 +67,8 @@ public class PauseDecisionSupersedeHumanEndToEndTests
                 pausedExecutionId, DecisionType.Resume, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == A).Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == B).Status);
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == A));
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == B));
             await AssertOutputExistsAsync(artifactsRoot, finalState.Steps.Single(s => s.StepId == B), "out_b", "a-out");
         }
         finally
@@ -200,8 +200,8 @@ public class PauseDecisionSupersedeHumanEndToEndTests
                 flakyAfterRetry.LatestExecutionId!.Value, DecisionType.Resume, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == Flaky).Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == Downstream).Status);
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == Flaky));
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == Downstream));
             await AssertOutputExistsAsync(artifactsRoot, finalState.Steps.Single(s => s.StepId == Downstream), "final", "revised-result");
 
             // Every attempt's artifact directory — both exhausted, the supplementary, and the
@@ -287,8 +287,8 @@ public class PauseDecisionSupersedeHumanEndToEndTests
                 criticExecutionId2, DecisionType.Resume, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == Architect).Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == Critic).Status);
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == Architect));
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == Critic));
         }
         finally
         {
@@ -350,7 +350,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
             // Succeeded, no longer a pending Supersede target — exactly what makes a second
             // Supersede against it legal (ExternalDecisionValidatorTests proves the pure rule; this
             // proves the real dispatch consequence).
-            Assert.Equal(StepStatus.Succeeded, secondPauseState.Steps.Single(s => s.StepId == Architect).Status);
+            FlowAssert.Succeeded(secondPauseState.Steps.Single(s => s.StepId == Architect));
             Assert.False(secondPauseState.Steps.Single(s => s.StepId == Architect).IsPendingSupersedeTarget);
 
             // Cycle 2: the same target, a second time, naming Critic's *second* execution as the
@@ -384,8 +384,8 @@ public class PauseDecisionSupersedeHumanEndToEndTests
                 criticExecutionId3, DecisionType.Resume, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == Architect).Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == Critic).Status);
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == Architect));
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == Critic));
         }
         finally
         {
@@ -440,8 +440,8 @@ public class PauseDecisionSupersedeHumanEndToEndTests
                 workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == H).Status);
-            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == C).Status);
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == H));
+            FlowAssert.Succeeded(finalState.Steps.Single(s => s.StepId == C));
             await AssertOutputExistsAsync(artifactsRoot, finalState.Steps.Single(s => s.StepId == C), "final", "the-revision");
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
