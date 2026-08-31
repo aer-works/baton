@@ -40,8 +40,7 @@ public enum ShellPatternListStatus
     /// Nothing arrived, so this gate cannot know what patterns apply. The enum only reports the
     /// fact; the CONSUMER decides what it means -- <c>AgyHookCheckCommand</c> reads this as a deny,
     /// but <c>HookCheckCommand.Decide</c> (claude) deliberately reads it as an unscoped-shell no-op
-    /// instead, because <c>--allowedTools</c>/<c>--disallowedTools</c> already settled whether Bash is
-    /// reachable at all before this channel is consulted (see that method's own remarks, #1459).
+    /// instead (#1459) -- see that method's own remarks for why.
     /// </summary>
     Absent,
 

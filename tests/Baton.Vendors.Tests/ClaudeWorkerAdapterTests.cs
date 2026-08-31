@@ -567,9 +567,8 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
-    /// A bare <c>Bash</c> clause in the raw scope (no parens) is the genuinely-unscoped-shell case --
-    /// extracting a pattern from it would deny an intentionally-unscoped grant, the opposite defect
-    /// from the one this fix closes. The channel must stay empty (unscoped no-op), not deny.
+    /// The genuinely-unscoped-shell case (see <c>BuildShellPatternsFromRawScope</c>'s own doc
+    /// comment for why a bare clause must stay excluded). The channel must stay empty, not deny.
     /// </summary>
     [Fact]
     public void A_bare_Bash_raw_scope_still_yields_an_empty_shell_pattern_channel()
