@@ -53,12 +53,17 @@ public sealed record WorkerRoleOutput(string Name, OutputSchema Schema, string I
 /// runtime, never embedded, so the operator can retune tiers without a rebuild.
 /// </summary>
 /// <remarks>
-/// Resolution order per file, evaluated fresh on every access (the same "resolve, never capture"
-/// discipline <see cref="BatonPaths"/> keeps, so a test or a live edit is honoured immediately):
+/// Resolution order per file:
 /// <list type="number">
-/// <item>the <c>BATON_WORKER_*_PATH</c> environment override, when set — for a one-off experiment;</item>
+/// <item>the <c>BATON_WORKER_*_PATH</c> environment override, when set — for a one-off experiment.
+///   This step alone is still evaluated fresh on every access, the "resolve, never capture"
+///   discipline <see cref="BatonPaths"/> used to keep before #1496 froze <em>its</em> read — this
+///   catalog's own env-override lookup is deliberately NOT folded into
+///   <see cref="BatonEnvironmentSnapshot"/>; see the exempt comment on <c>ResolvePath</c>;</item>
 /// <item><c>{BatonPaths.Root}/worker-tiers.json</c> (or <c>worker-roles.json</c>) when it exists — the
-///   operator's durable, rebuild-free override;</item>
+///   operator's durable, rebuild-free override. <see cref="BatonPaths.Root"/> itself is frozen per
+///   process since #1496, so this step no longer observes a <c>BATON_HOME</c> change made after the
+///   first resolution anywhere in the process;</item>
 /// <item>the default shipped next to the assembly (<see cref="AppContext.BaseDirectory"/>).</item>
 /// </list>
 /// Tiers and roles resolve independently, so overriding a model does not freeze the role definitions.
@@ -185,6 +190,9 @@ public static class WorkerRoleCatalog
         return new WorkerRoleOutput(raw.Name, schema, raw.Instruction);
     }
 
+    // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
+    // #1496 exempt: NOT folded into BatonEnvironmentSnapshot. See the canonical "why" on
+    // BatonEnvironmentSnapshot's own remarks.
     private static string ResolvePath(string envVar, string overrideFileName, string defaultFileName)
     {
         var env = Environment.GetEnvironmentVariable(envVar);

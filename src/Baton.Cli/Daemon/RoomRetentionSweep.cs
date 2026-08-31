@@ -39,6 +39,10 @@ public sealed class RoomRetentionSweep : BackgroundService
     public static readonly TimeSpan MinPruneGrace = TimeSpan.FromSeconds(1);
     public static readonly TimeSpan MaxPruneGrace = TimeSpan.FromDays(365);
 
+    // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
+    // #1496 exempt: NOT folded into BatonEnvironmentSnapshot (this method and the four below --
+    // IsPruneEnabled, GetInterval, GetThresholdBytes, GetPruneGrace). See the canonical "why" on
+    // BatonEnvironmentSnapshot's own remarks.
     public static bool IsEnabled()
     {
         var val = Environment.GetEnvironmentVariable(EnabledEnvironmentVariable);

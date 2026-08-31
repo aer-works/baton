@@ -4,11 +4,15 @@ namespace Baton.Architecture.Tests;
 
 /// <summary>
 /// #1491: a test class that calls <c>Environment.SetEnvironmentVariable</c> flips a value the whole
-/// process shares, and a handful of production call sites (<c>BatonPaths.Root</c>, the lookups behind
-/// the shipped worker-role and workflow-template catalogs) go back to that shared value fresh on every
-/// call instead of caching it once. Left to xUnit's default parallel pool, a mutator's edit can land in
-/// the middle of one of those lookups running in an unrelated class, or have its own cleanup overtaken
-/// by a sibling's edit — the #1480 flake family. Enrolling every such class in the per-assembly
+/// process shares, and a handful of production call sites (the env-override lookups behind the
+/// shipped worker-role and workflow-template catalogs, <c>ClaudeWorkerAdapter</c>'s config root,
+/// <c>RoomRetentionSweep</c>'s cadence/threshold variables) go back to that shared value fresh on
+/// every call instead of caching it once -- <c>BatonPaths.Root</c> was the same shape before #1496
+/// froze its read into <c>BatonEnvironmentSnapshot</c>; the sites above are what remain unfrozen and
+/// still need this collection (#1524 tracks folding them too). Left to xUnit's default parallel pool,
+/// a mutator's edit can land in the middle of one of those lookups running in an unrelated class, or
+/// have its own cleanup overtaken by a sibling's edit — the #1480 flake family. Enrolling every such
+/// class in the per-assembly
 /// <c>SerializedEnvironmentCollection</c> closes it structurally; this test is the build-time guard
 /// that a class added later can't skip that enrollment and quietly reopen the same failure mode.
 /// </summary>

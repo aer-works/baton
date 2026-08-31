@@ -13,25 +13,26 @@ namespace Baton.Cli.Tests.Mcp;
 /// <summary>
 /// Unit and integration coverage for <see cref="RoomDetailTool"/> (#1427): the level-two
 /// drill-down beyond <c>fleet_status</c> — a single room's stdout tail and flow.jsonl timeline.
-/// Fixture rooms are real files under a temp <c>BATON_HOME</c>, no mocks of the subject.
+/// Fixture rooms are real files under a scoped storage root (see the class remarks below), no mocks
+/// of the subject.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
+// #1496: scoped via BeginScope rather than Environment.SetEnvironmentVariable -- see
+// FleetStatusToolTests' matching comment for why.
 public sealed class RoomDetailToolTests : IDisposable
 {
     private readonly string _tempHome;
-    private readonly string? _originalBatonHome;
+    private readonly IDisposable _scope;
 
     public RoomDetailToolTests()
     {
         _tempHome = Path.Combine(Path.GetTempPath(), $"baton-room-detail-test-home-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempHome);
-        _originalBatonHome = Environment.GetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable);
-        Environment.SetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable, _tempHome);
+        _scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with { HomeOverride = _tempHome });
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable, _originalBatonHome);
+        _scope.Dispose();
         if (Directory.Exists(_tempHome))
         {
             DirectoryCleanup.DeleteRecursively(_tempHome);

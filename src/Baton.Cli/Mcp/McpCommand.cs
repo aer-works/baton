@@ -1,3 +1,5 @@
+using Baton.Status;
+
 namespace Baton.Cli.Mcp;
 
 /// <summary>
@@ -37,7 +39,7 @@ public static class McpCommand
 
         if (enableMemoryProposalTool)
         {
-            var outputDirectory = Environment.GetEnvironmentVariable("BATON_OUTPUT_DIR");
+            var outputDirectory = BatonEnvironmentSnapshot.Current.McpOutputDirectory;
             if (string.IsNullOrEmpty(outputDirectory))
             {
                 Console.Error.WriteLine(

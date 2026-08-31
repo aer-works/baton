@@ -17,9 +17,10 @@ namespace Baton.Tests.Shared;
 /// <para>
 /// <b>Why a <see cref="ModuleInitializerAttribute"/> and not a fixture:</b> the redirect must happen
 /// before the first read of <c>BatonPaths.Root</c>, and a module initializer runs at assembly load,
-/// ahead of any test or fixture. Because <c>BatonPaths.Root</c> re-resolves the environment on every
-/// access (it deliberately never caches), setting <c>BATON_HOME</c> here is enough — nothing captured
-/// the root at type-load.
+/// ahead of any test or fixture. Since #1496, <c>BatonPaths.Root</c> resolves against
+/// <c>BatonEnvironmentSnapshot.Current</c>, which captures <c>BATON_HOME</c> once on first access and
+/// freezes it for the rest of the process — so this redirect only works because it runs before that
+/// first access; setting it any later would be silently ignored.
 /// </para>
 /// <para>
 /// This is the mechanism, not the guarantee. Cleanup runs only on a graceful process exit, and a
