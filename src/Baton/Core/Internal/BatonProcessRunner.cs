@@ -66,11 +66,6 @@ internal static class BatonProcessRunner
                 throw new BatonException(BatonErrorCode.SpawnFailed, $"Failed to start '{program}': the OS returned no process.");
             }
 
-            // Stdin redirected then immediately closed: the child sees EOF exactly as it would
-            // reading a native NUL device, and is never left connected to this process's own stdin
-            // (spec: "stdin-of-child redirected to null natively at spawn").
-            process.StandardInput.Close();
-
             if (!job.TryAssign(process.SafeHandle))
             {
                 // The no-orphans guarantee applies to spawn failures too, not
@@ -82,7 +77,17 @@ internal static class BatonProcessRunner
                 throw new BatonException(BatonErrorCode.SpawnFailed, $"Failed to assign '{program}' to its job object (Win32 error {error}).");
             }
 
+            // Armed as soon as the child is inside the job -- before StandardInput.Close() below,
+            // which practically never throws but would otherwise open a window (between a
+            // successful spawn+assign and the first event) where an exception left the tree
+            // untracked by this method's own kill-on-unwind guard.
             armed = true;
+
+            // Stdin redirected then immediately closed: a child that reads from stdin sees EOF exactly
+            // as it would reading a native NUL device, and is never left connected to this process's
+            // own stdin. Not a full equivalence -- a child that instead writes to stdin gets
+            // ERROR_BROKEN_PIPE here, where a real NUL device would have silently accepted the write.
+            process.StandardInput.Close();
 
             raiseEvent(new BatonEventArgs { Kind = BatonTaskEventKind.Started, Pid = (uint)process.Id });
 
@@ -319,14 +324,19 @@ internal static class BatonProcessRunner
             try
             {
                 process.WaitForExit();
-
-                // See RunDiscardingOutput's comment: unconditional, and what actually closes a
-                // straggling grandchild's inherited pipe handles so the drain threads below unblock.
-                job.Terminate();
             }
             catch (Exception ex)
             {
                 waitException = ex;
+            }
+            finally
+            {
+                // See RunDiscardingOutput's comment: unconditional, and what actually closes a
+                // straggling grandchild's inherited pipe handles so the drain threads below unblock.
+                // In `finally` rather than after WaitForExit(): if WaitForExit() itself throws, the
+                // drain threads and the foreach above must still be released rather than left blocked
+                // forever waiting on a tree nothing else is going to kill (#1474 second-reader S1).
+                job.Terminate();
             }
         })
         { IsBackground = true };
@@ -335,19 +345,34 @@ internal static class BatonProcessRunner
         // Live delivery: emit each chunk as it arrives. Ends once both drain threads have finished
         // (their pipes hit EOF, ultimately because the tree died), which is what completes the
         // collection below.
-        foreach (ChunkMessage chunk in chunks.GetConsumingEnumerable())
+        //
+        // The foreach body runs caller code (raiseEvent -> the subscriber's EventRaised handler): if
+        // it throws, the exception must not reach the `using chunks` disposal above while a drain
+        // thread could still be mid-`sink.Add` on it -- that raced an ObjectDisposedException onto a
+        // background thread, unhandled, which is fatal to the whole process (#1474 second-reader B1).
+        // The `finally` below both guarantees the joins still happen and, by terminating the job
+        // first, guarantees they happen promptly: without killing the tree here, a throw while the
+        // child is still producing output would otherwise block this rethrow on drain threads that
+        // only reach EOF once the process eventually exits on its own.
+        try
         {
-            raiseEvent(new BatonEventArgs
+            foreach (ChunkMessage chunk in chunks.GetConsumingEnumerable())
             {
-                Kind = chunk.IsStdout ? BatonTaskEventKind.StdoutChunk : BatonTaskEventKind.StderrChunk,
-                Seq = chunk.Seq,
-                Data = chunk.Bytes,
-            });
+                raiseEvent(new BatonEventArgs
+                {
+                    Kind = chunk.IsStdout ? BatonTaskEventKind.StdoutChunk : BatonTaskEventKind.StderrChunk,
+                    Seq = chunk.Seq,
+                    Data = chunk.Bytes,
+                });
+            }
         }
-
-        stdoutDrain.Join();
-        stderrDrain.Join();
-        waitThread.Join();
+        finally
+        {
+            job.Terminate();
+            stdoutDrain.Join();
+            stderrDrain.Join();
+            waitThread.Join();
+        }
 
         if (waitException is not null)
         {

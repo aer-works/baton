@@ -207,4 +207,47 @@ public class ProcessTreeAndPanicSafetyTests
 
         Assert.False(ProcessIsAlive(recordedPid), $"process {recordedPid} is still alive after the callback threw -- the process tree was orphaned");
     }
+
+    /// <summary>
+    /// Capture-path counterpart to <see cref="Run_EventHandlerThrows_StillKillsTheProcess"/> (#1474
+    /// second-reader B1): a callback throwing out of a <c>StderrChunk</c> event, while the still-alive
+    /// child means both drain threads are still blocked in their own <c>Read</c> rather than having
+    /// already hit EOF, used to race the <c>using</c>-disposed <c>BlockingCollection</c> against a
+    /// drain thread's own pending <c>Add</c> -- an unhandled <c>ObjectDisposedException</c> on that
+    /// background thread that crashed the whole host process rather than propagating as an ordinary
+    /// exception out of <see cref="BatonTask.Run"/>. This test's own survival (not merely the
+    /// assertions below) is the actual regression check: before the fix, this test took the test host
+    /// down with it instead of failing.
+    /// </summary>
+    [Fact]
+    public void Run_ChunkCallbackThrowsWhileProcessStillProducing_PropagatesAndKillsProcessWithoutCrashingHost()
+    {
+        (string prog, string[] args) = ("cmd", ["/c", "echo first-chunk 1>&2 & ping -n 30 127.0.0.1 >nul"]);
+        using BatonTask task = new BatonTask(prog, args).WithCaptureOutput();
+
+        int recordedPid = 0;
+        task.EventRaised += (_, e) =>
+        {
+            if (e.Kind == BatonTaskEventKind.Started)
+            {
+                recordedPid = (int)e.Pid;
+            }
+            else if (e.Kind == BatonTaskEventKind.StderrChunk)
+            {
+                throw new InvalidOperationException("simulated capture-path callback failure (#1474 second-reader B1 regression)");
+            }
+        };
+
+        InvalidOperationException thrown = Assert.Throws<InvalidOperationException>(task.Run);
+        Assert.Contains("simulated capture-path callback failure", thrown.Message, StringComparison.Ordinal);
+        Assert.True(recordedPid > 0, "pid was not recorded before the callback threw");
+
+        DateTime start = DateTime.UtcNow;
+        while (ProcessIsAlive(recordedPid) && DateTime.UtcNow - start < TimeSpan.FromSeconds(5))
+        {
+            Thread.Sleep(100); // wait-ok: poll interval for the teardown check above, not a flaky wait
+        }
+
+        Assert.False(ProcessIsAlive(recordedPid), $"process {recordedPid} is still alive after the callback threw -- the process tree was orphaned");
+    }
 }
