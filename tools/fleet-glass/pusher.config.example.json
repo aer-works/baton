@@ -10,6 +10,5 @@
   "rooms_root": "",
   "secret_patterns_file": "",
   "push_state_file": "",
-  "underhood_dirs": [],
-  "underhood_logs": []
+  "underhood_dirs": []
 }
