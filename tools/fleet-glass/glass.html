@@ -461,7 +461,7 @@ function renderMarkdown(text){
 }
 function itemRow(item){
   const [label, cls] = verdictChip(item.verdict);
-  const a = age(item.pushed_at);
+  const a = age(item.created_at || item.pushed_at);
   const withheld = item.withheld ? ` · <span title="${esc(item.stub_reason || "")}">withheld</span>` : "";
   return `<div class="item" data-id="${esc(item.id)}">
     <div class="top"><span class="title">${esc(item.title || item.artifact || item.id)}</span><span class="chip ${cls}">${label}</span></div>

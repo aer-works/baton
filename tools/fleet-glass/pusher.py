@@ -611,6 +611,11 @@ def build_item(room: str, room_dir: Path, artifact_path: Path, verdict: dict,
         "verdict": verdict,
         "content": content,
     }
+    try:
+        st = artifact_path.stat()
+        item["created_at"] = datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()
+    except (OSError, ValueError):
+        pass
     if stub_reason:
         item["stub_reason"] = stub_reason
     if pattern_index is not None:
@@ -618,12 +623,12 @@ def build_item(room: str, room_dir: Path, artifact_path: Path, verdict: dict,
     return item
 
 
-def build_verdict_only_item(room: str, verdict: dict) -> dict:
+def build_verdict_only_item(room: str, verdict: dict, room_dir: Path | None = None) -> dict:
     """A room with zero declared outputs (typically Failed) still gets one inbox entry, so a
     failure with nothing to show is still visible rather than silently absent."""
     text = json.dumps(verdict, indent=2, sort_keys=True)
     content_hash = sha256_hex(text.encode("utf-8"))
-    return {
+    item = {
         "id": f"{room}::__verdict__::{content_hash[:16]}",
         "room": room,
         "artifact": None,
@@ -633,6 +638,13 @@ def build_verdict_only_item(room: str, verdict: dict) -> dict:
         "verdict": verdict,
         "content": text,
     }
+    if room_dir is not None:
+        try:
+            st = (Path(room_dir) / "terminal.json").stat()
+            item["created_at"] = datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()
+        except (OSError, ValueError):
+            pass
+    return item
 
 
 def gather_deliverables(rooms_root: Path, state: dict, patterns: list[re.Pattern] | None) -> list[dict]:
@@ -655,7 +667,7 @@ def gather_deliverables(rooms_root: Path, state: dict, patterns: list[re.Pattern
         verdict = verdict_summary(terminal)
         outputs = declared_outputs(terminal)
         if not outputs:
-            item = build_verdict_only_item(room, verdict)
+            item = build_verdict_only_item(room, verdict, room_dir)
             key = f"{room}::{item['artifact']}"
             if state.get(key) != item["content_hash"]:
                 items.append(item)
@@ -827,6 +839,15 @@ def _selftest() -> int:
         check("clean content is uploaded verbatim when nothing matches",
               report["withheld"] is False and "Report A" in report["content"])
         check("title comes from the first markdown heading", report["title"] == "Report A")
+        check("deliverable carries ISO-8601 created_at from artifact mtime",
+              isinstance(report.get("created_at"), str) and "T" in report["created_at"])
+        verdict_only = next(i for i in items2 if i["room"] == "room-b")
+        check("verdict-only deliverable carries created_at from terminal.json mtime",
+              isinstance(verdict_only.get("created_at"), str) and "T" in verdict_only["created_at"])
+        unreadable_item = build_item("room-x", tmp / "nonexistent", tmp / "nonexistent" / "missing.md", {}, [])
+        check("unreadable artifact omits created_at (never crashes)", "created_at" not in unreadable_item)
+        unreadable_verdict = build_verdict_only_item("room-x", {}, tmp / "nonexistent")
+        check("missing terminal.json omits created_at", "created_at" not in unreadable_verdict)
 
         # -- patterns present, a hit: withheld with the matched index, never the pattern text --
         hit_patterns_file = tmp / "hit.txt"
