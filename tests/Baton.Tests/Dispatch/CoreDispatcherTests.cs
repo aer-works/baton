@@ -13,6 +13,7 @@ namespace Baton.Tests.Dispatch;
 /// (M7 Phase 6's acceptance criteria — a trivial worker, output file appears in the pre-allocated
 /// artifact directory, Core lifecycle events land in the log). No mocking of Baton.Core itself.
 /// </summary>
+[Collection(SerializedEnvironmentCollection.Name)]
 public class CoreDispatcherTests
 {
     private static readonly ExecutionId ExecutionId = new("exec-1");

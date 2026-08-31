@@ -19,6 +19,7 @@ namespace Baton.Tests.Core;
 /// EOF rather than blocking -- the managed equivalent of aer-core's native <c>Stdio::null()</c>.</item>
 /// </list>
 /// </summary>
+[Collection(SerializedEnvironmentCollection.Name)]
 public class SpawnResolutionTests
 {
     /// <summary>

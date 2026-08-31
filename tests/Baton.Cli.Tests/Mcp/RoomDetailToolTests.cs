@@ -15,7 +15,7 @@ namespace Baton.Cli.Tests.Mcp;
 /// drill-down beyond <c>fleet_status</c> — a single room's stdout tail and flow.jsonl timeline.
 /// Fixture rooms are real files under a temp <c>BATON_HOME</c>, no mocks of the subject.
 /// </summary>
-[Collection(BatonHomeEnvCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public sealed class RoomDetailToolTests : IDisposable
 {
     private readonly string _tempHome;

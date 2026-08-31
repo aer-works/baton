@@ -8,6 +8,7 @@ using Xunit;
 
 namespace Baton.Cli.Tests.Daemon;
 
+[Collection(SerializedEnvironmentCollection.Name)]
 public class RoomRetentionSweepTests
 {
     private static readonly StepId StepA = new("stepA");

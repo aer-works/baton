@@ -13,7 +13,7 @@ namespace Baton.Cli.Tests;
 /// asserted in isolation (that half is <see cref="RedispatchBindingTests"/>). Mirrors
 /// <see cref="DispatchCommandEndToEndTests"/>'s catalog-pinning and fake-adapter setup.
 /// </summary>
-[Collection(WorkerCatalogEnvCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public sealed class RedispatchCommandEndToEndTests : IDisposable
 {
     private static readonly IReadOnlyDictionary<string, IWorkerAdapter> Adapters =

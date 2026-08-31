@@ -20,6 +20,7 @@ namespace Baton.Cli.Tests.Daemon;
 /// the public <see cref="ConcurrencySlotGate.SetCaps"/> rather than that type's test-only internal reset;
 /// these tests never call <c>AcquireAsync</c>, so only the two cap values need resetting.
 /// </summary>
+[Collection(SerializedEnvironmentCollection.Name)]
 public class DaemonHostTests
 {
     public DaemonHostTests() => ConcurrencySlotGate.SetCaps(ConcurrencySlotGate.DefaultGlobalCap, ConcurrencySlotGate.DefaultPerVendorCap);

@@ -11,7 +11,7 @@ namespace Baton.Vendors.Tests;
 /// M20 Phase 4's deliverable: unit tests for the refactored, direct shell-less
 /// <see cref="ClaudeWorkerAdapter"/> resolving.
 /// </summary>
-[Collection(LaunchConfigCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public class ClaudeWorkerAdapterTests
 {
     private static readonly WorkerContract ArchitectContract = new(

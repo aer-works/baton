@@ -12,7 +12,7 @@ namespace Baton.Cli.Tests;
 /// means Failed. The fake adapter (<see cref="ContractOutputWorkerAdapter"/>) stands in for the worker
 /// so no live LLM is needed; the role, its outputs, and the contract are the real ones.
 /// </summary>
-[Collection(WorkerCatalogEnvCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchCommandEndToEndTests : IDisposable
 {
     private static readonly IReadOnlyDictionary<string, IWorkerAdapter> Adapters =
@@ -31,7 +31,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     // machine that has one -- the exact hazard WorkerRoleCatalogTests.ShippedDefault documents and
     // guards. The env edit is process-global, and one test below sets a deliberately-broken roles path --
     // so this class is not the only catalog reader that matters. It shares
-    // [Collection(WorkerCatalogEnvCollection.Name)] with DispatchTemplateEndToEndTests (see that
+    // [Collection(SerializedEnvironmentCollection.Name)] with DispatchTemplateEndToEndTests (see that
     // collection for the bleed it prevents); the ctor/Dispose set-and-restore keeps it clean within the
     // serialized group. Templates are pinned too (#1380, finding 7's test): DispatchCommand.MaterializeAsync
     // probes WorkflowTemplateCatalog.All to decide role-vs-template even for a role dispatch.

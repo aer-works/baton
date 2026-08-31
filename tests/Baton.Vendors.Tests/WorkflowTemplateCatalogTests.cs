@@ -9,7 +9,7 @@ namespace Baton.Vendors.Tests;
 /// take precedence, and that load-time validation catches empty catalogs, duplicate ids, zero-phase
 /// templates, unknown role references, duplicate phase names, and invalid input declarations.
 /// </summary>
-[Collection(WorkerRoleCatalogCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public class WorkflowTemplateCatalogTests
 {
     private sealed class EnvScope : IDisposable
