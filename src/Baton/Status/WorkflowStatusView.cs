@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Baton.Artifacts;
 using Baton.Domain;
 using Baton.Outcomes;
+using Baton.Scheduling;
 
 namespace Baton.Status;
 
@@ -38,7 +39,45 @@ public sealed record WorkflowStatusStepView(
     // every non-Running step so the field's mere presence already answers "does liveness apply here".
     [property: JsonPropertyName("liveness")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Liveness = null);
+    string? Liveness = null,
+    // #1509: a CONSECUTIVE-FAILURE-derived ordinal, not a true lifetime execution count -- Flow
+    // persists StepState.ConsecutiveFailureCount, not a monotonic attempt counter, so this is the
+    // most honest number derivable from what's actually recorded: ConsecutiveFailureCount+1 while
+    // Running (this attempt hasn't failed yet), ConsecutiveFailureCount itself once Failed (the
+    // latest attempt IS the Nth consecutive failure). Omitted -- never fabricated -- whenever
+    // ConsecutiveFailureCount is 0 (indistinguishable from "never failed" vs. "nothing recorded")
+    // or Status is neither Running nor Failed. Two known ways this undercounts relative to a true
+    // execution ordinal, both because ConsecutiveFailureCount itself is defined that way
+    // (StateProjector.cs): a FailureClassification.ExhaustedUntil failure does not increment the
+    // count (0026 obliges the engine not to spend a retry-budget attempt against an exhausted
+    // quota), so that execution's own ordinal renders one low; a DecisionType.RetryWithRevision
+    // resume resets the count to 0, so the next real failure after a human-revised retry renders as
+    // attempt 1 again rather than continuing the count. Both are reported findings (see
+    // report-1509.md), not silently swallowed -- fixing them needs a persisted lifetime counter Flow
+    // does not have today, which is bigger than this field's brief authorizes.
+    [property: JsonPropertyName("attempt")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? Attempt = null,
+    // #1509: the step definition's RetryPolicy.MaxAttempts, carried alongside Attempt so a
+    // consumer can render "attempt 3/5" without a second lookup. Present only when Attempt is.
+    [property: JsonPropertyName("maxAttempts")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? MaxAttempts = null,
+    // #1510: StepState.LatestFailureClassification's enum member name verbatim (Retryable /
+    // Permanent / ExhaustedUntil / ToolDenied) -- the engine's own taxonomy, never a new one.
+    // Present only for a Failed step that recorded a classification; a Failed step whose worker
+    // reported none stays omitted rather than defaulting to "Retryable", even though that is how
+    // RetryEngine itself treats an absent classification -- the field states what was recorded, not
+    // what it is treated as.
+    [property: JsonPropertyName("failureKind")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? FailureKind = null,
+    // #1510: RetryEngine.MayRetry's own verdict for this step, never a second taxonomy. Present
+    // only alongside a Failed step; a step that hasn't failed has nothing to be "eligible to
+    // retry".
+    [property: JsonPropertyName("retryEligible")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? RetryEligible = null);
 
 /// <summary>
 /// The one JSON object <c>baton status --json</c> writes to stdout (#1356's machine completion
@@ -171,9 +210,35 @@ public static class WorkflowStatusProjector
                 };
             }
 
+            // #1509/#1510: StepState already carries everything -- ConsecutiveFailureCount,
+            // LatestFailureClassification, and (via stepDefByStepId) RetryPolicy.MaxAttempts -- this
+            // is just the one place that was discarding it before it reached this view. Gated on
+            // ConsecutiveFailureCount > 0, not merely Running/Failed: a step's first-ever execution
+            // is indistinguishable from "unknown" if it were rendered as "attempt 1" (the count
+            // defaults to 0 both when a step genuinely never failed and when nothing was ever
+            // recorded for it) -- so a step with no failure history omits the field entirely rather
+            // than asserting attempt 1. See WorkflowStatusStepView.Attempt's own remarks for the two
+            // known cases (ExhaustedUntil, RetryWithRevision) where this still undercounts once a
+            // failure genuinely has happened.
+            int? attempt = step switch
+            {
+                { Status: StepStatus.Running, ConsecutiveFailureCount: > 0 } => step.ConsecutiveFailureCount + 1,
+                { Status: StepStatus.Failed, ConsecutiveFailureCount: > 0 } => step.ConsecutiveFailureCount,
+                _ => null,
+            };
+            int? maxAttempts = attempt is not null && stepDefByStepId.TryGetValue(step.StepId, out var attemptStepDef)
+                ? attemptStepDef.RetryPolicy.MaxAttempts
+                : null;
+            string? failureKind = step.Status == StepStatus.Failed && step.LatestFailureClassification is { } classification
+                ? classification.ToString()
+                : null;
+            bool? retryEligible = step.Status == StepStatus.Failed && stepDefByStepId.TryGetValue(step.StepId, out var retryStepDef)
+                ? RetryEngine.MayRetry(step, retryStepDef.RetryPolicy)
+                : null;
+
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
-                usage, linkedFromUsage, liveness));
+                usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))
