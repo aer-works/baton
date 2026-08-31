@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Domain;
@@ -155,6 +156,176 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Equal("Running", singleStep.State);
         Assert.Equal("exec-active-1", singleStep.Execution);
         Assert.NotNull(singleStep.Timestamp);
+    }
+
+    /// <summary>Same technique as <c>WorkflowStatusProjectorLivenessTests.DeadProcessIdentity</c>:
+    /// capture a real process's identity while it is provably alive, then kill it, so the probe's
+    /// OS-level checks see a genuinely dead PID rather than a fabricated one that might coincidentally
+    /// collide with something else running on the host.</summary>
+    private static (int Pid, DateTimeOffset StartTime) DeadProcessIdentity()
+    {
+        var psi = OperatingSystem.IsWindows()
+            ? new ProcessStartInfo("ping.exe", "-n 30 127.0.0.1") { CreateNoWindow = true }
+            : new ProcessStartInfo("sleep", "30") { CreateNoWindow = true };
+
+        using var process = Process.Start(psi)!;
+        try
+        {
+            return (process.Id, new DateTimeOffset(process.StartTime).ToUniversalTime());
+        }
+        finally
+        {
+            process.Kill();
+            process.WaitForExit();
+        }
+    }
+
+    /// <summary>
+    /// #1462: `fleet_status` must inherit `WorkflowStatusStepView.Liveness` off the SAME
+    /// <see cref="WorkflowStatusProjector"/> projection `status --json` reads (spec/baton.md §3/§6) --
+    /// never a second <see cref="Baton.Outcomes.EngineLivenessProbe"/> call. A fleet caller reading a
+    /// "Running" step whose engine was SIGKILLed must be able to tell a dead engine from a merely slow
+    /// one without a second, per-room `status --json` call.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_RunningStepWithDeadEngine_ReportsDeadLivenessThroughFleetStatus()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "dead-engine-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-dead"), "agent-worker", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("dead-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var (deadPid, deadStartTime) = DeadProcessIdentity();
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-dead-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("dead-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(req, EnginePid: deadPid, EngineStartTime: deadStartTime),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        var singleStep = Assert.Single(singleRoom.Steps!);
+        Assert.Equal("Running", singleStep.State);
+        Assert.Equal("dead", singleStep.Liveness);
+    }
+
+    /// <summary>
+    /// Polarity arm for the same #1462 fix, opposite direction: a step whose engine is genuinely
+    /// alive must read "alive" (or be omitted entirely once non-Running), never silently coincide
+    /// with the "dead" arm above -- proving `fleet_status` carries the probe's actual verdict rather
+    /// than a hardcoded string.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_RunningStepWithAliveEngine_ReportsAliveLivenessThroughFleetStatus()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "alive-engine-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-alive"), "agent-worker", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("alive-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var livePid = Environment.ProcessId;
+        var liveStartTime = new DateTimeOffset(Process.GetCurrentProcess().StartTime).ToUniversalTime();
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-alive-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("alive-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(req, EnginePid: livePid, EngineStartTime: liveStartTime),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        var singleStep = Assert.Single(singleRoom.Steps!);
+        Assert.Equal("alive", singleStep.Liveness);
+    }
+
+    /// <summary>
+    /// #1462: `fleet_status` must inherit `WorkflowStatusView.Rejected` off the same projection
+    /// `status --json` reads (spec/baton.md §3/§6) -- copied from the terminal sentinel, since the
+    /// sentinel already IS a <see cref="WorkflowStatusView"/>. A rejected room must read distinctly
+    /// from an ordinary crashed one: both settle as `"state": "Failed"`, and `rejected` is the only
+    /// structural fact telling them apart.
+    /// </summary>
+    [Fact]
+    public async Task TerminalSentinel_RejectedRoom_ReportsRejectedTrue_DistinctFromOrdinaryFailure()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var rejectedRoom = Path.Combine(defaultRoomsDir, "rejected-room");
+        var crashedRoom = Path.Combine(defaultRoomsDir, "crashed-room");
+        Directory.CreateDirectory(rejectedRoom);
+        Directory.CreateDirectory(crashedRoom);
+
+        var rejectedSentinel = new WorkflowStatusView("Failed", [], [], "a step was rejected", null, Rejected: true);
+        var crashedSentinel = new WorkflowStatusView("Failed", [], [], "the worker crashed", null, Rejected: false);
+        await TerminalSentinelWriter.WriteAsync(rejectedRoom, rejectedSentinel, TestContext.Current.CancellationToken);
+        await TerminalSentinelWriter.WriteAsync(crashedRoom, crashedSentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        Assert.Equal(2, rooms!.Count);
+
+        var rejected = rooms.First(r => r.Name == "rejected-room");
+        Assert.Equal("Failed", rejected.State);
+        Assert.True(rejected.Rejected);
+
+        var crashed = rooms.First(r => r.Name == "crashed-room");
+        Assert.Equal("Failed", crashed.State);
+        Assert.False(crashed.Rejected);
+        // Wire-level: a non-rejected room must OMIT the key, not emit "rejected": false -- the
+        // omission rests on JsonIgnoreCondition.WhenWritingDefault, and only a serialized assertion
+        // catches that attribute breaking.
+        Assert.DoesNotContain("\"rejected\"", JsonSerializer.Serialize(crashed));
     }
 
     [Fact]

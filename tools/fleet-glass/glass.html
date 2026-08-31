@@ -104,13 +104,18 @@ function newestStepTime(room){
 function laneHtml(room){
   const st = room.state;
   const chip = st === "Running" ? ["RUNNING","c-run"]
+    : st === "Failed" && room.rejected ? ["REJECTED","c-warn"]
     : st === "Succeeded" ? ["SUCCEEDED","c-ok"]
     : st === "Failed" ? ["FAILED","c-bad"]
     : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"];
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   const bits = [];
-  if(running) bits.push("step: " + esc(running.id));
+  if(running){
+    bits.push("step: " + esc(running.id));
+    if(running.liveness === "dead") bits.push("⚠ dead engine");
+    else if(running.liveness === "unknown") bits.push("engine: unknown");
+  }
   else if(lastStep) bits.push(esc(lastStep.id) + " " + esc(lastStep.state));
   const u = lastStep && (lastStep.usage || lastStep.linkedFromUsage);
   const tk = tokens(u); if(tk) bits.push(tk);

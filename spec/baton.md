@@ -300,12 +300,14 @@ entirely (`JsonIgnoreCondition.WhenWritingNull`, `FleetStepStatusView`,
 `timestamp` field the terminal-sentinel shape does not have. `terminal.json` and `status --json` are
 one contract; `fleet_status` is a third, related shape with its own null-handling — see §6's schema.
 
-**`liveness`/`rejected` (#1375/#1377) are `WorkflowStatusView`/`WorkflowStatusStepView`-only** — the
-`fleet_status` shape (§6) does not carry either field today; `FleetStatusTool` builds
-`FleetStepStatusView`/`FleetRoomStatusView` by copying named fields off the same projection rather
-than re-exposing it whole, so a fleet_status caller still cannot tell a dead engine or a rejection
-apart from an ordinary `Failed`/`Running` room. Not fixed here: out of scope for the `status --json`
-finding both issues were filed against, tracked as a gap rather than silently left unstated.
+**`liveness`/`rejected` (#1375/#1377) round-trip through `fleet_status` too (#1462).** `FleetStatusTool`
+builds `FleetStepStatusView`/`FleetRoomStatusView` by copying named fields off the same
+`WorkflowStatusView`/`WorkflowStatusStepView` projection — never a second probe or a second
+computation — so `FleetStepStatusView.Liveness` and `FleetRoomStatusView.Rejected` are the identical
+values `status --json` would report for the same room (`FleetStatusTool.cs`; the terminal-sentinel
+path copies `sentinel.Liveness`/`sentinel.Rejected` since the sentinel already **is** a
+`WorkflowStatusView`). A fleet_status caller can now tell a dead engine or a rejection apart from an
+ordinary `Failed`/`Running` room without a second `status --json` call per room.
 `liveness` is present only on a step this same projection calls `"Running"` — the identical gate
 `StatusCommand.FormatStepStatus` uses before probing (a `Paused` step's engine has legitimately
 exited; a step with no execution yet has nothing to probe) — so its mere presence in the JSON already
@@ -433,17 +435,22 @@ Output: a JSON array of
   "state"?: string,
   "steps"?: [
     { "id": string, "state": string, "execution"?: string, "linkedFrom"?: string,
-      "timestamp"?: string, "usage"?: ExecutionUsageView, "linkedFromUsage"?: ExecutionUsageView }
+      "timestamp"?: string, "usage"?: ExecutionUsageView, "linkedFromUsage"?: ExecutionUsageView,
+      "liveness"?: string }
   ],
   "outputs"?: [string],
   "error"?: string,
-  "try"?: string
+  "try"?: string,
+  "rejected"?: boolean
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
-(`JsonIgnoreCondition.WhenWritingNull` throughout `FleetRoomStatusView`/`FleetStepStatusView`). This
-is a **third shape**, related to but not identical with `terminal.json`/`status --json` — see §3's
-note on `linkedFrom` and `timestamp` for the concrete divergence.
+(`JsonIgnoreCondition.WhenWritingNull` throughout `FleetRoomStatusView`/`FleetStepStatusView`);
+`rejected` follows the same omit-when-uninformative convention via
+`JsonIgnoreCondition.WhenWritingDefault`, so it is absent rather than emitted `false`. This is a
+**third shape**, related to but not identical with `terminal.json`/`status --json` — see §3's note on
+`linkedFrom` and `timestamp` for the concrete divergence; `liveness`/`rejected` themselves are
+identical values across all three shapes (§3).
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan
