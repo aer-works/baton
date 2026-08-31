@@ -739,9 +739,29 @@ the deny-subset above is belt-and-braces on top. What the #1461 measurement actu
 against a chained command is a *separate*, unconditional claude guard against local file writes — not
 `--allowedTools`/`--disallowedTools`, whose behavior against a denied subcommand riding a chain is
 unmeasured and, given the whole-command-line matching above, plausibly weaker rather than stronger.
-So a non-file-mutating command chained after an allowed prefix (`git diff; echo …`) executes today,
-and closing that hole is the hook-side second layer #1459 tracks — the deny-subset is not, on this
-evidence, what bounds chaining.
+So a non-file-mutating command chained after an allowed prefix (`git diff; echo …`) would have
+executed under `--allowedTools`/`--disallowedTools` alone — the deny-subset was not, on that
+evidence, what bounded chaining.
+
+**#1459 closed that hole with a hook-side second layer, wired onto the same `PreToolUse` channel
+`HookCheckCommand` already runs (#543, #649).** `ClaudeWorkerAdapter` now sets
+`BATON_HOOK_SHELL_PATTERNS`/`BATON_HOOK_DENIED_SHELL_PATTERNS` — declared since #659, left unset
+until now (the issue's own "dead code" finding). For a `Bash` call under a scoped grant, the hook
+itself now parses the command claude actually received rather than trusting claude's own whole-line
+match: see `ShellCommandPatternMatcher.EvaluateChainedCommand`'s doc comment for the exact
+segmentation rule and its fail-closed set, and `docs/vendor-capabilities.md`'s #1461 subsection for
+the two measured rows this closes. Both rows are regression arms in `ShellCommandPatternMatcherTests`
+and `HookCheckCommandTests`.
+
+**One asymmetry against the denied-tools channel is worth flagging here rather than only in code:**
+`HookCheckCommand.Decide` reads an absent or wrong-vendor pattern channel as an unscoped grant, not a
+denial — the opposite of how it reads a missing denied-tools list (#600). See that method's own
+remarks for the full reasoning; in short, `--allowedTools`/`--disallowedTools` already ran and settled
+whether `Bash` is reachable at all before this check is even reached, so a hard denial on its own
+absence would have broken every already-shipped unscoped shell role the moment this landed. An explicitly
+unscoped grant reads the same way, matching `AgyHookCheckCommand`'s existing treatment of an empty
+pattern list on that vendor. Scoped to claude for now; the evaluator lives in vendor-neutral
+`Baton.Vendors` so agy can adopt it later, but agy's own `run_command` gate does not segment today.
 `PermissionGrant.ShellCommandsAreReadOnly`
 (new, #1456) is the named, author-asserted escape hatch that lets a grant like this one compose
 without widening `WriteFiles`/`NetworkAccess` just to satisfy `CategoriesDefeatedByTheShell`'s

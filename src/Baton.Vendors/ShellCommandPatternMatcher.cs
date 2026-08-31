@@ -1,6 +1,8 @@
+using System.Linq;
 using System.Text.Json;
 
 namespace Baton.Vendors;
+
 
 /// <summary>
 /// Evaluates a shell command line against a pattern allowlist using claude-compatible
@@ -230,4 +232,201 @@ public static class ShellCommandPatternMatcher
 
     private static readonly char[] MetaCharacters =
         [';', '&', '|', '`', '$', '<', '>', '(', ')', '\n', '\r', '\\', '\'', '"'];
+
+    /// <summary>
+    /// The overall result of <see cref="EvaluateChainedCommand"/> — <see cref="Allowed"/> when every
+    /// chained segment independently matched an allowed pattern and none matched a denied one,
+    /// <see cref="DeniedSegment"/> when a specific segment failed that test, and
+    /// <see cref="Unparseable"/> when the scanner would not trust its own segment boundaries at all.
+    /// </summary>
+    public enum ScopedShellVerdict
+    {
+        Allowed,
+        DeniedSegment,
+        Unparseable,
+    }
+
+    /// <param name="Verdict">The overall decision.</param>
+    /// <param name="Segment">
+    /// The offending segment, for <see cref="ScopedShellVerdict.DeniedSegment"/> only. An
+    /// <see cref="ScopedShellVerdict.Unparseable"/> command has no segment boundary this scanner
+    /// trusts, and an <see cref="ScopedShellVerdict.Allowed"/> command has nothing to name.
+    /// </param>
+    /// <param name="Reason">A denial reason a person can act on; <see langword="null"/> when allowed.</param>
+    public readonly record struct ScopedShellResult(ScopedShellVerdict Verdict, string? Segment, string? Reason)
+    {
+        public bool IsAllowed => Verdict == ScopedShellVerdict.Allowed;
+    }
+
+    /// <summary>
+    /// The hook-side second enforcement layer for a scoped shell grant (#1459, #1461's measured
+    /// hole). <see cref="IsAllowed"/> matches <paramref name="commandLine"/> as one whole string — the
+    /// same thing claude's own <c>Bash(pattern)</c> matching does — so an unlisted command riding a
+    /// <c>;</c>/<c>&amp;&amp;</c>/<c>||</c>/<c>|</c> chain after an allowed prefix matches too (`git
+    /// diff; echo escaped` and `git diff | grep baseline` both ran, unblocked, under a
+    /// <c>Bash(git diff*)</c> grant — see <c>docs/vendor-capabilities.md</c>'s #1461 subsection).
+    /// This method splits the command at top-level (unquoted) chain boundaries first and requires
+    /// EVERY resulting segment to independently satisfy the grant: match at least one allowed
+    /// pattern, and match no denied one.
+    /// </summary>
+    /// <remarks>
+    /// Fails closed to <see cref="ScopedShellVerdict.Unparseable"/> on anything this scanner will not
+    /// guess a boundary for — backticks, <c>$(...)</c>/<c>${...}</c>/a bare <c>$</c>, <c>&lt;</c>/
+    /// <c>&gt;</c> redirection, subshell parens, an embedded newline, or an unterminated quote —
+    /// rather than segment around it and risk a hidden command riding through. Once split, each
+    /// segment is itself checked through <see cref="IsAllowed"/>'s own quote-tracking scan, so a
+    /// segment that somehow still carries a bare metacharacter denies through the same path
+    /// <see cref="IsAllowed"/> already has.
+    /// </remarks>
+    /// <param name="commandLine">The full shell command line as claude's <c>Bash</c> tool received it.</param>
+    /// <param name="allowedPatterns">The grant's allowed patterns. Never call this with an empty/null list — that is the unscoped-shell case, handled by the caller before reaching here.</param>
+    /// <param name="deniedPatterns">The grant's standing-deny patterns, or empty/null when none apply.</param>
+    public static ScopedShellResult EvaluateChainedCommand(
+        string? commandLine, IReadOnlyList<string>? allowedPatterns, IReadOnlyList<string>? deniedPatterns)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            return new ScopedShellResult(
+                ScopedShellVerdict.Unparseable, null, "unparseable under scoped grant (empty command line)");
+        }
+
+        if (!TrySegmentChainedCommand(commandLine, out var segments, out var unparseableReason))
+        {
+            return new ScopedShellResult(ScopedShellVerdict.Unparseable, null, unparseableReason!);
+        }
+
+        foreach (var segment in segments)
+        {
+            if (deniedPatterns is { Count: > 0 } && IsAllowed(segment, deniedPatterns))
+            {
+                return new ScopedShellResult(
+                    ScopedShellVerdict.DeniedSegment, segment,
+                    $"segment '{segment}' matches this session's standing deny list");
+            }
+
+            if (!IsAllowed(segment, allowedPatterns))
+            {
+                return new ScopedShellResult(
+                    ScopedShellVerdict.DeniedSegment, segment,
+                    $"segment '{segment}' does not match any pattern this session's grant allows");
+            }
+        }
+
+        return new ScopedShellResult(ScopedShellVerdict.Allowed, null, null);
+    }
+
+    /// <summary>
+    /// Splits <paramref name="commandLine"/> at top-level (unquoted) <c>;</c>, <c>&amp;&amp;</c>,
+    /// <c>||</c>, <c>|</c> and a lone <c>&amp;</c> boundaries. Returns <see langword="false"/> the
+    /// moment it meets a character it will not trust a boundary decision around; see
+    /// <see cref="EvaluateChainedCommand"/>'s own remarks for the exact set and why.
+    /// </summary>
+    private static bool TrySegmentChainedCommand(
+        string commandLine, out IReadOnlyList<string> segments, out string? unparseableReason)
+    {
+        var result = new List<string>();
+        var current = new System.Text.StringBuilder();
+        bool inSingleQuote = false;
+        bool inDoubleQuote = false;
+        segments = Array.Empty<string>();
+
+        for (int i = 0; i < commandLine.Length; i++)
+        {
+            char c = commandLine[i];
+
+            if (inSingleQuote)
+            {
+                current.Append(c);
+                if (c == '\'')
+                {
+                    inSingleQuote = false;
+                }
+                continue;
+            }
+
+            if (inDoubleQuote)
+            {
+                if (c == '\\' && i + 1 < commandLine.Length)
+                {
+                    current.Append(c);
+                    current.Append(commandLine[++i]);
+                    continue;
+                }
+
+                if (c == '`' || (c == '$' && i + 1 < commandLine.Length && commandLine[i + 1] is '(' or '{'))
+                {
+                    unparseableReason =
+                        "unparseable under scoped grant (command substitution inside a quoted segment)";
+                    return false;
+                }
+
+                current.Append(c);
+                if (c == '"')
+                {
+                    inDoubleQuote = false;
+                }
+                continue;
+            }
+
+            switch (c)
+            {
+                case '\'':
+                    inSingleQuote = true;
+                    current.Append(c);
+                    continue;
+                case '"':
+                    inDoubleQuote = true;
+                    current.Append(c);
+                    continue;
+                case '`' or '$' or '<' or '>' or '(' or ')' or '\\':
+                    unparseableReason = $"unparseable under scoped grant (unsupported character '{c}')";
+                    return false;
+                case '\n' or '\r':
+                    unparseableReason = "unparseable under scoped grant (embedded newline)";
+                    return false;
+                case ';':
+                    result.Add(current.ToString());
+                    current.Clear();
+                    continue;
+                case '&':
+                    if (i + 1 < commandLine.Length && commandLine[i + 1] == '&')
+                    {
+                        i++;
+                    }
+                    result.Add(current.ToString());
+                    current.Clear();
+                    continue;
+                case '|':
+                    if (i + 1 < commandLine.Length && commandLine[i + 1] == '|')
+                    {
+                        i++;
+                    }
+                    result.Add(current.ToString());
+                    current.Clear();
+                    continue;
+                default:
+                    current.Append(c);
+                    continue;
+            }
+        }
+
+        if (inSingleQuote || inDoubleQuote)
+        {
+            unparseableReason = "unparseable under scoped grant (unterminated quote)";
+            return false;
+        }
+
+        result.Add(current.ToString());
+        var trimmed = result.Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+
+        if (trimmed.Count == 0)
+        {
+            unparseableReason = "unparseable under scoped grant (no command found)";
+            return false;
+        }
+
+        segments = trimmed;
+        unparseableReason = null;
+        return true;
+    }
 }

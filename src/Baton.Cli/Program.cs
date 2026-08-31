@@ -28,7 +28,13 @@ if (args.Length >= 1 && args[0] == "hook-check")
     // #679: where a granted write may land -- see HookCheckCommand.Execute's own parameter docs for
     // what its absence means.
     var workspaceDir = Environment.GetEnvironmentVariable(HookCheckCommand.WorkspaceEnvironmentVariable);
-    return HookCheckCommand.Execute(Console.In, Console.Error, deniedTools, outputDir, workspaceDir);
+    // #1459: the scoped-shell second layer -- allowed patterns and the standing-deny list, read the
+    // same way the denied-tool list above is.
+    var shellPatterns = Environment.GetEnvironmentVariable(HookCheckCommand.ShellPatternsEnvironmentVariable);
+    var deniedShellPatterns =
+        Environment.GetEnvironmentVariable(HookCheckCommand.DeniedShellPatternsEnvironmentVariable);
+    return HookCheckCommand.Execute(
+        Console.In, Console.Error, deniedTools, outputDir, workspaceDir, shellPatterns, deniedShellPatterns);
 }
 
 // #554: the same idea for agy, and a separate command because the two vendors share none of the

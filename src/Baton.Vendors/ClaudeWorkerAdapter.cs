@@ -229,6 +229,17 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             // #600 tags it with the vendor; #649 makes its contents differ from the flag.
             (DeniedToolsVariable, $"{DeniedToolsVendorTag}:{withheld}"),
             (SimpleModeVariable, "0"),
+            // #1459: always set, even empty -- an empty-but-tagged list is the deliberate
+            // unscoped-shell reading (HookCheckCommand.Decide skips the segment-level check), where an
+            // absent/wrong-vendor one is a broken channel and also skips it (see that method's own
+            // remarks for why claude's absent case reads opposite to agy's). Reuses
+            // AgyWorkerAdapter's builders rather than restating them -- both read the same
+            // PermissionGrant fields the same way; only the vendor tag differs, and that is applied
+            // here.
+            (ShellPatternsVariable,
+                $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildShellPatterns(invocation.PermissionGrant)}"),
+            (DeniedShellPatternsVariable,
+                $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellPatterns(invocation.PermissionGrant)}"),
         };
 
         if (Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable) is { Length: > 0 } configRoot)
@@ -303,9 +314,29 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
 
     /// <summary>
     /// The environment variable carrying shell command patterns for pattern-scoped grants (#659).
+    /// Declared but never set into a spawned worker's environment until #1459 — see
+    /// <see cref="ShellPatternsVendorTag"/> and <c>Resolve</c>'s environment list below for the wiring,
+    /// and <c>HookCheckCommand.Decide</c> for what reads it.
     /// </summary>
     public const string ShellPatternsVariable = "BATON_HOOK_SHELL_PATTERNS";
 
+    /// <summary>
+    /// The vendor tag prefixing <see cref="ShellPatternsVariable"/>'s and
+    /// <see cref="DeniedShellPatternsVariable"/>'s values (#600's pattern, applied here by #1459).
+    /// </summary>
+    public const string ShellPatternsVendorTag = "claude";
+
+    /// <summary>
+    /// The environment variable carrying this invocation's <b>denied</b> shell command patterns —
+    /// 0022's DenyAlways rung (#390), same literal as <c>AgyWorkerAdapter.DeniedShellPatternsVariable</c>
+    /// (record-once: declared there first, referenced here rather than restated). claude's OWN
+    /// enforcement for that rung is <c>--disallowedTools Bash(pattern)</c>
+    /// (<see cref="StandingShellDenials"/>), which the CLI applies with precedence over
+    /// <c>--allowedTools</c> and which survives a silently-dead hook (#530) — so this channel is
+    /// belt-and-braces for the hook's own segment-level check (#1459, spec/baton.md §9), not this
+    /// vendor's only enforcement of a standing "never" the way it is on agy.
+    /// </summary>
+    public const string DeniedShellPatternsVariable = AgyWorkerAdapter.DeniedShellPatternsVariable;
 
     /// <summary>
     /// The environment variable name Claude Code reads for its subagent fan-out depth cap.

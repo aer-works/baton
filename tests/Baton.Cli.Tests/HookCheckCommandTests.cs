@@ -131,4 +131,94 @@ public class HookCheckCommandTests
 
         Assert.Throws<ArgumentNullException>(() => HookCheckCommand.Execute(null!, stderr, "claude:Bash"));
     }
+
+    // --- #1459: the scoped-shell second layer -------------------------------------------------------
+
+    private static int RunBash(
+        string command, string? shellPatternsRaw, string? deniedShellPatternsRaw = null,
+        TextWriter? stderr = null)
+    {
+        var payload = """{"tool_name": "Bash", "tool_input": {"command": COMMAND_JSON}}"""
+            .Replace("COMMAND_JSON", System.Text.Json.JsonSerializer.Serialize(command));
+        using var stdin = new StringReader(payload);
+        // "claude:Read" -- Bash is granted (absent from the denied-tool list), which is what lets
+        // execution reach the shell-pattern check under test.
+        return HookCheckCommand.Execute(
+            stdin, stderr ?? new StringWriter(), "claude:Read", shellPatternsRaw: shellPatternsRaw,
+            deniedShellPatternsRaw: deniedShellPatternsRaw);
+    }
+
+    [Theory]
+    [InlineData("git diff; echo escaped")] // #1461's measured escape row 1
+    [InlineData("git diff | grep baseline")] // #1461's measured escape row 2
+    public void Regression_the_measured_chaining_escapes_are_denied_by_the_hook(string command)
+    {
+        // See ShellCommandPatternMatcherTests for why these ran unblocked before #1459. This is the
+        // same regression asserted end-to-end through the hook rather than the evaluator directly.
+        using var stderr = new StringWriter();
+
+        var exitCode = RunBash(command, "claude:git diff*", stderr: stderr);
+
+        Assert.Equal(HookCheckCommand.DeniedExitCode, exitCode);
+        Assert.Contains("scoped shell grant", stderr.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_single_command_matching_the_scoped_pattern_is_allowed()
+    {
+        var exitCode = RunBash("git diff", "claude:git diff*");
+
+        Assert.Equal(HookCheckCommand.AllowedExitCode, exitCode);
+    }
+
+    [Fact]
+    public void A_segment_outside_the_scoped_patterns_denies_naming_the_segment()
+    {
+        using var stderr = new StringWriter();
+
+        var exitCode = RunBash("git diff && npm install", "claude:git diff*", stderr: stderr);
+
+        Assert.Equal(HookCheckCommand.DeniedExitCode, exitCode);
+        Assert.Contains("npm install", stderr.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_segment_matching_the_standing_deny_list_denies_even_when_the_allow_list_would_admit_it()
+    {
+        using var stderr = new StringWriter();
+
+        var exitCode = RunBash(
+            "git diff && git push", "claude:git diff*,git push*", "claude:git push*", stderr);
+
+        Assert.Equal(HookCheckCommand.DeniedExitCode, exitCode);
+        Assert.Contains("git push", stderr.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("git diff $(whoami)")]
+    [InlineData("git diff `whoami`")]
+    [InlineData("git diff > out.txt")]
+    public void An_unparseable_command_fails_closed_under_a_scoped_grant(string command)
+    {
+        using var stderr = new StringWriter();
+
+        var exitCode = RunBash(command, "claude:git diff*", stderr: stderr);
+
+        Assert.Equal(HookCheckCommand.DeniedExitCode, exitCode);
+        Assert.Contains("unparseable under scoped grant", stderr.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("claude:")] // Present, explicitly unscoped (empty pattern list)
+    [InlineData(null)] // Absent -- the channel never arrived (an older AER, or a role never updated)
+    [InlineData("agy:git diff*")] // WrongVendor
+    public void An_unscoped_or_absent_shell_pattern_channel_leaves_the_second_layer_untouched(
+        string? shellPatternsRaw)
+    {
+        // Point 4 of #1459's design. See HookCheckCommand.Decide's own comment on this branch for why
+        // Absent/WrongVendor here reads opposite to the denied-tools channel above.
+        var exitCode = RunBash("git diff; echo escaped", shellPatternsRaw);
+
+        Assert.Equal(HookCheckCommand.AllowedExitCode, exitCode);
+    }
 }

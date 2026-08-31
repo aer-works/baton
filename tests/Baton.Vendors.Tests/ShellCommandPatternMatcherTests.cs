@@ -82,4 +82,95 @@ public class ShellCommandPatternMatcherTests
         Assert.False(ShellCommandPatternMatcher.IsAllowed("   ", patterns));
         Assert.False(ShellCommandPatternMatcher.IsAllowed(null, patterns));
     }
+
+    // --- EvaluateChainedCommand (#1459): the hook-side second layer ---------------------------------
+
+    [Theory]
+    [InlineData("git diff; echo escaped", "echo escaped")] // #1461's measured escape row 1
+    [InlineData("git diff | grep baseline", "grep baseline")] // #1461's measured escape row 2
+    public void Regression_the_measured_escape_rows_are_denied_naming_the_offending_segment(
+        string commandLine, string expectedSegment)
+    {
+        // #1461 measured both of these as executing, unblocked, under `--allowedTools "Bash(git diff*)"`
+        // -- claude's own pattern match is against the WHOLE command line, so the unlisted second half
+        // rode the allowed prefix past it. This is the hole the hook-side segment check exists to close.
+        string[] allowed = ["git diff*"];
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(commandLine, allowed, null);
+
+        Assert.Equal(ShellCommandPatternMatcher.ScopedShellVerdict.DeniedSegment, result.Verdict);
+        Assert.Equal(expectedSegment, result.Segment);
+    }
+
+    [Fact]
+    public void A_single_command_matching_an_allowed_pattern_passes()
+    {
+        string[] allowed = ["git diff*"];
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand("git diff", allowed, null);
+
+        Assert.True(result.IsAllowed);
+        Assert.Equal(ShellCommandPatternMatcher.ScopedShellVerdict.Allowed, result.Verdict);
+    }
+
+    [Theory]
+    [InlineData("git diff && git status")]
+    [InlineData("git diff && git status && git log")]
+    [InlineData("git diff; git status")]
+    [InlineData("git diff || git status")]
+    public void A_chain_whose_every_segment_matches_an_allowed_pattern_passes(string commandLine)
+    {
+        // The capability the segment-level check adds over a blanket "any metacharacter denies": a
+        // genuinely scoped chain of allowed reads is allowed, not just refused outright.
+        string[] allowed = ["git diff*", "git status*", "git log*"];
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(commandLine, allowed, null);
+
+        Assert.True(result.IsAllowed);
+    }
+
+    [Fact]
+    public void A_segment_matching_nothing_allowed_denies_naming_that_segment_even_mid_chain()
+    {
+        string[] allowed = ["git diff*", "git status*"];
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand("git diff && npm install", allowed, null);
+
+        Assert.Equal(ShellCommandPatternMatcher.ScopedShellVerdict.DeniedSegment, result.Verdict);
+        Assert.Equal("npm install", result.Segment);
+    }
+
+    [Fact]
+    public void A_segment_matching_a_denied_pattern_denies_even_when_it_also_matches_an_allowed_one()
+    {
+        // Deny beats allow (0022, #390): "git push" would itself match a hypothetical "git *" allow,
+        // but the standing deny list refuses it regardless of what widens the allow side.
+        string[] allowed = ["git diff*", "git push*"];
+        string[] denied = ["git push*"];
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand("git diff && git push", allowed, denied);
+
+        Assert.Equal(ShellCommandPatternMatcher.ScopedShellVerdict.DeniedSegment, result.Verdict);
+        Assert.Equal("git push", result.Segment);
+    }
+
+    [Theory]
+    [InlineData("git diff $(whoami)")] // command substitution
+    [InlineData("git diff `whoami`")] // backtick substitution
+    [InlineData("git diff > out.txt")] // output redirection
+    [InlineData("git diff < in.txt")] // input redirection
+    [InlineData("(git diff)")] // subshell
+    [InlineData("git diff\nrm -rf /")] // embedded newline
+    [InlineData("git diff \\")] // trailing backslash
+    [InlineData("'git diff")] // unterminated quote
+    public void Unparseable_shapes_fail_closed_rather_than_guessing_a_boundary(string commandLine)
+    {
+        string[] allowed = ["git diff*"];
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(commandLine, allowed, null);
+
+        Assert.Equal(ShellCommandPatternMatcher.ScopedShellVerdict.Unparseable, result.Verdict);
+        Assert.Contains("unparseable under scoped grant", result.Reason, StringComparison.Ordinal);
+        Assert.Null(result.Segment);
+    }
 }

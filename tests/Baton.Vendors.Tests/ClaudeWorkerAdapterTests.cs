@@ -490,6 +490,43 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// #1459: closes the gap <c>ShellPatternsVariable</c>'s own doc comment names. Both channels now
+    /// reach the hook subprocess, tagged and comma-joined the same way the denied-tools channel is.
+    /// </summary>
+    [Fact]
+    public void The_shell_pattern_channels_carry_the_grants_allowed_and_denied_patterns()
+    {
+        var grant = new PermissionGrant(
+            RunShellCommands: true, ShellCommandPatterns: ["git diff*", "gh pr view*"],
+            DeniedShellCommandPatterns: ["git commit*", "git push*"]);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*,gh pr view*"), target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.DeniedShellPatternsVariable, "claude:git commit*,git push*"),
+            target.Environment);
+    }
+
+    /// <summary>
+    /// #1459: an unscoped shell (no pattern list, or no grant at all) must still set both channels,
+    /// tagged and empty -- that is the "unscoped, not broken" reading <c>HookCheckCommand.Decide</c>
+    /// depends on. A missing variable and an empty-but-tagged one must stay tellable apart the same
+    /// way #600 already made the denied-tools channel tellable apart.
+    /// </summary>
+    [Fact]
+    public void The_shell_pattern_channels_are_set_even_when_unscoped_or_absent()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.DeniedShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
     /// #543, from review: an inherited `CLAUDE_CODE_SIMPLE=1` disables hooks the same way `--bare`
     /// does (see the doc comment above `SimpleModeVariable`'s declaration), and `BatonTask` inherits
     /// the full parent environment by default -- so this override has to actually be on the argv
