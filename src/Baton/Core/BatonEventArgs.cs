@@ -1,9 +1,9 @@
 namespace Baton.Core;
 
 /// <summary>
-/// Payload for <see cref="BatonTask.EventRaised"/>. One instance is created per native
-/// <c>BatonEvent</c> delivered during a run; check <see cref="Kind"/> to determine which
-/// other members are meaningful.
+/// Payload for <see cref="BatonTask.EventRaised"/>. One instance is created per lifecycle/observation
+/// event delivered during a run; check <see cref="Kind"/> to determine which other members are
+/// meaningful.
 /// </summary>
 public sealed class BatonEventArgs : EventArgs
 {

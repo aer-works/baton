@@ -243,10 +243,11 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             environment.Add((WorkerEnvironment.WorkspaceVariable, workspace));
         }
 
-        // Native core spawns this literal name via Rust's Command::new, which resolves only
-        // `claude`/`claude.exe` on PATH -- never a `claude.cmd`/`.bat` shim (no PATHEXT; Rust
-        // refuses batch resolution by design, CVE-2024-24576). An npm-installed Claude CLI is
-        // exactly such a shim and will fail spawn with "program not found"; the native installer's
+        // BatonTask spawns this literal name via .NET's Process (UseShellExecute=false), which
+        // resolves only `claude`/`claude.exe` on PATH -- never a `claude.cmd`/`.bat` shim (no
+        // PATHEXT consulted; CreateProcess's own resolution only ever appends `.exe`, CVE-2024-24576
+        // -- measured empirically for this managed spawn path, #1474). An npm-installed Claude CLI
+        // is exactly such a shim and will fail spawn with "program not found"; the native installer's
         // claude.exe is required (#1468).
         return new CoreDispatchTarget(
             "claude", [.. args], invocation.WorkingDirectory, PromptText: prompt,

@@ -21,7 +21,6 @@ namespace Baton.Architecture.Tests;
 /// <item>Reflection or a delegate (<c>typeof(Process).GetMethod("Start")</c>) matches no text here.</item>
 /// <item>An approved site spawning something that itself spawns a vendor CLI — a shell script, the
 /// Go sidecar — is a grandchild this cannot see.</item>
-/// <item>Native spawns inside <c>native/core</c>: that is Rust, and out of this scan.</item>
 /// <item>An approved site silently dropping its gate arguments — each adapter's own <c>Resolve</c>
 /// tests cover the two shipped adapters; nothing covers a third that has not been written.</item>
 /// </list>
@@ -41,6 +40,7 @@ public class VendorSpawnGateTests
     private static readonly Dictionary<string, string> ApprovedSpawnSites = new()
     {
         ["src/Baton/Dispatch/CoreDispatcher.cs"] = "The gated dispatch path. Adapters build the gate into the target.",
+        ["src/Baton/Core/Internal/BatonProcessRunner.cs"] = "The managed spawn primitive BatonTask.Run/RunAsync bottoms out into (#1474). Previously invisible to this scan -- the same spawn happened across the FFI boundary inside native/core's Rust Command::new -- now visible because the port is plain C#. Gating happens upstream: an adapter builds the PreToolUse gate into the CoreDispatchTarget before CoreDispatcher ever constructs a BatonTask, so this file spawns whatever CoreDispatcher hands it, already gated.",
         ["src/Baton.Vendors/AgyWorkerAdapter.cs"] = "Read-only agy registry queries (models/agent/plugin list) — no -p, no tool execution.",
         ["src/Baton.Cli/WorkspaceHead.cs"] = "Read-only 'git rev-parse HEAD' to capture a capture step's base ref — git, not a vendor CLI; no -p, no tool execution.",
         ["src/Baton/Workspaces/WorktreeProvisioner.cs"] = "'git worktree add/remove' plus 'git status' to provision and tear down a worker's workspace (#669) — git, not a vendor CLI; spawns no vendor process.",

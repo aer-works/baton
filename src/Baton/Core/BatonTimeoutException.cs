@@ -1,8 +1,8 @@
 namespace Baton.Core;
 
 /// <summary>
-/// Thrown when an <see cref="BatonTask"/> run is killed because it exceeded its configured
-/// wall-clock timeout (<see cref="BatonErrorCode.TimedOut"/>).
+/// Thrown when a <see cref="BatonTask"/> run is killed because it exceeded its configured wall-clock
+/// timeout (<see cref="BatonErrorCode.TimedOut"/>).
 /// </summary>
 public sealed class BatonTimeoutException : BatonException
 {

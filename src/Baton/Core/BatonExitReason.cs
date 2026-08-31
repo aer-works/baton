@@ -1,7 +1,7 @@
 namespace Baton.Core;
 
 /// <summary>
-/// Reason an <see cref="BatonEvent"/> of kind Exited was delivered. Integer values are stable ABI — never reorder.
+/// Reason a <see cref="BatonEventArgs"/> of kind Exited was delivered.
 /// </summary>
 public enum BatonExitReason : uint
 {
@@ -9,6 +9,6 @@ public enum BatonExitReason : uint
     Natural = 0,
     /// <summary>The task exceeded its configured wall-clock timeout.</summary>
     TimedOut = 1,
-    /// <summary>A cancel handle was triggered.</summary>
+    /// <summary>An on-demand cancellation request killed the process.</summary>
     CancelRequested = 2,
 }

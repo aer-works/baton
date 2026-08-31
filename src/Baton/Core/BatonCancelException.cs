@@ -1,9 +1,8 @@
 namespace Baton.Core;
 
 /// <summary>
-/// Thrown when an <see cref="BatonTask"/> run is killed because it was cancelled — either via the
-/// <see cref="CancellationToken"/> passed to <see cref="BatonTask.RunAsync"/> or an explicit cancel
-/// request (<see cref="BatonErrorCode.Cancelled"/>).
+/// Thrown when a <see cref="BatonTask"/> run is killed because the <see cref="CancellationToken"/>
+/// passed to <see cref="BatonTask.RunAsync"/> was cancelled (<see cref="BatonErrorCode.Cancelled"/>).
 /// </summary>
 public sealed class BatonCancelException : BatonException
 {

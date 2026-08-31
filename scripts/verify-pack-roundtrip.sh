@@ -25,10 +25,13 @@ trap cleanup EXIT
 # for, but this time settling the step Succeeded instead of Failed.
 #
 # The stub MUST be a real .exe (#1468): since #1424 removed shell wrapping, the adapter's direct
-# `claude` invocation is spawned by native core's Rust `Command::new`, which resolves only `claude`
-# and `claude.exe` on PATH -- never `claude.cmd`/`.bat` (no PATHEXT; Rust refuses batch resolution
-# by design, see CVE-2024-24576). The `.cmd` stub #1405 chose for the old shell-wrapped spawn was
-# invisible to it, which kept the pack job red on every main push from #1424 until this fix. The
+# `claude` invocation is spawned by BatonTask's managed spawn path (.NET's Process,
+# UseShellExecute=false), which resolves only `claude` and `claude.exe` on PATH -- never
+# `claude.cmd`/`.bat` (no PATHEXT consulted; CreateProcess's own resolution only ever appends
+# `.exe`, see CVE-2024-24576 -- this held for aer-core's Rust `Command::new` pre-#1474 and was
+# measured to hold identically for the managed port that replaced it). The `.cmd` stub #1405 chose
+# for the old shell-wrapped spawn was invisible to it, which kept the pack job red on every main
+# push from #1424 until this fix. The
 # dotnet SDK is already a hard dependency of this script (it installs a dotnet tool), so publish a
 # three-line C# stub as `claude.exe`.
 STUB_SRC="$TASK_ROOT/stub-src"
