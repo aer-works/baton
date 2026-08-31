@@ -864,7 +864,10 @@ mutating) was denied, so the mutating/read-only split `review`'s grant relies on
 practice — but it holds because claude classifies `git rebase` as needing approval, not because
 `Bash(git diff*)` excludes it. An explicit `--disallowedTools` pattern still wins over the
 auto-approve, consistent with the deny-over-allow precedence the canonical ceiling above already
-established.
+established. This does not contradict that section's control row (`git --version` under *no grant* →
+**denied**): the outcome under no grant is per-subcommand, decided by claude's risk classification —
+`git --version`/`git rebase` land on the approval-required side, `git log`/`git status` on the
+auto-approved side — not a single blanket answer for "no grant."
 
 **Command-line matching extent: `Bash(pattern)` matches the whole invoked command line, and
 non-file-mutating chained/piped commands execute.**
@@ -884,10 +887,10 @@ tokens: `git diff; echo escaped` and `git diff | grep baseline` both executed in
 naming only `git diff*`, and the appended/piped part's own output is in the `tool_result` — not
 merely asserted by the model. That is the escape #1456's second reader asked about, and it is real.
 Separately, claude carries an **unconditional Bash-tool guard against file creation and
-modification**: `>` redirection and `touch` were blocked identically whether the grant was the
-narrow `Bash(git diff*)` or the wide-open `Bash(git *)`, so that guard sits outside the
-`--allowedTools` pattern match — a pattern cannot widen or narrow it, and its presence is not
-evidence that `--allowedTools` itself bounds chaining. It is also silent on any chained command that
+modification**: `>` redirection was blocked identically whether the grant was the narrow
+`Bash(git diff*)` or the wide-open `Bash(git *)` control, and chained `touch` was blocked under the
+narrow grant, so that guard sits outside the `--allowedTools` pattern match — a pattern cannot widen
+or narrow it, and its presence is not evidence that `--allowedTools` itself bounds chaining. It is also silent on any chained command that
 neither writes a local file nor is git/gh — `echo`, a `grep` of secrets already in context, a
 network read — which is exactly the shape `git diff; echo escaped` and `git diff | grep baseline`
 showed running unblocked.

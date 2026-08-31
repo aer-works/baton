@@ -735,8 +735,13 @@ subcommand family explicitly rather than relying on allowlist-omission alone, an
 assertion rests on that explicit deny-subset plus claude's own read/mutate classification — not on
 `--allowedTools` excluding unlisted reads, which it does not do. `review`'s grant relies on exactly
 that: only the enumerated `Bash(git …*)`/`Bash(gh …*)` patterns are pre-approved (no bare `Bash`), and
-the deny-subset above is belt-and-braces on top — now known to be load-bearing against chaining
-(#1459 tracks the hook-side second layer that data feeds), not merely defensive.
+the deny-subset above is belt-and-braces on top. What the #1461 measurement actually leaves standing
+against a chained command is a *separate*, unconditional claude guard against local file writes — not
+`--allowedTools`/`--disallowedTools`, whose behavior against a denied subcommand riding a chain is
+unmeasured and, given the whole-command-line matching above, plausibly weaker rather than stronger.
+So a non-file-mutating command chained after an allowed prefix (`git diff; echo …`) executes today,
+and closing that hole is the hook-side second layer #1459 tracks — the deny-subset is not, on this
+evidence, what bounds chaining.
 `PermissionGrant.ShellCommandsAreReadOnly`
 (new, #1456) is the named, author-asserted escape hatch that lets a grant like this one compose
 without widening `WriteFiles`/`NetworkAccess` just to satisfy `CategoriesDefeatedByTheShell`'s
