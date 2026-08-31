@@ -786,6 +786,11 @@ whole-scope balance gate ahead of a fifth swallowed-grant shape, and refusing ra
 comma-list inside one clause once #1514 found that reading unmeasured against claude's own parser) —
 `BuildShellPatternsFromRawScope`'s doc comment is again the canonical record; nothing here restates it.
 
+**Round 5 found that "categorically" still had a gap: a balanced fusion of a `Bash(` grant into a
+clause the loop would drop.** The balance gate cannot see it, because the string balances. A fusion
+gate closes it with a conservation count — `BuildShellPatternsFromRawScope`'s own "Fusion gate:"
+inline comment is the canonical record of the count and what it refuses.
+
 **One asymmetry against the denied-tools channel is worth flagging here rather than only in code:**
 `HookCheckCommand.Decide` reads an absent or wrong-vendor pattern channel as an unscoped grant, not a
 denial — the opposite of how it reads a missing denied-tools list (#600). See that method's own

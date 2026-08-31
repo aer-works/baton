@@ -698,6 +698,87 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// Round-5 HIGH: a balanced string with no top-level comma is one clause -- when that clause
+    /// starts with something other than <c>Bash(</c>, the loop's <c>StartsWith("Bash(")</c> drops it
+    /// whole, taking a fused <c>Bash(</c> grant down with it. <c>ClaudeWorkerAdapter
+    /// .BuildShellPatternsFromRawScope</c>'s own "Fusion gate" remarks record the conservation-count
+    /// mechanism that now catches this instead of silently emitting an empty channel.
+    /// </summary>
+    [Fact]
+    public void A_Bash_grant_fused_after_a_balanced_leading_clause_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Read()Bash(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Two <c>Bash(</c> grants with no separating top-level comma are still one clause by
+    /// <c>SplitAtTopLevelCommas</c>'s count -- the fusion gate's occurrence-vs-headed-clause count
+    /// (2 vs 1) is what catches this, not the balance gate (the string balances).
+    /// </summary>
+    [Fact]
+    public void Two_Bash_grants_fused_together_with_no_separating_comma_make_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation(
+                    "Draft a plan.", PermissionScope: "Bash(git diff*)Bash(git status*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Leading text before a <c>Bash(</c> grant, with no separating comma, fuses the grant into a
+    /// clause that does not start with <c>Bash(</c> -- must throw rather than drop it.
+    /// </summary>
+    [Fact]
+    public void Leading_text_fused_before_a_Bash_grant_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "x Bash(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Same shape as the leading-text case with no whitespace at all -- the fused text sits directly
+    /// against the grant, so the clause still does not start with <c>Bash(</c> after trimming.
+    /// </summary>
+    [Fact]
+    public void A_Bash_grant_fused_directly_after_leading_text_with_no_space_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "XBash(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// A <c>Bash(</c> grant nested inside a non-<c>Bash</c> clause's parens -- balanced, one top-level
+    /// clause, headed by <c>Read(</c> rather than <c>Bash(</c>. The fusion gate must catch this the
+    /// same way as the unnested fusion shapes above rather than treating "nested" as safe.
+    /// </summary>
+    [Fact]
+    public void A_Bash_grant_nested_inside_a_non_Bash_clause_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Read(Bash(x))"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
     /// #543, from review: an inherited `CLAUDE_CODE_SIMPLE=1` disables hooks the same way `--bare`
     /// does (see the doc comment above `SimpleModeVariable`'s declaration), and `BatonTask` inherits
     /// the full parent environment by default -- so this override has to actually be on the argv

@@ -696,8 +696,38 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
                 "unbalanced clause silently swallowing the real Bash(...) grant");
         }
 
+        // Fusion gate: every Bash( grant must head its own top-level clause. SplitAtTopLevelCommas can
+        // only separate grants a top-level comma actually divides, and the loop below drops any clause
+        // that doesn't START with Bash( -- so a Bash( grant fused into another clause with no separating
+        // comma ("Read()Bash(git diff*)", "Bash(a)Bash(b)", "x Bash(git diff*)") is perfectly balanced,
+        // passes the balance gate above, then vanishes silently on the StartsWith continue. The balance
+        // gate cannot see this (the string balances); only a count can. If the scope names more Bash(
+        // grants than there are top-level clauses that start with Bash(, at least one is buried inside a
+        // clause we would drop -- refuse rather than lose it. This is the round-5 closure that makes the
+        // no-op path reachable ONLY when no Bash( grant is present at all.
+        var clauses = SplitAtTopLevelCommas(resolvedScope);
+        var bashGrantOccurrences = CountOccurrences(resolvedScope, "Bash(");
+        var bashHeadedClauses = 0;
+        foreach (var rawClause in clauses)
+        {
+            if (rawClause.Trim().StartsWith("Bash(", StringComparison.Ordinal))
+            {
+                bashHeadedClauses++;
+            }
+        }
+
+        if (bashGrantOccurrences != bashHeadedClauses)
+        {
+            throw new PermissionGrantUnsupportedException(
+                "claude",
+                $"the raw PermissionScope '{resolvedScope}' fuses a Bash(...) grant into another " +
+                "clause without a separating top-level comma, where it would be silently dropped from " +
+                "the shell-pattern hook channel -- write each Bash(...) grant as its own top-level " +
+                "clause (Bash(p1),Bash(p2)) so the #1459 bypass this method exists to close stays shut");
+        }
+
         List<string> patterns = [];
-        foreach (var rawClause in SplitAtTopLevelCommas(resolvedScope))
+        foreach (var rawClause in clauses)
         {
             var clause = rawClause.Trim();
             if (clause.Length == 0)
@@ -775,6 +805,25 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         }
 
         return depth == 0;
+    }
+
+    /// <summary>
+    /// Counts non-overlapping occurrences of <paramref name="needle"/> in <paramref name="text"/>. Used
+    /// by <see cref="BuildShellPatternsFromRawScope"/>'s fusion gate to count how many <c>Bash(</c>
+    /// grants the raw scope names, which must equal the number of top-level clauses that START with
+    /// <c>Bash(</c> -- any surplus is a grant fused into a clause that would be silently dropped.
+    /// </summary>
+    private static int CountOccurrences(string text, string needle)
+    {
+        var count = 0;
+        var index = text.IndexOf(needle, StringComparison.Ordinal);
+        while (index >= 0)
+        {
+            count++;
+            index = text.IndexOf(needle, index + needle.Length, StringComparison.Ordinal);
+        }
+
+        return count;
     }
 
     /// <summary>
