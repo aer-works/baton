@@ -21,12 +21,21 @@ namespace Baton.Cli;
 /// uncommitted changes, or a removal that could not complete. A clean removal is not listed; empty is
 /// the common case.
 /// </param>
+/// <param name="WaitTimedOut">
+/// #1378: true only when <c>baton run --wait --wait-timeout &lt;minutes&gt;</c>'s poll loop stopped
+/// because that bound elapsed, not because the room reached Terminal or the caller cancelled. Only
+/// <see cref="RunCommand"/> ever sets this; every other command leaves it at its default, since only
+/// <c>run</c>'s own <c>--wait</c> has a poll loop for a timeout to bound. <see cref="RunExitCodeResolver"/>
+/// reads it to report <see cref="RunExitCode.Timeout"/> ahead of the state-based classification —
+/// the room itself is still Paused, not "timed out" by anything the ledger recorded.
+/// </param>
 public sealed record CommandResult(
     FlowState State,
     WorkflowDefinitionSnapshot Snapshot,
     bool ResumedFromSnapshot = false,
     string? RoomDirectoryPath = null,
-    IReadOnlyList<WorktreeTeardownResult>? WorktreeTeardowns = null)
+    IReadOnlyList<WorktreeTeardownResult>? WorktreeTeardowns = null,
+    bool WaitTimedOut = false)
 {
     /// <summary>Defaults to empty rather than <c>null</c> for callers that omit the argument.</summary>
     public IReadOnlyList<WorktreeTeardownResult> WorktreeTeardowns { get; init; } = WorktreeTeardowns ?? [];

@@ -161,15 +161,18 @@ public static class RunCommand
         }
 
         // See RunOptions.Wait's own doc for the full contract; this just implements it.
+        var waitTimedOut = false;
         if (options.Wait && state.Status != WorkflowStatus.Terminal && !cancellationToken.IsCancellationRequested)
         {
-            state = await WaitForTerminalAsync(options.RoomDirectoryPath, snapshot, logPath, cancellationToken)
+            (state, waitTimedOut) = await WaitForTerminalAsync(
+                    options.RoomDirectoryPath, snapshot, logPath, options.WaitTimeout, cancellationToken)
                 .ConfigureAwait(false);
         }
 
         var worktreeTeardowns = WorktreeProvisioner.TeardownIfTerminal(state.Status, provisionedWorktrees);
 
-        return new CommandResult(state, snapshot, resumedFromSnapshot, options.RoomDirectoryPath, worktreeTeardowns);
+        return new CommandResult(
+            state, snapshot, resumedFromSnapshot, options.RoomDirectoryPath, worktreeTeardowns, WaitTimedOut: waitTimedOut);
     }
 
     /// <summary>
@@ -178,46 +181,72 @@ public static class RunCommand
     /// per-event printing) until <see cref="WorkflowStatus.Terminal"/> or cancellation. Reads only —
     /// this process already returned its own <see cref="FlowEventLogWriter"/>'s lock by the time this
     /// runs, and the state change being waited on is necessarily written by a different process.
+    /// <para>
+    /// #1378: <paramref name="waitTimeout"/>, when given, bounds the loop with its own linked
+    /// cancellation source rather than the caller's <paramref name="cancellationToken"/> — so the
+    /// returned <c>WaitTimedOut</c> can tell the two exits apart. It is only ever true when the
+    /// timeout itself elapsed; a plain Ctrl-C (the ambient token firing first, including the race
+    /// where both fire around the same instant) is reported as a normal cancelled exit, same as
+    /// before #1378.
+    /// </para>
     /// </summary>
-    private static async Task<FlowState> WaitForTerminalAsync(
-        string roomDirectoryPath, WorkflowDefinitionSnapshot snapshot, string logPath, CancellationToken cancellationToken)
+    private static async Task<(FlowState State, bool WaitTimedOut)> WaitForTerminalAsync(
+        string roomDirectoryPath, WorkflowDefinitionSnapshot snapshot, string logPath, TimeSpan? waitTimeout,
+        CancellationToken cancellationToken)
     {
         var reader = new FlowEventLogReader(logPath);
         var lastObservedLength = -1L;
 
+        using var timeoutCts = waitTimeout is { } timeout ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken) : null;
+        timeoutCts?.CancelAfter(waitTimeout!.Value);
+        var loopToken = timeoutCts?.Token ?? cancellationToken;
+
         while (true)
         {
+            // One catch covers BOTH cancelable awaits in the iteration: the reader below takes the
+            // same loopToken, and an expiry landing mid-read must break to the final-read path like
+            // an expiry during the delay does -- not escape as an unhandled crash (#1478 review, F2).
             try
             {
-                await Task.Delay(StatusPollIntervalMs, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(StatusPollIntervalMs, loopToken).ConfigureAwait(false);
+
+                var logFile = new FileInfo(logPath);
+                var currentLength = logFile.Exists ? logFile.Length : 0;
+                if (currentLength == lastObservedLength)
+                {
+                    continue;
+                }
+
+                lastObservedLength = currentLength;
+
+                var events = await reader.ReadAllAsync(loopToken).ConfigureAwait(false);
+                var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
+                var state = StateProjector.Project(events, snapshot, checkpoint);
+                if (state.Status == WorkflowStatus.Terminal)
+                {
+                    return (state, false);
+                }
             }
             catch (OperationCanceledException)
             {
                 break;
             }
-
-            var logFile = new FileInfo(logPath);
-            var currentLength = logFile.Exists ? logFile.Length : 0;
-            if (currentLength == lastObservedLength)
-            {
-                continue;
-            }
-
-            lastObservedLength = currentLength;
-
-            var events = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
-            var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
-            var state = StateProjector.Project(events, snapshot, checkpoint);
-            if (state.Status == WorkflowStatus.Terminal)
-            {
-                return state;
-            }
         }
 
-        // Cancelled before reaching Terminal: report the latest state we actually observed rather
-        // than a synthetic one, same as the pump itself does on a host stop.
+        // Cancelled or timed out before reaching Terminal: report the latest state we actually
+        // observed rather than a synthetic one, same as the pump itself does on a host stop.
         var finalEvents = await reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false);
-        return StateProjector.Project(finalEvents, snapshot, ProjectionCheckpointStore.Load(roomDirectoryPath));
+        var finalState = StateProjector.Project(finalEvents, snapshot, ProjectionCheckpointStore.Load(roomDirectoryPath));
+
+        // Timed out only when OUR OWN timeout source fired first (an ambient Ctrl-C, or the ambient
+        // token racing the timeout, reports as a plain cancelled exit) AND the room truly fell short
+        // of Terminal. The second clause is load-bearing (#1478 review, F1): a decision landing in
+        // the last poll window before the deadline reaches Terminal without the loop ever observing
+        // it, and reporting THAT as a timeout would exit 3 while a terminal sentinel gets written --
+        // the exact contradiction of the documented "room untouched, still Paused" contract.
+        var timedOut = finalState.Status != WorkflowStatus.Terminal
+            && timeoutCts is not null && !cancellationToken.IsCancellationRequested;
+        return (finalState, timedOut);
     }
 
     /// <summary>Matches <c>StatusCommand</c>'s own follow-poll cadence (#1356) — see that constant's doc for why a fixed poll rather than a <see cref="FileSystemWatcher"/>.</summary>

@@ -289,7 +289,7 @@ already Failed, even a perfectly good resume exits 1; read the resumed step's ow
 | 0 | `Succeeded` — every step Succeeded |
 | 1 | `Failed` — a step ran and failed for an ordinary reason (also the bucket a still-Running or still-Paused process falls into if it returns short of Terminal, e.g. no `--wait`) |
 | 2 | `ValidationRefused` — bindings/workflow validation, or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), was refused **before anything was dispatched, against a room with no ledger yet** |
-| 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own |
+| 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own; or (#1378) `baton run --wait --wait-timeout <minutes>` hit that bound before the room reached Terminal — the room itself is still Paused/Running in that case, check `baton status` |
 | 4 | `Cancelled` — the workflow settled via cancellation, not failure |
 | 5 | `RoomHeld` — another Flow instance already holds this room (a live pump, or a background component's brief lock). Not a terminal outcome and not written to `terminal.json`: the room may be perfectly healthy, so nothing here overwrites its real state. Retry later, or check `baton status`/the sentinel for what the room actually is |
 
@@ -313,6 +313,14 @@ not cover: an `baton run` that already crashed in an earlier invocation is not s
 start yourself, the only completion signals stay the process's own exit or the `terminal.json`
 sentinel §3 describes. **Do not background an `baton run` and poll `baton status` for a state word —
 wait on the process, or watch `terminal.json`.**
+
+**`--wait-timeout <minutes>` (#1378)** bounds how long `--wait` is willing to sit on an undecided
+pause — without `--wait` the flag is accepted but does nothing. Without it, `--wait`
+still waits forever for a separate `baton decide` (from anywhere — another process, another
+operator); a lane with nobody watching for that decision hangs the invocation indefinitely. When the
+bound elapses first, the call stops waiting and exits 3 (`Timeout`, above) rather than 1 — the room
+itself is untouched (still Paused, no sentinel written), so a later `baton decide` against the same
+room still works normally; only this particular `--wait` call gave up on it.
 
 **Budget the wall clock in minutes, not seconds.** A repo-scale agy review ran roughly 3–5 minutes in
 the 2026-08-26 session that prompted [#1358](https://github.com/aer-works/baton/issues/1358) — one

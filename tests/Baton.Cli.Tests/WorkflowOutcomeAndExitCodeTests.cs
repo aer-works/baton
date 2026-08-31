@@ -108,6 +108,30 @@ public class WorkflowOutcomeAndExitCodeTests
         Assert.Equal(RunExitCode.Failed, RunExitCodeResolver.Resolve(Result(state)));
     }
 
+    [Fact]
+    public void A_wait_timeout_expiry_on_a_still_paused_workflow_resolves_to_exit_3_not_the_generic_Failed_bucket()
+    {
+        // #1378: WaitTimedOut is set by RunCommand's --wait poll loop, never by anything the ledger
+        // itself records -- the room is genuinely still Paused, distinct from the dispatch-timeout
+        // arm above (which IS a Terminal, Failed room). Checked ahead of WorkflowOutcome entirely.
+        var state = new FlowState(SnapshotId, [Step("a", StepStatus.Paused)], WorkflowStatus.Paused);
+
+        Assert.Equal(WorkflowOutcome.Paused, WorkflowOutcome.Describe(state));
+        Assert.Equal(RunExitCode.Timeout, RunExitCodeResolver.Resolve(Result(state, waitTimedOut: true)));
+    }
+
+    [Fact]
+    public void A_wait_timeout_flag_on_a_room_that_actually_reached_Terminal_defers_to_the_real_outcome()
+    {
+        // #1478 review, F1 (the race itself is explained at RunCommand.WaitForTerminalAsync's
+        // timedOut computation): RunCommand refuses to pair WaitTimedOut with a Terminal state;
+        // this arm pins the resolver's own guard so that even a future producer of the pairing
+        // cannot make exit 3 contradict a written terminal sentinel.
+        var state = TerminalState([Step("a", StepStatus.Succeeded)]);
+
+        Assert.Equal(RunExitCode.Succeeded, RunExitCodeResolver.Resolve(Result(state, waitTimedOut: true)));
+    }
+
     private static FlowState TerminalState(IReadOnlyList<StepState> steps) =>
         new(SnapshotId, steps, WorkflowStatus.Terminal);
 
@@ -115,7 +139,8 @@ public class WorkflowOutcomeAndExitCodeTests
         new(new StepId(stepId), status, new ExecutionId(Guid.NewGuid().ToString("N")),
             new Dictionary<StepId, ExecutionId>(), LatestFailureReason: reason);
 
-    private static CommandResult Result(FlowState state) => new(
+    private static CommandResult Result(FlowState state, bool waitTimedOut = false) => new(
         state,
-        new WorkflowDefinitionSnapshot(SnapshotId, new WorkflowTemplateId("t"), 1, []));
+        new WorkflowDefinitionSnapshot(SnapshotId, new WorkflowTemplateId("t"), 1, []),
+        WaitTimedOut: waitTimedOut);
 }

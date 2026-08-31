@@ -58,6 +58,17 @@ namespace Baton.Cli;
 /// passes its own (possibly <c>--workspace</c>-overridden) workspace explicitly here instead, since by
 /// the time <see cref="RunCommand.ExecuteAsync"/> runs the two can already differ.
 /// </param>
+/// <param name="WaitTimeout">
+/// #1378: bounds how long <paramref name="Wait"/>'s poll loop is willing to sit on an undecided pause.
+/// Null (the default, no <c>--wait-timeout</c> given) preserves the pre-#1378 behaviour of waiting
+/// forever for a separate <c>baton decide</c> to carry the room to Terminal. When set and the poll
+/// loop reaches this bound before the room settles, <see cref="RunCommand"/> stops waiting and the
+/// call reports <see cref="RunExitCode.Timeout"/> — the same code a step's own binding timeout
+/// produces — rather than the generic <see cref="RunExitCode.Failed"/> a plain Ctrl-C leaves a
+/// still-Paused room at. Ignored entirely when <paramref name="Wait"/> is false, since there is no
+/// poll loop for it to bound. Validated (rejects zero/negative) by <see cref="RunOptionsParser"/>,
+/// not here.
+/// </param>
 public sealed record RunOptions(
     string? WorkflowFilePath,
     string BindingsFilePath,
@@ -66,4 +77,5 @@ public sealed record RunOptions(
     bool EchoWorker = false,
     bool SettleOnVendorExhaustion = false,
     bool Wait = false,
-    string? ProjectRootDirectory = null);
+    string? ProjectRootDirectory = null,
+    TimeSpan? WaitTimeout = null);

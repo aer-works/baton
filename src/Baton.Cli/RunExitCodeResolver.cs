@@ -16,6 +16,14 @@ public enum RunExitCode
     Succeeded = 0,
     Failed = 1,
     ValidationRefused = 2,
+
+    /// <summary>
+    /// Either a step's own failure was a binding timeout (<see cref="RunExitCodeResolver.ResolveFailed"/>),
+    /// or — #1378 — the wait bound expired first (<see cref="CommandResult.WaitTimedOut"/>, which
+    /// carries the mechanism). The room's own ledger state differs between the two: the first is a
+    /// genuinely Terminal, Failed room; the second is still Paused/Running — read <c>baton status</c>
+    /// to tell them apart.
+    /// </summary>
     Timeout = 3,
     Cancelled = 4,
 
@@ -49,6 +57,18 @@ public static class RunExitCodeResolver
     {
         ArgumentNullException.ThrowIfNull(result);
 
+        // #1378: baton run --wait --wait-timeout <minutes> expired before the room reached Terminal.
+        // Checked ahead of the state-based classification below because the room itself is still
+        // Paused/Running -- nothing in the ledger says "timeout", only this call's own poll loop does.
+        // The Terminal guard is defense in depth (#1478 review, F1): RunCommand already refuses to
+        // pair WaitTimedOut with a Terminal state, and if a future path ever does, the room's real
+        // outcome must win over a wait bookkeeping flag -- a written sentinel and exit 3 would
+        // contradict each other.
+        if (result.WaitTimedOut && result.State.Status != WorkflowStatus.Terminal)
+        {
+            return RunExitCode.Timeout;
+        }
+
         var outcome = WorkflowOutcome.Describe(result.State);
         return outcome switch
         {
@@ -56,9 +76,11 @@ public static class RunExitCodeResolver
             WorkflowOutcome.Cancelled => RunExitCode.Cancelled,
             WorkflowOutcome.Failed => ResolveFailed(result.State.Steps),
             // Running or Paused: the pump returned short of Terminal (no --wait, or --wait's poll
-            // loop was cancelled before the room settled). Not one of #1356's four named failure
-            // classes, so this stays in the general Failed bucket rather than minting a fifth code —
-            // a caller that cares about "still going" reads status --json's `state` field instead.
+            // loop was cancelled -- e.g. Ctrl-C -- before the room settled; a --wait-timeout expiry
+            // is handled above, ahead of this switch, and never reaches here). Not one of #1356's
+            // four named failure classes, so this stays in the general Failed bucket rather than
+            // minting a fifth code — a caller that cares about "still going" reads status --json's
+            // `state` field instead.
             _ => RunExitCode.Failed,
         };
     }
