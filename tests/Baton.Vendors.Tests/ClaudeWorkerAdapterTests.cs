@@ -584,8 +584,7 @@ public class ClaudeWorkerAdapterTests
     /// <summary>
     /// The other half of the no-op case: a raw scope that names no <c>Bash(</c> clause at all (not
     /// even a bare one). Must read identically to the bare-<c>Bash</c> case above -- an empty channel,
-    /// not a throw -- proving "no Bash( clause present" and "a Bash( clause present but unparseable"
-    /// (below) are genuinely different states in the parser, not the same branch reached two ways.
+    /// never the throw the unparseable-clause arm below asserts.
     /// </summary>
     [Fact]
     public void A_raw_scope_with_no_Bash_clause_at_all_still_yields_an_empty_shell_pattern_channel()
