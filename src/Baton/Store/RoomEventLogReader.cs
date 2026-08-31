@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Store;
 
@@ -59,7 +60,8 @@ public sealed class RoomEventLogReader(string logFilePath) : IRoomEventLogReader
                 // fact -- this line cannot be replayed -- so both wrap into the one loud contract.
                 // Proven by RoomEventLogReaderCorruptionTests: the raw NSE escaped before this
                 // clause existed.
-                throw new FlowEventLogReadException($"Malformed room.jsonl line: {line}", ex);
+                throw new FlowEventLogReadException(
+                    $"Malformed {BatonPaths.RoomLogFileName} line: {line}", ex);
             }
 
             if (entry is null)

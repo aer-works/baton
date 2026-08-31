@@ -35,7 +35,6 @@ namespace Baton.Cli;
 /// </summary>
 public static class StatusCommand
 {
-
     /// <summary>
     /// How often <c>--follow</c> re-checks <c>flow.jsonl</c>'s length for growth. A modest,
     /// fixed interval rather than a <see cref="FileSystemWatcher"/> — file-system change

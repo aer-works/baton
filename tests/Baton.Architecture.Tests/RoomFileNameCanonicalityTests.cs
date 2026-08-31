@@ -22,7 +22,17 @@ public class RoomFileNameCanonicalityTests
     public void No_source_file_outside_BatonPaths_declares_a_room_evidence_filename_literal()
     {
         var srcDir = Path.Combine(RepoRoot(), "src");
-        var regex = new Regex(@"""(room\.jsonl|flow\.jsonl|snapshot\.json|flow\.lock)""");
+
+        // Matches the filename anywhere INSIDE a double-quoted literal, not only as its entire
+        // contents — so "rooms/room.jsonl" and $"{dir}/flow.lock" trip it too (PR #1489 review
+        // finding: the exact-content form would silently miss an embedded-path regression).
+        // Comment text is stripped per-line first so prose mentions like `// reads "flow.jsonl"`
+        // don't false-positive; the known boundary is a string literal that itself contains "//"
+        // before the filename (e.g. a URL), which the strip would hide — no such string exists in
+        // src today and none of the four names plausibly appears in one.
+        // The trailing lookahead keeps distinct sibling names (flow.lock.holder) from tripping on
+        // their prefix.
+        var regex = new Regex(@"""[^""\n]*(room\.jsonl|flow\.jsonl|snapshot\.json|flow\.lock)(?![\w.])[^""\n]*""");
 
         // The one file allowed to declare these literals — everything else must reference
         // Baton.Status.BatonPaths's consts instead.
@@ -44,8 +54,14 @@ public class RoomFileNameCanonicalityTests
                 continue;
             }
 
-            var content = File.ReadAllText(filePath);
-            if (regex.IsMatch(content))
+            var codeOnly = string.Join(
+                '\n',
+                File.ReadLines(filePath).Select(line =>
+                {
+                    var commentStart = line.IndexOf("//", StringComparison.Ordinal);
+                    return commentStart < 0 ? line : line[..commentStart];
+                }));
+            if (regex.IsMatch(codeOnly))
             {
                 offenders.Add(relativePath);
             }
