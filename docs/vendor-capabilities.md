@@ -12,6 +12,7 @@ and where a row says something is *absent*, it names the surfaces that absence w
 
 | established | against | covers |
 |---|---|---|
+| 2026-08-31, `#1461` | `claude` **2.1.251** | subcommand granularity and command-line matching extent of `Bash(pattern)` grants — the two gaps #1456's second reader flagged in the canonical ceiling measurement below. New subsection immediately after that table. |
 | 2026-08-28, `#1397` | `claude` **2.1.247**, `agy` **1.1.22** | probe suite re-pinned after both CLIs updated (2.1.231→2.1.247, 1.1.13→1.1.22 per the staleness tripwire). New, surface-dependent finding: **`/usage` in plain print mode** — `agy -p "/usage"` emits the CLI's own tab-separated quota table (model family, window, % remaining, reset instant; measured twice same day, no model turn), and `claude -p "/usage"` reports session/week percentages likewise. The probe's stream-json instrument does NOT surface it (no percentage; conversational answer) — a per-surface present/absent split, not a contradiction; the probe.md agy row's "not found" is correct for the surfaces it names. Supersedes the 2026-07-26-era "not a built-in command" reading (accurate when taken; a CLI update changed behaviour). |
 | 2026-08-10, `#1088` | `agy` **1.1.11** (`claude` carried) | **`structured output` CORRECTED — the negative in the rows below was a probe bug, not agy.** `Aer.VendorProbe` invoked agy with *claude's* stream-json grammar (`-p` boolean + positional prompt + `--verbose`), so agy read `--output-format` as the prompt and stream-json never engaged (it also rejects `--verbose`, exit 2). Fixed to agy's flag-value `-p`: agy **observably streams** `--output-format stream-json` on stdout (`init`→`step_update`→`result` with a `usage` token object). Per-turn *dollar* cost stays absent (no `total_cost_usd`); per-turn **token** usage is now recorded present. The "every reading unchanged" rows below were re-confirming a false negative. |
 | 2026-08-07 | `agy` **1.1.11** (`claude` carried) | the six probe-suite rows re-established after `agy` self-updated 1.1.10→1.1.11: usage, per-turn cost, structured output, `--permission-prompt-tool`, effort, `--add-dir` — **every reading unchanged**; only the version and the RPC server's random port moved. *(structured-output reading later found false — see the #1088 row above.)* |
@@ -831,6 +832,68 @@ instead of waving everything through. Then the canonical ceiling, allow-family p
 establish that the push could not happen — an unrestricted `PowerShell` tool, or a script written and
 then executed, reaches the same outcome. Same-tool discrimination is real; cross-tool containment was
 never tested and, per #527, does not hold.
+
+### Subcommand granularity and command-line matching extent (#1461)
+
+**Measured 2026-08-31, `claude` 2.1.251, Windows.** #1456's second reader flagged two gaps in the
+canonical ceiling measurement above: it discriminates at the PROGRAM level (`npm` vs `git`), not the
+subcommand level, and it never tested whether `Bash(pattern)` matches the whole invoked command line
+or only its leading tokens. Same throwaway-git-dir method as above, `--allowedTools "Bash(git
+diff*)"` (no blanket `git *`), `--output-format stream-json --verbose` so the actual Bash
+`tool_use`/`tool_result` pairs are read directly rather than trusted from the model's prose summary
+(a model can silently switch to a different tool, or answer from its own knowledge of the repo,
+without the underlying Bash call ever running — the `json`-summary format alone cannot tell the
+difference).
+
+**Subcommand granularity: the pattern does not gate it at all for commands claude classifies as
+read-only.**
+
+| command | grant | result |
+|---|---|---|
+| `git log` | `Bash(git diff*)` | **ran**, no denial |
+| `git status` | *(no `--allowedTools` at all)* | **ran**, no denial |
+| `git log` | *(no `--allowedTools` at all)* | **ran**, no denial |
+| `git rebase --abort` | `Bash(git diff*)` | **denied** — *"This command requires approval"* |
+| `git log` | `Bash(git diff*)` **plus** `--disallowedTools "Bash(git log*)"` | **denied** — *"Permission to use Bash with command git log has been denied."* |
+
+An unlisted git subcommand is **not** denied the way `Bash(npm *)` was denied under `Bash(git *)`
+(the program-level control above): `git log`/`git status` ran identically whether the grant was
+`Bash(git diff*)` or absent entirely, so it is claude's own internal command-risk classification —
+not the `--allowedTools` pattern — that let them through. `git rebase --abort` (unlisted and
+mutating) was denied, so the mutating/read-only split `review`'s grant relies on still holds in
+practice — but it holds because claude classifies `git rebase` as needing approval, not because
+`Bash(git diff*)` excludes it. An explicit `--disallowedTools` pattern still wins over the
+auto-approve, consistent with the deny-over-allow precedence the canonical ceiling above already
+established. This does not contradict that section's control row (`git --version` under *no grant* →
+**denied**): the outcome under no grant is per-subcommand, decided by claude's risk classification —
+`git --version`/`git rebase` land on the approval-required side, `git log`/`git status` on the
+auto-approved side — not a single blanket answer for "no grant."
+
+**Command-line matching extent: `Bash(pattern)` matches the whole invoked command line, and
+non-file-mutating chained/piped commands execute.**
+
+| command | grant | result |
+|---|---|---|
+| `git diff; echo escaped` | `Bash(git diff*)` | **ran as one command** — `tool_result` stdout was the diff followed by the literal `escaped` line |
+| `git diff \| grep baseline` | `Bash(git diff*)` | **ran as one command** — `tool_result` stdout was the piped `grep` match, not the raw diff |
+| `git diff > REDIRECT.marker` | `Bash(git diff*)` **and**, as a control, `Bash(git *)` | **denied, both arms** — *"Output redirection ... was blocked. For security, Claude Code may only write to files in the allowed working directories for this session"* |
+| `git diff; echo escaped > ESCAPED.marker` | `Bash(git diff*)` **and**, as a control, `Bash(git *)` | **denied, both arms** — same redirection-blocked message |
+| `git diff && touch MUTATED.marker` | `Bash(git diff*)` | **denied** — *"touch in '...' was blocked. For security, Claude Code may only create or modify files in the allowed working directories for this session"* |
+| `git diff; touch MUTATED.marker` | `Bash(git diff*)` | **denied**, same message |
+
+Two different mechanisms are visible here, not one. `--allowedTools`/`--disallowedTools` pattern
+matching is confirmed to run against the **whole command line as typed**, not just its leading
+tokens: `git diff; echo escaped` and `git diff | grep baseline` both executed in full under a grant
+naming only `git diff*`, and the appended/piped part's own output is in the `tool_result` — not
+merely asserted by the model. That is the escape #1456's second reader asked about, and it is real.
+Separately, claude carries an **unconditional Bash-tool guard against file creation and
+modification**: `>` redirection was blocked identically whether the grant was the narrow
+`Bash(git diff*)` or the wide-open `Bash(git *)` control, and chained `touch` was blocked under the
+narrow grant, so that guard sits outside the `--allowedTools` pattern match — a pattern cannot widen
+or narrow it, and its presence is not evidence that `--allowedTools` itself bounds chaining. It is also silent on any chained command that
+neither writes a local file nor is git/gh — `echo`, a `grep` of secrets already in context, a
+network read — which is exactly the shape `git diff; echo escaped` and `git diff | grep baseline`
+showed running unblocked.
 
 So the two vendors are **not** "one enforcing, one advisory". They are strong in opposite places:
 
