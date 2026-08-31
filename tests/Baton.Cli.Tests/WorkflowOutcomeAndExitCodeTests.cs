@@ -108,6 +108,18 @@ public class WorkflowOutcomeAndExitCodeTests
         Assert.Equal(RunExitCode.Failed, RunExitCodeResolver.Resolve(Result(state)));
     }
 
+    [Fact]
+    public void A_wait_timeout_expiry_on_a_still_paused_workflow_resolves_to_exit_3_not_the_generic_Failed_bucket()
+    {
+        // #1378: WaitTimedOut is set by RunCommand's --wait poll loop, never by anything the ledger
+        // itself records -- the room is genuinely still Paused, distinct from the dispatch-timeout
+        // arm above (which IS a Terminal, Failed room). Checked ahead of WorkflowOutcome entirely.
+        var state = new FlowState(SnapshotId, [Step("a", StepStatus.Paused)], WorkflowStatus.Paused);
+
+        Assert.Equal(WorkflowOutcome.Paused, WorkflowOutcome.Describe(state));
+        Assert.Equal(RunExitCode.Timeout, RunExitCodeResolver.Resolve(Result(state, waitTimedOut: true)));
+    }
+
     private static FlowState TerminalState(IReadOnlyList<StepState> steps) =>
         new(SnapshotId, steps, WorkflowStatus.Terminal);
 
@@ -115,7 +127,8 @@ public class WorkflowOutcomeAndExitCodeTests
         new(new StepId(stepId), status, new ExecutionId(Guid.NewGuid().ToString("N")),
             new Dictionary<StepId, ExecutionId>(), LatestFailureReason: reason);
 
-    private static CommandResult Result(FlowState state) => new(
+    private static CommandResult Result(FlowState state, bool waitTimedOut = false) => new(
         state,
-        new WorkflowDefinitionSnapshot(SnapshotId, new WorkflowTemplateId("t"), 1, []));
+        new WorkflowDefinitionSnapshot(SnapshotId, new WorkflowTemplateId("t"), 1, []),
+        WaitTimedOut: waitTimedOut);
 }

@@ -12,7 +12,9 @@ namespace Baton.Cli.Tests;
 /// observable difference this flag makes is what happens on Paused — see <see cref="RunOptions.Wait"/>'s
 /// own doc for why. These tests pin both polarities: without the flag, a paused run returns
 /// immediately; with it, the SAME call only returns once a separate <c>baton decide</c> process carries
-/// the room to Terminal.
+/// the room to Terminal. A third test pins <c>--wait-timeout</c> (#1378): with a bound set and no
+/// decision ever landing, the SAME call gives up once that bound elapses and reports the dedicated
+/// <see cref="RunExitCode.Timeout"/> exit code rather than blocking forever.
 /// </summary>
 [Collection(WorkingDirectoryCollection.Name)]
 public class RunWaitEndToEndTests
@@ -72,6 +74,33 @@ public class RunWaitEndToEndTests
 
             Assert.Equal(WorkflowStatus.Terminal, waitedResult.State.Status);
             Assert.All(waitedResult.State.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Wait_timeout_expires_before_a_decision_lands_and_reports_the_Timeout_exit_code()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-wait-timeout-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteApprovalGateWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteApprovalGateBindingsAsync(testRoot);
+            // #1378: short enough that the poll loop's own CancelAfter fires well before this test's
+            // ambient timeout, so the assertion below resolves as soon as the bound elapses rather
+            // than waiting out a real ceiling -- no decision is ever issued in this test.
+            var options = new RunOptions(
+                workflowFilePath, bindingsFilePath, roomDirectory, Wait: true, WaitTimeout: TimeSpan.FromMilliseconds(200));
+
+            var result = await RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Paused, result.State.Status);
+            Assert.True(result.WaitTimedOut);
+            Assert.Equal(RunExitCode.Timeout, RunExitCodeResolver.Resolve(result));
         }
         finally
         {

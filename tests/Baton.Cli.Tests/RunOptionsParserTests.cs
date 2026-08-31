@@ -116,4 +116,33 @@ public class RunOptionsParserTests
 
         Assert.True(options.Wait);
     }
+
+    [Fact]
+    public void Wait_timeout_defaults_to_null()
+    {
+        var options = RunOptionsParser.Parse(["workflow.json", "--bindings", "bindings.json", "--wait"]);
+
+        Assert.Null(options.WaitTimeout);
+    }
+
+    [Fact]
+    public void Wait_timeout_parses_as_minutes()
+    {
+        var options = RunOptionsParser.Parse(
+            ["workflow.json", "--bindings", "bindings.json", "--wait", "--wait-timeout", "30"]);
+
+        Assert.Equal(TimeSpan.FromMinutes(30), options.WaitTimeout);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("nope")]
+    [InlineData("12.5")]
+    public void A_non_positive_or_unparseable_wait_timeout_is_a_typed_argument_error(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => RunOptionsParser.Parse(["workflow.json", "--bindings", "bindings.json", "--wait", "--wait-timeout", rawValue]));
+        Assert.Contains("--wait-timeout", ex.Message, StringComparison.Ordinal);
+    }
 }

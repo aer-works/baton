@@ -95,8 +95,11 @@ describes writes to it or reads from it.
 A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
 
 - **`baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>]
-  [--echo-worker] [--wait]`** — runs an authored `WorkflowDefinition` to a terminal state or a pause
-  (`src/Baton.Cli/RunOptionsParser.cs`).
+  [--echo-worker] [--wait] [--wait-timeout <minutes>]`** — runs an authored `WorkflowDefinition` to a
+  terminal state or a pause (`src/Baton.Cli/RunOptionsParser.cs`). `--wait-timeout` (#1378) bounds how
+  long `--wait`'s poll loop sits on an undecided pause: ignored without `--wait`, and once it elapses
+  the call stops waiting and reports exit code 3 (`Timeout`, below) rather than blocking forever on a
+  workflow nobody has decided.
 - **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
   [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]`**
   — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
@@ -159,7 +162,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 
 | Verb | Usage | Source |
 |---|---|---|
-| `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait]` | `RunOptionsParser.cs` |
+| `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
 | `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]` | `DispatchOptionsParser.cs` |
 | `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
@@ -242,23 +245,25 @@ surface (`FlowEvent.ExternalDecisionRecorded` carries none), so `rejected` stays
 | 0 | `Succeeded` | Every step succeeded |
 | 1 | `Failed` | **Not** exclusively terminal-and-failed — see below |
 | 2 | `ValidationRefused` | Provisioning/validation refused, independent of ledger state; the **sentinel write** (not the exit code) is what is conditional on `RoomLedgerProbe.HasLedger` (above) |
-| 3 | `Timeout` | At least one step's failure is a timeout and none is a hard failure (`RunExitCodeResolver.ResolveFailed`) |
+| 3 | `Timeout` | At least one step's failure is a timeout and none is a hard failure (`RunExitCodeResolver.ResolveFailed`) — **or** (#1378) `--wait --wait-timeout <minutes>`'s poll loop hit that bound before the room reached Terminal (`CommandResult.WaitTimedOut`); the room itself is still Paused/Running in that second case, not Terminal-and-failed — read `baton status` to tell the two apart |
 | 4 | `Cancelled` | — |
 | 5 | `RoomHeld` | Another Flow instance already holds this room — retry later, not a terminal outcome; no sentinel is written (`Program.cs`) |
 
 **Exit code 1 is not "terminal, a step failed."** `RunExitCodeResolver.Resolve` falls through to
 `Failed` for **`Running` and `Paused` too** — any outcome that is not `Succeeded`, `Cancelled`, or the
 resolved `Failed`/`Timeout` split (`RunExitCodeResolver.cs`, comment verbatim: *"Running or
-Paused: the pump returned short of Terminal (no `--wait`, or `--wait`'s poll loop was cancelled before
-the room settled)... a caller that cares about 'still going' reads `status --json`'s `state` field
+Paused: the pump returned short of Terminal (no `--wait`, or `--wait`'s poll loop was cancelled --
+e.g. Ctrl-C -- before the room settled; a `--wait-timeout` expiry is handled ahead of this and never
+reaches here)... a caller that cares about 'still going' reads `status --json`'s `state` field
 instead."*). Concretely: a harness runs `baton dispatch` without `--wait`, the lane reaches a gate and
 pauses — the process exits **1**. Reading that as "a step failed" and abandoning a healthy, paused
 room is the single most consequential misreading this table can produce, because §5's entire gate
 contract depends on that paused room still being there to `baton decide` against. **The rule: exit code
 1 alone never tells you whether the room is done. Read `state` from `terminal.json` or `baton status
 --json` to distinguish `Failed` from `Running`/`Paused`.** `--wait` makes `run`/`dispatch` block until
-the room reaches Terminal (or the wait is itself cancelled); without it, a non-1/0 exit code is the
-only signal a lane is even still going, and it is unreliable for that purpose by design.
+the room reaches Terminal or the wait is itself cancelled; `run`'s own `--wait-timeout` (#1378) bounds
+that block and reports exit code 3 instead when it elapses first. Without `--wait`, a non-1/0 exit
+code is the only signal a lane is even still going, and it is unreliable for that purpose by design.
 
 ### §3 schema — `terminal.json` / `baton status --json`
 
