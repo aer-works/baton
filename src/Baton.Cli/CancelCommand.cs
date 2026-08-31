@@ -22,11 +22,10 @@ namespace Baton.Cli;
 /// <c>--execution</c> resolves "the running lane" via <see cref="RunningExecutionResolver"/>, fail
 /// closed on zero or more than one candidate) and a live-pump fall-through — catching
 /// <see cref="WorkflowLockedException"/> from the guarded call above and writing
-/// <see cref="CancelRequestFile"/> instead (writing <c>latest</c> for room-level targeting, which
-/// re-resolves at poll time to arrest whatever is running then, whereas the direct path cancels
-/// the execution resolved at command time), so a room whose <c>baton run</c> is genuinely still live
-/// is reachable too, not just the idle-room path the rest of this type's doc still describes
-/// accurately on its own.
+/// <see cref="CancelRequestFile"/> instead (writing <c>latest</c> to re-resolve the target at poll
+/// time per spec §2, unlike the idle room's command-time resolution), so a room whose <c>baton run</c>
+/// is genuinely still live is reachable too, not just the idle-room path the rest of this type's doc
+/// still describes accurately on its own.
 /// </para>
 /// </summary>
 public static class CancelCommand
