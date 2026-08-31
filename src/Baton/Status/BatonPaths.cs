@@ -16,12 +16,13 @@ namespace Baton.Status;
 /// never silently redirect storage to a bare relative <c>.baton</c>.
 /// </para>
 /// <para>
-/// <b>Resolve, never capture.</b> <see cref="Root"/> reads the environment on every access on
-/// purpose: a single process (the test suite above all) can change
-/// <see cref="HomeEnvironmentVariable"/> between runs and must be honoured immediately. Assigning
-/// any member of this type to a <c>static readonly</c> field re-introduces the one-shot,
-/// captured-at-type-load resolution this seam exists to remove — expose a re-resolving property
-/// instead.
+/// <b>Frozen, not re-resolved (#1496).</b> <see cref="Root"/> reads <see cref="HomeEnvironmentVariable"/>
+/// through <see cref="BatonEnvironmentSnapshot.Current"/>, which captures the environment once per
+/// process and never re-reads it — the opposite of this type's original "resolve, never capture"
+/// discipline, which forced every env-mutating test into one serialized collection (#1491) because a
+/// production reader could observe a mutation mid-process. A test that needs a different root uses
+/// <c>BatonEnvironmentSnapshot.BeginScope</c> to supply one explicitly instead of mutating the
+/// process environment.
 /// </para>
 /// <para>
 /// The vendor CLIs' own configuration directories (e.g. Claude Code's <c>~/.claude</c>) are
@@ -41,15 +42,16 @@ public static class BatonPaths
     private const string DefaultDirectoryName = ".baton";
 
     /// <summary>
-    /// The AER storage root, resolved fresh on every access — <see cref="HomeEnvironmentVariable"/>
-    /// when set to a non-blank value, otherwise <c>{UserProfile}/.baton</c>. Never cache this in a
-    /// <c>static readonly</c> field (see the type remarks).
+    /// The AER storage root — <see cref="HomeEnvironmentVariable"/> when set to a non-blank value,
+    /// otherwise <c>{UserProfile}/.baton</c>. Resolved against the frozen
+    /// <see cref="BatonEnvironmentSnapshot.Current"/> (see the type remarks); a per-test override goes
+    /// through <c>BatonEnvironmentSnapshot.BeginScope</c>, never <c>Environment.SetEnvironmentVariable</c>.
     /// </summary>
     public static string Root
     {
         get
         {
-            var overridden = Environment.GetEnvironmentVariable(HomeEnvironmentVariable);
+            var overridden = BatonEnvironmentSnapshot.Current.HomeOverride;
             return string.IsNullOrWhiteSpace(overridden)
                 ? Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), DefaultDirectoryName)

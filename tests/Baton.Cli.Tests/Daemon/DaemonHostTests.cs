@@ -10,17 +10,20 @@ namespace Baton.Cli.Tests.Daemon;
 
 /// <summary>
 /// #1425: <see cref="DaemonHost.RunDaemonAsync(string[])"/> had no direct coverage of the three kept
-/// startup behaviors -- the second-reader review of #1423's narrowing flagged it. Each test isolates
-/// AER's storage root via <see cref="BatonPaths.HomeEnvironmentVariable"/> (the seam that type's own doc
-/// comment names for exactly this: "per-run test isolation (#318)") so it never touches the real
-/// <c>~/.baton</c>, and resets <see cref="ConcurrencySlotGate"/>'s process-static caps to their documented
-/// defaults before every test the same way <c>ConcurrencySlotGateTests</c> resets full state, since
-/// xunit runs one class's methods sequentially by default (one collection per class) -- what makes that
-/// safe here too. This project has no <c>InternalsVisibleTo</c> grant from Baton, so it goes through
-/// the public <see cref="ConcurrencySlotGate.SetCaps"/> rather than that type's test-only internal reset;
-/// these tests never call <c>AcquireAsync</c>, so only the two cap values need resetting.
+/// startup behaviors -- the second-reader review of #1423's narrowing flagged it. The two tests that
+/// need an isolated storage root use <see cref="BatonEnvironmentSnapshot.BeginScope"/> (#1496: this
+/// project has an IVT grant from Baton for exactly that seam) so they never touch the real
+/// <c>~/.baton</c> and never mutate process environment -- before #1496 they redirected
+/// <see cref="BatonPaths.HomeEnvironmentVariable"/> directly, which stopped working once
+/// <see cref="BatonPaths.Root"/> started resolving through a frozen, process-wide snapshot instead of
+/// re-reading the environment per access. Every test also resets <see cref="ConcurrencySlotGate"/>'s
+/// process-static caps to their documented defaults before running, the same way
+/// <c>ConcurrencySlotGateTests</c> resets full state, since xunit runs one class's methods sequentially
+/// by default (one collection per class) -- what makes that safe here too. This goes through the
+/// public <see cref="ConcurrencySlotGate.SetCaps"/> rather than that type's test-only internal reset,
+/// which this project has no IVT grant for; these tests never call <c>AcquireAsync</c>, so only the
+/// two cap values need resetting.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
 public class DaemonHostTests
 {
     public DaemonHostTests() => ConcurrencySlotGate.SetCaps(ConcurrencySlotGate.DefaultGlobalCap, ConcurrencySlotGate.DefaultPerVendorCap);
@@ -60,11 +63,9 @@ public class DaemonHostTests
     public async Task RunDaemonAsync_LoadsSettingsBeforeApplyingCaps_SoSetCapsSeesTheFileNotDefaults()
     {
         var tempHome = CreateTempHome();
-        var priorHome = Environment.GetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable);
+        using var scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with { HomeOverride = tempHome });
         try
         {
-            Environment.SetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable, tempHome);
-
             // Neither value is a default (3/2, see DaemonSettings/ConcurrencySlotGate) -- if RunDaemonAsync
             // called SetCaps before LoadAsync resolved (or dropped the load entirely), GlobalCap/PerVendorCap
             // would read the defaults below instead of these.
@@ -79,7 +80,6 @@ public class DaemonHostTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable, priorHome);
             if (Directory.Exists(tempHome))
             {
                 Directory.Delete(tempHome, true);
@@ -91,11 +91,9 @@ public class DaemonHostTests
     public async Task RunDaemonAsync_RegistersRoomRetentionSweepAsAHostedServiceAndStartsIt()
     {
         var tempHome = CreateTempHome();
-        var priorHome = Environment.GetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable);
+        using var scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with { HomeOverride = tempHome });
         try
         {
-            Environment.SetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable, tempHome);
-
             List<IHostedService>? hostedServices = null;
             var applicationStarted = false;
 
@@ -123,7 +121,6 @@ public class DaemonHostTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable, priorHome);
             if (Directory.Exists(tempHome))
             {
                 Directory.Delete(tempHome, true);

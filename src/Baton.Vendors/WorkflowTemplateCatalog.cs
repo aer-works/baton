@@ -27,9 +27,10 @@ public sealed record WorkflowTemplate(string Id, IReadOnlyList<WorkflowTemplateP
 /// </summary>
 /// <remarks>
 /// Same three-tier resolution order as <see cref="WorkerRoleCatalog"/> (env override, then
-/// <c>{BatonPaths.Root}/workflow-templates.json</c>, then the shipped default), evaluated fresh on
-/// every access for the same "resolve, never capture" reason — substituting
-/// <c>BATON_WORKFLOW_TEMPLATES_PATH</c> for the env var name.
+/// <c>{BatonPaths.Root}/workflow-templates.json</c>, then the shipped default) — see that type's
+/// remarks for which of the three steps is still evaluated fresh on every access after #1496 and
+/// which now resolves against a frozen <see cref="BatonPaths.Root"/>. Substituting
+/// <c>BATON_WORKFLOW_TEMPLATES_PATH</c> for the env var name throughout.
 /// </remarks>
 public static class WorkflowTemplateCatalog
 {
@@ -141,6 +142,9 @@ public static class WorkflowTemplateCatalog
         return templates;
     }
 
+    // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
+    // #1496 exempt: NOT folded into BatonEnvironmentSnapshot. See the canonical "why" on
+    // BatonEnvironmentSnapshot's own remarks.
     private static string ResolvePath(string envVar, string overrideFileName, string defaultFileName)
     {
         var env = Environment.GetEnvironmentVariable(envVar);

@@ -22,6 +22,13 @@
          Register/Unregister/RequestStopAsync) directly where a test needs to force an exact
          internal race deterministically, not just through the public mutation surface. -->
     <InternalsVisibleTo Include="Baton.Tests" />
+    <!-- #1496: BatonEnvironmentSnapshot.BeginScope is internal (a test-only seam, never production
+         surface). Baton.Cli.Tests needs it directly: FleetStatusToolTests, RoomDetailToolTests and
+         DaemonHostTests isolate BatonPaths.Root through a scope rather than mutating process
+         environment. (Baton.Vendors' own readers, WorkerRoleCatalog, WorkflowTemplateCatalog and
+         ClaudeWorkerAdapter, were tried against the snapshot and reverted, see the #1496 report;
+         add a matching Baton.Vendors.Tests grant only if a future PR actually folds one of them.) -->
+    <InternalsVisibleTo Include="Baton.Cli.Tests" />
   </ItemGroup>
 
 </Project>

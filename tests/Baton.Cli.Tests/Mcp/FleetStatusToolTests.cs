@@ -14,23 +14,26 @@ namespace Baton.Cli.Tests.Mcp;
 /// Validates root enumeration, terminal sentinel fast path, active room projection,
 /// filtering, and graceful error handling on malformed rooms.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
+// #1496: BatonPaths.Root now resolves through BatonEnvironmentSnapshot.Current, which is captured
+// once per process and never re-reads the environment -- so an Environment.SetEnvironmentVariable
+// here would no longer be observed. BeginScope supplies an isolated root explicitly instead, which
+// needs no SerializedEnvironmentCollection enrollment (nothing mutates process state) and runs
+// parallel-safe with everything else.
 public sealed class FleetStatusToolTests : IDisposable
 {
     private readonly string _tempHome;
-    private readonly string? _originalBatonHome;
+    private readonly IDisposable _scope;
 
     public FleetStatusToolTests()
     {
         _tempHome = Path.Combine(Path.GetTempPath(), $"baton-fleet-test-home-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempHome);
-        _originalBatonHome = Environment.GetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable);
-        Environment.SetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable, _tempHome);
+        _scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with { HomeOverride = _tempHome });
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(BatonPaths.HomeEnvironmentVariable, _originalBatonHome);
+        _scope.Dispose();
         if (Directory.Exists(_tempHome))
         {
             DirectoryCleanup.DeleteRecursively(_tempHome);
