@@ -29,10 +29,21 @@ public class VendorProbeStalenessTests
 {
     private static readonly string[] Vendors = ["claude", "agy"];
 
+    /// <summary>
+    /// #1487: drift is no longer an immediate hard-fail. The verdict — grace-window pass, or a
+    /// hard-fail past it — comes from <see cref="DriftGrace.Evaluate"/>, the same call
+    /// <c>Program.Check</c> (wired into <c>gates</c> as the <c>vendor-check</c> task) makes, so the
+    /// two can never disagree about today's verdict. This test only consumes
+    /// <see cref="DriftGrace.Result.Fatal"/> — printing the WARN loudly is <c>vendor-check</c>'s job,
+    /// not this test's: a passing xunit test's <c>ITestOutputHelper</c> output does not surface
+    /// through `gates` (dotnet test only prints output for a test that fails), so a test-layer WARN
+    /// would be invisible on the fresh-drift path this exists to make loud.
+    /// </summary>
     [Fact]
     public void RecordedVendorFindingsAreAboutTheCliThatIsInstalled()
     {
         var lockPath = Path.Combine(RepositoryRoot(), Staleness.DefaultLockPath);
+        var driftPath = Path.Combine(RepositoryRoot(), DriftGrace.DefaultBookkeepingPath);
         var statuses = Staleness.Check(lockPath, Vendors);
 
         var inspectable = statuses.Where(s => s.Verdict != Staleness.Verdict.Uninspectable).ToList();
@@ -49,10 +60,12 @@ public class VendorProbeStalenessTests
             .Where(s => s.Verdict is Staleness.Verdict.Drifted or Staleness.Verdict.NeverProbed)
             .ToList();
 
+        var grace = DriftGrace.Evaluate(driftPath, stale.Count > 0, DateTimeOffset.Now);
+
         Assert.True(
-            stale.Count == 0,
+            !grace.Fatal,
             $"""
-            {stale.Count} vendor CLI(s) no longer match the recorded capability findings.
+            {grace.Message}
 
             {string.Join("\n\n", stale.Select(s => s.Explain()))}
 

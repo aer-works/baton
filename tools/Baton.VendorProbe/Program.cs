@@ -35,12 +35,13 @@ public static class Program
         var writeTo = Arg(args, "--out");
         var only = Arg(args, "--vendor");
         var lockPath = Arg(args, "--lock") ?? Staleness.DefaultLockPath;
+        var driftPath = Arg(args, "--drift-lock") ?? DriftGrace.DefaultBookkeepingPath;
 
         var vendors = only is null ? Vendors : [only];
 
         if (args.Contains("--check"))
         {
-            return Check(lockPath, vendors);
+            return Check(lockPath, driftPath, vendors);
         }
 
         var findings = new List<Finding>();
@@ -123,7 +124,7 @@ public static class Program
     /// the expensive probe should be triggered by a vendor moving, not by a calendar or by someone
     /// remembering.
     /// </summary>
-    private static int Check(string lockPath, IReadOnlyList<string> vendors)
+    private static int Check(string lockPath, string driftPath, IReadOnlyList<string> vendors)
     {
         var statuses = Staleness.Check(lockPath, vendors);
 
@@ -139,14 +140,38 @@ public static class Program
             Console.WriteLine($"[{mark}] {s.Explain()}");
         }
 
-        var needsProbe = statuses.Where(s =>
+        var inspectable = statuses.Where(s => s.Verdict != Staleness.Verdict.Uninspectable).ToList();
+        var needsProbe = inspectable.Where(s =>
             s.Verdict is Staleness.Verdict.Drifted or Staleness.Verdict.NeverProbed).ToList();
 
-        if (needsProbe.Count > 0)
+        // #1487: drift becomes deliberate. A vendor moving is no longer an immediate hard-fail —
+        // DriftGrace records when it was first seen and only fails once it has sat past the grace
+        // window. This is the layer that can print, so the WARN below is what makes drift visible in
+        // `gates` output; the xunit tripwire (VendorProbeStalenessTests) shares this Evaluate call —
+        // see its doc comment for why the WARN prints here and not there.
+        //
+        // Gated on `inspectable.Count > 0`, same as the xunit test's own Assert.Skip: a run where
+        // NOTHING was inspectable (both vendors absent from PATH, or Cli.Version transiently failed
+        // on one mid-update) must never touch the bookkeeping file at all. Calling Evaluate(false, …)
+        // there would read as "confirmed clean" and delete a real, in-progress drift clock — turning
+        // a flaky --version into an unlimited grace window that never actually expires.
+        if (inspectable.Count > 0)
         {
-            Console.WriteLine();
-            Console.WriteLine($"{needsProbe.Count} vendor(s) need a probe run: pixi run vendor-probe");
-            return 1;
+            var grace = DriftGrace.Evaluate(driftPath, needsProbe.Count > 0, DateTimeOffset.Now);
+
+            if (grace.Verdict == DriftGrace.Verdict.FreshWarn)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"WARN VENDOR-DRIFT: {grace.Message}");
+                return 0;
+            }
+
+            if (grace.Fatal)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"FAIL VENDOR-DRIFT: {grace.Message}");
+                return 1;
+            }
         }
 
         if (statuses.All(s => s.Verdict == Staleness.Verdict.Uninspectable))

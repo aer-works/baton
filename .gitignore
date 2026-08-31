@@ -62,6 +62,12 @@ bld/
 # per-invocation working state, never the deliverable.
 /.baton/
 
+# #1487: the vendor-drift grace-window clock (tools/Baton.VendorProbe/DriftGrace.cs). Machine-local
+# by design -- it times how long *this machine's* installed CLI has sat drifted from the committed
+# pins, so committing it would either share one machine's clock with every other, or make every
+# clone re-fight over it. Sits beside the tracked docs/vendor-probe.lock.json it is not.
+docs/vendor-probe.drift.local.json
+
 # Python bytecode. Four .pyc files were tracked, so every tool run dirtied the tree.
 __pycache__/
 *.pyc

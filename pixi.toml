@@ -253,9 +253,11 @@ setup-hooks = { cmd = "git config core.hooksPath .githooks" }
 
 # The free half of the same suite, and the trigger for the paid half: compares each installed CLI's
 # `--version` against the version recorded in the lock file. Starts no session and spends no quota,
-# so it runs in the ordinary dev loop — `pixi run test` runs the same comparison via
-# Baton.Architecture.Tests, which is what actually makes a vendor self-update surface. Exits non-zero
-# when a CLI has moved; says so plainly, and does not pass, when no vendor CLI is present to inspect.
+# so it runs in the ordinary dev loop and, since #1487, in `gates`/`gates-fast` (AFTER_BUILD_FAST) --
+# `pixi run test` runs the same DriftGrace.Evaluate verdict via Baton.Architecture.Tests, which is what
+# actually makes a vendor self-update surface, but this is the layer that PRINTS: within the 7-day
+# grace window drift is a loud WARN and exit 0, past it or on unreadable bookkeeping it is a FAIL, and
+# with no vendor CLI present to inspect it says so plainly without failing.
 vendor-check = { cmd = "python tools/buildlock.py dotnet run --project tools/Baton.VendorProbe -- --check" }
 
 # Dispatches one AER workflow step to a worker via a real `baton run` and prints its output -- the
