@@ -46,9 +46,10 @@ never scales with polling frequency. Same save-only-after-success discipline as
 push_snapshot_and_record: POST first, record the timestamp only afterwards, so a failed heartbeat
 retries next cycle instead of silently going stale. Heartbeat failures are logged and never raise
 into the snapshot path -- see main()'s heartbeat try/except, which runs in its own block after the
-snapshot has already been sent. A heartbeat body carries a timestamp and nothing else -- no room or
-deliverable content -- so it is not a deliverable and does not pass through the secret gate below;
-there is nothing in it that gate exists to catch.
+snapshot has already been sent. A heartbeat body carries nothing at all -- a literal "{}", not even
+a timestamp; the Worker stamps its own receipt time server-side (see worker.js's /heartbeat
+handler) -- so it is not a deliverable and does not pass through the secret gate below; there is
+nothing in it that gate exists to catch.
 
 THE DELIVERABLES HALF (#1413 half 2)
 -------------------------------------
