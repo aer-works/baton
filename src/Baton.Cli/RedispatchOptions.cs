@@ -14,10 +14,8 @@ namespace Baton.Cli;
 /// <param name="OutputPath">Parsed like <c>baton dispatch</c>'s own <c>--output</c>; never defaulted from the parent.</param>
 /// <param name="Timeout">Null keeps the parent's.</param>
 /// <param name="Label">
-/// The <c>--label</c> override (#1499). Unlike <paramref name="OutputPath"/>, this DOES inherit from
-/// the parent when null — <see cref="RedispatchCommand.InheritBinding"/>'s rule — since a label is a
-/// durable room-level fact (<see cref="Baton.Vendors.WorkerBindingConfigEntry.Label"/>), not a
-/// process-local copy target the way a prior <c>--output</c> destination is.
+/// The <c>--label</c> override (#1499). Unlike <paramref name="OutputPath"/>, null here inherits the
+/// parent's — <see cref="RedispatchCommand.InheritBinding"/>'s rule, spec/baton.md §2.
 /// </param>
 public sealed record RedispatchOptions(
     string ParentRoomDirectoryPath,

@@ -318,9 +318,12 @@ public static class ContractValidator
     /// <summary>
     /// Cuts to at most <paramref name="length"/> chars without leaving a lone high surrogate — a
     /// non-BMP character is two UTF-16 chars and splitting one produces malformed UTF-16, which here
-    /// would be written into an append-only journal. Worker-controlled JSON reaches this.
+    /// would be written into an append-only journal. Worker-controlled JSON reaches this. Public (not
+    /// internal) because <c>Baton.Cli</c>'s <c>DispatchOptionsParser.SanitizeLabel</c> (#1499) needs
+    /// the identical surrogate-safe cut for <c>--label</c> — the rule stays in this one file either
+    /// way, which is the point; only its accessibility widened.
     /// </summary>
-    internal static string TrimWithoutSplittingSurrogatePair(string value, int length)
+    public static string TrimWithoutSplittingSurrogatePair(string value, int length)
     {
         if (value.Length <= length)
         {

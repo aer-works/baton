@@ -133,13 +133,16 @@ public static class DispatchOptionsParser
     /// <summary>
     /// <c>--label</c>'s sanitization (#1499): trimmed, embedded newlines folded to spaces (display
     /// text renders on one line — a Fleet Glass lane card, never a paragraph), then capped at
-    /// <see cref="MaxLabelLength"/>. Nothing here needs to escape JSON or path characters: the label is
-    /// never written into a path (the hex room name stays the on-disk identity) and
-    /// <see cref="System.Text.Json.JsonSerializer"/> already escapes whatever the string contains when
-    /// it lands in <c>bindings.json</c>/the MCP payload. A blank result after trimming (an operator
-    /// passing <c>--label ""</c> or all-whitespace) is treated the same as never passing the flag at
-    /// all, rather than a typed refusal — there is no meaningful invocation this could be correcting.
-    /// Shared with <see cref="RedispatchOptionsParser"/>, which parses the identical flag.
+    /// <see cref="MaxLabelLength"/> without splitting a surrogate pair
+    /// (<see cref="Baton.Outcomes.ContractValidator.TrimWithoutSplittingSurrogatePair"/> — the one file
+    /// that rule lives in; reused here rather than re-cut by hand). Nothing here needs to escape JSON
+    /// or path characters: the label is never written into a path (the hex room name stays the
+    /// on-disk identity) and <see cref="System.Text.Json.JsonSerializer"/> already escapes whatever
+    /// the string contains when it lands in <c>bindings.json</c>/the MCP payload. A blank result after
+    /// trimming (an operator passing <c>--label ""</c> or all-whitespace) is treated the same as never
+    /// passing the flag at all, rather than a typed refusal — there is no meaningful invocation this
+    /// could be correcting. Shared with <see cref="RedispatchOptionsParser"/>, which parses the
+    /// identical flag.
     /// </summary>
     internal static string? SanitizeLabel(string rawValue)
     {
@@ -148,12 +151,9 @@ public static class DispatchOptionsParser
             .Replace('\n', ' ')
             .Trim();
 
-        if (folded.Length == 0)
-        {
-            return null;
-        }
-
-        return folded.Length > MaxLabelLength ? folded[..MaxLabelLength] : folded;
+        return folded.Length == 0
+            ? null
+            : Baton.Outcomes.ContractValidator.TrimWithoutSplittingSurrogatePair(folded, MaxLabelLength);
     }
 
     /// <summary>

@@ -46,9 +46,7 @@ public static class DispatchCommand
         var workspace = options.WorkspaceDirectory ?? workspaceDirectory ?? Directory.GetCurrentDirectory();
         var (definition, bindings) = await MaterializeAsync(options, workspace, cancellationToken).ConfigureAwait(false);
 
-        // #1499: stamped onto every entry (a composed template's bindings.json holds one per phase) --
-        // the label is a room-level fact, not scoped to one worker, and FleetStatusTool reads it off
-        // whichever entry it happens to load first.
+        // #1499: stamped onto every entry -- a composed template's bindings.json holds one per phase.
         if (options.Label is not null)
         {
             bindings = bindings.ToDictionary(

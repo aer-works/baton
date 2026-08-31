@@ -1001,12 +1001,7 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(singleRoom.Project);
     }
 
-    /// <summary>
-    /// #1499: the terminal-sentinel fast path never reads <c>bindings.json</c> for
-    /// role/adapter/model/effort/timeout (#1503, spec/baton.md §6 schema), but a room's <c>--label</c>
-    /// is a room-level fact, not scoped to a Running step -- so it must still surface here, unlike
-    /// that quartet.
-    /// </summary>
+    /// <summary>#1499, spec/baton.md §6 schema: the terminal-sentinel fast path still surfaces a label.</summary>
     [Fact]
     public async Task TerminalFastPath_WithLabelInBindings_ReportsLabel()
     {
@@ -1037,10 +1032,35 @@ public sealed class FleetStatusToolTests : IDisposable
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Succeeded", singleRoom.State);
         Assert.Equal("env-snapshot lane", singleRoom.Label);
-        // The sentinel fast path never resolves a Running binding -- the quartet stays absent even
-        // though the label, read independently, is present.
         Assert.Null(singleRoom.Role);
         Assert.Null(singleRoom.Adapter);
+    }
+
+    /// <summary>
+    /// The fail-open half of #1499's own claim: an unparseable <c>bindings.json</c> on the
+    /// terminal-sentinel path (which has no enclosing try/catch of its own around the label read)
+    /// must degrade to an absent label, not an exception that drops the row.
+    /// </summary>
+    [Fact]
+    public async Task TerminalFastPath_WithCorruptBindingsFile_OmitsLabelButStillRendersRow()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "corrupt-bindings-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(
+            BatonPaths.RoomBindingsFile(room), "{ not valid json", TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", singleRoom.State);
+        Assert.Null(singleRoom.Label);
     }
 
     [Fact]
@@ -1057,20 +1077,14 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
+        // Asserts on the actual MCP payload (result.Text), not a re-serialized deserialized copy --
+        // the real wire text is the thing a JsonIgnore regression would actually change.
+        Assert.DoesNotContain("\"label\"", result.Text);
         var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
-        var singleRoom = Assert.Single(rooms!);
-        Assert.Null(singleRoom.Label);
-        var wire = JsonSerializer.Serialize(singleRoom);
-        Assert.DoesNotContain("\"label\"", wire);
+        Assert.Null(Assert.Single(rooms!).Label);
     }
 
-    /// <summary>
-    /// #1499: an active room with NO Running step at all (no <c>flow.jsonl</c>, so the workflow
-    /// projects as Pending) -- <see cref="FleetStatusTool.TryResolveRunningBindingAsync"/> would never
-    /// even attempt a bindings read here, since role/adapter/model/effort/timeout are scoped to a
-    /// Running step this room does not have. The label read is a separate, ungated path, so it must
-    /// still come back present.
-    /// </summary>
+    /// <summary>#1499: a Pending room (no <c>flow.jsonl</c>, so no step is Running) still reports its label.</summary>
     [Fact]
     public async Task ActiveRoom_WithNoRunningStep_StillReportsLabelButNotTheRunningStepQuartet()
     {
