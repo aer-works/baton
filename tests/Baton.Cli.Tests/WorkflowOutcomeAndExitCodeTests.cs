@@ -120,6 +120,18 @@ public class WorkflowOutcomeAndExitCodeTests
         Assert.Equal(RunExitCode.Timeout, RunExitCodeResolver.Resolve(Result(state, waitTimedOut: true)));
     }
 
+    [Fact]
+    public void A_wait_timeout_flag_on_a_room_that_actually_reached_Terminal_defers_to_the_real_outcome()
+    {
+        // #1478 review, F1 (the race itself is explained at RunCommand.WaitForTerminalAsync's
+        // timedOut computation): RunCommand refuses to pair WaitTimedOut with a Terminal state;
+        // this arm pins the resolver's own guard so that even a future producer of the pairing
+        // cannot make exit 3 contradict a written terminal sentinel.
+        var state = TerminalState([Step("a", StepStatus.Succeeded)]);
+
+        Assert.Equal(RunExitCode.Succeeded, RunExitCodeResolver.Resolve(Result(state, waitTimedOut: true)));
+    }
+
     private static FlowState TerminalState(IReadOnlyList<StepState> steps) =>
         new(SnapshotId, steps, WorkflowStatus.Terminal);
 

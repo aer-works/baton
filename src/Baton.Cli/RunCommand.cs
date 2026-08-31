@@ -203,41 +203,49 @@ public static class RunCommand
 
         while (true)
         {
+            // One catch covers BOTH cancelable awaits in the iteration: the reader below takes the
+            // same loopToken, and an expiry landing mid-read must break to the final-read path like
+            // an expiry during the delay does -- not escape as an unhandled crash (#1478 review, F2).
             try
             {
                 await Task.Delay(StatusPollIntervalMs, loopToken).ConfigureAwait(false);
+
+                var logFile = new FileInfo(logPath);
+                var currentLength = logFile.Exists ? logFile.Length : 0;
+                if (currentLength == lastObservedLength)
+                {
+                    continue;
+                }
+
+                lastObservedLength = currentLength;
+
+                var events = await reader.ReadAllAsync(loopToken).ConfigureAwait(false);
+                var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
+                var state = StateProjector.Project(events, snapshot, checkpoint);
+                if (state.Status == WorkflowStatus.Terminal)
+                {
+                    return (state, false);
+                }
             }
             catch (OperationCanceledException)
             {
                 break;
             }
-
-            var logFile = new FileInfo(logPath);
-            var currentLength = logFile.Exists ? logFile.Length : 0;
-            if (currentLength == lastObservedLength)
-            {
-                continue;
-            }
-
-            lastObservedLength = currentLength;
-
-            var events = await reader.ReadAllAsync(loopToken).ConfigureAwait(false);
-            var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
-            var state = StateProjector.Project(events, snapshot, checkpoint);
-            if (state.Status == WorkflowStatus.Terminal)
-            {
-                return (state, false);
-            }
         }
-
-        // Timed out only when OUR OWN timeout source fired first -- an ambient Ctrl-C (or the ambient
-        // token racing the timeout) reports as a plain cancelled exit, not a timeout.
-        var timedOut = timeoutCts is not null && !cancellationToken.IsCancellationRequested;
 
         // Cancelled or timed out before reaching Terminal: report the latest state we actually
         // observed rather than a synthetic one, same as the pump itself does on a host stop.
         var finalEvents = await reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false);
         var finalState = StateProjector.Project(finalEvents, snapshot, ProjectionCheckpointStore.Load(roomDirectoryPath));
+
+        // Timed out only when OUR OWN timeout source fired first (an ambient Ctrl-C, or the ambient
+        // token racing the timeout, reports as a plain cancelled exit) AND the room truly fell short
+        // of Terminal. The second clause is load-bearing (#1478 review, F1): a decision landing in
+        // the last poll window before the deadline reaches Terminal without the loop ever observing
+        // it, and reporting THAT as a timeout would exit 3 while a terminal sentinel gets written --
+        // the exact contradiction of the documented "room untouched, still Paused" contract.
+        var timedOut = finalState.Status != WorkflowStatus.Terminal
+            && timeoutCts is not null && !cancellationToken.IsCancellationRequested;
         return (finalState, timedOut);
     }
 

@@ -60,7 +60,11 @@ public static class RunExitCodeResolver
         // #1378: baton run --wait --wait-timeout <minutes> expired before the room reached Terminal.
         // Checked ahead of the state-based classification below because the room itself is still
         // Paused/Running -- nothing in the ledger says "timeout", only this call's own poll loop does.
-        if (result.WaitTimedOut)
+        // The Terminal guard is defense in depth (#1478 review, F1): RunCommand already refuses to
+        // pair WaitTimedOut with a Terminal state, and if a future path ever does, the room's real
+        // outcome must win over a wait bookkeeping flag -- a written sentinel and exit 3 would
+        // contradict each other.
+        if (result.WaitTimedOut && result.State.Status != WorkflowStatus.Terminal)
         {
             return RunExitCode.Timeout;
         }
