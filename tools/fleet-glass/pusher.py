@@ -380,6 +380,15 @@ def post_json(url: str, body: str) -> None:
 SNAPSHOT_HASH_KEY = "__snapshot_hash__"
 
 
+def build_wrapped(room_list, underhood, timelines, stale_hidden_count) -> dict:
+    """The exact snapshot body main() pushes. One home so the leak selftest exercises the real push
+    path's construction, not a hand-rebuilt copy that could drift from it (PR #1508 review)."""
+    return {"rooms": room_list,
+            "underhood": underhood,
+            "timelines": timelines,
+            "stale_hidden_count": stale_hidden_count}
+
+
 def snapshot_hash(wrapped: dict) -> str:
     """Stable hash of the wrapped {rooms, underhood} body -- sort_keys so the hash does not depend
     on dict insertion order upstream, independent of the (unsorted) exact string actually POSTed."""
@@ -694,10 +703,11 @@ def main() -> None:
             # for rooms that survived drop_stale_rooms above, so a hidden room's timeline is hidden
             # with it rather than riding along as orphaned payload.
             surviving_paths = {r.get("path") for r in (room_list or []) if isinstance(r, dict)}
-            wrapped = {"rooms": room_list,
-                       "underhood": gather_underhood(cfg),
-                       "timelines": {p: t for p, t in timelines.items() if p in surviving_paths},
-                       "stale_hidden_count": stale_hidden_count}
+            wrapped = build_wrapped(
+                room_list,
+                gather_underhood(cfg),
+                {p: t for p, t in timelines.items() if p in surviving_paths},
+                stale_hidden_count)
             current_hash = snapshot_hash(wrapped)
             snap_state = load_push_state(state_path)
             if should_push_snapshot(snap_state, current_hash):
@@ -965,10 +975,10 @@ def _selftest() -> int:
           ])
     check("extract_timeline drops an entry's `detail` field even when populated",
           all("detail" not in e for e in extracted))
-    # The claim under test is "none of it touches the SNAPSHOT" -- prove it against the fully
-    # serialized wrapped body main() actually pushes, not just this function's return value.
-    wrapped_with_timeline = {"rooms": [], "underhood": [],
-                              "timelines": {"/rooms/room-x": extracted}, "stale_hidden_count": 0}
+    # The claim under test is "none of it touches the SNAPSHOT" -- prove it against the body main()
+    # actually pushes by building it through the SAME build_wrapped() main() calls, so a future edit
+    # to that construction can't silently invalidate this proof.
+    wrapped_with_timeline = build_wrapped([], [], {"/rooms/room-x": extracted}, 0)
     serialized = json.dumps(wrapped_with_timeline)
     check("the stdout/detail/note leak string is absent from the fully serialized pushed body",
           stdout_leak not in serialized)

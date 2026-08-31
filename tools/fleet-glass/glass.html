@@ -229,14 +229,21 @@ function bindingsPathFor(roomPath){
   const sep = roomPath.includes("\\") && !roomPath.includes("/") ? "\\" : "/";
   return roomPath.replace(/[\\/]+$/, "") + sep + "bindings.json";
 }
+// The verb is copied to a clipboard and pasted into a real shell, so a `"` in a room path would
+// otherwise terminate the quoted argument early and let anything after it execute (PR #1508 review).
+// Escaping the quote-closer neutralizes that for both bash and pwsh double-quoted arguments; if a
+// path still carries a raw newline (no legal filesystem produces one, but the payload isn't
+// path-validated), refuse the button rather than emit a command that could span lines.
+function shellArgSafe(s){ return !/[\r\n]/.test(s); }
+function shq(s){ return s.replace(/"/g, '\\"'); }
 function copyButtonHtml(verb, label){
   return `<button class="copybtn" data-verb="${esc(verb)}">${esc(label)}</button><input class="revealbox mono" readonly hidden>`;
 }
 function copyButtonsHtml(room, running){
-  if(!room.path) return "";
-  const buttons = [copyButtonHtml(`baton redispatch "${room.path}"`, "copy redispatch")];
+  if(!room.path || !shellArgSafe(room.path)) return "";
+  const buttons = [copyButtonHtml(`baton redispatch "${shq(room.path)}"`, "copy redispatch")];
   if(room.state === "Running" && running && running.execution){
-    const cancelVerb = `baton cancel "${room.path}" --execution ${running.execution} --bindings "${bindingsPathFor(room.path)}"`;
+    const cancelVerb = `baton cancel "${shq(room.path)}" --execution ${running.execution} --bindings "${shq(bindingsPathFor(room.path))}"`;
     buttons.push(copyButtonHtml(cancelVerb, "copy cancel"));
   }
   return `<div class="verbs">${buttons.join("")}</div>`;
