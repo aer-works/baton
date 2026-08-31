@@ -203,7 +203,8 @@ public sealed class FleetStatusTool : IMcpTool
                 s.LinkedFrom,
                 Timestamp: null,
                 s.Usage,
-                s.LinkedFromUsage
+                s.LinkedFromUsage,
+                Liveness: s.Liveness
             )).ToList();
 
             return new FleetRoomStatusView(
@@ -213,7 +214,8 @@ public sealed class FleetStatusTool : IMcpTool
                 Steps: sentinelSteps,
                 Outputs: sentinel.Outputs,
                 Error: sentinel.Error,
-                Try: sentinel.Try);
+                Try: sentinel.Try,
+                Rejected: sentinel.Rejected);
         }
 
         // 2. Active room: load snapshot + flow events and project
@@ -271,7 +273,8 @@ public sealed class FleetStatusTool : IMcpTool
                     stepView.LinkedFrom,
                     timestamp,
                     stepView.Usage,
-                    stepView.LinkedFromUsage));
+                    stepView.LinkedFromUsage,
+                    stepView.Liveness));
             }
 
             return new FleetRoomStatusView(
@@ -281,7 +284,8 @@ public sealed class FleetStatusTool : IMcpTool
                 Steps: steps,
                 Outputs: view.Outputs,
                 Error: view.Error,
-                Try: view.Try);
+                Try: view.Try,
+                Rejected: view.Rejected);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -319,7 +323,14 @@ public sealed record FleetRoomStatusView(
     string? Error = null,
     [property: JsonPropertyName("try")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Try = null);
+    string? Try = null,
+    // spec/baton.md §3/§6: the same WorkflowStatusView.Rejected FleetStatusTool already reads off
+    // the shared projection (sentinel.Rejected / view.Rejected) -- copied, never re-derived. Omitted
+    // (not emitted false) so its mere presence already answers "did a human reject a step here",
+    // the same presence-signals-meaning convention Liveness below uses.
+    [property: JsonPropertyName("rejected")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    bool Rejected = false);
 
 /// <summary>
 /// Status of a single workflow step within a fleet room status report.
@@ -341,4 +352,11 @@ public sealed record FleetStepStatusView(
     ExecutionUsageView? Usage = null,
     [property: JsonPropertyName("linkedFromUsage")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    ExecutionUsageView? LinkedFromUsage = null);
+    ExecutionUsageView? LinkedFromUsage = null,
+    // spec/baton.md §3/§6: the same WorkflowStatusStepView.Liveness FleetStatusTool already reads
+    // off the shared projection (sentinel step's Liveness / stepView.Liveness) -- copied, never a
+    // second EngineLivenessProbe call. Present only for a step this projection calls "Running",
+    // the identical gate WorkflowStatusProjector.Project already applies before probing.
+    [property: JsonPropertyName("liveness")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Liveness = null);
