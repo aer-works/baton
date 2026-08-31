@@ -197,7 +197,7 @@ function failureKindChip(step){
   const cls = step.retryEligible === true ? "c-warn" : step.retryEligible === false ? "c-bad" : "c-idle";
   return [step.failureKind.toUpperCase(), cls];
 }
-function chipsHtml(room, running, lastStep){
+function chipsHtml(room, running, focusStep){
   const st = room.state;
   const chips = [];
   chips.push(st === "Running" ? ["RUNNING","c-run"]
@@ -208,9 +208,9 @@ function chipsHtml(room, running, lastStep){
   if(running && running.liveness === "dead") chips.push(["ZOMBIE","c-bad"]);
   const tb = timeboxChip(room, running);
   if(tb) chips.push(tb);
-  const ac = attemptChip(running || lastStep);
+  const ac = attemptChip(focusStep);
   if(ac) chips.push(ac);
-  const fc = failureKindChip(lastStep);
+  const fc = failureKindChip(focusStep);
   if(fc) chips.push(fc);
   return chips.map(([label,cls]) => `<span class="chip ${cls}">${esc(label)}</span>`).join("");
 }
@@ -306,6 +306,12 @@ document.addEventListener("click", async (ev) => {
 function laneHtml(room, timelines){
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
+  // Chips key off the step that actually failed, not array position: in A->B->C with B
+  // Permanent-failed and C still Pending, lastStep is C (carries no attempt/failureKind) and
+  // neither chip would render even though B holds the data. Simultaneous Failed steps
+  // (parallel branches) pick the first one in definition order -- an accepted heuristic.
+  const failedStep = (room.steps||[]).find(s => s.state === "Failed");
+  const focusStep = running || failedStep || lastStep;
   const bits = [];
   if(running){
     bits.push("step: " + esc(running.id));
@@ -322,7 +328,7 @@ function laneHtml(room, timelines){
   const ageLine = a ? `<div class="age">last event ${a} ago${room.state === "Running" && t && (Date.now()-Date.parse(t)) > 15*60000 ? " ⚠" : ""}</div>` : "";
   const deliverables = room.name
     ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(room.name)}">deliverables &rarr;</a></div>` : "";
-  return `<div class="lane"><div class="top"><span class="name">${esc(room.name)}</span><span class="chips">${chipsHtml(room, running, lastStep)}</span></div>
+  return `<div class="lane"><div class="top"><span class="name">${esc(room.name)}</span><span class="chips">${chipsHtml(room, running, focusStep)}</span></div>
     ${bindingLineHtml(room)}
     ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${tryLine}${err}${ageLine}
     ${timelineHtml(room, timelines)}

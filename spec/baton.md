@@ -444,7 +444,8 @@ Output: a JSON array of
   "steps"?: [
     { "id": string, "state": string, "execution"?: string, "linkedFrom"?: string,
       "timestamp"?: string, "usage"?: ExecutionUsageView, "linkedFromUsage"?: ExecutionUsageView,
-      "liveness"?: string }
+      "liveness"?: string, "attempt"?: number, "maxAttempts"?: number, "failureKind"?: string,
+      "retryEligible"?: boolean }
   ],
   "outputs"?: [string],
   "error"?: string,
@@ -478,6 +479,15 @@ fail-open for display metadata, so one unreadable bindings file degrades this ro
 countdown — a "remaining" figure would already be stale by the time a caller reads it. A renderer
 wanting remaining time pairs it with the same Running step's own `steps[].timestamp` above, which
 this shape already emits; `timeoutMs` is not duplicated there.
+
+**`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510)** are copied verbatim from
+`WorkflowStatusStepView`, never re-derived here — see that record's own remarks for the gating
+rules (`src/Baton/Status/WorkflowStatusView.cs`). Same presence-gated, never-fabricated convention
+as `role`/`adapter`/`model`/`effort`/`timeoutMs` above: a step with no failure history omits
+`attempt`/`maxAttempts` entirely, and a step that hasn't failed omits `failureKind`/`retryEligible`.
+The two failure fields are gated independently of each other, not as a pair: `retryEligible` (the
+scheduler's verdict) can be present while `failureKind` is absent, for a Failed step whose worker
+hasn't reported a classification yet.
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan
