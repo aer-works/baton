@@ -10,6 +10,7 @@ namespace Baton.Tests.Core;
 /// (spec/baton.md C-10), so the cross-platform command branching that file carried is gone; only
 /// the Windows arm survives.
 /// </summary>
+[Collection(SerializedEnvironmentCollection.Name)]
 public class BatonTaskTests
 {
     private static (string Program, string[] Args) EchoHello() => ("cmd", ["/c", "echo", "hello"]);

@@ -17,7 +17,7 @@ namespace Baton.Cli.Tests;
 /// <c>WithheldWritesReachTheOutbox</c> (false) and flips the grant to <c>AuditedNotEnforced</c>, while
 /// the process actually dispatched is still this file's fake — no live vendor needed.
 /// </summary>
-[Collection(WorkerCatalogEnvCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
 {
     private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);

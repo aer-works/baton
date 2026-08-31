@@ -14,7 +14,7 @@ namespace Baton.Cli.Tests.Mcp;
 /// Validates root enumeration, terminal sentinel fast path, active room projection,
 /// filtering, and graceful error handling on malformed rooms.
 /// </summary>
-[Collection(BatonHomeEnvCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public sealed class FleetStatusToolTests : IDisposable
 {
     private readonly string _tempHome;

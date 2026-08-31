@@ -15,7 +15,7 @@ namespace Baton.Cli.Tests;
 /// binding → capture HEAD → adapter receives it) is proven without a live LLM and without git having to
 /// produce a real diff. The one namespace rule (0047 §5) and the role-vs-template spec split are here too.
 /// </summary>
-[Collection(WorkerCatalogEnvCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchTemplateEndToEndTests : IDisposable
 {
     private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
@@ -23,7 +23,7 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
     private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
 
     // Pin all three shipped catalogs -- same hazard, same reason as DispatchCommandEndToEndTests'
-    // own ctor comment, which this class shares [Collection(WorkerCatalogEnvCollection.Name)] with.
+    // own ctor comment, which this class shares [Collection(SerializedEnvironmentCollection.Name)] with.
     public DispatchTemplateEndToEndTests()
     {
         Environment.SetEnvironmentVariable(

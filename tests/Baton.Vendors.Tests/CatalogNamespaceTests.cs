@@ -8,7 +8,7 @@ namespace Baton.Vendors.Tests;
 /// as a failing build here, not as a runtime error a user hits. The runtime refusal is the belt; this is
 /// the braces.
 /// </summary>
-[Collection(WorkerRoleCatalogCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public sealed class CatalogNamespaceTests : IDisposable
 {
     private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);

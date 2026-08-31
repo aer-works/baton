@@ -12,7 +12,7 @@ namespace Baton.Vendors.Tests;
 /// rebuild (the env override stands in for the runtime <c>worker-tiers.json</c> the operator drops),
 /// and that a malformed catalog fails loudly rather than dispatching something nobody chose.
 /// </summary>
-[Collection(WorkerRoleCatalogCollection.Name)]
+[Collection(SerializedEnvironmentCollection.Name)]
 public class WorkerRoleCatalogTests
 {
     private sealed class EnvScope : IDisposable
