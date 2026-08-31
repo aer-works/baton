@@ -68,7 +68,7 @@ if (args.Length >= 1 && args[0] == "daemon")
     return 0;
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "supply", "resume", "status", "templates", "mcp", "daemon" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "supply", "resume", "status", "templates", "keep", "unkeep", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -85,6 +85,8 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine($"       {ResumeOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {StatusOptionsParser.Usage[7..]}");
     Console.Error.WriteLine("       baton templates [--json]");
+    Console.Error.WriteLine($"       {KeepOptionsParser.Usage}");
+    Console.Error.WriteLine($"       {UnkeepOptionsParser.Usage}");
     Console.Error.WriteLine(
         "       baton mcp [--capture-file <path>] [--memory-proposal-tool] [--fleet-status-tool] [--room-detail-tool]");
     Console.Error.WriteLine("       baton daemon [--no-mutex]");
@@ -130,6 +132,22 @@ try
     if (args[0] == "templates")
     {
         return await TemplatesCommand.ExecuteAsync(args[1..], Console.Out, hostStopSource.Token).ConfigureAwait(false);
+    }
+
+    // #1156: a filesystem-marker mutation, not a workflow pump — no CommandResult to report, so
+    // this joins status/templates above rather than the CommandResult/FlowStateReporter switch below.
+    if (args[0] == "keep")
+    {
+        var keepOptions = KeepOptionsParser.Parse(args[1..]);
+        await KeepCommand.MarkAsync(keepOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
+        return 0;
+    }
+
+    if (args[0] == "unkeep")
+    {
+        var unkeepOptions = UnkeepOptionsParser.Parse(args[1..]);
+        await KeepCommand.UnmarkAsync(unkeepOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
+        return 0;
     }
 
     CommandResult result;

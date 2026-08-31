@@ -219,7 +219,8 @@ public sealed class RoomRetentionSweep : BackgroundService
             return false;
         }
 
-        // See #1027 follow-ups: operator pruned/ view and operator KeepMarker setting.
+        // See #1027 follow-ups: operator pruned/ view remains open; operator KeepMarker setting
+        // shipped as `baton keep`/`baton unkeep` (#1156).
         return await ArtifactPruner.PruneAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
     }
 

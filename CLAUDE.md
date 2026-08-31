@@ -15,8 +15,8 @@ baton/
 │   ├── Baton/                  The core execution engine and routing state machine (ex-Baton.Flow)
 │   ├── Baton.Vendors/          Vendor adapters (Claude/Gemini) + the built-in template catalog
 │   └── Baton.Cli/               Command-line interface (baton run/dispatch/decide/cancel/supply/
-│                              resume/status/templates), plus two folded-in verbs that used to be
-│                              their own shipped binaries:
+│                              resume/status/templates/keep/unkeep), plus two folded-in verbs that
+│                              used to be their own shipped binaries:
 │                              - `baton mcp` (ex-Baton.Mcp + Baton.Mcp.Host) — the stdio MCP server
 │                                workers connect to (fleet_status, baton yield, memory proposals).
 │                                PermissionGateTool/PermissionReturnShape (the mid-lane ask

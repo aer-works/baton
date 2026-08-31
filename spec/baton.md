@@ -168,6 +168,8 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | `cancel` | `baton cancel <room-dir> --execution <execution-id> --bindings <bindings-file> [--workflow-id <id>]` | `Program.cs` |
 | `status` | `baton status <room-dir> [--follow] [--json]` | `StatusOptionsParser.cs` |
 | `templates` | `baton templates [--json]` | `Program.cs` |
+| `keep` | `baton keep <room-dir>` | `KeepOptionsParser.cs` |
+| `unkeep` | `baton unkeep <room-dir>` | `UnkeepOptionsParser.cs` |
 
 `templates` narrows to the built-in catalog only (`Baton.Vendors`'s `BuiltInWorkflowTemplates`) —
 there is no authoring UI to browse a saved-template library visually against (Appendix, R7 in the
