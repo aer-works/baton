@@ -1,3 +1,5 @@
+using Baton.Status;
+
 namespace Baton.Cli;
 
 /// <summary>
@@ -15,11 +17,9 @@ namespace Baton.Cli;
 /// </summary>
 internal static class RoomLedgerProbe
 {
-    private const string LogFileName = "flow.jsonl";
-
     public static bool HasLedger(string roomDirectoryPath)
     {
-        var info = new FileInfo(Path.Combine(roomDirectoryPath, LogFileName));
+        var info = new FileInfo(Path.Combine(roomDirectoryPath, BatonPaths.FlowLogFileName));
         return info.Exists && info.Length > 0;
     }
 }

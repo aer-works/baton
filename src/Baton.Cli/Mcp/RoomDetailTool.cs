@@ -353,7 +353,7 @@ public sealed class RoomDetailTool : IMcpTool
 
     private static async Task<RoomTimelineView?> ReadTimelineAsync(string roomDir, CancellationToken cancellationToken)
     {
-        var logPath = Path.Combine(roomDir, "flow.jsonl");
+        var logPath = Path.Combine(roomDir, BatonPaths.FlowLogFileName);
         if (!File.Exists(logPath))
         {
             return null;

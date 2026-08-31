@@ -1,4 +1,5 @@
 using Baton.Domain;
+using Baton.Status;
 using Baton.Store;
 
 namespace Baton.Projection;
@@ -37,8 +38,6 @@ public sealed record OrchestratorTurnInput(
     string? RoomDirectoryPath = null,
     string? LastEventLineHash = null)
 {
-    private const string RoomLogFileName = "room.jsonl";
-
     /// <summary>
     /// Assembles an <see cref="OrchestratorTurnInput"/> from <paramref name="roomDirectoryPath"/> and the passed-in <paramref name="wakes"/>.
     /// Reads the room event journal ONCE for both state projection and delta extraction.
@@ -51,7 +50,7 @@ public sealed record OrchestratorTurnInput(
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(wakes);
 
-        var roomLogPath = Path.Combine(roomDirectoryPath, RoomLogFileName);
+        var roomLogPath = Path.Combine(roomDirectoryPath, BatonPaths.RoomLogFileName);
         var reader = new RoomEventLogReader(roomLogPath);
         var allEvents = await reader.ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
 

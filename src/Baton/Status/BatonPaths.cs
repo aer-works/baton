@@ -97,6 +97,43 @@ public static class BatonPaths
     }
 
     /// <summary>
+    /// Filename, directly in a room's directory, of the append-only room-scoped event log — chat
+    /// turns, permission grants, memory proposals — as distinct from <see cref="FlowLogFileName"/>'s
+    /// engine-scoped run log (0053: the two logs take independent locks).
+    /// </summary>
+    public const string RoomLogFileName = "room.jsonl";
+
+    /// <summary>
+    /// Filename, directly in a room's directory, of the append-only engine event log the Flow engine
+    /// writes as it executes a workflow run.
+    /// </summary>
+    public const string FlowLogFileName = "flow.jsonl";
+
+    /// <summary>
+    /// Filename, directly in a room's directory, of the terminal snapshot the engine writes once a
+    /// workflow run reaches a terminal state.
+    /// </summary>
+    public const string SnapshotFileName = "snapshot.json";
+
+    /// <summary>
+    /// Filename, directly in a room's directory, of <see cref="Baton.Concurrency.ConcurrencyGuard"/>'s
+    /// advisory lock file that serializes the engine against <see cref="FlowLogFileName"/> writers
+    /// (0053). <see cref="Baton.Concurrency.ConcurrencyGuard.FlowLockFileName"/> mirrors this value
+    /// rather than restating it, so the lock's own home stays the source of the mechanism while this
+    /// stays the source of the name.
+    /// </summary>
+    public const string FlowLockFileName = "flow.lock";
+
+    /// <summary>
+    /// The four filenames whose presence in a directory is local evidence that directory is a room —
+    /// decision 0057 rule 4's detection test: "the file is named <c>bindings.json</c> <em>and</em> its
+    /// directory carries room evidence". Never a path prefix: room directories arrive as free paths on
+    /// every request and can live anywhere.
+    /// </summary>
+    public static readonly IReadOnlyList<string> RoomEvidenceFileNames =
+        [RoomLogFileName, FlowLogFileName, SnapshotFileName, FlowLockFileName];
+
+    /// <summary>
     /// <c>{Root}/worker-launch</c> — files AER writes to pass per-spawn configuration to a vendor
     /// CLI via an explicit flag rather than the CLI's own directory-based discovery (#533). Unlike
     /// <see cref="Rooms"/> this directory holds no operator-authored content: everything under it

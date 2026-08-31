@@ -235,7 +235,7 @@ try
         // #1360: entries feeds the sentinel's per-execution usage. A fresh ledger read (CommandResult
         // carries only the already-projected FlowState, not the raw entries) -- one extra read at
         // terminal completion, not a hot path.
-        var terminalLogPath = Path.Combine(terminalRoomDirectoryPath, "flow.jsonl");
+        var terminalLogPath = Path.Combine(terminalRoomDirectoryPath, BatonPaths.FlowLogFileName);
         var terminalEntries = await new FlowEventLogReader(terminalLogPath)
             .ReadAllEntriesWithTimestampsAsync(CancellationToken.None).ConfigureAwait(false);
         var view = WorkflowStatusProjector.Project(result.State, result.Snapshot, terminalRoomDirectoryPath, terminalEntries);

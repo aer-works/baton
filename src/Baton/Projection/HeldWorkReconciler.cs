@@ -1,5 +1,6 @@
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Status;
 
 namespace Baton.Projection;
 
@@ -44,7 +45,7 @@ public static class HeldWorkReconciler
     }
 
     private static bool DefaultWorkflowJournalExistsProbe(string workflowDirectoryPath)
-        => File.Exists(Path.Combine(workflowDirectoryPath, "flow.jsonl"));
+        => File.Exists(Path.Combine(workflowDirectoryPath, BatonPaths.FlowLogFileName));
 
     private static string RenderWorkflowStatus(HeldWorkState state, Func<string, bool> workflowJournalExistsProbe)
     {

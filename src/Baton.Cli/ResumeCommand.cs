@@ -3,6 +3,7 @@ using Baton.Artifacts;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Status;
 using Baton.Store;
 using Baton.Templates;
 using Baton.Workspaces;
@@ -24,8 +25,6 @@ namespace Baton.Cli;
 /// </summary>
 public static class ResumeCommand
 {
-    private const string SnapshotFileName = "snapshot.json";
-    private const string LogFileName = "flow.jsonl";
     private const string ArtifactsDirectoryName = ArtifactManager.ArtifactsDirectoryName;
 
     /// <exception cref="CliArgumentException">
@@ -80,8 +79,8 @@ public static class ResumeCommand
             message = await File.ReadAllTextAsync(messageFilePath, cancellationToken).ConfigureAwait(false);
         }
 
-        var snapshotPath = Path.Combine(options.RoomDirectoryPath, SnapshotFileName);
-        var logPath = Path.Combine(options.RoomDirectoryPath, LogFileName);
+        var snapshotPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.SnapshotFileName);
+        var logPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.FlowLogFileName);
         var artifactsRootPath = Path.Combine(options.RoomDirectoryPath, ArtifactsDirectoryName);
 
         if (!File.Exists(snapshotPath))

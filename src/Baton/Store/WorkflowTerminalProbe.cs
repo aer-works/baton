@@ -1,5 +1,6 @@
 using Baton.Domain;
 using Baton.Projection;
+using Baton.Status;
 using Baton.Templates;
 
 namespace Baton.Store;
@@ -17,21 +18,18 @@ namespace Baton.Store;
 /// </summary>
 public static class WorkflowTerminalProbe
 {
-    private const string SnapshotFileName = "snapshot.json";
-    private const string LogFileName = "flow.jsonl";
-
     public static async Task<WorkflowProbeResult> ProbeAsync(
         string workflowDirectoryPath, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(workflowDirectoryPath);
 
-        var logPath = Path.Combine(workflowDirectoryPath, LogFileName);
+        var logPath = Path.Combine(workflowDirectoryPath, BatonPaths.FlowLogFileName);
         if (!File.Exists(logPath))
         {
             return new WorkflowProbeResult(JournalExists: false, IsTerminal: false);
         }
 
-        var snapshotPath = Path.Combine(workflowDirectoryPath, SnapshotFileName);
+        var snapshotPath = Path.Combine(workflowDirectoryPath, BatonPaths.SnapshotFileName);
         if (!File.Exists(snapshotPath))
         {
             return new WorkflowProbeResult(JournalExists: true, IsTerminal: false);
