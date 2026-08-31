@@ -70,9 +70,8 @@ public static class WorkerBindingConfigWriter
     /// </para>
     /// <para>
     /// The staging name is unique per call, so two writers racing the same target cannot land in each
-    /// other's temp file — the same reasoning <c>MaterializeRoomBindings</c> states for its own copy.
-    /// The lock is still what stops those two writers losing each other's <em>updates</em>; that is a
-    /// different question from this one, and 0057 keeps them apart deliberately.
+    /// other's temp file. The lock is still what stops those two writers losing each other's <em>updates</em>;
+    /// that is a different question from this one, and 0057 keeps them apart deliberately.
     /// </para>
     /// </remarks>
     /// <exception cref="WorkerBindingConfigException">

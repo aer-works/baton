@@ -97,6 +97,11 @@ public static class RedispatchCommand
         {
             (definition, entry) = await RebuildFromAmendedSpecAsync(workerName, parentEntry, options, cancellationToken)
                 .ConfigureAwait(false);
+            // #1499: RoleDispatch.Materialize knows nothing of labels -- apply InheritBinding's rule here too.
+            entry = entry with
+            {
+                Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label
+            };
         }
 
         if (options.Timeout is { } timeoutOverride && timeoutOverride > TimeSpan.FromMinutes(DispatchOptionsParser.WarnTimeoutMinutes))
@@ -180,6 +185,7 @@ public static class RedispatchCommand
             WorkingDirectory = workingDirectory,
             Worktree = worktree,
             Timeout = options.Timeout ?? parentEntry.Timeout,
+            Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label, // #1499, spec/baton.md §2
             // Adapter-derived, not role-derived, so it CAN be recomputed here — carrying the parent's
             // value across a vendor swap would stream-json a claude worker (or text-mode an agy one).
             // Grant/GrantAuditMode/worktree intent stay inherited: spec/baton.md §2 states why.

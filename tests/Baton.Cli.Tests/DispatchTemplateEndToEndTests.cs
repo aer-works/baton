@@ -116,6 +116,45 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Dispatching_a_composed_template_with_a_label_stamps_it_onto_every_bindings_entry()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-tmpl-label-{Guid.NewGuid():N}");
+        try
+        {
+            var workspace = Path.Combine(testRoot, "workspace");
+            await InitGitWorkspaceAsync(workspace);
+
+            var verdictFixture = Path.Combine(testRoot, "verdict-fixture.json");
+            await File.WriteAllTextAsync(
+                verdictFixture, """{"reviewedRef":"HEAD","findings":[]}""", TestContext.Current.CancellationToken);
+
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new ContractOutputWorkerAdapter(
+                    satisfyOutputs: true,
+                    outputFixtures: new Dictionary<string, string> { ["verdict.json"] = verdictFixture }),
+                [WorkflowTemplateComposer.CaptureAdapter] = new BaseRefCapturingWorkerAdapter(),
+            };
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("implement-review", SpecFilePath: null, roomDirectory, Adapter: "fake", Label: "multi-phase lane");
+
+            var state = (await DispatchCommand.ExecuteAsync(
+                options, adapters, TestContext.Current.CancellationToken, workspaceDirectory: workspace)).State;
+
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(roomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.True(bindings.Count > 1);
+            Assert.All(bindings.Values, entry => Assert.Equal("multi-phase lane", entry.Label));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task A_composed_templates_capture_step_prints_no_grant_line_while_its_role_siblings_do()
     {
         // F2 (#1355 PR #1385 review): the capture step's adapter (BaseRefCapturingWorkerAdapter, standing

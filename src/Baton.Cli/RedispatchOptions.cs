@@ -13,6 +13,8 @@ namespace Baton.Cli;
 /// <param name="WorkspaceDirectory">Null keeps the parent's.</param>
 /// <param name="OutputPath">Parsed like <c>baton dispatch</c>'s own <c>--output</c>; never defaulted from the parent.</param>
 /// <param name="Timeout">Null keeps the parent's.</param>
+/// <param name="Label">The <c>--label</c> override (#1499) — see spec/baton.md §2 for the inheritance/clear/override contract.</param>
+/// <param name="LabelSpecified">True when <c>--label</c> was explicitly provided, even if blank.</param>
 public sealed record RedispatchOptions(
     string ParentRoomDirectoryPath,
     string RoomDirectoryPath,
@@ -22,4 +24,6 @@ public sealed record RedispatchOptions(
     string? Effort = null,
     string? WorkspaceDirectory = null,
     string? OutputPath = null,
-    TimeSpan? Timeout = null);
+    TimeSpan? Timeout = null,
+    string? Label = null,
+    bool LabelSpecified = false);

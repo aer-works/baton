@@ -46,6 +46,11 @@ namespace Baton.Vendors;
 /// claims isolation that does not exist, and the post-run audit then fails closed against the
 /// shared directory's unrelated dirt (loud, not silent — but still a lie the run pays for).
 /// </param>
+/// <param name="Label">
+/// The operator-supplied <c>--label</c> (#1499) — full contract, including why it lives here rather
+/// than a new file, is spec/baton.md §2/§6. Sanitized once at parse time
+/// (<c>Baton.Cli.DispatchOptionsParser.SanitizeLabel</c>). Null when never supplied.
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -62,7 +67,8 @@ public sealed record WorkerBindingConfigEntry(
     string? Effort = null,
     WorktreeWorkspace? Worktree = null,
     GrantAuditMode GrantAuditMode = GrantAuditMode.Enforced,
-    bool IsWorktree = false);
+    bool IsWorktree = false,
+    string? Label = null);
 
 
 /// <summary>

@@ -40,6 +40,10 @@ namespace Baton.Cli;
 /// dispatch only, rejected for a workflow template the same way <see cref="OutputPath"/> is. Null
 /// keeps the role's tier timeout. Validated and bounded by <see cref="DispatchOptionsParser"/>, not here.
 /// </param>
+/// <param name="Label">
+/// The <c>--label</c> escape hatch (#1499) — full contract in spec/baton.md §2. Sanitized by
+/// <see cref="DispatchOptionsParser"/>, not here. Null keeps a room unlabeled.
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -50,4 +54,5 @@ public sealed record DispatchOptions(
     string? Model = null,
     string? Effort = null,
     string? OutputPath = null,
-    TimeSpan? Timeout = null);
+    TimeSpan? Timeout = null,
+    string? Label = null);

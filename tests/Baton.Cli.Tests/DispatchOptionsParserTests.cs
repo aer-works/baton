@@ -140,6 +140,52 @@ public class DispatchOptionsParserTests
     }
 
     [Fact]
+    public void Parses_the_label_axis()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--label", "env-snapshot lane"]);
+        Assert.Equal("env-snapshot lane", options.Label);
+    }
+
+    [Fact]
+    public void A_label_is_absent_when_never_passed()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md"]);
+        Assert.Null(options.Label);
+    }
+
+    [Fact]
+    public void A_label_is_trimmed_and_internal_newlines_are_folded_to_spaces()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--label", "  line one\nline two  "]);
+        Assert.Equal("line one line two", options.Label);
+    }
+
+    [Fact]
+    public void A_label_longer_than_60_characters_is_capped()
+    {
+        var raw = new string('x', 90);
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--label", raw]);
+        Assert.Equal(60, options.Label!.Length);
+        Assert.Equal(new string('x', 60), options.Label);
+    }
+
+    [Fact]
+    public void A_blank_label_is_treated_as_absent_rather_than_refused()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--label", "   "]);
+        Assert.Null(options.Label);
+    }
+
+    [Fact]
+    public void A_label_cut_does_not_split_a_surrogate_pair()
+    {
+        var raw = new string('x', 59) + "\U0001F680";
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--label", raw]);
+        Assert.Equal(new string('x', 59), options.Label);
+        Assert.False(char.IsHighSurrogate(options.Label![^1]));
+    }
+
+    [Fact]
     public void The_default_room_directory_is_unique_per_invocation_so_a_redispatch_does_not_resume()
     {
         // A one-shot dispatch must run anew each time; two default directories that collided would

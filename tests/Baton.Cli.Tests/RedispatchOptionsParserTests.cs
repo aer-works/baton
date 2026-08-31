@@ -14,6 +14,7 @@ public class RedispatchOptionsParserTests
             [
                 "parent-room", "--spec", "amended.md", "--adapter", "agy", "--model", "opus",
                 "--effort", "careful", "--workspace", ".", "--output", "custom.md", "--timeout", "90",
+                "--label", "env-snapshot lane",
             ]);
 
         Assert.EndsWith("parent-room", options.ParentRoomDirectoryPath);
@@ -24,6 +25,7 @@ public class RedispatchOptionsParserTests
         Assert.Equal(Path.GetFullPath("."), options.WorkspaceDirectory);
         Assert.Equal(Path.GetFullPath("custom.md"), options.OutputPath);
         Assert.Equal(TimeSpan.FromMinutes(90), options.Timeout);
+        Assert.Equal("env-snapshot lane", options.Label);
     }
 
     [Fact]
@@ -38,6 +40,27 @@ public class RedispatchOptionsParserTests
         Assert.Null(options.WorkspaceDirectory);
         Assert.Null(options.OutputPath);
         Assert.Null(options.Timeout);
+        Assert.Null(options.Label);
+        Assert.False(options.LabelSpecified);
+    }
+
+    [Fact]
+    public void A_label_is_sanitized_the_same_way_dispatchs_own_is()
+    {
+        // Shared sanitizer (DispatchOptionsParser.SanitizeLabel) -- one cap/trim/newline-fold rule for
+        // both verbs, not a second implementation that could drift.
+        var raw = new string('x', 90);
+        var options = RedispatchOptionsParser.Parse(["parent-room", "--label", raw]);
+        Assert.Equal(60, options.Label!.Length);
+        Assert.True(options.LabelSpecified);
+    }
+
+    [Fact]
+    public void A_blank_label_sets_LabelSpecified_true_and_Label_null()
+    {
+        var options = RedispatchOptionsParser.Parse(["parent-room", "--label", "   "]);
+        Assert.Null(options.Label);
+        Assert.True(options.LabelSpecified);
     }
 
     [Fact]

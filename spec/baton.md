@@ -101,7 +101,8 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   the call stops waiting and reports exit code 3 (`Timeout`, below) rather than blocking forever on a
   workflow nobody has decided.
 - **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
-  [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]`**
+  [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]
+  [--label <text>]`**
   — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
   template (`src/Baton.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
   directory under `BatonPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
@@ -116,26 +117,41 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   say — so such a lane does not die mid-flight. Role dispatch only, rejected for a template: a
   template's phases each carry their own role's timeout, so there is no single one to override. Values
   are whole minutes, rejected outright above a 24h ceiling (no interactive confirmation exists for a
-  non-interactive CLI) and merely flagged on stderr above 2h.
+  non-interactive CLI) and merely flagged on stderr above 2h. `--label` (#1499) is display text only —
+  a short human-readable name (e.g. "the #1496 env-snapshot lane") so Fleet Glass (§6) can show
+  something legible instead of a bare `dispatch-<role>-<hex8>` directory name; it is never part of the
+  room directory's own name, which stays the generated hex identity above. Sanitized at parse time
+  (`DispatchOptionsParser.SanitizeLabel`): trimmed, embedded newlines folded to spaces, capped at
+  `DispatchOptionsParser.MaxLabelLength` chars; a blank result is treated as omitted rather than refused.
+  Persisted onto every entry of that
+  room's own `bindings.json` (`WorkerBindingConfigEntry.Label`) rather than a new file, since bindings
+  already exists for every room regardless of terminal state — see §6 schema for how `fleet_status`
+  reads it back.
 
 A room's model is always pinned in `bindings.json` at dispatch time — there is no runtime model
 choice a harness makes mid-lane; §9 covers the bindings contract. `baton resume`, `baton decide`, `baton
 cancel`, and `baton supply` continue an already-dispatched room; §5 covers `decide` specifically.
 
 **`baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
-<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>]`** (#1441) reruns a single-role
-`baton dispatch` room into a fresh one, once the operator finds the brief was wrong or incomplete —
-without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch `baton dispatch`
-would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the new room's own
-directory is always freshly generated (`RedispatchOptionsParser.cs`) — a redispatch is never a resume,
-same rule as §2's dispatch entry above. Every flag inherits the parent room's recorded `bindings.json`
-entry as its default — adapter, model, effort, workspace, timeout — and is overridden by whichever
-flag the operator actually passes (`RedispatchCommand.InheritBinding`); `--output` is the one
-exception, never inherited, because a prior `--output`'s destination copy path is not persisted
-anywhere in the room (only the produced output's customized *name* is, on the bindings entry's
-contract) — a redispatch's own `--output`, when given, works exactly like dispatch's own. `--spec`
+<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>]`** (#1441) reruns
+a single-role `baton dispatch` room into a fresh one, once the operator finds the brief was wrong or
+incomplete — without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch
+`baton dispatch` would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the
+new room's own directory is always freshly generated (`RedispatchOptionsParser.cs`) — a redispatch is
+never a resume, same rule as §2's dispatch entry above. Every flag inherits the parent room's recorded
+`bindings.json` entry as its default — adapter, model, effort, workspace, timeout, and (#1499) label —
+and is overridden by whichever flag the operator actually passes (`RedispatchCommand.InheritBinding`);
+`--output` is the one exception, never inherited, because a prior `--output`'s destination copy path is
+not persisted anywhere in the room (only the produced output's customized *name* is, on the bindings
+entry's contract) — a redispatch's own `--output`, when given, works exactly like dispatch's own.
+`--label` inherits unlike `--output` does: the parent's label IS a persisted, durable room-level fact
+(`WorkerBindingConfigEntry.Label`), not a process-local copy target, so a redispatched lane keeps
+reading as the same human-named thing — absent inherits the parent's label, specified-and-blank
+(`--label ""`) clears it, and specified-and-nonblank overrides it (`RedispatchCommand.InheritBinding`). `--spec`
 omitted reuses the parent's already-built prompt verbatim; given, the amended brief is rebuilt through
-the same `RoleDispatch.Materialize` a fresh dispatch uses, with the parent's recorded axes as defaults.
+the same `RoleDispatch.Materialize` a fresh dispatch uses, with the parent's recorded axes as defaults
+— including the inherited-unless-overridden label, applied after that rebuild since
+`RoleDispatch.Materialize` itself knows nothing of it (`RedispatchCommand.ExecuteAsync`).
 The parent must be Terminal (`terminal.json` present) — a still-running or never-dispatched parent is
 refused with a typed `CliArgumentException` naming `baton status` as the retry (no interactive
 confirmation exists for a non-interactive CLI, the same doctrine `--timeout`'s ceiling above rests on);
@@ -163,8 +179,8 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]` | `DispatchOptionsParser.cs` |
-| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>]` | `RedispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--label <text>]` | `DispatchOptionsParser.cs` |
+| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
@@ -458,7 +474,8 @@ Output: a JSON array of
   "adapter"?: string,     // that role's WorkerBindingConfigEntry.Adapter
   "model"?: string,       // that role's WorkerBindingConfigEntry.Model
   "effort"?: string,      // that role's WorkerBindingConfigEntry.Effort
-  "timeoutMs"?: number    // that role's WorkerBindingConfigEntry.Timeout, in milliseconds
+  "timeoutMs"?: number,   // that role's WorkerBindingConfigEntry.Timeout, in milliseconds
+  "label"?: string        // #1499: the room's --label, WorkerBindingConfigEntry.Label
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
@@ -482,6 +499,17 @@ fail-open for display metadata, so one unreadable bindings file degrades this ro
 countdown — a "remaining" figure would already be stale by the time a caller reads it. A renderer
 wanting remaining time pairs it with the same Running step's own `steps[].timestamp` above, which
 this shape already emits; `timeoutMs` is not duplicated there.
+
+**`label` (#1499) is read from the same `bindings.json`, but deliberately NOT gated the way the
+quartet above is.** A room's `--label` is a room-level fact stamped onto every entry at dispatch time
+(`DispatchCommand.ExecuteAsync`), not scoped to one worker's Running step — so `FleetStatusTool`
+reads it off the first entry whose Label is non-null regardless of whether any step is Running, on **both**
+`ProcessRoomAsync` paths, including the terminal-sentinel fast path that never reads `bindings.json`
+for `role`/`adapter`/`model`/`effort`/`timeoutMs` at all. Absent when never supplied, when
+`bindings.json` is missing or fails to parse, or on a pre-#1499 room whose `bindings.json` predates
+this field — the same fail-open-for-display-metadata convention the quartet above uses. `redispatch`
+carries a room's label into its child unless overridden (§2), so a lineage of redispatches keeps
+reading as the same human-named lane.
 
 **`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510)** are copied verbatim from
 `WorkflowStatusStepView`, never re-derived here — see that record's own remarks for the gating

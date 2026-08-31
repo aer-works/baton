@@ -1004,5 +1004,132 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(singleRoom.Project);
     }
 
+    /// <summary>#1499, spec/baton.md §6 schema: the terminal-sentinel fast path still surfaces a label.</summary>
+    [Fact]
+    public async Task TerminalFastPath_WithLabelInBindings_ReportsLabel()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "labeled-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["advise"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Weigh the options.",
+                TimeSpan.FromMinutes(5),
+                Label: "env-snapshot lane"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", singleRoom.State);
+        Assert.Equal("env-snapshot lane", singleRoom.Label);
+        Assert.Null(singleRoom.Role);
+        Assert.Null(singleRoom.Adapter);
+    }
+
+    /// <summary>
+    /// The fail-open half of #1499's own claim: an unparseable <c>bindings.json</c> on the
+    /// terminal-sentinel path (which has no enclosing try/catch of its own around the label read)
+    /// must degrade to an absent label, not an exception that drops the row.
+    /// </summary>
+    [Fact]
+    public async Task TerminalFastPath_WithCorruptBindingsFile_OmitsLabelButStillRendersRow()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "corrupt-bindings-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(
+            BatonPaths.RoomBindingsFile(room), "{ not valid json", TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", singleRoom.State);
+        Assert.Null(singleRoom.Label);
+    }
+
+    [Fact]
+    public async Task TerminalFastPath_WithNoBindingsFile_OmitsLabelFromTheWire()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "unlabeled-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        // Asserts on the actual MCP payload (result.Text), not a re-serialized deserialized copy --
+        // the real wire text is the thing a JsonIgnore regression would actually change.
+        Assert.DoesNotContain("\"label\"", result.Text);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.Null(Assert.Single(rooms!).Label);
+    }
+
+    /// <summary>#1499: a Pending room (no <c>flow.jsonl</c>, so no step is Running) still reports its label.</summary>
+    [Fact]
+    public async Task ActiveRoom_WithNoRunningStep_StillReportsLabelButNotTheRunningStepQuartet()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "pending-labeled-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-pending"), "advise", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("pending-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["advise"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Weigh the options.",
+                TimeSpan.FromMinutes(5),
+                Label: "env-snapshot lane"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        // No flow.jsonl at all -- FlowEventLogReader.ReadAllEntriesWithTimestampsAsync treats a
+        // missing log as zero entries, so the STEP projects Pending, never Running. (The room's own
+        // top-level `state` still reads "Running" either way -- WorkflowOutcome.Describe reports the
+        // overall WorkflowStatus, which starts Running before any step's own state does; the gate that
+        // matters here is per-step.)
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.DoesNotContain(singleRoom.Steps ?? [], s => s.State == "Running");
+        Assert.Equal("env-snapshot lane", singleRoom.Label);
+        Assert.Null(singleRoom.Role);
+        Assert.Null(singleRoom.Adapter);
+    }
+
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
 }

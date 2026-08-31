@@ -46,6 +46,13 @@ public static class DispatchCommand
         var workspace = options.WorkspaceDirectory ?? workspaceDirectory ?? Directory.GetCurrentDirectory();
         var (definition, bindings) = await MaterializeAsync(options, workspace, cancellationToken).ConfigureAwait(false);
 
+        // #1499: stamped onto every entry -- a composed template's bindings.json holds one per phase.
+        if (options.Label is not null)
+        {
+            bindings = bindings.ToDictionary(
+                pair => pair.Key, pair => pair.Value with { Label = options.Label }, StringComparer.Ordinal);
+        }
+
         // R1 (#1354/#1380): disclose the consequence up front, before the run starts, whenever
         // RoleDispatch.ToBinding declared a fresh worktree for an audited role — the worker then never
         // sees uncommitted or staged changes in `workspace`, only what HEAD already had (finding 5).
