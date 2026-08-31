@@ -45,6 +45,10 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
             RedispatchOptionsParser.Parse([Relative]).ParentRoomDirectoryPath,
         [typeof(StatusOptionsParser)] = () =>
             StatusOptionsParser.Parse([Relative]).RoomDirectoryPath,
+        [typeof(KeepOptionsParser)] = () =>
+            KeepOptionsParser.Parse([Relative]).RoomDirectoryPath,
+        [typeof(UnkeepOptionsParser)] = () =>
+            UnkeepOptionsParser.Parse([Relative]).RoomDirectoryPath,
     };
 
     [Fact]
