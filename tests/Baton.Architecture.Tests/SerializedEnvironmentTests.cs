@@ -49,12 +49,7 @@ public class SerializedEnvironmentTests
             // file's own, or SerializedEnvironmentCollection.cs's) can't false-positive as an
             // unenrolled mutator or a satisfied enrollment — both patterns must match real code.
             var codeOnly = string.Join(
-                '\n',
-                File.ReadLines(filePath).Select(line =>
-                {
-                    var commentStart = line.IndexOf("//", StringComparison.Ordinal);
-                    return commentStart < 0 ? line : line[..commentStart];
-                }));
+                '\n', File.ReadLines(filePath).Select(StripLineComment));
 
             if (mutates.IsMatch(codeOnly) && !enrolled.IsMatch(codeOnly))
             {
@@ -69,6 +64,42 @@ public class SerializedEnvironmentTests
             "[Collection(SerializedEnvironmentCollection.Name)] to each offending class (#1491) — an " +
             "unenrolled env mutator can race a production reader that re-reads the same variable on " +
             "every access, which is the #1480 flake family.");
+    }
+
+    /// <summary>
+    /// Truncates a line at its <c>//</c> comment, ignoring <c>//</c> that sits inside a string
+    /// literal — a naive first-index truncation would let a line like
+    /// <c>Log("https://x"); Environment.SetEnvironmentVariable(...)</c> hide a real mutation behind
+    /// the URL's slashes (PR #1498 review finding). Quote-parity is enough here: test source doesn't
+    /// use raw strings with embedded quotes in ways that would defeat it, and erring toward NOT
+    /// stripping keeps the guard fail-closed (a false comment-mention flags loudly instead of a real
+    /// call passing silently).
+    /// </summary>
+    private static string StripLineComment(string line)
+    {
+        var inString = false;
+        for (var i = 0; i < line.Length - 1; i++)
+        {
+            var c = line[i];
+            if (c == '\\' && inString)
+            {
+                i++;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (!inString && c == '/' && line[i + 1] == '/')
+            {
+                return line[..i];
+            }
+        }
+
+        return line;
     }
 
     private static string RepoRoot()

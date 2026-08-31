@@ -21,9 +21,13 @@ namespace Baton.Vendors.Tests;
 /// it was added for needs, and that is an opportunity, not something this issue measured against.
 /// </para>
 /// <para>
-/// Eight classes rather than the original two: three of the failures were in classes never covered.
+/// Seven classes rather than the original two: three of the failures were in classes never covered.
 /// <see cref="AgyWorkerAdapterTests"/> is included on the same mechanism rather than its own
 /// observed failure — it writes the other launch config through the same writer.
+/// <c>ClaudeWorkerAdapterTests</c>, an original member and still a launch-config writer, moved to
+/// <see cref="SerializedEnvironmentCollection"/> (#1491, it also mutates env vars); that stays safe
+/// against this group because xUnit guarantees a parallelism-opted-out test never runs in parallel
+/// against ANY other test — two <c>DisableParallelization</c> collections cannot overlap each other.
 /// </para>
 /// </remarks>
 [CollectionDefinition(Name, DisableParallelization = true)]
