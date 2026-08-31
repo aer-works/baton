@@ -26,6 +26,13 @@ public class SpawnResolutionTests
     /// extension-less <see cref="BatonTask"/> spawn does not resolve to it -- it must fail exactly the
     /// way it would if nothing on PATH matched at all.
     /// </summary>
+    /// <remarks>
+    /// Carries its own positive control (#1474 second-reader S2): the <c>.cmd</c>-refusal assertion
+    /// alone cannot distinguish "the resolver correctly refused a batch shim" from "the PATH mutation
+    /// never reached the child at all" -- both look identical, a <see cref="BatonErrorCode.SpawnFailed"/>.
+    /// A real <c>.exe</c> placed in the same directory, under the same PATH mutation, must resolve and
+    /// run; if it didn't, the negative assertion above would be vacuous rather than a measurement.
+    /// </remarks>
     [Fact]
     public void Run_BareNameWithOnlyCmdShimOnPath_DoesNotResolveAndFailsToSpawn()
     {
@@ -35,10 +42,21 @@ public class SpawnResolutionTests
         string shimPath = Path.Combine(dir, shimName + ".cmd");
         File.WriteAllText(shimPath, "@echo off\r\necho ran the cmd shim\r\n");
 
+        string realExeName = $"baton_test_real_{Guid.NewGuid():N}";
+        string realExePath = Path.Combine(dir, realExeName + ".exe");
+        File.Copy(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "hostname.exe"),
+            realExePath);
+
         string? originalPath = Environment.GetEnvironmentVariable("PATH");
         try
         {
             Environment.SetEnvironmentVariable("PATH", dir + Path.PathSeparator + originalPath);
+
+            // Positive control: proves the PATH mutation above actually reaches the child resolver,
+            // so the negative assertion below is measuring refusal, not a directory nothing can see.
+            using BatonTask controlTask = new(realExeName);
+            controlTask.Run();
 
             using BatonTask task = new(shimName);
             BatonException ex = Assert.Throws<BatonException>(task.Run);
