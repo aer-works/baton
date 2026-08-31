@@ -196,12 +196,11 @@ public class FlowEventLogJsonTests
     }
 
     /// <summary>
-    /// <see cref="CoreExitReason"/> is persisted too, in <c>CoreEvent.ExecutionExited</c>, and its own
-    /// doc comment claims it "must serialize stably in <c>flow.jsonl</c> independent of however
-    /// <c>BatonExitReason</c>'s own declared values might later be reordered or renumbered".
-    /// <!-- record-once-ok: #1474 src/Baton/Domain/CoreEvent.cs -->
-    /// Storing it as an ordinal made that claim false by re-coupling stability to this repo's
-    /// declaration order instead. Asserted so the comment and the code cannot drift apart again.
+    /// <see cref="CoreExitReason"/> is persisted too, in <c>CoreEvent.ExecutionExited</c>. Its own doc
+    /// comment (<c>src/Baton/Domain/CoreEvent.cs</c>) promises the journal survives
+    /// <c>BatonExitReason</c> being reordered or renumbered later. Storing it as an ordinal instead of
+    /// by name would break that promise by re-coupling stability to this repo's own declaration order.
+    /// Asserted so the comment and the code cannot drift apart again.
     /// </summary>
     /// <summary>
     /// #759's second reader's C1 DEFECT: the additive-member compat pattern above existed only for

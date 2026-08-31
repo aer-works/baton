@@ -243,12 +243,11 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             environment.Add((WorkerEnvironment.WorkspaceVariable, workspace));
         }
 
-        // BatonTask spawns this literal name via .NET's Process (UseShellExecute=false), which
-        // resolves only `claude`/`claude.exe` on PATH -- never a `claude.cmd`/`.bat` shim, the
-        // CVE-2024-24576 stance measured for this managed spawn path (#1474; see
-        // scripts/verify-pack-roundtrip.sh for the mechanism). An npm-installed Claude CLI is
-        // exactly such a shim and will fail spawn with "program not found"; the native installer's
-        // claude.exe is required (#1468).
+        // This literal name resolves through PATH the same way scripts/verify-pack-roundtrip.sh
+        // documents in detail (the CVE-2024-24576 stance, measured for BatonTask's managed spawn
+        // path, #1474): a real claude.exe, never an npm-installed `claude.cmd`/`.bat` shim, which
+        // will fail spawn with "program not found" -- the native installer's claude.exe is
+        // required (#1468).
         return new CoreDispatchTarget(
             "claude", [.. args], invocation.WorkingDirectory, PromptText: prompt,
             Environment: [.. environment], OversizePromptWrapper: OversizePromptWrapperText);
