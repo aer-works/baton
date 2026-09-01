@@ -592,7 +592,8 @@ public static class StatusCommand
                 return $"parked ({classification}) — retries {localRetryTime}, but the engine that scheduled " +
                     "this retry is no longer alive and nothing else will act on it; this needs manual " +
                     "intervention — re-run `baton run` against this room's own workflow.json and " +
-                    "bindings.json with --room-dir pointed at it (see spec/baton.md §7)";
+                    $"bindings.json with --room-dir pointed at it, and leave it running until " +
+                    $"{localRetryTime} or nothing fires (see spec/baton.md §3)";
             }
         }
 
