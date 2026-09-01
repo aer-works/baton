@@ -1,16 +1,17 @@
 namespace Baton.Cli;
 
 /// <summary>
-/// Parses <c>baton cancel</c>'s arguments: <c>baton cancel &lt;room-dir&gt; --execution &lt;execution-id&gt;
-/// --bindings &lt;bindings-file&gt; [--workflow-id &lt;id&gt;]</c>. Never throws a bare
-/// <see cref="InvalidOperationException"/> for a malformed invocation — every failure here is a
-/// <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules), mirroring
+/// Parses <c>baton cancel</c>'s arguments: <c>baton cancel &lt;room-dir&gt; [--execution &lt;execution-id&gt;]
+/// --bindings &lt;bindings-file&gt; [--workflow-id &lt;id&gt;]</c>. <c>--execution</c> is optional (#1495): omitted,
+/// <see cref="CancelCommand"/> targets "the running lane" itself rather than a caller-named id. Never
+/// throws a bare <see cref="InvalidOperationException"/> for a malformed invocation — every failure
+/// here is a <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules), mirroring
 /// <see cref="RunOptionsParser"/>.
 /// </summary>
 public static class CancelOptionsParser
 {
     private const string Usage =
-        "Usage: baton cancel <room-dir> --execution <execution-id> --bindings <bindings-file> [--workflow-id <id>]";
+        "Usage: baton cancel <room-dir> [--execution <execution-id>] --bindings <bindings-file> [--workflow-id <id>]";
 
     public static CancelOptions Parse(IReadOnlyList<string> args)
     {
@@ -54,11 +55,6 @@ public static class CancelOptionsParser
         if (roomDirectoryPath is null)
         {
             throw new CliArgumentException($"Missing required <room-dir> argument. {Usage}");
-        }
-
-        if (executionId is null)
-        {
-            throw new CliArgumentException($"Missing required option '--execution <execution-id>'. {Usage}");
         }
 
         if (bindingsFilePath is null)

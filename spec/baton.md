@@ -184,7 +184,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
-| `cancel` | `baton cancel <room-dir> --execution <execution-id> --bindings <bindings-file> [--workflow-id <id>]` | `Program.cs` |
+| `cancel` | `baton cancel <room-dir> [--execution <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `Program.cs` |
 | `status` | `baton status <room-dir> [--follow] [--json]` | `StatusOptionsParser.cs` |
 | `templates` | `baton templates [--json]` | `Program.cs` |
 | `keep` | `baton keep <room-dir>` | `KeepOptionsParser.cs` |
@@ -194,6 +194,21 @@ through `RoleDispatch.Materialize` against the real role catalog.
 there is no authoring UI to browse a saved-template library visually against (Appendix, R7 in the
 old numbering — dropped here, since there is no longer a separate register to number rulings
 against).
+
+**`cancel`'s `--execution` is now optional** (#1495): omitted, it targets "the running lane" —
+exactly one `Running` step's latest execution, refused (naming every candidate) on zero or more than
+one (`RunningExecutionResolver.cs`). Against a room whose `baton run` pump is still live, the direct
+mutation call cannot win `flow.lock` — `cancel` catches that specific `WorkflowLockedException` and
+writes a room-scoped `cancel.request` file instead (`CancelRequestFile.cs`), which the pump itself
+polls at a modest cadence without ever contending the lock (`CancelRequestPoller.cs`) and delivers
+through the same `FlowEvent.CancellationRequested` path `MutationInterface` already uses. The
+fall-through path re-resolves `latest` at poll time (arresting whatever is running then), whereas the
+direct path cancels the execution resolved at command time; on the fall-through path, zero or more
+than one Running at act time lands as a `.rejected` record in the room (with the diagnostic reason
+written in its body), rather than a terminal command-line refusal. This is the arrest half of §10's
+"only cancellation-then-restart" ruling, not a reopening of it: nothing here reaches into a running
+worker to redirect it — it only makes the existing stop-then-`redispatch` sequence reachable from
+outside the lane's own process.
 
 ---
 
