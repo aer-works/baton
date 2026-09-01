@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
@@ -530,6 +531,63 @@ public class StatusCommandEndToEndTests
         }
     }
 
+    /// <summary>
+    /// #1513: a parked step whose engine is provably dead is the exact live signature this issue was
+    /// filed against -- "parked ... retries HH:MM" alone reads as a promise the ledger cannot back
+    /// (spec/baton.md §7 has why). Same technique as
+    /// <c>FleetStatusToolTests.DeadProcessIdentity</c>: spawn a real process, capture its identity
+    /// while genuinely alive, then kill it, so <c>EngineLivenessProbe</c> sees an OS-confirmed-dead
+    /// PID rather than a fabricated one that might coincidentally collide with something else on the
+    /// host.
+    /// </summary>
+    [Fact]
+    public async Task Status_of_a_parked_step_with_a_dead_engine_names_it_and_says_manual_intervention_is_needed()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var (deadPid, deadStartTime) = DeadProcessIdentity();
+            var (_, _, _, retryNotBefore) = await WriteParkedStepFixtureAsync(
+                testRoot, roomDirectory, FailureClassification.Retryable, enginePid: deadPid, engineStartTime: deadStartTime);
+
+            var output = new StringWriter();
+            await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory), output, TestContext.Current.CancellationToken);
+
+            var text = output.ToString();
+            var expectedLocalTime = retryNotBefore.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+            Assert.Contains(
+                $"implement: parked (retryable) — retries {expectedLocalTime}, but the engine that scheduled " +
+                "this retry is no longer alive and nothing else will act on it; this needs manual " +
+                "intervention — re-run `baton run` against this room's own workflow.json and " +
+                $"bindings.json with --room-dir pointed at it, and leave it running until " +
+                $"{expectedLocalTime} or nothing fires (see spec/baton.md §3)",
+                text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    private static (int Pid, DateTimeOffset StartTime) DeadProcessIdentity()
+    {
+        var psi = OperatingSystem.IsWindows()
+            ? new ProcessStartInfo("ping.exe", "-n 30 127.0.0.1") { CreateNoWindow = true }
+            : new ProcessStartInfo("sleep", "30") { CreateNoWindow = true };
+
+        using var process = Process.Start(psi)!;
+        try
+        {
+            return (process.Id, new DateTimeOffset(process.StartTime).ToUniversalTime());
+        }
+        finally
+        {
+            process.Kill();
+            process.WaitForExit();
+        }
+    }
+
     [Fact]
     public async Task Status_of_an_unknown_instant_exhausted_step_renders_parked_vendor_quota_reset_unknown()
     {
@@ -630,7 +688,9 @@ public class StatusCommandEndToEndTests
             string testRoot,
             string roomDirectory,
             FailureClassification classification = FailureClassification.ExhaustedUntil,
-            TimeSpan? retryIn = null)
+            TimeSpan? retryIn = null,
+            int? enginePid = null,
+            DateTimeOffset? engineStartTime = null)
     {
         Directory.CreateDirectory(roomDirectory);
         var definition = new WorkflowDefinition(
@@ -658,7 +718,9 @@ public class StatusCommandEndToEndTests
 
         await using (var writer = new FlowEventLogWriter(logPath))
         {
-            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionRequestAccepted(request, EnginePid: enginePid, EngineStartTime: engineStartTime),
+                TestContext.Current.CancellationToken);
             await writer.AppendAsync(
                 new FlowEvent.ExecutionFailed(executionId, classification, "attempt failed", retryNotBefore),
                 TestContext.Current.CancellationToken);

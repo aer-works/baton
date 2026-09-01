@@ -486,7 +486,14 @@ public sealed class FleetStatusToolTests : IDisposable
         var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
-        Assert.Equal("Running", singleRoom.State);
+        // #1513: superseding the pre-#1513 expectation here (room-level State stayed "Running", with
+        // only the per-step Liveness naming the dead engine). #1513's whole complaint is that this
+        // room reads RUNNING forever on the fleet view with nothing behind it -- the per-step signal
+        // alone was never enough for an operator glancing at the room list, only for a caller already
+        // reading Steps[].Liveness. The room-level State is now downgraded whenever nothing keeping it
+        // non-terminal is confirmed alive; the step's own State token is untouched (still "Running" --
+        // this is a display-layer override of FleetRoomStatusView.State only, never StepStatus).
+        Assert.Equal("Stalled", singleRoom.State);
         var singleStep = Assert.Single(singleRoom.Steps!);
         Assert.Equal("Running", singleStep.State);
         Assert.Equal("dead", singleStep.Liveness);
@@ -540,8 +547,305 @@ public sealed class FleetStatusToolTests : IDisposable
         var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
+        // #1513 polarity: a genuinely alive engine must never trip the Stalled downgrade.
+        Assert.Equal("Running", singleRoom.State);
         var singleStep = Assert.Single(singleRoom.Steps!);
         Assert.Equal("alive", singleStep.Liveness);
+    }
+
+    /// <summary>
+    /// #1513: the signature this issue actually reports live -- a Failed step still carrying a
+    /// RetryNotBefore (a scheduled backoff/retry), whose engine is confirmed dead. Unlike the Running
+    /// case above, NOTHING probed this state before #1513: `WorkflowStatusProjector.Project`'s
+    /// liveness gate covered only Running steps, so a room stuck exactly like this reported no
+    /// liveness signal at all and read as plain "Running" with no way to tell it apart from a healthy
+    /// paced backoff. Why that pump dying is fatal to the retry: spec/baton.md §7.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_FailedStepWithPendingRetryAndDeadEngine_ProjectsAsStalledNotRunning()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "dead-pump-parked-retry-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-parked"), "agent-worker", [], [], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("parked-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var (deadPid, deadStartTime) = DeadProcessIdentity();
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-parked-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("parked-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(req, EnginePid: deadPid, EngineStartTime: deadStartTime),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionStarted(execId, (uint)deadPid), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionExited(execId, 1, CoreExitReason.Natural, null), TestContext.Current.CancellationToken);
+        var retryNotBefore = DateTimeOffset.UtcNow.AddHours(4);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(execId, FailureClassification.Retryable, "Worker exited with non-zero code 1.", retryNotBefore),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRetryScheduled(stepDef.StepId, execId, retryNotBefore, 14_400_000),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.NotEqual("Running", singleRoom.State);
+        Assert.Equal("Stalled", singleRoom.State);
+        var singleStep = Assert.Single(singleRoom.Steps!);
+        Assert.Equal("Failed", singleStep.State);
+        Assert.Equal("dead", singleStep.Liveness);
+    }
+
+    /// <summary>
+    /// #1582 review (MED-4): on a single-step room, `gated.All(dead)` and `!gated.Any(alive)` are
+    /// indistinguishable -- every other test in this class is single-step, so none of them would
+    /// catch <see cref="FleetStatusTool"/>'s predicate being written the wrong way. Two independent
+    /// (no DependsOn) gated steps -- one confirmed dead, one "unknown" (no recorded engine identity,
+    /// same shape <see cref="EngineLivenessProbeTests.Probe_failure_arm_returns_unknown_when_identity_is_missing_or_invalid"/>
+    /// exercises directly) -- discriminates them: `All(dead)` correctly stays "Running" (one gated
+    /// step is not confirmed dead), while `!Any(alive)` would wrongly read "Stalled" (neither gated
+    /// step is confirmed alive). This is the exact false-`"Stalled"` the predicate's own comment says
+    /// it exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_OneDeadGatedStepAndOneUnknownGatedStep_StaysRunning()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "dead-plus-unknown-gated-steps-room");
+        Directory.CreateDirectory(room);
+
+        var deadStepDef = new WorkflowStepDefinition(new StepId("step-dead"), "agent-worker", [], [], [], new RetryPolicy(3));
+        var unknownStepDef = new WorkflowStepDefinition(new StepId("step-unknown"), "agent-worker", [], [], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("dead-plus-unknown-wf"), 1, [deadStepDef, unknownStepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var (deadPid, deadStartTime) = DeadProcessIdentity();
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+
+        var deadExecId = new ExecutionId("exec-dead-1");
+        var deadReq = new ExecutionRequest(
+            deadExecId, new WorkflowId("dead-plus-unknown-wf"), deadStepDef.StepId, deadStepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(deadReq, EnginePid: deadPid, EngineStartTime: deadStartTime),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionStarted(deadExecId, (uint)deadPid), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionExited(deadExecId, 1, CoreExitReason.Natural, null), TestContext.Current.CancellationToken);
+        var deadRetryNotBefore = DateTimeOffset.UtcNow.AddHours(4);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(deadExecId, FailureClassification.Retryable, "Worker exited with non-zero code 1.", deadRetryNotBefore),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRetryScheduled(deadStepDef.StepId, deadExecId, deadRetryNotBefore, 14_400_000),
+            TestContext.Current.CancellationToken);
+
+        // No EnginePid/EngineStartTime recorded -- the pre-#1375-ledger shape EngineLivenessProbe
+        // reports "unknown" for (missing identity), not "dead".
+        var unknownExecId = new ExecutionId("exec-unknown-1");
+        var unknownReq = new ExecutionRequest(
+            unknownExecId, new WorkflowId("dead-plus-unknown-wf"), unknownStepDef.StepId, unknownStepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(unknownReq, EnginePid: null, EngineStartTime: null),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionStarted(unknownExecId, 999999), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionExited(unknownExecId, 1, CoreExitReason.Natural, null), TestContext.Current.CancellationToken);
+        var unknownRetryNotBefore = DateTimeOffset.UtcNow.AddHours(4);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(unknownExecId, FailureClassification.Retryable, "Worker exited with non-zero code 1.", unknownRetryNotBefore),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRetryScheduled(unknownStepDef.StepId, unknownExecId, unknownRetryNotBefore, 14_400_000),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        Assert.Equal(2, singleRoom.Steps!.Count);
+        Assert.Equal("dead", singleRoom.Steps!.Single(s => s.Id == "step-dead").Liveness);
+        Assert.Equal("unknown", singleRoom.Steps!.Single(s => s.Id == "step-unknown").Liveness);
+    }
+
+    /// <summary>
+    /// #1513 polarity, opposite direction: the identical parked-retry shape, but the engine that
+    /// scheduled it is genuinely alive -- an ordinary healthy backoff must keep reading "Running", or
+    /// the fix would just be trading one false reading for another (every paced retry, alive or not,
+    /// misreported as stuck).
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_FailedStepWithPendingRetryAndAliveEngine_StaysRunning()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "alive-pump-parked-retry-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-parked"), "agent-worker", [], [], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("parked-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var livePid = Environment.ProcessId;
+        var liveStartTime = new DateTimeOffset(Process.GetCurrentProcess().StartTime).ToUniversalTime();
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-parked-alive-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("parked-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(req, EnginePid: livePid, EngineStartTime: liveStartTime),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionStarted(execId, (uint)livePid), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionExited(execId, 1, CoreExitReason.Natural, null), TestContext.Current.CancellationToken);
+        var retryNotBefore = DateTimeOffset.UtcNow.AddHours(4);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(execId, FailureClassification.Retryable, "Worker exited with non-zero code 1.", retryNotBefore),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRetryScheduled(stepDef.StepId, execId, retryNotBefore, 14_400_000),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        var singleStep = Assert.Single(singleRoom.Steps!);
+        Assert.Equal("alive", singleStep.Liveness);
+    }
+
+    /// <summary>
+    /// #1513 `right-instrument`: the claim under test is about what an operator sees projected off a
+    /// REAL room this bug was caught in, not only a synthetic fixture. Copies one of four live
+    /// operator-killed-pump rooms this fix was verified against (`dispatch-implement-a0c38801` --
+    /// `flow.jsonl` ends in `stepRetryScheduled` with no `terminal.json`; the room #1513's own body
+    /// names, `dispatch-implement-2c5dcd8d`, is NOT this shape -- its engine was in fact still alive
+    /// and it finished naturally, `terminal.json: Succeeded`, so it is deliberately not used as a
+    /// positive fixture here) into an isolated fleet root read-only (never mutates the original room)
+    /// and asserts the fix changes what an operator actually sees for it. Skips (not silently passes)
+    /// if this machine does not have that room under `~/.baton/rooms` -- the room is local live
+    /// evidence, not a checked-in fixture.
+    /// </summary>
+    /// <remarks>
+    /// #1582 review (MED-3): this used to skip on directory existence alone, which hard-FAILS (not
+    /// skips) the instant the operator recovers the room per spec/baton.md §3's own recovery path --
+    /// the directory still exists, now with a terminal.json, so `Assert.Equal("Stalled", ...)` below
+    /// would fail against a room that has since gone `Succeeded`. Guarding on shape instead (no
+    /// terminal.json, and the one step is still Failed with a liveness verdict recorded) makes
+    /// recovery a skip, not a red suite.
+    /// </remarks>
+    [Fact]
+    public async Task ActiveRoom_RealZombieRoomFromIssue1513_ProjectsAsStalledNotRunning()
+    {
+        var realRoomsDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".baton", "rooms");
+        var sourceRoom = Path.Combine(realRoomsDir, "dispatch-implement-a0c38801");
+        if (!Directory.Exists(sourceRoom))
+        {
+            Assert.Skip("this machine has no ~/.baton/rooms/dispatch-implement-a0c38801 -- local live evidence, not a checked-in fixture");
+        }
+
+        if (File.Exists(Path.Combine(sourceRoom, TerminalSentinelWriter.TerminalSentinelFileName)))
+        {
+            Assert.Skip("dispatch-implement-a0c38801 has since reached a terminal state (recovered, e.g. via a fresh " +
+                "`baton run` per spec/baton.md §3) -- no longer the parked-retry-with-dead-engine shape this test targets");
+        }
+
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var copiedRoom = Path.Combine(defaultRoomsDir, "dispatch-implement-a0c38801");
+        Directory.CreateDirectory(defaultRoomsDir);
+        CopyRoomReadOnly(sourceRoom, copiedRoom);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        var singleStep = Assert.Single(singleRoom.Steps!);
+        if (singleStep.State != "Failed" || singleStep.Liveness is null)
+        {
+            Assert.Skip("dispatch-implement-a0c38801's step no longer reads Failed-with-a-liveness-verdict -- " +
+                "no longer the parked-retry-with-dead-engine shape this test targets");
+        }
+
+        Assert.NotEqual("Running", singleRoom.State);
+        Assert.Equal("Stalled", singleRoom.State);
+    }
+
+    private static void CopyRoomReadOnly(string sourceDir, string destDir)
+    {
+        Directory.CreateDirectory(destDir);
+        foreach (var file in Directory.GetFiles(sourceDir))
+        {
+            File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)), overwrite: true);
+        }
+
+        foreach (var dir in Directory.GetDirectories(sourceDir))
+        {
+            // artifacts/ can be large and is irrelevant to the projection under test; skip it.
+            if (Path.GetFileName(dir) == "artifacts")
+            {
+                continue;
+            }
+
+            CopyRoomReadOnly(dir, Path.Combine(destDir, Path.GetFileName(dir)));
+        }
     }
 
     /// <summary>

@@ -522,7 +522,7 @@ public static class StatusCommand
 
             if (step.RetryNotBefore is not null)
             {
-                return FormatParkedStatus(step);
+                return FormatParkedStatus(step, events);
             }
         }
 
@@ -567,13 +567,35 @@ public static class StatusCommand
     /// or absent, per <see cref="Baton.Scheduling.RetryEngine.MayRetry"/>) is an ordinary
     /// backoff.
     /// </summary>
-    private static string FormatParkedStatus(StepState step)
+    private static string FormatParkedStatus(StepState step, IReadOnlyList<FlowEvent> events)
     {
         var classification = step.LatestFailureClassification == FailureClassification.ExhaustedUntil
             ? "vendor quota"
             : "retryable";
         var localRetryTime = step.RetryNotBefore!.Value.ToLocalTime()
             .ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+
+        // #1513: "retries HH:MM" reads as a promise the ledger cannot back on its own -- see
+        // spec/baton.md §7 for why. Same probe, same identity source as the Running branch below --
+        // confirm dead before saying so, so a merely slow (or Unknown-liveness) pump is never
+        // misreported as abandoned.
+        if (step.LatestExecutionId is { } latestExecutionId)
+        {
+            var accepted = events.OfType<FlowEvent.ExecutionRequestAccepted>()
+                .FirstOrDefault(e => e.Request.ExecutionId == latestExecutionId);
+            var probeResult = EngineLivenessProbe.Probe(accepted?.EnginePid, accepted?.EngineStartTime);
+            if (probeResult.Status == EngineLivenessStatus.Dead)
+            {
+                // #1582 review (HIGH-1): `baton resume`/`baton redispatch` both refuse a room in this
+                // shape, for two different reasons -- spec/baton.md §3 has the refusal chain and why
+                // a fresh `baton run --room-dir` is the recovery below instead.
+                return $"parked ({classification}) — retries {localRetryTime}, but the engine that scheduled " +
+                    "this retry is no longer alive and nothing else will act on it; this needs manual " +
+                    "intervention — re-run `baton run` against this room's own workflow.json and " +
+                    $"bindings.json with --room-dir pointed at it, and leave it running until " +
+                    $"{localRetryTime} or nothing fires (see spec/baton.md §3)";
+            }
+        }
 
         return $"parked ({classification}) — retries {localRetryTime}";
     }

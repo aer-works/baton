@@ -32,11 +32,12 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("linkedFromUsage")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     ExecutionUsageView? LinkedFromUsage = null,
-    // #1375: the SAME EngineLivenessProbe the human `baton status` rendering consults
-    // (StatusCommand.FormatStepStatus), never a second probe -- present only for a Running step,
-    // FormatStepStatus's own gate (why non-Running steps claim nothing: spec/baton.md §3).
-    // "alive" | "dead" | "unknown", lower-cased from EngineLivenessStatus; omitted, never null, for
-    // every non-Running step so the field's mere presence already answers "does liveness apply here".
+    // #1375/#1513: the SAME EngineLivenessProbe the human `baton status` rendering consults
+    // (StatusCommand.FormatStepStatus), never a second probe -- present for a Running step, and
+    // (#1513) for a Failed step still carrying a RetryNotBefore, FormatStepStatus's own gate (why
+    // every other step claims nothing: spec/baton.md §3). "alive" | "dead" | "unknown", lower-cased
+    // from EngineLivenessStatus; omitted, never null, for every ungated step so the field's mere
+    // presence already answers "does liveness apply here".
     [property: JsonPropertyName("liveness")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Liveness = null,
@@ -185,17 +186,27 @@ public static class WorkflowStatusProjector
                 ? linkedUsage
                 : null;
 
-            // Probe ONLY steps this projection itself calls Running -- same gate as
-            // FormatStepStatus's own; the record parameter's comment above says why the gate exists.
-            // Unlike FormatStepStatus, a step with no recorded
-            // ExecutionRequestAccepted identity still gets probed -- Probe(null, null) itself already
-            // reads as EngineLivenessStatus.Unknown, so this always renders a value for a Running step
-            // rather than silently omitting the field on a miss (review finding: the two renderings
-            // must never disagree about WHETHER a verdict exists, only about its OS-level result).
+            // Probe steps this projection calls Running, PLUS a Failed step still carrying a
+            // RetryNotBefore (#1513): that step's next attempt depends entirely on the same pump
+            // process staying alive through its `Task.Delay` wait (MutationInterface's scheduling
+            // loop) -- there is no other reaper. Its LatestExecutionId's ExecutionRequestAccepted
+            // still names the engine that scheduled the wait, so the identical probe applies; a step
+            // whose retry budget is exhausted (Failed, RetryNotBefore null) has no pending wait to
+            // question and stays ungated, same as before. Unlike FormatStepStatus, a step with no
+            // recorded ExecutionRequestAccepted identity still gets probed -- Probe(null, null) itself
+            // already reads as EngineLivenessStatus.Unknown, so this always renders a value for a
+            // gated step rather than silently omitting the field on a miss (review finding: the two
+            // renderings must never disagree about WHETHER a verdict exists, only about its OS-level
+            // result).
             string? liveness = null;
-            if (step.Status == StepStatus.Running && step.LatestExecutionId is { } runningExecution)
+            var probedExecution = step.Status == StepStatus.Running
+                ? step.LatestExecutionId
+                : step.Status == StepStatus.Failed && step.RetryNotBefore is not null
+                    ? step.LatestExecutionId
+                    : null;
+            if (probedExecution is { } executionToProbe)
             {
-                var identity = engineIdentityByExecutionId.TryGetValue(runningExecution.Value, out var found)
+                var identity = engineIdentityByExecutionId.TryGetValue(executionToProbe.Value, out var found)
                     ? found
                     : (Pid: (int?)null, StartTime: (DateTimeOffset?)null);
                 var probeResult = EngineLivenessProbe.Probe(identity.Pid, identity.StartTime);
