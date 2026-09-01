@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -1367,6 +1368,90 @@ def _recordonce_still_fires_on_real_data():
     assert ok, "record-once no longer finds what it found in " + rec.PROVEN_SHA[:7] + ":\n  " \
         + "\n  ".join(detail)
     return detail[0]
+
+
+@check("the record-once checker applies every exclusion reason to its changed-file population")
+def _recordonce_applies_every_exclusion():
+    """#1466: `excluded_from_comparison()` classifies files to exclude, but `main()` must actually
+    delete matching entries from `by_file` before comparison. #1465 proved the blind spot: a new
+    reason existed in the classifier while `main()` still ignored it, and `_recordonce_discriminates`
+    passed 20/20 because it called the classifier directly.
+
+    Runs `main()` against a synthetic change set containing one file per dynamically enumerated
+    exclusion reason alongside an ordinary file, all sharing identical prose. If `main()` applies all
+    exclusions, only the ordinary file survives and comparison succeeds; if any reason is not deleted,
+    the un-deleted file collides with the ordinary file and `main()` fails with a duplication violation.
+    """
+    rec = load(ROOT / "tools" / "audit-completeness" / "recordonce.py", "_selfcheck_recordonce_exclusions")
+
+    # Enumerate exclusion reasons dynamically from AST of excluded_from_comparison.
+    source = inspect.getsource(rec.excluded_from_comparison)
+    tree = ast.parse(source)
+    reasons = {
+        node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Return)
+        and node.value is not None
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    }
+    assert reasons, "record-once: found no exclusion reasons in excluded_from_comparison"
+
+    # Known sample paths representing each exclusion category. If a future reason is added to
+    # excluded_from_comparison without registering a sample path fixture here, the test fails
+    # immediately rather than silently testing an incomplete set of reasons.
+    fixtures = {
+        "changelog": "src/Baton/CHANGELOG.md",
+        "restored-decision": "docs/decisions/0001-two-nouns-workflow-and-session.md",
+    }
+    uncovered = reasons - set(fixtures.keys())
+    assert not uncovered, (
+        f"record-once: excluded_from_comparison returned reason(s) {sorted(uncovered)} with no "
+        "fixture path in selfcheck -- register sample path(s) to verify main() applies them"
+    )
+
+    for reason, path in fixtures.items():
+        classified = rec.excluded_from_comparison(path)
+        assert classified == reason, (
+            f"record-once: fixture {path} expected classification {reason!r}, got {classified!r}"
+        )
+
+    sentence = "a withheld write reaching the outbox is the only exemption that exists in this design"
+    ordinary = "src/Ordinary.cs"
+    test_files = {path: reason for reason, path in fixtures.items()}
+    test_files[ordinary] = None
+
+    # Synthetic diff: all files share the exact same added passage.
+    synthetic_diff = {}
+    synthetic_head = {}
+    for path in test_files:
+        line = sentence if path.endswith(".md") else f"// {sentence}"
+        synthetic_diff[path] = [[line]]
+        synthetic_head[path] = [line]
+
+    rec.added_lines_by_file = lambda base: {k: [list(h) for h in v] for k, v in synthetic_diff.items()}
+    rec.file_at = lambda path, rev="HEAD": synthetic_head.get(path, [])
+
+    buf_out = io.StringIO()
+    buf_err = io.StringIO()
+    with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+        code = rec.main([])
+
+    assert code == 0, (
+        f"record-once main() failed to apply all exclusion reasons (exit {code}):\n"
+        f"stdout:\n{buf_out.getvalue()}\nstderr:\n{buf_err.getvalue()}"
+    )
+
+    out_text = buf_out.getvalue()
+    assert "record-once: 1 changed file(s)" in out_text, (
+        f"record-once main() did not reduce population to 1 ordinary file:\n{out_text}"
+    )
+    for path in fixtures.values():
+        assert path not in buf_err.getvalue(), (
+            f"record-once main() reported violation in excluded path {path}:\n{buf_err.getvalue()}"
+        )
+
+    return f"{len(reasons)} dynamically enumerated exclusion reason(s) ({', '.join(sorted(reasons))}) applied and deleted in main()"
 
 
 def main() -> int:
