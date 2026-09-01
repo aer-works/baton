@@ -6,14 +6,19 @@ namespace Baton.Cli;
 /// <summary>
 /// Formats and prints supported adapters, models, efforts, and role defaults (issue #1500).
 /// <see cref="WorkerRoleCatalog.All"/> is the same catalog <c>ModelAndEffortValidationTests</c>
-/// reads directly; <see cref="EffortTierMapping"/>'s tables are the exact static tables
-/// <c>ClaudeWorkerAdapter.Resolve</c>/<c>AgyWorkerAdapter.Resolve</c> call into on every
-/// <c>--effort</c> that suite exercises — so the role and effort sections cannot drift from what
-/// dispatch actually accepts. <see cref="ClaudeWorkerAdapter.ModelAliases"/> is read live too, but
-/// that list has no validation surface of its own (every alias always resolves to a vendor-current
-/// model, so nothing rejects one). agy has no equivalent model-alias catalog (its models are
-/// suffix-parametrized, not enumerated), so its printed model examples are illustrative text, not a
-/// sourced table.
+/// reads directly. The role and effort sections cannot drift from what dispatch actually accepts, but
+/// that is single-source construction, not test coverage: this printer and
+/// <c>ClaudeWorkerAdapter.Resolve</c>/<c>AgyWorkerAdapter.Resolve</c> both read the same
+/// <see cref="EffortTierMapping"/> statics, so they cannot disagree regardless of what any test
+/// exercises. <c>ModelAndEffortValidationTests</c> only exercises <c>AgyRawValues</c> end to end —
+/// it never hands Claude an <c>--effort</c> at all, and no test passes a canonical word
+/// (quick/standard/careful/exhaustive) to either vendor — so do not cite that suite as validating
+/// <c>ClaudeRawValues</c> or either vendor's canonical table (#1500 second-reader MED-3).
+/// <see cref="ClaudeWorkerAdapter.ModelAliases"/> is read live too, but that list has no validation
+/// surface of its own (every alias always resolves to a vendor-current model, so nothing rejects one)
+/// and is not exercised by that suite either. agy has no equivalent model-alias catalog (its models
+/// are suffix-parametrized, not enumerated), so its printed model examples are illustrative text, not
+/// a sourced table.
 /// </summary>
 public static class DispatchCapabilitiesPrinter
 {

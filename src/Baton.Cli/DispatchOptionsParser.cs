@@ -108,6 +108,20 @@ public static class DispatchOptionsParser
             }
         }
 
+        // #1500 second-reader MED-5: --list-capabilities prints and returns before anything is
+        // validated, created, or dispatched (DispatchCommand.ExecuteAsync's early return) — passed
+        // alongside a real <name> it silently discards that dispatch and still exits 0, which is
+        // exactly the case #1356's truthful exit-code table exists to prevent. Refuse the combination
+        // up front, the same way --attach on a template is refused, rather than let a fat-fingered or
+        // templated invocation read as success for work that never happened.
+        if (listCapabilities && name is not null)
+        {
+            throw new CliArgumentException(
+                $"'--list-capabilities' does not take a role or template name — it prints adapter/model/"
+                + $"effort/timebox info and exits, dispatching nothing. {Usage}",
+                $"run 'baton dispatch --list-capabilities' on its own, or drop the flag to dispatch '{name}'.");
+        }
+
         if (name is null && !listCapabilities)
         {
             throw new CliArgumentException(

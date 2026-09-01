@@ -30,8 +30,8 @@ baton dispatch --list-capabilities
 | `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. |
 | `--timeout <minutes>` | Override the dispatched role's own catalog timeout for just this dispatch — a role that legitimately needs longer than its fixed tier timebox (an orchestrator coordinating sub-lanes, say) does not have to die mid-flight. Role dispatch only — refused up front on a template dispatch, the same way `--output` is: each phase carries its own role's timeout, so there is no single one to override. Must be a positive whole number of minutes; rejected outright above a 24h ceiling (a non-interactive dispatch has no confirmation prompt to gate a larger value behind); merely flagged on stderr above 2h. |
 | `--label <text>` | Display text only, e.g. `"the #1496 env-snapshot lane"` — so Fleet Glass shows something legible instead of the bare `dispatch-<role>-<8 hex>` directory name. Never part of the room directory's own name. Trimmed, newline-folded, capped at `DispatchOptionsParser.MaxLabelLength` chars; full contract in `spec/baton.md` §2. |
-| `--attach <file>` | Repeatable (#1500). Copies `<file>` into the room's `artifacts/attachments/` directory before the worker starts, and appends one line to the prompt naming every attached file and that directory. Keeps a brief short instead of pasting context documents inline. Role dispatch only — refused up front on a template dispatch, the same way `--output`/`--timeout` are. Content is operator-supplied and **inbound**: it never passes the deliverable secret gate that governs a worker's own outputs. Each named file must exist; a missing one is a typed argument error before the room is created. |
-| `--list-capabilities` | Prints every adapter's supported models and effort values, plus each catalog role's timebox default, and exits — no `<role>` or room required (#1500). `WorkerRoleCatalog.All` is the same catalog `ModelAndEffortValidationTests` reads directly; both vendors' effort tables come from `EffortTierMapping`, the exact static tables `ClaudeWorkerAdapter.Resolve`/`AgyWorkerAdapter.Resolve` call into on every `--effort` that test suite exercises — so the role and effort sections can never drift from what dispatch actually accepts. Claude's model aliases (`ClaudeWorkerAdapter.ModelAliases`) are read live too, but that specific list has no validation surface of its own — every alias always resolves to a vendor-current model, so nothing dispatch-side rejects one. agy has no equivalent alias catalog — its model names are suffix-parametrized (`gemini-<version>-<flash\|pro>-<low\|medium\|high>`), so the printed agy model examples are illustrative text, not a sourced table. |
+| `--attach <file>` | Repeatable (#1500). Copies `<file>` into the room's `artifacts/attachments/` directory before the worker starts, and appends one line to the prompt naming every attached file and that directory. Keeps a brief short instead of pasting context documents inline. Role dispatch only — refused up front on a template dispatch, the same way `--output`/`--timeout` are. Content is operator-supplied and **inbound**: it is never scanned and never published, because the mailbox pusher reads only `terminal.json`'s declared step outputs and an attachment is never one of them (not the deliverable secret gate withholding it — there is nothing for that gate to see in the first place). Each named file must exist; a missing one is a typed argument error before the room is created. |
+| `--list-capabilities` | Prints every adapter's supported models and effort values, plus each catalog role's timebox default, and exits — no `<role>` or room required (#1500). Refused if combined with a `<name>`, rather than silently discarding the dispatch and exiting 0. `WorkerRoleCatalog.All` is the same catalog `ModelAndEffortValidationTests` reads directly. The role and effort sections can never drift from what dispatch actually accepts, but that is single-source construction — this printer and `ClaudeWorkerAdapter.Resolve`/`AgyWorkerAdapter.Resolve` all read the same `EffortTierMapping` statics — not test coverage: that suite only exercises agy's raw effort values end to end; it never hands Claude an `--effort`, and no test passes a canonical word to either vendor. Claude's model aliases (`ClaudeWorkerAdapter.ModelAliases`) are read live too, but that specific list has no validation surface of its own and is not exercised by that suite either — every alias always resolves to a vendor-current model, so nothing dispatch-side rejects one. agy has no equivalent alias catalog — its model names are suffix-parametrized (`gemini-<version>-<flash\|pro>-<low\|medium\|high>`), so the printed agy model examples are illustrative text, not a sourced table. |
 
 #1355's acceptance criterion "one output path" is about `--output`/the printed fact above naming one
 destination — not about a role declaring only one output (`review` declares two: `report.md` AND
@@ -61,8 +61,19 @@ Warning: Spec line 4 ('gh issue view 1500') implies shell instructions (gh), but
 This is a **warning, never a refusal** — the heuristic is not a parser and cannot know a matched line
 is inert prose ("pixie dust") or that the worker will route around it; it only shortens the loop from
 "the lane discovers its instructions are unexecutable mid-flight" to "the operator sees it before the
-room exists." The named heuristics are `DispatchSpecLinter.Heuristics`, the single source both the
-lint and its tests read.
+room exists." `DispatchCommand` wraps the lint call so a throwing heuristic degrades to a skipped lint
+rather than a refused dispatch — the promise above is enforced there, not just asserted here.
+
+**Two disclosed gaps, the shell one larger.** The shell check is `RunShellCommands` alone — never
+pattern-aware. A role with *any* shell grant, unscoped or narrowly patterned (`review`'s read-only
+`git`/`gh` allowlist, say), is never warned about a Shell-category line, whatever the allowlist
+actually contains: a `review` brief saying "run `pixi run gates`" or "`dotnet test`" produces zero
+warnings even though the role cannot execute either. Seven of `DispatchSpecLinter.Heuristics`' ten
+entries are Shell; only three are Network — this is the larger of the two gaps. The smaller one is on
+the Network axis: a role with a scoped read-only shell (again, `review`) is treated as having *some*
+effective network reach for lint purposes (`PermissionGrant.NetworkReachable`), so an unrelated network
+command not actually in its allowlist also goes unflagged. Neither gap is a security hole — the grant
+is the enforcement and this lint never gates anything — both are discoverability misses.
 
 ### The auto-provisioned worktree, and what it costs
 
@@ -192,6 +203,11 @@ baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--mod
 `<room-dir>` names the parent room to rerun. The full contract — what each flag inherits from that
 room vs. overrides, the Terminal/single-role refusals, and where lineage is recorded — is
 `spec/baton.md` §2; this page does not restate it.
+
+The spec/grant mismatch lint above and `--attach` are both dispatch-only (#1500's literal scope) —
+`redispatch` runs neither, even though rewriting a brief after a lane failed is plausibly the likeliest
+moment to introduce an instruction the grant cannot execute; tracked as a follow-up rather than wired
+in here (#1500 second-reader LOW-1, filed as #1576).
 
 ## What a dispatch leaves in the room
 

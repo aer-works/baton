@@ -96,7 +96,8 @@ public class DispatchSpecLinterTests
     // These two pin the read-only-patterned-shell exemption against the REAL catalog `review` grant,
     // not a hand-rolled double that cannot reproduce the shape which caused it (#1500 second-reader) --
     // a fabricated grant is what let the original defect through. Why that exemption exists is stated
-    // once, beside the `readOnlyPatternedShell` check in DispatchSpecLinter; not restated here.
+    // once, on PermissionGrant.NetworkReachable (the single source DispatchSpecLinter now reads rather
+    // than re-deriving); not restated here.
 
     [Fact]
     public void Real_review_role_grant_does_not_warn_on_its_own_allowlisted_gh_command()
@@ -110,14 +111,13 @@ public class DispatchSpecLinterTests
     }
 
     [Fact]
-    public void Real_review_role_grant_still_has_no_shell_at_all_flagged_correctly()
+    public void Real_review_role_grant_still_carries_the_read_only_patterned_shape_the_fix_targets()
     {
+        // #1500 second-reader LOW-2: this is a fixture guard, not a lint test — it calls no lint at
+        // all. It exists so the two real-catalog tests above fail loudly the moment a future catalog
+        // edit drops the shape they depend on, instead of silently testing nothing.
         var reviewRole = WorkerRoleCatalog.For("review");
         Assert.True(reviewRole.Grant is { RunShellCommands: true });
-
-        // Sanity check the fixture itself carries the read-only, patterned shape the fix targets —
-        // if a future catalog edit dropped either flag, this fails loudly instead of the two tests
-        // above silently testing nothing.
         Assert.True(reviewRole.Grant is { ShellCommandsAreReadOnly: true, ShellCommandPatterns.Count: > 0 });
         Assert.False(reviewRole.Grant.NetworkAccess);
     }

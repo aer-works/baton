@@ -902,9 +902,75 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     [Fact]
     public async Task Dispatching_with_list_capabilities_prints_capabilities_and_succeeds()
     {
-        var options = new DispatchOptions("", SpecFilePath: null, "", ListCapabilities: true);
-        var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
-        Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+        // #1500 second-reader LOW-4: the prior version of this test asserted only Terminal status. It
+        // did not pin the exit code, that anything was printed (despite the test's own name), or that
+        // no room directory was created — all three hold today, but nothing regressed if they stopped.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "capabilities-room");
+        var priorOut = Console.Out;
+        using var capturedOut = new StringWriter();
+        Console.SetOut(capturedOut);
+
+        try
+        {
+            var options = new DispatchOptions("", SpecFilePath: null, roomDirectory, ListCapabilities: true);
+            var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.Equal(RunExitCode.Succeeded, RunExitCodeResolver.Resolve(result));
+            Assert.Null(result.RoomDirectoryPath);
+            Assert.False(Directory.Exists(roomDirectory));
+
+            var printed = capturedOut.ToString();
+            Assert.Contains("Adapters, Models & Efforts:", printed);
+            Assert.Contains("Role Timebox Defaults:", printed);
+        }
+        finally
+        {
+            Console.SetOut(priorOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_throwing_heuristic_is_caught_and_the_dispatch_still_reaches_terminal()
+    {
+        // #1500 second-reader MED-4: "WARN, never fail" is asserted in three places (DispatchSpecLinter's
+        // class doc, docs/dispatch.md, the PR body) and was enforced by none — DispatchCommand called
+        // Lint with no try/catch, so the first heuristic that throws would refuse a dispatch the lint
+        // promised only to warn about. This proves the wrapping catches it: the room still reaches
+        // Terminal, and stderr names the skip rather than a raw stack trace reaching the caller.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var priorError = Console.Error;
+        using var capturedError = new StringWriter();
+        Console.SetError(capturedError);
+
+        DispatchSpecLinter.HeuristicsOverrideForTests =
+        [
+            new SpecGrantHeuristic(
+                "boom", GrantCategory.Shell, _ => throw new InvalidOperationException("deliberate test failure"), "throws"),
+        ];
+
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Provide advice on the design.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake");
+
+            var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+
+            var errorOutput = capturedError.ToString();
+            Assert.Contains("spec/grant lint failed and was skipped", errorOutput);
+            Assert.Contains("InvalidOperationException", errorOutput);
+        }
+        finally
+        {
+            DispatchSpecLinter.HeuristicsOverrideForTests = null;
+            Console.SetError(priorError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
     }
 
     private static async Task<string> WriteSpecAsync(string directory, string content)

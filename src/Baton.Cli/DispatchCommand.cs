@@ -85,7 +85,11 @@ public static class DispatchCommand
         Directory.CreateDirectory(options.RoomDirectoryPath);
 
         // #1500: Copy attached context files into the room before the worker starts.
-        // Attachment content is operator-supplied and does NOT pass the deliverable secret gate (it is inbound, not outbound).
+        // Attachment content is operator-supplied and inbound: it is never scanned and never published,
+        // because the pusher's gather_deliverables reads only terminal.json's declared step outputs (not
+        // a directory walk), and an attachment is never a declared output of any step (#1500
+        // second-reader LOW-6 — "never passes the gate" read as either "never scanned" or "the gate
+        // withholds it"; state the mechanism instead of the ambiguous phrase).
         if (options.Attachments is { Count: > 0 } attachmentsToCopy)
         {
             var attachmentsDir = Path.Combine(options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName, AttachmentsDirectoryName);
@@ -463,8 +467,23 @@ public static class DispatchCommand
 
         var spec = await File.ReadAllTextAsync(options.SpecFilePath, cancellationToken).ConfigureAwait(false);
 
-        // #1500: Spec/grant mismatch lint (WARN, never fail).
-        var warnings = DispatchSpecLinter.Lint(spec, role.Grant, role.Id);
+        // #1500: Spec/grant mismatch lint (WARN, never fail). The guarantee is asserted on
+        // DispatchSpecLinter's own class doc and in docs/dispatch.md; this try/catch is what actually
+        // enforces it. Every heuristic today is a string Contains/StartsWith, but Heuristics is a
+        // public list explicitly framed as the extension point — the first heuristic that throws (a
+        // future regex, say) must degrade this advisory lint to "skipped", not refuse a dispatch it
+        // was only ever supposed to warn about (#1500 second-reader MED-4).
+        IReadOnlyList<SpecLintWarning> warnings;
+        try
+        {
+            warnings = DispatchSpecLinter.Lint(spec, role.Grant, role.Id);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: spec/grant lint failed and was skipped ({ex.GetType().Name}: {ex.Message}).");
+            warnings = [];
+        }
+
         foreach (var warning in warnings)
         {
             Console.Error.WriteLine(warning.Format());

@@ -48,12 +48,36 @@ public sealed record SpecLintWarning(
 }
 
 /// <summary>
-/// Heuristically scans task specs at dispatch time for shell/network-implying instructions
-/// (<c>gh </c>, <c>git </c>, <c>dotnet </c>, <c>pixi </c>, <c>curl</c>, "run the", "execute", URLs)
-/// and compares them against the resolved role grant (issue #1500). WARN, never fail.
+/// Heuristically scans task specs at dispatch time for shell/network-implying instructions and
+/// compares them against the resolved role grant (issue #1500). The named heuristics are
+/// <see cref="Heuristics"/> — the single register both this scan and its tests read; not restated in
+/// prose here (record-once). WARN, never fail: the guarantee holds only because every heuristic
+/// today is a string <c>Contains</c>/<c>StartsWith</c>, and the call site (<see cref="DispatchCommand"/>)
+/// wraps this method so a future throwing heuristic degrades to a skipped lint rather than a refused
+/// dispatch (#1500 second-reader MED-4).
+/// <para>
+/// <b>The shell axis is not pattern-aware.</b> <see cref="Lint"/>'s shell check is
+/// <c>RunShellCommands</c> alone — it never consults <see cref="PermissionGrant.ShellCommandPatterns"/>.
+/// A role with ANY shell grant (unscoped or narrowly patterned, e.g. <c>review</c>'s read-only
+/// <c>git</c>/<c>gh</c> allowlist) is therefore never warned about a Shell-category line, whatever the
+/// allowlist actually contains — a spec telling <c>review</c> to run <c>dotnet test</c> produces zero
+/// warnings even though the role cannot execute it. Seven of the ten <see cref="Heuristics"/> are
+/// <see cref="GrantCategory.Shell"/>; this is the larger of the lint's two disclosed gaps, the smaller
+/// being the network-axis precision tradeoff documented on <see cref="PermissionGrant.NetworkReachable"/>
+/// and below. Not a security hole — the grant is the enforcement and this lint never gates anything —
+/// but a discoverability miss worth knowing about before relying on silence (#1500 second-reader MED-2).
+/// </para>
 /// </summary>
 public static class DispatchSpecLinter
 {
+    /// <summary>
+    /// Test-only seam (Baton.Cli.Tests, via <c>InternalsVisibleTo</c>): when non-null, <see cref="Lint"/>
+    /// scans this list instead of <see cref="Heuristics"/>, so a test can simulate a heuristic that
+    /// throws without mutating the production extension point itself. Always reset to <see langword="null"/>
+    /// after use.
+    /// </summary>
+    internal static IReadOnlyList<SpecGrantHeuristic>? HeuristicsOverrideForTests;
+
     public static readonly IReadOnlyList<SpecGrantHeuristic> Heuristics =
     [
         new SpecGrantHeuristic("gh", GrantCategory.Shell, line => MatchesCommand(line, "gh"), "GitHub CLI invocation"),
@@ -120,21 +144,16 @@ public static class DispatchSpecLinter
 
         // A role like `review` declares NetworkAccess: false but scopes RunShellCommands to a
         // read-only, patterned allowlist that includes network-reaching commands (`gh issue view*`),
-        // asserted via ShellCommandsAreReadOnly — the same exemption PermissionGrant.
-        // CategoriesDefeatedByTheShell already encodes for exactly this shape. Checking NetworkAccess
-        // alone would warn "no-network grant" on a line the role can actually execute (a cry-wolf
-        // false positive on review, the catalog's own default role for src/ changes) — see #1500's
-        // second-reader finding.
-        var readOnlyPatternedShell = grant is
-        {
-            RunShellCommands: true,
-            ShellCommandsAreReadOnly: true,
-            ShellCommandPatterns.Count: > 0,
-        };
-        var hasNetwork = grant is { NetworkAccess: true } || readOnlyPatternedShell;
+        // asserted via ShellCommandsAreReadOnly. PermissionGrant.NetworkReachable reads exactly that
+        // exemption (via CategoriesDefeatedByTheShell) rather than re-deriving it here — checking
+        // NetworkAccess alone would warn "no-network grant" on a line the role can actually execute (a
+        // cry-wolf false positive on review, the catalog's own default role for src/ changes) — see
+        // #1500's second-reader MED-1.
+        var hasNetwork = grant?.NetworkReachable ?? false;
 
         var lines = spec.Split('\n');
         var warnings = new List<SpecLintWarning>();
+        var heuristics = HeuristicsOverrideForTests ?? Heuristics;
 
         for (var i = 0; i < lines.Length; i++)
         {
@@ -148,7 +167,7 @@ public static class DispatchSpecLinter
             var lineNumber = i + 1;
             var missingOnLine = new HashSet<GrantCategory>();
 
-            foreach (var heuristic in Heuristics)
+            foreach (var heuristic in heuristics)
             {
                 if (heuristic.Matches(rawLine))
                 {

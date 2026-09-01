@@ -15,8 +15,12 @@ public class DispatchCapabilitiesTests
         Assert.Contains("agy:", text);
 
         // Claude model aliases and full ID example — the exact joined line, not a per-alias loose
-        // Contains: "opus" alone is a substring of the hardcoded "claude-opus-4-8" example, so a
-        // per-value check would pass even if the printer's alias list went stale (#1500 second-reader).
+        // Contains: "opus" alone is a substring of the hardcoded "claude-opus-4-8" example. Note what
+        // this exact-line check catches and what it doesn't (#1500 second-reader LOW-3): the expected
+        // string is itself computed from ClaudeWorkerAdapter.ModelAliases, the same static the printer
+        // reads, so it cannot catch that list going stale — printer and expectation go stale together.
+        // What it does catch: a printer hardcoding a list instead of reading the live one, a format
+        // regression, or an alias reordering a loose per-value check would miss.
         Assert.Contains(
             $"Models:     {string.Join(", ", ClaudeWorkerAdapter.ModelAliases)} (aliases), or full ID (e.g. claude-opus-4-8)",
             text);

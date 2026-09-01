@@ -247,9 +247,13 @@ public class DispatchOptionsParserTests
     }
 
     [Fact]
-    public void Parses_list_capabilities_flag_with_name()
+    public void List_capabilities_flag_with_a_name_is_refused()
     {
-        var options = DispatchOptionsParser.Parse(["review", "--list-capabilities"]);
-        Assert.True(options.ListCapabilities);
+        // #1500 second-reader MED-5: this combination used to parse silently, dispatch nothing, and
+        // exit 0 — the one axis where a silent success is most expensive. Pinning refusal instead.
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["review", "--list-capabilities"]));
+        Assert.Contains("--list-capabilities", ex.Message);
+        Assert.Contains("review", ex.TryInvocation);
     }
 }
