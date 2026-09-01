@@ -65,6 +65,10 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .tabpanel{display:none;}
 .tabpanel.active{display:block;}
 .stalenote{font-size:.74rem; color:var(--ink-soft); margin:.2rem 0 .4rem;}
+.dismissnote{font-size:.74rem; color:var(--ink-soft); margin:.2rem 0 .4rem;}
+.dismissnote a{color:var(--accent); text-decoration:none; cursor:pointer;}
+.dismissbtn{background:transparent; border:none; color:var(--ink-soft); font:600 .85rem/1 var(--mono); cursor:pointer; padding:.1em .35em; border-radius:4px; line-height:1;}
+.dismissbtn:hover{background:var(--chip-idle); color:var(--ink);}
 .lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:.45rem 0; background:var(--card);}
 .lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
 .lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
@@ -147,6 +151,7 @@ footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px s
   <div id="banner"></div>
   <div class="tabpanel" id="tab-fleet">
     <div class="stalenote" id="stalenote"></div>
+    <div class="dismissnote" id="dismissnote"></div>
     <div id="content"></div>
   </div>
   <div class="tabpanel" id="tab-inbox">
@@ -415,6 +420,58 @@ function timelineHtml(room, timelines){
 }
 
 // -----------------------------------------------------------------------------------------------
+// #1532: per-viewer dismiss and terminal collapse. Persisted in localStorage under its own key
+// (baton.glass.dismissed), keyed by room PATH (absent-safe, try/catch-wrapped).
+// Never silent: dismissed count + state is visible with a restore affordance.
+// -----------------------------------------------------------------------------------------------
+const DISMISSED_STORAGE_KEY = "baton.glass.dismissed";
+
+function loadPersistedDismissed(){
+  try {
+    if(typeof localStorage === "undefined" || !localStorage) return new Set();
+    const raw = localStorage.getItem(DISMISSED_STORAGE_KEY);
+    if(!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter(p => typeof p === "string" && p)) : new Set();
+  } catch(e) {
+    return new Set();
+  }
+}
+
+function savePersistedDismissed(dismissedSet){
+  try {
+    if(typeof localStorage === "undefined" || !localStorage) return;
+    if(!dismissedSet) return;
+    const arr = Array.from(dismissedSet);
+    localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify(arr));
+  } catch(e) {
+    // Storage access blocked or quota exceeded
+  }
+}
+
+function pruneDismissed(dismissedSet, rooms){
+  if(!dismissedSet) return new Set();
+  const current = dismissedSet instanceof Set ? new Set(dismissedSet) : new Set(Array.isArray(dismissedSet) ? dismissedSet : []);
+  if(!Array.isArray(rooms)) return current;
+  const presentTerminalPaths = new Set();
+  for(const r of rooms){
+    if(r && r.path){
+      if(r.state === "Running"){
+        current.delete(r.path);
+      } else {
+        presentTerminalPaths.add(r.path);
+      }
+    }
+  }
+  for(const p of Array.from(current)){
+    if(!presentTerminalPaths.has(p)){
+      current.delete(p);
+    }
+  }
+  return current;
+}
+
+// -----------------------------------------------------------------------------------------------
 // #1505 item 6: copy-the-verb. Never executes anything -- copies a CLI verb string to the
 // clipboard for the operator to paste into their own Claude Code mobile session (spec/baton.md
 // §10: origination and arrest both stay orchestrator-only). `redispatch` needs only the room
@@ -486,7 +543,7 @@ document.addEventListener("click", async (ev) => {
   }
 });
 
-function laneHtml(room, timelines){
+function laneHtml(room, timelines, dismissable = false){
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   // Chips key off the step that actually failed, not array position: in A->B->C with B
@@ -516,7 +573,10 @@ function laneHtml(room, timelines){
   // -- it drops to a secondary line so deliverables/redispatch/cancel still show what to paste.
   const title = room.label ? esc(room.label) : esc(room.name);
   const roomIdLine = room.label ? `<div class="roomid">${esc(room.name)}</div>` : "";
-  return `<div class="lane"><div class="top"><span class="name">${title}</span><span class="chips">${chipsHtml(room, running, focusStep)}</span></div>
+  const dismissBtn = (dismissable && room.path)
+    ? `<button class="dismissbtn" data-path="${esc(room.path)}" title="Dismiss room" aria-label="Dismiss">×</button>`
+    : "";
+  return `<div class="lane"><div class="top"><span class="name">${title}</span><span class="chips">${chipsHtml(room, running, focusStep)}${dismissBtn}</span></div>
     ${roomIdLine}
     ${bindingLineHtml(room)}
     ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${tryLine}${err}${ageLine}
@@ -537,17 +597,52 @@ function underhoodHtml(list){
   }).join("");
   return `<h2>Under the hood · ${list.length}</h2>` + rows;
 }
-function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount){
+function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms){
   const running = rooms.filter(r => r.state === "Running");
   const failed  = rooms.filter(r => r.state === "Failed");
   const done    = rooms.filter(r => r.state === "Succeeded");
   const other   = rooms.filter(r => !r.state);
   const byNewest = (a,b) => (newestStepTime(b)||"").localeCompare(newestStepTime(a)||"");
   running.sort(byNewest); failed.sort(byNewest); done.sort(byNewest);
+
+  const dismissedSet = dismissed instanceof Set ? dismissed : new Set(Array.isArray(dismissed) ? dismissed : []);
+  const isDismissed = (r) => r && r.path && dismissedSet.has(r.path);
+
+  const dismissedFailed = failed.filter(isDismissed);
+  const visibleFailed = failed.filter(r => !isDismissed(r));
+  const dismissedDone = done.filter(isDismissed);
+  const visibleDone = done.filter(r => !isDismissed(r));
+
+  const totalDismissed = dismissedFailed.length + dismissedDone.length;
+  const failedDismissed = dismissedFailed.length;
+
   let html = underhoodHtml(underhood);
-  html += `<h2>Running · ${running.length}</h2>` + (running.map(r => laneHtml(r, timelines)).join("") || `<div class="lane"><div class="ev">none</div></div>`);
-  html += `<h2>Failed · ${failed.length}</h2>` + (failed.slice(0,12).map(r => laneHtml(r, timelines)).join("") || `<div class="lane"><div class="ev">none</div></div>`);
-  html += `<details><summary>Succeeded · ${done.length}</summary>${done.slice(0,40).map(r => laneHtml(r, timelines)).join("")}</details>`;
+  html += `<h2>Running · ${running.length}</h2>` + (running.map(r => laneHtml(r, timelines, false)).join("") || `<div class="lane"><div class="ev">none</div></div>`);
+
+  const termParts = [];
+  if(visibleDone.length > 0 || visibleFailed.length === 0){
+    termParts.push(`${visibleDone.length} succeeded`);
+  }
+  if(visibleFailed.length > 0){
+    termParts.push(`${visibleFailed.length} failed`);
+  }
+  const termSummary = termParts.join(" · ");
+
+  let termContent = "";
+  if(visibleFailed.length > 0){
+    termContent += `<h2>Failed · ${visibleFailed.length}</h2>` + visibleFailed.slice(0,12).map(r => laneHtml(r, timelines, true)).join("");
+  }
+  if(visibleDone.length > 0){
+    termContent += `<h2>Succeeded · ${visibleDone.length}</h2>` + visibleDone.slice(0,40).map(r => laneHtml(r, timelines, true)).join("");
+  }
+  if(!visibleFailed.length && !visibleDone.length){
+    termContent += `<div class="lane"><div class="ev">none</div></div>`;
+  }
+
+  // Preserve the section's open/closed state across a re-render -- otherwise every dismiss/restore
+  // click (which rebuilds #content from scratch) would slam an opened Terminal section shut again.
+  const terminalWasOpen = !!($("terminal-details") && $("terminal-details").open);
+  html += `<details id="terminal-details"${terminalWasOpen ? " open" : ""}><summary>Terminal · ${termSummary}</summary>${termContent}</details>`;
   if(other.length) html += `<details><summary>Unreadable entries · ${other.length}</summary>${other.slice(0,20).map(r => laneHtml(r, timelines)).join("")}</details>`;
   $("content").innerHTML = html;
   $("fresh").textContent = freshLabel(pushedAt, "pushed ") || "push time unknown";
@@ -557,6 +652,16 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   $("stalenote").textContent = staleHiddenCount
     ? `${staleHiddenCount} room(s) hidden — older than the pusher's retention window`
     : "";
+
+  const dismissNoteEl = $("dismissnote");
+  if(dismissNoteEl){
+    if(totalDismissed > 0){
+      const failCount = failedDismissed > 0 ? ` (${failedDismissed} failed)` : "";
+      dismissNoteEl.innerHTML = `dismissed ${totalDismissed}${failCount} · <a id="restore-dismissed">restore</a>`;
+    } else {
+      dismissNoteEl.innerHTML = "";
+    }
+  }
 }
 // "pushed X ago" measures the SNAPSHOT (legitimately stale on a quiet fleet, #1457's change-gate);
 // "pusher alive X ago" measures the PUSHER PROCESS itself (hourly heartbeat, #1486) -- the two are
@@ -813,7 +918,32 @@ function applyRoute(){
     renderInboxList(items, inboxRoomFilter);
   }
 }
+let lastGood = null;
+let accumulatedTimelines = loadPersistedTimelines();
+let dismissedRooms = loadPersistedDismissed();
+
 document.addEventListener("click", (ev) => {
+  const dismissBtn = ev.target.closest(".dismissbtn");
+  if(dismissBtn){
+    const path = dismissBtn.dataset.path;
+    if(path){
+      dismissedRooms.add(path);
+      savePersistedDismissed(dismissedRooms);
+      if(lastGood && Array.isArray(lastGood.rooms)){
+        render(lastGood.rooms, lastGood.pushed_at, lastGood.underhood, lastGood.heartbeat_at, accumulatedTimelines, lastGood.stale_hidden_count, dismissedRooms);
+      }
+    }
+    return;
+  }
+  const restoreBtn = ev.target.closest("#restore-dismissed");
+  if(restoreBtn){
+    dismissedRooms.clear();
+    savePersistedDismissed(dismissedRooms);
+    if(lastGood && Array.isArray(lastGood.rooms)){
+      render(lastGood.rooms, lastGood.pushed_at, lastGood.underhood, lastGood.heartbeat_at, accumulatedTimelines, lastGood.stale_hidden_count, dismissedRooms);
+    }
+    return;
+  }
   const tabBtn = ev.target.closest(".tabbtn");
   if(tabBtn){
     location.hash = tabBtn.dataset.tab === "inbox" ? "#inbox" : "";
@@ -836,8 +966,6 @@ window.addEventListener("hashchange", applyRoute);
     return;
   }
   window.mcpHandle = mcp;
-  let lastGood = null;
-  let accumulatedTimelines = loadPersistedTimelines();
   // #1486: heartbeat_at (hourly ping, independent of the change-gated snapshot) is what tells a
   // dead pusher apart from a quiet fleet whose pushed_at is legitimately stale. Loud only past
   // ~2 missed beats + slop, so one delayed cycle doesn't cry wolf.
@@ -851,6 +979,8 @@ window.addEventListener("hashchange", applyRoute);
         lastGood = snap;
         accumulatedTimelines = updateAccumulatedTimelines(accumulatedTimelines, snap.rooms, snap.timelines);
         savePersistedTimelines(accumulatedTimelines);
+        dismissedRooms = pruneDismissed(dismissedRooms, snap.rooms);
+        savePersistedDismissed(dismissedRooms);
         const hbMs = snap.heartbeat_at ? Date.now() - Date.parse(snap.heartbeat_at) : null;
         const pushMs = snap.pushed_at ? Date.now() - Date.parse(snap.pushed_at) : null;
         const running = snap.rooms.some(r => r.state === "Running");
@@ -863,9 +993,10 @@ window.addEventListener("hashchange", applyRoute);
         } else {
           banner("");
         }
-        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count);
+        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count, dismissedRooms);
       } else if(snap && snap.rooms === null){
         $("content").innerHTML = "";
+        $("dismissnote").innerHTML = "";
         banner("<b>No snapshot pushed yet.</b> The mailbox is live but the fleet machine hasn't pushed data.");
         $("fresh").textContent = "empty mailbox";
       }
