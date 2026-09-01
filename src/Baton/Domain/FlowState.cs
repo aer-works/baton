@@ -143,6 +143,12 @@ public enum StepStatus
 /// own request (issue #1359) — the prior execution <c>baton resume</c> continued to produce this one.
 /// <c>null</c> for every step whose latest attempt was an ordinary dispatch or retry.
 /// </param>
+/// <param name="ExecutionCount">
+/// The total lifetime number of <see cref="FlowEvent.ExecutionRequestAccepted"/> events projected for
+/// this step (issue #1522) — never reset by <see cref="DecisionType.RetryWithRevision"/> or skipped by
+/// <see cref="FailureClassification.ExhaustedUntil"/>, so the Status projector can derive a true
+/// execution ordinal.
+/// </param>
 public sealed record StepState(
     StepId StepId,
     StepStatus Status,
@@ -159,7 +165,8 @@ public sealed record StepState(
     int? RetryDelayMs = null,
     ExecutionId? RetryScheduledForExecutionId = null,
     DateTimeOffset? LatestExecutionFailedRetryNotBefore = null,
-    ExecutionId? LinkedFromExecutionId = null);
+    ExecutionId? LinkedFromExecutionId = null,
+    int ExecutionCount = 0);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

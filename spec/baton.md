@@ -526,10 +526,10 @@ this field — the same fail-open-for-display-metadata convention the quartet ab
 carries a room's label into its child unless overridden (§2), so a lineage of redispatches keeps
 reading as the same human-named lane.
 
-**`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510)** are copied verbatim from
+**`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510/#1522)** are copied verbatim from
 `WorkflowStatusStepView`, never re-derived here — see that record's own remarks for the gating
 rules (`src/Baton/Status/WorkflowStatusView.cs`). Same presence-gated, never-fabricated convention
-as `role`/`adapter`/`model`/`effort`/`timeoutMs` above: a step with no failure history omits
+as `role`/`adapter`/`model`/`effort`/`timeoutMs` above: a step with no execution history omits
 `attempt`/`maxAttempts` entirely, and a step that hasn't failed omits `failureKind`/`retryEligible`.
 The two failure fields are gated independently of each other, not as a pair: `retryEligible` (the
 scheduler's verdict) can be present while `failureKind` is absent, for a Failed step whose worker

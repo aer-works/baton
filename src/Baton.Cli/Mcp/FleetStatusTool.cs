@@ -486,9 +486,8 @@ public sealed record FleetStepStatusView(
     [property: JsonPropertyName("liveness")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Liveness = null,
-    // #1509: copied verbatim from WorkflowStatusStepView.Attempt/.MaxAttempts -- see that record's
-    // remarks for the derivation (ConsecutiveFailureCount-based, never fabricated for a step with no
-    // retry history) and its two known undercounting cases (ExhaustedUntil, RetryWithRevision).
+    // #1509/#1522: copied verbatim from WorkflowStatusStepView.Attempt/.MaxAttempts -- see that record's
+    // remarks for the derivation (lifetime execution count from StateProjector).
     [property: JsonPropertyName("attempt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     int? Attempt = null,

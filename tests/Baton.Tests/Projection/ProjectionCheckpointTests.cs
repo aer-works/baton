@@ -97,6 +97,8 @@ public class ProjectionCheckpointTests
         Assert.Equal(expected.RetryDelayMs, actual.RetryDelayMs);
         Assert.Equal(expected.RetryScheduledForExecutionId, actual.RetryScheduledForExecutionId);
         Assert.Equal(expected.LatestExecutionFailedRetryNotBefore, actual.LatestExecutionFailedRetryNotBefore);
+        Assert.Equal(expected.LinkedFromExecutionId, actual.LinkedFromExecutionId);
+        Assert.Equal(expected.ExecutionCount, actual.ExecutionCount);
         Assert.Equal(expected.UpstreamExecutionIds.Count, actual.UpstreamExecutionIds.Count);
         foreach (var (k, v) in expected.UpstreamExecutionIds)
         {

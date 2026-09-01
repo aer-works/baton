@@ -950,4 +950,93 @@ public class StateProjectorTests
             new WorkflowStepDefinition(Architect, "architect", ["goal"], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
             new WorkflowStepDefinition(Critic, "critic", ["plan"], ["review"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(3)),
         ]);
+
+    [Fact]
+    public void ExecutionCount_increments_on_every_ExecutionRequestAccepted_and_survives_RetryWithRevision_and_Success()
+    {
+        var exec1 = new ExecutionId("exec-1");
+        var exec2 = new ExecutionId("exec-2");
+        var exec3 = new ExecutionId("exec-3");
+        var decisionId = new DecisionId("decision-1");
+        var snapshot = ThreeAttemptSnapshot();
+
+        // 1. First execution accepted and failed
+        var events = new List<FlowEvent>
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec1, Architect)),
+            new FlowEvent.ExecutionFailed(exec1, FailureClassification.Retryable),
+        };
+        var state1 = StateProjector.Project(events, snapshot);
+        var arch1 = StepFor(state1, Architect);
+        Assert.Equal(1, arch1.ExecutionCount);
+        Assert.Equal(1, arch1.ConsecutiveFailureCount);
+
+        // 2. Second execution accepted and failed with ExhaustedUntil (which doesn't increment ConsecutiveFailureCount)
+        events.Add(new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec2, Architect)));
+        events.Add(new FlowEvent.ExecutionFailed(exec2, FailureClassification.ExhaustedUntil));
+        var state2 = StateProjector.Project(events, snapshot);
+        var arch2 = StepFor(state2, Architect);
+        Assert.Equal(2, arch2.ExecutionCount);
+        Assert.Equal(1, arch2.ConsecutiveFailureCount); // ExhaustedUntil skipped ConsecutiveFailureCount increment
+
+        // 3. Paused, RetryWithRevision, Resumed
+        events.Add(new FlowEvent.WorkflowPaused(exec2, Architect));
+        events.Add(new FlowEvent.ExternalDecisionRecorded(decisionId, exec2, DecisionType.RetryWithRevision, null, null));
+        events.Add(new FlowEvent.WorkflowResumed(decisionId));
+        var statePausedResumed = StateProjector.Project(events, snapshot);
+        var archPausedResumed = StepFor(statePausedResumed, Architect);
+        Assert.Equal(2, archPausedResumed.ExecutionCount);
+        Assert.Equal(0, archPausedResumed.ConsecutiveFailureCount); // RetryWithRevision cleared ConsecutiveFailureCount
+
+        // 4. Third execution accepted (post-RetryWithRevision) and succeeded
+        events.Add(new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec3, Architect)));
+        var state3Running = StateProjector.Project(events, snapshot);
+        var arch3Running = StepFor(state3Running, Architect);
+        Assert.Equal(3, arch3Running.ExecutionCount);
+
+        events.Add(new FlowEvent.ExecutionSucceeded(exec3));
+        var state3Succeeded = StateProjector.Project(events, snapshot);
+        var arch3Succeeded = StepFor(state3Succeeded, Architect);
+        Assert.Equal(3, arch3Succeeded.ExecutionCount);
+        Assert.Equal(0, arch3Succeeded.ConsecutiveFailureCount);
+        Assert.Equal(StepStatus.Succeeded, arch3Succeeded.Status);
+    }
+
+    [Fact]
+    public void Replay_determinism_projecting_same_event_stream_twice_yields_identical_step_execution_counts()
+    {
+        var exec1 = new ExecutionId("exec-1");
+        var exec2 = new ExecutionId("exec-2");
+        var exec3 = new ExecutionId("exec-3");
+        var decisionId = new DecisionId("decision-1");
+        var snapshot = ThreeAttemptSnapshot();
+
+        var events = new List<FlowEvent>
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec1, Architect)),
+            new FlowEvent.ExecutionFailed(exec1, FailureClassification.Retryable),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec2, Architect)),
+            new FlowEvent.ExecutionFailed(exec2, FailureClassification.Retryable),
+            new FlowEvent.WorkflowPaused(exec2, Architect),
+            new FlowEvent.ExternalDecisionRecorded(decisionId, exec2, DecisionType.RetryWithRevision, null, null),
+            new FlowEvent.WorkflowResumed(decisionId),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec3, Architect)),
+            new FlowEvent.ExecutionSucceeded(exec3),
+        };
+
+        var project1 = StateProjector.Project(events, snapshot);
+        var project2 = StateProjector.Project(events, snapshot);
+
+        Assert.Equal(project1.Steps.Count, project2.Steps.Count);
+        for (int i = 0; i < project1.Steps.Count; i++)
+        {
+            var s1 = project1.Steps[i];
+            var s2 = project2.Steps[i];
+            Assert.Equal(s1.StepId, s2.StepId);
+            Assert.Equal(s1.Status, s2.Status);
+            Assert.Equal(s1.ExecutionCount, s2.ExecutionCount);
+            Assert.Equal(s1.ConsecutiveFailureCount, s2.ConsecutiveFailureCount);
+            Assert.Equal(s1.LatestExecutionId, s2.LatestExecutionId);
+        }
+    }
 }

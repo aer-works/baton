@@ -42,8 +42,11 @@ public sealed record ProjectionCheckpointState(
     HashSet<ExecutionId> SucceededExecutionIds,
     Dictionary<ExecutionId, ExecutionRequest> AcceptedRequestByExecutionId,
     HashSet<ExecutionId> CoreStartedExecutionIds,
-    Dictionary<ExecutionId, CoreEvent.ExecutionExited> CoreExitedByExecutionId)
+    Dictionary<ExecutionId, CoreEvent.ExecutionExited> CoreExitedByExecutionId,
+    Dictionary<StepId, int>? ExecutionCountByStepId = null)
 {
+    public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
+
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
         new Dictionary<StepId, Dictionary<StepId, ExecutionId>>(),
@@ -69,7 +72,8 @@ public sealed record ProjectionCheckpointState(
         new HashSet<ExecutionId>(),
         new Dictionary<ExecutionId, ExecutionRequest>(),
         new HashSet<ExecutionId>(),
-        new Dictionary<ExecutionId, CoreEvent.ExecutionExited>());
+        new Dictionary<ExecutionId, CoreEvent.ExecutionExited>(),
+        new Dictionary<StepId, int>());
 
     public ProjectionCheckpointState DeepCopy() => new(
         new Dictionary<StepId, ExecutionId>(LatestExecutionIdByStepId),
@@ -96,5 +100,6 @@ public sealed record ProjectionCheckpointState(
         new HashSet<ExecutionId>(SucceededExecutionIds),
         new Dictionary<ExecutionId, ExecutionRequest>(AcceptedRequestByExecutionId),
         new HashSet<ExecutionId>(CoreStartedExecutionIds),
-        new Dictionary<ExecutionId, CoreEvent.ExecutionExited>(CoreExitedByExecutionId));
+        new Dictionary<ExecutionId, CoreEvent.ExecutionExited>(CoreExitedByExecutionId),
+        new Dictionary<StepId, int>(ExecutionCountByStepId));
 }

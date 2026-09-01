@@ -216,10 +216,10 @@ function timeboxChip(room, running){
 // brainstorm's "try counter" framing does not match what FleetStatusTool actually emits, and this
 // page does not pretend otherwise (see report-1505.md for the full finding). `liveness: "dead"`
 // becomes an explicit ZOMBIE chip instead of inline text.
-// #1509/#1510: `attempt`/`maxAttempts` (WorkflowStatusStepView, ConsecutiveFailureCount-derived)
+// #1509/#1510/#1522: `attempt`/`maxAttempts` (WorkflowStatusStepView, lifetime execution-count derived)
 // and `failureKind`/`retryEligible` (the engine's own FailureClassification enum member name and
 // RetryEngine.MayRetry's verdict) now do reach the payload per-step -- see FleetStatusTool.cs.
-// Both stay presence-gated the same way liveness/try already are: a step with no retry history
+// Both stay presence-gated the same way liveness/try already are: a step that hasn't executed
 // renders no attempt chip, a step that never failed renders no failure-kind chip.
 // -----------------------------------------------------------------------------------------------
 function attemptChip(step){
