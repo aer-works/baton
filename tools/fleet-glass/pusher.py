@@ -352,6 +352,12 @@ def extract_timeline(room_detail_result: dict) -> list[dict]:
     The synthetic "unreadable" entry (RoomDetailTool.ReadTimelineAsync, e.g. a held-open ledger) is
     kept as a type-only marker -- its `detail` (an exception message) is dropped like any other
     entry's, so the timeline still shows "something is wrong here" without smuggling free text.
+
+    No event TYPE is excluded, deliberately (#1537): this function never inspects `type`'s value,
+    only its shape (a string) -- so the vocabulary here is exactly whatever the engine journals,
+    never a second, narrower list to keep in sync with FlowEvent/CoreEvent/RoomEvent. The selftest's
+    "admits every event type unfiltered" check is what keeps that true; a future type-keyed filter
+    would fail it.
     """
     timeline = room_detail_result.get("timeline")
     if not isinstance(timeline, dict):
@@ -1221,6 +1227,37 @@ def _selftest() -> int:
 
     check("extract_timeline degrades to [] for a room_detail response with no timeline at all",
           extract_timeline({"name": "room-y", "note": "no flow.jsonl yet"}) == [])
+
+    # #1537: extract_timeline admits every event TYPE -- it has never filtered on `type`, only on
+    # field shape (KEEP-ONLY type+timestamp, see the function's own docstring). This is the
+    # discriminating control for that claim: it would fail the moment anyone added a type-keyed
+    # allowlist, including one that (wrongly) tried to list "every type we know about today" --
+    # the "someFutureType" entry has no home in FlowEvent.cs/CoreEvent.cs/RoomEvent.cs and must
+    # still survive. The 29 real tags are current as of this change (10 flow + 2 core + 17 room);
+    # they are a snapshot for this test's own realism, not a source of truth the engine must keep
+    # in sync -- the engine is the source of truth, and this test doesn't police it.
+    every_known_type = [
+        "flow.executionRequestAccepted", "flow.executionRequestRejected", "flow.executionSucceeded",
+        "flow.executionFailed", "flow.executionCancelled", "flow.cancellationRequested",
+        "flow.workflowPaused", "flow.externalDecisionRecorded", "flow.workflowResumed",
+        "flow.stepRetryScheduled",
+        "core.executionStarted", "core.executionExited",
+        "room.heldWorkDispatched", "room.heldWorkEscalated", "room.heldWorkResolved",
+        "room.grantRecorded", "room.grantAmended", "room.grantRevoked", "room.escalationRaised",
+        "room.turnHostDormancyEntered", "room.turnHostDormancyCleared",
+        "room.runtimePermissionAsked", "room.runtimePermissionAnswered", "room.runtimePermissionRevoked",
+        "room.workflowSwitched", "room.standingPermissionRevoked",
+        "room.workerJoined", "room.workerRenamed", "room.orchestratorAssigned",
+        "flow.someFutureType",
+    ]
+    assert len(every_known_type) <= TIMELINE_CAP, \
+        "synthetic list outgrew TIMELINE_CAP -- shorten it; this is not a filter to widen"
+    admitted = extract_timeline({
+        "timeline": {"entries": [{"type": t, "timestamp": "2026-08-31T00:00:00Z"} for t in every_known_type],
+                     "truncated": False, "totalEntries": len(every_known_type)}
+    })
+    check("extract_timeline admits every event type unfiltered, known or not -- no type-keyed allowlist",
+          [e["type"] for e in admitted] == every_known_type)
 
     # -- #1505: stale-room drop becomes a visible count, never a silent disappearance (landmine #43) --
     now_iso = datetime.now(timezone.utc).isoformat()
