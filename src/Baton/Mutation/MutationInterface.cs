@@ -1301,9 +1301,9 @@ public static class MutationInterface
     /// <see cref="FlowEvent.ZeroOutputsDespiteSubstantialWork"/> right alongside the outcome event
     /// <see cref="ToOutcomeEvent"/> mapped, from every caller that classifies an outcome — both the
     /// just-completed live dispatch and the branch that settles a dead pump's recorded exit — so the
-    /// tripwire fires identically regardless of which one produced the classification. Spec §3
-    /// (state-truth S1) names the two call sites; the same "one seam, every caller of it" placement
-    /// #1594's own integration constraint required of the capture arm this mirrors.
+    /// tripwire fires identically regardless of which one produced the classification.
+    /// <c>spec/baton.md</c> §3 names the two call sites; the same "one seam, every caller of it"
+    /// placement #1594's own integration constraint required of the capture arm this mirrors.
     /// </summary>
     private static async Task AppendZeroOutputsTripwireIfAnyAsync(
         IEventLogWriter eventLogWriter, ExecutionId executionId, OutcomeClassification classification, CancellationToken cancellationToken)

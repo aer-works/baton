@@ -37,8 +37,8 @@ public static class WorkflowOutcome
     /// journal, since nothing in <c>src/</c> can derive it yet.
     /// </para>
     /// <para>
-    /// <b>Consumer obligations (ruling item 2, spelled out in full in spec §3):</b> a room reading
-    /// this refuses bare <c>baton redispatch</c> with a diagnosis
+    /// <b>Consumer obligations (ruling item 2, spelled out in full in <c>spec/baton.md</c> §3):</b>
+    /// a room reading this refuses bare <c>baton redispatch</c> with a diagnosis
     /// (<c>Baton.Cli.RedispatchCommand</c>); the fleet glass renders a distinct chip; leaving this
     /// value always requires a conductor's own recorded justification — it is not a state a room
     /// exits on its own.
