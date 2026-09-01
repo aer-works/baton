@@ -27,6 +27,8 @@ public sealed class ClaudeFinalUsageParsingTests
         Assert.Equal(100, usage!.TokensIn);
         Assert.Equal(50, usage.TokensOut);
         Assert.Equal(3, usage.Turns);
+        Assert.Equal(10, usage.CacheCreationTokens);
+        Assert.Equal(5, usage.CacheReadTokens);
     }
 
     [Fact]
@@ -44,6 +46,47 @@ public sealed class ClaudeFinalUsageParsingTests
         Assert.Null(usage!.TokensIn);
         Assert.Null(usage.TokensOut);
         Assert.Equal(1, usage.Turns);
+    }
+
+    [Fact]
+    public void TryParseFinalUsage_ResultLineWithCacheAndThinkingFields_ReturnsAllThree()
+    {
+        // #1569: the nested usage.output_tokens_details.thinking_tokens path plus the two flat cache
+        // siblings, captured verbatim off a real `claude -p ... --output-format stream-json --verbose`
+        // result line -- see docs/vendor-capabilities.md's "Baton's usage field, per adapter" section
+        // for this envelope's provenance (a `run_command` tool call inside an agy-orchestrated lane,
+        // not Baton's own dispatch path).
+        const string line = """
+            {"duration_api_ms":2475,"stop_reason":"end_turn","session_id":"f2790c72-2c95-4b91-9786-ce6d5ba3aea8","total_cost_usd":0.039611,"usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":38741,"output_tokens":17,"output_tokens_details":{"thinking_tokens":6}},"is_error":false,"num_turns":1,"subtype":"success","result":"1\n\n2\n\n3\n\n4\n\n5","type":"result"}
+            """;
+
+        var parsed = _adapter.TryParseFinalUsage(line, out var usage);
+
+        Assert.True(parsed);
+        Assert.Equal(2, usage!.TokensIn);
+        Assert.Equal(17, usage.TokensOut);
+        Assert.Equal(38741, usage.CacheReadTokens);
+        Assert.Equal(0, usage.CacheCreationTokens);
+        Assert.Equal(6, usage.ThinkingTokens);
+    }
+
+    [Fact]
+    public void TryParseFinalUsage_ResultLineWithoutCacheOrThinkingFields_LeavesAllThreeAbsent()
+    {
+        // Polarity's other arm: a result line that omits the new fields entirely must yield null for
+        // each, never a fabricated zero -- same doctrine WorkerUsage.cs already states for TokensIn.
+        const string line = """
+            {"type":"result","subtype":"success","is_error":false,"duration_ms":1234,"num_turns":2,"result":"done","session_id":"16ab91d3-511f-46ad-ade5-c946b7c9e2f7","usage":{"input_tokens":9,"output_tokens":4}}
+            """;
+
+        var parsed = _adapter.TryParseFinalUsage(line, out var usage);
+
+        Assert.True(parsed);
+        Assert.Equal(9, usage!.TokensIn);
+        Assert.Equal(4, usage.TokensOut);
+        Assert.Null(usage.CacheReadTokens);
+        Assert.Null(usage.CacheCreationTokens);
+        Assert.Null(usage.ThinkingTokens);
     }
 
     [Fact]

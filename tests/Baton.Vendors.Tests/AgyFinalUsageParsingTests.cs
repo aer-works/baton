@@ -27,6 +27,9 @@ public sealed class AgyFinalUsageParsingTests
         Assert.Equal(14407, usage!.TokensIn);
         Assert.Equal(1173, usage.TokensOut);
         Assert.Equal(1, usage.Turns);
+        Assert.Equal(992, usage.ThinkingTokens);
+        Assert.Equal(40765, usage.CacheReadTokens);
+        Assert.Null(usage.CacheCreationTokens);
     }
 
     [Fact]
@@ -43,6 +46,27 @@ public sealed class AgyFinalUsageParsingTests
         Assert.Null(usage!.TokensIn);
         Assert.Null(usage.TokensOut);
         Assert.Equal(2, usage.Turns);
+        Assert.Null(usage.CacheReadTokens);
+        Assert.Null(usage.ThinkingTokens);
+    }
+
+    [Fact]
+    public void TryParseFinalUsage_ResultLineWithoutCacheOrThinkingFields_LeavesBothAbsent()
+    {
+        // Polarity's other arm, captured shape (docs/vendor-capabilities.md): a run reporting only
+        // input/output/turns leaves cacheReadTokens/thinkingTokens null, never a fabricated zero.
+        const string line = """
+            {"event":"result","result":{"status":"SUCCESS","response":"done","num_turns":1,"usage":{"input_tokens":9,"output_tokens":4}}}
+            """;
+
+        var parsed = _adapter.TryParseFinalUsage(line, out var usage);
+
+        Assert.True(parsed);
+        Assert.Equal(9, usage!.TokensIn);
+        Assert.Equal(4, usage.TokensOut);
+        Assert.Null(usage.CacheReadTokens);
+        Assert.Null(usage.ThinkingTokens);
+        Assert.Null(usage.CacheCreationTokens);
     }
 
     [Fact]

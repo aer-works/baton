@@ -7,4 +7,10 @@ namespace Baton.Domain;
 /// the fields it reported and no others. Wall-clock is deliberately not here — it is a Flow-derived
 /// fact (execution start/exit timestamps already in the ledger), not something a vendor reports.
 /// </summary>
-public sealed record WorkerUsage(long? TokensIn = null, long? TokensOut = null, int? Turns = null);
+public sealed record WorkerUsage(
+    long? TokensIn = null,
+    long? TokensOut = null,
+    int? Turns = null,
+    long? CacheReadTokens = null,
+    long? CacheCreationTokens = null,
+    long? ThinkingTokens = null);
