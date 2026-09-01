@@ -166,10 +166,10 @@ public class RunCommandEchoTests
     [Fact]
     public void EchoStreamJsonLine_EchoesUnrecognizedEnvelopeTypeVerbatim()
     {
-        // #1561 finding 2: a valid-JSON `type` no adapter knows (claude's own `user` tool-result
-        // echo today; anything the vendor adds tomorrow) used to return false from the parser and
-        // vanish with no trace, contradicting this method's own "never swallow" doc comment. It
-        // must now echo verbatim, same as a malformed line.
+        // #1561 finding 2: a valid-JSON `type` no adapter recognizes at all (a real example: claude's
+        // own `user` role, shown below) used to return false from the parser and vanish with no
+        // trace, contradicting this method's own "never swallow" doc comment. It must now echo
+        // verbatim, same as a malformed line.
         const string line = """{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"abc","content":"ls output"}]}}""";
         using var writer = new StringWriter();
 
