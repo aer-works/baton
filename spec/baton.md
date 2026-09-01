@@ -894,8 +894,8 @@ definition has no exit event yet and needs every line scanned, not just the last
   quantized to a ~90s bucket before it enters the pushed payload (2026-09-01 review finding) — see
   `pusher.py`'s `LAST_ACTIVITY_BUCKET_SECONDS` for the write-budget reasoning this closes. Quantized,
   not excluded the way `derived_at` is excluded below: a prose-only turn with no tool call in it
-  would leave every OTHER field in `live` unchanged too, so excluding this one as well would let
-  glass keep showing a stale "active Nm ago" for a lane that is, in fact, still going.
+  would leave every OTHER field in `live` unchanged too, so excluding this one as well would freeze
+  glass's rendered age on an old instant while the lane is, in fact, still going.
 - **`derived_at` (item 2)**, beside `heartbeat_at` (#1486) at the top level of the pushed snapshot:
   when this pusher process's OWN `derive_snapshot_and_timelines` call last completed successfully,
   regardless of whether that cycle's content changed enough to push. `pushed_at` (worker.js's own
