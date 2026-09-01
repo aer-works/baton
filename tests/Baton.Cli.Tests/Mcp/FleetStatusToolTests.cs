@@ -210,6 +210,50 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.True(singleStep.RetryEligible);
         Assert.Equal(1, singleStep.Attempt);
         Assert.Equal(3, singleStep.MaxAttempts);
+        // #1551: no StepRetryScheduled was recorded here -- an un-obligated ExhaustedUntil park
+        // ("reset unknown" on the human path) must not fabricate a reset instant.
+        Assert.Null(singleStep.ExhaustedUntil);
+    }
+
+    [Fact]
+    public async Task ExhaustedUntilFailure_WithRecordedObligation_SurfacesResetInstant()
+    {
+        // #1551: the reset instant a StepRetryScheduled actually recorded reaches fleet_status
+        // verbatim, through the active-room projection path (not the terminal sentinel).
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "exhausted-parked-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-parked"), "agent-worker", [], ["plan.md"], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("exhausted-parked-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-parked-1");
+        var req = new ExecutionRequest(
+            execId, new WorkflowId("exhausted-parked-wf"), stepDef.StepId, stepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+        var resetInstant = new DateTimeOffset(2026, 9, 1, 21, 59, 0, TimeSpan.Zero);
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", RetryNotBefore: resetInstant),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRetryScheduled(stepDef.StepId, execId, resetInstant, RetryDelayMs: 0),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
+        Assert.Equal("ExhaustedUntil", singleStep.FailureKind);
+        Assert.Equal(resetInstant.ToString("O"), singleStep.ExhaustedUntil);
     }
 
     [Fact]
@@ -414,6 +458,33 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Equal(3, singleStep.MaxAttempts);
         Assert.Equal("Permanent", singleStep.FailureKind);
         Assert.False(singleStep.RetryEligible);
+    }
+
+    [Fact]
+    public async Task TerminalSentinel_CarriesExhaustedUntilThroughVerbatim()
+    {
+        // #1551: a room can go terminal (e.g. a later Permanent failure on a sibling step) while a
+        // frozen ExhaustedUntil sentinel step still names its last recorded reset instant -- the
+        // fast path copies it, same as Attempt/FailureKind, never re-derives.
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "sentinel-exhausted-room");
+        Directory.CreateDirectory(room);
+
+        var resetInstant = new DateTimeOffset(2026, 9, 1, 21, 59, 0, TimeSpan.Zero);
+        var step = new WorkflowStatusStepView(
+            "step-a", "Failed", "exec-1", null, null, null, null, Attempt: 1, MaxAttempts: 3,
+            FailureKind: "ExhaustedUntil", RetryEligible: true, ExhaustedUntil: resetInstant.ToString("O"));
+        var sentinel = new WorkflowStatusView("Failed", [step], [], "quota exhausted", null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
+        Assert.Equal("ExhaustedUntil", singleStep.FailureKind);
+        Assert.Equal(resetInstant.ToString("O"), singleStep.ExhaustedUntil);
     }
 
     /// <summary>Same technique as <c>WorkflowStatusProjectorLivenessTests.DeadProcessIdentity</c>:

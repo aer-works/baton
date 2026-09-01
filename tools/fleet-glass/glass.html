@@ -241,6 +241,31 @@ function failureKindChip(step){
   const cls = step.retryEligible === true ? "c-warn" : step.retryEligible === false ? "c-bad" : "c-idle";
   return [step.failureKind.toUpperCase(), cls];
 }
+// -----------------------------------------------------------------------------------------------
+// #1551: `step.exhaustedUntil` is the vendor-quota park's own reset instant (WorkflowStatusStepView,
+// gated to an actual ExhaustedUntil park with a recorded obligation -- absent for an un-obligated
+// park or an ordinary Retryable backoff, same presence-gated convention as failureKindChip above).
+// Absolute + relative, mirroring timeboxChip's future/overdue duality above it -- but a Failed step
+// whose OWN liveness reads "dead" (#1513) has no scheduler left to fire this at all: a live
+// countdown there would be dishonest, so that arm renders the same past instant as a flat fact
+// instead ("was due HH:mm — no scheduler"), never a fake countdown. `Date.parse`/`toLocaleTimeString`
+// do not throw on a far-future instant (#1183, not fixed here) -- `isFinite` below is what a
+// genuinely unparseable one falls back through, same as `age()`/`timeboxChip`.
+// -----------------------------------------------------------------------------------------------
+function parkChip(step){
+  if(!step || !step.exhaustedUntil) return null;
+  const target = Date.parse(step.exhaustedUntil);
+  if(!isFinite(target)) return null;
+  const local = new Date(target).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  if(step.liveness === "dead"){
+    return [`was due ${local} — no scheduler`, "c-warn"];
+  }
+  const remainingMs = target - Date.now();
+  const mins = Math.round(Math.abs(remainingMs)/60000);
+  return remainingMs >= 0
+    ? [`resumes in ${mins}m (${local})`, "c-idle"]
+    : [`overdue ${mins}m (${local})`, "c-bad"];
+}
 function chipsHtml(room, running, focusStep){
   const st = room.state;
   const chips = [];
@@ -260,6 +285,8 @@ function chipsHtml(room, running, focusStep){
   if(ac) chips.push(ac);
   const fc = failureKindChip(focusStep);
   if(fc) chips.push(fc);
+  const pc = parkChip(focusStep);
+  if(pc) chips.push(pc);
   return chips.map(([label,cls]) => `<span class="chip ${cls}">${esc(label)}</span>`).join("");
 }
 

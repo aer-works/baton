@@ -74,7 +74,20 @@ public sealed record WorkflowStatusStepView(
     // retry".
     [property: JsonPropertyName("retryEligible")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    bool? RetryEligible = null);
+    bool? RetryEligible = null,
+    // #1551: StepState.RetryNotBefore verbatim (ISO-8601, UTC), the vendor-reported instant an
+    // ExhaustedUntil park auto-resumes -- the same value FormatVendorQuotaParkNotice/
+    // StatusCommand.FormatParkedStatus already render as "resumes at HH:mm". Gated on
+    // FailureKind == "ExhaustedUntil" specifically (not any Failed step with a pending retry): an
+    // ordinary Retryable backoff has a RetryNotBefore too, but this field answers "when does the
+    // vendor-quota park lift", not "when is the next attempt". Present only when the engine
+    // actually recorded a reset instant -- an un-obligated ExhaustedUntil park (RetryNotBefore
+    // null, StatusCommand's "reset unknown") stays absent rather than fabricating one. Absent, not
+    // re-derived, once liveness confirms the scheduling engine dead (#1513 Stalled) -- the instant
+    // itself does not change, only its honesty on render: that is the consuming chip's job.
+    [property: JsonPropertyName("exhaustedUntil")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ExhaustedUntil = null);
 
 /// <summary>
 /// The one JSON object <c>baton status --json</c> writes to stdout (#1356's machine completion
@@ -235,10 +248,18 @@ public static class WorkflowStatusProjector
             bool? retryEligible = step.Status == StepStatus.Failed && stepDefByStepId.TryGetValue(step.StepId, out var retryStepDef)
                 ? RetryEngine.MayRetry(step, retryStepDef.RetryPolicy)
                 : null;
+            // #1551: the reset instant, gated to an actual ExhaustedUntil park with a recorded
+            // obligation -- see WorkflowStatusStepView.ExhaustedUntil's remarks for why this is
+            // narrower than "any Failed step with a RetryNotBefore".
+            string? exhaustedUntil = step.Status == StepStatus.Failed
+                && step.LatestFailureClassification == FailureClassification.ExhaustedUntil
+                && step.RetryNotBefore is { } resetInstant
+                ? resetInstant.ToString("O")
+                : null;
 
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
-                usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible));
+                usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible, exhaustedUntil));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))
