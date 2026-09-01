@@ -109,10 +109,9 @@ its whole point is proposing a diff without mutating the workspace.
 
 Every dispatch also prints the worker's discovered skill roster, one line per bound worker whose
 adapter is registered (or `Skills (<worker>)` for composed templates), before the run starts (#1512).
-Like the Grant line above, a composed template's capture step gets no line — it spawns `git` directly
-rather than running a skill-bearing prompt, so it has no roster meaningful to an operator either (this
-is a separately-drawn exclusion from the Grant line's, not a reuse of it: skill discovery does not
-depend on whether an adapter consumes a permission grant).
+Like the Grant line above, a composed template's capture step gets no line, for the same "spawns `git`
+directly, nothing to report" reason as the Grant exclusion — but drawn independently, since skill
+discovery does not depend on whether an adapter consumes a permission grant (`src/Baton.Cli/DispatchCommand.cs`).
 
 ```
 Skills: none discovered
@@ -126,21 +125,16 @@ for Claude — also `<CLAUDE_CONFIG_DIR>/skills` when `BATON_CLAUDE_CONFIG_ROOT`
 Skills: artifact-design, run-checks
 ```
 
-For a worktree-provisioned binding (an audited role), the worktree the worker will actually run in does
-not exist yet when this prints — it is provisioned later, at a fresh checkout of HEAD. The roster in
-that case scans the source repository instead (untracked/uncommitted files included) and says so:
-`Skills (from <repo>; the worker runs in a fresh worktree at HEAD): …` — an untracked skill visible in
-that line may not be present once the worker's worktree checkout actually runs.
+For a worktree-provisioned binding (an audited role), the roster scans the source repository rather
+than the worker's not-yet-provisioned worktree, and says so —
+`Skills (from <repo>; the worker runs in a fresh worktree at HEAD): …` — since an untracked skill it
+finds there may not survive into the worker's actual checkout. Full rationale on the exclusion above
+and this line: `src/Baton.Cli/DispatchCommand.cs`'s skill-roster block.
 
 **Vendor coverage, honestly scoped.** The `<workspace>/.claude/skills` and personal-arm paths reflect
-Claude Code's own documented `SKILL.md` convention. Whether `agy` actually reads
-`<workspace>/.agents/skills/*/SKILL.md` is **not measured** anywhere in this repo (`tools/vendor-verify/verify.py`
-has no check for it, and `docs/decisions/0033-skills-attach-directly-no-persona.md` describes agy's
-equivalent as "the plugin/agent equivalent", not a `SKILL.md` directory) — tracked in #1572. Similarly,
-whether Claude Code itself relocates *skill* lookup under a redirected `CLAUDE_CONFIG_DIR` the way it
-relocates auth/session state is unmeasured; the adapter follows the redirected root when set (the
-defensible reading either way — see `src/Baton.Vendors/ClaudeWorkerAdapter.cs`'s `DiscoverCapabilitiesCore`),
-but that is a choice, not a confirmed vendor fact.
+Claude Code's own documented `SKILL.md` convention; the `BATON_CLAUDE_CONFIG_ROOT` arm and the agy
+`.agents/skills` path each rest on an unmeasured vendor fact, tracked in #1572 for agy and in the
+adapters' own comments (`src/Baton.Vendors/ClaudeWorkerAdapter.cs`, `AgyWorkerAdapter.cs`) for both.
 
 **Rule for briefs:** Dispatched workers run in their own process and do not inherit the conducting session's loaded skills. Briefs must inline what they need; a named skill only works if the worker's roster shows it. Skill forwarding is not performed by dispatch.
 

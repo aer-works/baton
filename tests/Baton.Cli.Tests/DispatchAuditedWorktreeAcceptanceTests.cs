@@ -167,15 +167,11 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
     [Fact]
     public async Task Dispatching_an_audited_role_prints_a_skill_roster_that_names_the_repo_it_scanned_not_the_worktree()
     {
-        // #1512 H1 (second-reader finding): for a worktree-provisioned binding, WorkingDirectory is
-        // null when the roster is printed and the worktree the worker will actually run in does not
-        // exist yet -- it is provisioned later, inside RunCommand, at a fresh checkout of HEAD. Before
-        // this fix, the roster silently scanned binding.Worktree.Repository (the SOURCE repo's raw
-        // filesystem, untracked files included) and printed a bare "Skills:" label that claimed no
-        // less than an ordinary, non-worktree roster would. This pins the fix: the label now says what
-        // was actually scanned, and the scan itself still targets the source repo (proven via the
-        // fake's own LastDiscoverCapabilitiesWorkingDirectory) -- an untracked skill in that repo is
-        // real, but the worker's fresh worktree checkout will not have it.
+        // #1512 H1 (second-reader finding) -- see DispatchCommand.cs's skill-roster block for why a
+        // worktree-provisioned binding's roster can only honestly describe the source repo it scans.
+        // Before this fix the label was a bare "Skills:" that claimed no less than an ordinary
+        // roster would. Pins the fix: the label now discloses the scope, and the scan target itself
+        // is still the source repo (proven via the fake's own LastDiscoverCapabilitiesWorkingDirectory).
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-agy-h1-{Guid.NewGuid():N}");
         var originalOut = Console.Out;
         try
