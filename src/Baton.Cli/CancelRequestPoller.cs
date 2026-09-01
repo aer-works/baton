@@ -20,9 +20,11 @@ namespace Baton.Cli;
 /// genuinely settled — a step Failed with a scheduled <see cref="Domain.StepState.RetryNotBefore"/>,
 /// the shape a vendor-quota park leaves behind — is marked via
 /// <see cref="InFlightExecutionRegistry.MarkParkedCancelIntent"/> instead of being told it is too
-/// late. That mark records nothing by itself; the pump's own idle-deferral wait validates and
-/// appends the durable events once it wakes, exactly as <c>RequestCancellationAsync</c> does for a
-/// live process.
+/// late. That mark records nothing by itself; the pump validates and appends the durable events once
+/// it wakes, exactly as <c>RequestCancellationAsync</c> does for a live process — and it wakes on
+/// TWO separate waits, not one: the idle-deferral wait (nothing else in flight) and the busy wait
+/// (a sibling step's dispatch still is), both wired to the same latch (<c>MutationInterface</c>'s own
+/// remarks on each site have the detail).
 /// </para>
 /// </summary>
 public static class CancelRequestPoller
@@ -30,6 +32,12 @@ public static class CancelRequestPoller
     public static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(2);
 
     private static readonly ConcurrentDictionary<(string Path, string Target, DateTime LastWriteUtc), int> RetryCounters = new();
+
+    // #1605 review, F1: the isParked skip below used to print nothing, so an operator watching a
+    // park had no signal a mark had actually landed until (possibly a day later) it settled. Printed
+    // once per distinct request (keyed the same way RetryCounters is) rather than every ~2s tick for
+    // the park's whole duration.
+    private static readonly ConcurrentDictionary<(string Path, string Target, DateTime LastWriteUtc), byte> ParkedNoticePrinted = new();
 
     /// <summary>
     /// Runs until <paramref name="cancellationToken"/> fires. Never throws for a malformed request, a
@@ -146,6 +154,7 @@ public static class CancelRequestPoller
         if (delivered)
         {
             RetryCounters.TryRemove(retryKey, out _);
+            ParkedNoticePrinted.TryRemove(retryKey, out _);
             CancelRequestFile.Consume(requestPath);
             return;
         }
@@ -172,10 +181,14 @@ public static class CancelRequestPoller
         if (!stillRunning && !isParked)
         {
             RetryCounters.TryRemove(retryKey, out _);
+            ParkedNoticePrinted.TryRemove(retryKey, out _);
             // The one-word difference that keeps this honest once the seam above can actually
             // settle a park: an execution the seam itself just cancelled did settle BECAUSE of this
             // request, not despite it — reporting "too late" for that case is the exact false claim
-            // #802's "three independent locks" finding measured, just for the step-less case this method does not yet cover.
+            // #802's "three independent locks" finding identified (F7, #1605 review: that finding is
+            // derived from the code path, not a reproduced run — #802's own audit comment self-tags
+            // it ASSUMED, high confidence, code-derived — for the step-less case this method does
+            // not yet cover).
             var arrestedByThisRequest = targetStep?.Status == StepStatus.Cancelled;
             try
             {
@@ -205,6 +218,20 @@ public static class CancelRequestPoller
         if (isParked)
         {
             RetryCounters.TryRemove(retryKey, out _);
+            if (ParkedNoticePrinted.TryAdd(retryKey, 0))
+            {
+                try
+                {
+                    Console.Error.WriteLine(
+                        $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}' — "
+                        + "target is quota-parked (no live process to signal); marked for delivery once the pump settles it.");
+                }
+                catch
+                {
+                    // F6: swallow broken stderr pipe
+                }
+            }
+
             return;
         }
 

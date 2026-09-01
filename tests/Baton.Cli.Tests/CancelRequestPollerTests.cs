@@ -205,8 +205,10 @@ public class CancelRequestPollerTests
     // shape the idle-deferral park leaves behind once its worker process has already exited — is
     // neither "still running" (so the old bounded-retry-until-registered path never fires) nor
     // "already settled" (so the pre-#1563 code told the operator "too late", a false claim #802's
-    // "three independent locks" finding measured live). It must be marked on the registry's wake latch and left pending, not
-    // consumed, until the pump this registry is bound to actually drains it.
+    // "three independent locks" finding identified — see CancelRequestPoller.cs's own comment on
+    // that finding, F7 #1605 review, for the ASSUMED/code-derived confidence it actually carries).
+    // It must be marked on the registry's wake latch and left pending, not consumed, until the pump
+    // this registry is bound to actually drains it.
     [Fact]
     public async Task A_quota_parked_target_is_marked_on_the_registry_and_left_pending_not_declared_too_late()
     {
@@ -293,8 +295,9 @@ public class CancelRequestPollerTests
 
     // Once the pump this registry is bound to has actually processed the mark and settled the park
     // as Cancelled, the poller's own consume branch must say so honestly rather than repeat the
-    // generic "too late" text — that text is what #802's "three independent locks" finding measured
-    // as a false claim once an arrest is what actually ended the park.
+    // generic "too late" text — that text is what #802's "three independent locks" finding
+    // identified as a false claim once an arrest is what actually ended the park (see
+    // CancelRequestPoller.cs's own comment for that finding's actual confidence — F7, #1605 review).
     [Fact]
     public async Task Once_the_pump_settles_a_marked_park_as_Cancelled_the_poller_reports_arrested_not_too_late()
     {
