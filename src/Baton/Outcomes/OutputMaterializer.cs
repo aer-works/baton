@@ -6,9 +6,10 @@ namespace Baton.Outcomes;
 /// <summary>
 /// #1594's safety net: when a worker finished naturally, exit 0, but a declared output is simply
 /// absent — the measured agy failure mode, worker completes the real work and never writes its
-/// contract file — this recovers the worker's own final answer from its terminal stream envelope
-/// (<see cref="IWorkerResponseParser"/>) and writes it in the output's place, so a genuinely completed
-/// lane does not settle <c>Failed</c> with <c>outputs: []</c> for a report the worker already gave.
+/// contract file — this calls <see cref="IWorkerResponseParser"/> (see that interface's own doc
+/// comment for what it recovers and why) and writes the result in the output's place, so a genuinely
+/// completed lane does not settle <c>Failed</c> with <c>outputs: []</c> for a report the worker
+/// already gave.
 /// </summary>
 /// <remarks>
 /// Deliberately narrow. Only fires when <b>every</b> unsatisfied output is

@@ -134,10 +134,11 @@ public sealed class ClaudeFinalUsageParsingTests
 }
 
 /// <summary>
-/// Coverage for <see cref="ClaudeWorkerAdapter.TryParseFinalResponse"/> (issue #1594) — the same
-/// terminal line <see cref="ClaudeFinalUsageParsingTests"/> covers, read for the top-level
-/// <c>result</c> string instead of <c>usage</c>. The success fixture is the same real captured line
-/// docs/vendor-capabilities.md records (#1540).
+/// Mirrors <see cref="AgyFinalResponseParsingTests"/> for the claude adapter (issue #1594):
+/// exercises <see cref="ClaudeWorkerAdapter.TryParseFinalResponse"/>, which reads the top-level
+/// <c>result</c> string off the same line <see cref="ClaudeFinalUsageParsingTests"/> already parses
+/// for <c>usage</c>. Its success fixture is the real captured line docs/vendor-capabilities.md
+/// records (#1540).
 /// </summary>
 public sealed class ClaudeFinalResponseParsingTests
 {
@@ -159,8 +160,7 @@ public sealed class ClaudeFinalResponseParsingTests
     [Fact]
     public void TryParseFinalResponse_ErrorTurn_ReturnsFalse()
     {
-        // Captured verbatim (see ClaudeStreamJsonProgressParsingTests): an error turn's `result` field
-        // is a failure reason, not a worker's answer, and must never be materialized as though it were.
+        // Captured verbatim (see ClaudeStreamJsonProgressParsingTests).
         const string line = """
             {"type":"result","subtype":"success","is_error":true,"duration_ms":29,"num_turns":1,"result":"Not logged in","stop_reason":"stop_sequence","session_id":"16ab91d3-511f-46ad-ade5-c946b7c9e2f7"}
             """;

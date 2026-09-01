@@ -103,9 +103,10 @@ public sealed class AgyFinalUsageParsingTests
 }
 
 /// <summary>
-/// Coverage for <see cref="AgyWorkerAdapter.TryParseFinalResponse"/> (issue #1594) — the same terminal
-/// line <see cref="AgyFinalUsageParsingTests"/> covers, read for <c>result.response</c> instead of
-/// <c>result.usage</c>. The success fixture is the same real captured line those tests use.
+/// Exercises <see cref="AgyWorkerAdapter.TryParseFinalResponse"/> (issue #1594): the agy half of the
+/// two adapters' terminal-response parsing, reading <c>result.response</c> off the very line
+/// <see cref="AgyFinalUsageParsingTests"/> already parses for <c>result.usage</c>. Reuses that
+/// class's real captured success fixture.
 /// </summary>
 public sealed class AgyFinalResponseParsingTests
 {
@@ -127,9 +128,6 @@ public sealed class AgyFinalResponseParsingTests
     [Fact]
     public void TryParseFinalResponse_NonSuccessStatus_ReturnsFalse()
     {
-        // #1561: a non-SUCCESS result's response is documented empty; even if a vendor build ever put
-        // text there, an error status is not a worker's answer and must never be written into a
-        // declared output as though it were one.
         const string line = """
             {"event":"result","result":{"status":"ERROR","response":"","error":"quota exhausted"}}
             """;

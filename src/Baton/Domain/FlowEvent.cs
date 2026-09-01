@@ -36,10 +36,9 @@ public abstract record FlowEvent
 
     /// <summary>Flow has classified a completed execution as successful.</summary>
     /// <param name="MaterializedOutputs">
-    /// #1594: the declared output names <c>Outcomes.OutputMaterializer</c> wrote from the worker's own
-    /// terminal result envelope, when the worker itself never wrote them — the durable room fact that
-    /// makes a materialized success falsifiable from <c>flow.jsonl</c> alone, without re-reading the
-    /// disclosure header materialization also stamps onto the file. Null on every execution this
+    /// #1594: carries <c>Outcomes.OutcomeClassification.MaterializedOutputs</c> (see that field's own
+    /// doc comment for what the value means) onto the durable record — the room fact that makes a
+    /// materialized success falsifiable from <c>flow.jsonl</c> alone. Null on every execution this
     /// mechanism did not touch, including all history predating it (#597's same replay reasoning
     /// applies to every additive field on this union).
     /// </param>
