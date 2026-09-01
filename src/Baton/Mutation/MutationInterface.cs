@@ -1267,8 +1267,10 @@ public static class MutationInterface
     private static FlowEvent ToOutcomeEvent(ExecutionId executionId, OutcomeClassification classification) =>
         classification.Verdict switch
         {
-            OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(executionId, classification.MaterializedOutputs),
-            OutcomeVerdict.Failed => new FlowEvent.ExecutionFailed(executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore),
+            OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(executionId),
+            OutcomeVerdict.Failed => new FlowEvent.ExecutionFailed(
+                executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore,
+                classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
             _ => throw new ArgumentOutOfRangeException(nameof(classification), classification.Verdict, "Unknown OutcomeVerdict."),
         };

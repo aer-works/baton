@@ -35,16 +35,8 @@ public abstract record FlowEvent
     public sealed record ExecutionRequestRejected(ExecutionId ExecutionId, string Reason) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as successful.</summary>
-    /// <param name="MaterializedOutputs">
-    /// #1594: carries <c>Outcomes.OutcomeClassification.MaterializedOutputs</c> (see that field's own
-    /// doc comment for what the value means) onto the durable record — the room fact that makes a
-    /// materialized success falsifiable from <c>flow.jsonl</c> alone. Null on every execution this
-    /// mechanism did not touch, including all history predating it (#597's same replay reasoning
-    /// applies to every additive field on this union).
-    /// </param>
     public sealed record ExecutionSucceeded(
-        ExecutionId ExecutionId,
-        IReadOnlyList<string>? MaterializedOutputs = null) : FlowEvent;
+        ExecutionId ExecutionId) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as failed.</summary>
     /// <param name="Reason">
@@ -62,11 +54,26 @@ public abstract record FlowEvent
     /// went on asserting the opposite after the behaviour changed.
     /// </para>
     /// </param>
+    /// <param name="CapturedResponseFile">
+    /// #1594, conductor-writes shape (owner ruling, 2026-09-01, on #1606): carries
+    /// <c>Outcomes.OutputMaterializer.CapturedResponse.FileName</c> (see that record's own doc comment
+    /// for what this and <paramref name="UnsatisfiedOutputNames"/> mean) onto the durable record — the
+    /// room fact that makes "the worker's response was captured, awaiting conductor resolution"
+    /// falsifiable from <c>flow.jsonl</c> alone. Null on every execution this mechanism did not touch,
+    /// including all history predating it (#597's same replay reasoning applies to every additive
+    /// field on this union) — a required (no-default) parameter here would fail replay of every older
+    /// line, per this record's own remarks above.
+    /// </param>
+    /// <param name="UnsatisfiedOutputNames">
+    /// <c>Outcomes.OutputMaterializer.CapturedResponse.UnsatisfiedOutputNames</c>, carried the same hop.
+    /// </param>
     public sealed record ExecutionFailed(
         ExecutionId ExecutionId,
         FailureClassification? FailureClassification,
         string? Reason = null,
-        DateTimeOffset? RetryNotBefore = null) : FlowEvent;
+        DateTimeOffset? RetryNotBefore = null,
+        string? CapturedResponseFile = null,
+        IReadOnlyList<string>? UnsatisfiedOutputNames = null) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as cancelled.</summary>
     public sealed record ExecutionCancelled(ExecutionId ExecutionId) : FlowEvent;

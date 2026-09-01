@@ -88,7 +88,19 @@ public sealed record WorkflowStatusStepView(
     // chip's job.
     [property: JsonPropertyName("exhaustedUntil")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ExhaustedUntil = null);
+    string? ExhaustedUntil = null,
+    // #1594, conductor-writes shape (owner ruling, 2026-09-01, on #1606): StepState.LatestCapturedResponseFile
+    // (see OutputMaterializer.CapturedResponse for what this and UnsatisfiedOutputs mean), gated the
+    // same way FailureKind is: present only for a currently-Failed step. Read this WITHOUT opening the
+    // execution directory -- "response captured, outputs unwritten, awaiting resolution" must be
+    // answerable from this record alone (review F1).
+    [property: JsonPropertyName("capturedResponseFile")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? CapturedResponseFile = null,
+    // StepState.LatestUnsatisfiedOutputNames, carried the same hop.
+    [property: JsonPropertyName("unsatisfiedOutputs")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? UnsatisfiedOutputs = null);
 
 /// <summary>
 /// The one JSON object <c>baton status --json</c> writes to stdout (#1356's machine completion
@@ -259,9 +271,16 @@ public static class WorkflowStatusProjector
                 ? resetInstant.ToUniversalTime().ToString("O")
                 : null;
 
+            // #1594: gated the same way failureKind is above -- a step's raw StepState fields can
+            // carry a stale value from a prior failed attempt (e.g. a later Cancelled attempt never
+            // clears them), so only a currently-Failed step is allowed to surface a capture.
+            string? capturedResponseFile = step.Status == StepStatus.Failed ? step.LatestCapturedResponseFile : null;
+            IReadOnlyList<string>? unsatisfiedOutputs = step.Status == StepStatus.Failed ? step.LatestUnsatisfiedOutputNames : null;
+
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
-                usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible, exhaustedUntil));
+                usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible,
+                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))

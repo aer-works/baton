@@ -1158,7 +1158,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <c>result.response</c>, gated on <c>result.status == "SUCCESS"</c> exactly like
     /// <see cref="IsTerminalSuccessLine"/>, since a non-SUCCESS result's <c>response</c> is
     /// documented empty (#1561, this same file's <see cref="TryParseProgressEvent"/>) and an error
-    /// status carrying incidental text would be the wrong thing to write into a declared output.
+    /// status carrying incidental text would be the wrong thing to capture as the worker's response.
     /// </summary>
     public bool TryParseFinalResponse(string rawLine, out string? response)
     {

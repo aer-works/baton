@@ -121,6 +121,8 @@ public static class StateProjector
                     state.LatestFailureClassificationByStepId[succeededStepId] = null;
                     state.LatestFailureReasonByStepId[succeededStepId] = null;
                     state.LatestExecutionFailedRetryNotBeforeByStepId[succeededStepId] = null;
+                    state.LatestCapturedResponseFileByStepId[succeededStepId] = null;
+                    state.LatestUnsatisfiedOutputNamesByStepId[succeededStepId] = null;
                 }
 
                 break;
@@ -138,6 +140,9 @@ public static class StateProjector
                     state.LatestFailureClassificationByStepId[failedStepId] = failed.FailureClassification;
                     state.LatestFailureReasonByStepId[failedStepId] = failed.Reason;
                     state.LatestExecutionFailedRetryNotBeforeByStepId[failedStepId] = failed.RetryNotBefore;
+                    state.LatestCapturedResponseFileByStepId[failedStepId] = failed.CapturedResponseFile;
+                    state.LatestUnsatisfiedOutputNamesByStepId[failedStepId] =
+                        failed.UnsatisfiedOutputNames is null ? null : new List<string>(failed.UnsatisfiedOutputNames);
                 }
 
                 break;
@@ -205,6 +210,8 @@ public static class StateProjector
                         state.LatestFailureClassificationByStepId[retryStepId] = null;
                         state.LatestFailureReasonByStepId[retryStepId] = null;
                         state.LatestExecutionFailedRetryNotBeforeByStepId[retryStepId] = null;
+                        state.LatestCapturedResponseFileByStepId[retryStepId] = null;
+                        state.LatestUnsatisfiedOutputNamesByStepId[retryStepId] = null;
                         state.RetryNotBeforeByStepId.Remove(retryStepId);
                         state.RetryDelayMsByStepId.Remove(retryStepId);
                         state.RetryScheduledForExecutionIdByStepId.Remove(retryStepId);
@@ -300,7 +307,9 @@ public static class StateProjector
                 state.RetryScheduledForExecutionIdByStepId.TryGetValue(stepDefinition.StepId, out var rfe) ? rfe : null,
                 state.LatestExecutionFailedRetryNotBeforeByStepId.GetValueOrDefault(stepDefinition.StepId),
                 linkedFromExecutionId,
-                state.ExecutionCountByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.ExecutionCountByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.LatestCapturedResponseFileByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.LatestUnsatisfiedOutputNamesByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

@@ -41,6 +41,26 @@ public static class ReservedOutputNames
     /// <summary>The shared rejection clause. Callers prefix it with their own context.</summary>
     public const string RejectionClause =
         "a declared output cannot start with '.' — that namespace is reserved for engine-written files, such as ExecutionStreamLogger's stream logs";
+
+    /// <summary>
+    /// #1594 review F8: a declared output name is combined with an execution's own output directory
+    /// with no further sanitization, by every reader today (<c>ContractValidator.Validate</c>,
+    /// <c>StepOutputResolver.Resolve</c>) and by any future writer against the same directory — the
+    /// conductor resolution verb included, once it exists. A name carrying a directory separator or a
+    /// <c>..</c> segment could steer that combined path outside the room the contract was validated
+    /// against; <see cref="Path.GetFileName"/> returning anything other than <paramref name="name"/>
+    /// unchanged is exactly that case. This ships on Windows CI only (#1405) and the check is
+    /// evaluated against <see cref="Path.GetFileName(string)"/>'s own platform behaviour, so it
+    /// recognizes both <c>/</c> and <c>\</c> as separators there; it is not verified against a POSIX
+    /// runtime, where <see cref="Path.GetFileName(string)"/> treats <c>\</c> as an ordinary filename
+    /// character rather than a separator and a <c>\</c>-escaped traversal would not be caught.
+    /// </summary>
+    public static bool IsPathTraversal(string? name) =>
+        !string.IsNullOrEmpty(name) && Path.GetFileName(name) != name;
+
+    /// <summary>The shared rejection clause for <see cref="IsPathTraversal"/>. Callers prefix it with their own context.</summary>
+    public const string PathTraversalRejectionClause =
+        "a declared output name must be a bare file name — no directory separators or '..' segments, which could steer a write outside the execution's output directory";
 }
 
 /// <summary>A named output file role a <see cref="WorkerContract"/> requires.</summary>
@@ -64,6 +84,13 @@ public sealed record ProducedOutput
         {
             throw new ArgumentException(
                 $"ProducedOutput name '{Name}' is invalid: {ReservedOutputNames.RejectionClause}.",
+                nameof(Name));
+        }
+
+        if (ReservedOutputNames.IsPathTraversal(Name))
+        {
+            throw new ArgumentException(
+                $"ProducedOutput name '{Name}' is invalid: {ReservedOutputNames.PathTraversalRejectionClause}.",
                 nameof(Name));
         }
 

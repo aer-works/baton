@@ -47,12 +47,13 @@ public class OutcomeClassifierTests
         }
     }
 
-    // #1594: a missing declared output recovered from the worker's own terminal result envelope, via
-    // OutputMaterializer -- the three arms the issue's own acceptance item 4 asks for, plus the
-    // stdout-tail-is-too-short guard.
+    // #1594, conductor-writes shape (owner ruling, 2026-09-01, on #1606): a missing declared output's
+    // response recovered from the worker's own terminal result envelope, via OutputMaterializer, is
+    // now EXTRACTED into an engine-owned dotfile and ATTACHED as a room fact -- it never lands under
+    // the declared output name, and the verdict is always Failed(Permanent), never Succeeded.
 
     [Fact]
-    public void Classify_materializes_a_missing_output_from_the_response_parser_and_succeeds()
+    public void Classify_captures_a_missing_outputs_response_and_settles_Failed_Permanent_leaving_the_declared_output_unwritten()
     {
         var directory = CreateTempDirectory();
         try
@@ -64,13 +65,19 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("the worker's real answer"));
 
-            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
-            Assert.NotNull(classification.MaterializedOutputs);
-            Assert.Equal(["advice.md"], classification.MaterializedOutputs);
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.Permanent, classification.FailureClassification);
+            Assert.Equal(OutputMaterializer.CapturedResponseFileName, classification.CapturedResponseFile);
+            Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
+            Assert.Contains(OutputMaterializer.CapturedResponseFileName, classification.Reason);
+            Assert.Contains("awaiting conductor resolution", classification.Reason);
 
-            var written = File.ReadAllText(Path.Combine(directory, "advice.md"));
-            Assert.StartsWith(OutputMaterializer.MaterializedHeader, written);
-            Assert.Contains("the worker's real answer", written);
+            // The declared output directory is untouched -- its emptiness IS the honest state.
+            Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
+
+            var captured = File.ReadAllText(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName));
+            Assert.StartsWith(OutputMaterializer.CapturedResponseHeader, captured);
+            Assert.Contains("the worker's real answer", captured);
         }
         finally
         {
@@ -92,8 +99,10 @@ public class OutcomeClassifierTests
                 responseParser: new FakeResponseParser(response: null));
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Null(classification.MaterializedOutputs);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Null(classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
+            Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
         finally
         {
@@ -119,8 +128,10 @@ public class OutcomeClassifierTests
                 responseParser: new FakeResponseParser(response: null));
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Null(classification.MaterializedOutputs);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Null(classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
+            Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
         finally
         {
@@ -129,7 +140,7 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_never_materializes_a_mixed_population_of_missing_and_present_but_wrong_outputs()
+    public void Classify_never_captures_a_mixed_population_of_missing_and_present_but_wrong_outputs()
     {
         // Genuinely mixed (second-reader review, #1594): one output entirely absent (Missing), a
         // second one present but not JSON (NotJson) -- distinct from the single-output NotJson test
@@ -152,8 +163,10 @@ public class OutcomeClassifierTests
                 responseParser: new FakeResponseParser("the worker's real answer"));
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Null(classification.MaterializedOutputs);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Null(classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
+            Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
             Assert.Equal("not json", File.ReadAllText(Path.Combine(directory, "verdict.json")));
         }
         finally
@@ -163,7 +176,7 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_never_materializes_over_a_present_output_that_failed_for_a_different_reason()
+    public void Classify_never_captures_over_a_present_output_that_failed_for_a_different_reason()
     {
         var directory = CreateTempDirectory();
         try
@@ -179,7 +192,7 @@ public class OutcomeClassifierTests
                 responseParser: new FakeResponseParser("the worker's real answer"));
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Null(classification.MaterializedOutputs);
+            Assert.Null(classification.CapturedResponseFile);
             // Untouched: the real file a worker actually wrote must never be clobbered by the envelope.
             Assert.Equal("not json", File.ReadAllText(Path.Combine(directory, "verdict.json")));
         }
@@ -190,13 +203,12 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_never_writes_prose_into_a_missing_output_that_declares_a_schema()
+    public void Classify_never_captures_a_missing_output_that_declares_a_schema()
     {
         // Second-reader finding (#1594): a multi-output role like `review` declares report.md AND
         // verdict.json. If agy writes neither, both are Missing -- the naive "all Missing" gate would
-        // materialize prose into verdict.json too, which can never satisfy OutputSchema.ReviewVerdict,
-        // leaving a bogus, unrecorded file on disk (still Failed, so MaterializedOutputs stays null).
-        // Nothing must be written at all in this case, to either output.
+        // capture a response that can never resolve verdict.json (OutputSchema.ReviewVerdict), a
+        // capture that can only ever satisfy half the contract. Nothing must be captured at all.
         var directory = CreateTempDirectory();
         try
         {
@@ -211,9 +223,10 @@ public class OutcomeClassifierTests
                 responseParser: new FakeResponseParser("free-form prose, not a verdict"));
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Null(classification.MaterializedOutputs);
+            Assert.Null(classification.CapturedResponseFile);
             Assert.False(File.Exists(Path.Combine(directory, "report.md")));
             Assert.False(File.Exists(Path.Combine(directory, "verdict.json")));
+            Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
         finally
         {
@@ -222,10 +235,10 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_never_writes_prose_into_a_missing_json_output_with_no_declared_schema()
+    public void Classify_never_captures_a_missing_json_output_with_no_declared_schema()
     {
         // Second-reader finding (#1594): OutputSchema/OutputCondition is not the only signal that an
-        // output can't honestly hold prose. `orchestrate`'s turn-actions.json (WorkerRoles.json)
+        // output can't honestly resolve from prose. `orchestrate`'s turn-actions.json (WorkerRoles.json)
         // declares Schema: None yet is structurally JSON a downstream reader will try to parse as
         // such -- Missing-only + no-schema must still refuse a bare .json name.
         var directory = CreateTempDirectory();
@@ -239,8 +252,9 @@ public class OutcomeClassifierTests
                 responseParser: new FakeResponseParser("free-form prose"));
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Null(classification.MaterializedOutputs);
+            Assert.Null(classification.CapturedResponseFile);
             Assert.False(File.Exists(Path.Combine(directory, "turn-actions.json")));
+            Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
         finally
         {
@@ -249,12 +263,12 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_never_writes_prose_into_a_missing_diff_output_alongside_a_missing_report()
+    public void Classify_never_captures_a_missing_diff_output_alongside_a_missing_report_even_though_both_are_Missing()
     {
-        // Same finding, the `janitor` shape: janitor.md (prose-safe) + branch.diff (not), both
-        // Schema: None, both Missing. Neither must be written -- not even the prose-safe one --
-        // because writing report.md alone can never flip the verdict (branch.diff stays unsatisfied
-        // either way), so nothing should land on disk unrecorded.
+        // Same finding as the schema/json arms above, the `janitor` shape: janitor.md (prose-safe) +
+        // branch.diff (not), BOTH Missing (not a mixed-reason population -- this exercises the
+        // prose-unsafe check on its own, within an all-Missing set). A capture that can only ever
+        // resolve janitor.md and never branch.diff must not be recorded at all.
         var directory = CreateTempDirectory();
         try
         {
@@ -267,9 +281,10 @@ public class OutcomeClassifierTests
                 responseParser: new FakeResponseParser("ran the checkers, all green"));
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Null(classification.MaterializedOutputs);
+            Assert.Null(classification.CapturedResponseFile);
             Assert.False(File.Exists(Path.Combine(directory, "janitor.md")));
             Assert.False(File.Exists(Path.Combine(directory, "branch.diff")));
+            Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
         finally
         {
@@ -278,7 +293,38 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_does_not_materialize_when_no_response_parser_is_supplied()
+    public void Classify_captures_when_only_one_of_a_multioutput_contracts_declared_outputs_is_missing()
+    {
+        // Review F9: janitor.md missing, branch.diff present and valid -- the response is captured
+        // (janitor.md is the sole unsatisfied output, and it's prose-safe), branch.diff is
+        // byte-unchanged, and the declared output directory stays otherwise untouched.
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"ran the checkers, all green"}}""");
+            File.WriteAllText(Path.Combine(directory, "branch.diff"), "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n");
+            var contract = new WorkerContract(
+                "worker", [], [new ProducedOutput("janitor.md"), new ProducedOutput("branch.diff")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser("ran the checkers, all green"));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.Permanent, classification.FailureClassification);
+            Assert.Equal(OutputMaterializer.CapturedResponseFileName, classification.CapturedResponseFile);
+            Assert.Equal(["janitor.md"], classification.UnsatisfiedOutputNames);
+            Assert.False(File.Exists(Path.Combine(directory, "janitor.md")));
+            Assert.Equal("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n", File.ReadAllText(Path.Combine(directory, "branch.diff")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_does_not_capture_when_no_response_parser_is_supplied()
     {
         var directory = CreateTempDirectory();
         try
@@ -290,8 +336,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Null(classification.MaterializedOutputs);
+            Assert.Null(classification.CapturedResponseFile);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
+            Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
         finally
         {

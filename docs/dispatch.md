@@ -172,16 +172,30 @@ so a role that writes nothing fails loudly. The roles and their outputs are defi
 `src/Baton.Vendors/WorkerRoles.json` (authoritative); this table is a snapshot, pinned against that
 catalog by `WorkerRoleCatalogTests`.
 
-**"Succeeded" does not always mean the worker itself wrote the file (#1594).** If a plain-text
-output (`.md`/`.txt`/no extension, no declared `Schema`/`Condition` — `advice.md`, `changes.md`,
-`findings.md`, `janitor.md` above) is missing at settle time but the execution's own terminal result
-envelope carried a non-empty final response, the engine writes that response into the missing file in
-the worker's place and lets the room settle on the normal contract-satisfaction criteria — never
-silently: the written file's first line is a disclosure comment naming this mechanism, and the room's
-own `flow.jsonl` carries which output names were materialized this way. A structured output
-(`verdict.json`, `patch.diff`, `branch.diff`, `turn-actions.json` above) is never materialized this
-way — prose can't honestly stand in for a declared shape, so a lane missing one of these still fails
-exactly as before. See `src/Baton/Outcomes/OutputMaterializer.cs` for the mechanism.
+**A missing declared output is never silently filled in — the engine only ever captures and attaches,
+never writes (#1594, conductor-writes shape: owner ruling, 2026-09-01, on #1606).** If every
+unsatisfied output is missing (never present-but-wrong) at settle time, and the execution's own
+terminal result envelope carried a non-empty final response, the engine extracts that response into an
+engine-owned, dot-prefixed file in the execution's own output directory (`.captured-response.md`) and
+appends a `flow.jsonl` fact naming it plus the still-unsatisfied output names — never into the declared
+output name itself, and never silently: the captured file's first line is a disclosure comment, and the
+room's own `flow.jsonl` fact makes "a response was captured, awaiting resolution" readable from
+`baton status --json`/`terminal.json` without opening the execution directory. The room still settles
+`Failed` (`FailureClassification.Permanent`, so the engine never auto-retries against the same,
+still-unsatisfied workspace); only a conductor's own recorded resolution can turn a capture into a
+satisfied contract.
+
+The prose-safe/all-or-nothing rules that used to gate what the engine wrote now gate what a capture
+MAY later be resolved into: a plain-text output (`.md`/`.txt`/no extension, no declared
+`Schema`/`Condition` — `advice.md`, `changes.md`, `findings.md` above) can honestly be resolved from a
+captured response; a structured output (`verdict.json`, `patch.diff`, `turn-actions.json` above) can
+not — prose can't honestly stand in for a declared shape. `janitor`'s two outputs (`janitor.md`,
+`branch.diff`) are a mixed pair under this rule: `branch.diff` is not prose-safe, so a capture never
+fires while it is among the missing outputs (an all-or-nothing capture that could only ever resolve
+`janitor.md` is refused entirely) — a capture for this role is only possible when `janitor.md` alone is
+missing and `branch.diff` is already present and valid. See `src/Baton/Outcomes/OutputMaterializer.cs`
+for the mechanism; the `indeterminate` verdict and the conductor-side resolution verb itself are not
+built yet (#1608).
 
 | Role | Tier | Writes | For |
 |------|------|--------|-----|

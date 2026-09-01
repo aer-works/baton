@@ -43,9 +43,16 @@ public sealed record ProjectionCheckpointState(
     Dictionary<ExecutionId, ExecutionRequest> AcceptedRequestByExecutionId,
     HashSet<ExecutionId> CoreStartedExecutionIds,
     Dictionary<ExecutionId, CoreEvent.ExecutionExited> CoreExitedByExecutionId,
-    Dictionary<StepId, int>? ExecutionCountByStepId = null)
+    Dictionary<StepId, int>? ExecutionCountByStepId = null,
+    Dictionary<StepId, string?>? LatestCapturedResponseFileByStepId = null,
+    Dictionary<StepId, List<string>?>? LatestUnsatisfiedOutputNamesByStepId = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
+
+    /// <summary>#1594, conductor-writes shape. Absent from an older checkpoint's serialized JSON coalesces to empty here, same replay-safety shape as <see cref="ExecutionCountByStepId"/> — no <see cref="ProjectionCheckpoint.Version"/> bump needed.</summary>
+    public Dictionary<StepId, string?> LatestCapturedResponseFileByStepId { get; init; } = LatestCapturedResponseFileByStepId ?? new();
+
+    public Dictionary<StepId, List<string>?> LatestUnsatisfiedOutputNamesByStepId { get; init; } = LatestUnsatisfiedOutputNamesByStepId ?? new();
 
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
@@ -101,5 +108,7 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<ExecutionId, ExecutionRequest>(AcceptedRequestByExecutionId),
         new HashSet<ExecutionId>(CoreStartedExecutionIds),
         new Dictionary<ExecutionId, CoreEvent.ExecutionExited>(CoreExitedByExecutionId),
-        new Dictionary<StepId, int>(ExecutionCountByStepId));
+        new Dictionary<StepId, int>(ExecutionCountByStepId),
+        new Dictionary<StepId, string?>(LatestCapturedResponseFileByStepId),
+        LatestUnsatisfiedOutputNamesByStepId.ToDictionary(kvp => kvp.Key, kvp => kvp.Value is null ? null : new List<string>(kvp.Value)));
 }

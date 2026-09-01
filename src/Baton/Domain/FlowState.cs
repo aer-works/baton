@@ -149,6 +149,15 @@ public enum StepStatus
 /// <see cref="FailureClassification.ExhaustedUntil"/>, so the Status projector can derive a true
 /// execution ordinal.
 /// </param>
+/// <param name="LatestCapturedResponseFile">
+/// #1594, conductor-writes shape: the engine-owned, dot-prefixed file the latest attempt's
+/// <see cref="FlowEvent.ExecutionFailed.CapturedResponseFile"/> named, when that attempt's declared
+/// output(s) were missing but a response was recoverable. Null when the latest attempt did not fail
+/// this way, same "not recorded" semantics as <see cref="LatestFailureReason"/>.
+/// </param>
+/// <param name="LatestUnsatisfiedOutputNames">
+/// <see cref="FlowEvent.ExecutionFailed.UnsatisfiedOutputNames"/>, carried the same hop.
+/// </param>
 public sealed record StepState(
     StepId StepId,
     StepStatus Status,
@@ -166,7 +175,9 @@ public sealed record StepState(
     ExecutionId? RetryScheduledForExecutionId = null,
     DateTimeOffset? LatestExecutionFailedRetryNotBefore = null,
     ExecutionId? LinkedFromExecutionId = null,
-    int ExecutionCount = 0);
+    int ExecutionCount = 0,
+    string? LatestCapturedResponseFile = null,
+    IReadOnlyList<string>? LatestUnsatisfiedOutputNames = null);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

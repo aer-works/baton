@@ -15,7 +15,7 @@ namespace Baton.Vendors.Tests;
 public sealed class AgyOutputMaterializationEndToEndTests
 {
     [Fact]
-    public void TryMaterializeMissingOutputs_RealAgyResultLine_WritesTheWorkersOwnResponse()
+    public void TryCaptureFinalResponse_RealAgyResultLine_CapturesTheWorkersOwnResponse()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"agy-materialize-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
@@ -32,15 +32,90 @@ public sealed class AgyOutputMaterializationEndToEndTests
             var validation = ContractValidator.Validate(contract, directory);
             Assert.False(validation.IsSatisfied);
 
-            var written = OutputMaterializer.TryMaterializeMissingOutputs(validation, contract, directory, new AgyWorkerAdapter());
+            var captured = OutputMaterializer.TryCaptureFinalResponse(validation, contract, directory, new AgyWorkerAdapter());
 
-            Assert.Equal(["advice.md"], written);
-            var contents = File.ReadAllText(Path.Combine(directory, "advice.md"));
-            Assert.StartsWith(OutputMaterializer.MaterializedHeader, contents);
+            Assert.NotNull(captured);
+            Assert.Equal(OutputMaterializer.CapturedResponseFileName, captured.FileName);
+            Assert.Equal(["advice.md"], captured.UnsatisfiedOutputNames);
+
+            var contents = File.ReadAllText(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName));
+            Assert.StartsWith(OutputMaterializer.CapturedResponseHeader, contents);
             Assert.Contains("Created note.txt containing HELLO-WORLD.", contents);
 
+            // The declared output directory is untouched -- the declared output stays unsatisfied.
+            Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
             var revalidated = ContractValidator.Validate(contract, directory);
-            Assert.True(revalidated.IsSatisfied);
+            Assert.False(revalidated.IsSatisfied);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void TryCaptureFinalResponse_MultiLineStdoutLog_SelectsTheLastNonBlankLineAsTheResultLine()
+    {
+        // Review F3: a real agy stream log carries more than one line -- init/tool-use lines before
+        // the terminal result, and (this fixture) blank/whitespace-only lines after it, which a naive
+        // "first line" or "any non-blank line" scan would misread. Scanning backwards past the blanks
+        // must land on the actual result line and capture ITS response, not some earlier line's.
+        var directory = Path.Combine(Path.GetTempPath(), $"agy-materialize-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var lines = new[]
+            {
+                """{"event":"init","session_id":"abc123"}""",
+                """{"event":"tool_use","name":"Write","input":{"file_path":"note.txt"}}""",
+                """{"event":"result","result":{"conversation_id":"5ec0d582","status":"SUCCESS","response":"the real terminal answer","duration_seconds":3.6,"num_turns":1,"usage":{"input_tokens":1,"output_tokens":1,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":2}}}""",
+                "",
+                "  ",
+            };
+            File.WriteAllText(Path.Combine(directory, ".stdout.log"), string.Join("\n", lines) + "\n");
+
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+            var validation = ContractValidator.Validate(contract, directory);
+
+            var captured = OutputMaterializer.TryCaptureFinalResponse(validation, contract, directory, new AgyWorkerAdapter());
+
+            Assert.NotNull(captured);
+            var contents = File.ReadAllText(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName));
+            Assert.Contains("the real terminal answer", contents);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void TryCaptureFinalResponse_TrailingNonJsonLineAfterTheResultLine_RefusesExtraction()
+    {
+        // Polarity twin of the discrimination test above: the result line is present, but it is not
+        // the LAST non-blank line -- a trailing, non-JSON line (e.g. a stray log write after the
+        // terminal event) sits after it. The scan must not skip past a line the parser declines and
+        // fall back to an earlier one; it must refuse extraction entirely, same as any other
+        // undecodable last line. Mutating TryReadFinalResponse's scan direction (or making it continue
+        // past a declining line instead of returning) must turn this red.
+        var directory = Path.Combine(Path.GetTempPath(), $"agy-materialize-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var lines = new[]
+            {
+                """{"event":"result","result":{"conversation_id":"5ec0d582","status":"SUCCESS","response":"the real terminal answer","duration_seconds":3.6,"num_turns":1,"usage":{"input_tokens":1,"output_tokens":1,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":2}}}""",
+                "not json at all, a stray trailing write",
+            };
+            File.WriteAllText(Path.Combine(directory, ".stdout.log"), string.Join("\n", lines) + "\n");
+
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+            var validation = ContractValidator.Validate(contract, directory);
+
+            var captured = OutputMaterializer.TryCaptureFinalResponse(validation, contract, directory, new AgyWorkerAdapter());
+
+            Assert.Null(captured);
+            Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
         finally
         {

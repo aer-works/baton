@@ -1503,8 +1503,8 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// <see cref="TryParseResultEvent"/>, which reads <c>result</c> as an error summary on the
     /// <c>is_error: true</c> arm, this only ever reads it on the success arm
     /// (<c>is_error == false</c>) — an error turn's <c>result</c> text is a failure reason, not a
-    /// worker's answer, and writing one into a declared output would be a materialized failure
-    /// message masquerading as a real report. <c>is_error</c> is required, not defaulted, for the
+    /// worker's answer, and capturing one would be a failure message masquerading as a real report.
+    /// <c>is_error</c> is required, not defaulted, for the
     /// same reason <see cref="TryParseResultEvent"/> requires it: every observed envelope carries it,
     /// so its absence means an unfamiliar shape rather than a confirmed success.
     /// </summary>
