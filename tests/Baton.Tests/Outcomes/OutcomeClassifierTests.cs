@@ -47,10 +47,10 @@ public class OutcomeClassifierTests
         }
     }
 
-    // #1594, conductor-writes shape (owner ruling, 2026-09-01, on #1606): a missing declared output's
-    // response recovered from the worker's own terminal result envelope, via OutputMaterializer, is
-    // now EXTRACTED into an engine-owned dotfile and ATTACHED as a room fact -- it never lands under
-    // the declared output name, and the verdict is always Failed(Permanent), never Succeeded.
+    // #1594 (see OutputMaterializer's class remarks for the ruling): a missing declared output's
+    // response recovered from the worker's own terminal result envelope is EXTRACTED into an
+    // engine-owned dotfile and ATTACHED as a room fact -- it never lands under the declared output
+    // name, and the verdict is always Failed(Permanent), never Succeeded.
 
     [Fact]
     public void Classify_captures_a_missing_outputs_response_and_settles_Failed_Permanent_leaving_the_declared_output_unwritten()
