@@ -248,8 +248,8 @@ public sealed class ExecutionUsageProjectorTests
     [Fact]
     public void A_recorded_adapter_wins_over_bindings_json_even_after_failover_edits_the_file()
     {
-        // Issue #1567 (quota-design S1, full design in the 2026-09-01 proposal comment on #802), the
-        // keystone defect: ExecutionUsageProjector used to recover
+        // Issue #1567, quota-design S1 (see ExecutionRequest.Adapter's doc comment for the full design
+        // citation), the keystone defect: ExecutionUsageProjector used to recover
         // the vendor by reading bindings.json's CURRENT Adapter at read time. Failover editing that
         // file after this execution completed used to retroactively re-attribute it to the new
         // vendor -- silently, with plausible output. This execution's own ExecutionRequestAccepted
