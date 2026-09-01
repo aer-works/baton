@@ -550,6 +550,7 @@ def _shell_rules_leak_everywhere():
 
 RECORDONCE = "the record-once checker fires on restated prose, not on text the register prescribes"
 RECORDONCE_PIN = "the record-once checker still finds the passages it found in a real merge"
+RECORDONCE_APPLIES = "the record-once checker applies every exclusion reason to its changed-file population"
 
 
 @control(RECORDONCE, "the checker stops finding anything, so every restatement ships green")
@@ -703,6 +704,36 @@ def _recordonce_reads_index_rows():
 @control(RECORDONCE_PIN, "the pin is emptied, so the checker can stop finding anything and stay green")
 def _recordonce_pin_is_vacuous():
     with _loading_recordonce_as(lambda m: replacing(m, "PROVEN_GROUPS", ())):
+        yield
+
+
+@control(RECORDONCE_APPLIES, "main() ignores an exclusion reason returned by the classifier (#1465's defect)")
+def _recordonce_ignores_exclusion_reason():
+    # Simulate #1465: a reason exists in excluded_from_comparison, but main() skips deleting it.
+    def omit_del_block(mod):
+        def buggy_main(argv):
+            base = argv[1] if len(argv) > 1 else "origin/main"
+            try:
+                by_file = mod.added_lines_by_file(base)
+            except Exception:
+                return 1
+            # Apply only changelog, deliberately omitting restored-decision
+            skipped = sorted(p for p in by_file if mod.excluded_from_comparison(p) == "changelog")
+            for p in skipped:
+                del by_file[p]
+            print(f"record-once: {len(by_file)} changed file(s) against {base}")
+            at_head = lambda path: mod.file_at(path, "HEAD")
+            problems = mod.violations(by_file, at_head)
+            if not problems:
+                print(" OK no wording was added to more than one file")
+                return 0
+            for p in problems:
+                print(p, file=sys.stderr)
+            return 1
+
+        replacing(mod, "main", buggy_main)
+
+    with _loading_recordonce_as(omit_del_block):
         yield
 
 
