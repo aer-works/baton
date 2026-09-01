@@ -246,6 +246,102 @@ public sealed class ExecutionUsageProjectorTests
     }
 
     [Fact]
+    public void A_recorded_adapter_wins_over_bindings_json_even_after_failover_edits_the_file()
+    {
+        // Issue #1567 (quota-design S1), the keystone defect: ExecutionUsageProjector used to recover
+        // the vendor by reading bindings.json's CURRENT Adapter at read time. Failover editing that
+        // file after this execution completed used to retroactively re-attribute it to the new
+        // vendor -- silently, with plausible output. This execution's own ExecutionRequestAccepted
+        // now records "agy" as the adapter it actually ran through; bindings.json has since been
+        // rebound "plan" to "claude". The recorded value must win.
+        //
+        // The two vendors' terminal-usage envelopes are shaped differently (AgyUsageParser needs
+        // "event":"result" wrapping a nested "result" object; ClaudeUsageParser needs a flat
+        // "type":"result"), so picking the wrong parser for a captured agy line doesn't produce a
+        // plausible wrong number here -- it fails to parse at all, silently losing real token/turn
+        // data for an execution that genuinely has it. That silent loss is exactly what this test
+        // pins: this fails against current main, where bindings.json's post-failover "claude" wins
+        // and ClaudeUsageParser can't read the agy-shaped line.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-failover-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-failed-over");
+            var start = DateTime.UtcNow;
+            WriteBindings(testRoot, ("plan", "claude"));
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId, "plan", adapter: "agy"))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(3)),
+            };
+
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+            File.WriteAllText(
+                Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName),
+                """{"event":"result","result":{"num_turns":5,"usage":{"input_tokens":21,"output_tokens":13}}}""" + "\n");
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot);
+
+            var view = Assert.Single(usage).Value;
+            Assert.Equal(21, view.TokensIn);
+            Assert.Equal(13, view.TokensOut);
+            Assert.Equal(5, view.Turns);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void Recorded_adapter_absent_falls_back_to_bindings_json_recorded_adapter_present_ignores_it()
+    {
+        // Polarity, both directions, made observable via CommandWorkerAdapter (#1360 F1's spoof
+        // regression above already proves a mismatched adapter parses nothing): bindings.json names
+        // "command" for this worker, which never overrides TryParseFinalUsage, so a claude-shaped
+        // usage line yields no token fields when attribution falls through to bindings.json -- but
+        // yields real fields when the recorded Adapter overrides bindings.json with "claude" instead.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-polarity-{Guid.NewGuid():N}");
+        try
+        {
+            WriteBindings(testRoot, ("plan", CommandWorkerAdapter.AdapterName));
+
+            var noRecordedAdapter = new ExecutionId("exec-no-recorded-adapter");
+            var recordedAdapterPresent = new ExecutionId("exec-recorded-adapter-present");
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(noRecordedAdapter, "plan", adapter: null))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(noRecordedAdapter, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(noRecordedAdapter, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(recordedAdapterPresent, "plan", adapter: "claude"))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(recordedAdapterPresent, Pid: 2), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(recordedAdapterPresent, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+            };
+
+            foreach (var id in new[] { noRecordedAdapter, recordedAdapterPresent })
+            {
+                var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, id);
+                Directory.CreateDirectory(outputDir);
+                File.WriteAllText(
+                    Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName),
+                    """{"type":"result","num_turns":2,"usage":{"input_tokens":8,"output_tokens":4}}""" + "\n");
+            }
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot);
+
+            Assert.Null(usage[noRecordedAdapter.Value].TokensIn);
+            Assert.Equal(8, usage[recordedAdapterPresent.Value].TokensIn);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public void An_execution_with_no_ExecutionRequestAccepted_record_yields_no_token_fields_even_with_a_matching_bindings_entry()
     {
         // #1360 F1: attribution needs BOTH halves -- a worker-role name from the ledger AND that
@@ -283,7 +379,7 @@ public sealed class ExecutionUsageProjectorTests
         }
     }
 
-    private static ExecutionRequest AcceptedRequest(ExecutionId executionId, string worker) => new(
+    private static ExecutionRequest AcceptedRequest(ExecutionId executionId, string worker, string? adapter = null) => new(
         executionId,
         new WorkflowId("wf-usage-test"),
         new StepId(worker),
@@ -292,7 +388,8 @@ public sealed class ExecutionUsageProjectorTests
         Outputs: [],
         Timeout: TimeSpan.FromSeconds(30),
         Environment: [],
-        UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+        UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+        Adapter: adapter);
 
     private static void WriteBindings(string roomDirectoryPath, params (string WorkerName, string Adapter)[] entries)
     {

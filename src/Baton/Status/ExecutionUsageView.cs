@@ -35,10 +35,14 @@ public sealed record ExecutionUsageView(
 /// <para>
 /// Token/turn counts are read from the execution's already-captured <c>.stdout.log</c>
 /// (<see cref="ExecutionStreamLogger"/>) — never a new ledger event, per the issue's own preference
-/// for deriving over recording twice. Reconstructs just enough worker-binding context:
-/// <see cref="FlowEvent.ExecutionRequestAccepted"/> in <paramref name="entries"/> names the execution's
-/// worker role, and (when <paramref name="roomDirectoryPath"/> is supplied and the room's <c>bindings.json</c>
-/// still exists) that role's own config entry names the adapter it was actually dispatched through. Only that one
+/// for deriving over recording twice. Resolves which adapter's parser to trust in one of two ways:
+/// when <see cref="FlowEvent.ExecutionRequestAccepted"/>'s <see cref="ExecutionRequest.Adapter"/> is
+/// recorded (issue #1567), that value is used directly — it is what this execution actually
+/// dispatched through, frozen at accept time. Only when it is absent (a journal line written before
+/// #1567 landed) does this fall back to the room's <em>current</em> <c>bindings.json</c>, keyed by
+/// the accepted request's worker role — the pre-#1567 behavior, kept only for that older population,
+/// since a room's adapter binding can change after an execution completes (failover) and the current
+/// file no longer necessarily names what an old execution actually ran through. Only the resolved
 /// adapter's <see cref="IWorkerUsageParser.TryParseFinalUsage"/> is tried, and only against the last
 /// non-blank line of the captured stream.
 /// </para>
@@ -67,12 +71,17 @@ public static class ExecutionUsageProjector
         var startedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var exitedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var workerNameByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
+        var recordedAdapterByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
 
         foreach (var entry in entries)
         {
             if (entry is LogEntry.FlowLogEntry { Event: FlowEvent.ExecutionRequestAccepted accepted })
             {
                 workerNameByExecutionId[accepted.Request.ExecutionId.Value] = accepted.Request.Worker;
+                if (accepted.Request.Adapter is { Length: > 0 } recordedAdapter)
+                {
+                    recordedAdapterByExecutionId[accepted.Request.ExecutionId.Value] = recordedAdapter;
+                }
             }
 
             if (entry is not LogEntry.CoreLogEntry { WriterUtcTimestamp: { } timestamp } coreEntry)
@@ -113,7 +122,8 @@ public static class ExecutionUsageProjector
             }
 
             workerNameByExecutionId.TryGetValue(executionId, out var workerName);
-            var usage = TryReadWorkerUsage(artifactsRootPath, executionId, workerName, bindings, adapters);
+            recordedAdapterByExecutionId.TryGetValue(executionId, out var recordedAdapter);
+            var usage = TryReadWorkerUsage(artifactsRootPath, executionId, workerName, recordedAdapter, bindings, adapters);
             result[executionId] = new ExecutionUsageView(wallClockMs, usage?.TokensIn, usage?.TokensOut, usage?.Turns);
         }
 
@@ -170,13 +180,23 @@ public static class ExecutionUsageProjector
         string artifactsRootPath,
         string executionId,
         string? workerName,
+        string? recordedAdapter,
         IReadOnlyDictionary<string, string> bindings,
         IReadOnlyDictionary<string, TParser>? adapters)
         where TParser : IWorkerUsageParser
     {
-        if (workerName is null
+        // #1567: the recorded adapter (frozen on ExecutionRequest at accept time) wins whenever it's
+        // present. The bindings.json read below is a fallback for journal lines written before that
+        // field existed only — bindings.json is the room's CURRENT config, which failover can rebind
+        // after this execution already completed.
+        var adapterName = recordedAdapter;
+        if (adapterName is null && workerName is not null)
+        {
+            bindings.TryGetValue(workerName, out adapterName);
+        }
+
+        if (adapterName is null
             || adapters is null
-            || !bindings.TryGetValue(workerName, out var adapterName)
             || !adapters.TryGetValue(adapterName, out var adapter))
         {
             return null;

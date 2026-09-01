@@ -34,6 +34,23 @@ namespace Baton.Domain;
 /// actually continued, rather than trusting an unrecorded assertion. <c>null</c> for every ordinary
 /// dispatch and retry, same as <paramref name="LinkedFromExecutionId"/>.
 /// </param>
+/// <param name="Adapter">
+/// The vendor adapter this execution actually dispatched through (e.g. <c>"claude"</c>,
+/// <c>"agy"</c>), recorded at accept time (issue #1567, quota-design S1). Before this field existed,
+/// <see cref="Status.ExecutionUsageProjector"/> recovered the vendor by reading <c>Adapter</c> out of
+/// the room's <em>current</em> <c>bindings.json</c> at read time — harmless only because a room's
+/// adapter never changed mid-run. Failover changes that: rebinding <c>bindings.json</c> after this
+/// execution completed would silently re-attribute it to the new vendor. <c>null</c>, same defaulting
+/// rule as <see cref="FlowEvent.ExecutionFailed.Reason"/>, for every <c>flow.jsonl</c> line written
+/// before this field existed — an older journal must still replay, and its attribution still falls
+/// back to the bindings.json read this field exists to stop relying on.
+/// </param>
+/// <param name="Model">
+/// The model string this execution actually dispatched with, recorded alongside
+/// <paramref name="Adapter"/> for the same reason. <c>null</c> for every pre-existing journal line and
+/// for a non-process (<see cref="Mutation.WorkerBinding.NonProcess"/>) dispatch, which has no vendor
+/// model to name.
+/// </param>
 public sealed record ExecutionRequest(
     ExecutionId ExecutionId,
     WorkflowId WorkflowId,
@@ -46,4 +63,6 @@ public sealed record ExecutionRequest(
     IReadOnlyDictionary<StepId, ExecutionId> UpstreamExecutionIds,
     GrantAuditMode? GrantAuditMode = null,
     ExecutionId? LinkedFromExecutionId = null,
-    string? SessionId = null);
+    string? SessionId = null,
+    string? Adapter = null,
+    string? Model = null);
