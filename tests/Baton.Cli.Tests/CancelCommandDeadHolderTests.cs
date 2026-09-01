@@ -11,17 +11,13 @@ using Baton.Vendors;
 namespace Baton.Cli.Tests;
 
 /// <summary>
-/// #1586: a room whose <c>baton run</c> pump crashed while it held <c>flow.lock</c> — most visibly,
-/// mid-wait on a vendor-quota park's <c>RetryNotBefore</c> — leaves the OS lock free (release is
-/// automatic on process exit) but its <c>flow.lock.holder</c> sidecar stale, still naming the dead
-/// pump's pid. Measured against a copy of a real such room (issue #1586's own conductor run):
-/// <c>baton cancel</c> acquired the free lock, overwrote the sidecar with its own identity —
-/// destroying the record of which engine died — journalled a too-late <c>CancellationRequested</c>,
-/// and then hung, because <c>MutationInterface</c>'s pump re-enters the identical
-/// <c>Task.Delay</c> the dead pump was in for the same doomed retry. This file proves the fix: a
-/// dead holder is refused before any of that happens, and the sidecar is never touched.
-/// <see cref="CancelCommandWorkflowLockedFallThroughTests"/> is this file's control arm — a genuinely
-/// live holder (the lock is still OS-held) must still fall through unchanged.
+/// Proves the #1586 dead-holder fail-fast at <see cref="CancelCommand"/>'s own dead-holder-check
+/// comment — the mechanism it guards against (what a crashed mid-park pump leaves behind, and what
+/// the old behaviour did about it) is documented at that call site, not repeated here. This file
+/// asserts the fix's two externally-observable halves: the refusal fires before any lock acquire, and
+/// the holder sidecar survives byte-for-byte. <see cref="CancelCommandWorkflowLockedFallThroughTests"/>
+/// is this file's control arm — a genuinely live holder (the lock is still OS-held) must still fall
+/// through unchanged.
 /// </summary>
 public class CancelCommandDeadHolderTests
 {
