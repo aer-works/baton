@@ -42,11 +42,18 @@ public sealed record WorkerCapabilities(
 /// </summary>
 /// <param name="Kind">
 /// <c>"status"</c> (a lifecycle marker — session started, waiting on the vendor), <c>"text"</c> (a
-/// chunk of the assistant's reply, complete or partial per <paramref name="IsPartial"/>), or
-/// <c>"tool"</c> (the assistant is invoking a tool — <paramref name="Text"/> names it). Deliberately
-/// a small closed-ish vocabulary a UI can switch on, not the vendor's own raw event-type string.
+/// chunk of the assistant's reply, complete or partial per <paramref name="IsPartial"/>),
+/// <c>"tool"</c> (the assistant is invoking a tool — <paramref name="Text"/> names it),
+/// <c>"result"</c> (issue #1561 — a turn's completion status/error summary, e.g. why a lane failed),
+/// or <c>"ignore"</c> (issue #1561 — the adapter recognized this envelope and deliberately decided it
+/// carries no signal worth rendering, e.g. a claude `thinking`-only content block or an agy
+/// <c>step_update</c> ACTIVE edge; a consumer stays quiet on this Kind, distinct from <c>false</c>
+/// from <see cref="IWorkerAdapter.TryParseProgressEvent"/> itself, which means the adapter did not
+/// recognize the envelope at all — a consumer that never swallows should echo verbatim on <c>false</c>
+/// but stay quiet on <c>"ignore"</c>). Deliberately a small closed-ish vocabulary a UI can switch on,
+/// not the vendor's own raw event-type string.
 /// </param>
-/// <param name="Text">Human-readable text for this event — the delta/message text for <c>"text"</c>, the tool name for <c>"tool"</c>, or a short status label. Never null.</param>
+/// <param name="Text">Human-readable text for this event — the delta/message text for <c>"text"</c>, the tool name for <c>"tool"</c>, or a short status/result label. Never null.</param>
 /// <param name="IsPartial">
 /// True for a token-level delta that will be followed by more text in the same turn (Claude's
 /// <c>--include-partial-messages</c> stream events); false for a complete, already-whole unit (a

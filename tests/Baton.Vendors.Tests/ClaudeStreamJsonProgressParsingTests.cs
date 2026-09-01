@@ -76,19 +76,99 @@ public sealed class ClaudeStreamJsonProgressParsingTests
     }
 
     [Fact]
-    public void TryParseProgressEvent_ResultLine_ReturnsFalse()
+    public void TryParseProgressEvent_ErrorResultLine_ReturnsResultKindWithErrorSummary()
     {
-        // Captured verbatim; the "result" envelope is a turn-completion summary, not in-turn
-        // progress -- ExecuteSessionTurnAsync already reads the durable reply from the declared
-        // output file, so this type is deliberately not surfaced as a progress event.
+        // Captured verbatim (a real, unauthenticated claude run). Since #1561, the "result"
+        // envelope surfaces as a turn-completion status/error summary -- the one line that carries
+        // WHY a lane failed -- even though ExecuteSessionTurnAsync separately reads the durable
+        // reply from the declared output file rather than from this progress event.
         const string line = """
             {"type":"result","subtype":"success","is_error":true,"duration_ms":29,"num_turns":1,"result":"Not logged in","stop_reason":"stop_sequence","session_id":"16ab91d3-511f-46ad-ade5-c946b7c9e2f7"}
             """;
 
         var parsed = _adapter.TryParseProgressEvent(line, out var progressEvent);
 
+        Assert.True(parsed);
+        Assert.Equal("result", progressEvent!.Kind);
+        Assert.Equal("error — Not logged in", progressEvent.Text);
+    }
+
+    [Fact]
+    public void TryParseProgressEvent_SuccessfulResultLine_ReturnsResultKindWithSuccessText()
+    {
+        // Polarity check against the error-result test above: a successful turn renders too,
+        // rather than silently vanishing the way every "result" line used to before #1561.
+        const string line = """
+            {"type":"result","subtype":"success","is_error":false,"duration_ms":29,"num_turns":1,"result":"done","session_id":"16ab91d3-511f-46ad-ade5-c946b7c9e2f7"}
+            """;
+
+        var parsed = _adapter.TryParseProgressEvent(line, out var progressEvent);
+
+        Assert.True(parsed);
+        Assert.Equal("result", progressEvent!.Kind);
+        Assert.Equal("success", progressEvent.Text);
+    }
+
+    [Fact]
+    public void TryParseProgressEvent_ResultLineMissingIsError_ReturnsFalse()
+    {
+        // #1561 second-reader review: every observed result envelope carries is_error (both
+        // polarities). Without it, rendering "success" would be a guess, not an observation -- must
+        // return false (unknown shape) so EchoStreamJsonLine's fallback echoes the raw line instead
+        // of asserting a status it can't back up.
+        const string line = """{"type":"result","subtype":"error_during_execution","session_id":"x"}""";
+
+        var parsed = _adapter.TryParseProgressEvent(line, out var progressEvent);
+
         Assert.False(parsed);
         Assert.Null(progressEvent);
+    }
+
+    [Fact]
+    public void TryParseProgressEvent_ErrorResultWithNonStringResultField_ReturnsResultKindWithFallbackText()
+    {
+        // #1561 second-reader review: `result` isn't always a string (the field is vendor-controlled
+        // JSON) -- an object there must not throw InvalidOperationException off GetString(), which
+        // would escape past EchoStreamJsonLine on the dispatch thread. Falls back to a generic label.
+        const string line = """{"type":"result","is_error":true,"result":{"code":42}}""";
+
+        var parsed = _adapter.TryParseProgressEvent(line, out var progressEvent);
+
+        Assert.True(parsed);
+        Assert.Equal("result", progressEvent!.Kind);
+        Assert.Equal("error — no error detail in the result envelope", progressEvent.Text);
+    }
+
+    [Fact]
+    public void TryParseProgressEvent_SystemHookLifecycleSubtype_ReturnsIgnoreKind()
+    {
+        // #1561 second-reader review: a `system` envelope this adapter recognizes (the top-level
+        // `type`) but whose subtype carries no user-facing signal is a deliberate filter, not an
+        // unknown shape -- Kind "ignore", not false, so EchoStreamJsonLine stays quiet on it rather
+        // than dumping raw JSON the way the never-swallow fallback would for a genuinely unknown type.
+        const string line = """{"type":"system","subtype":"hook_started","session_id":"x"}""";
+
+        var parsed = _adapter.TryParseProgressEvent(line, out var progressEvent);
+
+        Assert.True(parsed);
+        Assert.Equal("ignore", progressEvent!.Kind);
+    }
+
+    [Fact]
+    public void TryParseProgressEvent_AssistantThinkingOnlyBlock_ReturnsIgnoreKind()
+    {
+        // #1561 second-reader review: captured from the same #1540 lane run
+        // docs/vendor-capabilities.md's evidence quote traces to -- an extended-thinking turn emits a
+        // `thinking`-only assistant message once per turn on the primary path. Pre-fix this fell
+        // through TryParseAssistantEvent's loop to `return false`, so the never-swallow fallback this
+        // issue added would have dumped the raw envelope (base64 signature included) every turn.
+        // Kind "ignore" keeps it quiet, matching pre-#1561 behavior.
+        const string line = """{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"","signature":"abc123"}]}}""";
+
+        var parsed = _adapter.TryParseProgressEvent(line, out var progressEvent);
+
+        Assert.True(parsed);
+        Assert.Equal("ignore", progressEvent!.Kind);
     }
 
     [Fact]

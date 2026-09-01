@@ -415,10 +415,11 @@ public static class RunCommand
     }
 
     /// <summary>
-    /// Creates the worker stdout echo callback for <c>--echo-worker</c> (#882, #1540).
-    /// For bindings with <c>StreamJson: true</c>, parses stream-json lines and emits only human-relevant
-    /// content (assistant text and tool-use markers); malformed lines echo verbatim. Non-streaming
-    /// bindings echo every stdout line verbatim.
+    /// Creates the worker stdout echo callback for <c>--echo-worker</c> (#882, #1540, #1561).
+    /// For bindings with <c>StreamJson: true</c>, parses stream-json lines via <see cref="EchoStreamJsonLine"/>
+    /// (never-swallow: see that method's own doc comment for what renders specially versus echoes
+    /// verbatim, including when <paramref name="adapters"/> has no entry for the binding's adapter).
+    /// Non-streaming bindings echo every stdout line verbatim.
     /// </summary>
     internal static Action<string, string> CreateEchoWorkerCallback(
         IReadOnlyDictionary<string, WorkerBindingConfigEntry> bindings,
@@ -440,10 +441,18 @@ public static class RunCommand
     }
 
     /// <summary>
-    /// Renders one stdout line from a <c>StreamJson</c> worker to <paramref name="writer"/> (#1540).
-    /// Human-relevant text (assistant messages/deltas, tool-use markers) is extracted and printed;
-    /// non-text structural stream envelopes (system lifecycle, rate limits, usage results) are filtered;
-    /// malformed/non-JSON lines echo verbatim.
+    /// Renders one stdout line from a <c>StreamJson</c> worker to <paramref name="writer"/> (#1540, #1561).
+    /// Human-relevant text (assistant messages/deltas, tool-use markers, in-turn status heartbeats, a
+    /// completed turn's status/error summary) is extracted and printed; malformed/non-JSON lines echo
+    /// verbatim. A recognized envelope the adapter deliberately filters (<see cref="WorkerProgressEvent"/>
+    /// Kind <c>"ignore"</c> — a claude `thinking`-only block, an agy step_update ACTIVE edge) stays
+    /// quiet, same as before #1561. Everything else — a valid-JSON <c>type</c>/<c>event</c> no adapter
+    /// recognises at all (a vendor's <c>user</c> tool-result echo today, anything the vendor adds
+    /// tomorrow), or a <see cref="WorkerProgressEvent.Kind"/> this switch has no arm for — echoes
+    /// verbatim rather than vanishing: nothing valid-JSON this method sees is silently dropped without
+    /// the adapter having explicitly decided to drop it. The <c>default</c> arm below is defensive
+    /// (today's Kind vocabulary — text/tool/status/result/ignore — is fully covered above); it is what
+    /// keeps a future Kind added without a matching case here failing safe instead of vanishing again.
     /// </summary>
     internal static void EchoStreamJsonLine(string line, IWorkerAdapter? adapter, TextWriter writer)
     {
@@ -480,7 +489,28 @@ public static class RunCommand
                 case "tool":
                     writer.WriteLine($"[tool: {progressEvent.Text}]");
                     break;
+                case "status":
+                    writer.WriteLine($"[status: {progressEvent.Text}]");
+                    break;
+                case "result":
+                    writer.WriteLine($"[result: {progressEvent.Text}]");
+                    break;
+                case "ignore":
+                    // The adapter recognized this envelope and deliberately decided it carries no
+                    // signal (e.g. a claude `thinking`-only block, an agy step_update ACTIVE edge) —
+                    // stay quiet. Distinct from the unrecognized-envelope fallback below: this is a
+                    // known shape the adapter chose not to surface, not one it failed to parse.
+                    break;
+                default:
+                    // A Kind this switch doesn't render yet — never swallow it silently.
+                    writer.WriteLine(line);
+                    break;
             }
+        }
+        else
+        {
+            // Valid JSON, but no adapter or no adapter that recognises this envelope — never swallow it.
+            writer.WriteLine(line);
         }
     }
 }

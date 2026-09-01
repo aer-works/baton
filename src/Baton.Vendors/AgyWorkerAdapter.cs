@@ -962,8 +962,10 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <c>"event"</c> — <c>init</c>, <c>step_update</c>, <c>result</c> — NOT claude's <c>"type"</c>, so
     /// this is a genuinely different parse, not a mirror of <see cref="ClaudeWorkerAdapter"/>. Confirmed
     /// against a live agy 1.1.11 run. Granularity is <b>step-level</b>: <c>step_update</c> is a heartbeat
-    /// naming the current step (assistant/tool/…), and the full answer text arrives only in the terminal
-    /// <c>result</c> event — agy does not stream token-by-token deltas the way claude's
+    /// naming the current step (assistant/tool/…); the terminal <c>result</c> event carries either the
+    /// full answer text (Kind <c>"text"</c>, <c>status: "SUCCESS"</c>) or, since #1561, a status/error
+    /// summary (Kind <c>"result"</c>, any other <c>status</c> — the failure reason a non-streaming
+    /// echo consumer needs). agy does not stream token-by-token deltas the way claude's
     /// <c>--include-partial-messages</c> does. A line split across a stdout chunk boundary throws
     /// <see cref="JsonException"/> and is treated as "not a progress event", exactly as the claude parser
     /// does; the daemon's line assembler delivers whole lines in practice.
@@ -1012,6 +1014,40 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                         && result.TryGetProperty("response", out var responseProp)
                         && responseProp.GetString() is { Length: > 0 } response:
                     progressEvent = new WorkerProgressEvent("text", response);
+                    return true;
+
+                // #1561: a non-SUCCESS result (e.g. quota exhaustion — #1128's real captured
+                // execution eca57a30, see AgyWorkerAdapterTests.Quota_refusal_on_the_stdout_tail_alone_classifies_ExhaustedUntil)
+                // carries an empty `response`, so the case above never matches it and this line used
+                // to fall through to `default => false`, silently dropping the one line that says WHY
+                // the agy lane failed — the same gap ClaudeWorkerAdapter.TryParseResultEvent closes on
+                // the claude side. `status` (not response-emptiness) is the correct signal:
+                // IsTerminalSuccessLine above already keys the #1089 hang guard on that same field.
+                case "result"
+                    when root.TryGetProperty("result", out var errorResult)
+                        && errorResult.TryGetProperty("status", out var statusProp)
+                        && statusProp.ValueKind == JsonValueKind.String
+                        && statusProp.GetString() is { Length: > 0 } status
+                        && status != "SUCCESS":
+                    var errorText = errorResult.TryGetProperty("error", out var errorProp)
+                        && errorProp.ValueKind == JsonValueKind.String
+                        && errorProp.GetString() is { Length: > 0 } detail
+                        ? detail
+                        : "no error detail in the result envelope";
+                    progressEvent = new WorkerProgressEvent("result", "error — " + errorText);
+                    return true;
+
+                // Recognized `step_update`/`result` shapes that neither case above matched — the
+                // ACTIVE edge, an unknown/checkpoint/user_input DONE step, or a SUCCESS result with an
+                // empty response — deliberately carry no signal (#1561 second-reader review: measured
+                // 144 ACTIVE `step_update` lines plus the echoed user prompt in one real capture; the
+                // pre-#1561 code silently dropped these the same way, via `default => false`, which
+                // is indistinguishable from "unrecognized event" now that unrecognized events echo
+                // verbatim). A bare, unguarded case for each so an actually-new `event` value the
+                // top-level switch has never seen still falls to `default` below and echoes verbatim.
+                case "step_update":
+                case "result":
+                    progressEvent = new WorkerProgressEvent("ignore", string.Empty);
                     return true;
 
                 default:
