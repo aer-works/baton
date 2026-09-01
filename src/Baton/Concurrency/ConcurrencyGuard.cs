@@ -231,9 +231,13 @@ public sealed class ConcurrencyGuard : IDisposable
 
     /// <summary>
     /// Reads the holder sidecar file <c>flow.lock.holder</c> for <paramref name="roomDirectoryPath"/> if present and readable.
-    /// Tolerates absence/unreadability by returning null for both fields.
+    /// Tolerates absence/unreadability by returning null for all three fields. <c>Pid</c> is what
+    /// #1586's dead-holder check (<c>Baton.Cli.CancelCommand</c>) reads before ever calling
+    /// <see cref="Acquire"/> — the sidecar records it unconditionally (<see cref="LockHolderInfo"/>'s
+    /// <c>Pid</c> is always <see cref="Environment.ProcessId"/>, never the caller-supplied
+    /// description), so it is trustworthy even when <c>HolderDescription</c> is a generic default.
     /// </summary>
-    public static (string? HolderDescription, DateTime? AcquiredAtUtc) ReadHolderInfo(string roomDirectoryPath)
+    public static (string? HolderDescription, int? Pid, DateTime? AcquiredAtUtc) ReadHolderInfo(string roomDirectoryPath)
     {
         return ReadHolderInfoCore(roomDirectoryPath, FlowHolderFileName);
     }
@@ -244,13 +248,14 @@ public sealed class ConcurrencyGuard : IDisposable
     /// </summary>
     public static (string? HolderDescription, DateTime? AcquiredAtUtc) ReadRoomEventsHolderInfo(string roomDirectoryPath)
     {
-        return ReadHolderInfoCore(roomDirectoryPath, RoomEventsHolderFileName);
+        var (description, _, acquiredAtUtc) = ReadHolderInfoCore(roomDirectoryPath, RoomEventsHolderFileName);
+        return (description, acquiredAtUtc);
     }
 
-    private static (string? HolderDescription, DateTime? AcquiredAtUtc) ReadHolderInfoCore(string roomDirectoryPath, string holderFileName)
+    private static (string? HolderDescription, int? Pid, DateTime? AcquiredAtUtc) ReadHolderInfoCore(string roomDirectoryPath, string holderFileName)
     {
         var info = TryReadHolderInfoCore(roomDirectoryPath, holderFileName);
-        return (info?.HolderDescription, info?.AcquiredAtUtc);
+        return (info?.HolderDescription, info?.Pid, info?.AcquiredAtUtc);
     }
 
     private static LockHolderInfo? TryReadHolderInfoCore(string roomDirectoryPath, string holderFileName)

@@ -4,6 +4,7 @@ using Baton.Concurrency;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Outcomes;
 using Baton.Projection;
 using Baton.Status;
 using Baton.Store;
@@ -80,13 +81,56 @@ public static class CancelCommand
         }
 
         var snapshot = await SnapshotBinder.LoadFromFileAsync(snapshotPath, cancellationToken).ConfigureAwait(false);
+        var reader = new FlowEventLogReader(logPath);
+
+        // #1586: measured against a copy of a real quota-parked room whose engine died — 'baton
+        // cancel' acquired flow.lock (the OS releases a crashed holder's lock immediately, so the
+        // acquire itself never fails), overwrote flow.lock.holder (destroying the record of which
+        // engine died), journalled a CancellationRequested, and then hung: PumpToFixedPointAsync
+        // re-enters the identical Task.Delay for the same doomed retry (MutationInterface.cs's
+        // pendingDeferrals branch), because the whole premise of this room's shape is that nothing
+        // will ever service it. That hang is specifically a FUTURE RetryNotBefore with nothing alive
+        // to act on it -- a dead holder whose room has already reached a fixed point (nothing
+        // pending, or a deadline already past) would NOT hang; refusing it anyway would send a
+        // recoverable-by-cancel room to 'baton run --room-dir' instead, which redispatches the step
+        // rather than cancelling it. So both conditions gate the refusal, not the holder alone.
+        // Reading the sidecar BEFORE any acquire -- the same EngineLivenessProbe StatusCommand's
+        // parked-status line already consults, never a second liveness mechanism -- lets this refuse
+        // the hang instead of producing it, without ever touching the holder record: a live holder
+        // (the lock is still OS-held) falls through unchanged to the WorkflowLockedException handling
+        // below.
+        if (!ConcurrencyGuard.IsHeld(options.RoomDirectoryPath))
+        {
+            var (_, holderPid, holderAcquiredAtUtc) = ConcurrencyGuard.ReadHolderInfo(options.RoomDirectoryPath);
+            var holderAcquiredAt = holderAcquiredAtUtc is { } acquiredAtUtc
+                ? new DateTimeOffset(DateTime.SpecifyKind(acquiredAtUtc, DateTimeKind.Utc))
+                : (DateTimeOffset?)null;
+            var liveness = EngineLivenessProbe.Probe(holderPid, holderAcquiredAt);
+            if (liveness.Status == EngineLivenessStatus.Dead)
+            {
+                var preCheckEvents = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+                var preCheckState = StateProjector.Project(preCheckEvents, snapshot);
+                var now = DateTimeOffset.UtcNow;
+                var hasFutureDeferral = preCheckState.Steps.Any(s => s.RetryNotBefore is { } retryNotBefore && retryNotBefore > now);
+                if (hasFutureDeferral)
+                {
+                    throw new CliArgumentException(
+                        $"Room '{options.RoomDirectoryPath}' has no live pump — its lock is unheld, but the " +
+                        $"last recorded holder (pid {holderPid}) is no longer running, and this room still has a " +
+                        "step waiting on a future retry. Acquiring the lock here would journal a cancellation " +
+                        "nothing will ever act on, then hang waiting for that retry the dead engine can never " +
+                        "deliver — and would overwrite the holder record, destroying the record of which engine " +
+                        "died. Left untouched.",
+                        $"{RecoveryGuidance.RunRoomDirInstruction} (see spec/baton.md §3).");
+                }
+            }
+        }
 
         var bindingConfig = await WorkerBindingConfigParser.LoadFromFileAsync(options.BindingsFilePath, cancellationToken)
             .ConfigureAwait(false);
         var profiles = await BatonProfileStore.LoadAsync(BatonProfileStore.DefaultPath, cancellationToken).ConfigureAwait(false);
 
         var workflowId = new WorkflowId(options.WorkflowId ?? snapshot.WorkflowTemplateId.Value);
-        var reader = new FlowEventLogReader(logPath);
 
         // #1495: room-level targeting when --execution is omitted — resolve "the running lane" from
         // the room's own projected state rather than a caller-named id. A plain read, safe regardless

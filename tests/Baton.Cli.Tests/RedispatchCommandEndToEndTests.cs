@@ -245,6 +245,16 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
 
             Assert.Contains("terminal", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.False(Directory.Exists(childRoom));
+
+            // #1586: the refusal must diagnose WHY (no terminal sentinel means the room never
+            // settled -- genuinely still running, or its engine died mid-wait) and point at the one
+            // verb that actually recovers a dead-engine room, rather than only explaining its own
+            // refusal (spec/baton.md §3's `baton run --room-dir` recovery, first said by
+            // StatusCommand's parked-status line for #1582).
+            Assert.Contains("engine died", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.NotNull(ex.TryInvocation);
+            Assert.Contains("baton run", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--room-dir", ex.TryInvocation, StringComparison.Ordinal);
         }
         finally
         {

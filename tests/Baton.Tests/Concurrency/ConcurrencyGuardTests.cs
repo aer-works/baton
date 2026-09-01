@@ -446,7 +446,7 @@ public class ConcurrencyGuardTests
             Assert.True(File.Exists(flowSidecarPath));
             Assert.True(File.Exists(roomEventsSidecarPath));
 
-            var (flowHolder, _) = ConcurrencyGuard.ReadHolderInfo(roomDirectory);
+            var (flowHolder, _, _) = ConcurrencyGuard.ReadHolderInfo(roomDirectory);
             var (roomEventsHolder, _) = ConcurrencyGuard.ReadRoomEventsHolderInfo(roomDirectory);
 
             Assert.Equal("Flow Holder 123", flowHolder);

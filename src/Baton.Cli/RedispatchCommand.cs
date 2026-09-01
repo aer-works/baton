@@ -43,10 +43,19 @@ public static class RedispatchCommand
         var terminalSentinelPath = Path.Combine(options.ParentRoomDirectoryPath, TerminalSentinelWriter.TerminalSentinelFileName);
         if (!File.Exists(terminalSentinelPath))
         {
+            // #1586: a missing terminal sentinel means the room never settled — it does NOT
+            // distinguish "genuinely still running" from "its engine died mid-wait", the two only
+            // being told apart by `baton status` (EngineLivenessProbe's own liveness read). Naming
+            // both, and the recovery for the second, is what closes this issue's population: the
+            // three verbs an operator reaches for first must point at the verb that actually works
+            // (spec/baton.md §3), not only explain their own refusal.
             throw new CliArgumentException(
                 $"Parent room '{options.ParentRoomDirectoryPath}' has not reached a terminal state — "
-                + "redispatch only reruns a room that has already finished.",
-                $"wait for it to finish, or cancel it first, then retry: baton status {options.ParentRoomDirectoryPath}");
+                + "redispatch only reruns a room that has already finished. A missing terminal sentinel "
+                + "means one of two things: the room is genuinely still running, or its scheduling engine "
+                + $"died before it could settle — check `baton status {options.ParentRoomDirectoryPath}` to tell which.",
+                "if it's genuinely running, wait for it or cancel it first; if the engine died, "
+                + $"{RecoveryGuidance.RunRoomDirInstruction} (see spec/baton.md §3).");
         }
 
         // A Succeeded parent needs no confirmation (there is none to ask, non-interactively); a
