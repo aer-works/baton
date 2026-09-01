@@ -370,7 +370,9 @@ belongs with #1556's arrest-predicate/pump-liveness plumbing rather than bolted 
 `FailureClassification`, Flow's own observation) and *contract completion* (did the declared outputs
 end up satisfied — `ContractValidator`, a fact about the filesystem). Every value above except
 `Indeterminate` is a case where the two predicates agree, or where one alone is enough to decide
-(`Cancelled` short-circuits contract completion entirely). `Indeterminate` is what the schema has
+(`Cancelled` short-circuits contract completion entirely) — with one live exception until #1608
+lands: the #1594 captured-response shape (below) is a genuine disagreement between the two predicates
+that still settles `Failed` today, not `Indeterminate`. `Indeterminate` is what the schema has
 never had a word for: the two predicates *disagree* — most concretely, #1594's shape, where the
 worker plainly did substantial work (a response-bearing envelope) but the contract's declared
 output(s) are simply absent, so "did this succeed" cannot be read off the journal alone. A worktree
@@ -406,10 +408,18 @@ nothing else changed re-arms the step for immediate re-dispatch against a still-
 which `RetryEngine.MayRetry` checks unconditionally ahead of every other bypass. Only the first two of
 the three events above reopen a foreclosed step (`ExecutionCancelled` terminates the execution rather
 than reopening it, so it does not clear `RetryForeclosed`) — a foreclosure is never permanent, but only
-a fresh dispatch or a deliberate revision lifts one. No verb in `src/` appends this event yet either;
-S1 ships the primitive and its projection, replay-tested (including the checkpoint `DeepCopy` hazard
-#1606 hit first for `LatestCapturedResponseFileByStepId`/`LatestUnsatisfiedOutputNamesByStepId`), for
-S2's `baton settle` to call.
+a fresh dispatch or a deliberate revision lifts one. A `Supersede` decision's own consequence dispatch is
+not a third lifting path: it reopens through the same `ExecutionRequestAccepted` the first clause already
+names, and a foreclosed step can never actually be the target of one in the first place —
+`ExternalDecisionValidator` refuses any `Supersede` whose target's `StepStatus` is not `Succeeded`
+(#271), and `StepState.RetryForeclosed` cannot be true for a step whose status IS `Succeeded`: reaching
+`Succeeded` requires the `ExecutionRequestAccepted` that set the step's latest execution, and that same
+event unconditionally clears `RetryForeclosedStepIds` for the step (`StateProjector`'s
+`ExecutionRequestAccepted` case), independent of which retry it was dispatching. No verb in `src/`
+appends this event yet either; S1 ships the primitive and its projection, replay-tested (including
+the checkpoint `DeepCopy` hazard #1606 hit first for
+`LatestCapturedResponseFileByStepId`/`LatestUnsatisfiedOutputNamesByStepId`), for S2's `baton settle`
+to call.
 
 **`FlowEvent.ZeroOutputsDespiteSubstantialWork`** (`src/Baton/Domain/FlowEvent.cs`) is the unconditional
 tripwire the #1594 ruling's amendment 3 names: recorded independent of `OutcomeVerdict`/
