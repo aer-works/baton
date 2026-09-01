@@ -14,7 +14,13 @@
  *    derivation last completed -- a fact only the pusher knows, so unlike `at` it is NOT
  *    re-stamped here. Lets a reader tell "fleet is quiet" (snapshot old, heartbeat fresh) apart
  *    from "pusher is dead" (both old) apart from "pusher alive but derivation stuck" (heartbeat
- *    fresh, derived_at old) -- see fleet_status below.
+ *    fresh, derived_at old) -- see fleet_status below. `pending_push_age_s`, if the body carries
+ *    one (a 2026-09-01 review finding), is likewise the pusher's own claim -- seconds since its
+ *    last SUCCESSFUL snapshot push, present only while it has content waiting to go out. Lets a
+ *    reader tell "derivation stuck" apart from a FOURTH state this route alone can distinguish:
+ *    "derivation is healthy but every push keeps failing" (a 413 from the push cap, a 5xx, a
+ *    network blip) -- derived_at stays fresh in that case, since it only reflects derivation, not
+ *    delivery.
  *  - POST /deliver/<PUSH_TOKEN> : the operator's machine pushes deliverable(s) -- a terminal room's
  *    declared output artifact(s) plus its verdict summary -- for the inbox surface (#1413). Body is
  *    `{"items": [...]}`; see `handleDeliver` for the item shape.
@@ -30,12 +36,14 @@
  *                          Also carries `derived_at` (#1613 item 2) whenever the pusher included one
  *                          in the push body -- NOT part of pusher.py's own snapshot_hash, so its
  *                          presence never gates the #1457 change-gate.
- *  - "heartbeat_at"      : JSON `{"at": ISO-8601, "derived_at"?: ISO-8601}` (#1613 item 2 widened
- *                          this from a bare ISO-8601 string; a bare string still reads back as a
- *                          legacy `at` value, self-healing the moment the next heartbeat lands).
- *                          Deliberately NOT part of the "snapshot" value or its hash -- neither `at`
- *                          nor this key's own `derived_at` may ever count as a snapshot content
- *                          change and trigger the change-gate (#1457) to push early.
+ *  - "heartbeat_at"      : JSON `{"at": ISO-8601, "derived_at"?: ISO-8601, "pending_push_age_s"?:
+ *                          number}` (#1613 item 2 widened this from a bare ISO-8601 string;
+ *                          `pending_push_age_s` was added by a 2026-09-01 review finding; a bare
+ *                          string still reads back as a legacy `at` value, self-healing the moment
+ *                          the next heartbeat lands). Deliberately NOT part of the "snapshot" value
+ *                          or its hash -- none of `at`/`derived_at`/`pending_push_age_s` may ever
+ *                          count as a snapshot content change and trigger the change-gate (#1457)
+ *                          to push early.
  *  - "inbox:index"       : JSON array of deliverable METADATA (no content), newest-first, capped at
  *                          INBOX_CAP entries -- what deliverables_list returns.
  *  - "inbox:item:<id>"   : one deliverable's full content (or a withheld stub), keyed by the id the
@@ -48,7 +56,7 @@ const TOOLS = [
   {
     name: "fleet_status",
     description:
-      "Read-only snapshot of room statuses across the operator's baton fleet, as last pushed by the fleet machine. Includes pushed_at for snapshot staleness, heartbeat_at for pusher liveness, and derived_at for snapshot-derivation health -- the three are independent (#1486, #1613 item 2): a quiet fleet lets pushed_at go stale on purpose (heartbeat_at tells that apart from a dead pusher), and a fleet whose derivation keeps failing lets derived_at go stale even while heartbeat_at stays fresh.",
+      "Read-only snapshot of room statuses across the operator's baton fleet, as last pushed by the fleet machine. Includes pushed_at for snapshot staleness, heartbeat_at for pusher liveness, derived_at for snapshot-derivation health, and pending_push_age_s for push-delivery health -- these are independent (#1486, #1613 item 2, 2026-09-01 review): a quiet fleet lets pushed_at go stale on purpose (heartbeat_at tells that apart from a dead pusher), a fleet whose derivation keeps failing lets derived_at go stale even while heartbeat_at stays fresh, and a fleet whose PUSHES keep failing (derivation healthy) grows pending_push_age_s even while derived_at stays fresh.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
   },
@@ -99,26 +107,32 @@ function toolError(text) {
 // #1613 item 2: "heartbeat_at" widened from a bare ISO-8601 string to a small JSON object so one
 // key can carry both `at` (this Worker's own receipt time, unconditionally re-stamped on every
 // /heartbeat POST) and `derived_at` (the pusher's own claim, taken from the POST body verbatim
-// when present, never re-stamped -- see this file's header). Reads a pre-#1613 bare-string value
-// back as a legacy `at` with no `derived_at`, so an old stored value degrades gracefully instead
-// of throwing; the next heartbeat overwrites it with the new shape either way.
+// when present, never re-stamped -- see this file's header). `pending_push_age_s` (2026-09-01
+// review finding) rides the same object, same "taken from the body verbatim, never re-stamped"
+// rule -- it too is a fact only the pusher itself knows. Reads a pre-#1613 bare-string value back
+// as a legacy `at` with no `derived_at`/`pending_push_age_s`, so an old stored value degrades
+// gracefully instead of throwing; the next heartbeat overwrites it with the new shape either way.
 function readStoredHeartbeat(raw) {
-  if (!raw) return { at: null, derivedAt: null };
+  if (!raw) return { at: null, derivedAt: null, pendingPushAgeS: null };
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
-      return { at: parsed.at ?? null, derivedAt: parsed.derived_at ?? null };
+      return {
+        at: parsed.at ?? null,
+        derivedAt: parsed.derived_at ?? null,
+        pendingPushAgeS: typeof parsed.pending_push_age_s === "number" ? parsed.pending_push_age_s : null,
+      };
     }
   } catch {
     // Falls through to the legacy bare-string reading below.
   }
-  return { at: raw, derivedAt: null };
+  return { at: raw, derivedAt: null, pendingPushAgeS: null };
 }
 
 async function readHeartbeat(env) {
   const raw = await env.FLEET.get("heartbeat_at");
-  const { at, derivedAt } = readStoredHeartbeat(raw);
-  return { heartbeatAt: at, derivedAt };
+  const { at, derivedAt, pendingPushAgeS } = readStoredHeartbeat(raw);
+  return { heartbeatAt: at, derivedAt, pendingPushAgeS };
 }
 
 // Both isoStrings this ever compares come from the same producer's datetime.isoformat() call
@@ -217,19 +231,23 @@ async function handleMcp(request, env) {
     const name = params?.name;
     if (name === "fleet_status") {
       const stored = await env.FLEET.get("snapshot");
-      const { heartbeatAt, derivedAt: derivedAtFromHeartbeat } = await readHeartbeat(env);
+      const { heartbeatAt, derivedAt: derivedAtFromHeartbeat, pendingPushAgeS } = await readHeartbeat(env);
       const storedSnapshot = stored === null ? null : JSON.parse(stored);
       // derived_at (#1613 item 2, spec/baton.md §6) can reach this Worker by two independent
       // routes: a snapshot push's own body, or a dedicated /heartbeat ping (see readHeartbeat).
       // Both stamp the SAME isoformat() shape from the SAME producer (pusher.py), so a plain
       // lexicographic string max is a sound "most recent" comparison -- no Date parsing needed.
       const derivedAt = maxIsoOrNull(storedSnapshot?.derived_at, derivedAtFromHeartbeat);
+      // pending_push_age_s (2026-09-01 review finding) has only ONE route -- the heartbeat ping,
+      // never the snapshot body itself (a snapshot that successfully pushed has nothing pending by
+      // definition) -- so there is no second value to max against here.
       if (stored === null) {
-        return json(rpcResult(id, toolText(JSON.stringify({ pushed_at: null, rooms: null, heartbeat_at: heartbeatAt, derived_at: derivedAt, note: "no snapshot pushed yet" }))));
+        return json(rpcResult(id, toolText(JSON.stringify({ pushed_at: null, rooms: null, heartbeat_at: heartbeatAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS, note: "no snapshot pushed yet" }))));
       }
-      // heartbeat_at/derived_at are merged in at read time, never written into the "snapshot" value
-      // itself -- that keeps them out of pusher.py's change-gate hash (see this file's header).
-      const snapshot = { ...storedSnapshot, heartbeat_at: heartbeatAt, derived_at: derivedAt };
+      // heartbeat_at/derived_at/pending_push_age_s are merged in at read time, never written into
+      // the "snapshot" value itself -- that keeps them out of pusher.py's change-gate hash (see
+      // this file's header).
+      const snapshot = { ...storedSnapshot, heartbeat_at: heartbeatAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS };
       return json(rpcResult(id, toolText(JSON.stringify(snapshot))));
     }
     if (name === "deliverables_list") {
@@ -296,11 +314,13 @@ export default {
       if (request.method !== "POST") return new Response(null, { status: 405 });
       // `at` is always THIS Worker's own receipt time, never read from the request (#1486) -- a
       // heartbeat's liveness claim must not depend on the pusher host's clock. `derived_at`
-      // (#1613 item 2), when the body carries one, IS read from the request: it names a fact only
-      // the pusher itself knows (when ITS OWN derivation last completed), which this Worker has no
-      // other way to learn. A missing/unparseable body (including the pre-#1613 literal "{}")
-      // degrades to no derived_at on this ping -- still a valid heartbeat.
+      // (#1613 item 2) and `pending_push_age_s` (2026-09-01 review finding), when the body carries
+      // them, ARE read from the request: both name a fact only the pusher itself knows (when ITS
+      // OWN derivation last completed; how long ITS OWN content has been waiting to push), which
+      // this Worker has no other way to learn. A missing/unparseable body (including the
+      // pre-#1613 literal "{}") degrades to neither field on this ping -- still a valid heartbeat.
       let derivedAt = null;
+      let pendingPushAgeS = null;
       try {
         const body = await request.text();
         if (body) {
@@ -308,12 +328,16 @@ export default {
           if (parsed && typeof parsed.derived_at === "string" && parsed.derived_at) {
             derivedAt = parsed.derived_at;
           }
+          if (parsed && typeof parsed.pending_push_age_s === "number" && isFinite(parsed.pending_push_age_s)) {
+            pendingPushAgeS = parsed.pending_push_age_s;
+          }
         }
       } catch {
         // Malformed body -- treat exactly like an absent one; still a valid liveness ping.
       }
       const stored = { at: new Date().toISOString() };
       if (derivedAt) stored.derived_at = derivedAt;
+      if (pendingPushAgeS !== null) stored.pending_push_age_s = pendingPushAgeS;
       await env.FLEET.put("heartbeat_at", JSON.stringify(stored));
       return new Response("ok", { status: 200 });
     }

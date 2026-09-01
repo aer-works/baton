@@ -726,9 +726,16 @@ define. On the **terminal-sentinel fast path** (#1613 item 3 — pre-#1613 this 
 terminal, even though the same `bindings.json` a live room reads from is still sitting right next to
 `terminal.json`), the resolution is different because there is no "Running" step left to key off:
 `TryResolveSoleBinding` (`FleetStatusTool.cs`) reads them only when `bindings.json` names **exactly
-one** role. `Dictionary` enumeration order is not a contract, so a multi-role room's terminal fast
-path has no single unambiguous answer for a fleet-facing row and omits the five fields rather than
-guess — the same fail-open-to-absent posture the rest of this paragraph already establishes. Both
+one** role. This is a **stated coverage limit, not an impossibility** (corrected 2026-09-01 by
+review of #1613's PR): the real answer for a multi-role room lives in `flow.jsonl` — the last
+`ExecutionRequestAccepted`'s `Request.Worker`, exactly what the active-room path above already
+reads. The terminal-sentinel fast path exists specifically to **avoid opening the ledger at all**,
+and resolving a multi-role room's binding would require doing exactly that; `Dictionary` enumeration
+order also is not a contract, so even a `bindings.json`-only guess among several roles would be
+arbitrary. The trade is real and worth keeping — a multi-role terminal room omits the five fields
+rather than pay the ledger-read cost the fast path exists to avoid — the same fail-open-to-absent
+posture the rest of this paragraph already establishes, now named as a cost rather than described
+as answerless. Both
 paths funnel their resolved `(role, entry)` pair through one shared projection
 (`ProjectBindingFields`), so the wire shape of the five fields is identical regardless of which path
 resolved them.
@@ -847,22 +854,54 @@ ever populates an execution that has recorded BOTH a `CoreEvent.ExecutionStarted
 `ExecutionExited`, and its parser contract (`IWorkerUsageParser.TryParseFinalUsage`) reads exactly
 the last non-blank line of the captured stream — neither fits a still-running execution, which by
 definition has no exit event yet and needs every line scanned, not just the last:
-- **`rooms[].live` (item 1)**, present only for a room whose pusher-displayed `state` is exactly
-  `"Running"`: `{ "toolCalls"?: number, "lastActivityAt"?: string }`. `toolCalls` counts
-  `tool_use` blocks in claude's `assistant` stream events and DONE/`tool` `step_update` heartbeats
-  in agy's — both shapes measured (docs/vendor-capabilities.md's `#1559`/`#1088` rows,
-  `tests/Baton.Cli.Tests/RunCommandEchoTests.cs`, `AgyWorkerAdapter.TryParseProgressEvent`'s own doc
-  comment). Token counts are deliberately never emitted: neither `docs/vendor-doc-audit.md` nor
-  `python tools/vendor-verify/verify.py --list` records a per-assistant-message (mid-stream) usage
-  figure for either vendor, only the terminal `result` line's cumulative usage — an absent field is
-  honest, a summed one would re-count each turn's whole context. `lastActivityAt` is the stdout
-  log's own last-write instant (a real filesystem fact, not `now()`), so it ages honestly the moment
-  a lane goes quiet.
+- **`rooms[].live` (item 1, extended by a 2026-09-01 review of #1613's PR)**, present only for a
+  room whose pusher-displayed `state` is exactly `"Running"`:
+  `{ "toolCalls"?: number, "outputTokens"?: number, "contextTokens"?: number,
+    "cacheReadTokens"?: number, "lastActivityAt"?: string }`.
+
+  `toolCalls` counts `tool_use` blocks in claude's `assistant` stream events and DONE/`tool`
+  `step_update` heartbeats in agy's — both shapes measured (docs/vendor-capabilities.md's
+  `#1559`/`#1088` rows, `tests/Baton.Cli.Tests/RunCommandEchoTests.cs`,
+  `AgyWorkerAdapter.TryParseProgressEvent`'s own doc comment). This is two different things under
+  one field name, disclosed rather than left to be inferred: claude counts tool *requests*, agy
+  counts DONE tool *steps*. Both are whole-tree, including subagent turns — claude's `assistant`
+  events for a subagent carry `parent_tool_use_id` but are never filtered out, deliberately (the
+  mirror image of `outputTokens`'s own subagent completeness below).
+
+  **Live tokens, claude only.** The original ruling — "token counts are deliberately never
+  emitted… an absent field is honest, a summed one would re-count each turn's whole context" — was
+  right about the trap and wrong about the conclusion: it correctly noted neither
+  `docs/vendor-doc-audit.md` nor `python tools/vendor-verify/verify.py --list` records a
+  per-assistant-message (mid-stream) usage figure, but read the register's silence as "does not
+  exist" rather than "go measure it". A live capture on 2026-09-01 (`claude -p ... --output-format
+  stream-json --verbose`, recorded in `docs/vendor-capabilities.md`'s history table) confirms
+  `message.usage` on every `type=="assistant"` line — not just the terminal `result` line — carries
+  `input_tokens`, `output_tokens`, `cache_read_input_tokens`, and `cache_creation_input_tokens`.
+  `outputTokens` sums `output_tokens` across every `assistant` line in the execution's `.stdout.log`
+  (additive, whole-tree) — this is *more* accurate than the terminal line's own cumulative figure,
+  which `docs/vendor-doc-audit.md` measures undercounting by ~22% with a single subagent in the tree
+  (`usage.output_tokens` excludes subagent tokens; the gap grows with the fan-out). `contextTokens`
+  (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`) and `cacheReadTokens`
+  (`cache_read_input_tokens` alone) are read off the LATEST `assistant` line only — a LEVEL, replaced
+  every turn, never summed: the trap the original ruling correctly named applies to `input_tokens`
+  specifically (summing it across turns re-counts each turn's whole repeated context), not to output
+  or to a single turn's own level. All three fields are absent, never a substituted zero, when a
+  line's `usage` object doesn't carry what is needed. agy emits none of the three: its `step_update`
+  heartbeat carries no `usage` field at all (`AgyWorkerAdapter.TryParseProgressEvent`,
+  `AgyWorkerAdapter.cs`) — a claude-only measurement stays a claude-only field.
+
+  `lastActivityAt` is the stdout log's own last-write instant (a real filesystem fact, not `now()`),
+  quantized to a ~90s bucket before it enters the pushed payload (2026-09-01 review finding) so a
+  continuously-streaming lane's every-chunk mtime advance does not itself force the #1457
+  change-gate to push every cycle. Quantized, not excluded the way `derived_at` is excluded below:
+  a lane that streams text without ever calling a tool would otherwise change no field in `live` at
+  all, and glass would keep rendering a stale "active Nm ago" for a lane that is actually still
+  streaming.
 - **`derived_at` (item 2)**, beside `heartbeat_at` (#1486) at the top level of the pushed snapshot:
   when this pusher process's OWN `derive_snapshot_and_timelines` call last completed successfully,
   regardless of whether that cycle's content changed enough to push. `pushed_at` (worker.js's own
   receipt time) is legitimately stale on a quiet-but-healthy fleet — the #1457 change-gate skips an
-  unchanged snapshot on purpose — so Fleet Glass's "Snapshot may be stuck" banner
+  unchanged snapshot on purpose — so Fleet Glass's "Snapshot derivation may be stuck" banner
   (`tools/fleet-glass/glass.html`) keys on `derived_at` instead: a fleet that stays quiet because
   nothing changed still reads healthy, while a derivation that has been raising every cycle for
   hours (the real failure mode this exists to catch — a hung `dotnet mcp` subprocess starves
@@ -871,7 +910,22 @@ definition has no exit event yet and needs every line scanned, not just the last
   rather than add to it: riding inside an actual snapshot push's own body (excluded from
   `snapshot_hash` so it can never itself force a push), or via a dedicated ping on the same
   `/heartbeat` endpoint whenever a push hasn't landed one recently (`should_send_derived_ping`) —
-  see `pusher.py`'s own module docstring for the write-budget arithmetic this is built around.
+  see `pusher.py`'s own module docstring for the write-budget arithmetic this is built around. A
+  missing `derived_at` (a pusher not yet redeployed for #1613) now gets its own explicit banner
+  rather than silently falling through to a clean one (2026-09-01 review finding) — mirrors the
+  sibling `heartbeat_at`-absent message.
+
+  **`pending_push_age_s` (2026-09-01 review finding), riding the SAME `/heartbeat` ping body as
+  `derived_at`:** `derived_at` alone cannot distinguish "the fleet is quiet" from "derivation keeps
+  succeeding but every snapshot PUSH keeps failing" (a 413 from the 1 MB push cap, a 5xx, a network
+  blip) — dropping the pre-#1613 `pushed_at` staleness check removed the only signal that used to
+  catch a failing push, and this PR's own terminal-timeline addition made the 413 case more likely
+  by growing the typical payload. `pending_push_age_s` is seconds since the pusher's last
+  SUCCESSFUL push, present only while `should_push_snapshot` says content is actually waiting to go
+  out — absent on a healthy, nothing-changed fleet, so a legitimately quiet lane never false-fires.
+  Fleet Glass alarms "Push failing" once it exceeds a threshold on the same order as the
+  derivation-stuck check above, independent of whether any room is Running (a failing push is not
+  scoped to active lanes the way the derivation-stuck check is).
 
 ---
 

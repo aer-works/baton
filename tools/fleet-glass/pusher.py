@@ -50,16 +50,19 @@ pusher.config.example.json and copy it):
 push_url (and deliver_url/heartbeat_url, if set) embed the push token -- the config file is a local
 secret; never print or commit it.
 
-THE TIMELINE HALF (#1505)
+THE TIMELINE HALF (#1505, extended by #1613 item 4)
 -------------------------------------------
 Pre-#42 (the daemon has not yet been given the projection job, spec/baton.md §7), this pusher gets
-per-room timelines the same way it gets the fleet snapshot: one `room_detail` call per NON-TERMINAL
-room, through the SAME dotnet-mcp process `derive_snapshot_and_timelines` already spawns for
-`fleet_status` -- never a second `dotnet` spawn per room. `extract_timeline` keeps ONLY each entry's
-`type` and `timestamp`; `room_detail`'s `stdout` field and any `note`/`detail`/`error` text are
-dropped unconditionally, by construction (the function reads exactly two named keys off each entry
-and nothing else), so stdout can never ride the mailbox through this path -- see the module's secret
-gate above for why that boundary exists at all. Capped at the last TIMELINE_CAP (30) entries per
+per-room timelines the same way it gets the fleet snapshot: one `room_detail` call per room each
+cycle its timeline can still change -- every cycle for a non-terminal room, exactly once per process
+lifetime for a terminal one (see `resolve_room_timeline`'s own docstring for the caching policy) --
+through the SAME dotnet-mcp process `derive_snapshot_and_timelines` already spawns for
+`fleet_status` -- never a second `dotnet` spawn per room. `extract_timeline` keeps only a fixed,
+named set of content-free fields off each entry (see its own docstring for exactly which -- not
+restated here, so this paragraph cannot go stale the way it once did when that set grew); `room_detail`'s
+`stdout` field and any `note`/`detail`/`error` text are dropped unconditionally, so stdout can never
+ride the mailbox through this path -- see the module's secret gate above for why that boundary exists
+at all. Capped at the last TIMELINE_CAP (30) entries per
 room: a lane's timeline is step-level transitions (dispatch, execution start/exit, retries, decisions)
 written a handful of times per step, not a line per stdout write -- a lane produces tens of these
 over its life, not thousands, so this rides the mailbox safely under the same 1,000-write/day KV
@@ -399,11 +402,12 @@ def extract_timeline(room_detail_result: dict) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------------------------
-# Live telemetry for Running rooms (#1613 item 1): a tool-call count and last-stream-activity
-# instant, read directly off the currently-running execution's own already-captured .stdout.log --
-# no new `dotnet mcp` round trip, no engine change. Why pusher-side rather than engine-side (the
-# ExecutionUsageProjector seam), and why token counts are omitted: spec/baton.md §6's
-# `rooms[].live` schema entry, not restated here.
+# Live telemetry for Running rooms (#1613 item 1, extended by this review's live-token finding and
+# items 3/4's incremental reader): a tool-call count, claude-only live token counts, and a
+# last-stream-activity instant, read directly off the currently-running execution's own
+# already-captured .stdout.log -- no new `dotnet mcp` round trip, no engine change. Why pusher-side
+# rather than engine-side (the ExecutionUsageProjector seam), and the token fields' exact gating and
+# additive-vs-level semantics: spec/baton.md §6's `rooms[].live` schema entry, not restated here.
 # ---------------------------------------------------------------------------------------------
 
 def _running_execution_id(room: dict) -> str | None:
@@ -416,32 +420,80 @@ def _running_execution_id(room: dict) -> str | None:
     return None
 
 
-def _find_stdout_log(room_path: str, execution_id: str) -> Path | None:
-    """The same two-location fallback ArtifactManager/ExecutionUsageProjector use on the engine
-    side (the live output directory, then artifacts/pruned for a retention-swept execution) --
-    mirrored here rather than shelling out, since the path shape itself
-    (`artifacts/execution_<id>/.stdout.log`) is a stable, already-public on-disk contract
-    (ArtifactManager.AllocateOutputDirectory / .ResolvePrunedOutputDirectory)."""
+def _find_stdout_paths(room_path: str, execution_id: str) -> tuple[Path | None, Path | None]:
+    """(stdout_path, rollover_path) for the Running execution's own captured stream. The same
+    two-location fallback ArtifactManager/ExecutionUsageProjector use on the engine side (the live
+    output directory, then artifacts/pruned for a retention-swept execution) -- mirrored here rather
+    than shelling out, since the path shape itself (`artifacts/execution_<id>/.stdout.log`) is a
+    stable, already-public on-disk contract (ArtifactManager.AllocateOutputDirectory /
+    .ResolvePrunedOutputDirectory). `rollover_path` is the sibling `.stdout.log.1`
+    ExecutionStreamLogger's single 8 MiB rollover produces in the SAME directory (#1613 review
+    finding 3) -- None when no rollover has happened yet for this execution."""
     for relative in (f"artifacts/execution_{execution_id}", f"artifacts/pruned/execution_{execution_id}"):
-        candidate = Path(room_path) / relative / ".stdout.log"
+        base = Path(room_path) / relative
+        candidate = base / ".stdout.log"
         if candidate.is_file():
-            return candidate
-    return None
+            rollover = base / ".stdout.log.1"
+            return candidate, (rollover if rollover.is_file() else None)
+    return None, None
+
+
+def _read_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
+    """Complete lines appended to `path` since byte `offset` (#1613 review finding 4 -- read only
+    the delta, never the whole file, every cycle), and the new offset positioned right after the
+    last complete line consumed. A trailing partial line -- the vendor CLI mid-flush, no newline
+    yet -- is left UNCONSUMED so it is read whole next cycle instead of split across two parses."""
+    try:
+        with path.open("rb") as f:
+            f.seek(offset)
+            chunk = f.read()
+    except OSError:
+        return [], offset
+    if not chunk:
+        return [], offset
+    text = chunk.decode("utf-8", errors="replace")
+    last_newline = text.rfind("\n")
+    if last_newline == -1:
+        return [], offset
+    complete = text[:last_newline]
+    consumed = len(complete.encode("utf-8")) + 1  # + the newline itself
+    return complete.split("\n"), offset + consumed
 
 
 def extract_live_counts(lines: list[str]) -> dict:
-    """A tool-call COUNT only, tolerant of a torn last line (the file is still being written) and
-    of both vendors' stream envelopes:
+    """A tool-call COUNT, plus claude-only live token fields, tolerant of a torn last line (the
+    file is still being written) and of both vendors' stream envelopes:
       - claude: `type`-keyed; a completed `assistant` message's `message.content` array carries a
         `{"type": "tool_use", ...}` block per tool call -- shape measured against real #1559
-        capture fixtures (tests/Baton.Cli.Tests/RunCommandEchoTests.cs).
+        capture fixtures (tests/Baton.Cli.Tests/RunCommandEchoTests.cs). The SAME `assistant`
+        message's `message.usage` (measured live 2026-09-01, docs/vendor-capabilities.md) carries
+        `output_tokens` and, when the CLI reports the cache split, `input_tokens` /
+        `cache_read_input_tokens` / `cache_creation_input_tokens` -- see below for how each is used.
       - agy: `event`-keyed; a `step_update` heartbeat with `state: "DONE"` and `step_type: "tool"`
         marks one completed tool step -- shape measured live against agy 1.1.11
-        (AgyWorkerAdapter.TryParseProgressEvent's own #1088 doc comment).
+        (AgyWorkerAdapter.TryParseProgressEvent's own #1088 doc comment). agy's `step_update` has no
+        `usage` field to read at all, so it never contributes to the token fields below.
     A line that fails to parse as JSON is skipped, not an error -- the vendor CLI may have flushed
     a partial line at the exact moment this read caught the file mid-write.
+
+    Returns `{"toolCalls": int}` always, plus:
+      - `"outputTokens"`: present only if at least one `assistant` line in THIS batch reported
+        `output_tokens` -- the SUM over the batch (additive: the caller accumulates this across
+        every batch it has ever read for the execution, spec/baton.md §6). Whole-tree, including
+        subagent `assistant` events (they carry `parent_tool_use_id` but are not filtered out) --
+        deliberately more complete than the terminal line's own cumulative figure, which
+        `docs/vendor-doc-audit.md` measures excluding subagent tokens by ~22%.
+      - `"context"`: `{"contextTokens": int, "cacheReadTokens": int}` from the LATEST `assistant`
+        line in this batch that reports all three of `input_tokens`/`cache_read_input_tokens`/
+        `cache_creation_input_tokens` together -- a LEVEL (the caller replaces, never sums, its own
+        running value). Absent when no line in the batch reports the full trio: never a partial or
+        fabricated figure, and never built from `input_tokens` alone (summing that across turns
+        would re-count each turn's whole repeated context -- the trap this field exists to avoid).
     """
     tool_calls = 0
+    output_tokens = 0
+    output_tokens_seen = False
+    context = None
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
@@ -458,40 +510,134 @@ def extract_live_counts(lines: list[str]) -> dict:
             content = message.get("content") if isinstance(message, dict) else None
             if isinstance(content, list):
                 tool_calls += sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
+            usage = message.get("usage") if isinstance(message, dict) else None
+            if isinstance(usage, dict):
+                out = usage.get("output_tokens")
+                if isinstance(out, int) and not isinstance(out, bool):
+                    output_tokens += out
+                    output_tokens_seen = True
+                in_tok = usage.get("input_tokens")
+                cache_read = usage.get("cache_read_input_tokens")
+                cache_creation = usage.get("cache_creation_input_tokens")
+                if (isinstance(in_tok, int) and not isinstance(in_tok, bool)
+                        and isinstance(cache_read, int) and not isinstance(cache_read, bool)
+                        and isinstance(cache_creation, int) and not isinstance(cache_creation, bool)):
+                    context = {
+                        "contextTokens": in_tok + cache_read + cache_creation,
+                        "cacheReadTokens": cache_read,
+                    }
         elif evt.get("event") == "step_update":
             step = evt.get("step_update")
             if isinstance(step, dict) and step.get("state") == "DONE" and step.get("step_type") == "tool":
                 tool_calls += 1
 
-    return {"toolCalls": tool_calls}
+    result = {"toolCalls": tool_calls}
+    if output_tokens_seen:
+        result["outputTokens"] = output_tokens
+    if context is not None:
+        result["context"] = context
+    return result
 
 
-def live_telemetry_for_room(room: dict) -> dict | None:
+def _apply_live_delta(state: dict, delta: dict) -> None:
+    """Merge one parsed batch (a rollover file or newly-appended live-file bytes) into a
+    per-execution running state: `toolCalls`/`outputTokens` ACCUMULATE (#1613 review findings 3/4 --
+    every batch this process has ever read for the execution), `context` is the latest LEVEL seen --
+    only overwritten when the batch actually reports one, so an empty or tool-only batch never blanks
+    out a level that was already known."""
+    counts = state["counts"]
+    counts["toolCalls"] = counts.get("toolCalls", 0) + delta.get("toolCalls", 0)
+    if "outputTokens" in delta:
+        counts["outputTokens"] = counts.get("outputTokens", 0) + delta["outputTokens"]
+    if "context" in delta:
+        state["context"] = delta["context"]
+
+
+LAST_ACTIVITY_BUCKET_SECONDS = 90  # #1613 review finding 1: floor lastActivityAt's mtime to this
+                                    # bucket BEFORE it enters the payload, so a continuously-
+                                    # streaming lane's every-chunk mtime advance does not itself
+                                    # change snapshot_hash every cycle (the #1457 change-gate) -- see
+                                    # the module docstring's write-budget arithmetic. Quantizing
+                                    # rather than excluding (unlike derived_at) is deliberate: a lane
+                                    # that streams text without ever calling a tool would otherwise
+                                    # change no field in `live` at all, so glass would keep rendering
+                                    # a stale "active Nm ago" for a lane that is actually streaming.
+
+
+def _quantized_activity_iso(mtime: float, bucket_seconds: float = LAST_ACTIVITY_BUCKET_SECONDS) -> str:
+    bucketed = (mtime // bucket_seconds) * bucket_seconds
+    return datetime.fromtimestamp(bucketed, tz=timezone.utc).isoformat()
+
+
+def live_telemetry_for_room(room: dict, live_cache: dict | None = None) -> dict | None:
     """None when there is no Running step, or its execution has no captured stdout yet (dispatch
     just started) -- absent, never a fabricated zero, matching ExecutionUsageView's own
     never-null/never-fabricated convention on the engine side. `lastActivityAt`'s honesty property
-    is spec/baton.md §6's `rooms[].live` schema entry, not restated here."""
+    and the token fields' gating are spec/baton.md §6's `rooms[].live` schema entry, not restated
+    here.
+
+    `live_cache` is the caller-owned `(byte_offset, running_counts)` dict #1613 review findings 3/4
+    need to avoid re-reading and re-parsing the whole `.stdout.log` every cycle -- the same
+    caller-owned-dict pattern `terminal_timeline_cache` already uses. Keyed by `room_path::
+    execution_id`, so a retry's fresh execution starts its own counters rather than inheriting a
+    finished one's. Defaults to a fresh, single-call dict when omitted (tests, and any caller that
+    genuinely wants a one-shot whole-file read -- offset 0 reading to EOF is equivalent)."""
+    if live_cache is None:
+        live_cache = {}
     execution_id = _running_execution_id(room)
     room_path = room.get("path")
     if execution_id is None or not isinstance(room_path, str) or not room_path:
         return None
 
-    stdout_path = _find_stdout_log(room_path, execution_id)
+    stdout_path, rollover_path = _find_stdout_paths(room_path, execution_id)
     if stdout_path is None:
         return None
 
     try:
         mtime = stdout_path.stat().st_mtime
-        lines = stdout_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        current_size = stdout_path.stat().st_size
     except OSError:
         return None
 
-    counts = extract_live_counts(lines)
-    counts["lastActivityAt"] = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
-    return counts
+    key = f"{room_path}::{execution_id}"
+    state = live_cache.setdefault(key, {
+        "stdout_offset": 0, "rollover_offset": 0, "counts": {"toolCalls": 0}, "context": None,
+    })
+
+    # #1613 review finding 3: `.stdout.log` rolls over to `.stdout.log.1` at 8 MiB and resets to
+    # empty (ExecutionStreamLogger.cs) -- a size DECREASE since the offset we last read is the
+    # rollover signal. The rename preserves content byte-for-byte, so hand the read position across
+    # to the rollover file's own (sticky, independently-tracked) offset rather than re-reading
+    # anything already counted -- this also self-heals a SECOND rollover later in the same
+    # execution's life, since `.stdout.log.1` gets overwritten each time and the same
+    # decrease-detection applies to its own offset too.
+    if current_size < state["stdout_offset"]:
+        state["rollover_offset"] = max(state["rollover_offset"], state["stdout_offset"])
+        state["stdout_offset"] = 0
+
+    if rollover_path is not None:
+        try:
+            rollover_size = rollover_path.stat().st_size
+        except OSError:
+            rollover_size = 0
+        if rollover_size < state["rollover_offset"]:
+            state["rollover_offset"] = 0
+        rollover_lines, state["rollover_offset"] = _read_new_lines(rollover_path, state["rollover_offset"])
+        if rollover_lines:
+            _apply_live_delta(state, extract_live_counts(rollover_lines))
+
+    new_lines, state["stdout_offset"] = _read_new_lines(stdout_path, state["stdout_offset"])
+    if new_lines:
+        _apply_live_delta(state, extract_live_counts(new_lines))
+
+    result = dict(state["counts"])
+    if state["context"] is not None:
+        result.update(state["context"])
+    result["lastActivityAt"] = _quantized_activity_iso(mtime)
+    return result
 
 
-def attach_live_telemetry(room_list: list) -> None:
+def attach_live_telemetry(room_list: list, live_cache: dict) -> None:
     """Mutates each Running room in the (already stale-filtered) list in place, adding a `live`
     field. Gated on the pusher's own displayed `state`, not the raw engine state: a room
     fleet_status already downgraded to Stalled (#1513, a CONFIRMED-dead process) never gets a live
@@ -499,15 +645,32 @@ def attach_live_telemetry(room_list: list) -> None:
     purpose -- `lastActivityAt` is a real file mtime, not a manufactured "now" stamp, so unlike
     `exhaustedUntil` it never needs `newest_timestamp`'s skip set: running it post-filter simply
     means it plays no part in the staleness decision at all, sidestepping the question by
-    construction rather than by exemption."""
+    construction rather than by exemption. `live_cache` is main()'s own persisted dict (#1613 review
+    findings 3/4) -- REQUIRED here (unlike `live_telemetry_for_room`'s optional default) because a
+    fresh dict every call would defeat the whole point of incremental reading."""
     if not isinstance(room_list, list):
         return
     for room in room_list:
         if not isinstance(room, dict) or room.get("state") != "Running":
             continue
-        live = live_telemetry_for_room(room)
+        live = live_telemetry_for_room(room, live_cache)
         if live is not None:
             room["live"] = live
+
+
+def prune_live_telemetry_cache(live_cache: dict, room_list: list) -> dict:
+    """New dict carrying forward only the cache entries for executions still actually Running in
+    `room_list` -- a finished or retried execution's counters must not linger forever in a
+    long-lived pusher process. Mirrors `terminal_timeline_cache`'s own per-cycle prune in main()."""
+    live_keys = set()
+    for room in room_list or []:
+        if not isinstance(room, dict) or room.get("state") != "Running":
+            continue
+        execution_id = _running_execution_id(room)
+        room_path = room.get("path")
+        if execution_id is not None and isinstance(room_path, str) and room_path:
+            live_keys.add(f"{room_path}::{execution_id}")
+    return {k: v for k, v in live_cache.items() if k in live_keys}
 
 
 def resolve_room_timeline(room_path: str, is_terminal: bool, cache: dict, fetch_fn) -> list[dict]:
@@ -837,7 +1000,10 @@ def send_heartbeat_and_record(post, state: dict, state_path, now_ts: float, extr
 
 # ---------------------------------------------------------------------------------------------
 # derived_at (#1613 item 2): what it is and why the glass banner keys on it instead of pushed_at
-# is spec/baton.md §6's `derived_at` schema entry, not restated here.
+# is spec/baton.md §6's `derived_at` schema entry, not restated here. `pending_push_age_s`
+# (this review's finding 2) rides the SAME `/heartbeat` ping body: derived_at alone cannot tell "the
+# fleet is quiet" apart from "derivation keeps succeeding but every PUSH keeps failing" (a 413 from
+# the 1 MB cap, a 5xx, a network blip) -- see `pending_push_age_s`'s own docstring below.
 #
 # Budget: derived_at must reach the server far more often than heartbeat_at's own hourly cadence to
 # be a useful "stuck" signal, but a naive fixed-interval ping alongside the change-gated snapshot
@@ -871,6 +1037,28 @@ def should_send_derived_ping(state: dict, now_ts: float, interval: float = DERIV
     if not candidates:
         return True
     return (now_ts - max(candidates)) >= interval
+
+
+def pending_push_age_s(state: dict, current_hash: str, now_ts: float) -> float | None:
+    """Seconds since the last SUCCESSFUL push, but ONLY when there is content actually waiting to go
+    out (`should_push_snapshot` says the persisted hash no longer matches `current_hash`) -- this
+    review's finding 2. A quiet, healthy fleet reports `None` here even though its own last push may
+    genuinely have been hours ago; that is the whole point -- it is what lets glass tell "nothing to
+    push" apart from "wants to push and can't", which `derived_at` alone cannot do (derivation
+    succeeds every cycle regardless of whether the following POST does). A missing/unreadable
+    LAST_PUSH_TS_KEY while content IS waiting also reports `None`: there is no successful-push
+    baseline yet to measure age from (this process's first cycle), and reporting an arbitrary number
+    here would be a fabricated figure, not an absent one -- same never-fabricate convention as every
+    other optional field in this module. Because `push_snapshot_and_record` only updates
+    LAST_PUSH_TS_KEY AFTER a successful POST, a run of failing pushes leaves it frozen, so this value
+    grows cycle over cycle for as long as the failures continue -- exactly the "growing pending age"
+    signal the heartbeat ping is meant to carry."""
+    if not should_push_snapshot(state, current_hash):
+        return None
+    last = state.get(LAST_PUSH_TS_KEY)
+    if not isinstance(last, (int, float)):
+        return None
+    return now_ts - last
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1120,11 +1308,19 @@ def main() -> None:
     # process lifetime and served from here on every later cycle -- see
     # derive_snapshot_and_timelines's own doc. In-memory only: a restart self-heals by refetching.
     terminal_timeline_cache: dict = {}
+    # #1613 review findings 3/4: per-execution (byte_offset, running_counts) for Running rooms'
+    # live telemetry -- see live_telemetry_for_room's own doc. In-memory only, same self-heals-on-
+    # restart posture as terminal_timeline_cache above.
+    live_telemetry_cache: dict = {}
     # #1613 item 2: the wall-clock instant this process's OWN most recent `derive_snapshot_and_
     # timelines` call last completed successfully -- None until the first cycle succeeds. Carried
     # into the heartbeat/derived-ping section below regardless of whether THIS cycle's content
     # changed enough to push.
     last_derived_at: str | None = None
+    # #1613 review finding 2: seconds since the last SUCCESSFUL push while content is still waiting
+    # to go out -- None whenever nothing is pending (see pending_push_age_s). Carried forward
+    # unchanged on a cycle whose derivation itself fails, same as last_derived_at above.
+    pending_push_age: float | None = None
 
     acquire_lock(lock_path)
     atexit.register(release_lock, lock_path)
@@ -1141,7 +1337,8 @@ def main() -> None:
                 # #1613 item 1: live telemetry for Running rooms, computed AFTER stale-filtering
                 # (never touches drop_stale_rooms' own newest_timestamp scan above) so it plays no
                 # part in the staleness decision at all.
-                attach_live_telemetry(room_list)
+                live_telemetry_cache = prune_live_telemetry_cache(live_telemetry_cache, room_list)
+                attach_live_telemetry(room_list, live_telemetry_cache)
                 # Timelines were fetched pre-stale-filter, keyed by path; only carry forward the ones
                 # for rooms that survived drop_stale_rooms above, so a hidden room's timeline is hidden
                 # with it rather than riding along as orphaned payload.
@@ -1166,24 +1363,40 @@ def main() -> None:
                         # (computed above from `wrapped` alone) -- it must never make the change-gate
                         # think an otherwise-unchanged snapshot changed.
                         post_body = json.dumps({**wrapped, "derived_at": last_derived_at})
-                        push_snapshot_and_record(
-                            lambda b: post_json(cfg["push_url"], b),
-                            post_body, snap_state, state_path, current_hash, now_ts=now_ts)
-                        if skip_streak:
-                            log(f"skipped {skip_streak} unchanged cycle(s) since last push")
-                            skip_streak = 0
-                        log(f"pushed {len(body)} bytes")
+                        try:
+                            push_snapshot_and_record(
+                                lambda b: post_json(cfg["push_url"], b),
+                                post_body, snap_state, state_path, current_hash, now_ts=now_ts)
+                        except Exception as ex:  # noqa: BLE001 — a failing push must not skip the
+                            # pending-push-age computation below (finding 2's whole point), and the
+                            # loop must survive regardless -- caught here, not the outer except, so
+                            # execution falls through to that computation either way.
+                            log(f"ERROR (push) {type(ex).__name__}: {ex}")
+                        else:
+                            if skip_streak:
+                                log(f"skipped {skip_streak} unchanged cycle(s) since last push")
+                                skip_streak = 0
+                            log(f"pushed {len(body)} bytes")
                 else:
                     skip_streak += 1
                     if should_log_skip(skip_streak, skip_log_every):
                         log(f"unchanged, skipped ({skip_streak} in a row)")
+                # #1613 review finding 2: recomputed from `snap_state` AFTER the push attempt above,
+                # whichever way it went -- a successful push just updated LAST_PUSH_TS_KEY in place
+                # (push_snapshot_and_record mutates snap_state), so should_push_snapshot now agrees
+                # the hash matches and this comes back None; a coalesced or failed push leaves
+                # snap_state's hash stale, so this reports how long content has been waiting.
+                pending_push_age = pending_push_age_s(snap_state, current_hash, time.time())
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (snapshot) {type(ex).__name__}: {ex}")
 
             # Own try/except, runs AFTER the snapshot has already been sent above -- a slow or failing
             # heartbeat POST must never block or delay the snapshot path (#1486). Also carries the
             # derived-freshness ping (#1613 item 2) on the same lightweight endpoint whenever a push
-            # hasn't already delivered a fresh derived_at recently -- see should_send_derived_ping.
+            # hasn't already delivered a fresh derived_at recently -- see should_send_derived_ping --
+            # and, since this review's finding 2, the current pending_push_age (omitted when None,
+            # i.e. nothing is waiting to go out) so glass can alarm on a failing push independent of
+            # derived_at, which stays fresh even while every push fails.
             try:
                 if heartbeat_url is None:
                     pass  # no heartbeat_url configured and none derivable from push_url — skip quietly
@@ -1193,7 +1406,10 @@ def main() -> None:
                     heartbeat_due = should_send_heartbeat(hb_state, now_ts)
                     derived_ping_due = should_send_derived_ping(hb_state, now_ts)
                     if heartbeat_due or derived_ping_due:
-                        payload = json.dumps({"derived_at": last_derived_at})
+                        payload_dict = {"derived_at": last_derived_at}
+                        if pending_push_age is not None:
+                            payload_dict["pending_push_age_s"] = pending_push_age
+                        payload = json.dumps(payload_dict)
                         extra_state = {DERIVED_PING_STATE_KEY: now_ts} if derived_ping_due else None
                         send_heartbeat_and_record(
                             lambda: post_json(heartbeat_url, payload),
@@ -1424,10 +1640,18 @@ def _selftest() -> int:
     hash_before = snapshot_hash(wrapped_no_derived)
     posted_body_1 = json.dumps({**wrapped_no_derived, "derived_at": "2026-09-01T00:00:00Z"})
     posted_body_2 = json.dumps({**wrapped_no_derived, "derived_at": "2026-09-01T00:05:00Z"})
-    check("derived_at changing between two otherwise-identical cycles never changes snapshot_hash "
-          "(it is computed from `wrapped` before derived_at is spliced in, matching main()'s own order)",
-          hash_before == snapshot_hash(wrapped_no_derived)
-          and "derived_at" not in wrapped_no_derived)
+    # This review's finding 7: the two checks that used to sit here were both non-discriminating --
+    # `hash_before == snapshot_hash(wrapped_no_derived)` is `snapshot_hash(x) == snapshot_hash(x)`
+    # (holds no matter what main() hashes), and `"derived_at" not in wrapped_no_derived` restates a
+    # literal two lines above. Both would still pass if main() hashed `post_body` instead of
+    # `wrapped`. The discriminating claim: hashing the POSTED body (which DOES carry derived_at)
+    # gives a DIFFERENT hash than hashing `wrapped` alone -- proving the exclusion at :1156/:1168 is
+    # load-bearing, not incidental, and this arm would actually fail if a future edit hashed the
+    # wrong thing.
+    check("hashing the POSTED body (derived_at included) differs from hashing `wrapped` alone -- "
+          "main() must hash `wrapped`, never `post_body`, or the change-gate would re-trigger on "
+          "derived_at alone",
+          snapshot_hash(json.loads(posted_body_1)) != hash_before)
     check("(control) the two posted bodies DO differ -- proving derived_at actually rides the "
           "wire, it just doesn't gate the push",
           posted_body_1 != posted_body_2)
@@ -1633,8 +1857,59 @@ def _selftest() -> int:
     check("extract_live_counts ignores a torn/unparseable last line instead of raising",
           extract_live_counts(['{"type": "assistant", "message": {"content": [{"type": "tool_use"}]}}',
                                 '{"type": "assistant", "message": {"conte']) == {"toolCalls": 1})
-    check("extract_live_counts never emits a tokens field -- unmeasured per the common-sense gate check",
-          "tokens" not in extract_live_counts([json.dumps({"type": "result", "usage": {"input_tokens": 100}})]))
+    # -- this review: live output/context tokens for claude, shipped on the shape a real capture
+    # confirmed 2026-09-01 (docs/vendor-capabilities.md) -- `message.usage` on every `assistant`
+    # line, not just the terminal `result` line the original ruling checked.
+    real_assistant_usage_line = json.dumps({
+        "type": "assistant",
+        "message": {
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {
+                "input_tokens": 2, "cache_creation_input_tokens": 12066,
+                "cache_read_input_tokens": 15092, "output_tokens": 4,
+                "service_tier": "standard",
+            },
+        },
+    })
+    real_counts = extract_live_counts([real_assistant_usage_line])
+    check("outputTokens reads message.usage.output_tokens off the real captured envelope shape",
+          real_counts.get("outputTokens") == 4)
+    check("contextTokens is input_tokens + cache_read_input_tokens + cache_creation_input_tokens "
+          "off the same message",
+          real_counts.get("context", {}).get("contextTokens") == 2 + 12066 + 15092)
+    check("cacheReadTokens is cache_read_input_tokens alone",
+          real_counts.get("context", {}).get("cacheReadTokens") == 15092)
+
+    check("outputTokens is ADDITIVE across multiple assistant messages in one batch (whole-tree, "
+          "including subagent assistant lines, which are never filtered out)",
+          extract_live_counts([
+              json.dumps({"type": "assistant", "message": {"usage": {"output_tokens": 100}}}),
+              json.dumps({"type": "assistant", "message": {"usage": {"output_tokens": 30}}}),
+          ]).get("outputTokens") == 130)
+    check("context is the LATEST message's level within a batch, never summed across messages",
+          extract_live_counts([
+              json.dumps({"type": "assistant", "message": {"usage": {
+                  "output_tokens": 1, "input_tokens": 100, "cache_read_input_tokens": 0,
+                  "cache_creation_input_tokens": 0}}}),
+              json.dumps({"type": "assistant", "message": {"usage": {
+                  "output_tokens": 1, "input_tokens": 5, "cache_read_input_tokens": 200,
+                  "cache_creation_input_tokens": 0}}}),
+          ]).get("context") == {"contextTokens": 205, "cacheReadTokens": 200})
+    check("outputTokens is ABSENT, never a substituted zero, when no assistant line reports one",
+          "outputTokens" not in extract_live_counts([
+              json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})]))
+    check("context is ABSENT when the cache fields aren't ALL present -- never a partial figure "
+          "built from input_tokens alone (the trap the original ruling correctly named)",
+          "context" not in extract_live_counts([
+              json.dumps({"type": "assistant", "message": {"usage": {"output_tokens": 4, "input_tokens": 2}}})]))
+    check("agy step_update heartbeats never contribute token fields -- no usage field to read",
+          extract_live_counts([
+              json.dumps({"event": "step_update", "step_update": {"state": "DONE", "step_type": "tool"}})
+          ]) == {"toolCalls": 1})
+    check("a terminal `result` line's usage never leaks into live counts -- only type==assistant is read",
+          extract_live_counts([
+              json.dumps({"type": "result", "usage": {"output_tokens": 999, "input_tokens": 999}})
+          ]) == {"toolCalls": 0})
 
     check("live_telemetry_for_room is None with no Running step",
           live_telemetry_for_room({"path": "/rooms/x", "steps": [{"id": "s1", "state": "Succeeded"}]}) is None)
@@ -1677,12 +1952,146 @@ def _selftest() -> int:
     stalled_room = {"path": "/rooms/s", "state": "Stalled",
                      "steps": [{"id": "s1", "state": "Running", "execution": "exec-none"}]}
     room_list_for_live = [running_room, stalled_room]
-    attach_live_telemetry(room_list_for_live)
+    attach_live_telemetry(room_list_for_live, {})
     check("attach_live_telemetry never adds a `live` key it cannot honestly back (no stdout yet)",
           "live" not in running_room)
     check("attach_live_telemetry gates on the DISPLAYED state, never touching a Stalled room "
           "(#1513 confirmed-dead) even though its raw step still reads Running",
           "live" not in stalled_room)
+
+    # -- this review, finding 4: incremental reading -- a second cycle over an UNCHANGED cache only
+    # counts newly-appended bytes, never re-parses the whole file. --
+    with tempfile.TemporaryDirectory() as tmp:
+        room_dir = Path(tmp) / "incremental-room"
+        exec_dir = room_dir / "artifacts" / "execution_exec-inc-1"
+        exec_dir.mkdir(parents=True)
+        stdout_path = exec_dir / ".stdout.log"
+        stdout_path.write_text(json.dumps(
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}}) + "\n",
+            encoding="utf-8")
+        inc_room = {"path": str(room_dir), "steps": [{"id": "s1", "state": "Running", "execution": "exec-inc-1"}]}
+        inc_cache: dict = {}
+        inc_live1 = live_telemetry_for_room(inc_room, inc_cache)
+        check("first cycle counts the initial tool call", inc_live1["toolCalls"] == 1)
+        state_after_1 = inc_cache[f"{room_dir}::exec-inc-1"]
+        check("first cycle's offset advances to the end of the file it just read",
+              state_after_1["stdout_offset"] == stdout_path.stat().st_size)
+
+        with stdout_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read"}]}}) + "\n")
+        inc_live2 = live_telemetry_for_room(inc_room, inc_cache)
+        check("second cycle ADDS only the newly appended tool call -- proving this reads the delta, "
+              "not the whole file again (a whole-file re-read would also land on 2, so this is "
+              "checked together with the offset assertion above/below, not alone)",
+              inc_live2["toolCalls"] == 2)
+        check("a cycle with nothing new appended leaves the offset (and count) unchanged",
+              live_telemetry_for_room(inc_room, inc_cache)["toolCalls"] == 2)
+
+    # -- this review, finding 3: `.stdout.log` rollover at 8 MiB (ExecutionStreamLogger.cs) must
+    # never silently reset the count to zero -- a size DECREASE is the rollover signal. --
+    with tempfile.TemporaryDirectory() as tmp:
+        room_dir = Path(tmp) / "rollover-room"
+        exec_dir = room_dir / "artifacts" / "execution_exec-roll-1"
+        exec_dir.mkdir(parents=True)
+        stdout_path = exec_dir / ".stdout.log"
+
+        def _tool_line(name):
+            return json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name}]}}) + "\n"
+
+        stdout_path.write_text(_tool_line("Bash"), encoding="utf-8")
+        roll_room = {"path": str(room_dir), "steps": [{"id": "s1", "state": "Running", "execution": "exec-roll-1"}]}
+        roll_cache: dict = {}
+        check("pre-rollover: first cycle counts the initial tool call",
+              live_telemetry_for_room(roll_room, roll_cache)["toolCalls"] == 1)
+        with stdout_path.open("a", encoding="utf-8") as f:
+            f.write(_tool_line("Read"))
+        check("pre-rollover: second cycle adds the newly appended call",
+              live_telemetry_for_room(roll_room, roll_cache)["toolCalls"] == 2)
+
+        # Simulate ExecutionStreamLogger's single rollover: a REAL rollover is a rename, so the
+        # moved file carries exactly what the pusher had already (fully) caught up to -- a fresh,
+        # much smaller `.stdout.log` starts alongside it.
+        rollover_path = exec_dir / ".stdout.log.1"
+        rollover_path.write_text(stdout_path.read_text(encoding="utf-8"), encoding="utf-8")
+        stdout_path.write_text(_tool_line("Grep"), encoding="utf-8")
+        live_after_rollover = live_telemetry_for_room(roll_room, roll_cache)
+        check("finding 3: toolCalls stays MONOTONIC across a rollover -- the pre-rollover count is "
+              "preserved (never reset to zero) and the post-rollover file's own new call is added",
+              live_after_rollover["toolCalls"] == 3)
+        check("a cycle AFTER the rollover, with nothing new, never re-counts the rollover file again",
+              live_telemetry_for_room(roll_room, roll_cache)["toolCalls"] == 3)
+
+    # -- this review, finding 1: lastActivityAt is quantized to a coarse bucket before it enters the
+    # payload, bounding snapshot_hash churn for a continuously-streaming lane. --
+    bucket_aligned_base = LAST_ACTIVITY_BUCKET_SECONDS * 10.0  # exactly on a bucket boundary
+    check("two mtimes inside the same bucket produce an identical lastActivityAt",
+          _quantized_activity_iso(bucket_aligned_base)
+          == _quantized_activity_iso(bucket_aligned_base + LAST_ACTIVITY_BUCKET_SECONDS - 1))
+    check("crossing a bucket boundary changes lastActivityAt",
+          _quantized_activity_iso(bucket_aligned_base)
+          != _quantized_activity_iso(bucket_aligned_base + LAST_ACTIVITY_BUCKET_SECONDS))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        room_dir = Path(tmp) / "streaming-room"
+        exec_dir = room_dir / "artifacts" / "execution_exec-stream-1"
+        exec_dir.mkdir(parents=True)
+        stdout_path = exec_dir / ".stdout.log"
+        stdout_path.write_text("", encoding="utf-8")
+
+        def _streaming_room():
+            return {"name": "streaming-room", "path": str(room_dir), "state": "Running",
+                    "steps": [{"id": "s1", "state": "Running", "execution": "exec-stream-1"}]}
+
+        stream_cache: dict = {}
+        # Bucket-aligned so "+10" is guaranteed to stay inside the same bucket below.
+        base_mtime = (1_700_000_000.0 // LAST_ACTIVITY_BUCKET_SECONDS) * LAST_ACTIVITY_BUCKET_SECONDS
+        os.utime(stdout_path, (base_mtime, base_mtime))
+        rooms_1 = [_streaming_room()]
+        attach_live_telemetry(rooms_1, stream_cache)
+        hash_1 = snapshot_hash(build_wrapped(rooms_1, [], {}, 0))
+
+        os.utime(stdout_path, (base_mtime + 10, base_mtime + 10))  # same bucket
+        rooms_2 = [_streaming_room()]
+        attach_live_telemetry(rooms_2, stream_cache)
+        hash_2 = snapshot_hash(build_wrapped(rooms_2, [], {}, 0))
+        check("finding 1: mtime advancing WITHIN one bucket leaves the pushed snapshot hash "
+              "unchanged -- a continuously-streaming lane no longer forces a push every cycle",
+              hash_1 == hash_2)
+
+        os.utime(stdout_path, (base_mtime + LAST_ACTIVITY_BUCKET_SECONDS, base_mtime + LAST_ACTIVITY_BUCKET_SECONDS))
+        rooms_3 = [_streaming_room()]
+        attach_live_telemetry(rooms_3, stream_cache)
+        hash_3 = snapshot_hash(build_wrapped(rooms_3, [], {}, 0))
+        check("finding 1: crossing a bucket boundary DOES change the pushed snapshot hash",
+              hash_1 != hash_3)
+
+    # -- this review, finding 2: pending_push_age_s -- absent when nothing is waiting to push, and
+    # growing from the last SUCCESSFUL push while content keeps failing to go out. --
+    check("pending_push_age_s is None when the persisted hash already matches (nothing waiting)",
+          pending_push_age_s({SNAPSHOT_HASH_KEY: "h", LAST_PUSH_TS_KEY: 0.0}, "h", 10_000.0) is None)
+    check("pending_push_age_s is None with no successful-push baseline yet, even if content waits",
+          pending_push_age_s({}, "h", 10_000.0) is None)
+    check("pending_push_age_s is the elapsed time since the last SUCCESSFUL push, while content "
+          "still differs from the persisted hash",
+          pending_push_age_s({LAST_PUSH_TS_KEY: 9_000.0}, "h", 10_000.0) == 1_000.0)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sp = Path(tmp) / "push-state.json"
+        push_fail_state = {LAST_PUSH_TS_KEY: 0.0, SNAPSHOT_HASH_KEY: "old-hash"}
+
+        def _push_boom(_body):
+            raise RuntimeError("push failed (e.g. a 413 from the 1 MB cap)")
+
+        try:
+            push_snapshot_and_record(_push_boom, "{}", push_fail_state, sp, "new-hash", now_ts=100.0)
+        except RuntimeError:
+            pass
+        check("finding 2: a FAILED push leaves LAST_PUSH_TS_KEY frozen, so pending_push_age_s keeps "
+              "GROWING cycle over cycle instead of resetting -- this is what lets the heartbeat ping "
+              "carry a growing pending age while pushes keep failing",
+              pending_push_age_s(push_fail_state, "new-hash", 100.0) == 100.0
+              and pending_push_age_s(push_fail_state, "new-hash", 500.0) == 500.0)
 
     # -- #1613 item 1: live telemetry is attached AFTER stale-filtering, never before -- it plays no
     # part in the staleness decision at all, sidestepping the exhaustedUntil-shaped landmine by
