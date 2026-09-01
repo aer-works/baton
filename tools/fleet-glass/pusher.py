@@ -482,8 +482,8 @@ def extract_live_counts(lines: list[str]) -> dict:
         `output_tokens` -- the SUM over the batch (additive: the caller accumulates this across
         every batch it has ever read for the execution, spec/baton.md §6). Whole-tree, including
         subagent `assistant` events (they carry `parent_tool_use_id` but are not filtered out) --
-        deliberately more complete than the terminal line's own cumulative figure, which
-        `docs/vendor-doc-audit.md` measures excluding subagent tokens by ~22%.
+        why that beats the terminal line's own total is spec/baton.md §6's `rooms[].live` entry,
+        not restated here.
       - `"context"`: `{"contextTokens": int, "cacheReadTokens": int}` from the LATEST `assistant`
         line in this batch that reports all three of `input_tokens`/`cache_read_input_tokens`/
         `cache_creation_input_tokens` together -- a LEVEL (the caller replaces, never sums, its own
