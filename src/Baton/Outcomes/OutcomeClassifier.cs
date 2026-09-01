@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Baton.Dispatch;
 using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Outcomes;
 
@@ -44,13 +45,28 @@ public enum OutcomeVerdict
 /// <param name="UnsatisfiedOutputNames">
 /// <see cref="OutputMaterializer.CapturedResponse.UnsatisfiedOutputNames"/>, carried the same hop.
 /// </param>
+/// <param name="SubstantialWorkNoOutputsEvidence">
+/// #1586 S1 (the #1594 ruling's tripwire): non-null exactly when the worker's own final usage line
+/// (read the same way <see cref="OutputMaterializer.TryCaptureFinalResponse"/> reads its response line
+/// — the execution's captured <c>.stdout.log</c>, last non-blank line) reports real work (turns and/or
+/// output tokens) while EVERY one of <paramref name="UnsatisfiedOutputNames"/>'s siblings in the
+/// contract is missing, never merely present-but-wrong. Verdict-independent by construction, the same
+/// reason <paramref name="CapturedResponseFile"/> lives on the classification rather than being tied to
+/// one <see cref="OutcomeVerdict"/> case: it is computed once, ahead of whether
+/// <see cref="OutputMaterializer.TryCaptureFinalResponse"/> itself succeeds, so it is attached
+/// identically to both the captured and the not-captured Failed return in <see cref="Classify"/>.
+/// Null whenever no <c>usageParser</c> was supplied, no stdout log exists, the worker's line did not
+/// parse, or it reported no turns/tokens at all — never fabricated as "no evidence found" versus
+/// "not measured".
+/// </param>
 public sealed record OutcomeClassification(
     OutcomeVerdict Verdict,
     FailureClassification? FailureClassification = null,
     string? Reason = null,
     DateTimeOffset? RetryNotBefore = null,
     string? CapturedResponseFile = null,
-    IReadOnlyList<string>? UnsatisfiedOutputNames = null);
+    IReadOnlyList<string>? UnsatisfiedOutputNames = null,
+    string? SubstantialWorkNoOutputsEvidence = null);
 
 /// <summary>
 /// Maps a <see cref="CoreDispatchResult"/> plus a step's <see cref="WorkerContract"/> into one of
@@ -106,7 +122,8 @@ public static class OutcomeClassifier
         TimeProvider? timeProvider = null,
         GrantAuditMode grantAuditMode = GrantAuditMode.Enforced,
         string? worktreePath = null,
-        IWorkerResponseParser? responseParser = null)
+        IWorkerResponseParser? responseParser = null,
+        IWorkerUsageParser? usageParser = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(contract);
@@ -154,6 +171,17 @@ public static class OutcomeClassifier
         }
 
         var validation = ContractValidator.Validate(contract, outputDirectory);
+
+        // #1586 S1 (the #1594 ruling's tripwire): computed once, ahead of whether a capture below
+        // succeeds, so it attaches identically to both the captured and not-captured Failed returns —
+        // "regardless of whether a capture succeeded" is the design's own phrasing for exactly this.
+        // Deliberately NOT computed for the non-zero-exit-code or timeout paths above: this is scoped
+        // to the #1594 shape specifically (a natural exit 0 whose contract is nonetheless unsatisfied),
+        // not to every Failed verdict.
+        string? substantialWorkNoOutputsEvidence = !validation.IsSatisfied && AllDeclaredOutputsMissing(contract, validation)
+            ? DescribeSubstantialWorkEvidence(outputDirectory, usageParser)
+            : null;
+
         if (!validation.IsSatisfied)
         {
             // #1594: the worker exited 0
@@ -192,7 +220,8 @@ public static class OutcomeClassifier
                     FailureClassification.Permanent, // Permanent: conductor-resolves means the engine never auto-retries against a workspace this capture just wrote into (RetryEngine.MayRetry gates on this unconditionally).
                     WithStderr(reason, result.StderrTail),
                     CapturedResponseFile: captured.FileName,
-                    UnsatisfiedOutputNames: captured.UnsatisfiedOutputNames);
+                    UnsatisfiedOutputNames: captured.UnsatisfiedOutputNames,
+                    SubstantialWorkNoOutputsEvidence: substantialWorkNoOutputsEvidence);
             }
         }
 
@@ -239,7 +268,8 @@ public static class OutcomeClassifier
             OutcomeVerdict.Failed,
             contractClassification,
             WithStderr(BuildContractFailureReason(validation.UnsatisfiedOutputs), result.StderrTail),
-            contractRetryNotBefore);
+            contractRetryNotBefore,
+            SubstantialWorkNoOutputsEvidence: substantialWorkNoOutputsEvidence);
     }
 
     /// <summary>
@@ -398,6 +428,80 @@ public static class OutcomeClassifier
         }
 
         return Truncate(reason, MaxReasonLength);
+    }
+
+    /// <summary>
+    /// "Zero declared outputs" for the #1586 S1 tripwire — not merely unsatisfied, but every declared
+    /// output <see cref="UnsatisfiedOutputReason.Missing"/> specifically. A present-but-wrong output
+    /// (<see cref="UnsatisfiedOutputReason.NotJson"/>, a failed <see cref="UnsatisfiedOutputReason.ConditionFailed"/>,
+    /// a <see cref="UnsatisfiedOutputReason.SchemaViolation"/>) means the worker DID write something —
+    /// a different failure than "wrote nothing", and #1606 merging is exactly what keeps "nothing
+    /// present" an honest read of "the engine wrote nothing either" (the engine never writes under a
+    /// declared name; see <see cref="OutputMaterializer"/>'s class remarks).
+    /// </summary>
+    private static bool AllDeclaredOutputsMissing(WorkerContract contract, ContractValidationResult validation) =>
+        contract.ProducedOutputs.Count > 0
+        && validation.UnsatisfiedOutputs.Count == contract.ProducedOutputs.Count
+        && validation.UnsatisfiedOutputs.All(u => u.Reason == UnsatisfiedOutputReason.Missing);
+
+    /// <summary>
+    /// The "substantial work" half of the #1586 S1 tripwire: the worker's own final usage line —
+    /// read exactly the way <see cref="OutputMaterializer.TryCaptureFinalResponse"/> reads its response
+    /// line, the execution's captured <c>.stdout.log</c>, last non-blank line — reporting turns and/or
+    /// output tokens. Chosen over a worktree-dirty read (also considered): <c>worktreePath</c> is the
+    /// operator's own working directory whenever no worktree was provisioned, routinely dirty for
+    /// reasons that have nothing to do with this execution, which would make the tripwire fire on the
+    /// operator's OWN uncommitted changes rather than the worker's. A vendor-reported usage figure has
+    /// no such false-positive source. Returns null — not "zero", which this deliberately does not
+    /// fabricate — when no parser was supplied, no stdout log exists, the line does not parse, or the
+    /// vendor reported neither figure.
+    /// </summary>
+    private static string? DescribeSubstantialWorkEvidence(string outputDirectory, IWorkerUsageParser? usageParser)
+    {
+        if (usageParser is null)
+        {
+            return null;
+        }
+
+        var stdoutPath = Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName);
+        if (!File.Exists(stdoutPath))
+        {
+            return null;
+        }
+
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(stdoutPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            var line = lines[i];
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            if (!usageParser.TryParseFinalUsage(line, out var usage) || usage is null)
+            {
+                return null;
+            }
+
+            if (usage.Turns is > 0 || usage.TokensOut is > 0)
+            {
+                return $"the worker's own final usage line reports {usage.Turns?.ToString() ?? "an unreported number of"} turn(s) " +
+                    $"and {usage.TokensOut?.ToString() ?? "an unreported number of"} output token(s)";
+            }
+
+            return null;
+        }
+
+        return null;
     }
 
     private static string DescribeUnsatisfiedOutput(UnsatisfiedOutput output) => output.Reason switch

@@ -132,6 +132,25 @@ public class WorkflowOutcomeAndExitCodeTests
         Assert.Equal(RunExitCode.Succeeded, RunExitCodeResolver.Resolve(Result(state, waitTimedOut: true)));
     }
 
+    // #1586 S1: the discriminating check that this slice did NOT wire the #1608 swap (the #1594
+    // capture arm flipping onto Indeterminate is explicitly that issue's job, not this one's — S1's
+    // own scope note names this exact shape as the example of what not to do). A captured-response
+    // Failed step must describe identically before and after this slice; this pins "after".
+    [Fact]
+    public void A_captured_response_step_still_describes_as_Failed_not_Indeterminate()
+    {
+        var step = new StepState(
+            new StepId("a"), StepStatus.Failed, new ExecutionId("exec-1"), new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.Permanent,
+            LatestFailureReason: "Contract not satisfied: 'advice.md' is missing. Response captured to '.captured-response.md'; awaiting conductor resolution.",
+            LatestCapturedResponseFile: ".captured-response.md",
+            LatestUnsatisfiedOutputNames: ["advice.md"]);
+        var state = TerminalState([step]);
+
+        Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(state));
+        Assert.NotEqual(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+    }
+
     private static FlowState TerminalState(IReadOnlyList<StepState> steps) =>
         new(SnapshotId, steps, WorkflowStatus.Terminal);
 

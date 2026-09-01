@@ -45,7 +45,8 @@ public sealed record ProjectionCheckpointState(
     Dictionary<ExecutionId, CoreEvent.ExecutionExited> CoreExitedByExecutionId,
     Dictionary<StepId, int>? ExecutionCountByStepId = null,
     Dictionary<StepId, string?>? LatestCapturedResponseFileByStepId = null,
-    Dictionary<StepId, List<string>?>? LatestUnsatisfiedOutputNamesByStepId = null)
+    Dictionary<StepId, List<string>?>? LatestUnsatisfiedOutputNamesByStepId = null,
+    HashSet<StepId>? RetryForeclosedStepIds = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -53,6 +54,19 @@ public sealed record ProjectionCheckpointState(
     public Dictionary<StepId, string?> LatestCapturedResponseFileByStepId { get; init; } = LatestCapturedResponseFileByStepId ?? new();
 
     public Dictionary<StepId, List<string>?> LatestUnsatisfiedOutputNamesByStepId { get; init; } = LatestUnsatisfiedOutputNamesByStepId ?? new();
+
+    /// <summary>
+    /// #1586 S1: which steps carry a projected <see cref="FlowEvent.StepRetryForeclosed"/> not since
+    /// cleared. Absent from an older checkpoint's serialized JSON coalesces to empty here, the same
+    /// trailing-optional replay-safety shape as <see cref="LatestCapturedResponseFileByStepId"/> above
+    /// — no <see cref="ProjectionCheckpoint.Version"/> bump needed. <b>Load-bearing in
+    /// <see cref="DeepCopy"/> specifically</b>: that method constructs a new instance positionally, so
+    /// a member added only here (relying on this init default) would silently lose every foreclosure
+    /// on the very next incremental-checkpoint resume — the exact landmine #1594's own
+    /// <c>LatestCapturedResponseFileByStepId</c>/<c>LatestUnsatisfiedOutputNamesByStepId</c> pair hit
+    /// first (#1606).
+    /// </summary>
+    public HashSet<StepId> RetryForeclosedStepIds { get; init; } = RetryForeclosedStepIds ?? new();
 
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
@@ -110,5 +124,6 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<ExecutionId, CoreEvent.ExecutionExited>(CoreExitedByExecutionId),
         new Dictionary<StepId, int>(ExecutionCountByStepId),
         new Dictionary<StepId, string?>(LatestCapturedResponseFileByStepId),
-        LatestUnsatisfiedOutputNamesByStepId.ToDictionary(kvp => kvp.Key, kvp => kvp.Value is null ? null : new List<string>(kvp.Value)));
+        LatestUnsatisfiedOutputNamesByStepId.ToDictionary(kvp => kvp.Key, kvp => kvp.Value is null ? null : new List<string>(kvp.Value)),
+        new HashSet<StepId>(RetryForeclosedStepIds));
 }

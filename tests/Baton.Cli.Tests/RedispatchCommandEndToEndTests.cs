@@ -3,6 +3,7 @@ using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Domain;
 using Baton.Status;
+using Baton.Templates;
 
 namespace Baton.Cli.Tests;
 
@@ -331,6 +332,76 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         }
         finally
         {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task An_Indeterminate_parent_refuses_bare_redispatch_with_a_diagnosis()
+    {
+        // #1586 S1: no producer in this slice writes "Indeterminate" to a real terminal.json (see
+        // WorkflowOutcome.Indeterminate's own remarks) -- this fabricates the shape directly, exactly
+        // as the slice's own scope note permits, to prove the CONSUMER side of the vocabulary.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = Path.Combine(testRoot, "parent");
+            Directory.CreateDirectory(parentRoom);
+            await TerminalSentinelWriter.WriteAsync(
+                parentRoom, new WorkflowStatusView(WorkflowOutcome.Indeterminate, [], [], null), TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, childRoom), Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("Indeterminate", ex.Message, StringComparison.Ordinal);
+            Assert.False(Directory.Exists(childRoom));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task The_same_room_Failed_instead_of_Indeterminate_is_redispatched_with_a_warning_not_a_refusal()
+    {
+        // Polarity partner: identical fixture, one state string apart, proving the refusal above is
+        // about Indeterminate specifically and not incidentally about "any non-Succeeded terminal
+        // parent" (that's the existing warn-and-proceed test above).
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        var originalError = Console.Error;
+        try
+        {
+            var parentRoom = Path.Combine(testRoot, "parent");
+            Directory.CreateDirectory(parentRoom);
+            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["advise"] = new("fake", new WorkerContract("advise", [], [new ProducedOutput("advice.md")], []), "prompt", TimeSpan.FromMinutes(30)),
+            };
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                bindings, BatonPaths.RoomBindingsFile(parentRoom), TestContext.Current.CancellationToken);
+            await WorkflowDefinitionWriter.SaveToFileAsync(
+                new WorkflowDefinition(
+                    new WorkflowTemplateId("wf-1"), WorkflowTemplateVersion: 1,
+                    Steps: [new WorkflowStepDefinition(new StepId("advise"), "advise", [], ["advice.md"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]),
+                Path.Combine(parentRoom, "workflow.json"), TestContext.Current.CancellationToken);
+            await TerminalSentinelWriter.WriteAsync(
+                parentRoom, new WorkflowStatusView(WorkflowOutcome.Failed, [], [], "some reason"), TestContext.Current.CancellationToken);
+
+            using var stderr = new StringWriter();
+            Console.SetError(stderr);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(parentRoom, childRoom, Adapter: "fake");
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.Contains("did not succeed", stderr.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
     }

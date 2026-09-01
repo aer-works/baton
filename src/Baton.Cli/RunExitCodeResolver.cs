@@ -75,6 +75,14 @@ public static class RunExitCodeResolver
             WorkflowOutcome.Succeeded => RunExitCode.Succeeded,
             WorkflowOutcome.Cancelled => RunExitCode.Cancelled,
             WorkflowOutcome.Failed => ResolveFailed(result.State.Steps),
+            // #1586 S1: WorkflowOutcome.Describe never returns this in this slice (no producer yet —
+            // see that constant's own remarks), so this arm is unreachable today and untestable via
+            // Resolve itself. Named explicitly anyway, per this file's own sweep discipline, rather
+            // than left to fall through the wildcard below silently: "we don't know" is not the same
+            // failure as "genuinely still going", and the wildcard's own comment says exactly that
+            // about the two cases it DOES cover. Becomes live and testable once #2's settle verb or
+            // #1608's classification swap gives Describe a path to it.
+            WorkflowOutcome.Indeterminate => RunExitCode.Failed,
             // Running or Paused: the pump returned short of Terminal (no --wait, or --wait's poll
             // loop was cancelled -- e.g. Ctrl-C -- before the room settled; a --wait-timeout expiry
             // is handled above, ahead of this switch, and never reaches here). Not one of #1356's

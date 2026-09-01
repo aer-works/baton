@@ -207,6 +207,31 @@ internal static class ShellWorkerCommands
     }
 
     /// <summary>
+    /// #1586 S1 (the #1594 ruling's tripwire): emits a verbatim agy-shaped terminal result line to
+    /// stdout — real turns/tokens, so <c>OutcomeClassifier</c>'s usage-parser read finds genuine
+    /// evidence — then exits 0 without ever writing the declared output. Standing in for the #1594
+    /// shape end to end through the real dispatch pipeline (<c>ExecutionStreamLogger</c>'s own stdout
+    /// capture, not a directly-written <c>.stdout.log</c>), so
+    /// <see cref="Domain.FlowEvent.ZeroOutputsDespiteSubstantialWork"/>'s wiring in
+    /// <c>MutationInterface</c> is proven live, not merely at <c>OutcomeClassifier.Classify</c>'s unit
+    /// level (<c>OutcomeClassifierTests</c> already pins that half with a fake usage parser).
+    /// </summary>
+    public static CoreDispatchTarget EmitSubstantialUsageThenExitWithoutWriting(string scriptDirectory)
+    {
+        const string resultLine = """{"event":"result","result":{"conversation_id":"test","status":"SUCCESS","response":"did real work","duration_seconds":1.0,"num_turns":4,"usage":{"input_tokens":100,"output_tokens":500,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":600}}}""";
+
+        var body = OperatingSystem.IsWindows()
+            ? "@echo off\n" +
+              $"echo {resultLine}\n" +
+              "exit /b 0\n"
+            : "#!/bin/sh\n" +
+              $"echo '{resultLine}'\n" +
+              "exit 0\n";
+
+        return FromScript(scriptDirectory, body);
+    }
+
+    /// <summary>
     /// Appends <paramref name="suffix"/> to the first resolved input's content instead of a bare
     /// copy — the architect–critic loop's Critic, so its output visibly differs across reruns and
     /// assertions can tell "fed the new plan back in" apart from "produced the same file again".

@@ -104,6 +104,12 @@ public static class StateProjector
                     state.RetryNotBeforeByStepId.Remove(acceptedStepId);
                     state.RetryDelayMsByStepId.Remove(acceptedStepId);
                     state.RetryScheduledForExecutionIdByStepId.Remove(acceptedStepId);
+
+                    // #1586 S1: a fresh dispatch reopens a foreclosed step — a foreclosure blocks
+                    // MayRetry, not admission, and this is the same "the pump is dispatching it, so
+                    // whatever blocked it is moot" reasoning the three clears above already rest on.
+                    // Never permanent, per the state-truth design's own ruling on #1586.
+                    state.RetryForeclosedStepIds.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -216,6 +222,11 @@ public static class StateProjector
                         state.RetryDelayMsByStepId.Remove(retryStepId);
                         state.RetryScheduledForExecutionIdByStepId.Remove(retryStepId);
 
+                        // #1586 S1: RetryWithRevision reopens the step regardless of whether it was
+                        // foreclosed — the same never-permanent rule ExecutionRequestAccepted's own
+                        // clear above enforces for the ordinary dispatch path.
+                        state.RetryForeclosedStepIds.Remove(retryStepId);
+
                         if (supplementaryExecutionId is { } retrySupplement)
                         {
                             state.PendingSupplementaryExecutionIdByStepId[retryStepId] = retrySupplement;
@@ -250,7 +261,28 @@ public static class StateProjector
                 state.CancellationRequestedExecutionIds.Add(cancellationRequested.ExecutionId);
                 break;
 
+            case FlowEvent.StepRetryForeclosed foreclosed:
+                // #1586 S1: all-or-nothing, the same discipline ExecutionCancelled's own retry-field
+                // clear already follows (#1605) — guarded on ForExecutionId still matching the
+                // CURRENTLY scheduled retry for this step. A retry already re-scheduled for a newer
+                // execution must survive an event that names an older one; applying the flag while
+                // skipping the field clear (or the reverse) would leave RetryNotBefore set AND
+                // MayRetry false at once — DeriveWorkflowStatus's deliverability predicate ORs the two
+                // (`step.RetryNotBefore is not null` / MayRetry), so a half-applied foreclosure can
+                // neither terminate nor retry.
+                if (state.RetryScheduledForExecutionIdByStepId.GetValueOrDefault(foreclosed.StepId) == foreclosed.ForExecutionId)
+                {
+                    state.RetryForeclosedStepIds.Add(foreclosed.StepId);
+                    state.RetryNotBeforeByStepId.Remove(foreclosed.StepId);
+                    state.RetryDelayMsByStepId.Remove(foreclosed.StepId);
+                    state.RetryScheduledForExecutionIdByStepId.Remove(foreclosed.StepId);
+                }
+
+                break;
+
             case FlowEvent.ExecutionRequestRejected:
+            case FlowEvent.ZeroOutputsDespiteSubstantialWork:
+                // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
                 break;
         }
     }
@@ -309,7 +341,8 @@ public static class StateProjector
                 linkedFromExecutionId,
                 state.ExecutionCountByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.LatestCapturedResponseFileByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.LatestUnsatisfiedOutputNamesByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.LatestUnsatisfiedOutputNamesByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.RetryForeclosedStepIds.Contains(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

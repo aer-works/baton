@@ -6,6 +6,7 @@ using Baton.Domain;
 using Baton.Outcomes;
 using Baton.Projection;
 using Baton.Scheduling;
+using Baton.Status;
 using Baton.Store;
 
 namespace Baton.Mutation;
@@ -691,11 +692,22 @@ public static class MutationInterface
                             // null worktree path.
                         }
 
+                        // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own
+                        // #1567 comment explains — the durable request, not the binding's current
+                        // resolution, since this is the crash-recovery path classifying from recorded
+                        // facts alone.
+                        var usageParser = request.Adapter is { } recoveryAdapter
+                            ? StandardWorkerUsageParsers.Default.GetValueOrDefault(recoveryAdapter)
+                            : null;
+
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
-                            grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser);
+                            grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
+                            usageParser: usageParser);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
+                            .ConfigureAwait(false);
+                        await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, executionId, classification, ioCancellationToken)
                             .ConfigureAwait(false);
                     }
 
@@ -1212,14 +1224,22 @@ public static class MutationInterface
             // request shape that predates the mode, and those were never promised an audit.
             var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
             var worktreePath = binding.Target.WorkingDirectory;
+            // #1586 S1: binding.Adapter is the resolved config entry's adapter name (#1567) — the same
+            // source ExecutionUsageProjector prefers.
+            var usageParser = binding.Adapter is { } liveAdapter
+                ? StandardWorkerUsageParsers.Default.GetValueOrDefault(liveAdapter)
+                : null;
             var classification = OutcomeClassifier.Classify(
-                dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider, grantAuditMode, worktreePath, binding.ResponseParser);
+                dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
+                grantAuditMode, worktreePath, binding.ResponseParser, usageParser);
 
             // Never gated on dispatchCancellationToken: that token having fired is exactly what
             // produced this outcome (Cancelled) in the first place, so recording it must not itself
             // be cancellable by the same signal — the outcome append always completes once
             // dispatch has returned.
             await eventLogWriter.AppendAsync(ToOutcomeEvent(prepared.Request.ExecutionId, classification), CancellationToken.None)
+                .ConfigureAwait(false);
+            await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, prepared.Request.ExecutionId, classification, CancellationToken.None)
                 .ConfigureAwait(false);
         }
         catch (CommandLineTooLongException ex)
@@ -1274,6 +1294,42 @@ public static class MutationInterface
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
             _ => throw new ArgumentOutOfRangeException(nameof(classification), classification.Verdict, "Unknown OutcomeVerdict."),
         };
+
+    /// <summary>
+    /// #1586 S1 (the #1594 ruling's tripwire): a no-op unless <paramref name="classification"/> carries
+    /// <see cref="OutcomeClassification.SubstantialWorkNoOutputsEvidence"/> — appends
+    /// <see cref="FlowEvent.ZeroOutputsDespiteSubstantialWork"/> right alongside the outcome event
+    /// <see cref="ToOutcomeEvent"/> mapped, from BOTH call sites that ever call it (the live dispatch
+    /// path and the crash-recovery <c>ToClassify</c> branch), so the tripwire fires identically whether
+    /// the classification came from a just-completed dispatch or from settling a dead pump's recorded
+    /// exit — the same "one seam, every caller of it" placement #1594's own integration constraint
+    /// required of the capture arm this mirrors.
+    /// </summary>
+    private static async Task AppendZeroOutputsTripwireIfAnyAsync(
+        IEventLogWriter eventLogWriter, ExecutionId executionId, OutcomeClassification classification, CancellationToken cancellationToken)
+    {
+        if (classification.SubstantialWorkNoOutputsEvidence is not { } evidence)
+        {
+            return;
+        }
+
+        try
+        {
+            Console.Error.WriteLine(
+                $"TRIPWIRE (#1594): execution '{executionId.Value}' produced NONE of its declared " +
+                $"outputs, yet {evidence} -- this room's classification may not reflect what actually " +
+                "happened. Investigate before trusting it.");
+        }
+        catch (IOException)
+        {
+            // Same best-effort posture as the #1594 capture line this mirrors (OutcomeClassifier.Classify) —
+            // a broken stderr pipe must not itself orphan the execution; the durable event below still
+            // records the fact regardless of whether this line reached the console.
+        }
+
+        await eventLogWriter.AppendAsync(new FlowEvent.ZeroOutputsDespiteSubstantialWork(executionId, evidence), cancellationToken)
+            .ConfigureAwait(false);
+    }
 
     /// <summary>
     /// #1563 (S0 of the quota design, #802): resolves every parked-cancel intent the registry's

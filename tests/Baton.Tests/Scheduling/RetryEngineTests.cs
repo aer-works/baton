@@ -112,4 +112,36 @@ public class RetryEngineTests
 
         Assert.True(mayRetry);
     }
+
+    [Fact]
+    public void A_foreclosed_step_may_not_retry_even_with_full_budget_and_an_ExhaustedUntil_bypass()
+    {
+        // #1586 S1: RetryForeclosed must short-circuit ahead of BOTH bypasses that would otherwise
+        // grant a retry here -- full MaxAttempts budget remaining AND an ExhaustedUntil classification
+        // (which normally spends no budget at all, per An_ExhaustedUntil_classification_never_spends_retry_budget
+        // above). If either bypass ran first, this fixture would read True.
+        var stepState = new StepState(
+            Architect, StepStatus.Failed, ExecutionId, NoUpstream,
+            ConsecutiveFailureCount: 0, LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryForeclosed: true);
+
+        var mayRetry = RetryEngine.MayRetry(stepState, new RetryPolicy(MaxAttempts: 10));
+
+        Assert.False(mayRetry);
+    }
+
+    [Fact]
+    public void The_same_shape_without_foreclosure_still_retries()
+    {
+        // Polarity partner: one field apart (RetryForeclosed false), otherwise identical, proving the
+        // refusal above is about the foreclosure flag and not incidentally about the classification.
+        var stepState = new StepState(
+            Architect, StepStatus.Failed, ExecutionId, NoUpstream,
+            ConsecutiveFailureCount: 0, LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryForeclosed: false);
+
+        var mayRetry = RetryEngine.MayRetry(stepState, new RetryPolicy(MaxAttempts: 10));
+
+        Assert.True(mayRetry);
+    }
 }

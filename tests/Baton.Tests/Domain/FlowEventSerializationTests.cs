@@ -86,6 +86,10 @@ public class FlowEventSerializationTests
                 new ExecutionId("exec-9"))
         ];
         yield return [new FlowEvent.WorkflowResumed(new DecisionId("decision-1"))];
+        // #1586 S1
+        yield return [new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park")];
+        yield return [new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park", ForeclosedBy: "settle")];
+        yield return [new FlowEvent.ZeroOutputsDespiteSubstantialWork(ExecutionId, "4 turns, 500 output tokens")];
     }
 
     [Theory]

@@ -19,6 +19,8 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(ExternalDecisionRecorded), "externalDecisionRecorded")]
 [JsonDerivedType(typeof(WorkflowResumed), "workflowResumed")]
 [JsonDerivedType(typeof(StepRetryScheduled), "stepRetryScheduled")]
+[JsonDerivedType(typeof(StepRetryForeclosed), "stepRetryForeclosed")]
+[JsonDerivedType(typeof(ZeroOutputsDespiteSubstantialWork), "zeroOutputsDespiteSubstantialWork")]
 public abstract record FlowEvent
 {
     private FlowEvent()
@@ -119,4 +121,52 @@ public abstract record FlowEvent
         ExecutionId ForExecutionId,
         DateTimeOffset RetryNotBefore,
         int RetryDelayMs) : FlowEvent;
+
+    /// <summary>
+    /// #1586 S1: a scheduled retry (<see cref="StepRetryScheduled"/>) was voided without ever being
+    /// dispatched — the missing primitive the state-truth design proposal on #1586 names: clearing
+    /// <see cref="StepRetryScheduled.RetryNotBefore"/> alone would re-arm the step (an
+    /// <see cref="FailureClassification.ExhaustedUntil"/> step bypasses <c>RetryPolicy.MaxAttempts</c>
+    /// by design, 0026), so this is a foreclosure, not a clear. <see cref="Scheduling.RetryEngine.MayRetry"/>
+    /// returns <c>false</c> once projected, which is what lets <see cref="Projection.StateProjector"/>'s
+    /// deliverability predicate go <c>Terminal</c>. Reopened by the same two events that already clear
+    /// <see cref="StepRetryScheduled"/>'s fields for a fresh attempt — <see cref="ExecutionRequestAccepted"/>
+    /// and a <see cref="DecisionType.RetryWithRevision"/> <see cref="WorkflowResumed"/> — so a
+    /// deliberate re-drive reopens the step and a foreclosure is never permanent. (A third event,
+    /// <see cref="ExecutionCancelled"/>'s own park-abort clear (#1563), also clears those fields but
+    /// does NOT reopen a foreclosure — it terminates the execution rather than re-arming the step, so
+    /// there is nothing to reopen.)
+    /// </summary>
+    /// <param name="ForExecutionId">
+    /// The execution whose retry obligation this forecloses. Guards the apply the same way
+    /// <see cref="ExecutionCancelled"/>'s own retry-field clear already does (#1605): projected only
+    /// when it still matches <see cref="Projection.ProjectionCheckpointState.RetryScheduledForExecutionIdByStepId"/>'s
+    /// recorded value for <see cref="StepId"/> — a retry already re-scheduled for a NEWER execution of
+    /// the same step must survive this event.
+    /// </param>
+    /// <param name="Reason">Why the retry was foreclosed — a diagnostic, never parsed back.</param>
+    /// <param name="ForeclosedBy">
+    /// Attribution for who/what recorded the foreclosure (e.g. <c>"settle"</c> once S2's verb exists).
+    /// Nullable — this slice writes no producer, so every foreclosure a test fabricates today may
+    /// legitimately omit it.
+    /// </param>
+    public sealed record StepRetryForeclosed(
+        StepId StepId,
+        ExecutionId ForExecutionId,
+        string Reason,
+        string? ForeclosedBy = null) : FlowEvent;
+
+    /// <summary>
+    /// #1586 S1 (the #1594 ruling's tripwire): a completed execution's own final usage line shows real
+    /// work (turns and/or output tokens reported) while every one of its contract's declared outputs is
+    /// simply missing — recorded independent of <see cref="ExecutionFailed"/>'s <c>Verdict</c>/
+    /// <c>FailureClassification</c> so it fires whether or not <see cref="Outcomes.OutputMaterializer"/>'s
+    /// response capture succeeded alongside it (<see cref="Outcomes.OutcomeClassification.SubstantialWorkNoOutputsEvidence"/>
+    /// explains the predicate). A diagnostic fact only — nothing in <see cref="Projection.StateProjector"/>
+    /// changes <see cref="StepState"/> because of this event; it exists to be loud and durable, not to
+    /// drive scheduling.
+    /// </summary>
+    public sealed record ZeroOutputsDespiteSubstantialWork(
+        ExecutionId ExecutionId,
+        string Evidence) : FlowEvent;
 }

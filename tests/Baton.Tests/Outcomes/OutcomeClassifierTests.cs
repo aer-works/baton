@@ -2,6 +2,7 @@ using Baton.Tests.TestSupport;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Outcomes;
+using Baton.Status;
 
 namespace Baton.Tests.Outcomes;
 
@@ -355,6 +356,160 @@ public class OutcomeClassifierTests
         {
             response2 = response;
             return response is not null;
+        }
+    }
+
+    private sealed class FakeUsageParser(WorkerUsage? usage) : IWorkerUsageParser
+    {
+        public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usageOut)
+        {
+            usageOut = usage;
+            return usage is not null;
+        }
+    }
+
+    // #1586 S1 (the #1594 ruling's tripwire): SubstantialWorkNoOutputsEvidence, scoped to the exact
+    // "worker exited 0, contract unsatisfied" shape above -- never the non-zero-exit or timeout paths.
+
+    [Fact]
+    public void Classify_records_substantial_work_evidence_alongside_a_successful_capture()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"the worker's real answer"}}""");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser("the worker's real answer"),
+                usageParser: new FakeUsageParser(new WorkerUsage(TokensOut: 500, Turns: 4)));
+
+            // Both facts land on the same classification -- "regardless of whether a capture
+            // succeeded" is the design's own phrasing; this is the "succeeded" half.
+            Assert.Equal(OutputMaterializer.CapturedResponseFileName, classification.CapturedResponseFile);
+            Assert.NotNull(classification.SubstantialWorkNoOutputsEvidence);
+            Assert.Contains("4 turn", classification.SubstantialWorkNoOutputsEvidence);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_records_substantial_work_evidence_even_when_nothing_was_captured()
+    {
+        // The "not captured" half: no responseParser at all, so OutputMaterializer never fires -- the
+        // evidence must still attach to the plain contract-failure fallback return.
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"irrelevant to the usage parser"}}""");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                usageParser: new FakeUsageParser(new WorkerUsage(TokensOut: 500, Turns: 4)));
+
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.NotNull(classification.SubstantialWorkNoOutputsEvidence);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_leaves_evidence_null_when_no_usage_parser_is_supplied()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"x"}}""");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
+
+            Assert.Null(classification.SubstantialWorkNoOutputsEvidence);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_leaves_evidence_null_when_the_worker_reported_no_turns_or_tokens()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"x"}}""");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                usageParser: new FakeUsageParser(new WorkerUsage(TokensOut: null, Turns: null)));
+
+            Assert.Null(classification.SubstantialWorkNoOutputsEvidence);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_leaves_evidence_null_when_only_some_declared_outputs_are_missing()
+    {
+        // Partial contracts (one output present, one missing) are a different, narrower failure than
+        // "wrote nothing" -- the tripwire is scoped to ALL declared outputs missing, per
+        // AllDeclaredOutputsMissing's own doc. Same fixture as
+        // Classify_captures_when_only_one_of_a_multioutput_contracts_declared_outputs_is_missing, plus
+        // a usage parser that WOULD report real work if consulted.
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"ran the checkers, all green"}}""");
+            File.WriteAllText(Path.Combine(directory, "branch.diff"), "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n");
+            var contract = new WorkerContract(
+                "worker", [], [new ProducedOutput("janitor.md"), new ProducedOutput("branch.diff")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser("ran the checkers, all green"),
+                usageParser: new FakeUsageParser(new WorkerUsage(TokensOut: 500, Turns: 4)));
+
+            Assert.Null(classification.SubstantialWorkNoOutputsEvidence);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_leaves_evidence_null_for_a_non_zero_exit_code_even_with_real_usage()
+    {
+        // Deliberately out of scope: a crash-exit failure already has an obvious explanation, and this
+        // tripwire targets the #1594 shape specifically (natural exit 0, contract unsatisfied).
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.Natural), contract, directory,
+                usageParser: new FakeUsageParser(new WorkerUsage(TokensOut: 500, Turns: 4)));
+
+            Assert.Null(classification.SubstantialWorkNoOutputsEvidence);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
         }
     }
 
