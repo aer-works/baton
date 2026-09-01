@@ -222,9 +222,7 @@ public sealed class WorkflowStatusProjectorLivenessTests
     [Fact]
     public void An_ordinary_Retryable_backoff_never_surfaces_a_reset_instant_despite_sharing_RetryNotBefore()
     {
-        // The gate is FailureKind == "ExhaustedUntil" specifically, not "any Failed step with a
-        // pending RetryNotBefore" -- an ordinary backoff schedules a RetryNotBefore too, but it is
-        // not a vendor-quota park and this field must not claim otherwise.
+        // Gating rule: WorkflowStatusStepView.ExhaustedUntil's own remarks.
         var executionId = new ExecutionId("exec-1");
         var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId));
         var retryNotBefore = DateTimeOffset.UtcNow.AddMinutes(5);
