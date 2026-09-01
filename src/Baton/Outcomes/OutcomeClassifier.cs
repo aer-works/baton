@@ -446,8 +446,10 @@ public static class OutcomeClassifier
 
     /// <summary>
     /// The "substantial work" half of the #1586 S1 tripwire: the worker's own final usage line —
-    /// read exactly the way <see cref="OutputMaterializer.TryCaptureFinalResponse"/> reads its response
-    /// line, the execution's captured <c>.stdout.log</c>, last non-blank line — reporting turns and/or
+    /// the execution's captured <c>.stdout.log</c>, last non-blank line, read via
+    /// <see cref="OutputMaterializer.TryReadLastNonBlankLine"/> (#1586 S1 review F5: shared with
+    /// <see cref="OutputMaterializer.TryCaptureFinalResponse"/>'s response-line read, so the two
+    /// cannot silently disagree about what "the worker's final line" is) — reporting turns and/or
     /// output tokens. Chosen over a worktree-dirty read (also considered): <c>worktreePath</c> is the
     /// operator's own working directory whenever no worktree was provisioned, routinely dirty for
     /// reasons that have nothing to do with this execution, which would make the tripwire fire on the
@@ -463,42 +465,21 @@ public static class OutcomeClassifier
             return null;
         }
 
-        var stdoutPath = Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName);
-        if (!File.Exists(stdoutPath))
+        var line = OutputMaterializer.TryReadLastNonBlankLine(outputDirectory);
+        if (line is null)
         {
             return null;
         }
 
-        string[] lines;
-        try
-        {
-            lines = File.ReadAllLines(stdoutPath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        if (!usageParser.TryParseFinalUsage(line, out var usage) || usage is null)
         {
             return null;
         }
 
-        for (var i = lines.Length - 1; i >= 0; i--)
+        if (usage.Turns is > 0 || usage.TokensOut is > 0)
         {
-            var line = lines[i];
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
-
-            if (!usageParser.TryParseFinalUsage(line, out var usage) || usage is null)
-            {
-                return null;
-            }
-
-            if (usage.Turns is > 0 || usage.TokensOut is > 0)
-            {
-                return $"the worker's own final usage line reports {usage.Turns?.ToString() ?? "an unreported number of"} turn(s) " +
-                    $"and {usage.TokensOut?.ToString() ?? "an unreported number of"} output token(s)";
-            }
-
-            return null;
+            return $"the worker's own final usage line reports {usage.Turns?.ToString() ?? "an unreported number of"} turn(s) " +
+                $"and {usage.TokensOut?.ToString() ?? "an unreported number of"} output token(s)";
         }
 
         return null;
