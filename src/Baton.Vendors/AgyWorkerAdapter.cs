@@ -1083,9 +1083,10 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// and of the input/output split. agy has never been observed reporting a cache-creation figure
     /// (docs/vendor-capabilities.md), so this parser has no field to bind
     /// <see cref="WorkerUsage.CacheCreationTokens"/> to and leaves it null rather than inventing one.
-    /// Turns come from <c>result.num_turns</c>, read independently of the usage object. Per
-    /// <c>spec/baton.md</c> §7, none of this shape is the reset-time source of truth — it is
-    /// attribution, and the fleet-level <c>/usage</c> poll is what §7 rules authoritative.
+    /// Turns come from <c>result.num_turns</c>, read independently of the usage object. This shape is
+    /// attribution, never the reset-time source of truth — see
+    /// <see cref="ClaudeWorkerAdapter.TryParseFinalUsage"/>'s own doc comment for the <c>spec/baton.md</c>
+    /// §7 ruling this rests on.
     /// </summary>
     public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage)
     {

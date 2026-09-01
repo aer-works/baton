@@ -396,11 +396,10 @@ where `ExecutionUsageView` is
 { "wallClockMs": number, "tokensIn"?: number, "tokensOut"?: number, "turns"?: number,
   "cacheReadTokens"?: number, "cacheCreationTokens"?: number, "thinkingTokens"?: number }
 ```
-(`WorkflowStatusView.cs`, `src/Baton/Status/ExecutionUsageView.cs` — canonical field list; do not
-restate it a third time elsewhere). `wallClockMs` is always present when the object is present at
-all — derived from recorded start/exit timestamps; every other field is independently omitted (never
-`null`, never fabricated as zero) when the vendor's captured stdout carried no such figure. The three
-added by #1569 follow one vendor's own field split, not a Baton-invented one: `cacheReadTokens` is a
+(`WorkflowStatusView.cs`, `src/Baton/Status/ExecutionUsageView.cs` — canonical field list and the
+null-vs-zero omission doctrine for every field in it; neither is restated here). `wallClockMs` is
+always present when the object is present at all — derived from recorded start/exit timestamps. The
+three added by #1569 follow one vendor's own field split, not a Baton-invented one: `cacheReadTokens` is a
 real field on both measured vendors' envelopes (claude: `cache_read_input_tokens`; agy:
 `cache_read_tokens`); `cacheCreationTokens` is claude-only (`cache_creation_input_tokens`) — agy has
 never been observed reporting one; and `thinkingTokens` (claude: nested
