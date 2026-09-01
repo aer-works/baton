@@ -132,3 +132,86 @@ public sealed class ClaudeFinalUsageParsingTests
         Assert.Null(usage);
     }
 }
+
+/// <summary>
+/// Coverage for <see cref="ClaudeWorkerAdapter.TryParseFinalResponse"/> (issue #1594) — the same
+/// terminal line <see cref="ClaudeFinalUsageParsingTests"/> covers, read for the top-level
+/// <c>result</c> string instead of <c>usage</c>. The success fixture is the same real captured line
+/// docs/vendor-capabilities.md records (#1540).
+/// </summary>
+public sealed class ClaudeFinalResponseParsingTests
+{
+    private readonly ClaudeWorkerAdapter _adapter = new();
+
+    [Fact]
+    public void TryParseFinalResponse_SuccessResultLine_ReturnsTheResultText()
+    {
+        const string line = """
+            {"duration_api_ms":2550,"is_error":false,"result":"1\n\n2\n\n3\n\n4\n\n5","type":"result","duration_ms":3870}
+            """;
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.True(parsed);
+        Assert.Equal("1\n\n2\n\n3\n\n4\n\n5", response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_ErrorTurn_ReturnsFalse()
+    {
+        // Captured verbatim (see ClaudeStreamJsonProgressParsingTests): an error turn's `result` field
+        // is a failure reason, not a worker's answer, and must never be materialized as though it were.
+        const string line = """
+            {"type":"result","subtype":"success","is_error":true,"duration_ms":29,"num_turns":1,"result":"Not logged in","stop_reason":"stop_sequence","session_id":"16ab91d3-511f-46ad-ade5-c946b7c9e2f7"}
+            """;
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_MissingIsError_ReturnsFalse()
+    {
+        // is_error is required, not defaulted: its absence means an unfamiliar shape, not a
+        // confirmed success -- same posture as TryParseResultEvent's own doc comment.
+        const string line = """{"type":"result","result":"looks like an answer"}""";
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_NonResultLine_ReturnsFalse()
+    {
+        const string line = """{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}""";
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_AgyShapedLine_ReturnsFalse()
+    {
+        const string line = """{"event":"result","result":{"status":"SUCCESS","response":"agy's answer"}}""";
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_BlankLine_ReturnsFalse()
+    {
+        var parsed = _adapter.TryParseFinalResponse("   ", out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+}

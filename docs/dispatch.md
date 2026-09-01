@@ -172,6 +172,17 @@ so a role that writes nothing fails loudly. The roles and their outputs are defi
 `src/Baton.Vendors/WorkerRoles.json` (authoritative); this table is a snapshot, pinned against that
 catalog by `WorkerRoleCatalogTests`.
 
+**"Succeeded" does not always mean the worker itself wrote the file (#1594).** If a plain-text
+output (`.md`/`.txt`/no extension, no declared `Schema`/`Condition` — `advice.md`, `changes.md`,
+`findings.md`, `janitor.md` above) is missing at settle time but the execution's own terminal result
+envelope carried a non-empty final response, the engine writes that response into the missing file in
+the worker's place and lets the room settle on the normal contract-satisfaction criteria — never
+silently: the written file's first line is a disclosure comment naming this mechanism, and the room's
+own `flow.jsonl` carries which output names were materialized this way. A structured output
+(`verdict.json`, `patch.diff`, `branch.diff`, `turn-actions.json` above) is never materialized this
+way — prose can't honestly stand in for a declared shape, so a lane missing one of these still fails
+exactly as before. See `src/Baton/Outcomes/OutputMaterializer.cs` for the mechanism.
+
 | Role | Tier | Writes | For |
 |------|------|--------|-----|
 | `advise` | standard | `advice.md` | Weighing an open design question before building — a second opinion. |

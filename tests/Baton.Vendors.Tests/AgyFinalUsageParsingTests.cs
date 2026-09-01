@@ -101,3 +101,84 @@ public sealed class AgyFinalUsageParsingTests
         Assert.Null(usage);
     }
 }
+
+/// <summary>
+/// Coverage for <see cref="AgyWorkerAdapter.TryParseFinalResponse"/> (issue #1594) — the same terminal
+/// line <see cref="AgyFinalUsageParsingTests"/> covers, read for <c>result.response</c> instead of
+/// <c>result.usage</c>. The success fixture is the same real captured line those tests use.
+/// </summary>
+public sealed class AgyFinalResponseParsingTests
+{
+    private readonly AgyWorkerAdapter _adapter = new();
+
+    [Fact]
+    public void TryParseFinalResponse_SuccessResultLine_ReturnsTheResponseText()
+    {
+        const string line = """
+            {"event":"result","result":{"conversation_id":"5ec0d582","status":"SUCCESS","response":"Created note.txt containing HELLO-WORLD.","duration_seconds":3.6,"num_turns":1,"usage":{"input_tokens":14407,"output_tokens":1173,"thinking_tokens":992,"cache_read_tokens":40765,"total_tokens":15580}}}
+            """;
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.True(parsed);
+        Assert.Equal("Created note.txt containing HELLO-WORLD.", response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_NonSuccessStatus_ReturnsFalse()
+    {
+        // #1561: a non-SUCCESS result's response is documented empty; even if a vendor build ever put
+        // text there, an error status is not a worker's answer and must never be written into a
+        // declared output as though it were one.
+        const string line = """
+            {"event":"result","result":{"status":"ERROR","response":"","error":"quota exhausted"}}
+            """;
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_EmptyResponseText_ReturnsFalse()
+    {
+        const string line = """{"event":"result","result":{"status":"SUCCESS","response":""}}""";
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_NonResultEvent_ReturnsFalse()
+    {
+        const string line = """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool"}}""";
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_ClaudeShapedLine_ReturnsFalse()
+    {
+        const string line = """{"type":"result","is_error":false,"result":"claude's answer"}""";
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_BlankLine_ReturnsFalse()
+    {
+        var parsed = _adapter.TryParseFinalResponse(" ", out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+}

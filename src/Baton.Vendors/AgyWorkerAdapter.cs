@@ -1152,6 +1152,46 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         }
     }
 
+    /// <summary>
+    /// #1594: recovers agy's own final answer from the same terminal <c>"event":"result"</c> line
+    /// <see cref="TryParseFinalUsage"/> and <see cref="IsTerminalSuccessLine"/> already key on --
+    /// <c>result.response</c>, gated on <c>result.status == "SUCCESS"</c> exactly like
+    /// <see cref="IsTerminalSuccessLine"/>, since a non-SUCCESS result's <c>response</c> is
+    /// documented empty (#1561, this same file's <see cref="TryParseProgressEvent"/>) and an error
+    /// status carrying incidental text would be the wrong thing to write into a declared output.
+    /// </summary>
+    public bool TryParseFinalResponse(string rawLine, out string? response)
+    {
+        response = null;
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("event", out var eventProp) || eventProp.GetString() != "result"
+                || !root.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object
+                || !result.TryGetProperty("status", out var statusProp) || statusProp.GetString() != "SUCCESS"
+                || !result.TryGetProperty("response", out var responseProp)
+                || responseProp.ValueKind != JsonValueKind.String
+                || responseProp.GetString() is not { Length: > 0 } text)
+            {
+                return false;
+            }
+
+            response = text;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private static IReadOnlyList<string> ParseModelLines(string? stdout) =>
         NonEmptyTrimmedLines(stdout).ToList();
 

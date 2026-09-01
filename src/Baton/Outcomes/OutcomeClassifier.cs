@@ -32,11 +32,19 @@ public enum OutcomeVerdict
 /// Treat a null on a stored event as "no reason recorded", never as evidence of when it was written.
 /// </para>
 /// </param>
+/// <param name="MaterializedOutputs">
+/// #1594: the declared output names <see cref="OutputMaterializer"/> wrote from the worker's own
+/// terminal result envelope, in place of a write the worker never made. Non-null and non-empty only
+/// for a <see cref="OutcomeVerdict.Succeeded"/> classification that materialization is what made
+/// satisfied — the durable, room-visible half of the "never silent" requirement; the loud stderr line
+/// <see cref="Classify"/> writes at materialization time is the other half.
+/// </param>
 public sealed record OutcomeClassification(
     OutcomeVerdict Verdict,
     FailureClassification? FailureClassification = null,
     string? Reason = null,
-    DateTimeOffset? RetryNotBefore = null);
+    DateTimeOffset? RetryNotBefore = null,
+    IReadOnlyList<string>? MaterializedOutputs = null);
 
 /// <summary>
 /// Maps a <see cref="CoreDispatchResult"/> plus a step's <see cref="WorkerContract"/> into one of
@@ -91,7 +99,8 @@ public static class OutcomeClassifier
         IFailureClassifier? failureClassifier = null,
         TimeProvider? timeProvider = null,
         GrantAuditMode grantAuditMode = GrantAuditMode.Enforced,
-        string? worktreePath = null)
+        string? worktreePath = null,
+        IWorkerResponseParser? responseParser = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(contract);
@@ -139,6 +148,31 @@ public static class OutcomeClassifier
         }
 
         var validation = ContractValidator.Validate(contract, outputDirectory);
+        IReadOnlyList<string>? materializedOutputs = null;
+        if (!validation.IsSatisfied)
+        {
+            // #1594: the worker exited 0 -- it did not crash mid-write -- but a declared output is
+            // absent. Before that becomes a diagnostic, give OutputMaterializer a chance to recover it
+            // from the worker's own terminal response; re-validate only when it actually wrote
+            // something, so an untouched output directory never pays for a re-read.
+            var materialized = OutputMaterializer.TryMaterializeMissingOutputs(validation, contract, outputDirectory, responseParser);
+            if (materialized.Count > 0)
+            {
+                Console.Error.WriteLine(
+                    "MATERIALIZED (#1594): the worker's declared output(s) " +
+                    string.Join(", ", materialized.Select(name => $"'{name}'")) +
+                    " were never written by the worker itself. baton recovered them from the " +
+                    "execution's own terminal result envelope and wrote them in the worker's place " +
+                    "-- each file starts with a one-line disclosure comment saying so.");
+
+                validation = ContractValidator.Validate(contract, outputDirectory);
+                if (validation.IsSatisfied)
+                {
+                    materializedOutputs = materialized;
+                }
+            }
+        }
+
         if (validation.IsSatisfied)
         {
             if (grantAuditMode == GrantAuditMode.AuditedNotEnforced)
@@ -171,7 +205,7 @@ public static class OutcomeClassifier
                     retryNotBefore);
             }
 
-            return new OutcomeClassification(OutcomeVerdict.Succeeded);
+            return new OutcomeClassification(OutcomeVerdict.Succeeded, MaterializedOutputs: materializedOutputs);
         }
 
         // Stderr is appended here too, not just on the non-zero-exit path. The exit-0-but-no-output

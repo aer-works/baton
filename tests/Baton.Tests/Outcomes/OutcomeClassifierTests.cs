@@ -47,6 +47,270 @@ public class OutcomeClassifierTests
         }
     }
 
+    // #1594: a missing declared output recovered from the worker's own terminal result envelope, via
+    // OutputMaterializer -- the three arms the issue's own acceptance item 4 asks for, plus the
+    // stdout-tail-is-too-short guard.
+
+    [Fact]
+    public void Classify_materializes_a_missing_output_from_the_response_parser_and_succeeds()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"the worker's real answer"}}""");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser("the worker's real answer"));
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+            Assert.NotNull(classification.MaterializedOutputs);
+            Assert.Equal(["advice.md"], classification.MaterializedOutputs);
+
+            var written = File.ReadAllText(Path.Combine(directory, "advice.md"));
+            Assert.StartsWith(OutputMaterializer.MaterializedHeader, written);
+            Assert.Contains("the worker's real answer", written);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_leaves_a_missing_output_failed_when_there_is_no_stdout_log_at_all()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            // No .stdout.log at all -- the empty-envelope arm: today's failure stands unchanged.
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser(response: null));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.MaterializedOutputs);
+            Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_leaves_a_missing_output_failed_when_the_parser_declines_the_stdout_lines_last_line()
+    {
+        // The polarity arm the previous test's "no .stdout.log" case can't reach: a real stream log
+        // exists, but the adapter's parser looks at its last line and says "not a usable response"
+        // (e.g. a non-SUCCESS terminal envelope) -- the FakeResponseParser is consulted here, not
+        // short-circuited before it runs.
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"ERROR","response":""}}""");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser(response: null));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.MaterializedOutputs);
+            Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_never_materializes_a_mixed_population_of_missing_and_present_but_wrong_outputs()
+    {
+        // Genuinely mixed (second-reader review, #1594): one output entirely absent (Missing), a
+        // second one present but not JSON (NotJson) -- distinct from the single-output NotJson test
+        // below, which never exercises the "some Missing, some not" branch at all.
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"the worker's real answer"}}""");
+            File.WriteAllText(Path.Combine(directory, "verdict.json"), "not json");
+            var contract = new WorkerContract(
+                "worker", [],
+                [
+                    new ProducedOutput("advice.md"),
+                    new ProducedOutput("verdict.json", new OutputCondition("/ok", new JsonScalar.Boolean(true))),
+                ],
+                []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser("the worker's real answer"));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.MaterializedOutputs);
+            Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
+            Assert.Equal("not json", File.ReadAllText(Path.Combine(directory, "verdict.json")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_never_materializes_over_a_present_output_that_failed_for_a_different_reason()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"the worker's real answer"}}""");
+            // A present, non-JSON file declaring a condition: ConditionFailed via NotJson, not Missing.
+            File.WriteAllText(Path.Combine(directory, "verdict.json"), "not json");
+            var contract = new WorkerContract(
+                "worker", [], [new ProducedOutput("verdict.json", new OutputCondition("/ok", new JsonScalar.Boolean(true)))], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser("the worker's real answer"));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.MaterializedOutputs);
+            // Untouched: the real file a worker actually wrote must never be clobbered by the envelope.
+            Assert.Equal("not json", File.ReadAllText(Path.Combine(directory, "verdict.json")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_never_writes_prose_into_a_missing_output_that_declares_a_schema()
+    {
+        // Second-reader finding (#1594): a multi-output role like `review` declares report.md AND
+        // verdict.json. If agy writes neither, both are Missing -- the naive "all Missing" gate would
+        // materialize prose into verdict.json too, which can never satisfy OutputSchema.ReviewVerdict,
+        // leaving a bogus, unrecorded file on disk (still Failed, so MaterializedOutputs stays null).
+        // Nothing must be written at all in this case, to either output.
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"free-form prose, not a verdict"}}""");
+            var contract = new WorkerContract(
+                "worker", [],
+                [new ProducedOutput("report.md"), new ProducedOutput("verdict.json", Schema: OutputSchema.ReviewVerdict)],
+                []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser("free-form prose, not a verdict"));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.MaterializedOutputs);
+            Assert.False(File.Exists(Path.Combine(directory, "report.md")));
+            Assert.False(File.Exists(Path.Combine(directory, "verdict.json")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_never_writes_prose_into_a_missing_json_output_with_no_declared_schema()
+    {
+        // Second-reader finding (#1594): OutputSchema/OutputCondition is not the only signal that an
+        // output can't honestly hold prose. `orchestrate`'s turn-actions.json (WorkerRoles.json)
+        // declares Schema: None yet is structurally JSON a downstream reader will try to parse as
+        // such -- Missing-only + no-schema must still refuse a bare .json name.
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"free-form prose"}}""");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("turn-actions.json")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser("free-form prose"));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.MaterializedOutputs);
+            Assert.False(File.Exists(Path.Combine(directory, "turn-actions.json")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_never_writes_prose_into_a_missing_diff_output_alongside_a_missing_report()
+    {
+        // Same finding, the `janitor` shape: janitor.md (prose-safe) + branch.diff (not), both
+        // Schema: None, both Missing. Neither must be written -- not even the prose-safe one --
+        // because writing report.md alone can never flip the verdict (branch.diff stays unsatisfied
+        // either way), so nothing should land on disk unrecorded.
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"ran the checkers, all green"}}""");
+            var contract = new WorkerContract(
+                "worker", [], [new ProducedOutput("janitor.md"), new ProducedOutput("branch.diff")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new FakeResponseParser("ran the checkers, all green"));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.MaterializedOutputs);
+            Assert.False(File.Exists(Path.Combine(directory, "janitor.md")));
+            Assert.False(File.Exists(Path.Combine(directory, "branch.diff")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_does_not_materialize_when_no_response_parser_is_supplied()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            WriteStdoutLog(directory, """{"event":"result","result":{"status":"SUCCESS","response":"the worker's real answer"}}""");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.MaterializedOutputs);
+            Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    private static void WriteStdoutLog(string outputDirectory, string lastLine) =>
+        File.WriteAllText(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName), lastLine + "\n");
+
+    private sealed class FakeResponseParser(string? response) : IWorkerResponseParser
+    {
+        public bool TryParseFinalResponse(string rawLine, out string? response2)
+        {
+            response2 = response;
+            return response is not null;
+        }
+    }
+
     [Fact]
     public void Classify_returns_Failed_for_a_non_zero_exit_code()
     {

@@ -199,6 +199,12 @@ The room directory also holds `snapshot.json` (the workflow this room is bound t
 append-only event ledger), and `flow.lock`. The authoritative room layout is
 [`spec/baton.md`](../../spec/baton.md) §2–§3.
 
+**A path in `outputs` is not a guarantee the worker itself wrote that file (#1594).** A plain-text
+declared output the worker never wrote can be *materialized* by baton, from the execution's own
+terminal response, at settle time — disclosed via a one-line comment at the top of the file itself and
+via `flow.jsonl`, never silently. See `docs/dispatch.md`'s "Roles" section for exactly which outputs
+this can and can't apply to.
+
 ---
 
 ## 4. Adapter notes
