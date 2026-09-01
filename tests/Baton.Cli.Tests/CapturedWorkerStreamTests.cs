@@ -509,9 +509,14 @@ public class CapturedWorkerStreamTests
             // step instead of Start-Sleep -- `timeout` was tried and rejected, since it fails with
             // "input redirection is not supported" because BatonProcessRunner.cs closes the child's
             // redirected stdin.
+            // #1547: the wait below must outlast MarkerWaitSeconds (see below) by a wide margin.
+            // Cancellation job-terminates the whole tree the instant cts.Cancel() fires, so a wait
+            // this long costs nothing on the passing path -- it only guards against the marker-wait
+            // ever taking so long that the child would have finished naturally and written out.txt on
+            // its own, which is exactly what the #1550 discriminator above checks for.
             var cmdLine = OperatingSystem.IsWindows()
-                ? "echo pre-cancel output line & ping -n 31 127.0.0.1 > nul & echo done > %BATON_OUTPUT_DIR%\\out.txt"
-                : "echo 'pre-cancel output line' && sleep 30 && echo done > \"$BATON_OUTPUT_DIR/out.txt\"";
+                ? "echo pre-cancel output line & ping -n 301 127.0.0.1 > nul & echo done > %BATON_OUTPUT_DIR%\\out.txt"
+                : "echo 'pre-cancel output line' && sleep 300 && echo done > \"$BATON_OUTPUT_DIR/out.txt\"";
 
             var bindings = new Dictionary<string, WorkerBindingConfigEntry>
             {
@@ -519,7 +524,7 @@ public class CapturedWorkerStreamTests
                     "shell",
                     new WorkerContract("worker", [], [new ProducedOutput("out.txt")], []),
                     cmdLine,
-                    TimeSpan.FromSeconds(90))
+                    TimeSpan.FromSeconds(400))
             };
 
             var workflowFile = Path.Combine(testRoot, "workflow.json");
@@ -533,12 +538,28 @@ public class CapturedWorkerStreamTests
             // persistence. Wait on the marker instead: poll the execution directory this run allocates
             // until its (now eagerly-created, #1525) .stdout.log actually contains the pre-cancel line,
             // then cancel. Bounded so a genuine regression still fails the test instead of hanging it.
+            //
+            // #1547: 20s wasn't enough -- main run 33458670493 failed this exact NotNull assert at ~21s
+            // under CI load (windows-shard-other, no spawn-failure or stream-logger warning in the log,
+            // just the bare timeout). Refuted as a product-side ordering gap by the failure location
+            // alone: this NotNull fires strictly before cts.Cancel() below, so no cancel-path code has
+            // run yet when it fails -- corroborated by BatonProcessRunner.cs's RunWithLiveCapture,
+            // which drains every chunk through its live foreach and only raises Exited after that loop
+            // returns, so CoreDispatcher.cs can never observe MarkTerminal before every AppendStdout for
+            // a given process. With #1550's quote-free command line fixed, a 20-iteration local
+            // measurement of this same marker-wait put every run at 246-356ms -- tight, sub-second,
+            // nowhere near 20s -- so 60s is a headroom judgment over the observed >20s CI outlier and
+            // that local baseline, not a second measurement of the CI tail itself, which isn't
+            // reproducible on a dev host (see the #945 comment elsewhere in this file on the same
+            // theme). A genuine regression in stdout persistence still fails this test well inside 60s;
+            // only the CI-load tail needed the room.
+            const int MarkerWaitSeconds = 60;
             using var cts = new CancellationTokenSource();
             var runOptions = new RunOptions(workflowFile, bindingsFile, roomDirectory);
             var runTask = RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: cts.Token);
 
             var artifactsDir = Path.Combine(roomDirectory, "artifacts");
-            var markerDeadline = DateTime.UtcNow.AddSeconds(20);
+            var markerDeadline = DateTime.UtcNow.AddSeconds(MarkerWaitSeconds);
             string? stdoutFileWithMarker = null;
             while (DateTime.UtcNow < markerDeadline && stdoutFileWithMarker is null)
             {
@@ -570,9 +591,9 @@ public class CapturedWorkerStreamTests
 
                 if (stdoutFileWithMarker is null)
                 {
-                    // Poll interval inside a real-condition loop bounded by markerDeadline above
-                    // (20s), not a fixed sleep standing in for synchronization -- the loop exits the
-                    // instant the marker text appears, so 50ms only bounds how late the test notices.
+                    // Poll interval inside a real-condition loop bounded by markerDeadline above, not a
+                    // fixed sleep standing in for synchronization -- the loop exits the instant the
+                    // marker text appears, so 50ms only bounds how late the test notices.
                     // wait-ok: poll interval, not a synchronization sleep -- see markerDeadline above
                     await Task.Delay(50, TestContext.Current.CancellationToken);
                 }
