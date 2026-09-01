@@ -875,8 +875,8 @@ definition has no exit event yet and needs every line scanned, not just the last
   per-assistant-message (mid-stream) usage figure, but treated that silence as a verdict rather than
   an open question still worth checking. A live capture on 2026-09-01 settles it — see
   `docs/vendor-capabilities.md`'s history table (top row) for the captured key list and the exact
-  command run; every one of the four raw usage keys that row names shows up on `message.usage`,
-  mid-stream, on every `type=="assistant"` line, not only the terminal `result` line.
+  command run; every one of the four raw usage keys that row names lands on the SAME assistant
+  message stream-json already flushes mid-turn, well before the lane's terminal `result` line.
   `outputTokens` sums the message's output count across every `assistant` line in the execution's
   `.stdout.log` (additive, whole-tree) — this is *more* accurate than the terminal line's own
   cumulative figure, which `docs/vendor-doc-audit.md` measures undercounting by ~22% with a single
@@ -893,9 +893,9 @@ definition has no exit event yet and needs every line scanned, not just the last
   `lastActivityAt` is the stdout log's own last-write instant (a real filesystem fact, not `now()`),
   quantized to a ~90s bucket before it enters the pushed payload (2026-09-01 review finding) — see
   `pusher.py`'s `LAST_ACTIVITY_BUCKET_SECONDS` for the write-budget reasoning this closes. Quantized,
-  not excluded the way `derived_at` is excluded below: a lane that streams text without ever calling
-  a tool would otherwise change no field in `live` at all, and glass would keep rendering a stale
-  "active Nm ago" for a lane that is actually still streaming.
+  not excluded the way `derived_at` is excluded below: a prose-only turn with no tool call in it
+  would leave every OTHER field in `live` unchanged too, so excluding this one as well would let
+  glass keep showing a stale "active Nm ago" for a lane that is, in fact, still going.
 - **`derived_at` (item 2)**, beside `heartbeat_at` (#1486) at the top level of the pushed snapshot:
   when this pusher process's OWN `derive_snapshot_and_timelines` call last completed successfully,
   regardless of whether that cycle's content changed enough to push. `pushed_at` (worker.js's own
