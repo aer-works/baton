@@ -214,4 +214,15 @@ public sealed class ClaudeFinalResponseParsingTests
         Assert.False(parsed);
         Assert.Null(response);
     }
+
+    [Fact]
+    public void TryParseFinalResponse_NonStringTypeField_ReturnsFalseRatherThanThrowing()
+    {
+        // The claude-side twin of AgyFinalResponseParsingTests' non-string-discriminator regression
+        // test -- same shape of bug, the other adapter's field name.
+        var parsed = _adapter.TryParseFinalResponse("""{"type":123,"is_error":false,"result":"x"}""", out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
 }

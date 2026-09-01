@@ -113,15 +113,18 @@ public static class OutputMaterializer
                 File.WriteAllText(path, content);
                 written.Add(unsatisfied.Name);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                or ArgumentException or NotSupportedException)
             {
                 // Best effort, same posture as ExecutionStreamLogger's own chunk writer: a transient
-                // sharing failure here must not corrupt the classification that follows. Whatever
-                // names ARE in `written` still had a real file land; the rest fall through to today's
-                // Missing failure, exactly as if materialization had never been attempted for them.
-                // Logged, never swallowed silently (CLAUDE.md's error-handling rule): if every write
-                // in this loop fails this way, `written` comes back empty and OutcomeClassifier prints
-                // no loud line -- this is the only trace that baton tried at all.
+                // sharing failure -- or a declared output name that isn't a writable path at all
+                // (invalid characters, a reserved device name) -- here must not corrupt the
+                // classification that follows. Whatever names ARE in `written` still had a real file
+                // land; the rest fall through to today's Missing failure, exactly as if materialization
+                // had never been attempted for them. Logged, never swallowed silently (CLAUDE.md's
+                // error-handling rule): if every write in this loop fails this way, `written` comes
+                // back empty and OutcomeClassifier prints no loud line -- this is the only trace that
+                // baton tried at all.
                 Console.Error.WriteLine(
                     $"Warning: #1594 materialization failed to write '{unsatisfied.Name}' in '{outputDirectory}': {ex.Message}.");
             }

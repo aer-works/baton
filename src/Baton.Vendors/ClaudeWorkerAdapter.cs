@@ -1521,7 +1521,8 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             using var doc = JsonDocument.Parse(rawLine);
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "result"
+                || !root.TryGetProperty("type", out var typeProp)
+                || typeProp.ValueKind != JsonValueKind.String || typeProp.GetString() != "result"
                 || !root.TryGetProperty("is_error", out var isErrorProp)
                 || isErrorProp.ValueKind != JsonValueKind.False
                 || !root.TryGetProperty("result", out var resultProp)

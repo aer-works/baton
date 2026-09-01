@@ -1173,9 +1173,11 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             using var doc = JsonDocument.Parse(rawLine);
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("event", out var eventProp) || eventProp.GetString() != "result"
+                || !root.TryGetProperty("event", out var eventProp)
+                || eventProp.ValueKind != JsonValueKind.String || eventProp.GetString() != "result"
                 || !root.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object
-                || !result.TryGetProperty("status", out var statusProp) || statusProp.GetString() != "SUCCESS"
+                || !result.TryGetProperty("status", out var statusProp)
+                || statusProp.ValueKind != JsonValueKind.String || statusProp.GetString() != "SUCCESS"
                 || !result.TryGetProperty("response", out var responseProp)
                 || responseProp.ValueKind != JsonValueKind.String
                 || responseProp.GetString() is not { Length: > 0 } text)

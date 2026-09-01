@@ -179,4 +179,15 @@ public sealed class AgyFinalResponseParsingTests
         Assert.False(parsed);
         Assert.Null(response);
     }
+
+    [Fact]
+    public void TryParseFinalResponse_NonStringDiscriminatorFields_ReturnsFalseRatherThanThrowing()
+    {
+        // A worker-controlled line that is valid JSON but not the shape expected -- "event"/"status"
+        // present as a non-string -- must not throw JsonElement.GetString()'s InvalidOperationException
+        // out of the outcome-recording path (a settle-time crash here orphans the execution, #1582's
+        // failure class). Two independent discriminators, each on its own line.
+        Assert.False(_adapter.TryParseFinalResponse("""{"event":123,"result":{"status":"SUCCESS","response":"x"}}""", out _));
+        Assert.False(_adapter.TryParseFinalResponse("""{"event":"result","result":{"status":true,"response":"x"}}""", out _));
+    }
 }
