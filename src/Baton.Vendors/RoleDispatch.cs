@@ -148,11 +148,10 @@ public static class RoleDispatch
             Worktree: worktreeSpec,
             GrantAuditMode: grantAuditMode,
             IsWorktree: false,
-            // #1089: agy only. Streaming puts agy's terminal `result` event on stdout so a teardown-hang
-            // (agy holds a scratch handle and never exits) classifies as the satisfied contract it is,
-            // instead of a from-scratch retry. claude has no such hang and no detector wired, so streaming
-            // it here would change its stdout format for nothing; left in text mode.
-            StreamJson: string.Equals(adapter, "agy", StringComparison.OrdinalIgnoreCase));
+            // #1089, #1540: agy and claude. Streaming puts event-level JSON envelopes on stdout so a running lane's
+            // log fills incrementally (feeding the live tail), while agy's terminal `result` event reaches the
+            // teardown-hang guard. claude dispatches run plain stream-json --verbose without --include-partial-messages.
+            StreamJson: string.Equals(adapter, "agy", StringComparison.OrdinalIgnoreCase) || string.Equals(adapter, "claude", StringComparison.OrdinalIgnoreCase));
     }
 
 

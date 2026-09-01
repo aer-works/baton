@@ -29,15 +29,14 @@ public class RoleDispatchTests
     }
 
     /// <summary>
-    /// #1089: dispatch turns on stream-json for agy (so its terminal `result` event reaches the timeout
-    /// guard) and leaves claude in text mode (no teardown-hang, no detector — streaming it would change
-    /// its stdout for nothing).
+    /// #1089, #1540: dispatch turns on stream-json for agy and claude so a running lane's stdout log
+    /// fills incrementally, while agy's terminal result event reaches the timeout guard.
     /// </summary>
     [Fact]
-    public void StreamJson_is_enabled_for_agy_and_left_off_for_claude()
+    public void StreamJson_is_enabled_for_agy_and_claude()
     {
         Assert.True(RoleDispatch.ToBinding(Review, "Review the change.", adapterOverride: "agy").StreamJson);
-        Assert.False(RoleDispatch.ToBinding(Review, "Review the change.", adapterOverride: "claude").StreamJson);
+        Assert.True(RoleDispatch.ToBinding(Review, "Review the change.", adapterOverride: "claude").StreamJson);
     }
 
     [Fact]

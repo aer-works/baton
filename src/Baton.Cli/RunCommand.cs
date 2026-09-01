@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Baton.Vendors;
 using Baton.Artifacts;
 using Baton.Dispatch;
@@ -104,9 +105,10 @@ public static class RunCommand
         var (provisionedConfig, provisionedWorktrees) =
             WorktreeWorkspaces.Provision(bindingConfig, options.RoomDirectoryPath);
 
-        // #882: CoreDispatcher only dispatches BatonTaskEventKind.StdoutChunk to OnStdoutLine.
+        // #882, #1540: CoreDispatcher only dispatches BatonTaskEventKind.StdoutChunk to OnStdoutLine.
         // Stderr chunks write to artifacts/stderrTail but are NOT passed to this callback.
-        Action<string, string>? effectiveOnWorkerStdoutLine = onWorkerStdoutLine ?? (options.EchoWorker ? (_, line) => Console.Out.WriteLine(line) : null);
+        // When --echo-worker is set, stream-json lines are parsed so only human-relevant content is echoed.
+        Action<string, string>? effectiveOnWorkerStdoutLine = onWorkerStdoutLine ?? (options.EchoWorker ? CreateEchoWorkerCallback(provisionedConfig, adapters, Console.Out) : null);
 
         var profiles = await BatonProfileStore.LoadAsync(BatonProfileStore.DefaultPath, cancellationToken).ConfigureAwait(false);
         var workerBindings = WorkerBindingResolver.Resolve(
@@ -409,6 +411,76 @@ public static class RunCommand
             Console.Error.WriteLine(
                 $"Could not update the room registry at '{BatonPaths.RoomRegistryFile}': {ex.Message}. "
                 + "fleet_status will still find this room via its normal directory scan.");
+        }
+    }
+
+    /// <summary>
+    /// Creates the worker stdout echo callback for <c>--echo-worker</c> (#882, #1540).
+    /// For bindings with <c>StreamJson: true</c>, parses stream-json lines and emits only human-relevant
+    /// content (assistant text and tool-use markers); malformed lines echo verbatim. Non-streaming
+    /// bindings echo every stdout line verbatim.
+    /// </summary>
+    internal static Action<string, string> CreateEchoWorkerCallback(
+        IReadOnlyDictionary<string, WorkerBindingConfigEntry> bindings,
+        IReadOnlyDictionary<string, IWorkerAdapter> adapters,
+        TextWriter writer)
+    {
+        return (workerName, line) =>
+        {
+            if (bindings.TryGetValue(workerName, out var entry) && entry.StreamJson)
+            {
+                adapters.TryGetValue(entry.Adapter, out var adapter);
+                EchoStreamJsonLine(line, adapter, writer);
+            }
+            else
+            {
+                writer.WriteLine(line);
+            }
+        };
+    }
+
+    /// <summary>
+    /// Renders one stdout line from a <c>StreamJson</c> worker to <paramref name="writer"/> (#1540).
+    /// Human-relevant text (assistant messages/deltas, tool-use markers) is extracted and printed;
+    /// non-text structural stream envelopes (system lifecycle, rate limits, usage results) are filtered;
+    /// malformed/non-JSON lines echo verbatim.
+    /// </summary>
+    internal static void EchoStreamJsonLine(string line, IWorkerAdapter? adapter, TextWriter writer)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+        }
+        catch (JsonException)
+        {
+            // Malformed JSON / raw CLI output (e.g. startup warning, crash backtrace) — echo verbatim (never swallow).
+            writer.WriteLine(line);
+            return;
+        }
+
+        if (adapter is not null && adapter.TryParseProgressEvent(line, out var progressEvent) && progressEvent is not null)
+        {
+            switch (progressEvent.Kind)
+            {
+                case "text":
+                    if (progressEvent.IsPartial)
+                    {
+                        writer.Write(progressEvent.Text);
+                    }
+                    else
+                    {
+                        writer.WriteLine(progressEvent.Text);
+                    }
+                    break;
+                case "tool":
+                    writer.WriteLine($"[tool: {progressEvent.Text}]");
+                    break;
+            }
         }
     }
 }

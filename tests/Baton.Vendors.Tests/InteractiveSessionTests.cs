@@ -39,7 +39,8 @@ public sealed class InteractiveSessionTests
         // comment in ClaudeWorkerAdapter.cs).
         Assert.DoesNotContain("--bare", target1.Args);
         Assert.Contains("stream-json", target1.Args);
-        Assert.Contains("--include-partial-messages", target1.Args);
+        // #1540: regression coverage for ClaudeWorkerAdapter.Resolve omitting the partial-messages flag
+        Assert.DoesNotContain("--include-partial-messages", target1.Args);
         // --print + --output-format=stream-json refuses to run at all without --verbose (confirmed
         // against the installed claude CLI) -- regression coverage for that failure mode.
         Assert.Contains("--verbose", target1.Args);

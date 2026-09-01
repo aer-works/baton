@@ -162,9 +162,10 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             // --output-format=stream-json requires --verbose") -- without this flag every
             // streaming session turn would fail at the CLI invocation itself, before producing any
             // output at all.
+            // #1540: event-level streaming only — do not pass --include-partial-messages so token-level
+            // volume does not roll the 8 MiB ExecutionStreamLogger window early.
             args.Add("--output-format");
             args.Add("stream-json");
-            args.Add("--include-partial-messages");
             args.Add("--verbose");
         }
         else
