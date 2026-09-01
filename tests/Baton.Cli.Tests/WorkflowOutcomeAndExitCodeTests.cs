@@ -1,3 +1,4 @@
+using System.Reflection;
 using Baton.Domain;
 using Baton.Status;
 
@@ -149,6 +150,32 @@ public class WorkflowOutcomeAndExitCodeTests
 
         Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(state));
         Assert.NotEqual(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+    }
+
+    // #1586 S1 review F1: the operator's amendment 1 called this a "tripwire pattern" that sweeps
+    // every predicate that must learn a new WorkflowOutcome member -- a mechanism the repo did not
+    // actually have (no reflection over the constant set anywhere, no vocabulary checker under
+    // tools/). This test IS that mechanism: the failure message doubles as the sweep list, so
+    // whoever adds a seventh member reads it here rather than discovering the gap via
+    // RunExitCodeResolver's silent wildcard (the concrete failure this closes).
+    [Fact]
+    public void The_WorkflowOutcome_vocabulary_is_pinned_so_a_new_member_forces_the_consumer_sweep()
+    {
+        var members = typeof(WorkflowOutcome)
+            .GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Where(f => f.IsLiteral)
+            .Select(f => (string)f.GetRawConstantValue()!)
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "Cancelled", "Failed", "Indeterminate", "Paused", "Running", "Succeeded",
+            ],
+            members);
+        // Adding a member? Sweep: RunExitCodeResolver.Resolve, RedispatchCommand's parent gate,
+        // StatusCommand, FleetStatusTool, glass.html chipsHtml + render buckets, spec/baton.md §3's
+        // table.
     }
 
     private static FlowState TerminalState(IReadOnlyList<StepState> steps) =>

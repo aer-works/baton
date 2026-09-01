@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Baton.Domain;
 using Baton.Status;
 
@@ -77,19 +78,33 @@ public static class RunExitCodeResolver
             WorkflowOutcome.Failed => ResolveFailed(result.State.Steps),
             // #1586 S1: WorkflowOutcome.Describe never returns this in this slice (no producer yet —
             // see that constant's own remarks), so this arm is unreachable today and untestable via
-            // Resolve itself. Named explicitly anyway, per this file's own sweep discipline, rather
-            // than left to fall through the wildcard below silently: "we don't know" is not the same
-            // failure as "genuinely still going", and the wildcard's own comment says exactly that
-            // about the two cases it DOES cover. Becomes live and testable once #2's settle verb or
-            // #1608's classification swap gives Describe a path to it.
+            // Resolve itself. Named explicitly anyway so a caller's `$?`/`%ERRORLEVEL%` branch never
+            // has to guess: "we don't know" is not the same failure as "genuinely still going", and
+            // the two arms below say exactly that about the cases they DO cover.
+            // Becomes live and testable once #2's settle verb or #1608's classification swap gives
+            // Describe a path to it.
             WorkflowOutcome.Indeterminate => RunExitCode.Failed,
             // Running or Paused: the pump returned short of Terminal (no --wait, or --wait's poll
             // loop was cancelled -- e.g. Ctrl-C -- before the room settled; a --wait-timeout expiry
             // is handled above, ahead of this switch, and never reaches here). Not one of #1356's
             // four named failure classes, so this stays in the general Failed bucket rather than
             // minting a fifth code — a caller that cares about "still going" reads status --json's
-            // `state` field instead.
-            _ => RunExitCode.Failed,
+            // `state` field instead. Named explicitly, not folded into a wildcard: `outcome` is a
+            // plain `string` (WorkflowOutcome's members are `const string`, not a real enum), so the
+            // compiler cannot prove this switch exhaustive over the member set the way it would for
+            // an actual enum — a silent wildcard here is exactly what let a hypothetical seventh
+            // member fall through unnoticed. The `_` arm below throws instead of guessing, and
+            // WorkflowOutcomeAndExitCodeTests' vocabulary-pinning test asserts the six-member set so
+            // adding one without touching this switch fails at test time even though nothing catches
+            // it at compile time.
+            WorkflowOutcome.Running => RunExitCode.Failed,
+            WorkflowOutcome.Paused => RunExitCode.Failed,
+            _ => throw new UnreachableException(
+                $"WorkflowOutcome.Describe returned '{outcome}', which is not one of the six known " +
+                "WorkflowOutcome members (Succeeded, Failed, Cancelled, Indeterminate, Running, Paused). " +
+                "A new member was added without sweeping this switch — also sweep RedispatchCommand's " +
+                "parent gate, StatusCommand, FleetStatusTool, glass.html's chipsHtml + render buckets, " +
+                "and spec/baton.md §3's table."),
         };
     }
 
