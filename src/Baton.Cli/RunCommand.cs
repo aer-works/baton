@@ -207,6 +207,32 @@ public static class RunCommand
                     {
                     }
                 }
+
+                // #1605 review F1: the poller only ticks on its own DefaultPollInterval cadence (2s),
+                // but StartWorkflowAsync can settle a parked cancel and return Terminal well inside
+                // that window — in the single-parked-lane shape, nothing else keeps the pump alive to
+                // reach the tick that would consume the request file, so pollTask above exits with the
+                // file still pending in a room whose cancel actually SUCCEEDED, and "arrested by this
+                // request" never prints. Run one last tick against the now-final state to close that
+                // gap — strictly AFTER pollTask has been awaited above (never concurrently with it: two
+                // ticks racing the same request file would double-append CancellationRequested for a
+                // still-live target, or race each other's Consume/Reject rename).
+                try
+                {
+                    await CancelRequestPoller.TickAsync(
+                            options.RoomDirectoryPath, logPath, snapshot, liveInFlightExecutions, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        Console.Error.WriteLine($"cancel.request final tick failed: {ex.Message}");
+                    }
+                    catch
+                    {
+                    }
+                }
             }
         }
 
