@@ -444,8 +444,8 @@ tokensOut + cacheReadTokens`).
 which is what every field here is — is never the reset-time source of truth; the `/usage` poll is.
 Separately, `tokensOut` (and now its cache/thinking siblings) is a top-level per-execution figure that
 excludes any subagent the dispatched worker itself fans out to, measured at a 22% shortfall on a
-single subagent (`ClaudeWorkerAdapter.TryParseFinalUsage`'s own doc comment,
-`src/Baton.Vendors/ClaudeWorkerAdapter.cs`) and growing with the tree — a gap this schema cannot close
+single subagent (`ClaudeUsageParser`'s own doc comment,
+`src/Baton/Status/StandardWorkerUsageParsers.cs`) and growing with the tree — a gap this schema cannot close
 without a field nobody has asked for.
 
 **Notation and a real divergence.** `usage`/`linkedFromUsage` are correctly optional-and-omitted —

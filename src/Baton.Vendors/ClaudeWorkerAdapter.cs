@@ -1397,105 +1397,17 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
 
     /// <summary>
     /// Parses claude's <c>stream-json</c> terminal <c>"type":"result"</c> line (issue #1360, extended
-    /// by #1569). Since #1561, <see cref="TryParseProgressEvent"/> also reads this same line — but only as
-    /// a turn-completion status/error summary (<see cref="TryParseResultEvent"/>), never as in-turn text:
-    /// <c>ExecuteSessionTurnAsync</c> already reads the durable reply from the declared output file, so
-    /// the answer text itself has no reason to be re-surfaced here.
-    /// <c>usage.input_tokens</c>/<c>output_tokens</c>/<c>cache_creation_input_tokens</c>/
-    /// <c>cache_read_input_tokens</c>, the nested <c>usage.output_tokens_details.thinking_tokens</c>,
-    /// and top-level <c>num_turns</c> are each read independently: a line reporting some and not others
-    /// yields exactly the fields it reported, never a fabricated zero (docs/vendor-capabilities.md's
-    /// "Usage, cost and quota" section is the register this reads against; the nested thinking-token
-    /// path and the sibling cache fields were confirmed against a live captured envelope, #1569).
-    /// <c>total_cost_usd</c> is real on this vendor but outside #1569's additive shape, so it is read
-    /// by nothing here.
-    /// <para>
-    /// <b>Scope, measured (docs/vendor-doc-audit.md, #479): this is a top-level figure, not a
-    /// whole-tree one.</b> <c>usage.output_tokens</c> excludes tokens spent by any subagent the
-    /// dispatched worker itself fans out to — confirmed at a 22% shortfall against the same result's
-    /// <c>modelUsage</c> object on a single subagent, growing with the tree. AER caps a worker's own
-    /// subagent fan-out at depth 1 (<see cref="MaxSubagentSpawnDepthVariable"/>) rather than zero, so
-    /// this undercount is a real, reachable case here, not a hypothetical — and it applies identically
-    /// to the cache/thinking fields added by #1569, which are the same top-level figure's siblings.
-    /// <c>modelUsage</c> is left unread: summing it correctly needs a per-model breakdown this shape's
-    /// scalars cannot carry without inventing a field neither #1360 nor #1569 asked for. Per
-    /// <c>spec/baton.md</c> §7, none of this shape is the reset-time source of truth — it is
-    /// attribution, and the fleet-level <c>/usage</c> poll is what §7 rules authoritative.
-    /// </para>
+    /// by #1569). Delegates to <see cref="ClaudeUsageParser"/> (#1599) — the same read
+    /// <see cref="StandardWorkerUsageParsers.Default"/> registers for the <c>terminal.json</c>/
+    /// <c>fleet_status</c> surface, so <c>baton status --json</c> resolves through exactly one
+    /// implementation rather than a hand-duplicated second one. See that class's own doc comment for
+    /// field-by-field provenance, the subagent-fan-out undercount (docs/vendor-doc-audit.md, #479),
+    /// and why <c>modelUsage</c>/<c>total_cost_usd</c> are read by neither side.
     /// </summary>
-    public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage)
-    {
-        usage = null;
-        if (string.IsNullOrWhiteSpace(rawLine))
-        {
-            return false;
-        }
+    public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage) =>
+        UsageParser.TryParseFinalUsage(rawLine, out usage);
 
-        try
-        {
-            using var doc = JsonDocument.Parse(rawLine);
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("type", out var typeProp)
-                || typeProp.GetString() != "result")
-            {
-                return false;
-            }
-
-            long? tokensIn = null;
-            long? tokensOut = null;
-            long? cacheReadTokens = null;
-            long? cacheCreationTokens = null;
-            long? thinkingTokens = null;
-            if (root.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
-            {
-                if (usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
-                {
-                    tokensIn = inTokens;
-                }
-
-                if (usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens))
-                {
-                    tokensOut = outTokens;
-                }
-
-                if (usageProp.TryGetProperty("cache_read_input_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue))
-                {
-                    cacheReadTokens = cacheReadValue;
-                }
-
-                if (usageProp.TryGetProperty("cache_creation_input_tokens", out var cacheCreationProp) && cacheCreationProp.TryGetInt64(out var cacheCreationValue))
-                {
-                    cacheCreationTokens = cacheCreationValue;
-                }
-
-                if (usageProp.TryGetProperty("output_tokens_details", out var outputDetailsProp)
-                    && outputDetailsProp.ValueKind == JsonValueKind.Object
-                    && outputDetailsProp.TryGetProperty("thinking_tokens", out var thinkingProp)
-                    && thinkingProp.TryGetInt64(out var thinkingValue))
-                {
-                    thinkingTokens = thinkingValue;
-                }
-            }
-
-            int? turns = root.TryGetProperty("num_turns", out var turnsProp) && turnsProp.TryGetInt32(out var turnsValue)
-                ? turnsValue
-                : null;
-
-            if (tokensIn is null && tokensOut is null && turns is null
-                && cacheReadTokens is null && cacheCreationTokens is null && thinkingTokens is null)
-            {
-                return false;
-            }
-
-            usage = new WorkerUsage(tokensIn, tokensOut, turns, cacheReadTokens, cacheCreationTokens, thinkingTokens);
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
+    private static readonly ClaudeUsageParser UsageParser = new();
 
     /// <summary>
     /// #1594: recovers claude's own final answer from the same terminal <c>"type":"result"</c> line
