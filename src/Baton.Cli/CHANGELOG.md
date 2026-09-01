@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.1](https://github.com/philipreese/baton/compare/cli-v0.26.0...cli-v0.26.1) (2026-09-01)
+
+
+### Miscellaneous
+
+* **cli:** Synchronize core versions
+
 ## [0.26.0](https://github.com/philipreese/baton/compare/cli-v0.25.0...cli-v0.26.0) (2026-09-01)
 
 

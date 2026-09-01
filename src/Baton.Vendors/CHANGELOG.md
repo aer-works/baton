@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.1](https://github.com/philipreese/baton/compare/vendors-v0.26.0...vendors-v0.26.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **vendors:** Instruct agy to run gates in the foreground, not poll manage_task ([#1625](https://github.com/philipreese/baton/issues/1625)) ([b9f0ec7](https://github.com/philipreese/baton/commit/b9f0ec7e9f979b0d432c1c68be3c74d5f10d24eb))
+
 ## [0.26.0](https://github.com/philipreese/baton/compare/vendors-v0.25.0...vendors-v0.26.0) (2026-09-01)
 
 
