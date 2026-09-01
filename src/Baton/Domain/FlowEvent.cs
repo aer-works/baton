@@ -55,14 +55,14 @@ public abstract record FlowEvent
     /// </para>
     /// </param>
     /// <param name="CapturedResponseFile">
-    /// #1594, conductor-writes shape (owner ruling, 2026-09-01, on #1606): carries
-    /// <c>Outcomes.OutputMaterializer.CapturedResponse.FileName</c> (see that record's own doc comment
-    /// for what this and <paramref name="UnsatisfiedOutputNames"/> mean) onto the durable record — the
-    /// room fact that makes "the worker's response was captured, awaiting conductor resolution"
-    /// falsifiable from <c>flow.jsonl</c> alone. Null on every execution this mechanism did not touch,
-    /// including all history predating it (#597's same replay reasoning applies to every additive
-    /// field on this union) — a required (no-default) parameter here would fail replay of every older
-    /// line, per this record's own remarks above.
+    /// #1594: carries <c>Outcomes.OutputMaterializer.CapturedResponse.FileName</c> onto the durable
+    /// record — <c>OutputMaterializer</c> (the class) explains why this exists at all, and its
+    /// <c>CapturedResponse</c> type explains what pairing this with
+    /// <paramref name="UnsatisfiedOutputNames"/> means. Null on every execution this mechanism did not
+    /// touch, including all history predating it (#597's same replay reasoning applies to every
+    /// additive field on this union) — a
+    /// required (no-default) parameter here would fail replay of every older line, per this record's
+    /// own remarks above.
     /// </param>
     /// <param name="UnsatisfiedOutputNames">
     /// <c>Outcomes.OutputMaterializer.CapturedResponse.UnsatisfiedOutputNames</c>, carried the same hop.

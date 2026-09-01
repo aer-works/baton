@@ -89,11 +89,10 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("exhaustedUntil")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ExhaustedUntil = null,
-    // #1594, conductor-writes shape (owner ruling, 2026-09-01, on #1606): StepState.LatestCapturedResponseFile
-    // (see OutputMaterializer.CapturedResponse for what this and UnsatisfiedOutputs mean), gated the
-    // same way FailureKind is: present only for a currently-Failed step. Read this WITHOUT opening the
-    // execution directory -- "response captured, outputs unwritten, awaiting resolution" must be
-    // answerable from this record alone (review F1).
+    // #1594: StepState.LatestCapturedResponseFile (OutputMaterializer.CapturedResponse explains the
+    // ruling and what this pairs up with UnsatisfiedOutputs to mean), gated the same way FailureKind
+    // is: present only for a currently-Failed step. This is the field a conductor reads instead of
+    // opening the execution directory (review F1).
     [property: JsonPropertyName("capturedResponseFile")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? CapturedResponseFile = null,

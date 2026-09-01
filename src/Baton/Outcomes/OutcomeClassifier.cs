@@ -33,10 +33,10 @@ public enum OutcomeVerdict
 /// </para>
 /// </param>
 /// <param name="CapturedResponseFile">
-/// #1594, conductor-writes shape (owner ruling, 2026-09-01, on #1606): carries
-/// <see cref="OutputMaterializer.CapturedResponse.FileName"/> (see that record's own doc comment for
-/// what the pairing with <paramref name="UnsatisfiedOutputNames"/> means and why it's non-null only on
-/// a capture) onto the classification. Verdict-independent by construction — this field lives on the
+/// #1594: carries <see cref="OutputMaterializer.CapturedResponse.FileName"/> (see
+/// <see cref="OutputMaterializer"/>'s class remarks for the ruling, and that record's own remarks for
+/// what the pairing with <paramref name="UnsatisfiedOutputNames"/> means) onto the classification.
+/// Verdict-independent by construction — this field lives on the
 /// classification itself rather than being tied to one <see cref="OutcomeVerdict"/> case, the way the
 /// pre-ruling <c>MaterializedOutputs</c> field was tied to <see cref="OutcomeVerdict.Succeeded"/> alone
 /// and so went unrecorded whenever an unrelated later gate flipped the verdict.
@@ -156,7 +156,7 @@ public static class OutcomeClassifier
         var validation = ContractValidator.Validate(contract, outputDirectory);
         if (!validation.IsSatisfied)
         {
-            // #1594, conductor-writes shape (owner ruling, 2026-09-01, on #1606): the worker exited 0
+            // #1594: the worker exited 0
             // -- it did not crash mid-write -- but a declared output is absent. Give OutputMaterializer
             // a chance to extract the worker's own terminal response into an engine-owned file (see
             // that class's own remarks for why it never touches the declared output directory); this

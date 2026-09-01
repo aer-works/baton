@@ -173,16 +173,14 @@ so a role that writes nothing fails loudly. The roles and their outputs are defi
 catalog by `WorkerRoleCatalogTests`.
 
 **A missing declared output is never silently filled in — the engine only ever captures and attaches,
-never writes (#1594, conductor-writes shape: owner ruling, 2026-09-01, on #1606).** If every
-unsatisfied output is missing (never present-but-wrong) at settle time, and the execution's own
-terminal result envelope carried a non-empty final response, the engine extracts that response into an
-engine-owned, dot-prefixed file in the execution's own output directory (`.captured-response.md`) and
-appends a `flow.jsonl` fact naming it plus the still-unsatisfied output names — never into the declared
-output name itself, and never silently: the captured file's first line is a disclosure comment, and the
-room's own `flow.jsonl` fact makes "a response was captured, awaiting resolution" readable from
-`baton status --json`/`terminal.json` without opening the execution directory. The room still settles
-`Failed` (`FailureClassification.Permanent`, so the engine never auto-retries against the same,
-still-unsatisfied workspace); only a conductor's own recorded resolution can turn a capture into a
+never writes (#1594).** See `src/Baton/Outcomes/OutputMaterializer.cs`'s class remarks for the ruling
+this implements and exactly what gets captured where. In short: if every unsatisfied output is missing
+(never present-but-wrong) at settle time and the execution's own terminal result carried a usable
+response, that response lands in an engine file beside the declared outputs, never under a declared
+name, and a room fact records which declared names it stands in for — see
+`docs/agents/invoking-baton.md` §3 for what that fact looks like to a harness reading the room. The room
+still settles `Failed` (`FailureClassification.Permanent`, so the engine never auto-retries against the
+same, still-unsatisfied workspace); only a conductor's own recorded resolution can turn a capture into a
 satisfied contract.
 
 The prose-safe/all-or-nothing rules that used to gate what the engine wrote now gate what a capture

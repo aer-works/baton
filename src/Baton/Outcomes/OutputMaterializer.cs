@@ -162,9 +162,8 @@ public static class OutputMaterializer
             // Best effort, same posture as ExecutionStreamLogger's own chunk writer: a transient
             // sharing failure must not corrupt the classification that follows -- falls through to
             // today's Missing failure, exactly as if capture had never been attempted. Logged, never
-            // swallowed silently (CLAUDE.md's error-handling rule). Wrapped per review F6: this runs on
-            // the settle path, which has no outer catch, so a broken stderr pipe on the way out must
-            // not itself orphan the execution the way #1582 did.
+            // swallowed silently (CLAUDE.md's error-handling rule). The inner try/catch below is review
+            // F6's guard -- see OutcomeClassifier.Classify's own F6 catch for why this path needs one.
             try
             {
                 Console.Error.WriteLine(
