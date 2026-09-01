@@ -1224,9 +1224,11 @@ public static class MutationInterface
             // request shape that predates the mode, and those were never promised an audit.
             var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
             var worktreePath = binding.Target.WorkingDirectory;
-            // #1586 S1: binding.Adapter is the resolved config entry's adapter name (#1567) — the same
-            // source ExecutionUsageProjector prefers.
-            var usageParser = binding.Adapter is { } liveAdapter
+            // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own #1567
+            // comment explains — prepared.Request.Adapter, not the binding, so this site and the
+            // crash-recovery site below both read the same source (identical value here, since
+            // prepared.Request.Adapter is frozen from this binding at preparation).
+            var usageParser = prepared.Request.Adapter is { } liveAdapter
                 ? StandardWorkerUsageParsers.Default.GetValueOrDefault(liveAdapter)
                 : null;
             var classification = OutcomeClassifier.Classify(
