@@ -389,6 +389,62 @@ public sealed class RoomDetailToolTests : IDisposable
         Assert.Equal($"execution_{execId}", view.Stdout.Source);
     }
 
+    /// <summary>
+    /// #1613 item 4: a timeline entry gains its step id / exit code where the underlying event
+    /// carries one directly. <c>ExecutionRequestAccepted</c> names the step it accepted;
+    /// <c>ExecutionExited</c> names the process's exit code -- both ids/counts, never content
+    /// (per the operator's 2026-09-01 ruling amending the content-free construction).
+    /// </summary>
+    [Fact]
+    public async Task TimelineEntries_CarryStepIdAndExitCodeWhereTheEventHasOne()
+    {
+        var roomDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName, "step-exit-room");
+        Directory.CreateDirectory(roomDir);
+
+        var execId = new ExecutionId("exec-step-exit-1");
+        var logPath = Path.Combine(roomDir, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("wf-1"),
+            new StepId("build"),
+            "worker",
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(new CoreEvent.ExecutionStarted(execId, Pid: 4321), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionExited(execId, ExitCode: 7, CoreExitReason.Natural),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new RoomDetailTool();
+        var result = await tool.CallAsync(Parse("""{ "room": "step-exit-room" }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var view = JsonSerializer.Deserialize<RoomDetailView>(result.Text);
+        Assert.NotNull(view?.Timeline);
+        var entries = view!.Timeline!.Entries;
+        Assert.Equal(3, entries.Count);
+
+        Assert.Equal("flow.executionRequestAccepted", entries[0].Type);
+        Assert.Equal("build", entries[0].StepId);
+        Assert.Null(entries[0].ExitCode);
+
+        Assert.Equal("core.executionStarted", entries[1].Type);
+        Assert.Null(entries[1].StepId);
+        Assert.Null(entries[1].ExitCode);
+
+        Assert.Equal("core.executionExited", entries[2].Type);
+        Assert.Null(entries[2].StepId);
+        Assert.Equal(7, entries[2].ExitCode);
+    }
+
     [Fact]
     public async Task MissingRoomArgument_ReturnsError()
     {

@@ -1471,8 +1471,59 @@ public sealed class FleetStatusToolTests : IDisposable
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Succeeded", singleRoom.State);
         Assert.Equal("env-snapshot lane", singleRoom.Label);
+        // #1613 item 3: bindings.json names exactly one role here, so the terminal fast path now
+        // carries it through -- this used to be the reported bug (role/adapter vanish on terminal
+        // rooms even though the bindings file that would answer them is sitting right there).
+        Assert.Equal("advise", singleRoom.Role);
+        Assert.Equal("claude", singleRoom.Adapter);
+    }
+
+    /// <summary>
+    /// #1613 item 3's own guard against the "first entry" trap: a terminal room whose bindings.json
+    /// names MORE THAN ONE role has no single unambiguous answer for a fleet-facing row (dictionary
+    /// enumeration order is not a contract), so the five binding fields stay absent -- fail open to
+    /// absent, never a confidently wrong role/adapter/model.
+    /// </summary>
+    [Fact]
+    public async Task TerminalFastPath_WithMultipleBindingsRoles_OmitsBindingFieldsRatherThanGuess()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "multi-role-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("architect", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Design it.",
+                TimeSpan.FromMinutes(5),
+                Model: "claude-opus-4"),
+            ["reviewer"] = new WorkerBindingConfigEntry(
+                "agy",
+                new WorkerContract("reviewer", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Check it.",
+                TimeSpan.FromMinutes(5),
+                Model: "gemini-3-pro"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", singleRoom.State);
         Assert.Null(singleRoom.Role);
         Assert.Null(singleRoom.Adapter);
+        Assert.Null(singleRoom.Model);
+        Assert.Null(singleRoom.Effort);
+        Assert.Null(singleRoom.TimeoutMs);
     }
 
     /// <summary>

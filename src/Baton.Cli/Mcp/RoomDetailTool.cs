@@ -382,29 +382,52 @@ public sealed class RoomDetailTool : IMcpTool
         var timeline = new List<RoomTimelineEntryView>(totalEntries - startIndex);
         for (var i = startIndex; i < totalEntries; i++)
         {
-            var (type, timestamp) = DescribeEntry(entries[i]);
-            timeline.Add(new RoomTimelineEntryView(type, timestamp));
+            var (type, timestamp, stepId, exitCode) = DescribeEntry(entries[i]);
+            timeline.Add(new RoomTimelineEntryView(type, timestamp, stepId, exitCode));
         }
 
         return new RoomTimelineView(timeline, Truncated: startIndex > 0, TotalEntries: totalEntries);
     }
 
-    private static (string Type, string? Timestamp) DescribeEntry(LogEntry entry)
+    private static (string Type, string? Timestamp, string? StepId, int? ExitCode) DescribeEntry(LogEntry entry)
     {
         return entry switch
         {
             LogEntry.FlowLogEntry flowEntry => (
                 $"flow.{EventTypeTag(flowEntry.Event, FlowEventTags)}",
-                flowEntry.WriterUtcTimestamp?.ToString("O")),
+                flowEntry.WriterUtcTimestamp?.ToString("O"),
+                FlowEventStepId(flowEntry.Event),
+                null),
             LogEntry.CoreLogEntry coreEntry => (
                 $"core.{EventTypeTag(coreEntry.Event, CoreEventTags)}",
-                coreEntry.WriterUtcTimestamp?.ToString("O")),
+                coreEntry.WriterUtcTimestamp?.ToString("O"),
+                null,
+                coreEntry.Event is CoreEvent.ExecutionExited exited ? exited.ExitCode : null),
             LogEntry.RoomLogEntry roomEntry => (
                 $"room.{EventTypeTag(roomEntry.Event, RoomEventTags)}",
-                roomEntry.WriterUtcTimestamp?.ToString("O")),
-            _ => ("unknown", null),
+                roomEntry.WriterUtcTimestamp?.ToString("O"),
+                roomEntry.Event is RoomEvent.RuntimePermissionAsked asked ? asked.StepId.Value : null,
+                null),
+            _ => ("unknown", null, null, null),
         };
     }
+
+    /// <summary>
+    /// #1613 item 4: step id where the FLOW event itself carries one directly -- deliberately NOT a
+    /// cross-referenced lookup through an execution-id-&gt;step-id map built from an earlier
+    /// <see cref="FlowEvent.ExecutionRequestAccepted"/> line (the way <see cref="ExecutionUsageProjector"/>
+    /// resolves a worker name for usage attribution). That would need a first pass over every entry
+    /// before this per-entry describe step runs, at whatever additional blast radius that carries;
+    /// this stays narrow, on-the-record-only, same as <see cref="DescribeEntry"/>'s exit code arm.
+    /// </summary>
+    private static string? FlowEventStepId(FlowEvent @event) => @event switch
+    {
+        FlowEvent.ExecutionRequestAccepted accepted => accepted.Request.StepId?.Value,
+        FlowEvent.WorkflowPaused paused => paused.StepId.Value,
+        FlowEvent.ExternalDecisionRecorded decision => decision.TargetStepId?.Value,
+        FlowEvent.StepRetryScheduled retry => retry.StepId.Value,
+        _ => null,
+    };
 
     private static string EventTypeTag(object @event, IReadOnlyDictionary<Type, string> tags) =>
         tags.TryGetValue(@event.GetType(), out var tag) ? tag : "unknown";
@@ -474,12 +497,24 @@ public sealed record RoomTimelineView(
     [property: JsonPropertyName("truncated")] bool Truncated,
     [property: JsonPropertyName("totalEntries")] int TotalEntries);
 
-/// <summary>One <c>flow.jsonl</c> line projected to its event type and writer-stamped timestamp.</summary>
+/// <summary>
+/// One <c>flow.jsonl</c> line projected to its event type and writer-stamped timestamp, plus
+/// <see cref="StepId"/>/<see cref="ExitCode"/> where the underlying event carries one directly
+/// (#1613 item 4, per the operator's 2026-09-01 ruling amending the content-free construction:
+/// step ids and exit codes are counts/ids, so they're in; stdout text and other content-bearing
+/// fields stay banned, same as <see cref="Detail"/> already was).
+/// </summary>
 public sealed record RoomTimelineEntryView(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("timestamp")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Timestamp = null,
+    [property: JsonPropertyName("stepId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? StepId = null,
+    [property: JsonPropertyName("exitCode")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? ExitCode = null,
     [property: JsonPropertyName("detail")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Detail = null);

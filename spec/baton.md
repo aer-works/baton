@@ -717,19 +717,33 @@ paragraph above, a display word `terminal.json`/`status --json` never emit — a
 identically across all three shapes must special-case this one divergence, the same way it already
 special-cases `linkedFrom`/`timestamp`.
 
-**`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503)** are read from the room's own
-`bindings.json` (`WorkerBindingConfigWriter`/`WorkerBindingConfigParser`, `Baton.Vendors`), scoped to
-whichever step this same projection currently calls `"Running"` — never a separate probe, and never
-one entry per worker role the room happens to define. All five are absent together whenever no step
-is Running (pending, paused between steps, or a terminal room — the sentinel fast path never reads
-bindings.json at all), whenever `bindings.json` is missing (a room predating bindings files) or
-fails to parse, or whenever a valid bindings file simply lacks the Running step's worker role as a
-key (where `resume` treats that as a hard error, this display path degrades):
-fail-open for display metadata, so one unreadable bindings file degrades this row, never the whole
-`fleet_status` call. `timeoutMs` is deliberately the raw configured timeout, not a
-countdown — a "remaining" figure would already be stale by the time a caller reads it. A renderer
-wanting remaining time pairs it with the same Running step's own `steps[].timestamp` above, which
-this shape already emits; `timeoutMs` is not duplicated there.
+**`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503, extended by #1613 item 3)** are read from the
+room's own `bindings.json` (`WorkerBindingConfigWriter`/`WorkerBindingConfigParser`,
+`Baton.Vendors`). On the active-room path, scoped to whichever step this same projection currently
+calls `"Running"` — never a separate probe, and never one entry per worker role the room happens to
+define. On the **terminal-sentinel fast path** (#1613 item 3 — pre-#1613 this fast path never read
+`bindings.json` for these five fields at all, so they silently vanished the moment a room went
+terminal, even though the same `bindings.json` a live room reads from is still sitting right next to
+`terminal.json`), the resolution is different because there is no "Running" step left to key off:
+`TryResolveSoleBinding` (`FleetStatusTool.cs`) reads them only when `bindings.json` names **exactly
+one** role. `Dictionary` enumeration order is not a contract, so a multi-role room's terminal fast
+path has no single unambiguous answer for a fleet-facing row and omits the five fields rather than
+guess — the same fail-open-to-absent posture the rest of this paragraph already establishes. Both
+paths funnel their resolved `(role, entry)` pair through one shared projection
+(`ProjectBindingFields`), so the wire shape of the five fields is identical regardless of which path
+resolved them.
+
+All five are absent together whenever no step is Running and no sole terminal binding resolves
+(pending, paused between steps, or a terminal room with zero or multiple bindings.json roles),
+whenever `bindings.json` is missing (a room predating bindings files) or fails to parse, or — on the
+active-room path only — whenever a valid bindings file simply lacks the Running step's worker role
+as a key (where `resume` treats that as a hard error, this display path degrades): fail-open for
+display metadata, so one unreadable bindings file degrades this row, never the whole `fleet_status`
+call. `timeoutMs` is deliberately the raw configured timeout, not a countdown — a "remaining" figure
+would already be stale by the time a caller reads it. A renderer wanting remaining time pairs it
+with the same Running step's own `steps[].timestamp` above, which this shape already emits;
+`timeoutMs` is not duplicated there (the terminal path has no live "remaining" concept to pair it
+with at all).
 
 **`label` (#1499) is read from the same `bindings.json`, but deliberately NOT gated the way the
 quartet above is.** A room's `--label` is a room-level fact stamped onto every entry at dispatch time
@@ -791,7 +805,7 @@ Output:
   "name": string,
   "path"?: string,
   "stdout"?: { "text": string, "truncated": boolean, "totalBytes": number, "source": string, "readError"?: string },
-  "timeline"?: { "entries": [ { "type": string, "timestamp"?: string, "detail"?: string } ],
+  "timeline"?: { "entries": [ { "type": string, "timestamp"?: string, "stepId"?: string, "exitCode"?: number, "detail"?: string } ],
                  "truncated": boolean, "totalEntries": number },
   "error"?: string,
   "note"?: string
@@ -803,6 +817,61 @@ Output:
 malformed line surfaces as a single `timeline.entries` item with `"type": "unreadable"` and a
 `detail` message, rather than failing the call. `error` is set only when `room` itself does not
 resolve to a directory.
+
+**`stepId`/`exitCode` (#1613 item 4) are ids/counts, populated only where the underlying event
+carries one DIRECTLY** — `DescribeEntry`'s `FlowEventStepId` reads `ExecutionRequestAccepted`'s
+`Request.StepId`, `WorkflowPaused`/`StepRetryScheduled`/`ExternalDecisionRecorded`'s own `StepId`
+fields, and `RuntimePermissionAsked`'s `StepId`; `exitCode` reads only
+`CoreEvent.ExecutionExited.ExitCode`. Deliberately NOT a cross-referenced lookup through an
+execution-id → step-id map built from an earlier `ExecutionRequestAccepted` line (the way
+`ExecutionUsageProjector` resolves a worker name for usage attribution) — that would need a first
+pass over every entry before this per-entry describe step runs; this stays narrow and on-the-record
+only. An entry whose event carries neither omits both fields, same never-fabricated convention as
+every other optional field in this shape.
+
+**The operator's 2026-09-01 ruling on content (issue #1613), which governs both fields above and
+the mailbox additions below:** the fleet_status/room_detail surface's original content-free
+construction (§6 above, `extract_timeline`'s own doc comment) is amended to **COUNTS AND IDS, NEVER
+CONTENT** — step ids, exit codes, event detail counts, and live token/tool-call counts are in;
+stdout text, prompts, and any other worker-output-derived string stay banned. The secret-gate
+boundary this amends nothing about: `tools/fleet-glass/pusher.py`'s `extract_timeline` still reads
+exactly the fields it enumerates as KEPT (now `type`/`timestamp`/`stepId`/`exitCode`) off each
+`room_detail` entry and nothing else — a future `room_detail` field still never leaks through by
+accident of that function failing to name it.
+
+**The pushed mailbox payload carries two fields `fleet_status`/`room_detail` do not (#1613 items 1
+and 2) — pusher-computed, not part of either MCP tool's own C# output above.** Both are read
+directly off the room's already-captured `.stdout.log` or wall-clock, python-side
+(`tools/fleet-glass/pusher.py`), because `Status.ExecutionUsageProjector`'s engine-side seam only
+ever populates an execution that has recorded BOTH a `CoreEvent.ExecutionStarted` AND
+`ExecutionExited`, and its parser contract (`IWorkerUsageParser.TryParseFinalUsage`) reads exactly
+the last non-blank line of the captured stream — neither fits a still-running execution, which by
+definition has no exit event yet and needs every line scanned, not just the last:
+- **`rooms[].live` (item 1)**, present only for a room whose pusher-displayed `state` is exactly
+  `"Running"`: `{ "toolCalls"?: number, "lastActivityAt"?: string }`. `toolCalls` counts
+  `tool_use` blocks in claude's `assistant` stream events and DONE/`tool` `step_update` heartbeats
+  in agy's — both shapes measured (docs/vendor-capabilities.md's `#1559`/`#1088` rows,
+  `tests/Baton.Cli.Tests/RunCommandEchoTests.cs`, `AgyWorkerAdapter.TryParseProgressEvent`'s own doc
+  comment). Token counts are deliberately never emitted: neither `docs/vendor-doc-audit.md` nor
+  `python tools/vendor-verify/verify.py --list` records a per-assistant-message (mid-stream) usage
+  figure for either vendor, only the terminal `result` line's cumulative usage — an absent field is
+  honest, a summed one would re-count each turn's whole context. `lastActivityAt` is the stdout
+  log's own last-write instant (a real filesystem fact, not `now()`), so it ages honestly the moment
+  a lane goes quiet.
+- **`derived_at` (item 2)**, beside `heartbeat_at` (#1486) at the top level of the pushed snapshot:
+  when this pusher process's OWN `derive_snapshot_and_timelines` call last completed successfully,
+  regardless of whether that cycle's content changed enough to push. `pushed_at` (worker.js's own
+  receipt time) is legitimately stale on a quiet-but-healthy fleet — the #1457 change-gate skips an
+  unchanged snapshot on purpose — so Fleet Glass's "Snapshot may be stuck" banner
+  (`tools/fleet-glass/glass.html`) keys on `derived_at` instead: a fleet that stays quiet because
+  nothing changed still reads healthy, while a derivation that has been raising every cycle for
+  hours (the real failure mode this exists to catch — a hung `dotnet mcp` subprocess starves
+  `derived_at` too, on the same timescale it starves `heartbeat_at`, since both live in the same
+  loop iteration) still alarms. Reaches the mailbox by two routes that share one KV write budget
+  rather than add to it: riding inside an actual snapshot push's own body (excluded from
+  `snapshot_hash` so it can never itself force a push), or via a dedicated ping on the same
+  `/heartbeat` endpoint whenever a push hasn't landed one recently (`should_send_derived_ping`) —
+  see `pusher.py`'s own module docstring for the write-budget arithmetic this is built around.
 
 ---
 

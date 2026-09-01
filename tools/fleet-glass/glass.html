@@ -15,14 +15,25 @@
   Claude Code mobile session; nothing here calls baton or the engine directly (spec/baton.md §10:
   origination and arrest both stay orchestrator-only from this page).
 
-  role/adapter/model/effort/timeoutMs (engine PR #1504, epic #1502 item #5/#6/#7) are read
-  ABSENT-SAFE throughout: every reference below is behind a truthiness/null check, so this page
-  renders identically whether or not #1504 has merged -- before merge those five fields are simply
-  never present on any room object, same as any other optional fleet_status field.
+  role/adapter/model/effort/timeoutMs (engine PR #1504, epic #1502 item #5/#6/#7; #1613 item 3
+  carries them through the terminal-sentinel fast path too, when bindings.json names exactly one
+  role) are read ABSENT-SAFE throughout: every reference below is behind a truthiness/null check,
+  so this page renders identically whether or not the producing pusher/engine has been redeployed
+  -- an unredeployed pair simply never sets these fields, same as any other optional fleet_status
+  field.
 
-  Timeline entries (menu item #1/#2) are content-free by construction (pusher.py's
-  `extract_timeline`, event type + timestamp only, no stdout) and only exist for rooms pusher.py
-  judged NON-TERMINAL at push time -- a terminal room's lane will not show a Timeline section here.
+  Timeline entries (menu item #1/#2, extended by #1613 item 4) are content-free by construction
+  (pusher.py's `extract_timeline` keeps only event type, timestamp, stepId, and exitCode -- ids and
+  counts, never stdout, per the operator's 2026-09-01 ruling amending the content-free
+  construction) and, since #1613, exist for TERMINAL rooms too (fetched once, cached) -- pre-#1613
+  a finished lane showed no Timeline section at all.
+
+  `room.live` (#1613 item 1: toolCalls/lastActivityAt for a Running room's currently-executing
+  step) is absent-safe the same way -- see `liveTelemetryHtml`'s own comment for why it never
+  carries a token count.
+
+  `derived_at` (#1613 item 2) is what the "Snapshot may be stuck" banner keys on instead of
+  pushed_at -- see the banner's own comment below for why pushed_at alone false-fired.
 -->
 <title>Fleet Glass</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -509,6 +520,15 @@ function updateAccumulatedTimelines(existingTimelines, rooms, incomingTimelines)
   return result;
 }
 
+// #1613 item 4: stepId/exitCode ride each entry (ids/counts, per the operator's amended content
+// ruling) when the underlying event carried one -- absent-safe, same as every other optional field
+// on this page: an entry with neither renders exactly as it did pre-#1613.
+function timelineEntryDetail(e){
+  const bits = [];
+  if(e.stepId) bits.push(esc(e.stepId));
+  if(e.exitCode != null) bits.push(`exit ${esc(String(e.exitCode))}`);
+  return bits.length ? ` (${bits.join(", ")})` : "";
+}
 function timelineHtml(room, timelines, isOpen = false){
   const entries = timelines && room.path ? timelines[room.path] : null;
   if(!Array.isArray(entries) || !entries.length) return "";
@@ -516,7 +536,7 @@ function timelineHtml(room, timelines, isOpen = false){
     const a = age(e.timestamp);
     const rawType = e.type || "";
     const label = friendlyEventName(rawType);
-    return `<div class="tl-entry"><span class="tl-type mono" title="${esc(rawType)}">${esc(label)}</span><span class="tl-age">${a ? a + " ago" : ""}</span></div>`;
+    return `<div class="tl-entry"><span class="tl-type mono" title="${esc(rawType)}">${esc(label)}${timelineEntryDetail(e)}</span><span class="tl-age">${a ? a + " ago" : ""}</span></div>`;
   }).join("");
   return `<details class="tl-details" data-room-path="${esc(room.path)}"${isOpen ? " open" : ""}><summary>Timeline · ${entries.length}</summary>${rows}</details>`;
 }
@@ -645,6 +665,24 @@ document.addEventListener("click", async (ev) => {
   }
 });
 
+// -----------------------------------------------------------------------------------------------
+// #1613 item 1: live telemetry for a Running room's currently-executing step -- a tool-call COUNT
+// and a last-stream-activity age, both read pusher-side straight off the execution's own
+// .stdout.log (no engine change; see pusher.py's own "Seam choice" comment). Absent-safe like
+// role/adapter/model/effort above: `room.live` is simply never present until the pusher that
+// produced this snapshot has been redeployed for #1613, same convention every other optional
+// fleet_status field on this page already follows. Token counts are deliberately never rendered --
+// pusher.py never emits them (unmeasured per the vendor registers), so there is nothing to read.
+// -----------------------------------------------------------------------------------------------
+function liveTelemetryHtml(room){
+  const live = room.live;
+  if(!live) return "";
+  const bits = [];
+  if(live.toolCalls != null) bits.push(`${live.toolCalls} call${live.toolCalls === 1 ? "" : "s"}`);
+  const a = age(live.lastActivityAt);
+  if(a) bits.push(`active ${a} ago`);
+  return bits.length ? `<div class="ev mono">${bits.join(" · ")}</div>` : "";
+}
 function laneHtml(room, timelines, dismissable = false, openTimelines = null){
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
@@ -684,6 +722,7 @@ function laneHtml(room, timelines, dismissable = false, openTimelines = null){
     ${projectLineHtml(room)}
     ${bindingLineHtml(room)}
     ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${tryLine}${err}${ageLine}
+    ${liveTelemetryHtml(room)}
     ${timelineHtml(room, timelines, isTlOpen)}
     ${copyButtonsHtml(room, running)}
     ${deliverables}</div>`;
@@ -1197,10 +1236,17 @@ window.addEventListener("hashchange", applyRoute);
     return;
   }
   window.mcpHandle = mcp;
-  // #1486: heartbeat_at (hourly ping, independent of the change-gated snapshot) is what tells a
-  // dead pusher apart from a quiet fleet whose pushed_at is legitimately stale. Loud only past
-  // ~2 missed beats + slop, so one delayed cycle doesn't cry wolf.
+  // #1486: heartbeat_at (independent of the change-gated snapshot) is what tells a dead pusher
+  // apart from a quiet fleet whose pushed_at is legitimately stale. Loud only past ~2 missed beats
+  // + slop, so one delayed cycle doesn't cry wolf.
   const HEARTBEAT_DEAD_MS = 2.5 * 60 * 60 * 1000;
+  // #1613 item 2: the "stuck" check below keys on derived_at (when the pusher's OWN snapshot
+  // derivation last actually completed), never on pushed_at -- pushed_at legitimately goes stale
+  // on a quiet-but-healthy fleet (the #1457 change-gate skips an unchanged snapshot), which is
+  // exactly what made the pre-#1613 pushed_at-keyed version of this banner false-fire constantly.
+  // derived_at reaches the mailbox on its own ~5-minute cadence independent of whether anything
+  // pushed (pusher.py's DERIVED_PING_INTERVAL_SECONDS), so this threshold stays the same order of
+  // magnitude the banner already used, rather than degrading to heartbeat's own coarser cadence.
   const RUNNING_SUSPICION_MS = 10 * 60 * 1000;
   mcp.watchTool("baton", "fleet_status", {}, (ev) => {
     if(ev.type === "data"){
@@ -1213,14 +1259,14 @@ window.addEventListener("hashchange", applyRoute);
         dismissedRooms = pruneDismissed(dismissedRooms, snap.rooms);
         savePersistedDismissed(dismissedRooms);
         const hbMs = snap.heartbeat_at ? Date.now() - Date.parse(snap.heartbeat_at) : null;
-        const pushMs = snap.pushed_at ? Date.now() - Date.parse(snap.pushed_at) : null;
+        const derivedMs = snap.derived_at ? Date.now() - Date.parse(snap.derived_at) : null;
         const running = snap.rooms.some(r => r.state === "Running");
         if(hbMs == null){
           banner("<b>No heartbeat recorded yet.</b> heartbeat_at is unset — redeploy worker.js and the pusher for #1486, or the mailbox hasn't received one yet.");
         } else if(!isFinite(hbMs) || hbMs > HEARTBEAT_DEAD_MS){
           banner(`<b>Pusher likely dead.</b> No heartbeat in ${esc(age(snap.heartbeat_at) || "over 2.5h")} — the fleet machine may be off or the pusher process may have stopped. Data below is from the last push.`);
-        } else if(running && pushMs != null && isFinite(pushMs) && pushMs > RUNNING_SUSPICION_MS){
-          banner(`<b>Snapshot may be stuck.</b> The pusher is alive (heartbeat ${esc(age(snap.heartbeat_at))} ago) but the last push was ${esc(age(snap.pushed_at))} ago while rooms show Running — snapshot derivation itself may be wedged.`);
+        } else if(running && derivedMs != null && isFinite(derivedMs) && derivedMs > RUNNING_SUSPICION_MS){
+          banner(`<b>Snapshot derivation may be stuck.</b> The pusher is alive (heartbeat ${esc(age(snap.heartbeat_at))} ago) but its last successful derivation was ${esc(age(snap.derived_at))} ago while rooms show Running — derive_snapshot_and_timelines may be failing every cycle.`);
         } else {
           banner("");
         }
