@@ -117,7 +117,8 @@ summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .finding .finding-claim{font:600 .86rem 'Public Sans'; color:var(--ink);}
 .finding .finding-chips{display:flex; gap:.3rem; flex-wrap:wrap; flex-shrink:0;}
 .finding .finding-anchor{font:400 .72rem var(--mono); color:var(--ink-soft); margin-top:.25rem;}
-.finding .finding-detail{font-size:.82rem; color:var(--ink); margin-top:.45rem; line-height:1.5; white-space:pre-wrap; word-break:break-word; overflow-x:auto;}
+.finding .finding-detail{font-size:.82rem; color:var(--ink); margin-top:.45rem; line-height:1.5; word-break:break-word; overflow-x:auto;}
+.finding .finding-detail p{margin:.3em 0;}
 .empty{color:var(--ink-soft); font-size:.85rem;}
 footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:.6rem;}
 </style>
@@ -472,7 +473,9 @@ function findingHtml(f){
     }
   }
   const detail = f.detail || f.body || "";
-  const detailHtml = detail ? `<div class="finding-detail">${esc(detail)}</div>` : "";
+  // Review lanes author markdown in detail/body (#1543) -- render it (renderMarkdown escapes
+  // internally) instead of showing literal ## headings and hard-wrapped source lines.
+  const detailHtml = detail ? `<div class="finding-detail">${renderMarkdown(detail)}</div>` : "";
   return `<div class="finding">
     <div class="finding-top">
       <span class="finding-claim">${esc(claim || "Finding")}</span>
@@ -484,7 +487,9 @@ function findingHtml(f){
 }
 function formatMetaValue(val){
   if(val == null) return "—";
-  if(typeof val === "string") return esc(val);
+  // Multiline string values (e.g. a verdict's summary) are markdown-authored prose (#1543);
+  // single-line values stay plain escaped text.
+  if(typeof val === "string") return /\n/.test(val) ? renderMarkdown(val) : esc(val);
   if(typeof val === "number" || typeof val === "boolean") return esc(String(val));
   return `<pre><code>${esc(JSON.stringify(val, null, 2))}</code></pre>`;
 }
