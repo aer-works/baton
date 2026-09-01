@@ -1238,17 +1238,21 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     }
 
     /// <summary>
-    /// Parses one line of <c>claude --output-format stream-json --include-partial-messages</c>'s
-    /// newline-delimited JSON (M24 Phase 1's live in-turn streaming). The <c>system</c>/<c>assistant</c>
-    /// envelopes below are confirmed against a real, live invocation of the installed CLI (a
-    /// same-shape <c>{"type":"assistant","message":{"content":[{"type":"text",...}]}}</c> line came
-    /// back even from an unauthenticated run's error response) — those branches are load-bearing.
+    /// Parses one line of <c>claude --output-format stream-json --verbose</c>'s newline-delimited JSON
+    /// (M24 Phase 1's live in-turn streaming). The <c>system</c>/<c>assistant</c> envelopes below are
+    /// confirmed against a real, live invocation of the installed CLI (a same-shape
+    /// <c>{"type":"assistant","message":{"content":[{"type":"text",...}]}}</c> line came back even from
+    /// an unauthenticated run's error response) — those branches are load-bearing.
     /// The <c>stream_event</c>/<c>content_block_delta</c> branch mirrors the publicly documented
     /// Anthropic Messages streaming event shape Claude Code wraps for <c>--include-partial-messages</c>'
-    /// token-level deltas, but no authenticated session was available to observe one directly; if the
-    /// real shape differs, this simply never matches and contributes no partial deltas — full
-    /// per-message text (the confirmed branch above) still arrives once each block completes, so
-    /// streaming degrades to coarser granularity rather than silently breaking.
+    /// token-level deltas. <b>Retained but currently unreachable</b>: #1540 deliberately dropped
+    /// <c>--include-partial-messages</c> from every dispatch (event-level volume over token-level, to
+    /// keep <c>ExecutionStreamLogger</c>'s 8 MiB window from rolling early — see
+    /// <c>docs/vendor-capabilities.md</c>'s `#1540` row), so no live invocation can produce this shape
+    /// today. Left in place rather than deleted: if a future issue reintroduces the flag, this branch
+    /// is already correct and does not need rediscovering; if the real shape differs from the
+    /// documented one, this simply never matches and contributes no partial deltas — full per-message
+    /// text (the confirmed branch above) still arrives once each block completes.
     /// </summary>
     public bool TryParseProgressEvent(string rawLine, out WorkerProgressEvent? progressEvent)
     {
@@ -1272,6 +1276,7 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
                 "system" => TryParseSystemEvent(root, out progressEvent),
                 "assistant" => TryParseAssistantEvent(root, out progressEvent),
                 "stream_event" => TryParseStreamEvent(root, out progressEvent),
+                "result" => TryParseResultEvent(root, out progressEvent),
                 _ => false,
             };
         }
@@ -1300,10 +1305,23 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
                 progressEvent = new WorkerProgressEvent("status", status);
                 return true;
             default:
-                return false;
+                // A recognized `system` envelope whose subtype carries no user-facing signal (e.g. a
+                // hook lifecycle marker) — deliberately filtered, not unknown (#1561 second-reader
+                // review: falling through to `false` here would dump it as raw JSON instead).
+                progressEvent = new WorkerProgressEvent("ignore", string.Empty);
+                return true;
         }
     }
 
+    /// <summary>
+    /// Returns the FIRST text-or-tool_use content block of an <c>assistant</c> message only (#1561
+    /// finding 9) — a message carrying <c>[text, tool_use]</c> surfaces the text and never the
+    /// <c>[tool: ...]</c> marker, and a two-text-block message loses the second block.
+    /// <see cref="WorkerProgressEvent"/> carries one event per call; looping every block would need a
+    /// return shape wider than <c>TryParseProgressEvent</c>'s single out-parameter, which is out of
+    /// scope for a doc-comment-only fix. Pre-existing behavior — what changed is that the caller
+    /// (<c>--echo-worker</c>) makes it user-visible now.
+    /// </summary>
     private static bool TryParseAssistantEvent(JsonElement root, out WorkerProgressEvent? progressEvent)
     {
         progressEvent = null;
@@ -1332,13 +1350,57 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             }
         }
 
-        return false;
+        // A recognized `assistant` message whose content blocks carry no renderable text/tool_use —
+        // e.g. a `thinking`-only block under extended thinking, or an empty text block — is
+        // deliberately filtered, not unknown (#1561 second-reader review: this shape appears in the
+        // very capture docs/vendor-capabilities.md's #1540 row quotes, once per turn on the primary
+        // path with extended thinking on; falling through to `false` here would dump the raw
+        // envelope, base64 thinking signature included, instead of staying quiet).
+        progressEvent = new WorkerProgressEvent("ignore", string.Empty);
+        return true;
     }
 
     /// <summary>
-    /// Parses claude's <c>stream-json</c> terminal <c>"type":"result"</c> line (issue #1360) — the one
-    /// line <see cref="TryParseProgressEvent"/> deliberately does not surface as progress, since it is
-    /// a turn-completion summary rather than in-turn text. <c>usage.input_tokens</c>/<c>output_tokens</c>
+    /// Surfaces the <c>result</c> envelope as a turn-completion status line (issue #1561) — the one
+    /// signal <see cref="EchoStreamJsonLine"/> needs to show WHY a lane failed, which the pre-#1561
+    /// echo switch could never render because <see cref="TryParseProgressEvent"/> returned <c>false</c>
+    /// for every <c>result</c> line. <c>is_error</c> decides the rendered text; the human-readable
+    /// <c>result</c> field carries the failure reason on an error turn (e.g. "Subscription quota
+    /// exhausted.", the exact string <see cref="TryClassifyFailure"/>'s quota fixtures use).
+    /// <c>is_error</c> is required, not defaulted: every observed envelope carries it (both polarities
+    /// — see the <c>docs/vendor-capabilities.md</c> `#1540` row's quoted capture), so its absence means
+    /// an unfamiliar shape, not a confirmed success. Rendering "success" on a guess would fabricate a
+    /// claim this method has no basis for (#1561 second-reader review) — return <c>false</c> instead
+    /// and let the generic verbatim-echo fallback show the raw line.
+    /// </summary>
+    private static bool TryParseResultEvent(JsonElement root, out WorkerProgressEvent? progressEvent)
+    {
+        progressEvent = null;
+        if (!root.TryGetProperty("is_error", out var isErrorProp)
+            || isErrorProp.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return false;
+        }
+
+        var isError = isErrorProp.ValueKind == JsonValueKind.True;
+        var text = isError
+            ? "error — " + (root.TryGetProperty("result", out var resultProp)
+                && resultProp.ValueKind == JsonValueKind.String
+                && resultProp.GetString() is { Length: > 0 } summary
+                ? summary
+                : "no error detail in the result envelope")
+            : "success";
+
+        progressEvent = new WorkerProgressEvent("result", text);
+        return true;
+    }
+
+    /// <summary>
+    /// Parses claude's <c>stream-json</c> terminal <c>"type":"result"</c> line (issue #1360). Since
+    /// #1561, <see cref="TryParseProgressEvent"/> also reads this same line — but only as a
+    /// turn-completion status/error summary (<see cref="TryParseResultEvent"/>), never as in-turn text:
+    /// <c>ExecuteSessionTurnAsync</c> already reads the durable reply from the declared output file, so
+    /// the answer text itself has no reason to be re-surfaced here. <c>usage.input_tokens</c>/<c>output_tokens</c>
     /// and top-level <c>num_turns</c> are read independently: a line reporting one and not the other
     /// yields exactly that field, never a fabricated zero (docs/vendor-capabilities.md's "Usage, cost
     /// and quota" section is the register this reads against). <c>total_cost_usd</c> and the

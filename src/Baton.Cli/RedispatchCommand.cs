@@ -189,7 +189,7 @@ public static class RedispatchCommand
             // Adapter-derived, not role-derived, so it CAN be recomputed here — carrying the parent's
             // value across a vendor swap would stream-json a claude/agy worker (or text-mode a non-streaming one).
             // Grant/GrantAuditMode/worktree intent stay inherited: spec/baton.md §2 states why.
-            StreamJson = string.Equals(adapter, "agy", StringComparison.OrdinalIgnoreCase) || string.Equals(adapter, "claude", StringComparison.OrdinalIgnoreCase),
+            StreamJson = RoleDispatch.StreamsJson(adapter),
             // A redispatch is a fresh worker turn, never a continuation of the parent's own session.
             SessionId = null,
             ResumeSession = false,

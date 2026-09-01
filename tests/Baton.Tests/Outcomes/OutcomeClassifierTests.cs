@@ -814,8 +814,13 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_with_multi_line_stream_json_stdout_tail_carries_ExhaustedUntil()
+    public void Classify_passes_multi_line_stream_json_stdout_tail_through_to_classifier_unaltered()
     {
+        // #1561 finding 7: this pins pass-through, not parsing -- TestQuotaTwoTailClassifier only
+        // matches the tail against its own canned fixture (equality, not JSON parsing), so it would
+        // pass identically with a one-line tail or with "garbage" in both slots. The actual
+        // multi-line stream-json *parse* is exercised in
+        // ClaudeWorkerAdapterTests.CreditsRequired_InRealisticStreamJsonStdoutTail_ClassifiesExhaustedUntil.
         var directory = CreateTempDirectory();
         try
         {

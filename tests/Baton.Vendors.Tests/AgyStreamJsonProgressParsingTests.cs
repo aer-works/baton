@@ -50,27 +50,62 @@ public sealed class AgyStreamJsonProgressParsingTests
     [InlineData("user_input")]  // the user's own echoed input, not worker progress
     [InlineData("checkpoint")]  // internal bookkeeping
     [InlineData("unknown")]     // opaque
-    public void Step_update_DONE_noise_type_is_dropped(string stepType)
+    public void Step_update_DONE_noise_type_is_recognized_but_ignored(string stepType)
     {
+        // #1561: recognized (parsed=true) but deliberately carries no signal (Kind "ignore") --
+        // distinct from an event this adapter has never seen at all, which still returns false so a
+        // never-swallow consumer can echo it verbatim instead of guessing it's noise.
         var parsed = _adapter.TryParseProgressEvent(StepUpdateLine("DONE", stepType), out var progressEvent);
 
-        Assert.False(parsed);
-        Assert.Null(progressEvent);
+        Assert.True(parsed);
+        Assert.Equal("ignore", progressEvent!.Kind);
     }
 
     [Fact]
-    public void Step_update_ACTIVE_edge_is_dropped_only_DONE_is_surfaced()
+    public void Step_update_ACTIVE_edge_is_recognized_but_ignored_only_DONE_renders_status()
     {
         // Measured: most agy steps report only a DONE edge; surfacing ACTIVE too would double a `tool`
-        // step and miss every DONE-only one. The DONE edge is the one heartbeat per step.
+        // step and miss every DONE-only one. The DONE edge is the one heartbeat per step. #1561:
+        // recognized (parsed=true, Kind "ignore"), not unknown -- see the theory above.
         const string line = """
             {"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool"}}
             """;
 
         var parsed = _adapter.TryParseProgressEvent(line, out var progressEvent);
 
-        Assert.False(parsed);
-        Assert.Null(progressEvent);
+        Assert.True(parsed);
+        Assert.Equal("ignore", progressEvent!.Kind);
+    }
+
+    [Theory]
+    [InlineData("ERROR")]
+    [InlineData("CANCELLED")]
+    public void Result_event_non_success_status_returns_error_summary(string status)
+    {
+        // #1561: the failure-reason gap the second-reader review found -- a non-SUCCESS result
+        // carries an empty `response`, so Result_event_returns_the_response_as_text's case never
+        // matched it and the line silently vanished. Fixture shape verbatim from #1128's real
+        // captured quota refusal (execution eca57a30, AgyWorkerAdapterTests).
+        var line = """{"event":"result","result":{"conversation_id":"eca57a30","status":"""
+            + $"\"{status}\""
+            + ""","response":"","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h39m10s."}}""";
+
+        var parsed = _adapter.TryParseProgressEvent(line, out var progressEvent);
+
+        Assert.True(parsed);
+        Assert.Equal("result", progressEvent!.Kind);
+        Assert.Equal("error — Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h39m10s.", progressEvent.Text);
+    }
+
+    [Fact]
+    public void Result_event_success_status_with_empty_response_is_recognized_but_ignored()
+    {
+        const string line = """{"event":"result","result":{"status":"SUCCESS","response":""}}""";
+
+        var parsed = _adapter.TryParseProgressEvent(line, out var progressEvent);
+
+        Assert.True(parsed);
+        Assert.Equal("ignore", progressEvent!.Kind);
     }
 
     [Fact]
@@ -98,7 +133,6 @@ public sealed class AgyStreamJsonProgressParsingTests
     [InlineData("not json at all")]
     [InlineData("{\"event\":\"init\",\"conv")]                                   // chunk-split line
     [InlineData("{\"event\":\"unknown_future_event\"}")]                          // forward-compatible
-    [InlineData("{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}")]   // result with no response
     [InlineData("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"x\"}")] // claude's envelope: NOT agy's
     public void Unrecognized_or_foreign_line_returns_false_without_throwing(string line)
     {

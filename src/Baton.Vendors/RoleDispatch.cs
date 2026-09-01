@@ -151,9 +151,18 @@ public static class RoleDispatch
             // #1089, #1540: agy and claude. Streaming puts event-level JSON envelopes on stdout so a running lane's
             // log fills incrementally (feeding the live tail), while agy's terminal `result` event reaches the
             // teardown-hang guard. claude dispatches run plain stream-json --verbose without --include-partial-messages.
-            StreamJson: string.Equals(adapter, "agy", StringComparison.OrdinalIgnoreCase) || string.Equals(adapter, "claude", StringComparison.OrdinalIgnoreCase));
+            StreamJson: StreamsJson(adapter));
     }
 
+    /// <summary>
+    /// Whether <paramref name="adapter"/> is one of the two vendors #1089/#1540 stream JSON on stdout
+    /// for (issue #1561 finding 10). The single source for a predicate previously duplicated between
+    /// <see cref="ToBinding"/> above and <c>RedispatchCommand.InheritBinding</c> — a third streaming
+    /// vendor now only needs adding here, rather than in both places with the redispatch path silently
+    /// diverging from dispatch if the second site were missed.
+    /// </summary>
+    public static bool StreamsJson(string adapter) =>
+        string.Equals(adapter, "agy", StringComparison.OrdinalIgnoreCase) || string.Equals(adapter, "claude", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Wraps <see cref="ToBinding"/> in a single-step workflow — the shape <c>baton dispatch</c> hands to

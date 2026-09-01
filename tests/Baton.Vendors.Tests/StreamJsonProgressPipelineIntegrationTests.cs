@@ -111,7 +111,7 @@ public class StreamJsonProgressPipelineIntegrationTests
             // in the single-shot unit tests that hand a string directly to the parser.
             Assert.Equal(CapturedLines, rawLinesReceived);
 
-            Assert.Equal(3, parsedEvents.Count);
+            Assert.Equal(4, parsedEvents.Count);
 
             Assert.Equal("status", parsedEvents[0].Kind);
             Assert.Equal("Session started", parsedEvents[0].Text);
@@ -122,8 +122,12 @@ public class StreamJsonProgressPipelineIntegrationTests
             Assert.Equal("text", parsedEvents[2].Kind);
             Assert.Equal("Not logged in · Please run /login", parsedEvents[2].Text);
 
-            // The `result` line (CapturedLines[3]) carries no progress content -- it must not
-            // produce a fourth event.
+            // #1561: the `result` line (CapturedLines[3]) is an error turn (is_error: true), so it
+            // now surfaces as a fourth event -- the status/error summary EchoStreamJsonLine renders
+            // to show WHY the lane failed, rather than vanishing the way every `result` line did
+            // before #1561.
+            Assert.Equal("result", parsedEvents[3].Kind);
+            Assert.Equal("error — Not logged in · Please run /login", parsedEvents[3].Text);
         }
         finally
         {
