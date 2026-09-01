@@ -131,8 +131,9 @@ public static class WorkflowStatusProjector
     /// Registered adapters (#1360) an execution's own dispatched worker is attributed to — primarily
     /// via the request's own recorded <c>Adapter</c> (#1567), falling back to
     /// <paramref name="roomDirectoryPath"/>'s <c>bindings.json</c> only for a journal line that
-    /// predates it — see <see cref="ExecutionUsageProjector"/>'s remarks for how attribution works and
-    /// what happens without it.
+    /// predates it — see <see cref="ExecutionUsageProjector"/>'s remarks for how attribution works.
+    /// Omitted (or null) resolves against <see cref="StandardWorkerUsageParsers.Default"/> instead of
+    /// yielding no usage (#1590) — an explicitly-passed, adapter-less dictionary still yields none.
     /// </param>
     public static WorkflowStatusView Project(
         FlowState state,

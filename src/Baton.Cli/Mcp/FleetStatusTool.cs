@@ -292,8 +292,9 @@ public sealed class FleetStatusTool : IMcpTool
             }
 
             var outcome = WorkflowOutcome.Describe(state);
-            // Without a parser registry the usage projector returns null for every
-            // execution, so the tool would advertise usage it never populates.
+            // Explicit for readability -- a null/omitted registry now falls back to this same
+            // StandardWorkerUsageParsers.Default internally (#1590), so this argument is redundant
+            // rather than load-bearing, but names the parser set the tool's usage figures depend on.
             var view = WorkflowStatusProjector.Project(
                 state, snapshot, roomDir, entries, StandardWorkerUsageParsers.Default);
             var eventTimestamps = WorkflowStatusProjector.ExtractEventTimestamps(entries);
