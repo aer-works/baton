@@ -248,7 +248,8 @@ public sealed class ExecutionUsageProjectorTests
     [Fact]
     public void A_recorded_adapter_wins_over_bindings_json_even_after_failover_edits_the_file()
     {
-        // Issue #1567 (quota-design S1), the keystone defect: ExecutionUsageProjector used to recover
+        // Issue #1567 (quota-design S1, full design in the 2026-09-01 proposal comment on #802), the
+        // keystone defect: ExecutionUsageProjector used to recover
         // the vendor by reading bindings.json's CURRENT Adapter at read time. Failover editing that
         // file after this execution completed used to retroactively re-attribute it to the new
         // vendor -- silently, with plausible output. This execution's own ExecutionRequestAccepted
@@ -297,15 +298,20 @@ public sealed class ExecutionUsageProjectorTests
     [Fact]
     public void Recorded_adapter_absent_falls_back_to_bindings_json_recorded_adapter_present_ignores_it()
     {
-        // Polarity, both directions, made observable via CommandWorkerAdapter (#1360 F1's spoof
-        // regression above already proves a mismatched adapter parses nothing): bindings.json names
-        // "command" for this worker, which never overrides TryParseFinalUsage, so a claude-shaped
-        // usage line yields no token fields when attribution falls through to bindings.json -- but
-        // yields real fields when the recorded Adapter overrides bindings.json with "claude" instead.
+        // Polarity, both directions, and both arms parse a REAL number rather than one of them merely
+        // asserting null -- an implementation with no fallback at all (recordedAdapter or nothing)
+        // would satisfy a null-vs-non-null assertion just as well as the real fallback does. Instead:
+        // bindings.json names "claude" for this worker; the first execution has no recorded Adapter,
+        // so it must resolve THROUGH bindings.json to "claude" and parse the claude-shaped line. The
+        // second execution's own ExecutionRequestAccepted records "agy" -- a DIFFERENT adapter than
+        // bindings.json names for the same worker -- and carries an agy-shaped line instead; it must
+        // resolve to "agy" and ignore bindings.json's "claude" entirely. Swapping either execution's
+        // envelope shape for the other's adapter would fail to parse, so each arm is only satisfiable
+        // by the correct resolution.
         var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-polarity-{Guid.NewGuid():N}");
         try
         {
-            WriteBindings(testRoot, ("plan", CommandWorkerAdapter.AdapterName));
+            WriteBindings(testRoot, ("plan", "claude"));
 
             var noRecordedAdapter = new ExecutionId("exec-no-recorded-adapter");
             var recordedAdapterPresent = new ExecutionId("exec-recorded-adapter-present");
@@ -316,24 +322,27 @@ public sealed class ExecutionUsageProjectorTests
                 new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(noRecordedAdapter, Pid: 1), start),
                 new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(noRecordedAdapter, 0, CoreExitReason.Natural), start.AddSeconds(1)),
 
-                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(recordedAdapterPresent, "plan", adapter: "claude"))),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(recordedAdapterPresent, "plan", adapter: "agy"))),
                 new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(recordedAdapterPresent, Pid: 2), start),
                 new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(recordedAdapterPresent, 0, CoreExitReason.Natural), start.AddSeconds(1)),
             };
 
-            foreach (var id in new[] { noRecordedAdapter, recordedAdapterPresent })
-            {
-                var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, id);
-                Directory.CreateDirectory(outputDir);
-                File.WriteAllText(
-                    Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName),
-                    """{"type":"result","num_turns":2,"usage":{"input_tokens":8,"output_tokens":4}}""" + "\n");
-            }
+            var noRecordedAdapterOutputDir = ArtifactManager.ResolveOutputDirectory(testRoot, noRecordedAdapter);
+            Directory.CreateDirectory(noRecordedAdapterOutputDir);
+            File.WriteAllText(
+                Path.Combine(noRecordedAdapterOutputDir, ExecutionStreamLogger.StdoutLogFileName),
+                """{"type":"result","num_turns":2,"usage":{"input_tokens":8,"output_tokens":4}}""" + "\n");
+
+            var recordedAdapterPresentOutputDir = ArtifactManager.ResolveOutputDirectory(testRoot, recordedAdapterPresent);
+            Directory.CreateDirectory(recordedAdapterPresentOutputDir);
+            File.WriteAllText(
+                Path.Combine(recordedAdapterPresentOutputDir, ExecutionStreamLogger.StdoutLogFileName),
+                """{"event":"result","result":{"num_turns":9,"usage":{"input_tokens":55,"output_tokens":22}}}""" + "\n");
 
             var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot);
 
-            Assert.Null(usage[noRecordedAdapter.Value].TokensIn);
-            Assert.Equal(8, usage[recordedAdapterPresent.Value].TokensIn);
+            Assert.Equal(8, usage[noRecordedAdapter.Value].TokensIn);
+            Assert.Equal(55, usage[recordedAdapterPresent.Value].TokensIn);
         }
         finally
         {

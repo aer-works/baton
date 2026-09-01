@@ -36,7 +36,8 @@ namespace Baton.Domain;
 /// </param>
 /// <param name="Adapter">
 /// The vendor adapter this execution actually dispatched through (e.g. <c>"claude"</c>,
-/// <c>"agy"</c>), recorded at accept time (issue #1567, quota-design S1). Before this field existed,
+/// <c>"agy"</c>), recorded at accept time (issue #1567, quota-design S1 — full design in the
+/// 2026-09-01 proposal comment on #802). Before this field existed,
 /// <see cref="Status.ExecutionUsageProjector"/> recovered the vendor by reading <c>Adapter</c> out of
 /// the room's <em>current</em> <c>bindings.json</c> at read time — harmless only because a room's
 /// adapter never changed mid-run. Failover changes that: rebinding <c>bindings.json</c> after this
@@ -47,9 +48,13 @@ namespace Baton.Domain;
 /// </param>
 /// <param name="Model">
 /// The model string this execution actually dispatched with, recorded alongside
-/// <paramref name="Adapter"/> for the same reason. <c>null</c> for every pre-existing journal line and
-/// for a non-process (<see cref="Mutation.WorkerBinding.NonProcess"/>) dispatch, which has no vendor
-/// model to name.
+/// <paramref name="Adapter"/> for the same reason. <c>null</c> covers three cases, not two: every
+/// pre-existing journal line; a non-process (<see cref="Mutation.WorkerBinding.NonProcess"/>) dispatch,
+/// which has no vendor model to name; and — reachable today, not merely hypothetical — a vendor swap
+/// with no explicit <c>--model</c>, where <c>RoleDispatch.ToBinding</c> and
+/// <c>RedispatchCommand</c> both deliberately drop the prior vendor's model string rather than hand
+/// the new vendor a model name it may not recognize (#1082), so a real execution can run, and burn
+/// real usage, on the new vendor's own default model while this field is still null.
 /// </param>
 public sealed record ExecutionRequest(
     ExecutionId ExecutionId,

@@ -127,10 +127,11 @@ public static class WorkflowStatusProjector
     /// use for usage data (or has not read the ledger for another reason) is not forced to.
     /// </param>
     /// <param name="adapters">
-    /// Registered adapters (#1360) an execution's own dispatched worker is attributed to via
-    /// <paramref name="roomDirectoryPath"/>'s <c>bindings.json</c> — see
-    /// <see cref="ExecutionUsageProjector"/>'s remarks for how attribution works and what happens
-    /// without it.
+    /// Registered adapters (#1360) an execution's own dispatched worker is attributed to — primarily
+    /// via the request's own recorded <c>Adapter</c> (#1567), falling back to
+    /// <paramref name="roomDirectoryPath"/>'s <c>bindings.json</c> only for a journal line that
+    /// predates it — see <see cref="ExecutionUsageProjector"/>'s remarks for how attribution works and
+    /// what happens without it.
     /// </param>
     public static WorkflowStatusView Project(
         FlowState state,
