@@ -243,6 +243,19 @@ public sealed class FleetStatusTool : IMcpTool
                 ExhaustedUntil: s.ExhaustedUntil
             )).ToList();
 
+            // #1613 item 3: terminal.json (the sentinel) is a frozen WorkflowStatusView -- it never
+            // carried role/adapter/model/effort/timeoutMs, so this fast path used to fall straight
+            // through to the all-null defaults below. bindings.json is still sitting right next to
+            // it (the same file the label read already loads), so this reads it once and reuses it
+            // for both -- one construction site with TryLoadBindingsAsync, same fail-open posture
+            // (WorkerBindingConfigParser funnels every data-driven failure into
+            // WorkerBindingConfigException, which TryLoadBindingsAsync catches and swallows) that
+            // already covered the label alone.
+            var terminalBindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
+            var terminalBinding = TryResolveSoleBinding(terminalBindings);
+            var (terminalRole, terminalAdapter, terminalModel, terminalEffort, terminalTimeoutMs) =
+                ProjectBindingFields(terminalBinding);
+
             return new FleetRoomStatusView(
                 Name: roomName,
                 Path: roomDir,
@@ -252,11 +265,12 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: sentinel.Error,
                 Try: sentinel.Try,
                 Rejected: sentinel.Rejected,
-                // The terminal fast path sits outside the per-room isolation try/catch below;
-                // this read sits outside it safely because WorkerBindingConfigParser funnels every
-                // data-driven failure into WorkerBindingConfigException, which TryReadRoomLabelAsync
-                // catches and swallows (fail-open), matching the sentinel read above it.
-                Label: await TryReadRoomLabelAsync(roomDir, cancellationToken).ConfigureAwait(false));
+                Role: terminalRole,
+                Adapter: terminalAdapter,
+                Model: terminalModel,
+                Effort: terminalEffort,
+                TimeoutMs: terminalTimeoutMs,
+                Label: ExtractRoomLabel(terminalBindings));
         }
 
         // 2. Active room: load snapshot + flow events and project
@@ -326,6 +340,7 @@ public sealed class FleetStatusTool : IMcpTool
 
             var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
             var binding = TryResolveRunningBinding(bindings, steps, events);
+            var (role, adapter, model, effort, timeoutMs) = ProjectBindingFields(binding);
 
             // #1513: the ledger's own `Running` (WorkflowOutcome.Describe/DeriveWorkflowStatus) means
             // "not terminal, and something could still make progress" -- true whether that something
@@ -349,11 +364,11 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: view.Error,
                 Try: view.Try,
                 Rejected: view.Rejected,
-                Role: binding?.Role,
-                Adapter: binding?.Entry.Adapter,
-                Model: binding?.Entry.Model,
-                Effort: binding?.Entry.Effort,
-                TimeoutMs: (long?)binding?.Entry.Timeout.TotalMilliseconds,
+                Role: role,
+                Adapter: adapter,
+                Model: model,
+                Effort: effort,
+                TimeoutMs: timeoutMs,
                 Label: ExtractRoomLabel(bindings));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -434,20 +449,40 @@ public sealed class FleetStatusTool : IMcpTool
     }
 
     /// <summary>
+    /// The terminal-sentinel fast path's binding resolution (#1613 item 3) -- rationale for the
+    /// "exactly one role" requirement is spec/baton.md §6's fleet_status schema entry, not restated
+    /// here.
+    /// </summary>
+    private static (string Role, WorkerBindingConfigEntry Entry)? TryResolveSoleBinding(
+        IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings)
+    {
+        if (bindings is null || bindings.Count != 1)
+        {
+            return null;
+        }
+
+        var only = bindings.Single();
+        return (only.Key, only.Value);
+    }
+
+    /// <summary>
+    /// One construction site (the #1590/#1597 lesson) for turning a resolved binding into the five
+    /// wire fields -- both the active-room path (<see cref="TryResolveRunningBinding"/>) and the
+    /// terminal-sentinel fast path (<see cref="TryResolveSoleBinding"/>) resolve WHICH role
+    /// differently, but project the resolved <c>(Role, Entry)</c> pair to Role/Adapter/Model/
+    /// Effort/TimeoutMs identically.
+    /// </summary>
+    private static (string? Role, string? Adapter, string? Model, string? Effort, long? TimeoutMs) ProjectBindingFields(
+        (string Role, WorkerBindingConfigEntry Entry)? binding) =>
+        binding is { } resolved
+            ? (resolved.Role, resolved.Entry.Adapter, resolved.Entry.Model, resolved.Entry.Effort, (long?)resolved.Entry.Timeout.TotalMilliseconds)
+            : (null, null, null, null, null);
+
+    /// <summary>
     /// Extracts a room's <c>--label</c> (#1499) off its loaded <c>bindings.json</c> dictionary.
     /// </summary>
     private static string? ExtractRoomLabel(IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings) =>
         bindings?.Values.Select(entry => entry.Label).FirstOrDefault(label => label is not null);
-
-    /// <summary>
-    /// Reads a room's <c>--label</c> (#1499) off its own <c>bindings.json</c> on the terminal sentinel
-    /// fast path. Full rationale and the fail-open contract: spec/baton.md §6 schema.
-    /// </summary>
-    private static async Task<string?> TryReadRoomLabelAsync(string roomDir, CancellationToken cancellationToken)
-    {
-        var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
-        return ExtractRoomLabel(bindings);
-    }
 }
 
 /// <summary>
@@ -503,7 +538,7 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("timeoutMs")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     long? TimeoutMs = null,
-    // #1499: read via TryReadRoomLabelAsync -- see that method's own doc, spec/baton.md §6 schema.
+    // #1499: read via ExtractRoomLabel off each path's own loaded bindings.json, spec/baton.md §6 schema.
     [property: JsonPropertyName("label")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Label = null);
