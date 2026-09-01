@@ -3,6 +3,7 @@ using Baton.Domain;
 using Baton.Outcomes;
 using Baton.Projection;
 using Baton.Status;
+using static Baton.Cli.Tests.TestSupport.ProcessIdentityFixture;
 
 namespace Baton.Cli.Tests;
 
@@ -28,28 +29,6 @@ public sealed class WorkflowStatusProjectorLivenessTests
         executionId, WorkflowId, StepId, "worker",
         Inputs: [], Outputs: [], Timeout: TimeSpan.FromMinutes(10), Environment: [],
         UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
-
-    /// <summary>Same technique as <c>EngineLivenessProbeTests.DeadProcessIdentity</c>: capture a real
-    /// process's identity while it is provably alive, then kill it, so the probe's OS-level checks
-    /// (start-time match, <c>HasExited</c>) see a genuinely dead PID rather than a fabricated one that
-    /// might coincidentally collide with something else running on the host.</summary>
-    private static (int Pid, DateTimeOffset StartTime) DeadProcessIdentity()
-    {
-        var psi = OperatingSystem.IsWindows()
-            ? new ProcessStartInfo("ping.exe", "-n 30 127.0.0.1") { CreateNoWindow = true }
-            : new ProcessStartInfo("sleep", "30") { CreateNoWindow = true };
-
-        using var process = Process.Start(psi)!;
-        try
-        {
-            return (process.Id, new DateTimeOffset(process.StartTime).ToUniversalTime());
-        }
-        finally
-        {
-            process.Kill();
-            process.WaitForExit();
-        }
-    }
 
     [Fact]
     public void A_running_step_whose_recorded_engine_is_dead_reports_liveness_dead_while_state_stays_Running()

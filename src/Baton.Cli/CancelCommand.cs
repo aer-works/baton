@@ -4,6 +4,7 @@ using Baton.Concurrency;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Outcomes;
 using Baton.Projection;
 using Baton.Status;
 using Baton.Store;
@@ -80,13 +81,70 @@ public static class CancelCommand
         }
 
         var snapshot = await SnapshotBinder.LoadFromFileAsync(snapshotPath, cancellationToken).ConfigureAwait(false);
+        var reader = new FlowEventLogReader(logPath);
+
+        // #1586: measured against a copy of a real quota-parked room whose engine died — 'baton
+        // cancel' acquired flow.lock (the OS releases a crashed holder's lock immediately, so the
+        // acquire itself never fails), overwrote flow.lock.holder (destroying the record of which
+        // engine died), journalled a CancellationRequested, and then hung: PumpToFixedPointAsync
+        // re-enters the identical Task.Delay for the same doomed retry (MutationInterface.cs's
+        // pendingDeferrals branch), because the whole premise of this room's shape is that nothing
+        // will ever service it. That hang is specifically a FUTURE RetryNotBefore with nothing alive
+        // to act on it -- a dead holder whose room has already reached a fixed point (nothing
+        // pending, or a deadline already past) would NOT hang; refusing it anyway would send a
+        // recoverable-by-cancel room to 'baton run --room-dir' instead, which redispatches the step
+        // rather than cancelling it. So both conditions gate the refusal, not the holder alone.
+        // Reading the sidecar BEFORE any acquire -- the same EngineLivenessProbe StatusCommand's
+        // parked-status line already consults, never a second liveness mechanism -- lets this refuse
+        // the hang instead of producing it, without ever touching the holder record.
+        //
+        // #1604 F1/F3: this used to gate on ConcurrencyGuard.IsHeld(...) first, and fed the probe
+        // AcquiredAtUtc (when this lock was won) as if it were the holder's PROCESS start time --
+        // EngineLivenessProbe.Probe's second parameter is a ±1s pid-recycling discriminator against
+        // the OS process's own StartTime, and a lock is essentially never won within 1s of its own
+        // holder's process starting, so that fed value made the Alive arm unreachable: every real pump read
+        // Dead, and IsHeld was the only thing standing between that misread and a false refusal.
+        // IsHeld itself opened flow.lock with FileShare.None to test it -- a momentary exclusive
+        // hold that could itself steal the lock out from under a concurrent, legitimate
+        // 'baton run --room-dir' (the exact recovery this refusal points at). Now that the sidecar
+        // carries the holder's actual process start time (ConcurrencyGuard.CreateWithSidecar) and
+        // Probe is fed that instead, the probe is directly trustworthy on its own -- a live holder's
+        // own pid, start time, and HasExited are all consulted -- so IsHeld's lock-stealing
+        // pre-check bought nothing further and is deleted. A genuinely live holder is still caught
+        // the same way it always was for every other contended acquire: this command's own Acquire
+        // call below loses the race, and WorkflowLockedException falls through unchanged to the
+        // handling below.
+        var (_, holderPid, _, holderProcessStartTimeUtc) = ConcurrencyGuard.ReadHolderInfo(options.RoomDirectoryPath);
+        var holderProcessStartTime = holderProcessStartTimeUtc is { } startTimeUtc
+            ? new DateTimeOffset(DateTime.SpecifyKind(startTimeUtc, DateTimeKind.Utc))
+            : (DateTimeOffset?)null;
+        var liveness = EngineLivenessProbe.Probe(holderPid, holderProcessStartTime);
+        if (liveness.Status == EngineLivenessStatus.Dead)
+        {
+            var preCheckEvents = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            var preCheckState = StateProjector.Project(preCheckEvents, snapshot);
+            var now = DateTimeOffset.UtcNow;
+            var hasFutureDeferral = preCheckState.Steps.Any(s => s.RetryNotBefore is { } retryNotBefore && retryNotBefore > now);
+            if (hasFutureDeferral)
+            {
+                throw new CliArgumentException(
+                    $"Room '{options.RoomDirectoryPath}' has no live pump — the last recorded holder " +
+                    $"(pid {holderPid}) is no longer running, and this room still has a step waiting on " +
+                    "a future retry. Acquiring the lock here would journal a cancellation nothing will " +
+                    "ever act on, then hang waiting for that retry the dead engine can never deliver — " +
+                    "and would overwrite the holder record, destroying the record of which engine died. " +
+                    "Left untouched. No verb terminates a dead-parked room today — that is #1586's " +
+                    "tracked 'baton settle' design — so the pointer below resumes it rather than " +
+                    "stopping it, deliberately.",
+                    $"{RecoveryGuidance.RunRoomDirInstruction} (see spec/baton.md §3).");
+            }
+        }
 
         var bindingConfig = await WorkerBindingConfigParser.LoadFromFileAsync(options.BindingsFilePath, cancellationToken)
             .ConfigureAwait(false);
         var profiles = await BatonProfileStore.LoadAsync(BatonProfileStore.DefaultPath, cancellationToken).ConfigureAwait(false);
 
         var workflowId = new WorkflowId(options.WorkflowId ?? snapshot.WorkflowTemplateId.Value);
-        var reader = new FlowEventLogReader(logPath);
 
         // #1495: room-level targeting when --execution is omitted — resolve "the running lane" from
         // the room's own projected state rather than a caller-named id. A plain read, safe regardless

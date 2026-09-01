@@ -317,12 +317,28 @@ wait the original pump was doing — nothing dispatches again until `RetryNotBef
 process driving that wait has to stay alive for it to fire, exactly as the mechanism above describes.
 This is the same re-drive the "known limitation" paragraph below already assumes exists; that
 paragraph's own caveat (briefly misreported as still `"Stalled"` while a live pump is in fact waiting)
-is the accurate scoping of what this recovers and what it does not. `baton cancel` was also checked
-rather than assumed: without `--execution` it refuses (no `Running` step to resolve), and with the
-parked execution's id explicitly named, it records a too-late `CancellationRequested` against an
-execution that already finished and then **does not return** — it re-enters the identical in-process
-`Task.Delay` for the same doomed retry before it would consider redispatching, so it is not a working
-step toward recovery on its own.
+is the accurate scoping of what this recovers and what it does not.
+
+**`baton cancel` was also checked rather than assumed, and originally left the room worse than it
+found it — closed by #1586.** Without `--execution` it refuses (no `Running` step to resolve). With
+the parked execution's id explicitly named, it used to take the room's lock, clobber the one artifact
+naming which engine died, and never come back — `CancelCommand`'s own dead-holder-check comment is
+the canonical account of that old failure and today's guard against it, not restated here. #1586's fix
+runs before any acquire: `CancelCommand` reuses the same `EngineLivenessProbe` arbiter this section's
+`baton status` line already relies on — the two verbs share the probe, not the recorded identity it
+probes. `baton status` probes the event-recorded engine identity (`ExecutionRequestAccepted`'s
+`EnginePid`/`EngineStartTime`); `CancelCommand` probes the lock-holder sidecar's recorded pid and
+process start time instead, since a dead-mid-park room's own `flow.lock.holder` is the only place
+that identity survives. So a dead holder with a step still owed a future retry is refused outright,
+pointed at the `baton run --room-dir` recovery above, sidecar untouched. A holder the lock is still
+genuinely OS-held by (a live pump) falls through unchanged to the pre-existing behaviour.
+
+**#1586 also closed the discoverability half: `baton redispatch`'s own missing-`terminal.json`
+refusal, and `baton status`'s dead-engine parked line, now cite the identical `baton run --room-dir`
+wording (`Baton.Cli.RecoveryGuidance`) — one string, not three independently drifting phrasings of
+the same recovery.** `baton resume`'s refusal is not included: it fires for an unrelated reason (no
+`SessionId` recorded, above) that `baton run --room-dir` does not fix either, and #1381 — not #1586 —
+is what would let it.
 
 So `"Stalled"` reads as "nothing is currently making progress, but this is not done, and recovering
 it needs the operator to start a fresh `baton run` pointed at the room" — never as a `Failed` room a
