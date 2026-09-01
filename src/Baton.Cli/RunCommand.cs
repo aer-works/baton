@@ -496,10 +496,8 @@ public static class RunCommand
                     writer.WriteLine($"[result: {progressEvent.Text}]");
                     break;
                 case "ignore":
-                    // The adapter recognized this envelope and deliberately decided it carries no
-                    // signal (e.g. a claude `thinking`-only block, an agy step_update ACTIVE edge) —
-                    // stay quiet. Distinct from the unrecognized-envelope fallback below: this is a
-                    // known shape the adapter chose not to surface, not one it failed to parse.
+                    // See WorkerProgressEvent's Kind doc comment for what "ignore" means and how it
+                    // differs from the unrecognized-envelope fallback below.
                     break;
                 default:
                     // A Kind this switch doesn't render yet — never swallow it silently.

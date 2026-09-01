@@ -6,13 +6,10 @@ using Xunit;
 namespace Baton.Cli.Tests;
 
 /// <summary>
-/// Unit tests for <see cref="RunCommand"/>'s worker stdout echo rendering under <c>--echo-worker</c>
-/// (#882, #1540, #1561). Verifies that stream-json bindings extract and render clean human-relevant
-/// content (assistant text, tool markers, status heartbeats, a completed turn's status/error summary),
-/// and that everything else — malformed/non-JSON lines, and any valid-JSON envelope no adapter renders
-/// specially — echoes verbatim rather than vanishing (issue #1561: the pre-fix switch silently dropped
-/// agy's incremental status events, any unrecognized envelope type, and claude's failure-carrying
-/// <c>result</c> line).
+/// Unit tests for <see cref="RunCommand.EchoStreamJsonLine"/> (#882, #1540, #1561) — see that
+/// method's own doc comment for what it renders versus echoes verbatim. Issue #1561's pre-fix switch
+/// silently dropped agy's incremental status events, any unrecognized envelope type, and claude's
+/// failure-carrying <c>result</c> line; this file pins all three plus the polarity checks around them.
 /// </summary>
 public class RunCommandEchoTests
 {

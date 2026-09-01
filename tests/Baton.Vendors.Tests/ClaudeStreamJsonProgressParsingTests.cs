@@ -78,10 +78,8 @@ public sealed class ClaudeStreamJsonProgressParsingTests
     [Fact]
     public void TryParseProgressEvent_ErrorResultLine_ReturnsResultKindWithErrorSummary()
     {
-        // Captured verbatim (a real, unauthenticated claude run). Since #1561, the "result"
-        // envelope surfaces as a turn-completion status/error summary -- the one line that carries
-        // WHY a lane failed -- even though ExecuteSessionTurnAsync separately reads the durable
-        // reply from the declared output file rather than from this progress event.
+        // Captured verbatim (a real, unauthenticated claude run). Since #1561, TryParseProgressEvent
+        // surfaces this "result" envelope too -- see TryParseResultEvent's own doc comment for why.
         const string line = """
             {"type":"result","subtype":"success","is_error":true,"duration_ms":29,"num_turns":1,"result":"Not logged in","stop_reason":"stop_sequence","session_id":"16ab91d3-511f-46ad-ade5-c946b7c9e2f7"}
             """;
