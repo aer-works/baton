@@ -1,4 +1,5 @@
-# Deploys the fleet mailbox Worker (worker.js) using wrangler's stored OAuth credentials.
+# Deploys the fleet mailbox Worker (worker.js) using wrangler's stored OAuth credentials, and
+# registers the fleet-glass-pusher scheduled task that runs pusher.py locally (#1548).
 # Secrets (PUSH_TOKEN, READ_SEGMENT) are generated once into secrets.local.json and never printed.
 # secrets.local.json is gitignored (#1413) -- run this locally; it is not part of any CI job.
 #
@@ -38,3 +39,34 @@ $secrets.read_segment | npx --yes wrangler secret put READ_SEGMENT
 
 # 4. Deploy.
 npx --yes wrangler deploy
+
+# 5. Register/update the fleet-glass-pusher scheduled task (idempotent: Register-ScheduledTask
+# -Force overwrites an existing task of the same name in place, so re-running this on a machine
+# that already has the task converges rather than failing or duplicating it).
+#
+# The 15-minute repetition trigger is a deliberate watchdog, not redundant polling (#1548). It is
+# safe against a *live* pusher because of two independent guards, and it is what performs the
+# self-heal against a *dead* one:
+#   - Task Scheduler's own MultipleInstancesPolicy=IgnoreNew skips a due trigger outright while
+#     the previously launched instance is still alive, so a healthy long-running pusher normally
+#     never sees a second launch at all.
+#   - If a launch does get through while pusher.lock is held, pusher.py's acquire_lock (#1538)
+#     checks the holder: a dead PID is reclaimed and logged ("reclaimed stale lock (pid dead)");
+#     a live PID whose command line contains "pusher" and does NOT also contain "claude" is
+#     terminated and replaced ("deploys always win"); any other live PID (including one running
+#     under a Claude session) is left running and the lock is reclaimed out from under it, logged
+#     as "reclaimed stale lock (pid not a pusher)" even though that PID is alive. None of these
+#     branches produces a second running pusher, so firing the trigger against a healthy process
+#     is at worst a harmless restart (or, in the Claude-cmdline case, a no-op lock reclaim).
+$taskName = "fleet-glass-pusher"
+$pythonPath = (Get-Command python -ErrorAction Stop).Source
+$pusherScript = Join-Path $PSScriptRoot "pusher.py"
+$action = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$pusherScript`"" -WorkingDirectory $PSScriptRoot
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+    -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
+$taskSettings = New-ScheduledTaskSettingsSet `
+    -MultipleInstances IgnoreNew -DisallowStartIfOnBatteries -StopIfGoingOnBatteries `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) -StartWhenAvailable `
+    -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+    -Settings $taskSettings -Force | Out-Null
