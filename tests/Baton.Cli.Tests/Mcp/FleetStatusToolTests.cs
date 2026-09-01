@@ -559,9 +559,7 @@ public sealed class FleetStatusToolTests : IDisposable
     /// case above, NOTHING probed this state before #1513: `WorkflowStatusProjector.Project`'s
     /// liveness gate covered only Running steps, so a room stuck exactly like this reported no
     /// liveness signal at all and read as plain "Running" with no way to tell it apart from a healthy
-    /// paced backoff. `MutationInterface`'s scheduling loop is the only thing that would ever act on
-    /// this retry (`Task.Delay`s it in-process, spec/baton.md §7 -- no daemon reaper exists) -- once
-    /// that pump is dead, this room is permanently stuck without `baton resume`.
+    /// paced backoff. Why that pump dying is fatal to the retry: spec/baton.md §7.
     /// </summary>
     [Fact]
     public async Task ActiveRoom_FailedStepWithPendingRetryAndDeadEngine_ProjectsAsStalledNotRunning()
