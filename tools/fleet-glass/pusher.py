@@ -837,11 +837,8 @@ def send_heartbeat_and_record(post, state: dict, state_path, now_ts: float, extr
 
 
 # ---------------------------------------------------------------------------------------------
-# derived_at (#1613 item 2): "the fleet's own most recent SUCCESSFUL snapshot derivation", carried
-# alongside heartbeat_at so the glass "Snapshot may be stuck" banner can key on it instead of
-# pushed_at. pushed_at goes legitimately stale on a quiet-but-healthy fleet (the #1457 change-gate
-# skips an unchanged snapshot) -- derived_at only goes stale when derivation itself stops
-# succeeding, e.g. every cycle's `derive_snapshot_and_timelines` call raising.
+# derived_at (#1613 item 2): what it is and why the glass banner keys on it instead of pushed_at
+# is spec/baton.md §6's `derived_at` schema entry, not restated here.
 #
 # Budget: derived_at must reach the server far more often than heartbeat_at's own hourly cadence to
 # be a useful "stuck" signal, but a naive fixed-interval ping alongside the change-gated snapshot
