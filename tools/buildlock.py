@@ -32,6 +32,11 @@ Timeout:          BATON_BUILDLOCK_TIMEOUT_S (default 1800) -- fails LOUDLY on ex
                   hanging past a lane's budget. BATON_BUILDLOCK_FILE overrides the lock path;
                   anyone may set it, but its intended use is selftest isolation -- overriding it
                   elsewhere opts that process out of the shared exclusion.
+Selftest knob:    BATON_BUILDLOCK_SELFTEST_HOLDER_DELAY_S (default 0) -- only read by the
+                  --selftest timeout-path holder, sleeps before it acquires the lock. Used to
+                  falsify the fix for #1627: set to 1 against the pre-#1627 code (fixed 0.2s
+                  sleep as the ordering signal) and its arm 3 fails; the current code polls the
+                  holder's .info sidecar instead and still passes.
 """
 import json
 import os
@@ -180,11 +185,35 @@ os._exit(0)  # dies holding the lock -- the OS must release it
 """
 
 _CHILD_ACQUIRE_AND_SLEEP = """
-import time
+import os, time
 import buildlock
+delay = float(os.environ.get("BATON_BUILDLOCK_SELFTEST_HOLDER_DELAY_S", "0"))
+if delay:
+    time.sleep(delay)
 handle = buildlock.acquire(buildlock.lock_path(), ["slow-holder"], 5.0)
 time.sleep(3)
 """
+
+
+def _wait_for_holder(lock_file: str, holder_pid: int, ceiling_s: float = 10.0) -> bool:
+    """Poll the .info sidecar until it names holder_pid, or ceiling_s elapses.
+
+    Replaces a fixed sleep as the ordering signal between a selftest's holder and waiter
+    children: the sidecar is written (write_holder_info) only after the holder's msvcrt lock
+    acquisition succeeds, so its presence is a direct acquisition signal rather than a guess
+    at how long acquisition takes on a loaded host.
+    """
+    deadline = time.monotonic() + ceiling_s
+    while time.monotonic() < deadline:
+        try:
+            with open(lock_file + ".info", "r", encoding="utf-8") as f:
+                info = json.load(f)
+            if info.get("pid") == holder_pid:
+                return True
+        except (OSError, ValueError, KeyError):
+            pass
+        time.sleep(0.02)
+    return False
 
 
 def _spawn_selftest_child(code: str, lock_file: str, *args: str) -> subprocess.Popen:
@@ -245,21 +274,30 @@ def selftest() -> int:
             ok = False
 
         # 3. The timeout path must fail loudly, not hang: waiter with a 1s budget against a
-        #    holder that sleeps well past it.
+        #    holder that sleeps well past it. Ordering is proven by the holder's .info sidecar
+        #    (written only once its msvcrt lock acquisition succeeds), not a fixed sleep guessing
+        #    how long acquisition takes -- a fixed sleep loses the race under host load (#1627).
         holder = _spawn_selftest_child(_CHILD_ACQUIRE_AND_SLEEP, lock_file)
-        time.sleep(0.2)  # let the holder win the race for the lock
-        env["BATON_BUILDLOCK_TIMEOUT_S"] = "1"
-        waiter = subprocess.run(
-            [sys.executable, os.path.abspath(__file__), sys.executable, "-c", "pass"],
-            env=env, capture_output=True, text=True, check=False, timeout=30,
-        )
-        holder.communicate(timeout=30)
-        if waiter.returncode == 0 or "TIMED OUT" not in waiter.stdout:
+        if not _wait_for_holder(lock_file, holder.pid, ceiling_s=10.0):
             print(
-                f"  control FAILED: timeout path exited {waiter.returncode} "
-                f"without a loud message -- {waiter.stdout!r}"
+                "  control FAILED: holder never signaled lock acquisition within 10s "
+                "(distinct from the timeout-path assertion below)"
             )
             ok = False
+            holder.communicate(timeout=30)
+        else:
+            env["BATON_BUILDLOCK_TIMEOUT_S"] = "1"
+            waiter = subprocess.run(
+                [sys.executable, os.path.abspath(__file__), sys.executable, "-c", "pass"],
+                env=env, capture_output=True, text=True, check=False, timeout=30,
+            )
+            holder.communicate(timeout=30)
+            if waiter.returncode == 0 or "TIMED OUT" not in waiter.stdout:
+                print(
+                    f"  control FAILED: timeout path exited {waiter.returncode} "
+                    f"without a loud message -- {waiter.stdout!r}"
+                )
+                ok = False
 
         # 4. A stale inherited marker with a FREE lock must be probed, not trusted: the run
         #    must take the lock properly (visible via the .info sidecar it writes) rather than
