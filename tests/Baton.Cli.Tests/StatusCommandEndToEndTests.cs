@@ -536,10 +536,8 @@ public class StatusCommandEndToEndTests
     /// <summary>
     /// #1513: a parked step whose engine is provably dead is the exact live signature this issue was
     /// filed against -- "parked ... retries HH:MM" alone reads as a promise the ledger cannot back
-    /// (spec/baton.md §7 has why). <see cref="TestSupport.ProcessIdentityFixture.DeadProcessIdentity"/>
-    /// spawns a real process, captures its identity while genuinely alive, then kills it, so
-    /// <c>EngineLivenessProbe</c> sees an OS-confirmed-dead PID rather than a fabricated one that
-    /// might coincidentally collide with something else on the host.
+    /// (spec/baton.md §7 has why). Uses <see cref="TestSupport.ProcessIdentityFixture.DeadProcessIdentity"/>
+    /// for an OS-confirmed-dead PID -- see that method's own doc for why.
     /// </summary>
     [Fact]
     public async Task Status_of_a_parked_step_with_a_dead_engine_names_it_and_says_manual_intervention_is_needed()

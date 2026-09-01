@@ -31,19 +31,14 @@ public class CancelCommandDeadHolderTests
         var roomDirectory = Path.Combine(testRoot, "task");
         try
         {
-            // The gate this fixture must exercise is `hasFutureDeferral` (CancelCommand.cs) --
-            // it only fires for a room with a step still waiting on a future RetryNotBefore, the
-            // exact shape a dead-mid-park pump leaves behind. A room that ran to Terminal (no
-            // pending retry) never reaches the dead-holder throw at all -- hand-write the parked
-            // shape directly via the shared fixture, the same way
-            // StatusCommandEndToEndTests proves a quota park without needing an adapter that can
-            // report one.
+            // The gate this fixture must exercise is `hasFutureDeferral` (CancelCommand.cs) -- see
+            // ParkedStepFixture's own doc for why that shape is what gets hand-written here rather
+            // than driven through RunCommand.
             await WriteParkedStepFixtureAsync(testRoot, roomDirectory);
             var bindingsFilePath = await WriteImplementBindingsFileAsync(testRoot);
 
-            // Reconstruct the exact stale-sidecar-beside-a-free-lock shape a crash leaves behind,
-            // naming a real pid that was genuinely alive and is now genuinely dead (never a
-            // fabricated number that might coincidentally collide with something else on the host).
+            // Reconstruct the exact stale-sidecar-beside-a-free-lock shape a crash leaves behind.
+            // ProcessIdentityFixture.DeadProcessIdentity names a real pid, never a fabricated one.
             // #1604 F2: AcquiredAtUtc is the PRODUCT shape -- distinct from, and here deliberately
             // ten minutes later than, ProcessStartTimeUtc (ConcurrencyGuard.CreateWithSidecar always
             // writes AcquiredAtUtc as DateTime.UtcNow, never the holder's own start time) --

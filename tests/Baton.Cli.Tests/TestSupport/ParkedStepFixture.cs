@@ -8,10 +8,10 @@ namespace Baton.Cli.Tests.TestSupport;
 /// Hand-writes a snapshot plus an <c>ExecutionFailed</c>(<see cref="FailureClassification.ExhaustedUntil"/>)
 /// / <c>StepRetryScheduled</c> pair directly to <c>flow.jsonl</c> — the shape #594's retry scheduling
 /// actually records for a quota park — rather than driving it through <c>RunCommand</c>, whose
-/// <c>ShellCommandWorkerAdapter</c> has no way to report a quota classification. Shared by every
-/// <c>Baton.Cli.Tests</c> fixture that needs a parked step with a step still waiting on a future
-/// <c>RetryNotBefore</c> — <c>StatusCommandEndToEndTests</c>'s human-rendering assertions and
-/// <c>CancelCommandDeadHolderTests</c>'s #1586 dead-holder gate both need the identical shape.
+/// <c>ShellCommandWorkerAdapter</c> has no way to report a quota classification.
+/// <c>StatusCommandEndToEndTests</c>'s human-rendering assertions and
+/// <c>CancelCommandDeadHolderTests</c>'s #1586 dead-holder gate both drive off this one fixture,
+/// rather than each hand-rolling its own copy of the identical parked-with-a-pending-retry shape.
 /// </summary>
 public static class ParkedStepFixture
 {
