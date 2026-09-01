@@ -179,7 +179,15 @@ public sealed class ConcurrencyGuard : IDisposable
         var description = holderDescription ?? DefaultHolderDescription();
         try
         {
-            var info = new LockHolderInfo(description, Environment.ProcessId, DateTime.UtcNow);
+            // #1604 F1: ProcessStartTimeUtc, not AcquiredAtUtc, is what a liveness probe's
+            // pid-recycling discriminator needs — AcquiredAtUtc is when THIS lock was won, which is
+            // almost always well over a second after the holding process itself started, so feeding
+            // it to EngineLivenessProbe.Probe (a PROCESS START TIME check, ±1s) reads every real
+            // holder as dead. Captured beside Pid so a reader never has to reconstruct it from a
+            // pid alone.
+            using var self = Process.GetCurrentProcess();
+            var processStartTimeUtc = self.StartTime.ToUniversalTime();
+            var info = new LockHolderInfo(description, Environment.ProcessId, DateTime.UtcNow, processStartTimeUtc);
             var json = JsonSerializer.Serialize(info);
             File.WriteAllText(sidecarPath, json);
         }
@@ -231,13 +239,17 @@ public sealed class ConcurrencyGuard : IDisposable
 
     /// <summary>
     /// Reads the holder sidecar file <c>flow.lock.holder</c> for <paramref name="roomDirectoryPath"/> if present and readable.
-    /// Tolerates absence/unreadability by returning null for all three fields. <c>Pid</c> is what
+    /// Tolerates absence/unreadability by returning null for all four fields. <c>Pid</c> is what
     /// #1586's dead-holder check (<c>Baton.Cli.CancelCommand</c>) reads before ever calling
     /// <see cref="Acquire"/> — the sidecar records it unconditionally (<see cref="LockHolderInfo"/>'s
     /// <c>Pid</c> is always <see cref="Environment.ProcessId"/>, never the caller-supplied
     /// description), so it is trustworthy even when <c>HolderDescription</c> is a generic default.
+    /// <c>ProcessStartTimeUtc</c> (#1604) is that same check's PROCESS START TIME discriminator —
+    /// distinct from <c>AcquiredAtUtc</c>, which is when the lock itself was won, not when the
+    /// holding process started — and reads null against a sidecar written before #1604 (an old
+    /// holder's JSON simply has no such property), which a caller must treat as Unknown, not Dead.
     /// </summary>
-    public static (string? HolderDescription, int? Pid, DateTime? AcquiredAtUtc) ReadHolderInfo(string roomDirectoryPath)
+    public static (string? HolderDescription, int? Pid, DateTime? AcquiredAtUtc, DateTime? ProcessStartTimeUtc) ReadHolderInfo(string roomDirectoryPath)
     {
         return ReadHolderInfoCore(roomDirectoryPath, FlowHolderFileName);
     }
@@ -248,14 +260,14 @@ public sealed class ConcurrencyGuard : IDisposable
     /// </summary>
     public static (string? HolderDescription, DateTime? AcquiredAtUtc) ReadRoomEventsHolderInfo(string roomDirectoryPath)
     {
-        var (description, _, acquiredAtUtc) = ReadHolderInfoCore(roomDirectoryPath, RoomEventsHolderFileName);
+        var (description, _, acquiredAtUtc, _) = ReadHolderInfoCore(roomDirectoryPath, RoomEventsHolderFileName);
         return (description, acquiredAtUtc);
     }
 
-    private static (string? HolderDescription, int? Pid, DateTime? AcquiredAtUtc) ReadHolderInfoCore(string roomDirectoryPath, string holderFileName)
+    private static (string? HolderDescription, int? Pid, DateTime? AcquiredAtUtc, DateTime? ProcessStartTimeUtc) ReadHolderInfoCore(string roomDirectoryPath, string holderFileName)
     {
         var info = TryReadHolderInfoCore(roomDirectoryPath, holderFileName);
-        return (info?.HolderDescription, info?.Pid, info?.AcquiredAtUtc);
+        return (info?.HolderDescription, info?.Pid, info?.AcquiredAtUtc, info?.ProcessStartTimeUtc);
     }
 
     private static LockHolderInfo? TryReadHolderInfoCore(string roomDirectoryPath, string holderFileName)
@@ -355,5 +367,5 @@ public sealed class ConcurrencyGuard : IDisposable
         _lockStream.Dispose();
     }
 
-    private sealed record LockHolderInfo(string HolderDescription, int Pid, DateTime AcquiredAtUtc);
+    private sealed record LockHolderInfo(string HolderDescription, int Pid, DateTime AcquiredAtUtc, DateTime? ProcessStartTimeUtc = null);
 }

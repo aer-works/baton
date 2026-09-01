@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text.Json;
 using Baton.Tests.TestSupport;
 using Baton.Concurrency;
 
@@ -446,7 +448,7 @@ public class ConcurrencyGuardTests
             Assert.True(File.Exists(flowSidecarPath));
             Assert.True(File.Exists(roomEventsSidecarPath));
 
-            var (flowHolder, _, _) = ConcurrencyGuard.ReadHolderInfo(roomDirectory);
+            var (flowHolder, _, _, _) = ConcurrencyGuard.ReadHolderInfo(roomDirectory);
             var (roomEventsHolder, _) = ConcurrencyGuard.ReadRoomEventsHolderInfo(roomDirectory);
 
             Assert.Equal("Flow Holder 123", flowHolder);
@@ -458,6 +460,73 @@ public class ConcurrencyGuardTests
 
             flowGuard.Dispose();
             Assert.False(File.Exists(flowSidecarPath));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1604 F1: the field <see cref="Baton.Outcomes.EngineLivenessProbe.Probe"/> actually needs as
+    /// its pid-recycling discriminator is the holder's PROCESS start time, not
+    /// <c>AcquiredAtUtc</c> (when the lock itself was won — always at least a little later than the
+    /// holding process's own start, which is what made the Alive arm unreachable before this fix).
+    /// This process is its own holder here, so the two timestamps should read within a whisker of
+    /// each other, not the seconds-to-minutes gap <c>AcquiredAtUtc</c> would show against a
+    /// long-lived holder.
+    /// </summary>
+    [Fact]
+    public void Acquire_writes_the_holders_own_process_start_time_into_the_sidecar()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        try
+        {
+            using var currentProcess = Process.GetCurrentProcess();
+            var expectedStartTimeUtc = currentProcess.StartTime.ToUniversalTime();
+
+            using var guard = ConcurrencyGuard.Acquire(roomDirectory);
+
+            var (_, _, _, processStartTimeUtc) = ConcurrencyGuard.ReadHolderInfo(roomDirectory);
+
+            Assert.NotNull(processStartTimeUtc);
+            Assert.True(
+                Math.Abs((processStartTimeUtc!.Value - expectedStartTimeUtc).TotalMilliseconds) < 1000,
+                $"expected {processStartTimeUtc} to be within 1s of the process's own start time {expectedStartTimeUtc}");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Backward compat, named explicitly by #1604 F1: a sidecar written before this fix has no
+    /// <c>ProcessStartTimeUtc</c> property at all. A reader must get null back for it (Unknown to a
+    /// liveness probe), not throw and not silently substitute another field.
+    /// </summary>
+    [Fact]
+    public void ReadHolderInfo_tolerates_a_pre_1604_sidecar_with_no_process_start_time_field()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(roomDirectory);
+            var sidecarPath = Path.Combine(roomDirectory, ConcurrencyGuard.FlowHolderFileName);
+            var preFixShapeJson = JsonSerializer.Serialize(new
+            {
+                HolderDescription = "an old holder",
+                Pid = 4242,
+                AcquiredAtUtc = DateTime.UtcNow,
+            });
+            File.WriteAllText(sidecarPath, preFixShapeJson);
+
+            var (holderDescription, pid, acquiredAtUtc, processStartTimeUtc) = ConcurrencyGuard.ReadHolderInfo(roomDirectory);
+
+            Assert.Equal("an old holder", holderDescription);
+            Assert.Equal(4242, pid);
+            Assert.NotNull(acquiredAtUtc);
+            Assert.Null(processStartTimeUtc);
         }
         finally
         {
