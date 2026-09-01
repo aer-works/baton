@@ -173,6 +173,12 @@ public static class WorkerRoleCatalog
                 $"Worker role '{roleId}' output name '{raw.Name}' is invalid: {ReservedOutputNames.RejectionClause}.");
         }
 
+        if (ReservedOutputNames.IsPathTraversal(raw.Name))
+        {
+            throw new InvalidOperationException(
+                $"Worker role '{roleId}' output name '{raw.Name}' is invalid: {ReservedOutputNames.PathTraversalRejectionClause}.");
+        }
+
         // Mapped explicitly rather than deserialized straight into OutputSchema: the catalog's wire
         // form is snake_case (dispatch.py reads the same file), and an unknown value must fail loudly
         // at load — a silently-defaulted OutputSchema.None would drop a verdict's schema check and

@@ -69,7 +69,7 @@ public sealed record WorkerProgressEvent(string Kind, string Text, bool IsPartia
 /// <c>BATON_INPUT_&lt;n&gt;</c>/<c>BATON_OUTPUT_DIR</c>) lives behind an implementation of this
 /// interface; <c>Baton</c> never learns a vendor exists.
 /// </summary>
-public interface IWorkerAdapter : Baton.Outcomes.IFailureClassifier, Baton.Status.IWorkerUsageParser
+public interface IWorkerAdapter : Baton.Outcomes.IFailureClassifier, Baton.Status.IWorkerUsageParser, Baton.Outcomes.IWorkerResponseParser
 {
     /// <summary>
     /// Resolves <paramref name="invocation"/> and <paramref name="contract"/> into the concrete

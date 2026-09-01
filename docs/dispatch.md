@@ -172,6 +172,29 @@ so a role that writes nothing fails loudly. The roles and their outputs are defi
 `src/Baton.Vendors/WorkerRoles.json` (authoritative); this table is a snapshot, pinned against that
 catalog by `WorkerRoleCatalogTests`.
 
+**A missing declared output is never silently filled in — the engine only ever captures and attaches,
+never writes (#1594).** See `src/Baton/Outcomes/OutputMaterializer.cs`'s class remarks for the ruling
+this implements and exactly what gets captured where. In short: if every unsatisfied output is missing
+(never present-but-wrong) at settle time and the execution's own terminal result carried a usable
+response, that response lands in an engine file beside the declared outputs, never under a declared
+name, and a room fact records which declared names it stands in for — see
+`docs/agents/invoking-baton.md` §3 for what that fact looks like to a harness reading the room. The room
+still settles `Failed` (`FailureClassification.Permanent`, so the engine never auto-retries against the
+same, still-unsatisfied workspace); only a conductor's own recorded resolution can turn a capture into a
+satisfied contract.
+
+The prose-safe/all-or-nothing rules that used to gate what the engine wrote now gate what a capture
+MAY later be resolved into: a plain-text output (`.md`/`.txt`/no extension, no declared
+`Schema`/`Condition` — `advice.md`, `changes.md`, `findings.md` above) can honestly be resolved from a
+captured response; a structured output (`verdict.json`, `patch.diff`, `turn-actions.json` above) can
+not — prose can't honestly stand in for a declared shape. `janitor`'s two outputs (`janitor.md`,
+`branch.diff`) are a mixed pair under this rule: `branch.diff` is not prose-safe, so a capture never
+fires while it is among the missing outputs (an all-or-nothing capture that could only ever resolve
+`janitor.md` is refused entirely) — a capture for this role is only possible when `janitor.md` alone is
+missing and `branch.diff` is already present and valid. See `src/Baton/Outcomes/OutputMaterializer.cs`
+for the mechanism; the `indeterminate` verdict and the conductor-side resolution verb itself are not
+built yet (#1608).
+
 | Role | Tier | Writes | For |
 |------|------|--------|-----|
 | `advise` | standard | `advice.md` | Weighing an open design question before building — a second opinion. |

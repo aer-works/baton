@@ -62,6 +62,17 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification: null)];
         yield return [new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification.Retryable, "Worker process exited with code 1")];
         yield return [new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification: null, "Missing required output file 'plan.md'")];
+        // #1594, conductor-writes shape: the captured-response fact -- pins that CapturedResponseFile
+        // and UnsatisfiedOutputNames actually round-trip through flow.jsonl, not just through memory.
+        yield return
+        [
+            new FlowEvent.ExecutionFailed(
+                ExecutionId, FailureClassification.Permanent,
+                "Contract not satisfied: 'advice.md' is missing. Response captured to '.captured-response.md'; awaiting conductor resolution.",
+                RetryNotBefore: null,
+                CapturedResponseFile: ".captured-response.md",
+                UnsatisfiedOutputNames: ["advice.md"])
+        ];
         yield return [new FlowEvent.ExecutionCancelled(ExecutionId)];
         yield return [new FlowEvent.CancellationRequested(ExecutionId)];
         yield return [new FlowEvent.WorkflowPaused(ExecutionId, StepId)];

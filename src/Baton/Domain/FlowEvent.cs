@@ -35,7 +35,8 @@ public abstract record FlowEvent
     public sealed record ExecutionRequestRejected(ExecutionId ExecutionId, string Reason) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as successful.</summary>
-    public sealed record ExecutionSucceeded(ExecutionId ExecutionId) : FlowEvent;
+    public sealed record ExecutionSucceeded(
+        ExecutionId ExecutionId) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as failed.</summary>
     /// <param name="Reason">
@@ -53,11 +54,26 @@ public abstract record FlowEvent
     /// went on asserting the opposite after the behaviour changed.
     /// </para>
     /// </param>
+    /// <param name="CapturedResponseFile">
+    /// #1594: carries <c>Outcomes.OutputMaterializer.CapturedResponse.FileName</c> onto the durable
+    /// record — <c>OutputMaterializer</c> (the class) explains why this exists at all, and its
+    /// <c>CapturedResponse</c> type explains what pairing this with
+    /// <paramref name="UnsatisfiedOutputNames"/> means. Null on every execution this mechanism did not
+    /// touch, including all history predating it (#597's same replay reasoning applies to every
+    /// additive field on this union) — a
+    /// required (no-default) parameter here would fail replay of every older line, per this record's
+    /// own remarks above.
+    /// </param>
+    /// <param name="UnsatisfiedOutputNames">
+    /// <c>Outcomes.OutputMaterializer.CapturedResponse.UnsatisfiedOutputNames</c>, carried the same hop.
+    /// </param>
     public sealed record ExecutionFailed(
         ExecutionId ExecutionId,
         FailureClassification? FailureClassification,
         string? Reason = null,
-        DateTimeOffset? RetryNotBefore = null) : FlowEvent;
+        DateTimeOffset? RetryNotBefore = null,
+        string? CapturedResponseFile = null,
+        IReadOnlyList<string>? UnsatisfiedOutputNames = null) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as cancelled.</summary>
     public sealed record ExecutionCancelled(ExecutionId ExecutionId) : FlowEvent;

@@ -62,6 +62,11 @@ public static class WorkflowDefinitionValidator
                     {
                         errors.Add($"Step '{step.StepId}' declares output '{output}', which is rejected: {ReservedOutputNames.RejectionClause}.");
                     }
+
+                    if (ReservedOutputNames.IsPathTraversal(output))
+                    {
+                        errors.Add($"Step '{step.StepId}' declares output '{output}', which is rejected: {ReservedOutputNames.PathTraversalRejectionClause}.");
+                    }
                 }
             }
         }

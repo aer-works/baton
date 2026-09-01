@@ -101,3 +101,93 @@ public sealed class AgyFinalUsageParsingTests
         Assert.Null(usage);
     }
 }
+
+/// <summary>
+/// Exercises <see cref="AgyWorkerAdapter.TryParseFinalResponse"/> (issue #1594): the agy half of the
+/// two adapters' terminal-response parsing, reading <c>result.response</c> off the very line
+/// <see cref="AgyFinalUsageParsingTests"/> already parses for <c>result.usage</c>. Reuses that
+/// class's real captured success fixture.
+/// </summary>
+public sealed class AgyFinalResponseParsingTests
+{
+    private readonly AgyWorkerAdapter _adapter = new();
+
+    [Fact]
+    public void TryParseFinalResponse_SuccessResultLine_ReturnsTheResponseText()
+    {
+        const string line = """
+            {"event":"result","result":{"conversation_id":"5ec0d582","status":"SUCCESS","response":"Created note.txt containing HELLO-WORLD.","duration_seconds":3.6,"num_turns":1,"usage":{"input_tokens":14407,"output_tokens":1173,"thinking_tokens":992,"cache_read_tokens":40765,"total_tokens":15580}}}
+            """;
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.True(parsed);
+        Assert.Equal("Created note.txt containing HELLO-WORLD.", response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_NonSuccessStatus_ReturnsFalse()
+    {
+        const string line = """
+            {"event":"result","result":{"status":"ERROR","response":"","error":"quota exhausted"}}
+            """;
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_EmptyResponseText_ReturnsFalse()
+    {
+        const string line = """{"event":"result","result":{"status":"SUCCESS","response":""}}""";
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_NonResultEvent_ReturnsFalse()
+    {
+        const string line = """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool"}}""";
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_ClaudeShapedLine_ReturnsFalse()
+    {
+        const string line = """{"type":"result","is_error":false,"result":"claude's answer"}""";
+
+        var parsed = _adapter.TryParseFinalResponse(line, out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_BlankLine_ReturnsFalse()
+    {
+        var parsed = _adapter.TryParseFinalResponse(" ", out var response);
+
+        Assert.False(parsed);
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void TryParseFinalResponse_NonStringDiscriminatorFields_ReturnsFalseRatherThanThrowing()
+    {
+        // A worker-controlled line that is valid JSON but not the shape expected -- "event"/"status"
+        // present as a non-string -- must not throw JsonElement.GetString()'s InvalidOperationException
+        // out of the outcome-recording path (a settle-time crash here orphans the execution, #1582's
+        // failure class). Two independent discriminators, each on its own line.
+        Assert.False(_adapter.TryParseFinalResponse("""{"event":123,"result":{"status":"SUCCESS","response":"x"}}""", out _));
+        Assert.False(_adapter.TryParseFinalResponse("""{"event":"result","result":{"status":true,"response":"x"}}""", out _));
+    }
+}

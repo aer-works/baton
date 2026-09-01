@@ -72,6 +72,13 @@ public static class WorkerBindingConfigParser
                             $"Worker-binding config entry for '{workerName}'{location} declares ProducedOutput '{output.Name}' — "
                             + $"{ReservedOutputNames.RejectionClause}.");
                     }
+
+                    if (ReservedOutputNames.IsPathTraversal(output.Name))
+                    {
+                        throw new WorkerBindingConfigException(
+                            $"Worker-binding config entry for '{workerName}'{location} declares ProducedOutput '{output.Name}' — "
+                            + $"{ReservedOutputNames.PathTraversalRejectionClause}.");
+                    }
                 }
             }
 

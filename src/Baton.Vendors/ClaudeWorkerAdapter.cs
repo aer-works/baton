@@ -1497,6 +1497,50 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         }
     }
 
+    /// <summary>
+    /// #1594: recovers claude's own final answer from the same terminal <c>"type":"result"</c> line
+    /// <see cref="TryParseFinalUsage"/> and <see cref="TryParseResultEvent"/> already key on. Unlike
+    /// <see cref="TryParseResultEvent"/>, which reads <c>result</c> as an error summary on the
+    /// <c>is_error: true</c> arm, this only ever reads it on the success arm
+    /// (<c>is_error == false</c>) — an error turn's <c>result</c> text is a failure reason, not a
+    /// worker's answer, and capturing one would be a failure message masquerading as a real report.
+    /// <c>is_error</c> is required, not defaulted, for the
+    /// same reason <see cref="TryParseResultEvent"/> requires it: every observed envelope carries it,
+    /// so its absence means an unfamiliar shape rather than a confirmed success.
+    /// </summary>
+    public bool TryParseFinalResponse(string rawLine, out string? response)
+    {
+        response = null;
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var typeProp)
+                || typeProp.ValueKind != JsonValueKind.String || typeProp.GetString() != "result"
+                || !root.TryGetProperty("is_error", out var isErrorProp)
+                || isErrorProp.ValueKind != JsonValueKind.False
+                || !root.TryGetProperty("result", out var resultProp)
+                || resultProp.ValueKind != JsonValueKind.String
+                || resultProp.GetString() is not { Length: > 0 } text)
+            {
+                return false;
+            }
+
+            response = text;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private static bool TryParseStreamEvent(JsonElement root, out WorkerProgressEvent? progressEvent)
     {
         progressEvent = null;

@@ -31,7 +31,11 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         Outcomes.IFailureClassifier? FailureClassifier = null,
         GrantAuditMode GrantAuditMode = GrantAuditMode.Enforced,
         string? Adapter = null,
-        string? Model = null)
+        string? Model = null,
+        // #1594: same resolved adapter object as FailureClassifier above -- a worker adapter answers
+        // both questions, and this is the settle path's seam for the second one (recovering a missing
+        // declared output from the worker's own terminal response).
+        Outcomes.IWorkerResponseParser? ResponseParser = null)
         : WorkerBinding(Contract, GrantAuditMode);
 
     /// <summary>

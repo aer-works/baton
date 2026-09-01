@@ -672,11 +672,13 @@ public static class MutationInterface
                         // (and fail-closed against a worktree that may be long gone).
                         var grantAuditMode = request.GrantAuditMode ?? GrantAuditMode.Enforced;
                         string? worktreePath = null;
+                        IWorkerResponseParser? responseParser = null;
                         try
                         {
                             if (workerBindings.TryGetValue(request.Worker, out var b) && b is WorkerBinding.Process p)
                             {
                                 worktreePath = p.Target.WorkingDirectory;
+                                responseParser = p.ResponseParser;
                             }
                         }
                         catch (BatonFlowException)
@@ -691,7 +693,7 @@ public static class MutationInterface
 
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
-                            grantAuditMode: grantAuditMode, worktreePath: worktreePath);
+                            grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
@@ -1211,7 +1213,7 @@ public static class MutationInterface
             var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
             var worktreePath = binding.Target.WorkingDirectory;
             var classification = OutcomeClassifier.Classify(
-                dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider, grantAuditMode, worktreePath);
+                dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider, grantAuditMode, worktreePath, binding.ResponseParser);
 
             // Never gated on dispatchCancellationToken: that token having fired is exactly what
             // produced this outcome (Cancelled) in the first place, so recording it must not itself
@@ -1266,7 +1268,9 @@ public static class MutationInterface
         classification.Verdict switch
         {
             OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(executionId),
-            OutcomeVerdict.Failed => new FlowEvent.ExecutionFailed(executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore),
+            OutcomeVerdict.Failed => new FlowEvent.ExecutionFailed(
+                executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore,
+                classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
             _ => throw new ArgumentOutOfRangeException(nameof(classification), classification.Verdict, "Unknown OutcomeVerdict."),
         };

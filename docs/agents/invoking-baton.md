@@ -199,6 +199,16 @@ The room directory also holds `snapshot.json` (the workflow this room is bound t
 append-only event ledger), and `flow.lock`. The authoritative room layout is
 [`spec/baton.md`](../../spec/baton.md) §2–§3.
 
+**A path in `outputs` IS the worker's own write (#1594, conductor-writes shape).** Baton never writes
+into a declared output itself. When a declared output is missing at settle time but the worker's
+terminal response was recoverable, a step's own `steps[].capturedResponseFile` names an engine-owned
+file (in the execution's own output directory, never a declared name) the response was captured into,
+alongside `steps[].unsatisfiedOutputs` naming which declared outputs are still unwritten — present only
+on a `Failed` step, and readable from `status --json`/`terminal.json` without opening the execution
+directory. That step's own room settles `Failed`; the missing output stays missing until a conductor
+resolves the capture. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a capture can
+and can't ever resolve into.
+
 ---
 
 ## 4. Adapter notes

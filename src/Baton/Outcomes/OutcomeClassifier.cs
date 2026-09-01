@@ -32,11 +32,25 @@ public enum OutcomeVerdict
 /// Treat a null on a stored event as "no reason recorded", never as evidence of when it was written.
 /// </para>
 /// </param>
+/// <param name="CapturedResponseFile">
+/// #1594: carries <see cref="OutputMaterializer.CapturedResponse.FileName"/> (see
+/// <see cref="OutputMaterializer"/>'s class remarks for the ruling, and that record's own remarks for
+/// what the pairing with <paramref name="UnsatisfiedOutputNames"/> means) onto the classification.
+/// Verdict-independent by construction — this field lives on the
+/// classification itself rather than being tied to one <see cref="OutcomeVerdict"/> case, the way the
+/// pre-ruling <c>MaterializedOutputs</c> field was tied to <see cref="OutcomeVerdict.Succeeded"/> alone
+/// and so went unrecorded whenever an unrelated later gate flipped the verdict.
+/// </param>
+/// <param name="UnsatisfiedOutputNames">
+/// <see cref="OutputMaterializer.CapturedResponse.UnsatisfiedOutputNames"/>, carried the same hop.
+/// </param>
 public sealed record OutcomeClassification(
     OutcomeVerdict Verdict,
     FailureClassification? FailureClassification = null,
     string? Reason = null,
-    DateTimeOffset? RetryNotBefore = null);
+    DateTimeOffset? RetryNotBefore = null,
+    string? CapturedResponseFile = null,
+    IReadOnlyList<string>? UnsatisfiedOutputNames = null);
 
 /// <summary>
 /// Maps a <see cref="CoreDispatchResult"/> plus a step's <see cref="WorkerContract"/> into one of
@@ -91,7 +105,8 @@ public static class OutcomeClassifier
         IFailureClassifier? failureClassifier = null,
         TimeProvider? timeProvider = null,
         GrantAuditMode grantAuditMode = GrantAuditMode.Enforced,
-        string? worktreePath = null)
+        string? worktreePath = null,
+        IWorkerResponseParser? responseParser = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(contract);
@@ -139,6 +154,48 @@ public static class OutcomeClassifier
         }
 
         var validation = ContractValidator.Validate(contract, outputDirectory);
+        if (!validation.IsSatisfied)
+        {
+            // #1594: the worker exited 0
+            // -- it did not crash mid-write -- but a declared output is absent. Give OutputMaterializer
+            // a chance to extract the worker's own terminal response into an engine-owned file (see
+            // that class's own remarks for why it never touches the declared output directory); this
+            // NEVER re-validates the contract, since that directory cannot have changed. The
+            // captured-response arm below always settles Failed(Permanent): a retry against the same,
+            // still-unsatisfied workspace would only burn budget, and the ruling is "the conductor
+            // resolves this", not "the engine retries it".
+            var captured = OutputMaterializer.TryCaptureFinalResponse(validation, contract, outputDirectory, responseParser);
+            if (captured is not null)
+            {
+                try
+                {
+                    Console.Error.WriteLine(
+                        "CAPTURED (#1594): the worker's declared output(s) " +
+                        string.Join(", ", captured.UnsatisfiedOutputNames.Select(name => $"'{name}'")) +
+                        $" were never written by the worker itself. baton captured its terminal " +
+                        $"response to '{captured.FileName}' -- the declared output(s) were NOT " +
+                        "written, and this execution settles Failed pending conductor resolution.");
+                }
+                catch (IOException)
+                {
+                    // Review F6: this runs on the settle path, which has no outer catch -- a broken
+                    // stderr pipe on the way out must not itself orphan the execution (#1582's failure
+                    // class). The room fact below still carries the capture regardless of whether this
+                    // line reached the console.
+                }
+
+                var reason = BuildContractFailureReason(validation.UnsatisfiedOutputs)
+                    + $" Response captured to '{captured.FileName}'; awaiting conductor resolution.";
+
+                return new OutcomeClassification(
+                    OutcomeVerdict.Failed,
+                    FailureClassification.Permanent, // Permanent: conductor-resolves means the engine never auto-retries against a workspace this capture just wrote into (RetryEngine.MayRetry gates on this unconditionally).
+                    WithStderr(reason, result.StderrTail),
+                    CapturedResponseFile: captured.FileName,
+                    UnsatisfiedOutputNames: captured.UnsatisfiedOutputNames);
+            }
+        }
+
         if (validation.IsSatisfied)
         {
             if (grantAuditMode == GrantAuditMode.AuditedNotEnforced)
