@@ -10,11 +10,12 @@ using static Baton.Tests.TestSupport.ShellWorkerCommands;
 namespace Baton.Tests.Mutation;
 
 /// <summary>
-/// #1563 (S0 of the ratified quota design, #802): a quota-parked lane — a step Failed with a
-/// scheduled <see cref="StepState.RetryNotBefore"/>, sitting in <c>MutationInterface</c>'s
-/// idle-deferral wait, possibly for as long as a vendor quota reset — must notice a cancel
-/// delivered through <see cref="InFlightExecutionRegistry.MarkParkedCancelIntent"/> without ever
-/// waiting out the park. Mirrors the fabricated-parked-history fixture
+/// #1563 (S0 of the ratified quota design, #802): the park this exercises, and why it can hold
+/// <c>flow.lock</c> indefinitely, is described once at
+/// <see cref="CancelRequestPoller.TickAsync"/>'s own remarks — this fixture only drives it. A
+/// quota-parked lane must notice a cancel delivered through
+/// <see cref="InFlightExecutionRegistry.MarkParkedCancelIntent"/> without ever waiting out the
+/// park. Mirrors the fabricated-parked-history fixture
 /// <c>MutationInterfaceRetryBackoffTests.Test815</c> already uses for the same shape.
 /// </summary>
 public class QuotaParkCancelArrestTests
@@ -37,7 +38,7 @@ public class QuotaParkCancelArrestTests
 
             Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(20), $"Timed out waiting for {typeof(T).Name}.");
             Assert.False(pumpTask.IsCompleted, "expected the wake to settle the park while the sibling dispatch was still in flight, not after the pump itself exited");
-            await Task.Delay(20, cancellationToken);
+            await Task.Delay(20, cancellationToken); // wait-ok: poll interval inside a 20s-bounded loop, not the wait ceiling itself
         }
     }
 
@@ -234,11 +235,11 @@ public class QuotaParkCancelArrestTests
 
     // Second-reader review finding: the wake was only wired into the idle-deferral branch
     // (`inFlight.Count == 0`), not the OTHER wait this same loop uses when a sibling step's
-    // dispatch is genuinely in flight (`waitCandidates`, MutationInterface.cs). A workflow with
-    // one step running as a live process while a DIFFERENT step sits quota-parked would otherwise
-    // only wake on that dispatch completing, a host stop, or the far-future RetryNotBefore itself
-    // — reopening the exact bug this issue fixes whenever any sibling happens to be running. This
-    // drives a real (short) OS process for StepB so `inFlight.Count > 0` is genuine, not simulated.
+    // dispatch is genuinely in flight (`waitCandidates`). The risk that wiring closes — a
+    // DIFFERENT step sitting quota-parked while this one's dispatch is still live — is spelled
+    // out once, beside that wiring, at MutationInterface.cs's own `#1563` comment on
+    // `waitParkedCancelWake`. This drives a real (short) OS process for StepB so
+    // `inFlight.Count > 0` is genuine, not simulated.
     [Fact]
     public async Task Cancel_delivered_while_a_sibling_step_is_genuinely_in_flight_still_settles_the_parked_step()
     {
@@ -318,7 +319,7 @@ public class QuotaParkCancelArrestTests
             {
                 Assert.True(stopwatchForStepB.Elapsed < TimeSpan.FromSeconds(20), "Timed out waiting for StepB's dispatch.");
                 Assert.False(pumpTask.IsCompleted, "expected StepB to still be dispatching when this check runs");
-                await Task.Delay(20, TestContext.Current.CancellationToken);
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: poll interval inside a 20s-bounded loop, not the wait ceiling itself
             }
 
             registry.MarkParkedCancelIntent(firstAttempt);
