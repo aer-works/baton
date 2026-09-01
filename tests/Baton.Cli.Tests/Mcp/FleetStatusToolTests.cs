@@ -463,9 +463,13 @@ public sealed class FleetStatusToolTests : IDisposable
     [Fact]
     public async Task TerminalSentinel_CarriesExhaustedUntilThroughVerbatim()
     {
-        // #1551: a room can go terminal (e.g. a later Permanent failure on a sibling step) while a
-        // frozen ExhaustedUntil sentinel step still names its last recorded reset instant -- the
-        // fast path copies it, same as Attempt/FailureKind, never re-derives.
+        // #1551: pins the fast path's copy-through of a frozen ExhaustedUntil sentinel step's
+        // recorded reset instant, same as Attempt/FailureKind, never re-derived. #1598 review F4:
+        // the shape this once described (a sibling Permanent failure alongside a still-parked step)
+        // does not arise today -- StateProjector keeps any step still carrying a RetryNotBefore
+        // eligible, so the room stays Running rather than going terminal around it. This test still
+        // guards the #1590/#1597 divergence class (a sentinel copying a field through unchanged vs.
+        // re-deriving it), independent of whether that particular terminal shape is reachable.
         var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
         var room = Path.Combine(defaultRoomsDir, "sentinel-exhausted-room");
         Directory.CreateDirectory(room);

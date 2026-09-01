@@ -652,10 +652,15 @@ park (`RetryNotBefore` null, the human path's "reset unknown") stays absent rath
 one, and an ordinary `Retryable` backoff never emits this field despite scheduling a
 `RetryNotBefore` of its own. Nothing re-derives or clears the value once (#1513) liveness confirms
 the scheduling engine dead — a Stalled room keeps reporting the exact same, now-past instant; the
-glass chip (`tools/fleet-glass/glass.html`) is what renders that honestly (an absolute "was due
-HH:mm — no scheduler" rather than a live countdown), never this field. A far-future instant (#1183,
+glass chip (`tools/fleet-glass/glass.html`) is what renders that honestly (a relative "was due 3d
+ago — no scheduler" rather than a live countdown), never this field. A far-future instant (#1183,
 not fixed here) is rendered, not fixed, by the same chip — the park's own crash-on-dispatch bug is
-tracked separately.
+tracked separately. In practice only one vendor path ever records an obligation to gate on: the agy
+duration-parse path (`Resets in …` → `AgyWorkerAdapter`) is what sets `RetryNotBefore` on an
+`ExhaustedUntil` park today; claude's `credits_required` park records none, because #1115 forbids
+fabricating a reset instant the vendor never actually reported. A claude park therefore still
+surfaces the `"ExhaustedUntil"` `failureKind`, just with `exhaustedUntil` absent and the chip showing
+no time.
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan
