@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/philipreese/baton/compare/flow-v0.26.1...flow-v0.27.0) (2026-09-01)
+
+
+### Features
+
+* **flow:** StepRetryForeclosed and the indeterminate terminal vocabulary (state-truth S1) ([#1628](https://github.com/philipreese/baton/issues/1628)) ([e7438a4](https://github.com/philipreese/baton/commit/e7438a4482e42a5521350aa246a223ad1238771c))
+
 ## [0.26.1](https://github.com/philipreese/baton/compare/flow-v0.26.0...flow-v0.26.1) (2026-09-01)
 
 
