@@ -1073,84 +1073,16 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
     /// <summary>
     /// Parses agy's <c>stream-json</c> terminal <c>"event":"result"</c> line (issue #1360, extended by
-    /// #1569). agy's <c>result.usage</c> shape is inconsistent across observed captures (#1088,
-    /// docs/vendor-capabilities.md): sometimes a full breakdown (<c>input_tokens</c>/<c>output_tokens</c>/
-    /// <c>thinking_tokens</c>/<c>cache_read_tokens</c>/<c>total_tokens</c>), sometimes only
-    /// <c>total_tokens</c>. Only <c>input_tokens</c>/<c>output_tokens</c> map to this shape's
-    /// <c>tokensIn</c>/<c>tokensOut</c> — a lone <c>total_tokens</c> is a real number but not a
-    /// direction, and splitting it would fabricate a breakdown agy never reported.
-    /// <c>thinking_tokens</c>/<c>cache_read_tokens</c> read the same way, independently of each other
-    /// and of the input/output split. agy has never been observed reporting a cache-creation figure
-    /// (docs/vendor-capabilities.md), so this parser has no field to bind
-    /// <see cref="WorkerUsage.CacheCreationTokens"/> to and leaves it null rather than inventing one.
-    /// Turns come from <c>result.num_turns</c>, read independently of the usage object. This shape is
-    /// attribution, never the reset-time source of truth — see
-    /// <see cref="ClaudeWorkerAdapter.TryParseFinalUsage"/>'s own doc comment for the <c>spec/baton.md</c>
-    /// §7 ruling this rests on.
+    /// #1569). Delegates to <see cref="AgyUsageParser"/> (#1599) — the same read
+    /// <see cref="StandardWorkerUsageParsers.Default"/> registers for the <c>terminal.json</c>/
+    /// <c>fleet_status</c> surface, so <c>baton status --json</c> resolves through exactly one
+    /// implementation rather than a hand-duplicated second one. See that class's own doc comment for
+    /// the inconsistent <c>result.usage</c> shape this reads against and the fields it leaves unbound.
     /// </summary>
-    public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage)
-    {
-        usage = null;
-        if (string.IsNullOrWhiteSpace(rawLine))
-        {
-            return false;
-        }
+    public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage) =>
+        UsageParser.TryParseFinalUsage(rawLine, out usage);
 
-        try
-        {
-            using var doc = JsonDocument.Parse(rawLine);
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("event", out var eventProp) || eventProp.GetString() != "result"
-                || !root.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object)
-            {
-                return false;
-            }
-
-            long? tokensIn = null;
-            long? tokensOut = null;
-            long? cacheReadTokens = null;
-            long? thinkingTokens = null;
-            if (result.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
-            {
-                if (usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
-                {
-                    tokensIn = inTokens;
-                }
-
-                if (usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens))
-                {
-                    tokensOut = outTokens;
-                }
-
-                if (usageProp.TryGetProperty("cache_read_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue))
-                {
-                    cacheReadTokens = cacheReadValue;
-                }
-
-                if (usageProp.TryGetProperty("thinking_tokens", out var thinkingProp) && thinkingProp.TryGetInt64(out var thinkingValue))
-                {
-                    thinkingTokens = thinkingValue;
-                }
-            }
-
-            int? turns = result.TryGetProperty("num_turns", out var turnsProp) && turnsProp.TryGetInt32(out var turnsValue)
-                ? turnsValue
-                : null;
-
-            if (tokensIn is null && tokensOut is null && turns is null && cacheReadTokens is null && thinkingTokens is null)
-            {
-                return false;
-            }
-
-            usage = new WorkerUsage(tokensIn, tokensOut, turns, cacheReadTokens, ThinkingTokens: thinkingTokens);
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
+    private static readonly AgyUsageParser UsageParser = new();
 
     /// <summary>
     /// #1594: recovers agy's own final answer from the same terminal <c>"event":"result"</c> line

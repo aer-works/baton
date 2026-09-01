@@ -86,4 +86,50 @@ public sealed class WorkflowStatusProjectorUsageRoutingTests
             DirectoryCleanup.DeleteRecursively(roomDirectory);
         }
     }
+
+    [Fact]
+    public void Explicit_adapter_less_registry_yields_no_usage()
+    {
+        // Negative half of the #1590 fix's contract (WorkflowStatusView.cs's own doc comment): an
+        // *omitted*/null registry falls back to StandardWorkerUsageParsers.Default, but an
+        // *explicitly-passed*, empty one is not null and must not fall back -- it still yields none.
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"usage-routing-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1590-negative");
+            var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId));
+            var start = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(accepted),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(4)),
+            };
+
+            var artifactsRoot = Path.Combine(roomDirectory, ArtifactManager.ArtifactsDirectoryName);
+            var execDir = ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId);
+            Directory.CreateDirectory(execDir);
+            File.WriteAllText(
+                Path.Combine(execDir, ExecutionStreamLogger.StdoutLogFileName),
+                """{"type":"result","num_turns":6,"usage":{"input_tokens":12,"output_tokens":9}}""" + "\n");
+
+            var state = StateProjector.Project([accepted], OneStepSnapshot());
+
+            var view = WorkflowStatusProjector.Project(
+                state, OneStepSnapshot(), roomDirectory, entries, new Dictionary<string, IWorkerUsageParser>());
+
+            // WallClockMs is always derived from the ledger's own start/exit timestamps (unrelated to
+            // the parser registry), so the step's Usage view is still present -- only the
+            // parser-sourced fields are absent.
+            var usage = Assert.Single(view.Steps).Usage;
+            Assert.Null(usage?.TokensIn);
+            Assert.Null(usage?.TokensOut);
+            Assert.Null(usage?.Turns);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
 }
