@@ -21,7 +21,7 @@ public static class StandardWorkerUsageParsers
 /// #1569). The sole implementation for this vendor (#1599) -- <c>ClaudeWorkerAdapter.TryParseFinalUsage</c>
 /// delegates here rather than re-implementing the same read, closing the drift #1590's fix left
 /// behind: an all-null result (no tokens, no turns, no cache/thinking figures) now returns
-/// <see langword="false"/> here too, matching the adapter's own guard, because a usage record with
+/// <see langword="false"/> here too, matching the guard the adapter carried before it delegated here, because a usage record with
 /// nothing in it claims nothing.
 /// <c>usage.input_tokens</c>/<c>output_tokens</c>/<c>cache_creation_input_tokens</c>/
 /// <c>cache_read_input_tokens</c>, the nested <c>usage.output_tokens_details.thinking_tokens</c>, and

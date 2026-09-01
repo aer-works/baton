@@ -5,16 +5,12 @@ namespace Baton.Tests.Status;
 
 /// <summary>
 /// Coverage for <see cref="ClaudeUsageParser"/>/<see cref="AgyUsageParser"/> (issue #1360, extended by
-/// #1569) — the parser pair passed explicitly via <see cref="StandardWorkerUsageParsers.Default"/> by
-/// <c>FleetStatusTool</c> for active rooms, and (#1590) now also the pair a null/omitted registry
-/// falls back to for every other caller, <c>Program.cs</c>'s <c>terminal.json</c> write included. A
-/// second, hand-duplicated pair lives on
-/// <c>ClaudeWorkerAdapter</c>/<c>AgyWorkerAdapter</c> themselves (<c>Baton.Vendors.Tests</c>' own
-/// <c>ClaudeFinalUsageParsingTests</c>/<c>AgyFinalUsageParsingTests</c> cover those) and feeds
-/// <c>baton status --json</c> via <c>WorkerAdapterRegistry.Default</c> instead — <c>spec/baton.md</c>
-/// §3 rules the two outputs one contract, so this file pins the same fixtures against this pair too
-/// (see #1578, filed while working #1569, for the duplication itself and one already-measured
-/// divergence between the pairs that this file does not attempt to resolve).
+/// #1569) — the sole implementation for each vendor's usage parsing (#1599/#1612). Passed explicitly
+/// via <see cref="StandardWorkerUsageParsers.Default"/> by <c>FleetStatusTool</c> for active rooms,
+/// resolved as the fallback for every other caller (<c>Program.cs</c>'s <c>terminal.json</c> write
+/// included), and delegated to by <c>ClaudeWorkerAdapter</c>/<c>AgyWorkerAdapter</c> for
+/// <c>baton status --json</c>. The #1578 divergence between the formerly duplicated parsers was
+/// reconciled so an all-null result returns <see langword="false"/> across all paths.
 /// </summary>
 public sealed class StandardWorkerUsageParsersTests
 {

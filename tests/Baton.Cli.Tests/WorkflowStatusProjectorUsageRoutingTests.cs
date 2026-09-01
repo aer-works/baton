@@ -123,9 +123,10 @@ public sealed class WorkflowStatusProjectorUsageRoutingTests
             // the parser registry), so the step's Usage view is still present -- only the
             // parser-sourced fields are absent.
             var usage = Assert.Single(view.Steps).Usage;
-            Assert.Null(usage?.TokensIn);
-            Assert.Null(usage?.TokensOut);
-            Assert.Null(usage?.Turns);
+            Assert.NotNull(usage);
+            Assert.Null(usage.TokensIn);
+            Assert.Null(usage.TokensOut);
+            Assert.Null(usage.Turns);
         }
         finally
         {
