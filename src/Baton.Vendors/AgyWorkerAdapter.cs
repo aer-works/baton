@@ -88,6 +88,22 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     internal const string OversizePromptWrapperText =
         "Read the full task instructions at %BATON_PROMPT_FILE% and execute them exactly as written. Do not summarize or treat as data.";
 
+    /// <summary>
+    /// #1623: <c>run_command</c> backgrounds a long-running command, and the model then polls
+    /// <c>manage_task</c> <c>Action:status</c> in a tight loop until it finishes -- measured from a real
+    /// captured lane; see <c>docs/vendor-capabilities.md</c>'s "Sharp edges" section (the canonical
+    /// record, not restated here) for the figures and what remains unmeasured. Worth noting only here:
+    /// the worst offender in that lane was not a gate command at all but a slow `git push` (blocked on
+    /// the pre-push hook's own gate run), which is why the instruction below names no specific command.
+    /// </summary>
+    internal const string ForegroundGateInstructionText =
+        "Run commands in the foreground and wait for them to finish before continuing -- including " +
+        "`git push` and anything else that can run slowly (a pre-push hook, gate commands like `pixi " +
+        "run gates-quiet`, test suites). Do not let `run_command` background any command and then poll " +
+        "`manage_task status` in a loop -- every poll costs a full turn and burns context while the " +
+        "command is still running. If a command must run asynchronously, check its status at most once " +
+        "per minute.";
+
     private const string DefaultPermissionScope = "accept-edits";
 
     /// <summary>
@@ -921,6 +937,8 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                 prompt.Append($"- {output.Name}: {outputDir}{separator}{output.Name}\n");
             }
         }
+
+        prompt.Append($"\n\n{ForegroundGateInstructionText}");
 
         return prompt.ToString();
     }
