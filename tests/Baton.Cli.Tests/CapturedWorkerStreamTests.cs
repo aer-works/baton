@@ -487,8 +487,30 @@ public class CapturedWorkerStreamTests
                 1,
                 [new WorkflowStepDefinition(new StepId("worker"), "worker", [], ["out.txt"], [], new RetryPolicy(1))]);
 
+            // #1550: the Windows branch used to invoke `powershell -NoProfile -Command "Write-Output
+            // '...'; Start-Sleep -Seconds 30"`. That never actually ran as a script. .NET's
+            // ArgumentList escapes the embedded quotes as `\"`; cmd.exe has no concept of
+            // backslash-escaped quotes, so its `/c` handling strips only the first/last quote of the
+            // whole argument and leaves both `\"` sequences intact; and powershell.exe's own
+            // CommandLineToArgvW-style argv parsing then treats each `\"` as a literal quote character
+            // rather than a region delimiter, so `-Command` collected the remaining tokens as a bare
+            // *string literal* (`"Write-Output '...'; Start-Sleep -Seconds 30"`), which PowerShell just
+            // evaluates and prints verbatim. Measured directly (a throwaway diagnostic reproducing the
+            // exact ArgumentList invocation): exits in ~150ms, stdout is the raw script source text,
+            // Start-Sleep never runs, and `echo done > out.txt` fires almost immediately afterward. The
+            // test's own assertion happened to still pass by accident -- the misparsed stdout literally
+            // contains the substring "pre-cancel output line" as part of the echoed script source --
+            // but nothing about cancellation-in-flight was ever exercised: the "cancelled" run had
+            // already finished on its own well before cts.Cancel() fired.
+            //
+            // Replaced with a quote-free command line: no `"` characters anywhere, so .NET's single
+            // outer quote pair (added because the string contains spaces) is the only pair cmd.exe's
+            // `/c` first/last-quote-strip rule ever sees, and `ping` stands in for the long-running
+            // step instead of Start-Sleep -- `timeout` was tried and rejected, since it fails with
+            // "input redirection is not supported" because BatonProcessRunner.cs closes the child's
+            // redirected stdin.
             var cmdLine = OperatingSystem.IsWindows()
-                ? "powershell -NoProfile -Command \"Write-Output 'pre-cancel output line'; Start-Sleep -Seconds 30\" & echo done > %BATON_OUTPUT_DIR%\\out.txt"
+                ? "echo pre-cancel output line & ping -n 31 127.0.0.1 > nul & echo done > %BATON_OUTPUT_DIR%\\out.txt"
                 : "echo 'pre-cancel output line' && sleep 30 && echo done > \"$BATON_OUTPUT_DIR/out.txt\"";
 
             var bindings = new Dictionary<string, WorkerBindingConfigEntry>
@@ -576,6 +598,14 @@ public class CapturedWorkerStreamTests
 
             var content = await File.ReadAllTextAsync(stdoutFile, TestContext.Current.CancellationToken);
             Assert.Contains("pre-cancel output line", content);
+
+            // #1550 discriminator: without this, the test above would pass identically whether or not
+            // cancellation actually interrupted the worker -- exactly the failure mode the quoting bug
+            // above produced silently. Job-termination on cancel kills the whole `cmd /c echo & ping &
+            // echo` tree, so the trailing `echo done > out.txt` never runs; a worker that instead ran to
+            // completion on its own would have written it.
+            var outFile = Path.Combine(execDirs[0], "out.txt");
+            Assert.False(File.Exists(outFile), $"out.txt exists at {outFile} -- the worker ran to completion instead of being cancelled");
         }
         finally
         {
