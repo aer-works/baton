@@ -193,7 +193,22 @@ public static class CancelRequestPoller
             return;
         }
 
-        // Target STILL projects Running or parked: count a bounded retry.
+        // #1563: a parked mark is a delivery GUARANTEE, not a hope — SettleParkedCancelIntentsAsync
+        // (MutationInterface) will drain it and append the terminal events on the pump's very next
+        // round. Folding this into the bounded-retry counter below would let a slow round (several
+        // other steps mid-dispatch, event-log I/O contention) hit the 5-tick ceiling before the pump
+        // gets there, rejecting a request that was already going to succeed with the false claim
+        // "not reachable" and deleting the pending file out from under the settle that follows
+        // moments later. A live pump that never drains its mark is the dead-pump case #1586 covers,
+        // not this one (scope note atop this file) — so this path retries forever rather than
+        // guessing a ceiling for a wait this poller has no way to bound.
+        if (isParked)
+        {
+            RetryCounters.TryRemove(retryKey, out _);
+            return;
+        }
+
+        // Target STILL projects Running: count a bounded retry.
         var retries = RetryCounters.AddOrUpdate(retryKey, 1, (_, current) => current + 1);
         if (retries >= 5)
         {

@@ -246,6 +246,54 @@ public class CancelRequestPollerTests
         }
     }
 
+    // Second-reader review finding: the bounded 5-tick retry-then-reject counter guarding a stuck
+    // "still running" target must not also apply to a parked target once it is marked — a mark is a
+    // delivery GUARANTEE the next pump round honours (SettleParkedCancelIntentsAsync), so hitting the
+    // ceiling before that round runs would reject a request that was already going to succeed, with
+    // the false claim "not reachable", and delete the pending file the settle has no further way to
+    // signal through. Ticks well past 5 with no pump ever draining the mark to prove the request
+    // survives indefinitely rather than timing out on a ceiling this poller has no way to size.
+    [Fact]
+    public async Task A_quota_parked_target_survives_past_the_bounded_retry_ceiling_without_being_rejected()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-parked-slow");
+            var reset = DateTimeOffset.UtcNow.AddHours(2);
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", reset), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.StepRetryScheduled(new StepId("a"), execId, reset, RetryDelayMs: (int)TimeSpan.FromHours(2).TotalMilliseconds), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "exec-parked-slow", TestContext.Current.CancellationToken);
+
+            // No pump is ever started against this registry — the mark is drained by nobody, for
+            // as many ticks as the old "still running" ceiling (5) would have tolerated and beyond.
+            var registry = new InFlightExecutionRegistry();
+
+            for (var i = 0; i < 8; i++)
+            {
+                await CancelRequestPoller.TickAsync(
+                    roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+            }
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.True(File.Exists(requestPath), "a parked mark must never be rejected on a tick ceiling — only the pump's own settle consumes it");
+            Assert.False(File.Exists($"{requestPath}.consumed"));
+            Assert.False(File.Exists($"{requestPath}.rejected"));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     // Once the pump this registry is bound to has actually processed the mark and settled the park
     // as Cancelled, the poller's own consume branch must say so honestly rather than repeat the
     // generic "too late" text — that text is what #802's "three independent locks" finding measured
