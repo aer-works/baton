@@ -675,6 +675,155 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Dispatching_with_attachments_copies_files_and_lists_them_in_prompt()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Analyze the attached context.");
+            var file1 = Path.Combine(testRoot, "doc.txt");
+            var file2 = Path.Combine(testRoot, "notes.md");
+            await File.WriteAllTextAsync(file1, "Context document 1", TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(file2, "Context notes 2", TestContext.Current.CancellationToken);
+
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions(
+                "advise", specPath, roomDirectory, Adapter: "fake",
+                Attachments: [file1, file2]);
+
+            var state = (await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken)).State;
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+
+            var attachmentsDir = Path.Combine(roomDirectory, "artifacts", "attachments");
+            Assert.True(File.Exists(Path.Combine(attachmentsDir, "doc.txt")));
+            Assert.True(File.Exists(Path.Combine(attachmentsDir, "notes.md")));
+            Assert.Equal("Context document 1", await File.ReadAllTextAsync(Path.Combine(attachmentsDir, "doc.txt"), TestContext.Current.CancellationToken));
+            Assert.Equal("Context notes 2", await File.ReadAllTextAsync(Path.Combine(attachmentsDir, "notes.md"), TestContext.Current.CancellationToken));
+
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(roomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Contains($"Attached files (in {attachmentsDir}): doc.txt, notes.md", bindings["advise"].PromptTemplate);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_with_missing_attachment_file_throws_typed_argument_error()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Analyze context.");
+            var missingFile = Path.Combine(testRoot, "nonexistent.txt");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions(
+                "advise", specPath, roomDirectory, Adapter: "fake",
+                Attachments: [missingFile]);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("Attached file", ex.Message);
+            Assert.Contains("nonexistent.txt", ex.Message);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_with_two_attachments_sharing_a_file_name_throws_typed_argument_error()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Analyze context.");
+            var subDir = Path.Combine(testRoot, "sub");
+            Directory.CreateDirectory(subDir);
+            var file1 = Path.Combine(testRoot, "doc.txt");
+            var file2 = Path.Combine(subDir, "doc.txt");
+            await File.WriteAllTextAsync(file1, "Top-level doc", TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(file2, "Sub-directory doc", TestContext.Current.CancellationToken);
+
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions(
+                "advise", specPath, roomDirectory, Adapter: "fake",
+                Attachments: [file1, file2]);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("doc.txt", ex.Message);
+            Assert.Contains("same file name", ex.Message);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_template_with_attach_throws_typed_argument_error()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var file1 = Path.Combine(testRoot, "doc.txt");
+            Directory.CreateDirectory(testRoot);
+            await File.WriteAllTextAsync(file1, "doc", TestContext.Current.CancellationToken);
+
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions(
+                "implement-review", SpecFilePath: null, roomDirectory, Adapter: "fake",
+                Attachments: [file1]);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("--attach", ex.Message);
+            Assert.Contains("remove the --attach flag", ex.TryInvocation);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Spec_grant_mismatch_prints_warning_and_proceeds()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var priorError = Console.Error;
+        using var capturedError = new StringWriter();
+        Console.SetError(capturedError);
+
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Please gh issue view 1500\nProvide advice.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake");
+
+            var state = (await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken)).State;
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+
+            var errorOutput = capturedError.ToString();
+            Assert.Contains("Warning: Spec line 1", errorOutput);
+            Assert.Contains("shell", errorOutput);
+            Assert.Contains("network", errorOutput);
+            Assert.Contains("advise", errorOutput);
+        }
+        finally
+        {
+            Console.SetError(priorError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Dispatching_a_role_prints_discovered_skill_names_when_present()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
@@ -748,6 +897,14 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             Console.SetOut(originalOut);
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
+    }
+
+    [Fact]
+    public async Task Dispatching_with_list_capabilities_prints_capabilities_and_succeeds()
+    {
+        var options = new DispatchOptions("", SpecFilePath: null, "", ListCapabilities: true);
+        var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+        Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
     }
 
     private static async Task<string> WriteSpecAsync(string directory, string content)

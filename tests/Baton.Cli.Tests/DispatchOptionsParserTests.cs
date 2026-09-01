@@ -211,4 +211,45 @@ public class DispatchOptionsParserTests
         Assert.DoesNotContain(
             Path.GetFullPath(Directory.GetCurrentDirectory()), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void Parses_a_single_attach_flag()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--attach", "context.txt"]);
+        Assert.NotNull(options.Attachments);
+        var attached = Assert.Single(options.Attachments);
+        Assert.Equal("context.txt", attached);
+    }
+
+    [Fact]
+    public void Parses_repeatable_attach_flags_in_order()
+    {
+        var options = DispatchOptionsParser.Parse(
+            ["advise", "--spec", "t.md", "--attach", "context.txt", "--attach", "notes.md"]);
+        Assert.NotNull(options.Attachments);
+        Assert.Equal(new[] { "context.txt", "notes.md" }, options.Attachments);
+    }
+
+    [Fact]
+    public void Attach_without_value_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--attach"]));
+        Assert.NotNull(ex.TryInvocation);
+        Assert.Contains("--attach", ex.TryInvocation);
+    }
+
+    [Fact]
+    public void Parses_list_capabilities_flag_without_name()
+    {
+        var options = DispatchOptionsParser.Parse(["--list-capabilities"]);
+        Assert.True(options.ListCapabilities);
+    }
+
+    [Fact]
+    public void Parses_list_capabilities_flag_with_name()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--list-capabilities"]);
+        Assert.True(options.ListCapabilities);
+    }
 }

@@ -11,7 +11,9 @@ interactive session (chat) is a different path with a different prompt and a con
 ```
 baton dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
                     [--workspace <dir>] [--workflow-id <label>] [--output <path>] [--timeout <minutes>]
-                    [--label <text>]
+                    [--label <text>] [--attach <file>]...
+
+baton dispatch --list-capabilities
 ```
 
 ## Flags
@@ -28,6 +30,8 @@ baton dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--m
 | `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. |
 | `--timeout <minutes>` | Override the dispatched role's own catalog timeout for just this dispatch — a role that legitimately needs longer than its fixed tier timebox (an orchestrator coordinating sub-lanes, say) does not have to die mid-flight. Role dispatch only — refused up front on a template dispatch, the same way `--output` is: each phase carries its own role's timeout, so there is no single one to override. Must be a positive whole number of minutes; rejected outright above a 24h ceiling (a non-interactive dispatch has no confirmation prompt to gate a larger value behind); merely flagged on stderr above 2h. |
 | `--label <text>` | Display text only, e.g. `"the #1496 env-snapshot lane"` — so Fleet Glass shows something legible instead of the bare `dispatch-<role>-<8 hex>` directory name. Never part of the room directory's own name. Trimmed, newline-folded, capped at `DispatchOptionsParser.MaxLabelLength` chars; full contract in `spec/baton.md` §2. |
+| `--attach <file>` | Repeatable (#1500). Copies `<file>` into the room's `artifacts/attachments/` directory before the worker starts, and appends one line to the prompt naming every attached file and that directory. Keeps a brief short instead of pasting context documents inline. Role dispatch only — refused up front on a template dispatch, the same way `--output`/`--timeout` are. Content is operator-supplied and **inbound**: it never passes the deliverable secret gate that governs a worker's own outputs. Each named file must exist; a missing one is a typed argument error before the room is created. |
+| `--list-capabilities` | Prints every adapter's supported models and effort values, plus each catalog role's timebox default, and exits — no `<role>` or room required (#1500). `WorkerRoleCatalog.All` is the same catalog `ModelAndEffortValidationTests` reads directly; both vendors' effort tables come from `EffortTierMapping`, the exact static tables `ClaudeWorkerAdapter.Resolve`/`AgyWorkerAdapter.Resolve` call into on every `--effort` that test suite exercises — so the role and effort sections can never drift from what dispatch actually accepts. Claude's model aliases (`ClaudeWorkerAdapter.ModelAliases`) are read live too, but that specific list has no validation surface of its own — every alias always resolves to a vendor-current model, so nothing dispatch-side rejects one. agy has no equivalent alias catalog — its model names are suffix-parametrized (`gemini-<version>-<flash\|pro>-<low\|medium\|high>`), so the printed agy model examples are illustrative text, not a sourced table. |
 
 #1355's acceptance criterion "one output path" is about `--output`/the printed fact above naming one
 destination — not about a role declaring only one output (`review` declares two: `report.md` AND
@@ -41,6 +45,23 @@ Model and effort are validated at the adapter boundary before dispatch (#1090): 
 id (`claude-opus-4.8`, a typo for `claude-opus-4-8`) is refused with the correction rather than run;
 and on agy, where the effort suffix in the model name and `--effort` are one control, a disagreeing
 pair is refused up-front naming the real cause instead of failing after the run has started.
+
+### The spec/grant mismatch lint
+
+Before a role's spec is dispatched, it is heuristically scanned for shell- or network-implying
+instructions (`gh `, `git `, `dotnet `, `pixi `, `curl`, "run the", "execute", an `http(s)://` URL)
+and compared against the resolved role's grant (#1500). A line implying a capability the grant
+withholds prints a warning to stderr naming the line and the missing category, e.g.:
+
+```
+Warning: Spec line 4 ('gh issue view 1500') implies shell instructions (gh), but role 'advise' has no-shell grant.
+```
+
+This is a **warning, never a refusal** — the heuristic is not a parser and cannot know a matched line
+is inert prose ("pixie dust") or that the worker will route around it; it only shortens the loop from
+"the lane discovers its instructions are unexecutable mid-flight" to "the operator sees it before the
+room exists." The named heuristics are `DispatchSpecLinter.Heuristics`, the single source both the
+lint and its tests read.
 
 ### The auto-provisioned worktree, and what it costs
 

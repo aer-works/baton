@@ -1102,7 +1102,7 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// interface here: each always resolves to that tier's current model, so this list doesn't need
     /// updating every model generation the way a hardcoded full model ID would.
     /// </summary>
-    private static readonly IReadOnlyList<string> ModelAliases = ["sonnet", "opus", "haiku"];
+    public static readonly IReadOnlyList<string> ModelAliases = ["sonnet", "opus", "haiku"];
 
     /// <summary>
     /// #1090: a <c>claude-*</c> id whose version is dot-delimited (<c>claude-opus-4.8</c>) is a typo for
