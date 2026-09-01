@@ -113,6 +113,33 @@ public sealed class WorkflowStatusProjectorLivenessTests
     }
 
     [Fact]
+    public void A_failed_step_with_no_pending_retry_never_carries_a_liveness_verdict_even_over_a_dead_engine()
+    {
+        // #1513 widened the gate to a Failed step with a pending RetryNotBefore -- this pins the
+        // negative next to it: a step whose retry budget is exhausted (Permanent classification, no
+        // FlowEvent.StepRetryScheduled ever recorded) has no pending wait for a dead engine to be
+        // failing to honor, and must stay ungated exactly like the pre-#1513 Failed case did.
+        var executionId = new ExecutionId("exec-1");
+        var (deadPid, deadStartTime) = DeadProcessIdentity();
+        var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId), EnginePid: deadPid, EngineStartTime: deadStartTime);
+        var events = new FlowEvent[]
+        {
+            accepted,
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.Permanent, "unrecoverable", RetryNotBefore: null),
+        };
+
+        var state = StateProjector.Project(events, OneStepSnapshot());
+        var entries = events.Select(e => (LogEntry)new LogEntry.FlowLogEntry(e)).ToList();
+
+        var view = WorkflowStatusProjector.Project(state, OneStepSnapshot(), Path.GetTempPath(), entries);
+
+        var step = Assert.Single(view.Steps);
+        Assert.Equal("Failed", step.State);
+        Assert.Null(step.Liveness);
+        Assert.DoesNotContain("\"liveness\"", System.Text.Json.JsonSerializer.Serialize(step));
+    }
+
+    [Fact]
     public void A_paused_step_never_carries_a_liveness_verdict_even_over_a_dead_engine()
     {
         // Mirrors FormatStepStatus's own gate (StatusCommand.cs): a Paused step's engine has

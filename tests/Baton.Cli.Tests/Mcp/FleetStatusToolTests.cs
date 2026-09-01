@@ -686,12 +686,15 @@ public sealed class FleetStatusToolTests : IDisposable
 
     /// <summary>
     /// #1513 `right-instrument`: the claim under test is about what an operator sees projected off a
-    /// REAL room this bug was caught in, not only a synthetic fixture. Copies one of the five live
-    /// rooms named in the issue (`dispatch-implement-a0c38801` -- operator-killed pump, `flow.jsonl`
-    /// ends in `stepRetryScheduled` with no `terminal.json`) into an isolated fleet root read-only
-    /// (never mutates the original room) and asserts the fix changes what an operator actually sees
-    /// for it. Skips gracefully if this machine does not have that room under `~/.baton/rooms` --
-    /// the room is local live evidence, not a checked-in fixture.
+    /// REAL room this bug was caught in, not only a synthetic fixture. Copies one of four live
+    /// operator-killed-pump rooms this fix was verified against (`dispatch-implement-a0c38801` --
+    /// `flow.jsonl` ends in `stepRetryScheduled` with no `terminal.json`; the room #1513's own body
+    /// names, `dispatch-implement-2c5dcd8d`, is NOT this shape -- its engine was in fact still alive
+    /// and it finished naturally, `terminal.json: Succeeded`, so it is deliberately not used as a
+    /// positive fixture here) into an isolated fleet root read-only (never mutates the original room)
+    /// and asserts the fix changes what an operator actually sees for it. Skips (not silently passes)
+    /// if this machine does not have that room under `~/.baton/rooms` -- the room is local live
+    /// evidence, not a checked-in fixture.
     /// </summary>
     [Fact]
     public async Task ActiveRoom_RealZombieRoomFromIssue1513_ProjectsAsStalledNotRunning()
@@ -701,7 +704,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var sourceRoom = Path.Combine(realRoomsDir, "dispatch-implement-a0c38801");
         if (!Directory.Exists(sourceRoom))
         {
-            return;
+            Assert.Skip("this machine has no ~/.baton/rooms/dispatch-implement-a0c38801 -- local live evidence, not a checked-in fixture");
         }
 
         var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);

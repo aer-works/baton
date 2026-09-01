@@ -269,25 +269,45 @@ surface (`FlowEvent.ExternalDecisionRecorded` carries none), so `rejected` stays
 
 **#1513 corrects #1462's own choice, not just a gap.** #1462 deliberately kept `fleet_status`'s
 room-level `state` unchanged even for a Running step with a confirmed-dead engine, reasoning that
-`liveness` was an additive signal for the caller to combine, never folded into `state` itself. Live
-data (issue #1513: a room whose deliverable had already landed on disk, `flow.jsonl` stalled on
-`executionRequestAccepted` with the pump dead) showed that choice fails open in exactly the case an
-operator scanning `fleet_status` most needs protecting from — a room reading `Running` with nothing
-behind it, indefinitely. `FleetStatusTool.ProcessRoomAsync` now overrides its **own returned
-`FleetRoomStatusView.State`** (never `WorkflowStatusView.State`/`WorkflowOutcome`/`state.Status`
-itself — `RunExitCodeResolver`, `TerminalSentinelWriter`, and `status --json` are unaffected) to
-`"Stalled"` — a fourth, `fleet_status`-only display word, not a fifth `WorkflowOutcome` member —
-whenever the room reads `Running` and every step whose `liveness` this projection computes reads
-`"dead"` with none reading `"alive"`. The condition `liveness` is computed under
+`liveness` was an additive signal for the caller to combine, never folded into `state` itself. Issue
+#1513 was filed against a room (`dispatch-implement-2c5dcd8d`) whose `flow.jsonl` appeared stalled on
+`executionRequestAccepted` with its deliverable already on disk — but that room's engine was in fact
+still alive and finished naturally minutes later (`terminal.json`: `Succeeded`); the reproducible
+defect is a distinct, confirmed live signature — four sibling rooms
+(`a0c38801`/`b161e85a`/`d1fb0d42`/`e5d1747c`) each `Failed` with a still-pending `RetryNotBefore`
+whose pump process an operator killed, none of which will ever go terminal on their own (§7). That
+shape — `Running` (a pending retry is not yet terminal) with **nothing left alive to act on it** —
+is exactly the case an operator scanning `fleet_status` most needs protecting from.
+`FleetStatusTool.ProcessRoomAsync` now overrides its **own returned `FleetRoomStatusView.State`**
+(never `WorkflowStatusView.State`/`WorkflowOutcome`/`state.Status` itself — `RunExitCodeResolver` and
+`TerminalSentinelWriter` are unaffected, and `status --json` keeps reporting its own `state`
+unchanged, though it now also carries `liveness` on the widened set of steps described below) to
+`"Stalled"` — a sixth display string, but `fleet_status`-only: it is never folded into
+`WorkflowOutcome` itself, whose five members (`Running`/`Paused`/`Succeeded`/`Failed`/`Cancelled`)
+stay untouched — whenever the room reads
+`Running` and every step whose `liveness` this projection computes reads `"dead"` with none reading
+`"alive"`. The condition `liveness` is computed under
 (`WorkflowStatusProjector.Project`, `src/Baton/Status/WorkflowStatusView.cs`) also widened: previously only a `Running` step was probed;
-now a `Failed` step still carrying a `RetryNotBefore` is too, since that step's own promise ("this
-will retry") rests on the identical fact — the pump that recorded `StepRetryScheduled` staying alive
-long enough to act on it (§7: there is no daemon reaper; `MutationInterface`'s scheduling loop
-`Task.Delay`s the wait **in-process**). A confirmed-dead engine behind a parked retry is recoverable
-via `baton resume` (it dispatches a fresh linked execution off the step's `LatestExecutionId`
-regardless of `RetryNotBefore` — `MutationInterface.RecordResumeAsync` does not gate on it), so
+now a `Failed` step still carrying a `RetryNotBefore` is too (no expiry check — a step keeps this
+gate as long as `RetryNotBefore` is set at all, since a stale-but-still-set value is itself part of
+the bug this closes), since that step's own promise ("this will retry") rests on the identical fact —
+the pump that recorded `StepRetryScheduled` staying alive long enough to act on it (§7: there is no
+daemon reaper; `MutationInterface`'s scheduling loop `Task.Delay`s the wait **in-process**). A
+confirmed-dead engine behind a parked retry is recoverable via `baton resume` (it dispatches a fresh
+linked execution off the step's `LatestExecutionId` regardless of `RetryNotBefore` —
+`MutationInterface.RecordResumeAsync` does not gate on it, though it refuses a multi-step worker or a
+`NonProcess` binding — a caller `baton resume` refuses still has plain `baton run` available), so
 `"Stalled"` reads as "nothing is currently making progress, but this is not done," never as a
 `Failed` room a caller might reasonably discard.
+
+**Known limitation, not closed by this change: a re-drive can still misreport briefly.** If an
+operator revives a stalled room with a fresh `baton run` (rather than `baton resume`) while the room
+is still inside its retry backoff wait, the new pump re-enters the same `Task.Delay` without writing
+a fresh `ExecutionRequestAccepted` — nothing is dispatched again until the wait elapses. `liveness`
+still probes the dead original pump's `EnginePid` until then, so `fleet_status` keeps reporting
+`"Stalled"` for a room a live pump is, in fact, quietly waiting on. Tracked as #1577, filed rather
+than fixed here — closing it needs the new pump to record its own liveness before dispatch, which
+belongs with #1556's arrest-predicate/pump-liveness plumbing rather than bolted on separately.
 
 ### Exit codes
 
