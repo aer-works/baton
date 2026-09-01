@@ -64,16 +64,10 @@ is inert prose ("pixie dust") or that the worker will route around it; it only s
 room exists." `DispatchCommand` wraps the lint call so a throwing heuristic degrades to a skipped lint
 rather than a refused dispatch — the promise above is enforced there, not just asserted here.
 
-**Two disclosed gaps, the shell one larger.** The shell check is `RunShellCommands` alone — never
-pattern-aware. A role with *any* shell grant, unscoped or narrowly patterned (`review`'s read-only
-`git`/`gh` allowlist, say), is never warned about a Shell-category line, whatever the allowlist
-actually contains: a `review` brief saying "run `pixi run gates`" or "`dotnet test`" produces zero
-warnings even though the role cannot execute either. Seven of `DispatchSpecLinter.Heuristics`' ten
-entries are Shell; only three are Network — this is the larger of the two gaps. The smaller one is on
-the Network axis: a role with a scoped read-only shell (again, `review`) is treated as having *some*
-effective network reach for lint purposes (`PermissionGrant.NetworkReachable`), so an unrelated network
-command not actually in its allowlist also goes unflagged. Neither gap is a security hole — the grant
-is the enforcement and this lint never gates anything — both are discoverability misses.
+**Two known gaps, disclosed rather than fixed — the specifics of each, and why the shell one is
+larger, live on `DispatchSpecLinter`'s own class doc; record-once, not restated here.** In short: the
+shell check cannot tell an allowlisted command from a forbidden one, and the network check can miss an
+unrelated command a scoped shell doesn't actually cover.
 
 ### The auto-provisioned worktree, and what it costs
 
