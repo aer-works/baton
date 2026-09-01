@@ -1073,11 +1073,10 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
     /// <summary>
     /// Parses agy's <c>stream-json</c> terminal <c>"event":"result"</c> line (issue #1360, extended by
-    /// #1569). Delegates to <see cref="AgyUsageParser"/> (#1599) — the same read
-    /// <see cref="StandardWorkerUsageParsers.Default"/> registers for the <c>terminal.json</c>/
-    /// <c>fleet_status</c> surface, so <c>baton status --json</c> resolves through exactly one
-    /// implementation rather than a hand-duplicated second one. See that class's own doc comment for
-    /// the inconsistent <c>result.usage</c> shape this reads against and the fields it leaves unbound.
+    /// #1569). Delegates to <see cref="AgyUsageParser"/> (#1599) for the reason
+    /// <see cref="ClaudeWorkerAdapter.TryParseFinalUsage"/>'s own doc comment states. See
+    /// <see cref="AgyUsageParser"/> itself for the inconsistent <c>result.usage</c> shape this reads
+    /// against and the fields it leaves unbound.
     /// </summary>
     public bool TryParseFinalUsage(string rawLine, out WorkerUsage? usage) =>
         UsageParser.TryParseFinalUsage(rawLine, out usage);
