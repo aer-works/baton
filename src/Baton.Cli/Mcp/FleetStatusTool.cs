@@ -238,7 +238,8 @@ public sealed class FleetStatusTool : IMcpTool
                 Attempt: s.Attempt,
                 MaxAttempts: s.MaxAttempts,
                 FailureKind: s.FailureKind,
-                RetryEligible: s.RetryEligible
+                RetryEligible: s.RetryEligible,
+                ExhaustedUntil: s.ExhaustedUntil
             )).ToList();
 
             return new FleetRoomStatusView(
@@ -318,7 +319,8 @@ public sealed class FleetStatusTool : IMcpTool
                     stepView.Attempt,
                     stepView.MaxAttempts,
                     stepView.FailureKind,
-                    stepView.RetryEligible));
+                    stepView.RetryEligible,
+                    stepView.ExhaustedUntil));
             }
 
             var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
@@ -549,4 +551,12 @@ public sealed record FleetStepStatusView(
     string? FailureKind = null,
     [property: JsonPropertyName("retryEligible")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    bool? RetryEligible = null);
+    bool? RetryEligible = null,
+    // #1551: copied verbatim from WorkflowStatusStepView.ExhaustedUntil -- see that record's own
+    // remarks for the gating rule (ExhaustedUntil classification with a recorded RetryNotBefore
+    // only). A future instant by construction while parked; a past one once the park's own
+    // reset time has elapsed and nothing repopulates it (#1513 Stalled) -- the fleet_status caller
+    // renders that honestly, this field never re-derives or clears it.
+    [property: JsonPropertyName("exhaustedUntil")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ExhaustedUntil = null);

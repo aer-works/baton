@@ -382,7 +382,8 @@ code is the only signal a lane is even still going, and it is unreliable for tha
       "linkedFrom"?: string,           // set when this step's latest execution is an `baton resume`
       "usage"?: ExecutionUsageView,
       "linkedFromUsage"?: ExecutionUsageView,
-      "liveness"?: "alive" | "dead" | "unknown"   // #1375/#1513: present while this step reads "Running", or "Failed" with a RetryNotBefore still pending
+      "liveness"?: "alive" | "dead" | "unknown",  // #1375/#1513: present while this step reads "Running", or "Failed" with a RetryNotBefore still pending
+      "exhaustedUntil"?: string  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
     }
   ],
   "outputs": [string],                 // resolved output paths
@@ -582,7 +583,7 @@ Output: a JSON array of
     { "id": string, "state": string, "execution"?: string, "linkedFrom"?: string,
       "timestamp"?: string, "usage"?: ExecutionUsageView, "linkedFromUsage"?: ExecutionUsageView,
       "liveness"?: string, "attempt"?: number, "maxAttempts"?: number, "failureKind"?: string,
-      "retryEligible"?: boolean }
+      "retryEligible"?: boolean, "exhaustedUntil"?: string }
   ],
   "outputs"?: [string],
   "error"?: string,
@@ -641,6 +642,25 @@ as `role`/`adapter`/`model`/`effort`/`timeoutMs` above: a step with no execution
 The two failure fields are gated independently of each other, not as a pair: `retryEligible` (the
 scheduler's verdict) can be present while `failureKind` is absent, for a Failed step whose worker
 hasn't reported a classification yet.
+
+**`exhaustedUntil` (#1551)** is the same `StepState.RetryNotBefore` `FormatVendorQuotaParkNotice`
+prints at dispatch time ("the run resumes automatically at 21:59") and `StatusCommand.FormatParkedStatus`
+renders on the human `baton status` path — copied verbatim, never re-derived, ISO-8601 UTC. Gated
+narrower than `attempt`/`failureKind` above: present only for a `"Failed"` step whose `failureKind`
+is exactly `"ExhaustedUntil"` **and** whose reset instant was actually recorded — an un-obligated
+park (`RetryNotBefore` null, the human path's "reset unknown") stays absent rather than fabricate
+one, and an ordinary `Retryable` backoff never emits this field despite scheduling a
+`RetryNotBefore` of its own. Nothing re-derives or clears the value once (#1513) liveness confirms
+the scheduling engine dead — a Stalled room keeps reporting the exact same, now-past instant; the
+glass chip (`tools/fleet-glass/glass.html`) is what renders that honestly (a relative "was due 3d
+ago — no scheduler" rather than a live countdown), never this field. A far-future instant (#1183,
+not fixed here) is rendered, not fixed, by the same chip — the park's own crash-on-dispatch bug is
+tracked separately. In practice only one vendor path ever records an obligation to gate on: the agy
+duration-parse path (`Resets in …` → `AgyWorkerAdapter`) is what sets `RetryNotBefore` on an
+`ExhaustedUntil` park today; claude's `credits_required` park records none, because #1115 forbids
+fabricating a reset instant the vendor never actually reported. A claude park therefore still
+surfaces the `"ExhaustedUntil"` `failureKind`, just with `exhaustedUntil` absent and the chip showing
+no time.
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan

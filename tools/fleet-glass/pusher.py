@@ -444,16 +444,26 @@ def derive_snapshot_and_timelines(dll: str, roots: list) -> tuple[str, dict]:
     return text, timelines
 
 
-def newest_timestamp(node) -> str:
+_NEWEST_TIMESTAMP_SKIP_KEYS = frozenset({"exhaustedUntil"})
+
+
+def newest_timestamp(node, _skip_keys: frozenset = _NEWEST_TIMESTAMP_SKIP_KEYS) -> str:
     """Max ISO-8601-looking string anywhere in the room object -- shape-agnostic on purpose,
-    so a fleet_status field rename degrades to 'room has no timestamp' (kept), never a crash."""
+    so a fleet_status field rename degrades to 'room has no timestamp' (kept), never a crash.
+
+    `exhaustedUntil` (#1551) is excluded by key, the one deliberate exception to "shape-agnostic":
+    it's a vendor-quota park's reset instant, a FUTURE timestamp by construction while parked.
+    Folding it into this scan would make an abandoned parked room's "newest timestamp" always
+    outrun drop_stale_rooms' cutoff below -- a room nobody is watching would never age out."""
     best = ""
     if isinstance(node, dict):
-        for v in node.values():
-            best = max(best, newest_timestamp(v))
+        for k, v in node.items():
+            if k in _skip_keys:
+                continue
+            best = max(best, newest_timestamp(v, _skip_keys))
     elif isinstance(node, list):
         for v in node:
-            best = max(best, newest_timestamp(v))
+            best = max(best, newest_timestamp(v, _skip_keys))
     elif isinstance(node, str) and len(node) >= 19 and node[4] == "-" and node[10] == "T":
         best = node
     return best
@@ -1282,6 +1292,21 @@ def _selftest() -> int:
                      "steps": [{"id": "s1", "state": "Running", "timestamp": now_iso}]}]),
         max_age_days=3)
     check("(control) nothing dropped when every room is recent", fresh_dropped == 0)
+
+    # -- #1551: an abandoned parked room's real (old) step timestamp must still win over its
+    # FUTURE exhaustedUntil reset instant, or a room nobody is watching never ages out --
+    future_iso = (datetime.now(timezone.utc).timestamp() + 30 * 86400)
+    future_iso = datetime.fromtimestamp(future_iso, tz=timezone.utc).isoformat()
+    check("(control) exhaustedUntil alone reads as the room's newest timestamp when included",
+          newest_timestamp({"steps": [{"exhaustedUntil": future_iso}]}, _skip_keys=frozenset()) == future_iso)
+    parked_body = json.dumps([
+        {"name": "abandoned-park", "state": "Running",
+         "steps": [{"id": "s1", "state": "Failed", "timestamp": old_iso, "exhaustedUntil": future_iso}]},
+    ])
+    parked_filtered, parked_dropped = drop_stale_rooms(parked_body, max_age_days=3)
+    check("an abandoned parked room drops as stale off its real (old) step timestamp, "
+          "not its future exhaustedUntil reset instant",
+          parked_dropped == 1 and json.loads(parked_filtered) == [])
 
     # -- #1538: single-instance guard --
     with tempfile.TemporaryDirectory() as tmp:

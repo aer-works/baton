@@ -241,6 +241,50 @@ function failureKindChip(step){
   const cls = step.retryEligible === true ? "c-warn" : step.retryEligible === false ? "c-bad" : "c-idle";
   return [step.failureKind.toUpperCase(), cls];
 }
+// -----------------------------------------------------------------------------------------------
+// #1551: `step.exhaustedUntil` is the vendor-quota park's own reset instant (WorkflowStatusStepView,
+// gated to an actual ExhaustedUntil park with a recorded obligation -- absent for an un-obligated
+// park or an ordinary Retryable backoff, same presence-gated convention as failureKindChip above).
+// Absolute + relative, mirroring timeboxChip's future/overdue duality above it -- but a Failed step
+// whose OWN liveness reads "dead" (#1513) has no scheduler left to fire this at all: a live
+// countdown there would be dishonest, so that arm renders the same past instant as a flat fact
+// instead -- and per #1598 review F1, a bare clock time ("was due 21:59") can't tell tonight from
+// three days ago, so the dead arm renders the relative span instead ("was due 3d ago — no
+// scheduler"), never a fake countdown. `parkLadder` below is a local m→h→d ladder (deliberately not
+// `age()`: that one returns null for negative spans and floors "just now", neither of which fits a
+// duration that can be future OR past) -- and it's what keeps a far-future (#1183-shaped) instant
+// rendering as "2914d" rather than a multi-million-minute count. When the target instant falls on a
+// different calendar day than now, the clock parenthetical gets the date prefixed (StatusCommand.cs
+// FormatParkedStatus's rationale: parks span days, a bare clock time is ambiguous -- the chip must
+// not reintroduce the ambiguity the human path already removed). `Date.parse`/`toLocaleTimeString`
+// do not throw on a far-future instant -- `isFinite` below is what a genuinely unparseable one falls
+// back through, same as `age()`/`timeboxChip`.
+// -----------------------------------------------------------------------------------------------
+function parkLadder(ms){
+  const m = Math.floor(ms/60000);
+  if(m < 60) return m + "m";
+  const h = Math.floor(m/60);
+  if(h < 48) return h + "h";
+  return Math.floor(h/24) + "d";
+}
+function parkChip(step){
+  if(!step || !step.exhaustedUntil) return null;
+  const target = Date.parse(step.exhaustedUntil);
+  if(!isFinite(target)) return null;
+  const targetDate = new Date(target);
+  const now = new Date();
+  const crossesDay = targetDate.toDateString() !== now.toDateString();
+  const clock = (crossesDay ? targetDate.toLocaleDateString([], {month: "short", day: "numeric"}) + " " : "")
+    + targetDate.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  const diffMs = target - Date.now();
+  const rel = parkLadder(Math.abs(diffMs));
+  if(step.liveness === "dead"){
+    return [`was due ${rel} ago — no scheduler`, "c-warn"];
+  }
+  return diffMs >= 0
+    ? [`resumes in ${rel} (${clock})`, "c-idle"]
+    : [`overdue ${rel} (${clock})`, "c-bad"];
+}
 function chipsHtml(room, running, focusStep){
   const st = room.state;
   const chips = [];
@@ -260,6 +304,8 @@ function chipsHtml(room, running, focusStep){
   if(ac) chips.push(ac);
   const fc = failureKindChip(focusStep);
   if(fc) chips.push(fc);
+  const pc = parkChip(focusStep);
+  if(pc) chips.push(pc);
   return chips.map(([label,cls]) => `<span class="chip ${cls}">${esc(label)}</span>`).join("");
 }
 

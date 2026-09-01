@@ -167,4 +167,107 @@ public sealed class WorkflowStatusProjectorLivenessTests
         // WhenWritingNull attribute, and only a serialized assertion catches that attribute breaking.
         Assert.DoesNotContain("\"liveness\"", System.Text.Json.JsonSerializer.Serialize(step));
     }
+
+    [Fact]
+    public void An_ExhaustedUntil_park_with_a_recorded_obligation_surfaces_the_reset_instant_verbatim()
+    {
+        // #1551: StepRetryScheduled's own RetryNotBefore, round-tripped verbatim (ISO "O") rather
+        // than re-derived -- same value FormatVendorQuotaParkNotice/StatusCommand render as
+        // "resumes at HH:mm" for the human path.
+        var executionId = new ExecutionId("exec-1");
+        var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId));
+        var resetInstant = new DateTimeOffset(2026, 9, 1, 21, 59, 0, TimeSpan.Zero);
+        var events = new FlowEvent[]
+        {
+            accepted,
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota exhausted", RetryNotBefore: resetInstant),
+            new FlowEvent.StepRetryScheduled(StepId, executionId, resetInstant, RetryDelayMs: 0),
+        };
+
+        var state = StateProjector.Project(events, OneStepSnapshot());
+        var entries = events.Select(e => (LogEntry)new LogEntry.FlowLogEntry(e)).ToList();
+
+        var view = WorkflowStatusProjector.Project(state, OneStepSnapshot(), Path.GetTempPath(), entries);
+
+        var step = Assert.Single(view.Steps);
+        Assert.Equal("Failed", step.State);
+        Assert.Equal("ExhaustedUntil", step.FailureKind);
+        Assert.Equal(resetInstant.ToString("O"), step.ExhaustedUntil);
+    }
+
+    [Fact]
+    public void An_ExhaustedUntil_park_with_no_recorded_obligation_omits_the_reset_instant()
+    {
+        // Post-#1115/0026 §5: an un-obligated ExhaustedUntil (no StepRetryScheduled) renders
+        // "reset unknown" on the human path (StatusCommand.FormatStepStatus) -- the machine field
+        // must stay absent here too rather than fabricate an instant nobody recorded.
+        var executionId = new ExecutionId("exec-1");
+        var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId));
+        var events = new FlowEvent[]
+        {
+            accepted,
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota exhausted", RetryNotBefore: null),
+        };
+
+        var state = StateProjector.Project(events, OneStepSnapshot());
+        var entries = events.Select(e => (LogEntry)new LogEntry.FlowLogEntry(e)).ToList();
+
+        var view = WorkflowStatusProjector.Project(state, OneStepSnapshot(), Path.GetTempPath(), entries);
+
+        var step = Assert.Single(view.Steps);
+        Assert.Null(step.ExhaustedUntil);
+        Assert.DoesNotContain("\"exhaustedUntil\"", System.Text.Json.JsonSerializer.Serialize(step));
+    }
+
+    [Fact]
+    public void An_ordinary_Retryable_backoff_never_surfaces_a_reset_instant_despite_sharing_RetryNotBefore()
+    {
+        // Gating rule: WorkflowStatusStepView.ExhaustedUntil's own remarks.
+        var executionId = new ExecutionId("exec-1");
+        var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId));
+        var retryNotBefore = DateTimeOffset.UtcNow.AddMinutes(5);
+        var events = new FlowEvent[]
+        {
+            accepted,
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.Retryable, "transient", RetryNotBefore: retryNotBefore),
+            new FlowEvent.StepRetryScheduled(StepId, executionId, retryNotBefore, RetryDelayMs: 5000),
+        };
+
+        var state = StateProjector.Project(events, OneStepSnapshot());
+        var entries = events.Select(e => (LogEntry)new LogEntry.FlowLogEntry(e)).ToList();
+
+        var view = WorkflowStatusProjector.Project(state, OneStepSnapshot(), Path.GetTempPath(), entries);
+
+        var step = Assert.Single(view.Steps);
+        Assert.Equal("Retryable", step.FailureKind);
+        Assert.Null(step.ExhaustedUntil);
+    }
+
+    [Fact]
+    public void A_Stalled_park_keeps_reporting_its_now_past_reset_instant_rather_than_clearing_it()
+    {
+        // #1513: liveness confirming the scheduling engine dead is a display-only downgrade at the
+        // FleetStatusTool room level (StalledDisplayState) -- it never touches this projection or
+        // the step's own recorded RetryNotBefore. A consumer (the glass chip) is what renders a
+        // past instant honestly; the data layer keeps reporting the same fact it always did.
+        var executionId = new ExecutionId("exec-1");
+        var (deadPid, deadStartTime) = DeadProcessIdentity();
+        var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId), EnginePid: deadPid, EngineStartTime: deadStartTime);
+        var pastResetInstant = DateTimeOffset.UtcNow.AddHours(-2);
+        var events = new FlowEvent[]
+        {
+            accepted,
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota exhausted", RetryNotBefore: pastResetInstant),
+            new FlowEvent.StepRetryScheduled(StepId, executionId, pastResetInstant, RetryDelayMs: 0),
+        };
+
+        var state = StateProjector.Project(events, OneStepSnapshot());
+        var entries = events.Select(e => (LogEntry)new LogEntry.FlowLogEntry(e)).ToList();
+
+        var view = WorkflowStatusProjector.Project(state, OneStepSnapshot(), Path.GetTempPath(), entries);
+
+        var step = Assert.Single(view.Steps);
+        Assert.Equal("dead", step.Liveness);
+        Assert.Equal(pastResetInstant.ToString("O"), step.ExhaustedUntil);
+    }
 }
