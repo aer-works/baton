@@ -82,9 +82,10 @@ public sealed record WorkflowStatusStepView(
     // ordinary Retryable backoff has a RetryNotBefore too, but this field answers "when does the
     // vendor-quota park lift", not "when is the next attempt". Present only when the engine
     // actually recorded a reset instant -- an un-obligated ExhaustedUntil park (RetryNotBefore
-    // null, StatusCommand's "reset unknown") stays absent rather than fabricating one. Absent, not
-    // re-derived, once liveness confirms the scheduling engine dead (#1513 Stalled) -- the instant
-    // itself does not change, only its honesty on render: that is the consuming chip's job.
+    // null, StatusCommand's "reset unknown") stays absent rather than fabricating one. Unchanged,
+    // not re-derived, once liveness confirms the scheduling engine dead (#1513 Stalled) -- the field
+    // still carries the recorded instant, only its honesty on render changes: that is the consuming
+    // chip's job.
     [property: JsonPropertyName("exhaustedUntil")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ExhaustedUntil = null);
@@ -254,7 +255,7 @@ public static class WorkflowStatusProjector
             string? exhaustedUntil = step.Status == StepStatus.Failed
                 && step.LatestFailureClassification == FailureClassification.ExhaustedUntil
                 && step.RetryNotBefore is { } resetInstant
-                ? resetInstant.ToString("O")
+                ? resetInstant.ToUniversalTime().ToString("O")
                 : null;
 
             steps.Add(new WorkflowStatusStepView(
