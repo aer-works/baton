@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.26.0](https://github.com/philipreese/baton/compare/vendors-v0.25.0...vendors-v0.26.0) (2026-09-01)
+
+
+### Features
+
+* **cli:** Dispatch accepts a --label so rooms are legible in every fleet view ([#1527](https://github.com/philipreese/baton/issues/1527)) ([ab695d7](https://github.com/philipreese/baton/commit/ab695d777bb22524cf9ae89481ea6b52ed5c1da8))
+* **cli:** Dispatch ergonomics — spec/grant lint, --attach context files, --list-capabilities ([#1573](https://github.com/philipreese/baton/issues/1573)) ([9d6bc21](https://github.com/philipreese/baton/commit/9d6bc21e433e04bae836c12c9c93138db4af9015))
+* **dispatch:** Surface the worker's skill roster at dispatch, and fix skill discovery on both adapters ([#1566](https://github.com/philipreese/baton/issues/1566)) ([b8c27dc](https://github.com/philipreese/baton/commit/b8c27dcdbaec1afc368e74ef5f71c0ba8beb4378))
+* **flow:** Extend WorkerUsage with cache-read, cache-creation and thinking tokens ([#1587](https://github.com/philipreese/baton/issues/1587)) ([275c806](https://github.com/philipreese/baton/commit/275c806a48a00e3ae55a33a9aafeb7bf4b3616d1))
+* **vendors:** Stream claude dispatches so a running lane's stdout log fills incrementally ([#1559](https://github.com/philipreese/baton/issues/1559)) ([b28f5b3](https://github.com/philipreese/baton/commit/b28f5b310cf7bcac9cdf0db4c470b9896ef97395))
+
+
+### Bug Fixes
+
+* **cli:** Render status/result envelopes, never swallow unknown ones ([#1585](https://github.com/philipreese/baton/issues/1585)) ([4b90189](https://github.com/philipreese/baton/commit/4b901895d09af4bdcb859bdd47dc3ad501ad2c1c))
+* **dispatch:** Materialize a missing declared output from the worker's result envelope, loudly ([#1606](https://github.com/philipreese/baton/issues/1606)) ([17b31fe](https://github.com/philipreese/baton/commit/17b31fed653ee6197e55ef85d8c8af00769b653b))
+* **flow:** Freeze vendor attribution — record Adapter/Model on ExecutionRequest ([#1579](https://github.com/philipreese/baton/issues/1579)) ([cea2d16](https://github.com/philipreese/baton/commit/cea2d163d5e2aab1713622abebd9c1f9606f8e01))
+* **hooks:** Wire the shell-pattern hook channel as a second enforcement layer for scoped grants ([#1506](https://github.com/philipreese/baton/issues/1506)) ([f1f34fa](https://github.com/philipreese/baton/commit/f1f34faa61e60295c5bc3eb97296853b0509b463))
+* **vendors:** One usage parser per vendor - adapters delegate to the standard parsers ([#1612](https://github.com/philipreese/baton/issues/1612)) ([bc8b5b1](https://github.com/philipreese/baton/commit/bc8b5b1a1b5bc15d6b64fb8609394bf13cc0bae7))
+
+
+### Code Refactoring
+
+* **vendors:** Freeze baton env config in an ambient snapshot instead of per-access re-reads ([#1526](https://github.com/philipreese/baton/issues/1526)) ([9a513aa](https://github.com/philipreese/baton/commit/9a513aa64a5a81951d72ad11b4a0c141f45ebc2a))
+
 ## [0.25.0](https://github.com/philipreese/baton/compare/vendors-v0.24.0...vendors-v0.25.0) (2026-08-31)
 
 

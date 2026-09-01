@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.26.0](https://github.com/philipreese/baton/compare/cli-v0.25.0...cli-v0.26.0) (2026-09-01)
+
+
+### Features
+
+* **cli:** A cancel request reaches a quota-parked lane without waiting out the park ([#1605](https://github.com/philipreese/baton/issues/1605)) ([ab717ec](https://github.com/philipreese/baton/commit/ab717ec0171e4151c30449b9f2434e4220e99ad3))
+* **cli:** Dispatch accepts a --label so rooms are legible in every fleet view ([#1527](https://github.com/philipreese/baton/issues/1527)) ([ab695d7](https://github.com/philipreese/baton/commit/ab695d777bb22524cf9ae89481ea6b52ed5c1da8))
+* **cli:** Dispatch ergonomics — spec/grant lint, --attach context files, --list-capabilities ([#1573](https://github.com/philipreese/baton/issues/1573)) ([9d6bc21](https://github.com/philipreese/baton/commit/9d6bc21e433e04bae836c12c9c93138db4af9015))
+* **cli:** Reach a live lane with baton cancel through a room-scoped request channel ([#1528](https://github.com/philipreese/baton/issues/1528)) ([50c8a4b](https://github.com/philipreese/baton/commit/50c8a4ba157b70787a10535deb429e73b198ce03))
+* **dispatch:** Surface the worker's skill roster at dispatch, and fix skill discovery on both adapters ([#1566](https://github.com/philipreese/baton/issues/1566)) ([b8c27dc](https://github.com/philipreese/baton/commit/b8c27dcdbaec1afc368e74ef5f71c0ba8beb4378))
+* **flow:** Extend WorkerUsage with cache-read, cache-creation and thinking tokens ([#1587](https://github.com/philipreese/baton/issues/1587)) ([275c806](https://github.com/philipreese/baton/commit/275c806a48a00e3ae55a33a9aafeb7bf4b3616d1))
+* **flow:** Persist a lifetime execution ordinal per step so RetryWithRevision can't reset the attempt count ([#1555](https://github.com/philipreese/baton/issues/1555)) ([cfcc8ba](https://github.com/philipreese/baton/commit/cfcc8ba13b33f2e984d5df58531a87626e86b6eb))
+* **glass:** Show when an exhausted-until park lifts, honestly for stalled rooms too ([#1598](https://github.com/philipreese/baton/issues/1598)) ([dd71d32](https://github.com/philipreese/baton/commit/dd71d3237330b3519ce8a4ba910cf432907b4907))
+* **mcp:** Fleet projection reads bindings.json for adapter, model, effort, role, and timeout ([#1504](https://github.com/philipreese/baton/issues/1504)) ([abfe460](https://github.com/philipreese/baton/commit/abfe4600b7d8f4ea4b686ab7305feb73947b4dda))
+* **mcp:** Surface retry attempt and failure classification in fleet_status ([#1520](https://github.com/philipreese/baton/issues/1520)) ([3700b24](https://github.com/philipreese/baton/commit/3700b24590d73172fe8f2325ecd797428bfdf4c8))
+* **vendors:** Stream claude dispatches so a running lane's stdout log fills incrementally ([#1559](https://github.com/philipreese/baton/issues/1559)) ([b28f5b3](https://github.com/philipreese/baton/commit/b28f5b310cf7bcac9cdf0db4c470b9896ef97395))
+
+
+### Bug Fixes
+
+* **cli:** Dead-pump rooms fail fast with the recovery pointer instead of refusing bare or hanging ([#1604](https://github.com/philipreese/baton/issues/1604)) ([ee13f98](https://github.com/philipreese/baton/commit/ee13f98f8b37e7eb522ab50d1d39eb839a8b0f46))
+* **cli:** Render status/result envelopes, never swallow unknown ones ([#1585](https://github.com/philipreese/baton/issues/1585)) ([4b90189](https://github.com/philipreese/baton/commit/4b901895d09af4bdcb859bdd47dc3ad501ad2c1c))
+* **dispatch:** A lane that writes its deliverable can hang without a terminal event ([#1582](https://github.com/philipreese/baton/issues/1582)) ([690b29e](https://github.com/philipreese/baton/commit/690b29e329f78738edce748b820e6bb27071db2b))
+* **flow:** Freeze vendor attribution — record Adapter/Model on ExecutionRequest ([#1579](https://github.com/philipreese/baton/issues/1579)) ([cea2d16](https://github.com/philipreese/baton/commit/cea2d163d5e2aab1713622abebd9c1f9606f8e01))
+* **flow:** terminal.json carries the same vendor usage baton status --json reports ([#1597](https://github.com/philipreese/baton/issues/1597)) ([01bef7f](https://github.com/philipreese/baton/commit/01bef7f1950b8b8fd54edafdadbdda813607472a))
+* **hooks:** Wire the shell-pattern hook channel as a second enforcement layer for scoped grants ([#1506](https://github.com/philipreese/baton/issues/1506)) ([f1f34fa](https://github.com/philipreese/baton/commit/f1f34faa61e60295c5bc3eb97296853b0509b463))
+
+
+### Code Refactoring
+
+* **core:** Give the four room-identifying filenames one canonical home in BatonPaths ([#1489](https://github.com/philipreese/baton/issues/1489)) ([4307cb9](https://github.com/philipreese/baton/commit/4307cb921c989a0e940330d2ab80d1c58c8851ca))
+* **vendors:** Freeze baton env config in an ambient snapshot instead of per-access re-reads ([#1526](https://github.com/philipreese/baton/issues/1526)) ([9a513aa](https://github.com/philipreese/baton/commit/9a513aa64a5a81951d72ad11b4a0c141f45ebc2a))
+
 ## [0.25.0](https://github.com/philipreese/baton/compare/cli-v0.24.0...cli-v0.25.0) (2026-08-31)
 
 

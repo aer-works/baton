@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.26.0](https://github.com/philipreese/baton/compare/flow-v0.25.0...flow-v0.26.0) (2026-09-01)
+
+
+### Features
+
+* **cli:** A cancel request reaches a quota-parked lane without waiting out the park ([#1605](https://github.com/philipreese/baton/issues/1605)) ([ab717ec](https://github.com/philipreese/baton/commit/ab717ec0171e4151c30449b9f2434e4220e99ad3))
+* **cli:** Dispatch accepts a --label so rooms are legible in every fleet view ([#1527](https://github.com/philipreese/baton/issues/1527)) ([ab695d7](https://github.com/philipreese/baton/commit/ab695d777bb22524cf9ae89481ea6b52ed5c1da8))
+* **cli:** Reach a live lane with baton cancel through a room-scoped request channel ([#1528](https://github.com/philipreese/baton/issues/1528)) ([50c8a4b](https://github.com/philipreese/baton/commit/50c8a4ba157b70787a10535deb429e73b198ce03))
+* **flow:** Extend WorkerUsage with cache-read, cache-creation and thinking tokens ([#1587](https://github.com/philipreese/baton/issues/1587)) ([275c806](https://github.com/philipreese/baton/commit/275c806a48a00e3ae55a33a9aafeb7bf4b3616d1))
+* **flow:** Persist a lifetime execution ordinal per step so RetryWithRevision can't reset the attempt count ([#1555](https://github.com/philipreese/baton/issues/1555)) ([cfcc8ba](https://github.com/philipreese/baton/commit/cfcc8ba13b33f2e984d5df58531a87626e86b6eb))
+* **glass:** Show when an exhausted-until park lifts, honestly for stalled rooms too ([#1598](https://github.com/philipreese/baton/issues/1598)) ([dd71d32](https://github.com/philipreese/baton/commit/dd71d3237330b3519ce8a4ba910cf432907b4907))
+* **mcp:** Surface retry attempt and failure classification in fleet_status ([#1520](https://github.com/philipreese/baton/issues/1520)) ([3700b24](https://github.com/philipreese/baton/commit/3700b24590d73172fe8f2325ecd797428bfdf4c8))
+
+
+### Bug Fixes
+
+* **cli:** Dead-pump rooms fail fast with the recovery pointer instead of refusing bare or hanging ([#1604](https://github.com/philipreese/baton/issues/1604)) ([ee13f98](https://github.com/philipreese/baton/commit/ee13f98f8b37e7eb522ab50d1d39eb839a8b0f46))
+* **dispatch:** A lane that writes its deliverable can hang without a terminal event ([#1582](https://github.com/philipreese/baton/issues/1582)) ([690b29e](https://github.com/philipreese/baton/commit/690b29e329f78738edce748b820e6bb27071db2b))
+* **dispatch:** Materialize a missing declared output from the worker's result envelope, loudly ([#1606](https://github.com/philipreese/baton/issues/1606)) ([17b31fe](https://github.com/philipreese/baton/commit/17b31fed653ee6197e55ef85d8c8af00769b653b))
+* **dispatch:** Persist the worker's stdout stream to the room so drill-down has something to tail ([#1529](https://github.com/philipreese/baton/issues/1529)) ([7ccdad7](https://github.com/philipreese/baton/commit/7ccdad7f1cdb84a3ef32af297e3be8be34c35612))
+* **flow:** Freeze vendor attribution — record Adapter/Model on ExecutionRequest ([#1579](https://github.com/philipreese/baton/issues/1579)) ([cea2d16](https://github.com/philipreese/baton/commit/cea2d163d5e2aab1713622abebd9c1f9606f8e01))
+* **flow:** terminal.json carries the same vendor usage baton status --json reports ([#1597](https://github.com/philipreese/baton/issues/1597)) ([01bef7f](https://github.com/philipreese/baton/commit/01bef7f1950b8b8fd54edafdadbdda813607472a))
+* **vendors:** One usage parser per vendor - adapters delegate to the standard parsers ([#1612](https://github.com/philipreese/baton/issues/1612)) ([bc8b5b1](https://github.com/philipreese/baton/commit/bc8b5b1a1b5bc15d6b64fb8609394bf13cc0bae7))
+
+
+### Code Refactoring
+
+* **core:** Give the four room-identifying filenames one canonical home in BatonPaths ([#1489](https://github.com/philipreese/baton/issues/1489)) ([4307cb9](https://github.com/philipreese/baton/commit/4307cb921c989a0e940330d2ab80d1c58c8851ca))
+* **vendors:** Freeze baton env config in an ambient snapshot instead of per-access re-reads ([#1526](https://github.com/philipreese/baton/issues/1526)) ([9a513aa](https://github.com/philipreese/baton/commit/9a513aa64a5a81951d72ad11b4a0c141f45ebc2a))
+
 ## [0.25.0](https://github.com/philipreese/baton/compare/flow-v0.24.0...flow-v0.25.0) (2026-08-31)
 
 
