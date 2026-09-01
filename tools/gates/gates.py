@@ -82,6 +82,27 @@ AFTER_BUILD_FULL = AFTER_BUILD_FAST + ["test-no-build"]
 PASS_MARK = "GATES: PASS"
 FAIL_MARK = "GATES: FAIL"
 
+# Quiet mode (#1560): a dispatched worker that runs `gates` inherits ~2,500 tests' worth of stdout
+# into its conversation context and then re-reads it on every subsequent model call -- one small
+# renderer lane measured 1.25M input + 43.8M cache-read tokens, most of it this file's inherited
+# output. Quiet mode drops PASSING gates' logs and prints a FAILING gate's output tail-bounded.
+# This does not reintroduce the filtering the module docstring forbids: nothing here reads the
+# text to DECIDE anything -- the verdict is still the exit code alone; quiet only changes how much
+# of an already-decided gate's log gets echoed.
+QUIET_FAIL_TAIL_LINES = 400
+
+
+def emit_failure_output(name, data, tail_lines=QUIET_FAIL_TAIL_LINES):
+    """Print a failing gate's captured output, tail-bounded, naming the rerun for the full log."""
+    lines = data.splitlines(keepends=True)
+    if len(lines) > tail_lines:
+        print(f"  [{name}: {len(lines) - tail_lines} earlier line(s) elided -- "
+              f"rerun `pixi run {name}` for the full log]", flush=True)
+        lines = lines[-tail_lines:]
+    sys.stdout.flush()
+    sys.stdout.buffer.write(b"".join(lines))
+    sys.stdout.buffer.flush()
+
 
 def run_gates(names, runner):
     """Run each gate, print a per-gate line, return the names that failed."""
@@ -94,20 +115,24 @@ def run_gates(names, runner):
     return failed
 
 
-def join_gates(procs):
+def join_gates(procs, quiet=False):
     """Join overlapped gates: re-print each one's output verbatim, return the names that failed.
 
     The re-print is byte-for-byte, no decode and no filter -- re-printing is where the filtering
     the module docstring describes creeps back in, so nothing here inspects the text. The verdict
-    is the exit code alone.
+    is the exit code alone. Under --quiet a passing gate's output is dropped and a failing
+    gate's is tail-bounded (#1560); the exit-code contract is unchanged.
     """
     failed = []
     for name, proc in procs:
         out, _ = proc.communicate()
-        sys.stdout.flush()
-        sys.stdout.buffer.write(out)
-        sys.stdout.buffer.flush()
         code = proc.returncode
+        if not quiet:
+            sys.stdout.flush()
+            sys.stdout.buffer.write(out)
+            sys.stdout.buffer.flush()
+        elif code != 0:
+            emit_failure_output(name, out)
         print(f"  {'pass' if code == 0 else 'FAIL':>4}  {name}  (exit {code})", flush=True)
         if code != 0:
             failed.append(name)
@@ -128,6 +153,16 @@ def pixi_runner(name):
     return subprocess.run(["pixi", "run", name], check=False).returncode
 
 
+def quiet_pixi_runner(name):
+    # The --quiet counterpart (#1560): capture, and echo only a FAILING gate's output
+    # (tail-bounded). The decision is still the exit code -- captured text is never inspected.
+    proc = subprocess.run(["pixi", "run", name], check=False,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if proc.returncode != 0:
+        emit_failure_output(name, proc.stdout)
+    return proc.returncode
+
+
 def pixi_spawner(name):
     # stderr folded into stdout so the join-time re-print loses nothing a terminal would have
     # shown. An overlapped audit that outgrows the OS pipe buffer just blocks until join drains
@@ -135,11 +170,11 @@ def pixi_spawner(name):
     return subprocess.Popen(["pixi", "run", name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
-def run_all(after_build, spawner=pixi_spawner, runner=pixi_runner):
+def run_all(after_build, spawner=pixi_spawner, runner=pixi_runner, quiet=False):
     """Overlapped audits start first, the build phase runs while they work, then everything joins."""
     procs = [(name, spawner(name)) for name in OVERLAP]
     failed = run_gates(BUILD_PHASE, runner)
-    failed += join_gates(procs)
+    failed += join_gates(procs, quiet=quiet)
     failed += run_gates(after_build, runner)
     return OVERLAP + BUILD_PHASE + after_build, failed
 
@@ -184,6 +219,49 @@ def selftest():
         print(f"  control FAILED: the overlapped path did not report the failing gate -- {failed}")
         ok = False
 
+    # The quiet path (#1560), both directions: a failing overlapped gate must still be REPORTED
+    # (named in the failed list -- quiet must never eat a red), and a passing gate's output must
+    # actually be dropped. Both arms discriminate: without the quiet branch the second arm sees
+    # "overlap-output"; if quiet ever stopped collecting failures the first arm goes green-blind.
+    failed = join_gates([("good", fake_spawner(0)), ("bad", fake_spawner(3))], quiet=True)
+    if failed != ["bad"]:
+        print(f"  control FAILED: the quiet overlapped path did not report the failing gate -- {failed}")
+        ok = False
+
+    import io
+    captured = io.BytesIO()
+
+    class _Buf:
+        buffer = captured
+        @staticmethod
+        def write(text):
+            captured.write(text.encode())
+        @staticmethod
+        def flush():
+            pass
+
+    real_stdout = sys.stdout
+    sys.stdout = _Buf()  # type: ignore[assignment]  # only .buffer/.flush are touched below
+    try:
+        join_gates([("good", fake_spawner(0))], quiet=True)
+    finally:
+        sys.stdout = real_stdout
+    if b"overlap-output" in captured.getvalue():
+        print("  control FAILED: quiet mode echoed a PASSING gate's output")
+        ok = False
+
+    # The tail bound: an over-long failing log is elided with the rerun named, and the tail kept.
+    sys.stdout = _Buf()  # type: ignore[assignment]
+    captured.seek(0); captured.truncate()
+    try:
+        emit_failure_output("longgate", b"".join(b"line%d\n" % i for i in range(500)), tail_lines=100)
+    finally:
+        sys.stdout = real_stdout
+    got = captured.getvalue()
+    if b"line499" not in got or b"line0\n" in got:
+        print("  control FAILED: the tail bound did not keep the tail / drop the head")
+        ok = False
+
     print("selftest: pass" if ok else "selftest: FAIL")
     return 0 if ok else 1
 
@@ -193,7 +271,10 @@ def main():
         return selftest()
 
     after_build = AFTER_BUILD_FAST if "--fast" in sys.argv else AFTER_BUILD_FULL
-    names, failed = run_all(after_build)
+    quiet = "--quiet" in sys.argv
+    names, failed = run_all(after_build,
+                            runner=quiet_pixi_runner if quiet else pixi_runner,
+                            quiet=quiet)
     print()
     print(summarise(names, failed))
     return 1 if failed else 0

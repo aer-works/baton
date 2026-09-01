@@ -245,6 +245,11 @@ flake-watch-selftest = { cmd = "python -u tools/flake-watch/summarize.py --selft
 # out of the combined output -- see tools/gates/gates.py for the two occasions that went wrong.
 gates = { cmd = "python -u tools/gates/gates.py" }
 gates-fast = { cmd = "python -u tools/gates/gates.py --fast" }
+# The quiet pair (#1560) is what DISPATCHED WORKERS run: same gates, same exit-code contract, but a
+# passing gate's log is dropped and a failing gate's is tail-bounded -- inherited full-suite output
+# was measured re-entering a lane's model context on every call (43.8M cache-read tokens in one lane).
+gates-quiet = { cmd = "python -u tools/gates/gates.py --quiet" }
+gates-fast-quiet = { cmd = "python -u tools/gates/gates.py --fast --quiet" }
 gates-selftest = { cmd = "python -u tools/gates/gates.py --selftest" }
 
 # One-time per clone: point git at the committed hooks. .git/hooks is not version-controlled, so a
