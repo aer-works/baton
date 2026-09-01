@@ -872,31 +872,30 @@ definition has no exit event yet and needs every line scanned, not just the last
   emitted… an absent field is honest, a summed one would re-count each turn's whole context" — was
   right about the trap and wrong about the conclusion: it correctly noted neither
   `docs/vendor-doc-audit.md` nor `python tools/vendor-verify/verify.py --list` records a
-  per-assistant-message (mid-stream) usage figure, but read the register's silence as "does not
-  exist" rather than "go measure it". A live capture on 2026-09-01 (`claude -p ... --output-format
-  stream-json --verbose`, recorded in `docs/vendor-capabilities.md`'s history table) confirms
-  `message.usage` on every `type=="assistant"` line — not just the terminal `result` line — carries
-  `input_tokens`, `output_tokens`, `cache_read_input_tokens`, and `cache_creation_input_tokens`.
-  `outputTokens` sums `output_tokens` across every `assistant` line in the execution's `.stdout.log`
-  (additive, whole-tree) — this is *more* accurate than the terminal line's own cumulative figure,
-  which `docs/vendor-doc-audit.md` measures undercounting by ~22% with a single subagent in the tree
-  (`usage.output_tokens` excludes subagent tokens; the gap grows with the fan-out). `contextTokens`
-  (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`) and `cacheReadTokens`
-  (`cache_read_input_tokens` alone) are read off the LATEST `assistant` line only — a LEVEL, replaced
-  every turn, never summed: the trap the original ruling correctly named applies to `input_tokens`
-  specifically (summing it across turns re-counts each turn's whole repeated context), not to output
-  or to a single turn's own level. All three fields are absent, never a substituted zero, when a
+  per-assistant-message (mid-stream) usage figure, but treated that silence as a verdict rather than
+  an open question still worth checking. A live capture on 2026-09-01 settles it — see
+  `docs/vendor-capabilities.md`'s history table (top row) for the captured key list and the exact
+  command run; every one of the four raw usage keys that row names shows up on `message.usage`,
+  mid-stream, on every `type=="assistant"` line, not only the terminal `result` line.
+  `outputTokens` sums the message's output count across every `assistant` line in the execution's
+  `.stdout.log` (additive, whole-tree) — this is *more* accurate than the terminal line's own
+  cumulative figure, which `docs/vendor-doc-audit.md` measures undercounting by ~22% with a single
+  subagent in the tree (`usage.output_tokens` excludes subagent tokens; the gap grows with the
+  fan-out). `contextTokens` (the sum of the message's fresh-input count and both its cache counters)
+  and `cacheReadTokens` (the cache-read counter alone) are read off the LATEST `assistant` line only
+  — a LEVEL, replaced every turn, never summed: the trap the original ruling correctly named applies
+  to the fresh-input count specifically (summing it across turns re-counts each turn's whole
+  repeated context), not to output or to a single turn's own level. All three fields are absent, never a substituted zero, when a
   line's `usage` object doesn't carry what is needed. agy emits none of the three: its `step_update`
   heartbeat carries no `usage` field at all (`AgyWorkerAdapter.TryParseProgressEvent`,
   `AgyWorkerAdapter.cs`) — a claude-only measurement stays a claude-only field.
 
   `lastActivityAt` is the stdout log's own last-write instant (a real filesystem fact, not `now()`),
-  quantized to a ~90s bucket before it enters the pushed payload (2026-09-01 review finding) so a
-  continuously-streaming lane's every-chunk mtime advance does not itself force the #1457
-  change-gate to push every cycle. Quantized, not excluded the way `derived_at` is excluded below:
-  a lane that streams text without ever calling a tool would otherwise change no field in `live` at
-  all, and glass would keep rendering a stale "active Nm ago" for a lane that is actually still
-  streaming.
+  quantized to a ~90s bucket before it enters the pushed payload (2026-09-01 review finding) — see
+  `pusher.py`'s `LAST_ACTIVITY_BUCKET_SECONDS` for the write-budget reasoning this closes. Quantized,
+  not excluded the way `derived_at` is excluded below: a lane that streams text without ever calling
+  a tool would otherwise change no field in `live` at all, and glass would keep rendering a stale
+  "active Nm ago" for a lane that is actually still streaming.
 - **`derived_at` (item 2)**, beside `heartbeat_at` (#1486) at the top level of the pushed snapshot:
   when this pusher process's OWN `derive_snapshot_and_timelines` call last completed successfully,
   regardless of whether that cycle's content changed enough to push. `pushed_at` (worker.js's own
@@ -915,8 +914,8 @@ definition has no exit event yet and needs every line scanned, not just the last
   rather than silently falling through to a clean one (2026-09-01 review finding) — mirrors the
   sibling `heartbeat_at`-absent message.
 
-  **`pending_push_age_s` (2026-09-01 review finding), riding the SAME `/heartbeat` ping body as
-  `derived_at`:** `derived_at` alone cannot distinguish "the fleet is quiet" from "derivation keeps
+  **`pending_push_age_s`, a second field this same review pass added to the SAME `/heartbeat` ping
+  body `derived_at` rides:** `derived_at` alone cannot distinguish "the fleet is quiet" from "derivation keeps
   succeeding but every snapshot PUSH keeps failing" (a 413 from the 1 MB push cap, a 5xx, a network
   blip) — dropping the pre-#1613 `pushed_at` staleness check removed the only signal that used to
   catch a failing push, and this PR's own terminal-timeline addition made the 413 case more likely

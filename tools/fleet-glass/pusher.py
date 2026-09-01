@@ -466,9 +466,10 @@ def extract_live_counts(lines: list[str]) -> dict:
       - claude: `type`-keyed; a completed `assistant` message's `message.content` array carries a
         `{"type": "tool_use", ...}` block per tool call -- shape measured against real #1559
         capture fixtures (tests/Baton.Cli.Tests/RunCommandEchoTests.cs). The SAME `assistant`
-        message's `message.usage` (measured live 2026-09-01, docs/vendor-capabilities.md) carries
-        `output_tokens` and, when the CLI reports the cache split, `input_tokens` /
-        `cache_read_input_tokens` / `cache_creation_input_tokens` -- see below for how each is used.
+        message's `message.usage` object carries an output count plus, when the CLI reports the
+        cache split, the three input-side counts a context figure needs -- the exact key names and
+        where they were measured are spec/baton.md §6's `rooms[].live` entry, not restated here; see
+        below for how each is used.
       - agy: `event`-keyed; a `step_update` heartbeat with `state: "DONE"` and `step_type: "tool"`
         marks one completed tool step -- shape measured live against agy 1.1.11
         (AgyWorkerAdapter.TryParseProgressEvent's own #1088 doc comment). agy's `step_update` has no
@@ -1874,8 +1875,8 @@ def _selftest() -> int:
     real_counts = extract_live_counts([real_assistant_usage_line])
     check("outputTokens reads message.usage.output_tokens off the real captured envelope shape",
           real_counts.get("outputTokens") == 4)
-    check("contextTokens is input_tokens + cache_read_input_tokens + cache_creation_input_tokens "
-          "off the same message",
+    check("contextTokens sums the message's three input-side usage counts (fresh input plus both "
+          "cache counters)",
           real_counts.get("context", {}).get("contextTokens") == 2 + 12066 + 15092)
     check("cacheReadTokens is cache_read_input_tokens alone",
           real_counts.get("context", {}).get("cacheReadTokens") == 15092)

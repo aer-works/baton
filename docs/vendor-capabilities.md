@@ -551,14 +551,13 @@ drift to chase. Observed on a trivial *"reply with ok"* turn: **$0.2463**, of wh
 per-turn cost display.
 
 **The terminal `result` line is not the only place this lives.** A separate 2026-09-01 capture (this
-file's history table, top row) confirms the SAME four token fields — `input_tokens`, `output_tokens`,
-`cache_read_input_tokens`, `cache_creation_input_tokens` — on `message.usage`, mid-stream, on every
-`type=="assistant"` line, not just the terminal one. `total_cost_usd`/`model` were not re-checked on
-that line and are not claimed there. This is what makes a live, not-yet-terminal usage figure
-possible at all (`tools/fleet-glass/pusher.py`'s `rooms[].live`, spec/baton.md §6) — a fact the #1613
-lane's own audit of this document and `vendor-doc-audit.md` missed, because both registers were
-silent on the per-message shape specifically and the silence was read as "does not exist" rather than
-"go measure it".
+file's history table, top row) confirms the same four keys that row names show up on
+`message.usage`, mid-stream, on every `type=="assistant"` line, not just the terminal one.
+`total_cost_usd`/`model` were not re-checked on that line and are not claimed there. This is what
+makes a live, not-yet-terminal usage figure possible at all (`tools/fleet-glass/pusher.py`'s
+`rooms[].live`, spec/baton.md §6) — a fact the #1613 lane's own audit of this document and
+`vendor-doc-audit.md` missed. Both registers were quiet on the per-message shape specifically, and
+that quiet got mistaken for a finished investigation instead of an open one.
 
 ### `agy` — works headlessly too, as of a CLI update
 
