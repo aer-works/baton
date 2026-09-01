@@ -4,9 +4,9 @@ using Baton.Cli.Tests.TestSupport;
 using Baton.Concurrency;
 using Baton.Domain;
 using Baton.Mutation;
-using Baton.Store;
-using Baton.Templates;
 using Baton.Vendors;
+using static Baton.Cli.Tests.TestSupport.ParkedStepFixture;
+using static Baton.Cli.Tests.TestSupport.ProcessIdentityFixture;
 
 namespace Baton.Cli.Tests;
 
@@ -35,20 +35,33 @@ public class CancelCommandDeadHolderTests
             // it only fires for a room with a step still waiting on a future RetryNotBefore, the
             // exact shape a dead-mid-park pump leaves behind. A room that ran to Terminal (no
             // pending retry) never reaches the dead-holder throw at all -- hand-write the parked
-            // shape directly, the same way StatusCommandEndToEndTests.WriteParkedStepFixtureAsync
-            // proves a quota park without needing an adapter that can report one.
-            var bindingsFilePath = await WriteParkedStepFixtureAsync(testRoot, roomDirectory);
+            // shape directly via the shared fixture, the same way
+            // StatusCommandEndToEndTests proves a quota park without needing an adapter that can
+            // report one.
+            await WriteParkedStepFixtureAsync(testRoot, roomDirectory);
+            var bindingsFilePath = await WriteImplementBindingsFileAsync(testRoot);
 
             // Reconstruct the exact stale-sidecar-beside-a-free-lock shape a crash leaves behind,
             // naming a real pid that was genuinely alive and is now genuinely dead (never a
             // fabricated number that might coincidentally collide with something else on the host).
+            // #1604 F2: AcquiredAtUtc is the PRODUCT shape -- distinct from, and here deliberately
+            // ten minutes later than, ProcessStartTimeUtc (ConcurrencyGuard.CreateWithSidecar always
+            // writes AcquiredAtUtc as DateTime.UtcNow, never the holder's own start time) --
+            // ProcessStartTimeUtc separately carries the value EngineLivenessProbe.Probe actually
+            // discriminates on, so this fixture cannot pass by accident against a real sidecar shape
+            // the way feeding AcquiredAtUtc as a start time did. A fixed ten-minute offset rather than
+            // a literal `DateTime.UtcNow` snapshot: a self-hosted xUnit process can itself be well
+            // under a second old when this test runs (measured directly against this test host, #1604
+            // F2 verification), which would make "now" and "this process's own start time" coincide
+            // and mask exactly the bug this fixture exists to catch.
             var (deadPid, deadStartTime) = DeadProcessIdentity();
             var holderPath = Path.Combine(roomDirectory, ConcurrencyGuard.FlowHolderFileName);
             var originalHolderJson = JsonSerializer.Serialize(new
             {
                 HolderDescription = $"baton run pump (pid {deadPid})",
                 Pid = deadPid,
-                AcquiredAtUtc = deadStartTime.UtcDateTime,
+                AcquiredAtUtc = deadStartTime.UtcDateTime.AddMinutes(10),
+                ProcessStartTimeUtc = deadStartTime.UtcDateTime,
             });
             await File.WriteAllTextAsync(holderPath, originalHolderJson, TestContext.Current.CancellationToken);
             Assert.False(ConcurrencyGuard.IsHeld(roomDirectory), "the lock must read as free -- only a stale sidecar is being simulated");
@@ -79,9 +92,13 @@ public class CancelCommandDeadHolderTests
 
     /// <summary>
     /// Control arm, polarity check: the identical parked-room shape as the test above -- same
-    /// pending future retry -- but a stale sidecar naming a pid that is genuinely still alive must
-    /// NOT be treated as dead. The gate has to discriminate on liveness, not on room shape; varying
-    /// only the pid (never the room) is what makes this a real control rather than a different test.
+    /// pending future retry, same product-shape sidecar (<c>AcquiredAtUtc</c> ten minutes after
+    /// <c>ProcessStartTimeUtc</c>, never equal to it) -- but naming a pid that is genuinely still
+    /// alive must NOT be treated as dead. The gate has to discriminate on liveness, not on room or
+    /// sidecar shape; varying only the pid (and its matching start time) between this arm and the
+    /// one above is what makes this a real control rather than a different test. Confirmed to go red
+    /// against the pre-#1604 code (which fed <c>AcquiredAtUtc</c> to the probe as if it were
+    /// <c>ProcessStartTimeUtc</c>) before this fix landed.
     /// Falls through to the ordinary unknown-execution refusal, proving the dead-holder branch was
     /// never entered.
     /// </summary>
@@ -92,15 +109,18 @@ public class CancelCommandDeadHolderTests
         var roomDirectory = Path.Combine(testRoot, "task");
         try
         {
-            var bindingsFilePath = await WriteParkedStepFixtureAsync(testRoot, roomDirectory);
+            await WriteParkedStepFixtureAsync(testRoot, roomDirectory);
+            var bindingsFilePath = await WriteImplementBindingsFileAsync(testRoot);
 
             using var currentProcess = Process.GetCurrentProcess();
             var holderPath = Path.Combine(roomDirectory, ConcurrencyGuard.FlowHolderFileName);
+            var currentProcessStartTimeUtc = currentProcess.StartTime.ToUniversalTime();
             var aliveHolderJson = JsonSerializer.Serialize(new
             {
                 HolderDescription = "leftover holder from an unrelated, still-running process",
                 Pid = currentProcess.Id,
-                AcquiredAtUtc = currentProcess.StartTime.ToUniversalTime(),
+                AcquiredAtUtc = currentProcessStartTimeUtc.AddMinutes(10),
+                ProcessStartTimeUtc = currentProcessStartTimeUtc,
             });
             await File.WriteAllTextAsync(holderPath, aliveHolderJson, TestContext.Current.CancellationToken);
             Assert.False(ConcurrencyGuard.IsHeld(roomDirectory));
@@ -118,71 +138,13 @@ public class CancelCommandDeadHolderTests
         }
     }
 
-    private static (int Pid, DateTimeOffset StartTime) DeadProcessIdentity()
-    {
-        var psi = OperatingSystem.IsWindows()
-            ? new ProcessStartInfo("ping.exe", "-n 30 127.0.0.1") { CreateNoWindow = true }
-            : new ProcessStartInfo("sleep", "30") { CreateNoWindow = true };
-
-        using var process = Process.Start(psi)!;
-        try
-        {
-            return (process.Id, new DateTimeOffset(process.StartTime).ToUniversalTime());
-        }
-        finally
-        {
-            process.Kill();
-            process.WaitForExit();
-        }
-    }
-
     /// <summary>
-    /// Hand-writes a snapshot plus an <c>ExecutionFailed</c>(<see cref="FailureClassification.ExhaustedUntil"/>)
-    /// / <c>StepRetryScheduled</c> pair directly to <c>flow.jsonl</c> -- the same shape
-    /// <c>StatusCommandEndToEndTests.WriteParkedStepFixtureAsync</c> hand-writes for the identical
-    /// reason: a room with a step still waiting on a future <c>RetryNotBefore</c> is the only shape
-    /// that reaches CancelCommand's dead-holder gate at all (<c>hasFutureDeferral</c>) -- a room that
-    /// ran to <c>Terminal</c> has no pending retry, so the gate never fires and the two arms above
-    /// become indistinguishable. Also writes bindings.json for <see cref="CancelOptions"/> to name,
-    /// even though the dead-holder throw fires before it is ever read.
+    /// A bindings.json naming the same "implement" step <see cref="ParkedStepFixture.WriteParkedStepFixtureAsync"/>
+    /// journals, for <see cref="CancelOptions"/> to point at -- the dead-holder throw fires before this
+    /// is ever read, so its content is a formality, not a fixture under test.
     /// </summary>
-    private static async Task<string> WriteParkedStepFixtureAsync(string testRoot, string roomDirectory)
+    private static async Task<string> WriteImplementBindingsFileAsync(string testRoot)
     {
-        Directory.CreateDirectory(roomDirectory);
-        var definition = new WorkflowDefinition(
-            new WorkflowTemplateId("parked-dead-holder-probe"),
-            1,
-            [new WorkflowStepDefinition(new StepId("implement"), "implement", [], ["out"], [], new RetryPolicy(3))]);
-        var snapshot = SnapshotBinder.Bind(definition);
-        var snapshotPath = Path.Combine(roomDirectory, "snapshot.json");
-        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
-
-        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
-        var executionId = new ExecutionId("exec-parked-1");
-        var request = new ExecutionRequest(
-            executionId,
-            new WorkflowId("wf-parked-dead-holder"),
-            new StepId("implement"),
-            "implement",
-            Inputs: [],
-            Outputs: [],
-            Timeout: TimeSpan.FromSeconds(30),
-            Environment: [],
-            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
-
-        var retryNotBefore = DateTimeOffset.UtcNow.Add(TimeSpan.FromMinutes(45));
-
-        await using (var writer = new FlowEventLogWriter(logPath))
-        {
-            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request), TestContext.Current.CancellationToken);
-            await writer.AppendAsync(
-                new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota exhausted", retryNotBefore),
-                TestContext.Current.CancellationToken);
-            await writer.AppendAsync(
-                new FlowEvent.StepRetryScheduled(new StepId("implement"), executionId, retryNotBefore, 2_700_000),
-                TestContext.Current.CancellationToken);
-        }
-
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["implement"] = new WorkerBindingConfigEntry(
