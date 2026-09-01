@@ -326,12 +326,9 @@ public sealed class FleetStatusTool : IMcpTool
             // "not terminal, and something could still make progress" -- true whether that something
             // is an in-flight process or a Failed step's still-unexpired RetryNotBefore. Neither
             // promise is backed by anything once the ONE process that would act on it is confirmed
-            // dead: `baton run`/`baton dispatch` is a single long-lived pump (MutationInterface's
-            // scheduling loop) that both spawns the worker AND `Task.Delay`s in-process through any
-            // retry backoff -- there is no daemon reaper (spec/baton.md §7 -- the room-watcher and
-            // retention sweep the daemon does own never re-drives a stalled room's own retry). This
-            // downgrade is display-only, scoped to the fleet-facing view an operator actually reads
-            // (the reported symptom -- "the room reads RUNNING forever on the fleet view"): it never
+            // dead -- spec/baton.md §7 has why there is nothing else to fall back on. This downgrade
+            // is display-only, scoped to the fleet-facing view an operator actually reads (the
+            // reported symptom -- "the room reads RUNNING forever on the fleet view"): it never
             // touches `outcome`/`state.Status` itself, so RunExitCodeResolver, TerminalSentinelWriter,
             // and every other WorkflowOutcome consumer keep reading exactly what they always did.
             var displayState = outcome == WorkflowOutcome.Running && IsConfirmedStalled(steps)

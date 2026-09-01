@@ -533,10 +533,8 @@ public class StatusCommandEndToEndTests
 
     /// <summary>
     /// #1513: a parked step whose engine is provably dead is the exact live signature this issue was
-    /// filed against -- "parked ... retries HH:MM" alone reads as a promise the ledger cannot back,
-    /// since the same pump that recorded <see cref="FlowEvent.StepRetryScheduled"/> is the only thing
-    /// that will ever act on it (no daemon reaper; <c>MutationInterface</c>'s scheduling loop
-    /// <c>Task.Delay</c>s the wait in-process). Same technique as
+    /// filed against -- "parked ... retries HH:MM" alone reads as a promise the ledger cannot back
+    /// (spec/baton.md §7 has why). Same technique as
     /// <c>FleetStatusToolTests.DeadProcessIdentity</c>: spawn a real process, capture its identity
     /// while genuinely alive, then kill it, so <c>EngineLivenessProbe</c> sees an OS-confirmed-dead
     /// PID rather than a fabricated one that might coincidentally collide with something else on the

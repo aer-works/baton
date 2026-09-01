@@ -575,11 +575,10 @@ public static class StatusCommand
         var localRetryTime = step.RetryNotBefore!.Value.ToLocalTime()
             .ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
 
-        // #1513: "retries HH:MM" reads as a promise the ledger cannot back on its own -- the pump
-        // that recorded StepRetryScheduled is the only thing that will ever act on it (no daemon
-        // reaper, MutationInterface's scheduling loop `Task.Delay`s the wait in-process). Same probe,
-        // same identity source as the Running branch below -- confirm dead before saying so, so a
-        // merely slow (or Unknown-liveness) pump is never misreported as abandoned.
+        // #1513: "retries HH:MM" reads as a promise the ledger cannot back on its own -- see
+        // spec/baton.md §7 for why. Same probe, same identity source as the Running branch below --
+        // confirm dead before saying so, so a merely slow (or Unknown-liveness) pump is never
+        // misreported as abandoned.
         if (step.LatestExecutionId is { } latestExecutionId)
         {
             var accepted = events.OfType<FlowEvent.ExecutionRequestAccepted>()

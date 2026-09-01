@@ -626,6 +626,14 @@ Explicitly **not** kept: pairing (`PairedClientsStore`), WebSocket broadcast (`/
 endpoints, orchestrator reassignment, and the permission REST answerer (§5) — all of that existed to
 serve `Baton.Ui`/`Baton.Mobile` and dies with them (Appendix).
 
+**No daemon reaper (#1513).** None of the kept surface above — the room-watcher, `RoomRetentionSweep`,
+or the concurrency-cap apply — ever re-drives a room's own pending retry or reaps a room whose pump
+has died. `MutationInterface`'s scheduling loop is the only thing that ever acts on a
+`StepRetryScheduled`/`RetryNotBefore` wait: it `Task.Delay`s that wait **in-process**, inside the same
+`baton run`/`baton dispatch` invocation that recorded it. If that process exits or is killed, nothing
+else in the system will ever complete the room — it does not go terminal on its own. Recovery is
+`baton resume`, an operator-driven action, never automatic.
+
 ### The quota ledger — what is new build, stated correctly
 
 Polls vendor CLIs' print-mode `/usage`; accumulation from lane logs is attribution only, never the
