@@ -72,7 +72,7 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:.45rem 0; background:var(--card);}
 .lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
 .lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.lane .roomid{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .roomid, .lane .project{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end;}
 .lane .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
@@ -192,6 +192,27 @@ function newestStepTime(room){
     if(s.timestamp && (!newest || s.timestamp > newest)) newest = s.timestamp;
   }
   return newest;
+}
+
+// -----------------------------------------------------------------------------------------------
+// #1618: project workspace sub-line (the room's projectRoot, emitted by FleetStatusTool.cs:458-460).
+// Displays the tail (last one or two segments, e.g. repos\w1614) with full path in title tooltip.
+// Absent-safe: rooms with no project render nothing.
+// -----------------------------------------------------------------------------------------------
+function projectTail(path){
+  if(!path || typeof path !== "string") return "";
+  const cleaned = path.trim().replace(/[\\/]+$/, "");
+  if(!cleaned) return "";
+  const sep = cleaned.includes("\\") && !cleaned.includes("/") ? "\\" : "/";
+  const parts = cleaned.split(/[\\/]+/).filter(Boolean);
+  if(!parts.length) return "";
+  return parts.slice(-2).join(sep);
+}
+function projectLineHtml(room){
+  if(!room || !room.project) return "";
+  const tail = projectTail(room.project);
+  if(!tail) return "";
+  return `<div class="project" title="${esc(room.project)}">${esc(tail)}</div>`;
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -632,6 +653,7 @@ function laneHtml(room, timelines, dismissable = false){
     : "";
   return `<div class="lane"><div class="top"><span class="name">${title}</span><span class="chips">${chipsHtml(room, running, focusStep)}${dismissBtn}</span></div>
     ${roomIdLine}
+    ${projectLineHtml(room)}
     ${bindingLineHtml(room)}
     ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${tryLine}${err}${ageLine}
     ${timelineHtml(room, timelines)}
