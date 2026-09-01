@@ -105,6 +105,39 @@ mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose`
 its default `agy` tier), and `patch` never grants a write in the first place —
 its whole point is proposing a diff without mutating the workspace.
 
+### The printed skill roster
+
+Every dispatch also prints the worker's discovered skill roster, one line per bound worker whose
+adapter is registered (or `Skills (<worker>)` for composed templates), before the run starts (#1512).
+Like the Grant line above, a composed template's capture step gets no line, for the same "spawns `git`
+directly, nothing to report" reason as the Grant exclusion — but drawn independently, since skill
+discovery does not depend on whether an adapter consumes a permission grant (`src/Baton.Cli/DispatchCommand.cs`).
+
+```
+Skills: none discovered
+```
+
+or, when skills exist in the worker's environment (e.g. `~/.claude/skills/` or `<workspace>/.claude/skills/`
+for Claude — also `<CLAUDE_CONFIG_DIR>/skills` when `BATON_CLAUDE_CONFIG_ROOT` is set, replacing the
+`~/.claude` arm rather than adding to it — or `<workspace>/.agents/skills/` for agy):
+
+```
+Skills: artifact-design, run-checks
+```
+
+For a worktree-provisioned binding (an audited role), the roster scans the source repository rather
+than the worker's not-yet-provisioned worktree, and says so —
+`Skills (from <repo>; the worker runs in a fresh worktree at HEAD): …` — since an untracked skill it
+finds there may not survive into the worker's actual checkout. Full rationale on the exclusion above
+and this line: `src/Baton.Cli/DispatchCommand.cs`'s skill-roster block.
+
+**Vendor coverage, honestly scoped.** The `<workspace>/.claude/skills` and personal-arm paths reflect
+Claude Code's own documented `SKILL.md` convention; the `BATON_CLAUDE_CONFIG_ROOT` arm and the agy
+`.agents/skills` path each rest on an unmeasured vendor fact, tracked in #1572 for agy and in the
+adapters' own comments (`src/Baton.Vendors/ClaudeWorkerAdapter.cs`, `AgyWorkerAdapter.cs`) for both.
+
+**Rule for briefs:** Dispatched workers run in their own process and do not inherit the conducting session's loaded skills. Briefs must inline what they need; a named skill only works if the worker's roster shows it. Skill forwarding is not performed by dispatch.
+
 ## Roles
 
 Each role declares what it must produce; those declarations become the contract the engine enforces,

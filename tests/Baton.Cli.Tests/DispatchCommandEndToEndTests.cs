@@ -649,6 +649,107 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Dispatching_a_role_prints_none_discovered_when_no_skills_are_found()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake");
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            Assert.Contains("Skills: none discovered", consoleOutput.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_a_role_prints_discovered_skill_names_when_present()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake-skills");
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake-skills"] = new ContractOutputWorkerAdapter(
+                    satisfyOutputs: true,
+                    capabilities: new List<WorkerCapabilityItem>
+                    {
+                        new("artifact-design", "skill", "Design artifacts"),
+                        new("run-checks", "skill", "Run checks"),
+                        new("/compact", "command", "Compact command"),
+                    }),
+            };
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            Assert.Contains("Skills: artifact-design, run-checks", consoleOutput.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_a_role_prints_the_grant_line_before_the_skills_line()
+    {
+        // #1512 M6: the two single-role skill tests above only ever Assert.Contains on the whole
+        // buffer, which passes regardless of position -- neither tests the ordering the preamble
+        // actually claims ("Grant" lines, then "Skills" lines). This asserts the ordered sequence
+        // directly. Needs GrantConsumingContractOutputWorkerAdapter (IPermissionGrantTranslator) so a
+        // Grant line prints at all -- the plain ContractOutputWorkerAdapter the other skills tests use
+        // sits outside that population (see M5's comment in DispatchCommand.cs).
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Review the change.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("review", specPath, roomDirectory, Adapter: "fake");
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new GrantConsumingContractOutputWorkerAdapter(satisfyOutputs: true),
+            };
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            var output = consoleOutput.ToString();
+            var grantIndex = output.IndexOf("Grant:", StringComparison.Ordinal);
+            var skillsIndex = output.IndexOf("Skills:", StringComparison.Ordinal);
+            Assert.True(grantIndex >= 0, "expected a Grant line");
+            Assert.True(skillsIndex >= 0, "expected a Skills line");
+            Assert.True(grantIndex < skillsIndex, "the Grant line must print before the Skills line");
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static async Task<string> WriteSpecAsync(string directory, string content)
     {
         Directory.CreateDirectory(directory);

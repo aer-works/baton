@@ -359,6 +359,53 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Dispatching_a_template_prints_skills_for_each_worker_phase()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-tmpl-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var workspace = Path.Combine(testRoot, "workspace");
+            await InitGitWorkspaceAsync(workspace);
+
+            var verdictFixture = Path.Combine(testRoot, "verdict-fixture.json");
+            await File.WriteAllTextAsync(
+                verdictFixture, """{"reviewedRef":"HEAD","findings":[]}""", TestContext.Current.CancellationToken);
+
+            var capture = new BaseRefCapturingWorkerAdapter();
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new ContractOutputWorkerAdapter(
+                    satisfyOutputs: true,
+                    outputFixtures: new Dictionary<string, string> { ["verdict.json"] = verdictFixture }),
+                [WorkflowTemplateComposer.CaptureAdapter] = capture,
+            };
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("implement-review", SpecFilePath: null, roomDirectory, Adapter: "fake");
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(
+                options, adapters, TestContext.Current.CancellationToken, workspaceDirectory: workspace);
+            Console.SetOut(originalOut);
+
+            var output = consoleOutput.ToString();
+            Assert.Contains("Skills (implement): none discovered", output);
+            Assert.Contains("Skills (janitor): none discovered", output);
+            Assert.Contains("Skills (review): none discovered", output);
+            // #1512 M6: this test previously asserted only presence, not absence -- it would have
+            // passed unchanged if a fourth "Skills (capture...)" line had been printed, so the
+            // exclusion itself was never actually tested.
+            Assert.DoesNotContain("Skills (capture", output);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     /// <summary>Creates a git repo at <paramref name="directory"/> with one empty commit; returns its HEAD SHA.</summary>
     private static async Task<string> InitGitWorkspaceAsync(string directory)
     {

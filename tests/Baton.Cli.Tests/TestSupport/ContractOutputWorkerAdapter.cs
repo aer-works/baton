@@ -22,8 +22,18 @@ namespace Baton.Cli.Tests.TestSupport;
 /// </param>
 internal sealed class ContractOutputWorkerAdapter(
     bool satisfyOutputs,
-    IReadOnlyDictionary<string, string>? outputFixtures = null) : IWorkerAdapter
+    IReadOnlyDictionary<string, string>? outputFixtures = null,
+    IReadOnlyList<WorkerCapabilityItem>? capabilities = null) : IWorkerAdapter
 {
+    /// <summary>The directory <see cref="DiscoverCapabilitiesAsync"/> was last called with — lets a test pin which directory <c>DispatchCommand</c> actually scanned (#1512 H1).</summary>
+    public string? LastDiscoverCapabilitiesWorkingDirectory { get; private set; }
+
+    public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(string? workingDirectory = null, CancellationToken cancellationToken = default)
+    {
+        LastDiscoverCapabilitiesWorkingDirectory = workingDirectory;
+        return Task.FromResult(new WorkerCapabilities("fake", capabilities ?? Array.Empty<WorkerCapabilityItem>(), Array.Empty<string>()));
+    }
+
     public CoreDispatchTarget Resolve(WorkerInvocation invocation, WorkerContract contract)
     {
         var script = satisfyOutputs && contract.ProducedOutputs.Count > 0

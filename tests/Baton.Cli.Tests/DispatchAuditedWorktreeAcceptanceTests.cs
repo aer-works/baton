@@ -164,6 +164,58 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Dispatching_an_audited_role_prints_a_skill_roster_that_names_the_repo_it_scanned_not_the_worktree()
+    {
+        // #1512 H1 (second-reader finding) -- see DispatchCommand.cs's skill-roster block for why a
+        // worktree-provisioned binding's roster can only honestly describe the source repo it scans.
+        // Before this fix the label was a bare "Skills:" that claimed no less than an ordinary
+        // roster would. Pins the fix: the label now discloses the scope, and the scan target itself
+        // is still the source repo (proven via the fake's own LastDiscoverCapabilitiesWorkingDirectory).
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-agy-h1-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var workspace = Path.Combine(testRoot, "workspace");
+            await InitGitRepoAsync(workspace);
+
+            // Untracked by construction -- exactly the case H1 describes: `git ls-files` never sees
+            // it, so the worker's fresh worktree checkout at HEAD will not have it either.
+            var untrackedSkillDir = Path.Combine(workspace, ".claude", "skills", "untracked-skill");
+            Directory.CreateDirectory(untrackedSkillDir);
+            await File.WriteAllTextAsync(
+                Path.Combine(untrackedSkillDir, "SKILL.md"), "description: Untracked skill",
+                TestContext.Current.CancellationToken);
+
+            var specPath = await WriteSpecAsync(testRoot, "Confirm the facts.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var fakeAdapter = new ContractOutputWorkerAdapter(
+                satisfyOutputs: true,
+                capabilities: new List<WorkerCapabilityItem> { new("untracked-skill", "skill", "Untracked skill") });
+            var adapters = new Dictionary<string, IWorkerAdapter> { ["agy"] = fakeAdapter };
+
+            var options = new DispatchOptions("fact-check", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace);
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            var output = consoleOutput.ToString();
+            Assert.Contains(
+                $"Skills (from {workspace}; the worker runs in a fresh worktree at HEAD): untracked-skill", output);
+            // Never the bare, non-scoped label an ordinary (non-worktree) dispatch prints -- that
+            // would claim more than this dispatch actually knows.
+            Assert.DoesNotContain("Skills: untracked-skill", output);
+            Assert.Equal(workspace, fakeAdapter.LastDiscoverCapabilitiesWorkingDirectory);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     /// <param name="translatesGrants">
     /// F2/F3: the printed-grant-line test needs the bound "agy" adapter to actually consume a grant
     /// (<see cref="IPermissionGrantTranslator"/>) or <see cref="DispatchCommand"/> now prints nothing

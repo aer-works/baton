@@ -954,6 +954,17 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         items.AddRange(ParseAgentLines(agentsOutput.Result));
         items.AddRange(ParsePluginLines(pluginsOutput.Result));
 
+        if (!string.IsNullOrWhiteSpace(workingDirectory) && Directory.Exists(workingDirectory))
+        {
+            // #1512 M2: whether agy actually reads SKILL.md from this directory is UNMEASURED --
+            // verify.py has no check for it and docs/decisions/0033-skills-attach-directly-no-persona.md
+            // describes agy's skill equivalent as "the plugin/agent equivalent", not a SKILL.md
+            // directory. Tracked by #1572. Not symmetric with claude's discovery either: no
+            // user-personal arm, and no name-based dedup (see docs/dispatch.md's skill-roster section).
+            var skillsDir = Path.Combine(workingDirectory, ".agents", "skills");
+            items.AddRange(SkillScanner.DiscoverSkills(skillsDir));
+        }
+
         return new WorkerCapabilities("agy", items, ParseModelLines(modelsOutput.Result));
     }
 

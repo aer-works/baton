@@ -104,6 +104,60 @@ public static class DispatchCommand
             Console.Out.WriteLine($"{label}: {DescribeGrant(binding)}");
         }
 
+        // #1512: surface the worker's discovered skill roster so a brief that names an absent skill is
+        // caught by the operator — printed after the room directory already exists (created at :75
+        // above; nothing about this ordering makes the room avoidable) and after the Grant lines.
+        // Excludes the capture step: like F2's Grant exclusion (:90-96 above), it spawns git directly
+        // rather than running a skill-bearing prompt. This is a DELIBERATELY parallel predicate, not
+        // the same one reused — F2 draws its population structurally (`is IPermissionGrantTranslator`)
+        // because a grant line is meaningless for an adapter that never consumes a grant; skill
+        // discovery has no such dependency; an adapter can discover skills whether or not it also
+        // translates a permission grant. Requiring IPermissionGrantTranslator here would wrongly hide
+        // a real roster behind an unrelated capability. The two populations already diverge in the test
+        // suite (ContractOutputWorkerAdapter is not an IPermissionGrantTranslator, so a plain-adapter
+        // dispatch prints a Skills line with no matching Grant line) — that is expected, not a bug.
+        var skillBindings = bindings
+            .Where(pair => !string.Equals(pair.Value.Adapter, WorkflowTemplateComposer.CaptureAdapter, StringComparison.Ordinal))
+            .Where(pair => adapters.ContainsKey(pair.Value.Adapter))
+            .ToList();
+        var multipleSkillWorkers = skillBindings.Count > 1;
+        foreach (var (workerName, binding) in skillBindings)
+        {
+            var boundAdapter = adapters[binding.Adapter];
+
+            // H1 (#1512 second-reader finding): for a worktree-provisioned binding, WorkingDirectory
+            // is null at this point (WorktreeWorkspaces.cs refuses a binding that sets both) and the
+            // worktree the worker will actually run in does not exist yet — it is provisioned later,
+            // inside RunCommand, as a fresh checkout at the binding's Ref. Scanning
+            // binding.Worktree.Repository instead means scanning the SOURCE repo's raw filesystem,
+            // untracked/uncommitted files included — the same gap workspaceFact discloses above for
+            // uncommitted changes generally. Rather than assert a roster the worker is not guaranteed
+            // to have, say plainly what was scanned.
+            string label;
+            string targetDirectory;
+            if (binding.Worktree is { } worktree)
+            {
+                targetDirectory = worktree.Repository;
+                label = multipleSkillWorkers
+                    ? $"Skills ({workerName}, from {worktree.Repository}; the worker runs in a fresh worktree at HEAD)"
+                    : $"Skills (from {worktree.Repository}; the worker runs in a fresh worktree at HEAD)";
+            }
+            else
+            {
+                targetDirectory = binding.WorkingDirectory ?? workspace;
+                label = multipleSkillWorkers ? $"Skills ({workerName})" : "Skills";
+            }
+
+            var caps = await boundAdapter.DiscoverCapabilitiesAsync(targetDirectory, cancellationToken).ConfigureAwait(false);
+            var skills = caps.Items
+                .Where(i => string.Equals(i.Kind, "skill", StringComparison.OrdinalIgnoreCase))
+                .Select(i => i.Name)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            var skillsText = skills.Count > 0 ? string.Join(", ", skills) : "none discovered";
+            Console.Out.WriteLine($"{label}: {skillsText}");
+        }
+
         // R4 (#1354/#1380): the execution-scoped artifact path isn't known until dispatch actually runs,
         // so without --output the only truthful thing to print beforehand is the artifacts directory
         // itself, labeled as a directory — not a fabricated per-execution file path that will not exist
