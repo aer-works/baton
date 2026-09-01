@@ -1191,6 +1191,25 @@ public class ClaudeWorkerAdapterTests
         Assert.Null(retryNotBefore);
     }
 
+    [Fact]
+    public void CreditsRequired_InRealisticStreamJsonStdoutTail_ClassifiesExhaustedUntil()
+    {
+        // #1540: multi-line stream-json tail containing system init, assistant message, and terminal error result
+        var streamJsonTail = """
+            {"type":"system","subtype":"init","session_id":"s-123","tools":["Bash"]}
+            {"type":"assistant","message":{"content":[{"type":"text","text":"Attempting operation..."}]}}
+            {"type":"result","subtype":"error","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}
+            """;
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(stderrTail: null, stdoutTail: streamJsonTail, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Null(retryNotBefore);
+    }
+
 
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider

@@ -80,12 +80,14 @@ public class RedispatchBindingTests
     [Fact]
     public void Stream_json_is_recomputed_for_the_new_adapter_not_inherited()
     {
-        // Adapter-derived (#1089): agy streams, claude doesn't. Both swap directions.
+        // Adapter-derived (#1089, #1540): agy and claude stream, others (e.g. shell) do not.
         var fromAgy = ParentEntry(adapter: "agy") with { StreamJson = true };
-        Assert.False(RedispatchCommand.InheritBinding(fromAgy, new RedispatchOptions("parent-room", "new-room", Adapter: "claude")).StreamJson);
+        Assert.True(RedispatchCommand.InheritBinding(fromAgy, new RedispatchOptions("parent-room", "new-room", Adapter: "claude")).StreamJson);
+        Assert.False(RedispatchCommand.InheritBinding(fromAgy, new RedispatchOptions("parent-room", "new-room", Adapter: "shell")).StreamJson);
 
-        var fromClaude = ParentEntry(adapter: "claude") with { StreamJson = false };
-        Assert.True(RedispatchCommand.InheritBinding(fromClaude, new RedispatchOptions("parent-room", "new-room", Adapter: "agy")).StreamJson);
+        var fromShell = ParentEntry(adapter: "shell") with { StreamJson = false };
+        Assert.True(RedispatchCommand.InheritBinding(fromShell, new RedispatchOptions("parent-room", "new-room", Adapter: "agy")).StreamJson);
+        Assert.True(RedispatchCommand.InheritBinding(fromShell, new RedispatchOptions("parent-room", "new-room", Adapter: "claude")).StreamJson);
     }
 
     /// <summary>Pins the axis rule <see cref="RedispatchCommand.InheritBinding"/>'s own comment cites (#1082).</summary>

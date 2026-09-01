@@ -187,9 +187,9 @@ public static class RedispatchCommand
             Timeout = options.Timeout ?? parentEntry.Timeout,
             Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label, // #1499, spec/baton.md §2
             // Adapter-derived, not role-derived, so it CAN be recomputed here — carrying the parent's
-            // value across a vendor swap would stream-json a claude worker (or text-mode an agy one).
+            // value across a vendor swap would stream-json a claude/agy worker (or text-mode a non-streaming one).
             // Grant/GrantAuditMode/worktree intent stay inherited: spec/baton.md §2 states why.
-            StreamJson = string.Equals(adapter, "agy", StringComparison.Ordinal),
+            StreamJson = string.Equals(adapter, "agy", StringComparison.OrdinalIgnoreCase) || string.Equals(adapter, "claude", StringComparison.OrdinalIgnoreCase),
             // A redispatch is a fresh worker turn, never a continuation of the parent's own session.
             SessionId = null,
             ResumeSession = false,

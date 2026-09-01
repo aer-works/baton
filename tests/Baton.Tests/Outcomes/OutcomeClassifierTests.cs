@@ -814,6 +814,37 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
+    public void Classify_with_multi_line_stream_json_stdout_tail_carries_ExhaustedUntil()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [], []);
+            var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+            var streamJsonTail = """
+                {"type":"system","subtype":"init","session_id":"s-123"}
+                {"type":"assistant","message":{"content":[{"type":"text","text":"Attempting run..."}]}}
+                {"type":"result","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}
+                """;
+            var mockClassifier = new TestQuotaTwoTailClassifier(null, streamJsonTail, FailureClassification.ExhaustedUntil, null);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.Natural, StderrTail: null, StdoutTail: streamJsonTail),
+                contract,
+                directory,
+                mockClassifier,
+                testTime);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
     public void Classify_with_ordinary_error_on_StdoutTail_stays_unclassified()
     {
         var directory = CreateTempDirectory();
