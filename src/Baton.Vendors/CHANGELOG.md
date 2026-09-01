@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/philipreese/baton/compare/vendors-v0.26.1...vendors-v0.27.0) (2026-09-01)
+
+
+### Miscellaneous
+
+* **vendors:** Synchronize core versions
+
 ## [0.26.1](https://github.com/philipreese/baton/compare/vendors-v0.26.0...vendors-v0.26.1) (2026-09-01)
 
 

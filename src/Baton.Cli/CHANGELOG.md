@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.0](https://github.com/philipreese/baton/compare/cli-v0.26.1...cli-v0.27.0) (2026-09-01)
+
+
+### Features
+
+* **flow:** StepRetryForeclosed and the indeterminate terminal vocabulary (state-truth S1) ([#1628](https://github.com/philipreese/baton/issues/1628)) ([e7438a4](https://github.com/philipreese/baton/commit/e7438a4482e42a5521350aa246a223ad1238771c))
+* **glass:** Live execution counts, honest staleness, terminal bindings, and terminal timelines ([#1624](https://github.com/philipreese/baton/issues/1624)) ([ea57852](https://github.com/philipreese/baton/commit/ea57852dab04f97c34d65137a575ae5b8a33aa5c))
+
 ## [0.26.1](https://github.com/philipreese/baton/compare/cli-v0.26.0...cli-v0.26.1) (2026-09-01)
 
 
