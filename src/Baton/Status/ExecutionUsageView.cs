@@ -62,7 +62,7 @@ public static class ExecutionUsageProjector
         string artifactsRootPath,
         IReadOnlyDictionary<string, IWorkerUsageParser>? adapters = null,
         string? roomDirectoryPath = null) =>
-        BuildByExecutionId<IWorkerUsageParser>(entries, artifactsRootPath, adapters ?? StandardWorkerUsageParsers.Default, roomDirectoryPath);
+        BuildByExecutionId<IWorkerUsageParser>(entries, artifactsRootPath, adapters, roomDirectoryPath);
 
     public static IReadOnlyDictionary<string, ExecutionUsageView> BuildByExecutionId<TParser>(
         IReadOnlyList<LogEntry> entries,
@@ -208,9 +208,20 @@ public static class ExecutionUsageProjector
             bindings.TryGetValue(workerName, out adapterName);
         }
 
-        if (adapterName is null
-            || adapters is null
-            || !adapters.TryGetValue(adapterName, out var adapter))
+        if (adapterName is null)
+        {
+            return null;
+        }
+
+        // Overload resolution against an unbound TParser can never apply the non-generic overload's
+        // `?? StandardWorkerUsageParsers.Default` fallback (invariance -- see #1590) -- so a null
+        // registry is resolved against the built-in parsers here instead, once, regardless of which
+        // overload the caller went through.
+        IWorkerUsageParser? adapter = adapters is not null
+            ? adapters.TryGetValue(adapterName, out var registered) ? registered : null
+            : StandardWorkerUsageParsers.Default.TryGetValue(adapterName, out var defaultParser) ? defaultParser : null;
+
+        if (adapter is null)
         {
             return null;
         }
