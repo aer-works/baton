@@ -390,10 +390,8 @@ public sealed class RoomDetailToolTests : IDisposable
     }
 
     /// <summary>
-    /// #1613 item 4: a timeline entry gains its step id / exit code where the underlying event
-    /// carries one directly. <c>ExecutionRequestAccepted</c> names the step it accepted;
-    /// <c>ExecutionExited</c> names the process's exit code -- both ids/counts, never content
-    /// (per the operator's 2026-09-01 ruling amending the content-free construction).
+    /// #1613 item 4 (content ruling: spec/baton.md §6): <c>ExecutionRequestAccepted</c> names the
+    /// step it accepted, <c>ExecutionExited</c> names the process's exit code.
     /// </summary>
     [Fact]
     public async Task TimelineEntries_CarryStepIdAndExitCodeWhereTheEventHasOne()

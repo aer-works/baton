@@ -449,14 +449,9 @@ public sealed class FleetStatusTool : IMcpTool
     }
 
     /// <summary>
-    /// The terminal-sentinel fast path's binding resolution (#1613 item 3): there is no "Running"
-    /// step left to key off, so <see cref="TryResolveRunningBinding"/>'s strategy does not apply.
-    /// Deliberately narrower than "first entry" -- <see cref="Dictionary{TKey,TValue}"/> enumeration
-    /// order is not a contract a fleet-facing display should lean on, and a multi-role room has no
-    /// single answer to "which role's adapter/model/effort does this row mean". Only when
-    /// <paramref name="bindings"/> names exactly one role is that role unambiguous; anything else
-    /// (zero, or more than one) omits the five fields rather than guess -- the same fail-open-to-absent
-    /// posture #1503 already established for a missing or corrupt <c>bindings.json</c>.
+    /// The terminal-sentinel fast path's binding resolution (#1613 item 3) -- rationale for the
+    /// "exactly one role" requirement is spec/baton.md §6's fleet_status schema entry, not restated
+    /// here.
     /// </summary>
     private static (string Role, WorkerBindingConfigEntry Entry)? TryResolveSoleBinding(
         IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings)

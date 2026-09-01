@@ -1479,10 +1479,7 @@ public sealed class FleetStatusToolTests : IDisposable
     }
 
     /// <summary>
-    /// #1613 item 3's own guard against the "first entry" trap: a terminal room whose bindings.json
-    /// names MORE THAN ONE role has no single unambiguous answer for a fleet-facing row (dictionary
-    /// enumeration order is not a contract), so the five binding fields stay absent -- fail open to
-    /// absent, never a confidently wrong role/adapter/model.
+    /// #1613 item 3's own guard against the "first entry" trap -- rationale is spec/baton.md §6.
     /// </summary>
     [Fact]
     public async Task TerminalFastPath_WithMultipleBindingsRoles_OmitsBindingFieldsRatherThanGuess()

@@ -413,12 +413,9 @@ public sealed class RoomDetailTool : IMcpTool
     }
 
     /// <summary>
-    /// #1613 item 4: step id where the FLOW event itself carries one directly -- deliberately NOT a
-    /// cross-referenced lookup through an execution-id-&gt;step-id map built from an earlier
-    /// <see cref="FlowEvent.ExecutionRequestAccepted"/> line (the way <see cref="ExecutionUsageProjector"/>
-    /// resolves a worker name for usage attribution). That would need a first pass over every entry
-    /// before this per-entry describe step runs, at whatever additional blast radius that carries;
-    /// this stays narrow, on-the-record-only, same as <see cref="DescribeEntry"/>'s exit code arm.
+    /// #1613 item 4: step id where the FLOW event itself carries one directly. Why this stays a
+    /// direct read rather than a cross-referenced lookup: spec/baton.md §6's room_detail schema
+    /// entry.
     /// </summary>
     private static string? FlowEventStepId(FlowEvent @event) => @event switch
     {
@@ -500,9 +497,8 @@ public sealed record RoomTimelineView(
 /// <summary>
 /// One <c>flow.jsonl</c> line projected to its event type and writer-stamped timestamp, plus
 /// <see cref="StepId"/>/<see cref="ExitCode"/> where the underlying event carries one directly
-/// (#1613 item 4, per the operator's 2026-09-01 ruling amending the content-free construction:
-/// step ids and exit codes are counts/ids, so they're in; stdout text and other content-bearing
-/// fields stay banned, same as <see cref="Detail"/> already was).
+/// (#1613 item 4 -- the content ruling that admits these two fields is spec/baton.md §6, not
+/// restated here; <see cref="Detail"/> stays under the original content-free rule).
 /// </summary>
 public sealed record RoomTimelineEntryView(
     [property: JsonPropertyName("type")] string Type,

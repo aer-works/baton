@@ -358,9 +358,8 @@ def extract_timeline(room_detail_result: dict) -> list[dict]:
     field never leaks through by accident of this function failing to name it. `stdout` is never
     read at all, whether or not room_detail's response carries one.
 
-    `stepId`/`exitCode` (#1613 item 4, the operator's 2026-09-01 ruling amending the content-free
-    construction) are ids/counts, not content -- RoomDetailTool.cs's DescribeEntry only ever
-    populates them off an event's own step id or process exit code, never off stdout text.
+    `stepId`/`exitCode` (#1613 item 4) are admitted under the content ruling in spec/baton.md §6, not
+    restated here.
 
     The synthetic "unreadable" entry (RoomDetailTool.ReadTimelineAsync, e.g. a held-open ledger) is
     kept as a type-only marker -- its `detail` (an exception message) is dropped like any other
@@ -402,24 +401,9 @@ def extract_timeline(room_detail_result: dict) -> list[dict]:
 # ---------------------------------------------------------------------------------------------
 # Live telemetry for Running rooms (#1613 item 1): a tool-call count and last-stream-activity
 # instant, read directly off the currently-running execution's own already-captured .stdout.log --
-# no new `dotnet mcp` round trip, no engine change. Seam choice: ExecutionUsageProjector
-# (Baton/Status/ExecutionUsageView.cs) only ever populates an execution that has recorded BOTH a
-# CoreEvent.ExecutionStarted AND ExecutionExited, and its parser contract
-# (IWorkerUsageParser.TryParseFinalUsage) reads exactly the LAST non-blank line of the stream --
-# neither fits a still-running execution, which by definition has no exit event and needs every
-# line scanned, not just the last. Extending that seam to cover "so far" would mean a new
-# incremental parser interface threaded through Baton.Status/Baton.Cli -- not the cheap reuse the
-# task asked to prefer -- so this stays pusher-side, python-only, engine untouched.
-#
-# COUNTS AND IDS, NEVER CONTENT (the issue's own 2026-09-01 amended ruling): only a tool-call COUNT
-# and a file mtime are read out of the stream; no tool name, no message text, no prompt ever leaves
-# this function. Token counts are DELIBERATELY omitted -- per the `common-sense` gate, both
-# registers were checked before writing this (`python tools/vendor-verify/verify.py --list` and
-# docs/vendor-doc-audit.md, e.g. its "per-turn and cumulative token usage" row): both record
-# per-turn usage on claude/agy's terminal `result` line only, never a running total on the
-# mid-stream `assistant`/`step_update` events this function actually scans. Summing an
-# `input_tokens` figure that repeats each turn's whole context across many turns would render a
-# confidently wrong "so far" number -- an absent field is honest, a summed one is not.
+# no new `dotnet mcp` round trip, no engine change. Why pusher-side rather than engine-side (the
+# ExecutionUsageProjector seam), and why token counts are omitted: spec/baton.md §6's
+# `rooms[].live` schema entry, not restated here.
 # ---------------------------------------------------------------------------------------------
 
 def _running_execution_id(room: dict) -> str | None:
