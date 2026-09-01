@@ -246,13 +246,10 @@ public class CancelRequestPollerTests
         }
     }
 
-    // Second-reader review finding: the bounded 5-tick retry-then-reject counter guarding a stuck
-    // "still running" target must not also apply to a parked target once it is marked — a mark is a
-    // delivery GUARANTEE the next pump round honours (SettleParkedCancelIntentsAsync), so hitting the
-    // ceiling before that round runs would reject a request that was already going to succeed, with
-    // the false claim "not reachable", and delete the pending file the settle has no further way to
-    // signal through. Ticks well past 5 with no pump ever draining the mark to prove the request
-    // survives indefinitely rather than timing out on a ceiling this poller has no way to size.
+    // Second-reader review finding, explained once beside the fix at CancelRequestPoller.cs's
+    // `isParked` early-return above the bounded-retry counter: ticks well past 5 with no pump ever
+    // draining the mark, to prove the request survives indefinitely rather than being rejected on a
+    // ceiling sized for a different failure mode.
     [Fact]
     public async Task A_quota_parked_target_survives_past_the_bounded_retry_ceiling_without_being_rejected()
     {
