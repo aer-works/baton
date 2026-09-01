@@ -23,6 +23,30 @@ namespace Baton.Cli.Mcp;
 /// </remarks>
 public sealed class FleetStatusTool : IMcpTool
 {
+    // #1513: NOT a WorkflowOutcome member -- deliberately a fleet_status-only display word, so it
+    // can never be confused for a fifth ledger outcome by a consumer that already switches on
+    // WorkflowOutcome's four (spec/baton.md §3). Distinct from "Failed": a stalled room is not
+    // permanently done, `baton resume` (or a fresh `baton run` against the same room) can still
+    // revive it -- this says "nothing is currently making progress", not "this cannot succeed".
+    private const string StalledDisplayState = "Stalled";
+
+    // #1513: confirms EVERY step whose liveness this projection probes reads "dead" -- not merely
+    // "none alive". Liveness is only ever populated (WorkflowStatusProjector.Project) for the exact
+    // steps keeping the workflow un-terminal (a Running step, or a Failed step still awaiting an
+    // unexpired RetryNotBefore), so this is already scoped to the steps whose promise this room's
+    // Running reading rests on. Requiring "all dead" rather than "none alive" matters for a
+    // multi-step DAG: a NonProcess-bound Running step carries no EnginePid to probe, so it reads
+    // "unknown", never "alive" -- "none alive" alone would let an unrelated sibling's confirmed-dead
+    // engine downgrade the whole room even though the NonProcess step might genuinely still be
+    // progressing. Fail-closed the OTHER way here: uncertain (any "unknown") stays "Running" rather
+    // than risk a false "Stalled" an operator would wrongly abandon.
+    private static bool IsConfirmedStalled(IReadOnlyList<FleetStepStatusView> steps)
+    {
+        var gated = steps.Where(s => s.Liveness is not null).ToList();
+        return gated.Count > 0 && gated.All(s => s.Liveness == "dead");
+    }
+
+
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         WriteIndented = true,
@@ -298,10 +322,26 @@ public sealed class FleetStatusTool : IMcpTool
             var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
             var binding = TryResolveRunningBinding(bindings, steps, events);
 
+            // #1513: the ledger's own `Running` (WorkflowOutcome.Describe/DeriveWorkflowStatus) means
+            // "not terminal, and something could still make progress" -- true whether that something
+            // is an in-flight process or a Failed step's still-unexpired RetryNotBefore. Neither
+            // promise is backed by anything once the ONE process that would act on it is confirmed
+            // dead: `baton run`/`baton dispatch` is a single long-lived pump (MutationInterface's
+            // scheduling loop) that both spawns the worker AND `Task.Delay`s in-process through any
+            // retry backoff -- there is no daemon reaper (spec/baton.md §7 -- the room-watcher and
+            // retention sweep the daemon does own never re-drives a stalled room's own retry). This
+            // downgrade is display-only, scoped to the fleet-facing view an operator actually reads
+            // (the reported symptom -- "the room reads RUNNING forever on the fleet view"): it never
+            // touches `outcome`/`state.Status` itself, so RunExitCodeResolver, TerminalSentinelWriter,
+            // and every other WorkflowOutcome consumer keep reading exactly what they always did.
+            var displayState = outcome == WorkflowOutcome.Running && IsConfirmedStalled(steps)
+                ? StalledDisplayState
+                : outcome;
+
             return new FleetRoomStatusView(
                 Name: roomName,
                 Path: roomDir,
-                State: outcome,
+                State: displayState,
                 Steps: steps,
                 Outputs: view.Outputs,
                 Error: view.Error,

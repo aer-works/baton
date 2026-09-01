@@ -486,7 +486,14 @@ public sealed class FleetStatusToolTests : IDisposable
         var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
-        Assert.Equal("Running", singleRoom.State);
+        // #1513: superseding the pre-#1513 expectation here (room-level State stayed "Running", with
+        // only the per-step Liveness naming the dead engine). #1513's whole complaint is that this
+        // room reads RUNNING forever on the fleet view with nothing behind it -- the per-step signal
+        // alone was never enough for an operator glancing at the room list, only for a caller already
+        // reading Steps[].Liveness. The room-level State is now downgraded whenever nothing keeping it
+        // non-terminal is confirmed alive; the step's own State token is untouched (still "Running" --
+        // this is a display-layer override of FleetRoomStatusView.State only, never StepStatus).
+        Assert.Equal("Stalled", singleRoom.State);
         var singleStep = Assert.Single(singleRoom.Steps!);
         Assert.Equal("Running", singleStep.State);
         Assert.Equal("dead", singleStep.Liveness);
@@ -540,8 +547,199 @@ public sealed class FleetStatusToolTests : IDisposable
         var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
+        // #1513 polarity: a genuinely alive engine must never trip the Stalled downgrade.
+        Assert.Equal("Running", singleRoom.State);
         var singleStep = Assert.Single(singleRoom.Steps!);
         Assert.Equal("alive", singleStep.Liveness);
+    }
+
+    /// <summary>
+    /// #1513: the signature this issue actually reports live -- a Failed step still carrying a
+    /// RetryNotBefore (a scheduled backoff/retry), whose engine is confirmed dead. Unlike the Running
+    /// case above, NOTHING probed this state before #1513: `WorkflowStatusProjector.Project`'s
+    /// liveness gate covered only Running steps, so a room stuck exactly like this reported no
+    /// liveness signal at all and read as plain "Running" with no way to tell it apart from a healthy
+    /// paced backoff. `MutationInterface`'s scheduling loop is the only thing that would ever act on
+    /// this retry (`Task.Delay`s it in-process, spec/baton.md §7 -- no daemon reaper exists) -- once
+    /// that pump is dead, this room is permanently stuck without `baton resume`.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_FailedStepWithPendingRetryAndDeadEngine_ProjectsAsStalledNotRunning()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "dead-pump-parked-retry-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-parked"), "agent-worker", [], [], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("parked-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var (deadPid, deadStartTime) = DeadProcessIdentity();
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-parked-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("parked-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(req, EnginePid: deadPid, EngineStartTime: deadStartTime),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionStarted(execId, (uint)deadPid), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionExited(execId, 1, CoreExitReason.Natural, null), TestContext.Current.CancellationToken);
+        var retryNotBefore = DateTimeOffset.UtcNow.AddHours(4);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(execId, FailureClassification.Retryable, "Worker exited with non-zero code 1.", retryNotBefore),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRetryScheduled(stepDef.StepId, execId, retryNotBefore, 14_400_000),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.NotEqual("Running", singleRoom.State);
+        Assert.Equal("Stalled", singleRoom.State);
+        var singleStep = Assert.Single(singleRoom.Steps!);
+        Assert.Equal("Failed", singleStep.State);
+        Assert.Equal("dead", singleStep.Liveness);
+    }
+
+    /// <summary>
+    /// #1513 polarity, opposite direction: the identical parked-retry shape, but the engine that
+    /// scheduled it is genuinely alive -- an ordinary healthy backoff must keep reading "Running", or
+    /// the fix would just be trading one false reading for another (every paced retry, alive or not,
+    /// misreported as stuck).
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_FailedStepWithPendingRetryAndAliveEngine_StaysRunning()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "alive-pump-parked-retry-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-parked"), "agent-worker", [], [], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("parked-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var livePid = Environment.ProcessId;
+        var liveStartTime = new DateTimeOffset(Process.GetCurrentProcess().StartTime).ToUniversalTime();
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-parked-alive-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("parked-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromSeconds(30),
+            [],
+            new Dictionary<StepId, ExecutionId>());
+
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(req, EnginePid: livePid, EngineStartTime: liveStartTime),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionStarted(execId, (uint)livePid), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionExited(execId, 1, CoreExitReason.Natural, null), TestContext.Current.CancellationToken);
+        var retryNotBefore = DateTimeOffset.UtcNow.AddHours(4);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(execId, FailureClassification.Retryable, "Worker exited with non-zero code 1.", retryNotBefore),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRetryScheduled(stepDef.StepId, execId, retryNotBefore, 14_400_000),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        var singleStep = Assert.Single(singleRoom.Steps!);
+        Assert.Equal("alive", singleStep.Liveness);
+    }
+
+    /// <summary>
+    /// #1513 `right-instrument`: the claim under test is about what an operator sees projected off a
+    /// REAL room this bug was caught in, not only a synthetic fixture. Copies one of the five live
+    /// rooms named in the issue (`dispatch-implement-a0c38801` -- operator-killed pump, `flow.jsonl`
+    /// ends in `stepRetryScheduled` with no `terminal.json`) into an isolated fleet root read-only
+    /// (never mutates the original room) and asserts the fix changes what an operator actually sees
+    /// for it. Skips gracefully if this machine does not have that room under `~/.baton/rooms` --
+    /// the room is local live evidence, not a checked-in fixture.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_RealZombieRoomFromIssue1513_ProjectsAsStalledNotRunning()
+    {
+        var realRoomsDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".baton", "rooms");
+        var sourceRoom = Path.Combine(realRoomsDir, "dispatch-implement-a0c38801");
+        if (!Directory.Exists(sourceRoom))
+        {
+            return;
+        }
+
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var copiedRoom = Path.Combine(defaultRoomsDir, "dispatch-implement-a0c38801");
+        Directory.CreateDirectory(defaultRoomsDir);
+        CopyRoomReadOnly(sourceRoom, copiedRoom);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.NotEqual("Running", singleRoom.State);
+        Assert.Equal("Stalled", singleRoom.State);
+    }
+
+    private static void CopyRoomReadOnly(string sourceDir, string destDir)
+    {
+        Directory.CreateDirectory(destDir);
+        foreach (var file in Directory.GetFiles(sourceDir))
+        {
+            File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)), overwrite: true);
+        }
+
+        foreach (var dir in Directory.GetDirectories(sourceDir))
+        {
+            // artifacts/ can be large and is irrelevant to the projection under test; skip it.
+            if (Path.GetFileName(dir) == "artifacts")
+            {
+                continue;
+            }
+
+            CopyRoomReadOnly(dir, Path.Combine(destDir, Path.GetFileName(dir)));
+        }
     }
 
     /// <summary>

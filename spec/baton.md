@@ -256,8 +256,8 @@ as an error.
 status at all (`Program.cs`) — it cannot complete a room or substitute for watching the
 sentinel.
 
-**Two defects this contract used to carry, now closed (#1375, #1377) — cited so a harness author who
-read an older version of this section knows what changed:** a dead engine's `Running` step
+**Three defects this contract used to carry, now closed (#1375, #1377, #1513) — cited so a harness
+author who read an older version of this section knows what changed:** a dead engine's `Running` step
 now also reports `steps[].liveness: "dead"` (§3 schema below), computed by the identical
 `EngineLivenessProbe` the human `baton status` rendering already used — one probe, two renderings,
 never two that can disagree; and a decision-rejected step now sets the top-level `rejected: true`
@@ -266,6 +266,28 @@ absent cause — it can mean "a person said no" as well as "not yet recorded". N
 value the ledger cannot actually support: there is still no operator-supplied rejection *reason* to
 surface (`FlowEvent.ExternalDecisionRecorded` carries none), so `rejected` stays a boolean, not a
 `reason` field that would always read `null`.
+
+**#1513 corrects #1462's own choice, not just a gap.** #1462 deliberately kept `fleet_status`'s
+room-level `state` unchanged even for a Running step with a confirmed-dead engine, reasoning that
+`liveness` was an additive signal for the caller to combine, never folded into `state` itself. Live
+data (issue #1513: a room whose deliverable had already landed on disk, `flow.jsonl` stalled on
+`executionRequestAccepted` with the pump dead) showed that choice fails open in exactly the case an
+operator scanning `fleet_status` most needs protecting from — a room reading `Running` with nothing
+behind it, indefinitely. `FleetStatusTool.ProcessRoomAsync` now overrides its **own returned
+`FleetRoomStatusView.State`** (never `WorkflowStatusView.State`/`WorkflowOutcome`/`state.Status`
+itself — `RunExitCodeResolver`, `TerminalSentinelWriter`, and `status --json` are unaffected) to
+`"Stalled"` — a fourth, `fleet_status`-only display word, not a fifth `WorkflowOutcome` member —
+whenever the room reads `Running` and every step whose `liveness` this projection computes reads
+`"dead"` with none reading `"alive"`. The condition `liveness` is computed under
+(`WorkflowStatusProjector.Project`, `src/Baton/Status/WorkflowStatusView.cs`) also widened: previously only a `Running` step was probed;
+now a `Failed` step still carrying a `RetryNotBefore` is too, since that step's own promise ("this
+will retry") rests on the identical fact — the pump that recorded `StepRetryScheduled` staying alive
+long enough to act on it (§7: there is no daemon reaper; `MutationInterface`'s scheduling loop
+`Task.Delay`s the wait **in-process**). A confirmed-dead engine behind a parked retry is recoverable
+via `baton resume` (it dispatches a fresh linked execution off the step's `LatestExecutionId`
+regardless of `RetryNotBefore` — `MutationInterface.RecordResumeAsync` does not gate on it), so
+`"Stalled"` reads as "nothing is currently making progress, but this is not done," never as a
+`Failed` room a caller might reasonably discard.
 
 ### Exit codes
 
@@ -312,7 +334,7 @@ code is the only signal a lane is even still going, and it is unreliable for tha
       "linkedFrom"?: string,           // set when this step's latest execution is an `baton resume`
       "usage"?: ExecutionUsageView,
       "linkedFromUsage"?: ExecutionUsageView,
-      "liveness"?: "alive" | "dead" | "unknown"   // #1375, only present while this step reads "Running"
+      "liveness"?: "alive" | "dead" | "unknown"   // #1375/#1513: present while this step reads "Running", or "Failed" with a RetryNotBefore still pending
     }
   ],
   "outputs": [string],                 // resolved output paths
@@ -347,10 +369,12 @@ values `status --json` would report for the same room (`FleetStatusTool.cs`; the
 path copies `sentinel.Liveness`/`sentinel.Rejected` since the sentinel already **is** a
 `WorkflowStatusView`). A fleet_status caller can now tell a dead engine or a rejection apart from an
 ordinary `Failed`/`Running` room without a second `status --json` call per room.
-`liveness` is present only on a step this same projection calls `"Running"` — the identical gate
-`StatusCommand.FormatStepStatus` uses before probing (a `Paused` step's engine has legitimately
-exited; a step with no execution yet has nothing to probe) — so its mere presence in the JSON already
-answers "does liveness apply here" before a caller reads its value. `rejected` carries no reason text
+`liveness` is present on a step this same projection calls `"Running"`, and (#1513) a `"Failed"` step
+still carrying a `RetryNotBefore` — the identical gate `StatusCommand.FormatStepStatus` uses before
+probing (a `Paused` step's engine has legitimately exited; a step with no execution yet has nothing
+to probe; a `Failed` step with no pending retry has no future engine action to question) — so its
+mere presence in the JSON already answers "does liveness apply here" before a caller reads its value.
+`rejected` carries no reason text
 alongside it: `FlowEvent.ExternalDecisionRecorded` records no operator-supplied reason field, so
 there is nothing structural to surface beyond the boolean fact itself; which step rejected, if that
 matters, is `steps[].state == "Rejected"` — already a token distinct from `"Failed"`.
@@ -474,7 +498,7 @@ Output: a JSON array of
   "name": string,
   "path": string,
   "project"?: string,             // §8 registry: the project root this room was dispatched for
-  "state"?: string,
+  "state"?: string,               // WorkflowOutcome, PLUS #1513's "Stalled" -- see the paragraph below
   "steps"?: [
     { "id": string, "state": string, "execution"?: string, "linkedFrom"?: string,
       "timestamp"?: string, "usage"?: ExecutionUsageView, "linkedFromUsage"?: ExecutionUsageView,
@@ -499,7 +523,11 @@ Output: a JSON array of
 `JsonIgnoreCondition.WhenWritingDefault`, so it is absent rather than emitted `false`. This is a
 **third shape**, related to but not identical with `terminal.json`/`status --json` — see §3's note on
 `linkedFrom` and `timestamp` for the concrete divergence; `liveness`/`rejected` themselves are
-identical values across all three shapes (§3).
+identical values across all three shapes (§3). `state` is the one field that is NOT: #1513 overrides
+`fleet_status`'s own `FleetRoomStatusView.State` to `"Stalled"` under the condition in §3's #1513
+paragraph above, a display word `terminal.json`/`status --json` never emit — a caller reading `state`
+identically across all three shapes must special-case this one divergence, the same way it already
+special-cases `linkedFrom`/`timestamp`.
 
 **`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503)** are read from the room's own
 `bindings.json` (`WorkerBindingConfigWriter`/`WorkerBindingConfigParser`, `Baton.Vendors`), scoped to
