@@ -508,7 +508,9 @@ function renderVerdictDoc(data){
   return metaHtml + findingsHtml;
 }
 function renderMarkdown(text){
-  const lines = esc(text ?? "").split("\n");
+  // Windows lanes write CRLF deliverables (#1545); a trailing \r defeats the heading/bullet
+  // regexes' (.*)$ anchors (JS "." never matches \r), so normalize before splitting.
+  const lines = esc(text ?? "").replace(/\r\n?/g, "\n").split("\n");
   let html = "";
   let inCode = false, inList = false;
   let para = [], table = [];
