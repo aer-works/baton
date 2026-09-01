@@ -264,8 +264,8 @@ public static class StateProjector
             case FlowEvent.StepRetryForeclosed foreclosed:
                 // #1586 S1: all-or-nothing, the same discipline ExecutionCancelled's own retry-field
                 // clear already follows (#1605) — guarded on ForExecutionId still matching the
-                // CURRENTLY scheduled retry for this step. A retry already re-scheduled for a newer
-                // execution must survive an event that names an older one; applying the flag while
+                // scheduled retry this step carries now (FlowEvent.StepRetryForeclosed.ForExecutionId's
+                // own remarks explain why a stale name must be a no-op). Applying the flag while
                 // skipping the field clear (or the reverse) would leave RetryNotBefore set AND
                 // MayRetry false at once — DeriveWorkflowStatus's deliverability predicate ORs the two
                 // (`step.RetryNotBefore is not null` / MayRetry), so a half-applied foreclosure can

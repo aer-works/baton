@@ -385,8 +385,9 @@ public class OutcomeClassifierTests
                 responseParser: new FakeResponseParser("the worker's real answer"),
                 usageParser: new FakeUsageParser(new WorkerUsage(TokensOut: 500, Turns: 4)));
 
-            // Both facts land on the same classification -- "regardless of whether a capture
-            // succeeded" is the design's own phrasing; this is the "succeeded" half.
+            // Both facts land on the same classification (OutcomeClassifier.Classify's own remarks
+            // explain why the evidence is computed independent of capture outcome) -- this fixture is
+            // the capture-succeeded half.
             Assert.Equal(OutputMaterializer.CapturedResponseFileName, classification.CapturedResponseFile);
             Assert.NotNull(classification.SubstantialWorkNoOutputsEvidence);
             Assert.Contains("4 turn", classification.SubstantialWorkNoOutputsEvidence);

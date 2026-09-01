@@ -340,8 +340,9 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
     public async Task An_Indeterminate_parent_refuses_bare_redispatch_with_a_diagnosis()
     {
         // #1586 S1: no producer in this slice writes "Indeterminate" to a real terminal.json (see
-        // WorkflowOutcome.Indeterminate's own remarks) -- this fabricates the shape directly, exactly
-        // as the slice's own scope note permits, to prove the CONSUMER side of the vocabulary.
+        // WorkflowOutcome.Indeterminate's own remarks) -- this fixture writes the sentinel by hand,
+        // which the slice's scope note permits, so the CONSUMER side of the vocabulary gets proven
+        // ahead of any producer existing.
         var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
         try
         {

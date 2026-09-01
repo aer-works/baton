@@ -114,10 +114,11 @@ public sealed class FleetStatusToolTests : IDisposable
     [Fact]
     public async Task TerminalFastPath_PassesThroughAnIndeterminateSentinelVerbatim()
     {
-        // #1586 S1: no producer in this slice writes "Indeterminate" to a real terminal.json -- this
-        // fabricates the shape directly (the terminal fast path copies sentinel.State verbatim,
-        // FleetStatusTool.ProcessRoomAsync, never re-deriving it via WorkflowOutcome.Describe), proving
-        // the glass-facing pipeline round-trips the value rather than silently dropping or renaming it.
+        // #1586 S1: WorkflowOutcome.Indeterminate's own remarks explain why this fabricates the shape
+        // directly rather than deriving it. The terminal fast path copies sentinel.State verbatim
+        // (FleetStatusTool.ProcessRoomAsync, never re-deriving it via WorkflowOutcome.Describe), so
+        // this proves the glass-facing pipeline round-trips the value rather than dropping or renaming
+        // it.
         var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
         var room = Path.Combine(defaultRoomsDir, "indeterminate-room");
         Directory.CreateDirectory(room);

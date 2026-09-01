@@ -346,8 +346,9 @@ public class DependencyResolverTests
         Assert.Contains(Architect, ready);
     }
 
-    // #1586 S1: the trap the state-truth design's own proposal on #1586 names -- the exact fixture
-    // above, but with StepState.RetryForeclosed set, is the red test that must NOT come back ready.
+    // #1586 S1: the named trap from the ratified state-truth design (see StateProjectorTests' own
+    // StepRetryForeclosed fixtures for the fuller citation) -- the exact fixture above, but with
+    // StepState.RetryForeclosed set, is the red test that must NOT come back ready.
     // Both polarities from one shared shape: the fixture two tests up is the "false" control (still
     // ready without foreclosure), this is the "true" arm.
     [Fact]

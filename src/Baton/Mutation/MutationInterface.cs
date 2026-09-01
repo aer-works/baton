@@ -1299,11 +1299,11 @@ public static class MutationInterface
     /// #1586 S1 (the #1594 ruling's tripwire): a no-op unless <paramref name="classification"/> carries
     /// <see cref="OutcomeClassification.SubstantialWorkNoOutputsEvidence"/> — appends
     /// <see cref="FlowEvent.ZeroOutputsDespiteSubstantialWork"/> right alongside the outcome event
-    /// <see cref="ToOutcomeEvent"/> mapped, from BOTH call sites that ever call it (the live dispatch
-    /// path and the crash-recovery <c>ToClassify</c> branch), so the tripwire fires identically whether
-    /// the classification came from a just-completed dispatch or from settling a dead pump's recorded
-    /// exit — the same "one seam, every caller of it" placement #1594's own integration constraint
-    /// required of the capture arm this mirrors.
+    /// <see cref="ToOutcomeEvent"/> mapped, from every caller that classifies an outcome — both the
+    /// just-completed live dispatch and the branch that settles a dead pump's recorded exit — so the
+    /// tripwire fires identically regardless of which one produced the classification. Spec §3
+    /// (state-truth S1) names the two call sites; the same "one seam, every caller of it" placement
+    /// #1594's own integration constraint required of the capture arm this mirrors.
     /// </summary>
     private static async Task AppendZeroOutputsTripwireIfAnyAsync(
         IEventLogWriter eventLogWriter, ExecutionId executionId, OutcomeClassification classification, CancellationToken cancellationToken)

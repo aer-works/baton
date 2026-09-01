@@ -160,14 +160,11 @@ public enum StepStatus
 /// </param>
 /// <param name="RetryForeclosed">
 /// #1586 S1: whether a <see cref="FlowEvent.StepRetryForeclosed"/> has been projected for this step
-/// and not since reopened by <see cref="FlowEvent.ExecutionRequestAccepted"/> or a
-/// <see cref="DecisionType.RetryWithRevision"/> <see cref="FlowEvent.WorkflowResumed"/> — those two
-/// events also clear <see cref="RetryNotBefore"/> for an ordinary fresh attempt, but a third event,
-/// <see cref="FlowEvent.ExecutionCancelled"/>'s own park-abort clear (#1563), clears
-/// <see cref="RetryNotBefore"/> too without reopening this flag (it terminates the execution rather
-/// than re-arming the step). <see cref="Scheduling.RetryEngine.MayRetry"/>
-/// returns <c>false</c> unconditionally while this is <c>true</c>, independent of
-/// <see cref="LatestFailureClassification"/> or <see cref="ConsecutiveFailureCount"/>.
+/// and not since reopened. <see cref="FlowEvent.StepRetryForeclosed"/>'s own remarks name which
+/// events reopen it and which merely clear <see cref="RetryNotBefore"/> without doing so.
+/// <see cref="Scheduling.RetryEngine.MayRetry"/> returns <c>false</c> unconditionally while this is
+/// <c>true</c>, independent of <see cref="LatestFailureClassification"/> or
+/// <see cref="ConsecutiveFailureCount"/>.
 /// </param>
 public sealed record StepState(
     StepId StepId,
