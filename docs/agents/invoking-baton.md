@@ -228,7 +228,9 @@ what the repo's own audit checks those pins against. `gemini-3.6-flash-low` abov
 `draft-review-paused-bindings.json` uses; take a current one from those two sources rather than from
 this sentence.
 
-**Usage (#1360):** agy's structured-output mode reports token counts, and separately a turn count —
+**Usage (#1360, extended by #1569):** agy's structured-output mode reports token counts (including
+cache-read and thinking breakdowns `status --json` now surfaces; spec/baton.md §3 has the canonical
+field list), and separately a turn count —
 [`docs/vendor-capabilities.md`](../vendor-capabilities.md#usage-cost-and-quota--the-asymmetry-that-matters-most)
 is the register for the underlying vendor facts. One shape quirk this repo does not paper over: when
 that report collapses the input/output split into a single combined figure, `status --json`'s

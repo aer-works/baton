@@ -5,9 +5,10 @@ namespace Baton.Tests.Status;
 
 /// <summary>
 /// Coverage for <see cref="ClaudeUsageParser"/>/<see cref="AgyUsageParser"/> (issue #1360, extended by
-/// #1569) — the parser pair <c>terminal.json</c> is actually written through: <c>Program.cs</c> calls
-/// <c>WorkflowStatusView.Project</c> with no <c>adapters</c> argument, which cascades to
-/// <see cref="StandardWorkerUsageParsers.Default"/>. A second, hand-duplicated pair lives on
+/// #1569) — the parser pair passed explicitly via <see cref="StandardWorkerUsageParsers.Default"/> by
+/// <c>FleetStatusTool</c> for active rooms. (A separate defect where <c>Program.cs</c>'s call to
+/// <c>WorkflowStatusProjector.Project</c> passes no adapter registry and leaves <c>terminal.json</c>
+/// without vendor token counts is tracked in #1590). A second, hand-duplicated pair lives on
 /// <c>ClaudeWorkerAdapter</c>/<c>AgyWorkerAdapter</c> themselves (<c>Baton.Vendors.Tests</c>' own
 /// <c>ClaudeFinalUsageParsingTests</c>/<c>AgyFinalUsageParsingTests</c> cover those) and feeds
 /// <c>baton status --json</c> via <c>WorkerAdapterRegistry.Default</c> instead — <c>spec/baton.md</c>

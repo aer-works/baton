@@ -8,9 +8,8 @@ namespace Baton.Status;
 
 /// <summary>
 /// One execution's usage, per <c>baton status --json</c>'s additive shape (issue #1360, extended by
-/// #1569): <c>{wallClockMs, tokensIn?, tokensOut?, turns?, cacheReadTokens?, cacheCreationTokens?,
-/// thinkingTokens?}</c> — canonical field list at <c>spec/baton.md</c> §3, not restated further than
-/// this type. <see cref="WallClockMs"/> is always present — it is derived from the ledger's own
+/// #1569). Canonical field list and wire contract at <c>spec/baton.md</c> §3, not restated here.
+/// <see cref="WallClockMs"/> is always present — it is derived from the ledger's own
 /// <see cref="CoreEvent.ExecutionStarted"/>/<see cref="CoreEvent.ExecutionExited"/> timestamps, which
 /// every completed execution has. Every other field is independently omitted from the serialized JSON
 /// (never emitted as <c>null</c>, never fabricated as zero) when the vendor's captured stdout carried
@@ -128,6 +127,7 @@ public static class ExecutionUsageProjector
                 continue;
             }
 
+            workerNameByExecutionId.TryGetValue(executionId, out var workerName);
             recordedAdapterByExecutionId.TryGetValue(executionId, out var recordedAdapter);
             var usage = TryReadWorkerUsage(artifactsRootPath, executionId, workerName, recordedAdapter, bindings, adapters);
             result[executionId] = new ExecutionUsageView(

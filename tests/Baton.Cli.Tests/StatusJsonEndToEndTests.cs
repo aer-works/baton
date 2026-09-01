@@ -100,6 +100,31 @@ public class StatusJsonEndToEndTests
     }
 
     [Fact]
+    public void ExecutionUsageView_serializes_all_fields_with_exact_camelCase_wire_format_names_when_present()
+    {
+        // #1569 MED-5: positive wire-format test pinning the exact JSON property names when all
+        // fields are populated.
+        var usage = new ExecutionUsageView(
+            WallClockMs: 1234,
+            TokensIn: 10,
+            TokensOut: 20,
+            Turns: 2,
+            CacheReadTokens: 300,
+            CacheCreationTokens: 400,
+            ThinkingTokens: 50);
+
+        var rawJson = JsonSerializer.Serialize(usage);
+
+        Assert.Contains("\"wallClockMs\":1234", rawJson);
+        Assert.Contains("\"tokensIn\":10", rawJson);
+        Assert.Contains("\"tokensOut\":20", rawJson);
+        Assert.Contains("\"turns\":2", rawJson);
+        Assert.Contains("\"cacheReadTokens\":300", rawJson);
+        Assert.Contains("\"cacheCreationTokens\":400", rawJson);
+        Assert.Contains("\"thinkingTokens\":50", rawJson);
+    }
+
+    [Fact]
     public async Task A_succeeded_execution_with_a_vendor_shaped_stdout_line_reports_no_tokens_when_dispatched_through_a_different_adapter()
     {
         // #1360 F1 spoof regression: a claude-shaped stream-json result line in the captured stdout
