@@ -219,10 +219,10 @@ async function handleMcp(request, env) {
       const stored = await env.FLEET.get("snapshot");
       const { heartbeatAt, derivedAt: derivedAtFromHeartbeat } = await readHeartbeat(env);
       const storedSnapshot = stored === null ? null : JSON.parse(stored);
-      // derived_at (#1613 item 2) can reach this Worker by two independent routes -- see
-      // spec/baton.md §6's `derived_at` schema entry for why, not restated here. Both routes stamp
-      // the SAME isoformat() shape from the SAME producer (pusher.py), so a plain lexicographic
-      // string max is a sound "most recent" comparison -- no Date parsing needed.
+      // derived_at (#1613 item 2, spec/baton.md §6) can reach this Worker by two independent
+      // routes: a snapshot push's own body, or a dedicated /heartbeat ping (see readHeartbeat).
+      // Both stamp the SAME isoformat() shape from the SAME producer (pusher.py), so a plain
+      // lexicographic string max is a sound "most recent" comparison -- no Date parsing needed.
       const derivedAt = maxIsoOrNull(storedSnapshot?.derived_at, derivedAtFromHeartbeat);
       if (stored === null) {
         return json(rpcResult(id, toolText(JSON.stringify({ pushed_at: null, rooms: null, heartbeat_at: heartbeatAt, derived_at: derivedAt, note: "no snapshot pushed yet" }))));
