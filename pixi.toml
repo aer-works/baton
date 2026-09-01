@@ -251,6 +251,7 @@ gates-fast = { cmd = "python -u tools/gates/gates.py --fast" }
 gates-quiet = { cmd = "python -u tools/gates/gates.py --quiet" }
 gates-fast-quiet = { cmd = "python -u tools/gates/gates.py --fast --quiet" }
 gates-selftest = { cmd = "python -u tools/gates/gates.py --selftest" }
+gate-sabotage = { cmd = "python -u tools/gates/sabotage.py" }
 
 # One-time per clone: point git at the committed hooks. .git/hooks is not version-controlled, so a
 # pre-push gate left there binds one machine and silently protects nobody else.

@@ -48,6 +48,8 @@ OVERLAP = [
     # #1402: pure python against an isolated temp lock file -- starts no MSBuild and never touches
     # the real build lock, so it cannot interfere with the build phase it overlaps.
     "buildlock-selftest",
+    # #1601: isolated sabotage suite (tools/gates/sabotage.py) overlapping the build.
+    "gate-sabotage",
 ]
 
 # The MSBuild owners, strictly sequential: one MSBuild at a time.

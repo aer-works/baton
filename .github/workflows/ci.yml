@@ -367,6 +367,9 @@ jobs:
       # belongs with the free audits here.
       - name: Every § in a code comment resolves to a live document
         run: pixi run audit-commentspecrefs && pixi run audit-commentspecrefs-selftest
+      # Hermetic gate polarity check (#1601, see tools/gates/sabotage.py).
+      - name: Prove gate members go red under sabotage
+        run: pixi run gate-sabotage
       # The live PR-body guard moved to its own workflow, .github/workflows/pr-body-lint.yml (#862),
       # so that fixing a bad body CLEARS it (it runs on `edited`; this job does not). Its logic is
       # still tested here -- `negated_close_faults`'s polarity arms run in audit-selfcheck above,
