@@ -469,9 +469,8 @@ def extract_live_counts(lines: list[str]) -> dict:
 def live_telemetry_for_room(room: dict) -> dict | None:
     """None when there is no Running step, or its execution has no captured stdout yet (dispatch
     just started) -- absent, never a fabricated zero, matching ExecutionUsageView's own
-    never-null/never-fabricated convention on the engine side. `lastActivityAt` is the stdout log's
-    own last-write instant (a real filesystem fact, not `now()`) -- it only advances when the
-    vendor CLI actually flushes a new line, so it ages honestly the moment a lane goes quiet."""
+    never-null/never-fabricated convention on the engine side. `lastActivityAt`'s honesty property
+    is spec/baton.md §6's `rooms[].live` schema entry, not restated here."""
     execution_id = _running_execution_id(room)
     room_path = room.get("path")
     if execution_id is None or not isinstance(room_path, str) or not room_path:
