@@ -29,7 +29,7 @@ public static class EffortTierMapping
     /// <summary>Every canonical effort word, in the order 0023 names them.</summary>
     public static readonly IReadOnlyList<string> CanonicalWords = [Quick, Standard, Careful, Exhaustive];
 
-    private static readonly IReadOnlyDictionary<string, string> ClaudeByCanonical =
+    public static readonly IReadOnlyDictionary<string, string> ClaudeByCanonical =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [Quick] = "low",
@@ -43,7 +43,7 @@ public static class EffortTierMapping
     /// disclosed collapse per 0023 constraint 2 — see <c>docs/vendor-capabilities.md</c>'s own table
     /// note. The collapse is stated here, once; nothing else re-derives it.
     /// </summary>
-    private static readonly IReadOnlyDictionary<string, string> AgyByCanonical =
+    public static readonly IReadOnlyDictionary<string, string> AgyByCanonical =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [Quick] = "low",
@@ -52,10 +52,10 @@ public static class EffortTierMapping
             [Exhaustive] = "high",
         };
 
-    private static readonly IReadOnlySet<string> ClaudeRawValues =
+    public static readonly IReadOnlySet<string> ClaudeRawValues =
         new HashSet<string>(StringComparer.Ordinal) { "low", "medium", "high", "xhigh", "max" };
 
-    private static readonly IReadOnlySet<string> AgyRawValues =
+    public static readonly IReadOnlySet<string> AgyRawValues =
         new HashSet<string>(StringComparer.Ordinal) { "low", "medium", "high" };
 
     /// <summary>True for exactly the four words 0023 names — never a vendor's own raw value.</summary>

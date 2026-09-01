@@ -70,7 +70,14 @@ public static class RoleDispatch
     /// name="modelOverride"/>/<paramref name="effortOverride"/> — rationale in spec/baton.md §2.
     /// Null keeps <see cref="WorkerRole.Timeout"/>.
     /// </param>
-    public static WorkerBindingConfigEntry ToBinding(WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null, string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null, IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null, bool autoProvisionWorktree = true, TimeSpan? timeoutOverride = null)
+    /// <param name="attachments">Attached context files supplied by the operator.</param>
+    /// <param name="attachmentsDirectory">The directory inside the room artifacts where attached files live.</param>
+    public static WorkerBindingConfigEntry ToBinding(
+        WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null,
+        string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null,
+        IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null,
+        bool autoProvisionWorktree = true, TimeSpan? timeoutOverride = null,
+        IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -143,7 +150,7 @@ public static class RoleDispatch
         return new WorkerBindingConfigEntry(
             Adapter: adapter,
             Contract: contract,
-            PromptTemplate: BuildPrompt(role, spec, outputs),
+            PromptTemplate: BuildPrompt(role, spec, outputs, attachments, attachmentsDirectory),
             Timeout: timeoutOverride ?? role.Timeout,
             Model: model,
             PermissionGrant: grant,
@@ -176,14 +183,15 @@ public static class RoleDispatch
     public static (WorkflowDefinition Definition, IReadOnlyDictionary<string, WorkerBindingConfigEntry> Bindings) Materialize(
         WorkerRole role, string spec, string? adapterOverride = null, string? workingDirectory = null,
         string? modelOverride = null, string? effortOverride = null, string? outputOverride = null,
-        TimeSpan? timeoutOverride = null)
+        TimeSpan? timeoutOverride = null, IReadOnlyList<string>? attachments = null,
+        string? attachmentsDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
         var binding = ToBinding(
             role, spec, adapterOverride, workingDirectory: workingDirectory,
             modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride,
-            timeoutOverride: timeoutOverride);
+            timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory);
 
         var stepOutputs = binding.Contract.ProducedOutputs.Select(o => o.Name).ToList();
 
@@ -211,7 +219,9 @@ public static class RoleDispatch
     /// exactly the files the contract asserts. A role always declares at least one output (the catalog
     /// enforces it at load), so the header is never emitted without lines under it.
     /// </summary>
-    private static string BuildPrompt(WorkerRole role, string spec, IReadOnlyList<WorkerRoleOutput>? outputs = null)
+    private static string BuildPrompt(
+        WorkerRole role, string spec, IReadOnlyList<WorkerRoleOutput>? outputs = null,
+        IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null)
     {
         var activeOutputs = outputs ?? role.Outputs;
         var instructions = string.Join("\n", activeOutputs.Select(o => $"- {o.Instruction}"));
@@ -219,7 +229,18 @@ public static class RoleDispatch
         {
             instructions = instructions.Replace(role.Outputs[0].Name, activeOutputs[0].Name, StringComparison.Ordinal);
         }
-        return $"{spec.TrimEnd()}\n\nRequired outputs:\n{instructions}\n\n{OneShotContract}";
+
+        var promptBuilder = new System.Text.StringBuilder();
+        promptBuilder.Append(spec.TrimEnd());
+
+        if (attachments is { Count: > 0 } && !string.IsNullOrEmpty(attachmentsDirectory))
+        {
+            var fileNames = attachments.Select(Path.GetFileName);
+            promptBuilder.Append($"\n\nAttached files (in {attachmentsDirectory}): {string.Join(", ", fileNames)}");
+        }
+
+        promptBuilder.Append($"\n\nRequired outputs:\n{instructions}\n\n{OneShotContract}");
+        return promptBuilder.ToString();
     }
 
     // #1095: a dispatched worker runs in a one-shot, non-interactive harness — the turn is never

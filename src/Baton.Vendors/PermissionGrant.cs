@@ -141,4 +141,18 @@ public sealed record PermissionGrant(
         }
     }
 
+    /// <summary>
+    /// True when this grant can reach the network — categorically via <see cref="NetworkAccess"/>, or
+    /// through a granted shell that <see cref="CategoriesDefeatedByTheShell"/> does not list
+    /// <see cref="NetworkAccess"/> as withheld from (the <see cref="ShellCommandsAreReadOnly"/> exemption
+    /// above, or an unscoped shell, both reach it the same way a shell reaches every other ungranted
+    /// category). Single source for the reachability question, derived from
+    /// <see cref="CategoriesDefeatedByTheShell"/> rather than re-deriving its conditions — a surface
+    /// that instead re-checks <see cref="RunShellCommands"/>/<see cref="ShellCommandsAreReadOnly"/>/
+    /// <see cref="ShellCommandPatterns"/> by hand drifts the moment that property's own condition changes
+    /// (#1387's open follow-up), which is exactly what this property exists to prevent (#1500
+    /// second-reader MED-1).
+    /// </summary>
+    public bool NetworkReachable =>
+        NetworkAccess || (RunShellCommands && !CategoriesDefeatedByTheShell.Contains(nameof(NetworkAccess)));
 }

@@ -12,7 +12,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--label <text>]";
+        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--label <text>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -45,6 +45,8 @@ public static class DispatchOptionsParser
         string? outputPath = null;
         TimeSpan? timeout = null;
         string? label = null;
+        var attachments = new List<string>();
+        var listCapabilities = false;
 
         var i = 0;
         while (i < args.Count)
@@ -54,6 +56,9 @@ public static class DispatchOptionsParser
             {
                 case "--spec":
                     specFilePath = RequireValue(args, ref i, arg);
+                    break;
+                case "--attach":
+                    attachments.Add(RequireValue(args, ref i, arg));
                     break;
                 case "--adapter":
                     adapter = RequireValue(args, ref i, arg);
@@ -82,6 +87,10 @@ public static class DispatchOptionsParser
                 case "--label":
                     label = SanitizeLabel(RequireValue(args, ref i, arg));
                     break;
+                case "--list-capabilities":
+                    listCapabilities = true;
+                    i++;
+                    break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
                     {
@@ -99,7 +108,21 @@ public static class DispatchOptionsParser
             }
         }
 
-        if (name is null)
+        // #1500 second-reader MED-5: --list-capabilities prints and returns before anything is
+        // validated, created, or dispatched (DispatchCommand.ExecuteAsync's early return) — passed
+        // alongside a real <name> it silently discards that dispatch and still exits 0, which is
+        // exactly the case #1356's truthful exit-code table exists to prevent. Refuse the combination
+        // up front, the same way --attach on a template is refused, rather than let a fat-fingered or
+        // templated invocation read as success for work that never happened.
+        if (listCapabilities && name is not null)
+        {
+            throw new CliArgumentException(
+                $"'--list-capabilities' does not take a role or template name — it prints adapter/model/"
+                + $"effort/timebox info and exits, dispatching nothing. {Usage}",
+                $"run 'baton dispatch --list-capabilities' on its own, or drop the flag to dispatch '{name}'.");
+        }
+
+        if (name is null && !listCapabilities)
         {
             throw new CliArgumentException(
                 $"Missing required <name> argument. {Usage}",
@@ -118,16 +141,18 @@ public static class DispatchOptionsParser
         // fails the audit even on an otherwise-pristine workspace (finding 2).
         if (roomDirectoryPath is null)
         {
-            var uniqueName = $"dispatch-{name}-{Guid.NewGuid().ToString("N")[..8]}";
+            var uniqueName = $"dispatch-{name ?? "capabilities"}-{Guid.NewGuid().ToString("N")[..8]}";
             roomDirectoryPath = Path.Combine(Baton.Status.BatonPaths.Rooms, uniqueName);
         }
 
         return new DispatchOptions(
-            name, specFilePath, RoomDirectoryPath.Resolve(roomDirectoryPath), adapter, workflowId,
+            name ?? string.Empty, specFilePath, RoomDirectoryPath.Resolve(roomDirectoryPath), adapter, workflowId,
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             model, effort,
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout, label);
+            timeout, label,
+            attachments.Count > 0 ? attachments : null,
+            listCapabilities);
     }
 
     /// <summary>

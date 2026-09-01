@@ -246,5 +246,16 @@ public class RoleDispatchTests
         Assert.Null(binding.WorkingDirectory);
         Assert.False(binding.IsWorktree);
     }
+
+    [Fact]
+    public void Attached_files_are_listed_in_the_prompt()
+    {
+        var binding = RoleDispatch.ToBinding(
+            Review, "Review the change.",
+            attachments: ["C:/test/file1.txt", "C:/test/file2.md"],
+            attachmentsDirectory: "C:/room/artifacts/attachments");
+
+        Assert.Contains("Attached files (in C:/room/artifacts/attachments): file1.txt, file2.md", binding.PromptTemplate);
+    }
 }
 
