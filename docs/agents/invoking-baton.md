@@ -171,14 +171,14 @@ available two other ways, and both give you the same set of paths without parsin
   `"Running"`, or a `"Failed"` step still carrying a pending `RetryNotBefore` — `"alive" | "dead" |
   "unknown"` from the same probe the human `baton status` line already uses — so a SIGKILLed `baton
   run` stops reading as indefinitely `"Running"` (or as an ordinary parked retry) to a polling agent.
-- **`usage`/`linkedFromUsage` (#1360)** cost per execution — the second field is the linked-from
-  execution's own separate figure, present exactly when `linkedFrom` is. Shape:
-  `{wallClockMs, tokensIn?, tokensOut?, turns?}`. The clock figure lands the moment Core has recorded
-  both ends of an execution's lifetime, no matter which vendor ran it. The three counts are a
+- **`usage`/`linkedFromUsage` (#1360, extended by #1569)** cost per execution — the second field is
+  the linked-from execution's own separate figure, present exactly when `linkedFrom` is. Canonical
+  shape at spec/baton.md §3, not restated here. The clock figure lands the moment Core has recorded
+  both ends of an execution's lifetime, no matter which vendor ran it. Every other field is a
   different kind of fact — pulled from whatever the vendor's own CLI put on stdout — so treat a
   missing key as "not reported for this run", never as zero: §4 spells out per-vendor which counts
   that actually is today, and it hinges on running in structured-output mode in the first place (a
-  plain-text dispatch, which is most of them right now, carries none of the three).
+  plain-text dispatch, which is most of them right now, carries none of them).
   **Narrower population than the human line** (#1360 F4, review): `--json` exposes only each step's
   current and linked-from executions, never a failed attempt a retry superseded or a step-less
   supplementary execution (§17.3) — those are in the human roll-up's total but have no home here. Sum
@@ -228,7 +228,9 @@ what the repo's own audit checks those pins against. `gemini-3.6-flash-low` abov
 `draft-review-paused-bindings.json` uses; take a current one from those two sources rather than from
 this sentence.
 
-**Usage (#1360):** agy's structured-output mode reports token counts, and separately a turn count —
+**Usage (#1360, extended by #1569):** agy's structured-output mode reports token counts (including
+cache-read and thinking breakdowns `status --json` now surfaces; spec/baton.md §3 has the canonical
+field list), and separately a turn count —
 [`docs/vendor-capabilities.md`](../vendor-capabilities.md#usage-cost-and-quota--the-asymmetry-that-matters-most)
 is the register for the underlying vendor facts. One shape quirk this repo does not paper over: when
 that report collapses the input/output split into a single combined figure, `status --json`'s
@@ -241,12 +243,14 @@ that report collapses the input/output split into a single combined figure, `sta
 on claude a **withheld** write still reaches the outbox, so `WriteFiles: false` there is a genuine
 read-only lane that still produces its report. That asymmetry is why §6's table splits by adapter.
 
-**Usage (#1360):** claude's structured-output mode reports the same token/turn shape agy does — same
-register, [`docs/vendor-capabilities.md`](../vendor-capabilities.md#usage-cost-and-quota--the-asymmetry-that-matters-most).
-It additionally computes a per-turn dollar cost, which `status --json`'s additive
-`{wallClockMs, tokensIn?, tokensOut?, turns?}` shape has no field for and therefore does not surface.
-One more thing worth knowing before reading `tokensOut` as a lane's whole cost: it is a top-level
-count that a worker's own subagent fan-out is not folded into — see
+**Usage (#1360, extended by #1569):** claude's structured-output mode reports the same token/turn
+shape agy does, plus a cache-read/cache-creation/thinking breakdown `status --json` now surfaces too
+(spec/baton.md §3 has the canonical field list) — same register,
+[`docs/vendor-capabilities.md`](../vendor-capabilities.md#usage-cost-and-quota--the-asymmetry-that-matters-most).
+It additionally computes a per-turn dollar cost, which the additive shape still has no field for and
+therefore does not surface. One more thing worth knowing before reading `tokensOut` (or its new
+siblings) as a lane's whole cost: each is a top-level count that a worker's own subagent fan-out is
+not folded into — see
 [`docs/vendor-capabilities.md`](../vendor-capabilities.md#batons-usage-field-per-adapter-1360)
 for the measured shortfall.
 

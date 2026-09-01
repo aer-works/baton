@@ -53,9 +53,10 @@ public class StatusJsonEndToEndTests
     [Fact]
     public async Task A_succeeded_execution_reports_wall_clock_with_no_token_fields_when_stdout_is_plain_text()
     {
-        // #1360: a shell-stub worker's stdout is plain text, never a vendor's structured usage line --
-        // wallClockMs is still derivable (Core recorded both lifecycle events), but tokensIn/tokensOut/
-        // turns must be OMITTED from the JSON entirely, never emitted as a fabricated zero or null.
+        // #1360 (extended by #1569): a shell-stub worker's stdout is plain text, never a vendor's
+        // structured usage line -- wallClockMs is still derivable (Core recorded both lifecycle
+        // events), but tokensIn/tokensOut/turns/cacheReadTokens/cacheCreationTokens/thinkingTokens must
+        // be OMITTED from the JSON entirely, never emitted as a fabricated zero or null.
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-status-json-usage-plain-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
@@ -77,18 +78,50 @@ public class StatusJsonEndToEndTests
             Assert.Null(step.Usage.TokensIn);
             Assert.Null(step.Usage.TokensOut);
             Assert.Null(step.Usage.Turns);
+            Assert.Null(step.Usage.CacheReadTokens);
+            Assert.Null(step.Usage.CacheCreationTokens);
+            Assert.Null(step.Usage.ThinkingTokens);
 
             // The stronger claim: the keys themselves are absent from the wire format, not merely
-            // null after deserialization -- JsonIgnoreCondition.WhenWritingNull is what #1360 requires.
+            // null after deserialization -- JsonIgnoreCondition.WhenWritingNull is what #1360/#1569
+            // require.
             Assert.DoesNotContain("tokensIn", rawJson);
             Assert.DoesNotContain("tokensOut", rawJson);
             Assert.DoesNotContain("\"turns\"", rawJson);
+            Assert.DoesNotContain("cacheReadTokens", rawJson);
+            Assert.DoesNotContain("cacheCreationTokens", rawJson);
+            Assert.DoesNotContain("thinkingTokens", rawJson);
             Assert.Contains("wallClockMs", rawJson);
         }
         finally
         {
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
+    }
+
+    [Fact]
+    public void ExecutionUsageView_serializes_all_fields_with_exact_camelCase_wire_format_names_when_present()
+    {
+        // #1569 MED-5: positive wire-format test pinning the exact JSON property names when all
+        // fields are populated.
+        var usage = new ExecutionUsageView(
+            WallClockMs: 1234,
+            TokensIn: 10,
+            TokensOut: 20,
+            Turns: 2,
+            CacheReadTokens: 300,
+            CacheCreationTokens: 400,
+            ThinkingTokens: 50);
+
+        var rawJson = JsonSerializer.Serialize(usage);
+
+        Assert.Contains("\"wallClockMs\":1234", rawJson);
+        Assert.Contains("\"tokensIn\":10", rawJson);
+        Assert.Contains("\"tokensOut\":20", rawJson);
+        Assert.Contains("\"turns\":2", rawJson);
+        Assert.Contains("\"cacheReadTokens\":300", rawJson);
+        Assert.Contains("\"cacheCreationTokens\":400", rawJson);
+        Assert.Contains("\"thinkingTokens\":50", rawJson);
     }
 
     [Fact]

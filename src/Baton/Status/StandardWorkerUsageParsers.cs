@@ -42,6 +42,9 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
 
             long? tokensIn = null;
             long? tokensOut = null;
+            long? cacheReadTokens = null;
+            long? cacheCreationTokens = null;
+            long? thinkingTokens = null;
             if (root.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
             {
                 if (usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
@@ -53,6 +56,24 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
                 {
                     tokensOut = outTokens;
                 }
+
+                if (usageProp.TryGetProperty("cache_read_input_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue))
+                {
+                    cacheReadTokens = cacheReadValue;
+                }
+
+                if (usageProp.TryGetProperty("cache_creation_input_tokens", out var cacheCreationProp) && cacheCreationProp.TryGetInt64(out var cacheCreationValue))
+                {
+                    cacheCreationTokens = cacheCreationValue;
+                }
+
+                if (usageProp.TryGetProperty("output_tokens_details", out var outputDetailsProp)
+                    && outputDetailsProp.ValueKind == JsonValueKind.Object
+                    && outputDetailsProp.TryGetProperty("thinking_tokens", out var thinkingProp)
+                    && thinkingProp.TryGetInt64(out var thinkingValue))
+                {
+                    thinkingTokens = thinkingValue;
+                }
             }
 
             int? turns = null;
@@ -61,7 +82,7 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
                 turns = turnCount;
             }
 
-            usage = new WorkerUsage(tokensIn, tokensOut, turns);
+            usage = new WorkerUsage(tokensIn, tokensOut, turns, cacheReadTokens, cacheCreationTokens, thinkingTokens);
             return true;
         }
         catch (JsonException)
@@ -97,6 +118,8 @@ public sealed class AgyUsageParser : IWorkerUsageParser
 
             long? tokensIn = null;
             long? tokensOut = null;
+            long? cacheReadTokens = null;
+            long? thinkingTokens = null;
             if (result.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
             {
                 if (usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
@@ -108,18 +131,28 @@ public sealed class AgyUsageParser : IWorkerUsageParser
                 {
                     tokensOut = outTokens;
                 }
+
+                if (usageProp.TryGetProperty("cache_read_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue))
+                {
+                    cacheReadTokens = cacheReadValue;
+                }
+
+                if (usageProp.TryGetProperty("thinking_tokens", out var thinkingProp) && thinkingProp.TryGetInt64(out var thinkingValue))
+                {
+                    thinkingTokens = thinkingValue;
+                }
             }
 
             int? turns = result.TryGetProperty("num_turns", out var turnsProp) && turnsProp.TryGetInt32(out var turnsValue)
                 ? turnsValue
                 : null;
 
-            if (tokensIn is null && tokensOut is null && turns is null)
+            if (tokensIn is null && tokensOut is null && turns is null && cacheReadTokens is null && thinkingTokens is null)
             {
                 return false;
             }
 
-            usage = new WorkerUsage(tokensIn, tokensOut, turns);
+            usage = new WorkerUsage(tokensIn, tokensOut, turns, cacheReadTokens, ThinkingTokens: thinkingTokens);
             return true;
         }
         catch (JsonException)

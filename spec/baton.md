@@ -393,12 +393,43 @@ code is the only signal a lane is even still going, and it is unreliable for tha
 ```
 where `ExecutionUsageView` is
 ```
-{ "wallClockMs": number, "tokensIn"?: number, "tokensOut"?: number, "turns"?: number }
+{ "wallClockMs": number, "tokensIn"?: number, "tokensOut"?: number, "turns"?: number,
+  "cacheReadTokens"?: number, "cacheCreationTokens"?: number, "thinkingTokens"?: number }
 ```
-(`WorkflowStatusView.cs`, `src/Baton/Status/ExecutionUsageView.cs`). `wallClockMs` is
-always present when the object is present at all — derived from recorded start/exit timestamps; the
-token/turn fields are independently omitted (never `null`, never fabricated as zero) when the
-vendor's captured stdout carried no such figure.
+(`src/Baton/Status/ExecutionUsageView.cs` declares the C# record; `WorkflowStatusView.cs` projects it). `wallClockMs` is
+always present when the object is present at all — derived from recorded start/exit timestamps. The
+three added by #1569 follow one vendor's own field split, not a Baton-invented one: `cacheReadTokens` is a
+real field on both measured vendors' envelopes (claude: `cache_read_input_tokens`; agy:
+`cache_read_tokens`); `cacheCreationTokens` is claude-only (`cache_creation_input_tokens`) — agy has
+never been observed reporting one; and `thinkingTokens` (claude: nested
+`usage.output_tokens_details.thinking_tokens`; agy: flat `thinking_tokens`) — each independently
+absent when its vendor's line does not carry it, same doctrine as the original three.
+
+**Not all fields are addends — on claude, `thinkingTokens` is a breakdown of `tokensOut`, not a
+sibling count; on agy, the containment relationship is unmeasured.** Measured (#1569): on claude,
+`thinkingTokens` is reached by descending *into* `usage.output_tokens_details`, an object nested inside
+`usage.output_tokens`, so it is structurally a detail of `tokensOut`; on agy, `thinking_tokens` is
+reported flat alongside `input_tokens`, `output_tokens`, `cache_read_tokens`, and `total_tokens` (where
+`input_tokens + output_tokens == total_tokens`), which cannot arithmetically discriminate whether
+`thinking_tokens` is a subset of `output_tokens` or disjoint from it and excluded from `total_tokens`.
+Do not assume containment across vendors.
+
+**Summation rules per vendor.** For claude, `cacheReadTokens`/`cacheCreationTokens` are true siblings
+of `tokensIn`/`tokensOut` (excluded from both, per measurement), while `thinkingTokens` is a breakdown
+of `tokensOut` — so `tokensIn + tokensOut + cacheReadTokens + cacheCreationTokens` is the honest burn
+sum, and adding `thinkingTokens` would double-count. For agy, `cacheReadTokens` is excluded from
+`total_tokens` (and `input_tokens < cache_read_tokens` rules out inclusion in `tokensIn`); because
+`thinkingTokens`'s relationship to `output_tokens` is unmeasured, the exact burn sum cannot be fixed
+without an additional vendor measurement (a consumer computing a lower bound sums `tokensIn +
+tokensOut + cacheReadTokens`).
+
+**This is attribution, not a complete burn figure.** §7 below rules that lane-log accumulation —
+which is what every field here is — is never the reset-time source of truth; the `/usage` poll is.
+Separately, `tokensOut` (and now its cache/thinking siblings) is a top-level per-execution figure that
+excludes any subagent the dispatched worker itself fans out to, measured at a 22% shortfall on a
+single subagent (`ClaudeWorkerAdapter.TryParseFinalUsage`'s own doc comment,
+`src/Baton.Vendors/ClaudeWorkerAdapter.cs`) and growing with the tree — a gap this schema cannot close
+without a field nobody has asked for.
 
 **Notation and a real divergence.** `usage`/`linkedFromUsage` are correctly optional-and-omitted —
 write it `"field"?: Type`, not `Type | null` with a comment contradicting itself. But `linkedFrom`

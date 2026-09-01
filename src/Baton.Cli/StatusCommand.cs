@@ -461,6 +461,12 @@ public static class StatusCommand
     /// per execution, not a claim about how long the room itself took end to end.
     /// </para>
     /// </summary>
+    /// <remarks>
+    /// Prints only <c>TokensIn</c>/<c>TokensOut</c>/<c>Turns</c> — #1569 added
+    /// <c>CacheReadTokens</c>/<c>CacheCreationTokens</c>/<c>ThinkingTokens</c> to the JSON contract
+    /// this same data comes from, but deliberately left this human roll-up unchanged (out of that
+    /// issue's stated scope). Tracked as #1581.
+    /// </remarks>
     private static string FormatUsageSummary(IReadOnlyDictionary<string, ExecutionUsageView> usageByExecutionId)
     {
         if (usageByExecutionId.Count == 0)

@@ -7,13 +7,15 @@ using Baton.Domain;
 namespace Baton.Status;
 
 /// <summary>
-/// One execution's usage, per <c>baton status --json</c>'s additive shape (issue #1360):
-/// <c>{wallClockMs, tokensIn?, tokensOut?, turns?}</c>. <see cref="WallClockMs"/> is always present —
-/// it is derived from the ledger's own <see cref="CoreEvent.ExecutionStarted"/>/
-/// <see cref="CoreEvent.ExecutionExited"/> timestamps, which every completed execution has. The token
-/// and turn fields are independently omitted from the serialized JSON (never emitted as <c>null</c>,
-/// never fabricated as zero) when the vendor's captured stdout carried no such figure — see
-/// <see cref="ExecutionUsageProjector"/> for how they are read.
+/// One execution's usage, per <c>baton status --json</c>'s additive shape (issue #1360, extended by
+/// #1569). Canonical field list and wire contract at <c>spec/baton.md</c> §3, not restated here.
+/// <see cref="WallClockMs"/> is always present — it is derived from the ledger's own
+/// <see cref="CoreEvent.ExecutionStarted"/>/<see cref="CoreEvent.ExecutionExited"/> timestamps, which
+/// every completed execution has. Every other field is independently omitted from the serialized JSON
+/// (never emitted as <c>null</c>, never fabricated as zero) when the vendor's captured stdout carried
+/// no such figure — see <see cref="ExecutionUsageProjector"/> for how they are read. These fields are
+/// per-execution attribution, not a complete burn figure — see <c>spec/baton.md</c> §3/§7 for why and
+/// for the measured subagent-spend gap this cannot close.
 /// </summary>
 public sealed record ExecutionUsageView(
     [property: JsonPropertyName("wallClockMs")] long WallClockMs,
@@ -25,7 +27,16 @@ public sealed record ExecutionUsageView(
     long? TokensOut = null,
     [property: JsonPropertyName("turns")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    int? Turns = null);
+    int? Turns = null,
+    [property: JsonPropertyName("cacheReadTokens")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? CacheReadTokens = null,
+    [property: JsonPropertyName("cacheCreationTokens")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? CacheCreationTokens = null,
+    [property: JsonPropertyName("thinkingTokens")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? ThinkingTokens = null);
 
 /// <summary>
 /// Builds one <see cref="ExecutionUsageView"/> per <see cref="ExecutionId"/> that has both a recorded
@@ -119,7 +130,14 @@ public static class ExecutionUsageProjector
             workerNameByExecutionId.TryGetValue(executionId, out var workerName);
             recordedAdapterByExecutionId.TryGetValue(executionId, out var recordedAdapter);
             var usage = TryReadWorkerUsage(artifactsRootPath, executionId, workerName, recordedAdapter, bindings, adapters);
-            result[executionId] = new ExecutionUsageView(wallClockMs, usage?.TokensIn, usage?.TokensOut, usage?.Turns);
+            result[executionId] = new ExecutionUsageView(
+                wallClockMs,
+                usage?.TokensIn,
+                usage?.TokensOut,
+                usage?.Turns,
+                usage?.CacheReadTokens,
+                usage?.CacheCreationTokens,
+                usage?.ThinkingTokens);
         }
 
         return result;

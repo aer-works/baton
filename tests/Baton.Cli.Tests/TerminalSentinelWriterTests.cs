@@ -60,6 +60,65 @@ public class TerminalSentinelWriterTests
     }
 
     [Fact]
+    public async Task TryReadAsync_deserializes_a_pre_1569_terminal_json_with_the_new_fields_absent()
+    {
+        // #1569 compatibility: a real terminal.json captured before this change (a "usage" object
+        // carrying only wallClockMs, no tokensIn/tokensOut/turns and no cache/thinking keys at all --
+        // ~/.baton/rooms/dispatch-implement-01f4291f/terminal.json, read-only, copied verbatim) must
+        // still deserialize, and the three new ExecutionUsageView fields must come back null rather
+        // than throwing or defaulting to zero.
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"sentinel-pre1569-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(roomDirectory);
+            var path = Path.Combine(roomDirectory, TerminalSentinelWriter.TerminalSentinelFileName);
+            await File.WriteAllTextAsync(
+                path,
+                """
+                {
+                  "state": "Succeeded",
+                  "steps": [
+                    {
+                      "id": "implement",
+                      "state": "Succeeded",
+                      "execution": "6560347b1f9246ba8345465933efa02f",
+                      "linkedFrom": null,
+                      "usage": {
+                        "wallClockMs": 2258434
+                      }
+                    }
+                  ],
+                  "outputs": [
+                    "C:\\room\\artifacts\\report.md"
+                  ],
+                  "error": null,
+                  "try": null,
+                  "rejected": false
+                }
+                """,
+                TestContext.Current.CancellationToken);
+
+            var readBack = await TerminalSentinelWriter.TryReadAsync(roomDirectory, TestContext.Current.CancellationToken);
+
+            Assert.NotNull(readBack);
+            Assert.Equal("Succeeded", readBack!.State);
+            var step = Assert.Single(readBack.Steps);
+            Assert.NotNull(step.Usage);
+            Assert.Equal(2258434, step.Usage!.WallClockMs);
+            Assert.Null(step.Usage.TokensIn);
+            Assert.Null(step.Usage.TokensOut);
+            Assert.Null(step.Usage.Turns);
+            Assert.Null(step.Usage.CacheReadTokens);
+            Assert.Null(step.Usage.CacheCreationTokens);
+            Assert.Null(step.Usage.ThinkingTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
     public async Task TryReadAsync_treats_a_torn_or_malformed_sentinel_as_absent_rather_than_throwing()
     {
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"sentinel-torn-{Guid.NewGuid():N}");

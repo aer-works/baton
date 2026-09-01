@@ -204,6 +204,45 @@ public sealed class ExecutionUsageProjectorTests
     }
 
     [Fact]
+    public void Cache_and_thinking_token_fields_flow_through_to_the_projected_view_when_the_line_carries_them()
+    {
+        // #1569: the new fields must reach ExecutionUsageView, not just WorkerUsage -- pins the
+        // constructor wiring in BuildByExecutionId, not only ClaudeWorkerAdapter's own parse.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-cache-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-cache-thinking");
+            var start = DateTime.UtcNow;
+            WriteBindings(testRoot, ("plan", "claude"));
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId, "plan"))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(2)),
+            };
+
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+            File.WriteAllText(
+                Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName),
+                """{"type":"result","num_turns":1,"usage":{"input_tokens":2,"output_tokens":17,"cache_creation_input_tokens":0,"cache_read_input_tokens":38741,"output_tokens_details":{"thinking_tokens":6}}}""" + "\n");
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot);
+
+            var view = Assert.Single(usage).Value;
+            Assert.Equal(2, view.TokensIn);
+            Assert.Equal(17, view.TokensOut);
+            Assert.Equal(38741, view.CacheReadTokens);
+            Assert.Equal(0, view.CacheCreationTokens);
+            Assert.Equal(6, view.ThinkingTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public void A_worker_echoing_a_vendor_shaped_usage_line_it_did_not_itself_produce_yields_no_token_fields()
     {
         // #1360 F1 spoof regression: a `command`-worker step's stdout is operator-supplied and can

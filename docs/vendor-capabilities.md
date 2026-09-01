@@ -637,16 +637,27 @@ in the execution's captured stdout; nothing here is fabricated when a line does 
 | field | claude | agy |
 |---|---|---|
 | `wallClockMs` | always, once Core has recorded both ends of the execution's lifetime — derived from the ledger, not from either vendor | same |
-| `tokensIn` / `tokensOut` | `usage.input_tokens`/`output_tokens` off the `stream-json` `result` event | `result.usage.input_tokens`/`output_tokens` — **only when agy reports the split**; a run reporting a single combined `total_tokens` (both shapes are observed, above) leaves both fields absent rather than guessing a direction |
+| `tokensIn` / `tokensOut` | `usage.input_tokens`/`output_tokens` off the `stream-json` `result` event — **measured (#1569) to exclude `cache_read_input_tokens`**, not include it: a captured envelope with `input_tokens: 2` alongside `cache_read_input_tokens: 38741` is only coherent if the two are disjoint | `result.usage.input_tokens`/`output_tokens` — **only when agy reports the split**; a run reporting a single combined `total_tokens` (both shapes are observed, above) leaves both fields absent rather than guessing a direction. Measured (#1569) on a captured envelope: `input_tokens + output_tokens == total_tokens` exactly, with `cache_read_tokens` outside that sum — same exclusion as claude |
 | `turns` | `num_turns` off the same `result` event | `result.num_turns` |
-| dollar cost (`total_cost_usd`) | real, but has no field in `usage`'s additive shape (issue #1360 scoped it to tokens/turns/wall-clock) | n/a (agy reports none, per this section) |
+| `cacheReadTokens` / `cacheCreationTokens` (#1569) | `usage.cache_read_input_tokens` / `usage.cache_creation_input_tokens`, siblings of `input_tokens` on the same event | `result.usage.cache_read_tokens`; agy has never been observed reporting a cache-creation figure, so `cacheCreationTokens` is always absent on this vendor |
+| `thinkingTokens` (#1569) | **nested**, not a sibling: `usage.output_tokens_details.thinking_tokens` | `result.usage.thinking_tokens`, flat |
+| dollar cost (`total_cost_usd`) | real, but has no field in `usage`'s additive shape (issue #1360 scoped it to tokens/turns/wall-clock; #1569 added the cache/thinking counts, not cost) | n/a (agy reports none, per this section) |
 
-**The gate every one of these rows sits behind: structured-output mode.** All three vendor-reported
-fields live in the `stream-json` terminal line this whole document has been describing — if a
-dispatch runs in plain-text mode instead (today's default for an ordinary `baton run`/`baton dispatch`
-lane; see `RoleDispatch.ToBinding`'s own remarks on why claude stays text-mode there), stdout is prose
-with no such line in it, and `tokensIn`/`tokensOut`/`turns` are absent for that execution regardless
-of what the vendor is otherwise capable of reporting. `wallClockMs` is unaffected either way.
+**The gate every one of these rows sits behind: structured-output mode.** Every vendor-reported field
+lives in the `stream-json` terminal line this whole document has been describing — if a dispatch runs
+in plain-text mode instead (today's default for an ordinary `baton run`/`baton dispatch` lane; see
+`RoleDispatch.ToBinding`'s own remarks on why claude stays text-mode there), stdout is prose with no
+such line in it, and every field in this table is absent for that execution regardless of what the
+vendor is otherwise capable of reporting. `wallClockMs` is unaffected either way.
+
+**Provenance of the claude row's `#1569` measurements:** both come from a genuine `claude -p ...
+--output-format stream-json --verbose` invocation's own `result` line, captured verbatim (the same
+envelope is pinned as a test fixture in `tests/Baton.Vendors.Tests/ClaudeFinalUsageParsingTests.cs`)
+— but that invocation ran as a `run_command` tool call inside an agy-orchestrated lane's own
+transcript, not from a Baton-dispatched claude execution's own captured stdout. Same binary, same
+flags Baton's own dispatch path uses, so the wire format claim holds; no dispatched claude lane on
+this machine had yet written a top-level `"type":"result"` line to its own `.stdout.log` at the time
+this was measured, so that narrower claim is not made here.
 
 **On claude, `tokensOut` is a top-level count, not a whole-tree one (#479, above).** The dispatched
 worker's own subagent fan-out spends tokens the `result` event's `usage` object does not carry — a
