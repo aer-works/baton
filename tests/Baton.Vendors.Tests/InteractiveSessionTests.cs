@@ -106,14 +106,31 @@ public sealed class InteractiveSessionTests
     [Fact]
     public async Task ClaudeWorkerAdapter_DiscoverCapabilities_ReturnsModelAliasesAndCompactCommand()
     {
-        var claudeAdapter = new ClaudeWorkerAdapter();
-        var claudeCaps = await claudeAdapter.DiscoverCapabilitiesAsync(cancellationToken: TestContext.Current.CancellationToken);
+        // #1512 L2: the 2-arg overload's default userHomeDirectory falls through to the real
+        // %USERPROFILE%, which would enumerate and fully read every SKILL.md the developer running
+        // this suite actually has -- use the same emptyUserHome/configRootDirectory test seam
+        // ClaudeSkillDiscoveryTests uses so this stays off the ambient home.
+        var emptyUserHome = Path.Combine(Path.GetTempPath(), $"claude-empty-user-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(emptyUserHome);
+        try
+        {
+            var claudeAdapter = new ClaudeWorkerAdapter();
+            var claudeCaps = await claudeAdapter.DiscoverCapabilitiesAsync(
+                workingDirectory: null,
+                userHomeDirectory: emptyUserHome,
+                configRootDirectory: string.Empty,
+                cancellationToken: TestContext.Current.CancellationToken);
 
-        Assert.Equal("claude", claudeCaps.Vendor);
-        // Claude Code has no "list models" subcommand — `--model` only documents alias examples in
-        // --help, so this is a deliberately hardcoded, CLI-independent list (unlike Gemini below).
-        Assert.Contains("sonnet", claudeCaps.Models);
-        Assert.Contains(claudeCaps.Items, item => item.Name == "/compact");
+            Assert.Equal("claude", claudeCaps.Vendor);
+            // Claude Code has no "list models" subcommand — `--model` only documents alias examples in
+            // --help, so this is a deliberately hardcoded, CLI-independent list (unlike Gemini below).
+            Assert.Contains("sonnet", claudeCaps.Models);
+            Assert.Contains(claudeCaps.Items, item => item.Name == "/compact");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(emptyUserHome);
+        }
     }
 
     [Fact]

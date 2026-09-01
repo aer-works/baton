@@ -1,5 +1,3 @@
-using Baton.Vendors;
-
 namespace Baton.Vendors;
 
 /// <summary>
@@ -91,7 +89,11 @@ public static class SkillScanner
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
-            // Directory unreadable or deleted concurrently; return whatever was collected
+            // #1512 M1: directory unreadable or deleted concurrently -- fail open (a stray permission
+            // error must not block dispatch), but not silently: an empty result here is otherwise
+            // indistinguishable from a directory that legitimately has no skills, on a feature whose
+            // whole point is telling the operator what the worker will have.
+            Console.Error.WriteLine($"Warning: could not read skills directory '{skillsDirectory}': {ex.Message}");
         }
 
         return items;

@@ -394,6 +394,10 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
             Assert.Contains("Skills (implement): none discovered", output);
             Assert.Contains("Skills (janitor): none discovered", output);
             Assert.Contains("Skills (review): none discovered", output);
+            // #1512 M6: this test previously asserted only presence, not absence -- it would have
+            // passed unchanged if a fourth "Skills (capture...)" line had been printed, so the
+            // exclusion itself was never actually tested.
+            Assert.DoesNotContain("Skills (capture", output);
         }
         finally
         {

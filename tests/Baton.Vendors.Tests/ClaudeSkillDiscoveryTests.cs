@@ -27,6 +27,7 @@ public sealed class ClaudeSkillDiscoveryTests
                 var caps = await adapter.DiscoverCapabilitiesAsync(
                     workingDirectory: tempWorkspace,
                     userHomeDirectory: emptyUserHome,
+                    configRootDirectory: string.Empty,
                     cancellationToken: TestContext.Current.CancellationToken);
 
                 Assert.Equal("claude", caps.Vendor);
@@ -65,6 +66,7 @@ public sealed class ClaudeSkillDiscoveryTests
             var caps = await adapter.DiscoverCapabilitiesAsync(
                 workingDirectory: null,
                 userHomeDirectory: tempUserHome,
+                configRootDirectory: string.Empty,
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal("claude", caps.Vendor);
@@ -108,6 +110,7 @@ public sealed class ClaudeSkillDiscoveryTests
             var caps = await adapter.DiscoverCapabilitiesAsync(
                 workingDirectory: tempWorkspace,
                 userHomeDirectory: tempUserHome,
+                configRootDirectory: string.Empty,
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal("claude", caps.Vendor);
@@ -125,5 +128,64 @@ public sealed class ClaudeSkillDiscoveryTests
             DirectoryCleanup.DeleteRecursively(tempWorkspace);
             DirectoryCleanup.DeleteRecursively(tempUserHome);
         }
+    }
+
+    [Fact]
+    public async Task DiscoverCapabilities_ConfigRoot_TakesPrecedenceOverUserHomeAndSkipsTheDotClaudeSegment()
+    {
+        // #1512 M3: BATON_CLAUDE_CONFIG_ROOT replaces ~/.claude wholesale -- the personal skills
+        // directory under a redirected root is "<configRoot>/skills", NOT "<configRoot>/.claude/skills"
+        // the way the plain user-home arm composes it. This also proves the config root is preferred
+        // over userHomeDirectory when both are supplied.
+        var tempUserHome = Path.Combine(Path.GetTempPath(), $"claude-user-{Guid.NewGuid():N}");
+        var tempConfigRoot = Path.Combine(Path.GetTempPath(), $"claude-config-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempUserHome);
+        Directory.CreateDirectory(tempConfigRoot);
+        try
+        {
+            // A user-home skill that must NOT surface -- the config root takes precedence.
+            var userSkillDir = Path.Combine(tempUserHome, ".claude", "skills", "user-home-skill");
+            Directory.CreateDirectory(userSkillDir);
+            File.WriteAllText(Path.Combine(userSkillDir, "SKILL.md"), "description: Should not surface");
+
+            // The config-root skill, composed WITHOUT a .claude segment.
+            var configRootSkillDir = Path.Combine(tempConfigRoot, "skills", "shared-root-skill");
+            Directory.CreateDirectory(configRootSkillDir);
+            File.WriteAllText(Path.Combine(configRootSkillDir, "SKILL.md"), "description: Shared config root skill");
+
+            var adapter = new ClaudeWorkerAdapter();
+            var caps = await adapter.DiscoverCapabilitiesAsync(
+                workingDirectory: null,
+                userHomeDirectory: tempUserHome,
+                configRootDirectory: tempConfigRoot,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Contains(caps.Items, i => i.Name == "shared-root-skill" && i.Kind == "skill" && i.Description == "Shared config root skill");
+            Assert.DoesNotContain(caps.Items, i => i.Name == "user-home-skill");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempUserHome);
+            DirectoryCleanup.DeleteRecursively(tempConfigRoot);
+        }
+    }
+
+    [Fact]
+    public async Task DiscoverCapabilities_HonoursAnAlreadyCancelledToken()
+    {
+        // #1512 M7: DiscoverCapabilitiesAsync used to accept a CancellationToken and never consult it
+        // at all. This does not prove the unbounded-hang scenario (a genuinely stuck UNC read cannot
+        // be simulated reliably in a unit test) but it does prove the token is no longer ignored: a
+        // caller that has already given up gets cancellation back, not a silently-completed scan.
+        var adapter = new ClaudeWorkerAdapter();
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAsync<TaskCanceledException>(() =>
+            adapter.DiscoverCapabilitiesAsync(
+                workingDirectory: null,
+                userHomeDirectory: Path.GetTempPath(),
+                configRootDirectory: string.Empty,
+                cancellationToken: cts.Token));
     }
 }

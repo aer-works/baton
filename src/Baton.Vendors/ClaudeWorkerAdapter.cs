@@ -1124,10 +1124,45 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         }
     }
 
-    public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(string? workingDirectory = null, CancellationToken cancellationToken = default) =>
-        DiscoverCapabilitiesAsync(workingDirectory, userHomeDirectory: null, cancellationToken);
+    private static readonly TimeSpan SkillDiscoveryTimeout = TimeSpan.FromSeconds(5);
 
-    public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(string? workingDirectory, string? userHomeDirectory, CancellationToken cancellationToken = default)
+    public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(string? workingDirectory = null, CancellationToken cancellationToken = default) =>
+        DiscoverCapabilitiesAsync(workingDirectory, userHomeDirectory: null, cancellationToken: cancellationToken);
+
+    public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(
+        string? workingDirectory, string? userHomeDirectory, string? configRootDirectory = null, CancellationToken cancellationToken = default) =>
+        BoundedDiscoverAsync(() => DiscoverCapabilitiesCore(workingDirectory, userHomeDirectory, configRootDirectory), cancellationToken);
+
+    /// <summary>
+    /// #1512 M7: <see cref="DiscoverCapabilitiesCore"/> is synchronous, unbounded file I/O — a full
+    /// <c>File.ReadAllText</c> of every <c>SKILL.md</c> under both arms, with no timeout of its own.
+    /// Before #1512 this method had no production call site; it is now on the critical path of every
+    /// <c>baton dispatch</c> preamble, so a roaming/UNC <c>%USERPROFILE%</c> share that hangs must not
+    /// hang the whole dispatch. <c>Task.Run</c> plus a linked timeout cannot abort the delegate
+    /// mid-read once it has started (no managed API can interrupt a blocked synchronous file read),
+    /// but it stops the caller from *awaiting* past the timeout, which is what keeps the preamble
+    /// itself responsive — mirrors <c>AgyWorkerAdapter.DiscoverySubcommandTimeout</c>'s bound on the
+    /// analogous risk for its subprocess calls.
+    /// </summary>
+    private static async Task<WorkerCapabilities> BoundedDiscoverAsync(Func<WorkerCapabilities> discover, CancellationToken cancellationToken)
+    {
+        var discoveryTask = Task.Run(discover, cancellationToken);
+        var timeoutTask = Task.Delay(SkillDiscoveryTimeout, cancellationToken);
+        var completed = await Task.WhenAny(discoveryTask, timeoutTask).ConfigureAwait(false);
+        if (completed == discoveryTask)
+        {
+            return await discoveryTask.ConfigureAwait(false);
+        }
+
+        // Task.Delay observes cancellationToken too, so the delay task can "win" either because the
+        // timeout genuinely elapsed or because the caller cancelled -- awaiting it rethrows
+        // OperationCanceledException in the latter case, so cancellation still propagates as
+        // cancellation rather than silently degrading to an empty roster.
+        await timeoutTask.ConfigureAwait(false);
+        return new WorkerCapabilities("claude", Array.Empty<WorkerCapabilityItem>(), ModelAliases);
+    }
+
+    private static WorkerCapabilities DiscoverCapabilitiesCore(string? workingDirectory, string? userHomeDirectory, string? configRootDirectory)
     {
         var items = new List<WorkerCapabilityItem>();
         var skillDirs = new List<string>();
@@ -1139,11 +1174,30 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             commandDirs.Add(Path.Combine(workingDirectory, ".claude", "commands"));
         }
 
-        var userHome = userHomeDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (!string.IsNullOrWhiteSpace(userHome) && Directory.Exists(userHome))
+        // #1512 M3: BATON_CLAUDE_CONFIG_ROOT redirects every spawned `claude`'s CLAUDE_CONFIG_DIR to a
+        // shared root (see the injection near BatonClaudeConfigRootVariable's other use, and
+        // docs/runbooks/claude-shared-config-root.md) -- when set, that root IS the worker's personal
+        // config directory, replacing ~/.claude wholesale, not a home directory with a .claude
+        // subdirectory underneath it. Whether Claude Code itself relocates *skill* lookup under a
+        // redirected CLAUDE_CONFIG_DIR the same way it relocates auth/session state is unmeasured in
+        // this repo (no docs/vendor-doc-audit.md entry covers it) -- but hardcoding %USERPROFILE%
+        // while the adapter redirects the root is defensible in neither reading, so this follows the
+        // root when the operator has actually set one, rather than assert a roster for a directory the
+        // worker does not use.
+        var configRoot = configRootDirectory ?? Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable);
+        if (!string.IsNullOrWhiteSpace(configRoot) && Directory.Exists(configRoot))
         {
-            skillDirs.Add(Path.Combine(userHome, ".claude", "skills"));
-            commandDirs.Add(Path.Combine(userHome, ".claude", "commands"));
+            skillDirs.Add(Path.Combine(configRoot, "skills"));
+            commandDirs.Add(Path.Combine(configRoot, "commands"));
+        }
+        else
+        {
+            var userHome = userHomeDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrWhiteSpace(userHome) && Directory.Exists(userHome))
+            {
+                skillDirs.Add(Path.Combine(userHome, ".claude", "skills"));
+                commandDirs.Add(Path.Combine(userHome, ".claude", "commands"));
+            }
         }
 
         foreach (var skillsDir in skillDirs)
@@ -1165,6 +1219,9 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
                 {
+                    // #1512 M1: distinguishable from "no commands" -- see SkillScanner's own catch for
+                    // the same rationale (fail open, but not silently).
+                    Console.Error.WriteLine($"Warning: could not read commands directory '{commandsDir}': {ex.Message}");
                 }
             }
         }
@@ -1172,8 +1229,11 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         items.Add(new WorkerCapabilityItem("/compact", "command", "Summarize and compact session history"));
         items.Add(new WorkerCapabilityItem("/clear", "command", "Clear session context"));
 
+        // L3: project-over-user precedence is produced here, not just by skillDirs' project-first
+        // ordering above -- First() keeps the earliest (project) entry when both arms report the same
+        // name.
         var uniqueItems = items.GroupBy(i => i.Name).Select(g => g.First()).ToList();
-        return Task.FromResult(new WorkerCapabilities("claude", uniqueItems, ModelAliases));
+        return new WorkerCapabilities("claude", uniqueItems, ModelAliases);
     }
 
     /// <summary>
