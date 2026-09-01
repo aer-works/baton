@@ -91,7 +91,11 @@ public static class RoleDispatch
         // Normalize whichever adapter wins, not just the CLI override: role.Adapter comes from the
         // operator-editable, rebuild-free WorkerTiers.json, so a tier authored as "Claude" must resolve
         // the same as the override path does — otherwise the binding fails with UnknownWorkerAdapterException
-        // for an adapter that plainly exists.
+        // for an adapter that plainly exists. Since #1567 this normalized string is also what gets frozen
+        // onto ExecutionRequest.Adapter and written into flow.jsonl, so it is now the join key of durable
+        // history against WorkerAdapterRegistry/StandardWorkerUsageParsers, not just a same-room round-trip
+        // through bindings.json — a future change to this normalization changes what already-recorded lines
+        // resolve to.
         var adapter = (string.IsNullOrWhiteSpace(adapterOverride) ? role.Adapter : adapterOverride)
             .Trim().ToLowerInvariant();
 

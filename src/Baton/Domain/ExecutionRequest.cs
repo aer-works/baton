@@ -35,16 +35,27 @@ namespace Baton.Domain;
 /// dispatch and retry, same as <paramref name="LinkedFromExecutionId"/>.
 /// </param>
 /// <param name="Adapter">
-/// The vendor adapter this execution actually dispatched through (e.g. <c>"claude"</c>,
-/// <c>"agy"</c>), recorded at accept time (issue #1567, quota-design S1 — full design in the
-/// 2026-09-01 proposal comment on #802). Before this field existed,
-/// <see cref="Status.ExecutionUsageProjector"/> recovered the vendor by reading <c>Adapter</c> out of
-/// the room's <em>current</em> <c>bindings.json</c> at read time — harmless only because a room's
-/// adapter never changed mid-run. Failover changes that: rebinding <c>bindings.json</c> after this
-/// execution completed would silently re-attribute it to the new vendor. <c>null</c>, same defaulting
-/// rule as <see cref="FlowEvent.ExecutionFailed.Reason"/>, for every <c>flow.jsonl</c> line written
-/// before this field existed — an older journal must still replay, and its attribution still falls
-/// back to the bindings.json read this field exists to stop relying on.
+/// The vendor adapter bound to <see cref="Worker"/> at accept time (e.g. <c>"claude"</c>,
+/// <c>"agy"</c>), recorded so a later failover rebind of <c>bindings.json</c> cannot retroactively
+/// re-attribute this execution's already-recorded usage to whichever vendor is bound now (issue
+/// #1567, quota-design S1 — full design in the 2026-09-01 proposal comment on #802). Before this
+/// field existed, <see cref="Status.ExecutionUsageProjector"/> recovered the vendor by reading
+/// <c>Adapter</c> out of the room's <em>current</em> <c>bindings.json</c> at read time — harmless
+/// only because a room's adapter never changed mid-run. Failover changes that.
+/// <para>
+/// For an ordinary dispatch this is also the adapter that actually ran: the same resolved
+/// <see cref="Mutation.WorkerBinding.Process"/> both spawns the process and supplies this value. It
+/// is deliberately <em>not</em> that guarantee on the crash-recovery resubmit path
+/// (<c>MutationInterface</c>'s <c>toResubmit</c> loop, M10 Phase 3): that path re-dispatches a
+/// previously accepted request verbatim while re-resolving the binding from the CURRENT bindings
+/// file, so a rebind between the crash and the resubmit makes this field name the pre-crash vendor
+/// while a different one actually runs — tracked as issue #1583, not fixed by this field.
+/// </para>
+/// <c>null</c> covers two cases, same defaulting rule as
+/// <see cref="FlowEvent.ExecutionFailed.Reason"/>: every <c>flow.jsonl</c> line written before this
+/// field existed — an older journal must still replay, and its attribution still falls back to the
+/// bindings.json read this field exists to stop relying on — and any non-process
+/// (<see cref="Mutation.WorkerBinding.NonProcess"/>) dispatch, which has no vendor adapter to name.
 /// </param>
 /// <param name="Model">
 /// The model string this execution actually dispatched with, recorded alongside

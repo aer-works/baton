@@ -442,7 +442,10 @@ public sealed record FleetRoomStatusView(
     // #1503: worker role/adapter/model/effort/timeout for this room's Running step, read off
     // bindings.json via TryResolveRunningBindingAsync -- see spec/baton.md §6 schema for exactly
     // which step this reads, when the five fields come back absent, and why timeoutMs isn't a
-    // countdown.
+    // countdown. Adapter/Model here are bindings.json's CURRENT values, not the recorded-at-accept
+    // value Steps[].Usage is attributed by since #1567 (ExecutionRequest.Adapter) -- after a
+    // failover rebind the two can name different vendors in the same view, neither labelled as such
+    // (issue #1584, not fixed here).
     [property: JsonPropertyName("role")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Role = null,

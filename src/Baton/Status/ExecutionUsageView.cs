@@ -35,16 +35,11 @@ public sealed record ExecutionUsageView(
 /// <para>
 /// Token/turn counts are read from the execution's already-captured <c>.stdout.log</c>
 /// (<see cref="ExecutionStreamLogger"/>) — never a new ledger event, per the issue's own preference
-/// for deriving over recording twice. Resolves which adapter's parser to trust in one of two ways:
-/// when <see cref="FlowEvent.ExecutionRequestAccepted"/>'s <see cref="ExecutionRequest.Adapter"/> is
-/// recorded (issue #1567), that value is used directly — it is what this execution actually
-/// dispatched through, frozen at accept time. Only when it is absent (a journal line written before
-/// #1567 landed) does this fall back to the room's <em>current</em> <c>bindings.json</c>, keyed by
-/// the accepted request's worker role — the pre-#1567 behavior, kept only for that older population,
-/// since a room's adapter binding can change after an execution completes (failover) and the current
-/// file no longer necessarily names what an old execution actually ran through. Only the resolved
-/// adapter's <see cref="IWorkerUsageParser.TryParseFinalUsage"/> is tried, and only against the last
-/// non-blank line of the captured stream.
+/// for deriving over recording twice. Which adapter's parser to trust is resolved by preferring the
+/// accepted request's own recorded <see cref="ExecutionRequest.Adapter"/> — see that field's doc
+/// comment (issue #1567) for why, and for the one path where it is not the guarantee it usually is.
+/// Only the resolved adapter's <see cref="IWorkerUsageParser.TryParseFinalUsage"/> is tried, and
+/// only against the last non-blank line of the captured stream.
 /// </para>
 /// </summary>
 public static class ExecutionUsageProjector
@@ -185,10 +180,10 @@ public static class ExecutionUsageProjector
         IReadOnlyDictionary<string, TParser>? adapters)
         where TParser : IWorkerUsageParser
     {
-        // #1567: the recorded adapter (frozen on ExecutionRequest at accept time) wins whenever it's
-        // present. The bindings.json read below is a fallback for journal lines written before that
-        // field existed only — bindings.json is the room's CURRENT config, which failover can rebind
-        // after this execution already completed.
+        // #1567: the recorded adapter wins whenever present -- see ExecutionRequest.Adapter's doc for
+        // why, and for the resubmit-path case (#1583) where it isn't the guarantee it usually is. The
+        // bindings.json fallback below covers lines that predate the field, and non-process
+        // dispatches, which never carry one.
         var adapterName = recordedAdapter;
         if (adapterName is null && workerName is not null)
         {
