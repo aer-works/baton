@@ -104,6 +104,30 @@ public static class DispatchCommand
             Console.Out.WriteLine($"{label}: {DescribeGrant(binding)}");
         }
 
+        // #1512: surface the worker's discovered skill roster so a brief that names an absent skill is
+        // caught by the operator before the room exists. Excludes the capture step (F2's same
+        // exclusion): it spawns git directly rather than running a skill-bearing prompt, so it has no
+        // roster meaningful to an operator either.
+        var skillBindings = bindings
+            .Where(pair => !string.Equals(pair.Value.Adapter, WorkflowTemplateComposer.CaptureAdapter, StringComparison.Ordinal))
+            .Where(pair => adapters.ContainsKey(pair.Value.Adapter))
+            .ToList();
+        var multipleSkillWorkers = skillBindings.Count > 1;
+        foreach (var (workerName, binding) in skillBindings)
+        {
+            var boundAdapter = adapters[binding.Adapter];
+            var targetDirectory = binding.WorkingDirectory ?? binding.Worktree?.Repository ?? workspace;
+            var caps = await boundAdapter.DiscoverCapabilitiesAsync(targetDirectory, cancellationToken).ConfigureAwait(false);
+            var skills = caps.Items
+                .Where(i => string.Equals(i.Kind, "skill", StringComparison.OrdinalIgnoreCase))
+                .Select(i => i.Name)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            var skillsText = skills.Count > 0 ? string.Join(", ", skills) : "none discovered";
+            var label = multipleSkillWorkers ? $"Skills ({workerName})" : "Skills";
+            Console.Out.WriteLine($"{label}: {skillsText}");
+        }
+
         // R4 (#1354/#1380): the execution-scoped artifact path isn't known until dispatch actually runs,
         // so without --output the only truthful thing to print beforehand is the artifacts directory
         // itself, labeled as a directory — not a fabricated per-execution file path that will not exist

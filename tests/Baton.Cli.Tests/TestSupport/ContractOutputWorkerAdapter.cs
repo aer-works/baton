@@ -22,8 +22,12 @@ namespace Baton.Cli.Tests.TestSupport;
 /// </param>
 internal sealed class ContractOutputWorkerAdapter(
     bool satisfyOutputs,
-    IReadOnlyDictionary<string, string>? outputFixtures = null) : IWorkerAdapter
+    IReadOnlyDictionary<string, string>? outputFixtures = null,
+    IReadOnlyList<WorkerCapabilityItem>? capabilities = null) : IWorkerAdapter
 {
+    public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(string? workingDirectory = null, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new WorkerCapabilities("fake", capabilities ?? Array.Empty<WorkerCapabilityItem>(), Array.Empty<string>()));
+
     public CoreDispatchTarget Resolve(WorkerInvocation invocation, WorkerContract contract)
     {
         var script = satisfyOutputs && contract.ProducedOutputs.Count > 0

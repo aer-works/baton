@@ -105,6 +105,22 @@ mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose`
 its default `agy` tier), and `patch` never grants a write in the first place —
 its whole point is proposing a diff without mutating the workspace.
 
+### The printed skill roster
+
+Every dispatch also prints the worker's discovered skill roster, one line per bound worker (or `Skills (<worker>)` for composed templates), before the run starts (#1512):
+
+```
+Skills: none discovered
+```
+
+or, when skills exist in the worker's environment (e.g. `~/.claude/skills/` or `<workspace>/.claude/skills/` for Claude, `<workspace>/.agents/skills/` for agy):
+
+```
+Skills: artifact-design, run-checks
+```
+
+**Rule for briefs:** Dispatched workers run in their own process and do not inherit the conducting session's loaded skills. Briefs must inline what they need; a named skill only works if the worker's roster shows it. Skill forwarding is not performed by dispatch.
+
 ## Roles
 
 Each role declares what it must produce; those declarations become the contract the engine enforces,

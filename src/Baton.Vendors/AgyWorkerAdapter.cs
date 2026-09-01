@@ -954,6 +954,12 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         items.AddRange(ParseAgentLines(agentsOutput.Result));
         items.AddRange(ParsePluginLines(pluginsOutput.Result));
 
+        if (!string.IsNullOrWhiteSpace(workingDirectory) && Directory.Exists(workingDirectory))
+        {
+            var skillsDir = Path.Combine(workingDirectory, ".agents", "skills");
+            items.AddRange(SkillScanner.DiscoverSkills(skillsDir));
+        }
+
         return new WorkerCapabilities("agy", items, ParseModelLines(modelsOutput.Result));
     }
 

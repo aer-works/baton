@@ -1124,59 +1124,47 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         }
     }
 
-    public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(string? workingDirectory = null, CancellationToken cancellationToken = default)
+    public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(string? workingDirectory = null, CancellationToken cancellationToken = default) =>
+        DiscoverCapabilitiesAsync(workingDirectory, userHomeDirectory: null, cancellationToken);
+
+    public Task<WorkerCapabilities> DiscoverCapabilitiesAsync(string? workingDirectory, string? userHomeDirectory, CancellationToken cancellationToken = default)
     {
         var items = new List<WorkerCapabilityItem>();
-        var searchDirs = new List<string>();
+        var skillDirs = new List<string>();
+        var commandDirs = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(workingDirectory) && Directory.Exists(workingDirectory))
         {
-            searchDirs.Add(workingDirectory);
-        }
-        var userClaudeDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
-        if (Directory.Exists(userClaudeDir))
-        {
-            searchDirs.Add(userClaudeDir);
+            skillDirs.Add(Path.Combine(workingDirectory, ".claude", "skills"));
+            commandDirs.Add(Path.Combine(workingDirectory, ".claude", "commands"));
         }
 
-        foreach (var baseDir in searchDirs)
+        var userHome = userHomeDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(userHome) && Directory.Exists(userHome))
         {
-            var skillsDir = Path.Combine(baseDir, ".claude", "skills");
-            if (Directory.Exists(skillsDir))
-            {
-                foreach (var skillSubDir in Directory.GetDirectories(skillsDir))
-                {
-                    var skillFile = Path.Combine(skillSubDir, "SKILL.md");
-                    var name = Path.GetFileName(skillSubDir);
-                    var desc = $"Skill in {name}";
-                    if (File.Exists(skillFile))
-                    {
-                        try
-                        {
-                            var text = File.ReadAllText(skillFile);
-                            var lines = text.Split('\n');
-                            foreach (var l in lines)
-                            {
-                                if (l.StartsWith("description:", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    desc = l["description:".Length..].Trim().Trim('"', '\'');
-                                    break;
-                                }
-                            }
-                        }
-                        catch { }
-                    }
-                    items.Add(new WorkerCapabilityItem(name, "skill", desc));
-                }
-            }
+            skillDirs.Add(Path.Combine(userHome, ".claude", "skills"));
+            commandDirs.Add(Path.Combine(userHome, ".claude", "commands"));
+        }
 
-            var commandsDir = Path.Combine(baseDir, ".claude", "commands");
+        foreach (var skillsDir in skillDirs)
+        {
+            items.AddRange(SkillScanner.DiscoverSkills(skillsDir));
+        }
+
+        foreach (var commandsDir in commandDirs)
+        {
             if (Directory.Exists(commandsDir))
             {
-                foreach (var file in Directory.GetFiles(commandsDir, "*.md"))
+                try
                 {
-                    var name = Path.GetFileNameWithoutExtension(file);
-                    items.Add(new WorkerCapabilityItem($"/{name}", "command", $"Custom command /{name}"));
+                    foreach (var file in Directory.GetFiles(commandsDir, "*.md"))
+                    {
+                        var name = Path.GetFileNameWithoutExtension(file);
+                        items.Add(new WorkerCapabilityItem($"/{name}", "command", $"Custom command /{name}"));
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+                {
                 }
             }
         }

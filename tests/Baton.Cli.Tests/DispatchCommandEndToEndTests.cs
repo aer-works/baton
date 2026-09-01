@@ -649,6 +649,67 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Dispatching_a_role_prints_none_discovered_when_no_skills_are_found()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake");
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            Assert.Contains("Skills: none discovered", consoleOutput.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_a_role_prints_discovered_skill_names_when_present()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake-skills");
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake-skills"] = new ContractOutputWorkerAdapter(
+                    satisfyOutputs: true,
+                    capabilities: new List<WorkerCapabilityItem>
+                    {
+                        new("artifact-design", "skill", "Design artifacts"),
+                        new("run-checks", "skill", "Run checks"),
+                        new("/compact", "command", "Compact command"),
+                    }),
+            };
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            Console.SetOut(originalOut);
+
+            Assert.Contains("Skills: artifact-design, run-checks", consoleOutput.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static async Task<string> WriteSpecAsync(string directory, string content)
     {
         Directory.CreateDirectory(directory);
