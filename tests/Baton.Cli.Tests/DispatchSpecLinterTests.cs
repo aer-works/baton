@@ -93,12 +93,10 @@ public class DispatchSpecLinterTests
         Assert.Contains("no-network grant", warning.Format());
     }
 
-    // The real catalog's `review` role (WorkerRoles.json) declares NetworkAccess: false but scopes
-    // RunShellCommands to a ShellCommandsAreReadOnly, patterned allowlist that includes network-
-    // reaching commands (`gh issue view*`, `gh pr view*`). Reading NetworkAccess alone would warn
-    // "no-network grant" on a line the role can actually execute — a cry-wolf false positive on the
-    // catalog's own default role for src/ changes. These two pin the fix against the real grant, not
-    // a hand-rolled double that cannot reproduce the shape which caused it (#1500 second-reader).
+    // These two pin the read-only-patterned-shell exemption against the REAL catalog `review` grant,
+    // not a hand-rolled double that cannot reproduce the shape which caused it (#1500 second-reader) --
+    // a fabricated grant is what let the original defect through. Why that exemption exists is stated
+    // once, beside the `readOnlyPatternedShell` check in DispatchSpecLinter; not restated here.
 
     [Fact]
     public void Real_review_role_grant_does_not_warn_on_its_own_allowlisted_gh_command()

@@ -49,8 +49,9 @@ pair is refused up-front naming the real cause instead of failing after the run 
 ### The spec/grant mismatch lint
 
 Before a role's spec is dispatched, it is heuristically scanned for shell- or network-implying
-instructions (`gh `, `git `, `dotnet `, `pixi `, `curl`, "run the", "execute", an `http(s)://` URL)
-and compared against the resolved role's grant (#1500). A line implying a capability the grant
+instructions and compared against the resolved role's grant (#1500). The heuristics themselves
+live in `DispatchSpecLinter.Heuristics` — that list is the register, and it is deliberately not
+restated here, so it cannot go stale in one place while the code moves on in the other. A line implying a capability the grant
 withholds prints a warning to stderr naming the line and the missing category, e.g.:
 
 ```
