@@ -28,6 +28,15 @@ namespace Baton.Cli;
 /// is genuinely still live is reachable too, not just the idle-room path the rest of this type's doc
 /// still describes accurately on its own.
 /// </para>
+/// <para>
+/// F2 (#1605 review): the <c>--execution</c>-omitted path is scoped to <see cref="StepStatus.Running"/>
+/// only — <see cref="RunningExecutionResolver"/> has no notion of a quota-parked step (<c>Failed</c>
+/// with a scheduled <c>RetryNotBefore</c>), so a parked lane is invisible to it and this command falls
+/// through to the zero-candidates refusal below, which now names the workaround. Widening the resolver
+/// itself is deliberately out of scope here — <c>CoreEventAggregation</c> and
+/// <c>NonProcessCancellationDetector</c> agree with its running-only predicate today and neither is
+/// measured against a widened one — tracked as its own follow-up, #1607.
+/// </para>
 /// </summary>
 public static class CancelCommand
 {
@@ -249,7 +258,11 @@ public static class CancelCommand
             throw new CliArgumentException(
                 $"No --execution given, and room '{roomDirectoryPath}' has no currently-Running step to "
                 + "target — 'baton cancel' refuses to guess.",
-                $"pass --execution explicitly, or check `baton status {roomDirectoryPath}`.");
+                // F2 (#1605 review): a quota-parked step never shows as Running (#1607 tracks
+                // widening this resolver), so the room-level path can never see it — name the
+                // workaround rather than leaving the operator to rediscover it.
+                $"pass --execution explicitly — a quota-parked step never shows as Running, so dig its "
+                + $"execution id from `baton status {roomDirectoryPath}` and pass it there.");
         }
 
         throw new CliArgumentException(

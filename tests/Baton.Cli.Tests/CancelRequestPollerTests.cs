@@ -201,6 +201,150 @@ public class CancelRequestPollerTests
         }
     }
 
+    // #1563 (S0 of the quota design, #802): a step Failed with a scheduled RetryNotBefore — the
+    // shape the idle-deferral park leaves behind once its worker process has already exited — is
+    // neither "still running" (so the old bounded-retry-until-registered path never fires) nor
+    // "already settled" (so the pre-#1563 code told the operator "too late", a false claim #802's
+    // "three independent locks" finding identified — see CancelRequestPoller.cs's own comment on
+    // that finding, F7 #1605 review, for the ASSUMED/code-derived confidence it actually carries).
+    // It must be marked on the registry's wake latch and left pending, not consumed, until the pump
+    // this registry is bound to actually drains it.
+    [Fact]
+    public async Task A_quota_parked_target_is_marked_on_the_registry_and_left_pending_not_declared_too_late()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-parked");
+            var reset = DateTimeOffset.UtcNow.AddHours(2);
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", reset), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.StepRetryScheduled(new StepId("a"), execId, reset, RetryDelayMs: (int)TimeSpan.FromHours(2).TotalMilliseconds), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "exec-parked", TestContext.Current.CancellationToken);
+
+            // Not bound to any pump — mirrors production, where the poller only ever holds the
+            // in-process handle to whatever pump started it; marking must not require a live process.
+            var registry = new InFlightExecutionRegistry();
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.True(File.Exists(requestPath), "request must remain pending until the pump actually settles the park");
+            Assert.False(File.Exists($"{requestPath}.consumed"));
+            Assert.False(File.Exists($"{requestPath}.rejected"));
+            Assert.Contains(execId, registry.DrainParkedCancelIntents());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // Second-reader review finding, explained once beside the fix at CancelRequestPoller.cs's
+    // `isParked` early-return above the bounded-retry counter: ticks well past 5 with no pump ever
+    // draining the mark, to prove the request survives indefinitely rather than being rejected on a
+    // ceiling sized for a different failure mode.
+    [Fact]
+    public async Task A_quota_parked_target_survives_past_the_bounded_retry_ceiling_without_being_rejected()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-parked-slow");
+            var reset = DateTimeOffset.UtcNow.AddHours(2);
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", reset), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.StepRetryScheduled(new StepId("a"), execId, reset, RetryDelayMs: (int)TimeSpan.FromHours(2).TotalMilliseconds), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "exec-parked-slow", TestContext.Current.CancellationToken);
+
+            // No pump is ever started against this registry — the mark is drained by nobody, for
+            // as many ticks as the old "still running" ceiling (5) would have tolerated and beyond.
+            var registry = new InFlightExecutionRegistry();
+
+            for (var i = 0; i < 8; i++)
+            {
+                await CancelRequestPoller.TickAsync(
+                    roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+            }
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.True(File.Exists(requestPath), "a parked mark must never be rejected on a tick ceiling — only the pump's own settle consumes it");
+            Assert.False(File.Exists($"{requestPath}.consumed"));
+            Assert.False(File.Exists($"{requestPath}.rejected"));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // Once the pump this registry is bound to has actually processed the mark and settled the park
+    // as Cancelled, the poller's own consume branch must say so honestly rather than repeat the
+    // generic "too late" text — that text is what #802's "three independent locks" finding
+    // identified as a false claim once an arrest is what actually ended the park (see
+    // CancelRequestPoller.cs's own comment for that finding's actual confidence — F7, #1605 review).
+    [Fact]
+    public async Task Once_the_pump_settles_a_marked_park_as_Cancelled_the_poller_reports_arrested_not_too_late()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        var originalError = Console.Error;
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-arrested");
+            var reset = DateTimeOffset.UtcNow.AddHours(2);
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", reset), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.StepRetryScheduled(new StepId("a"), execId, reset, RetryDelayMs: (int)TimeSpan.FromHours(2).TotalMilliseconds), TestContext.Current.CancellationToken);
+                // Simulates the pump having already drained a prior mark and settled the park —
+                // this test isolates the poller's own message branch from the pump's wake wiring,
+                // which QuotaParkCancelArrestTests (Baton.Tests) covers end to end.
+                await writer.AppendAsync(new FlowEvent.CancellationRequested(execId), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionCancelled(execId), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "exec-arrested", TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+
+            using var stderr = new StringWriter();
+            Console.SetError(stderr);
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.False(File.Exists(requestPath), "expected the request to be consumed once settled");
+            Assert.True(File.Exists($"{requestPath}.consumed"));
+            Assert.Contains("arrested by this request", stderr.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("too late", stderr.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     [Fact]
     public async Task Latest_requested_with_zero_running_rejects_with_reason_in_body()
     {

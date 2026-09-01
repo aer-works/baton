@@ -15,12 +15,29 @@ namespace Baton.Cli;
 /// poller adds no second recording path of its own. Started and stopped by <see cref="RunCommand"/>
 /// alongside its own <see cref="MutationInterface.StartWorkflowAsync"/> call — the registry it is
 /// given must be the same instance that call bound to the run's <c>IEventLogWriter</c>.
+/// <para>
+/// #1563 (S0 of the quota design, #802): a target that has no live process to deliver to AND is not
+/// genuinely settled — a step Failed with a scheduled <see cref="Domain.StepState.RetryNotBefore"/>,
+/// the shape a vendor-quota park leaves behind — is marked via
+/// <see cref="InFlightExecutionRegistry.MarkParkedCancelIntent"/> instead of being told it is too
+/// late. That mark records nothing by itself; the pump validates and appends the durable events once
+/// it wakes, exactly as <c>RequestCancellationAsync</c> does for a live process — and it wakes on
+/// TWO separate waits, not one: the idle-deferral wait (nothing else in flight) and the busy wait
+/// (a sibling step's dispatch still is), both wired to the same latch (<c>MutationInterface</c>'s own
+/// remarks on each site have the detail).
+/// </para>
 /// </summary>
 public static class CancelRequestPoller
 {
     public static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(2);
 
     private static readonly ConcurrentDictionary<(string Path, string Target, DateTime LastWriteUtc), int> RetryCounters = new();
+
+    // #1605 review, F1: the isParked skip below used to print nothing, so an operator watching a
+    // park had no signal a mark had actually landed until (possibly a day later) it settled. Printed
+    // once per distinct request (keyed the same way RetryCounters is) rather than every ~2s tick for
+    // the park's whole duration.
+    private static readonly ConcurrentDictionary<(string Path, string Target, DateTime LastWriteUtc), byte> ParkedNoticePrinted = new();
 
     /// <summary>
     /// Runs until <paramref name="cancellationToken"/> fires. Never throws for a malformed request, a
@@ -137,24 +154,48 @@ public static class CancelRequestPoller
         if (delivered)
         {
             RetryCounters.TryRemove(retryKey, out _);
+            ParkedNoticePrinted.TryRemove(retryKey, out _);
             CancelRequestFile.Consume(requestPath);
             return;
         }
 
-        // Delivered was false: re-check projection to differentiate settled from still-running/unregistered.
+        // Delivered was false: re-check projection to differentiate settled from still-running/parked.
         var settleCheckReader = new FlowEventLogReader(logPath);
         var settleCheckEvents = await settleCheckReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
         var settleCheckState = StateProjector.Project(settleCheckEvents, snapshot);
-        var stillRunning = settleCheckState.Steps.Any(s => s.Status == StepStatus.Running && s.LatestExecutionId == targetExecutionId);
+        var targetStep = settleCheckState.Steps.FirstOrDefault(s => s.LatestExecutionId == targetExecutionId);
+        var stillRunning = targetStep?.Status == StepStatus.Running;
 
-        if (!stillRunning)
+        // #1563 (S0 of the quota design, #802 "three independent locks" finding): a step-tied target sitting on a future
+        // RetryNotBefore has no live process to register with — the worker already exited — but it
+        // is not "already settled" either. The pump is parked in its idle-deferral wait, possibly
+        // for as long as a vendor quota reset (MutationInterface's deferralCandidates). Mark the
+        // intent on the SAME registry that wait watches instead of reporting the false "too late"
+        // verdict below. Idempotent: safe to re-mark on every tick until the pump drains it.
+        var isParked = targetStep is { Status: StepStatus.Failed, RetryNotBefore: not null };
+        if (isParked)
+        {
+            inFlightExecutions.MarkParkedCancelIntent(targetExecutionId);
+        }
+
+        if (!stillRunning && !isParked)
         {
             RetryCounters.TryRemove(retryKey, out _);
+            ParkedNoticePrinted.TryRemove(retryKey, out _);
+            // The one-word difference that keeps this honest once the seam above can actually
+            // settle a park: an execution the seam itself just cancelled did settle BECAUSE of this
+            // request, not despite it — reporting "too late" for that case is the exact false claim
+            // #802's "three independent locks" finding identified (F7, #1605 review: that finding is
+            // derived from the code path, not a reproduced run — #802's own audit comment self-tags
+            // it ASSUMED, high confidence, code-derived — for the step-less case this method does
+            // not yet cover).
+            var arrestedByThisRequest = targetStep?.Status == StepStatus.Cancelled;
             try
             {
-                Console.Error.WriteLine(
-                    $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}', which is "
-                    + "not currently in flight — too late (it already settled).");
+                Console.Error.WriteLine(arrestedByThisRequest
+                    ? $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}' — arrested by this request."
+                    : $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}', which is "
+                        + "not currently in flight — too late (it already settled).");
             }
             catch
             {
@@ -162,6 +203,35 @@ public static class CancelRequestPoller
             }
 
             CancelRequestFile.Consume(requestPath);
+            return;
+        }
+
+        // #1563: a parked mark is a delivery GUARANTEE, not a hope — SettleParkedCancelIntentsAsync
+        // (MutationInterface) will drain it and append the terminal events on the pump's very next
+        // round. Folding this into the bounded-retry counter below would let a slow round (several
+        // other steps mid-dispatch, event-log I/O contention) hit the 5-tick ceiling before the pump
+        // gets there, rejecting a request that was already going to succeed with the false claim
+        // "not reachable" and deleting the pending file out from under the settle that follows
+        // moments later. A live pump that never drains its mark is the dead-pump case #1586 covers,
+        // not this one (scope note atop this file) — so this path retries forever rather than
+        // guessing a ceiling for a wait this poller has no way to bound.
+        if (isParked)
+        {
+            RetryCounters.TryRemove(retryKey, out _);
+            if (ParkedNoticePrinted.TryAdd(retryKey, 0))
+            {
+                try
+                {
+                    Console.Error.WriteLine(
+                        $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}' — "
+                        + "target is quota-parked (no live process to signal); marked for delivery once the pump settles it.");
+                }
+                catch
+                {
+                    // F6: swallow broken stderr pipe
+                }
+            }
+
             return;
         }
 

@@ -930,7 +930,19 @@ public static class MutationInterface
                                 ? Task.Delay(Timeout.Infinite, cancellationToken)
                                 : null;
 
-                            var deferralCandidates = new List<Task> { delayTask };
+                            // #1563 (S0 of the quota design, #802): captured fresh on every entry into
+                            // this wait, never reused — a cancel.request the poller could not deliver
+                            // through the registry above (no live process; the worker already exited)
+                            // marks this same latch (also wired into the busy `waitCandidates` wait
+                            // below, for the sibling-still-in-flight shape), so a park that would
+                            // otherwise sit until `delayTask` — possibly a day out on a vendor quota
+                            // reset — wakes on the next round instead. See
+                            // InFlightExecutionRegistry.MarkParkedCancelIntent's own doc for the
+                            // #1556 follow-up this latch is meant to fold into (F6, #1605 review:
+                            // record once, not restated here).
+                            var parkedCancelWake = inFlightExecutions.NextParkedCancelWake();
+
+                            var deferralCandidates = new List<Task> { delayTask, parkedCancelWake };
                             if (deferralHostStopWatcher is not null)
                             {
                                 deferralCandidates.Add(deferralHostStopWatcher);
@@ -944,11 +956,40 @@ public static class MutationInterface
                             // (no awaited token observation anywhere in the round), both tasks arrive
                             // here already cancelled, WhenAny picks the delay task again, and the loop
                             // spins without ever noticing the stop (Test12's 30s timeout under load).
+                            // F1 sub-point (#1605 review): this guard wins the race over
+                            // `parkedCancelWake` below whenever both fire around the same instant — a
+                            // parked-cancel mark landing in the same tick as a host stop is dropped:
+                            // this call returns without ever draining it, RequestStopAsync below only
+                            // reaches a live process's CancellationTokenSource (the parked step has
+                            // none), and the in-memory mark itself does not survive process exit.
+                            // Accepted, not fixed: this pump call is exiting either way, the parked
+                            // step was never going to settle through it once a host stop lands, and
+                            // CancelRequestFile.DeleteStalePendingRequest sweeps any still-pending
+                            // request file on the room's next `baton run` regardless — so the worst
+                            // case is the operator re-issuing `baton cancel` once that run starts, not
+                            // a request that silently vanishes with no trace.
                             if (completedWait == deferralHostStopWatcher || cancellationToken.IsCancellationRequested)
                             {
                                 hostStopRequested = true;
                                 ioCancellationToken = CancellationToken.None;
                                 await inFlightExecutions.RequestStopAsync(CancellationToken.None).ConfigureAwait(false);
+                            }
+                            else if (completedWait == parkedCancelWake)
+                            {
+                                // F8 (#1605 review): reset BEFORE drain, load-bearing, not incidental
+                                // ordering. A mark landing between the two calls below still lands
+                                // safely either way: ResetParkedCancelWake only swaps in a fresh latch
+                                // if the one it is given is still current, so a mark racing this reset
+                                // either signals the brand-new latch (caught next round instantly,
+                                // since it is already complete) or still lands in the set the drain
+                                // just below reads. Drain-then-reset would instead let that same mark
+                                // signal the OLD, already-fired latch (a no-op — TrySetResult on a
+                                // completed TCS does nothing) and then get its own fresh latch swapped
+                                // out from under it by the reset that follows, stalling the intent
+                                // until some unrelated future mark happens to notice it pending.
+                                inFlightExecutions.ResetParkedCancelWake(parkedCancelWake);
+                                await SettleParkedCancelIntentsAsync(state, inFlightExecutions, eventLogWriter, ioCancellationToken)
+                                    .ConfigureAwait(false);
                             }
 
                             continue;
@@ -992,6 +1033,17 @@ public static class MutationInterface
                 {
                     waitCandidates.Add(hostStopWatcher);
                 }
+
+                // #1563: the same wake this loop's idle-deferral branch watches, needed here too —
+                // a DIFFERENT step sitting quota-parked (Failed, future RetryNotBefore) while THIS
+                // step's dispatch is still in flight would otherwise only wake on that dispatch
+                // completing, a host stop, or `deferralWakeup` below (which fires at the very
+                // deadline the cancel exists to end early) — reachable review finding: a workflow
+                // with any sibling step running concurrently reopens the exact bug this issue fixes
+                // for the parked one. Captured fresh every entry into this wait, same as the idle
+                // branch, so a mark landing anywhere before capture is never lost.
+                var waitParkedCancelWake = inFlightExecutions.NextParkedCancelWake();
+                waitCandidates.Add(waitParkedCancelWake);
 
                 // A deferral deadline must wake this wait too, not only the idle branch above: a
                 // deferred retry whose sibling is still mid-flight would otherwise sleep until that
@@ -1039,6 +1091,16 @@ public static class MutationInterface
                     // Intent-first, for every execution still in flight, before any of them is signalled —
                     // RequestStopAsync itself enforces that ordering.
                     await inFlightExecutions.RequestStopAsync(CancellationToken.None).ConfigureAwait(false);
+                    continue;
+                }
+                if (completed == waitParkedCancelWake)
+                {
+                    // F8 (#1605 review): reset-before-drain is load-bearing here too — see the same
+                    // ordering's full explanation at this loop's idle-deferral branch above
+                    // (`parkedCancelWake`'s own ResetParkedCancelWake call).
+                    inFlightExecutions.ResetParkedCancelWake(waitParkedCancelWake);
+                    await SettleParkedCancelIntentsAsync(state, inFlightExecutions, eventLogWriter, ioCancellationToken)
+                        .ConfigureAwait(false);
                     continue;
                 }
 
@@ -1208,6 +1270,78 @@ public static class MutationInterface
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
             _ => throw new ArgumentOutOfRangeException(nameof(classification), classification.Verdict, "Unknown OutcomeVerdict."),
         };
+
+    /// <summary>
+    /// #1563 (S0 of the quota design, #802): resolves every parked-cancel intent the registry's
+    /// wake latch just woke this deferral park for, against the CURRENT round's own projection —
+    /// never against whatever the poller's thread saw, which can be a round stale by the time this
+    /// runs. Intent-first, then settle, the same shape every other terminal append in this loop
+    /// takes: <see cref="FlowEvent.CancellationRequested"/> is recorded even though the target
+    /// already carries an <see cref="FlowEvent.ExecutionFailed"/> — <see cref="RequestCancellationAsync"/>'s
+    /// direct path does the same for an already-terminal target — then
+    /// <see cref="FlowEvent.ExecutionCancelled"/> settles it, overwriting the step's terminal status
+    /// from <see cref="StepStatus.Failed"/> to <see cref="StepStatus.Cancelled"/> the same way
+    /// <see cref="FlowEvent.WorkflowResumed"/>'s Reject decision already overwrites Failed to
+    /// Rejected for a paused step (<see cref="Projection.StateProjector"/>'s own
+    /// <c>WorkflowResumed</c> case). A target that no longer matches a parked step by the time this
+    /// runs (redispatched already, or never was one) is silently dropped here — see the comment at
+    /// the drop site below for the narrow race that produces this and why it self-heals. F5 (#1605
+    /// review): that drop is NOT surfaced by <see cref="CancelRequestPoller"/>'s bounded 5-tick retry
+    /// ceiling — the parked path deliberately bypasses that ceiling (its own <c>isParked</c> early
+    /// return) — so a genuinely unreachable target is instead caught by the poller's ordinary
+    /// settled-vs-still-running check re-evaluating against fresh state on its own next tick.
+    /// </summary>
+    private static async Task SettleParkedCancelIntentsAsync(
+        FlowState state,
+        InFlightExecutionRegistry inFlightExecutions,
+        IEventLogWriter eventLogWriter,
+        CancellationToken ioCancellationToken)
+    {
+        var intents = inFlightExecutions.DrainParkedCancelIntents();
+        foreach (var executionId in intents)
+        {
+            if (!IsParkedRetryTarget(state, executionId))
+            {
+                // This guard serves two purposes, not one: it is the fail-closed rejection of a
+                // target that was never a real park to begin with (a mismatched/stale execution id —
+                // Marking_an_intent_for_a_mismatched_execution_id... pins exactly this), AND it is
+                // where the F8 (#1605 review) delayTask-wins interleaving below lands. Neither
+                // resolves the same way, but both fall through the same drop.
+                //
+                // The interleaving: a mark lands in the exact instant this round's own deferral timer
+                // (not the parked-cancel wake) fires and moves the step off this parked shape — a
+                // redispatch minting a new ExecutionId — dropping the stale id silently here instead
+                // of settling it. Known, not fixed here. It is NOT silently lost end to end: the
+                // poller never consumed the request file for a parked mark (its own isParked branch
+                // just re-marks, never consumes), and the request's Target is always the ORIGINAL
+                // literal execution id in this scenario ('latest' can never resolve to a parked step
+                // in the first place — RunningExecutionResolver only sees Running steps, F2's own
+                // point). So the poller's next tick re-checks that same stale id, finds it no longer
+                // matches any step's LatestExecutionId, and reports the ordinary "too late (it already
+                // settled)" verdict — an honest, if imprecise, outcome (the intent was not wrong, just
+                // reported as arriving after the fact), not a request that vanishes with no trace.
+                continue;
+            }
+
+            await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(executionId), ioCancellationToken)
+                .ConfigureAwait(false);
+            await eventLogWriter.AppendAsync(new FlowEvent.ExecutionCancelled(executionId), ioCancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The fail-closed check behind <see cref="SettleParkedCancelIntentsAsync"/>: true only for a
+    /// step whose LATEST execution is <paramref name="targetExecutionId"/>, currently
+    /// <see cref="StepStatus.Failed"/>, and sitting on a scheduled <see cref="StepState.RetryNotBefore"/>
+    /// — the idle-deferral park's exact shape. A step that already redispatched (a new
+    /// <see cref="ExecutionId"/> is now latest) or was never parked at all resolves false.
+    /// </summary>
+    private static bool IsParkedRetryTarget(FlowState state, ExecutionId targetExecutionId) =>
+        state.Steps.Any(s =>
+            s.LatestExecutionId == targetExecutionId
+            && s.Status == StepStatus.Failed
+            && s.RetryNotBefore is not null);
 
     private sealed record PreparedExecution(ExecutionRequest Request, string OutputDirectory);
 

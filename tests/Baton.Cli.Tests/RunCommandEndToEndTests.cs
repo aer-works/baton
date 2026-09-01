@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
+using Baton.Concurrency;
 using Baton.Domain;
 using Baton.Status;
 using Baton.Store;
@@ -27,6 +28,8 @@ public class RunCommandEndToEndTests
 {
     private static readonly IReadOnlyDictionary<string, IWorkerAdapter> Adapters =
         new Dictionary<string, IWorkerAdapter> { ["shell"] = new ShellCommandWorkerAdapter() };
+
+    private static readonly TimeSpan PumpCompletionTimeout = TimeSpan.FromSeconds(30);
 
     [Fact]
     public async Task A_three_step_linear_workflow_runs_to_completion_through_RunCommand()
@@ -395,6 +398,117 @@ public class RunCommandEndToEndTests
         {
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
+    }
+
+    /// <summary>
+    /// #1605 review F1 (HIGH): the single-parked-lane shape — a quota-parked room resumed through
+    /// <c>baton run</c>, with no other step in flight — settles a cancel and returns Terminal well
+    /// inside <see cref="CancelRequestPoller.DefaultPollInterval"/> (2s) of the mark, so the finally
+    /// block used to cancel the poller before its own next tick could ever consume the pending
+    /// <c>cancel.request</c> file — a pending file left behind in a room whose cancel actually
+    /// SUCCEEDED. Drives this through the real <see cref="RunCommand.ExecuteAsync"/> entry point
+    /// (not <c>MutationInterface</c> directly, and not <c>InFlightExecutionRegistry.MarkParkedCancelIntent</c>
+    /// called in-process, which <c>QuotaParkCancelArrestTests</c> already covers) — the file channel
+    /// end to end is this test's own scope.
+    /// </summary>
+    [Fact]
+    public async Task A_cancel_request_against_a_resumed_parked_room_is_consumed_when_settling_the_park_terminates_the_run()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var (bindingsFilePath, executionId) = await WriteParkedRoomFixtureAsync(roomDirectory);
+            var options = new RunOptions(WorkflowFilePath: null, bindingsFilePath, roomDirectory);
+
+            var pumpTask = RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
+
+            // Wait for MutationInterface's own ConcurrencyGuard (flow.lock) to be held: that only
+            // happens inside StartWorkflowAsync, called strictly AFTER RunCommand's one-time
+            // CancelRequestFile.DeleteStalePendingRequest sweep at start-up — so once this is true,
+            // writing the request file below can never race that sweep and be deleted out from
+            // under this test before the poller ever sees it.
+            var lockDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+            while (!ConcurrencyGuard.IsHeld(roomDirectory))
+            {
+                Assert.True(DateTime.UtcNow < lockDeadline, "Timed out waiting for the pump to acquire flow.lock.");
+                Assert.False(pumpTask.IsCompleted, "expected the pump to still be running (parked) when this check runs");
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: poll interval inside a 20s-bounded loop, not the wait ceiling itself
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, executionId.Value, TestContext.Current.CancellationToken);
+
+            var result = await pumpTask.WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.Equal(StepStatus.Cancelled, result.State.Steps.Single().Status);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.False(File.Exists(requestPath), "expected the pending cancel.request to be consumed, not left behind");
+            Assert.True(
+                File.Exists($"{requestPath}.consumed"),
+                "expected the final tick in RunCommand's finally block to consume the request once the park settled");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// Hand-writes a bound snapshot plus a quota-parked <c>ExecutionFailed</c>/<c>StepRetryScheduled</c>
+    /// history directly to <c>flow.jsonl</c> — same shape as
+    /// <c>StatusCommandEndToEndTests.WriteParkedStepFixtureAsync</c> — with a real (not faked)
+    /// <see cref="DateTimeOffset.UtcNow"/>-based <c>RetryNotBefore</c> far enough out (1 hour) that
+    /// the idle-deferral wait's own delay could never account for this test completing on its own;
+    /// only the cancel mark can make it converge inside the 30s bound below.
+    /// </summary>
+    private static async Task<(string BindingsFilePath, ExecutionId ExecutionId)> WriteParkedRoomFixtureAsync(string roomDirectory)
+    {
+        Directory.CreateDirectory(roomDirectory);
+        var definition = new WorkflowDefinition(
+            new WorkflowTemplateId("parked-probe"),
+            1,
+            [new WorkflowStepDefinition(new StepId("implement"), "implement", [], ["out"], [], new RetryPolicy(3))]);
+        var snapshot = SnapshotBinder.Bind(definition);
+        await SnapshotBinder.PersistAsync(
+            snapshot, Path.Combine(roomDirectory, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var executionId = new ExecutionId("exec-parked-runcommand");
+        var request = new ExecutionRequest(
+            executionId,
+            new WorkflowId("wf-parked"),
+            new StepId("implement"),
+            "implement",
+            Inputs: [],
+            Outputs: [],
+            Timeout: TimeSpan.FromSeconds(30),
+            Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+        var retryNotBefore = DateTimeOffset.UtcNow.AddHours(1);
+
+        await using (var writer = new FlowEventLogWriter(Path.Combine(roomDirectory, "flow.jsonl")))
+        {
+            var ct = TestContext.Current.CancellationToken;
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request), ct);
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota exhausted", retryNotBefore), ct);
+            await writer.AppendAsync(
+                new FlowEvent.StepRetryScheduled(new StepId("implement"), executionId, retryNotBefore, RetryDelayMs: (int)TimeSpan.FromHours(1).TotalMilliseconds), ct);
+        }
+
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["implement"] = new WorkerBindingConfigEntry(
+                "shell",
+                new WorkerContract("implement", [], [new ProducedOutput("out")], []),
+                WriteFileCommand("out", "unused"),
+                TimeSpan.FromSeconds(30)),
+        };
+        var bindingsPath = Path.Combine(roomDirectory, "bindings.json");
+        await File.WriteAllTextAsync(bindingsPath, JsonSerializer.Serialize(config));
+
+        return (bindingsPath, executionId);
     }
 
     private static async Task<string> WriteThreeStepWorkflowAsync(

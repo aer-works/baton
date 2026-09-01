@@ -144,6 +144,23 @@ public static class StateProjector
 
             case FlowEvent.ExecutionCancelled cancelled:
                 state.TerminalStatusByExecutionId[cancelled.ExecutionId] = StepStatus.Cancelled;
+
+                // #1563: a park-abort settles a Failed, quota-parked execution as Cancelled (the
+                // idle-deferral wait's own arrest seam) without ever dispatching a new attempt — so,
+                // unlike ExecutionRequestAccepted's clear above, nothing else will clear the retry
+                // this exact execution was scheduled for. Left in place, the idle wait's own
+                // pendingDeferrals check (MutationInterface) reads this stale RetryNotBefore and
+                // keeps waiting out the very deadline the cancellation was meant to end. Guarded by
+                // matching RetryScheduledForExecutionId, not just StepId: a retry already
+                // re-scheduled for a NEWER execution of the same step must survive this clear.
+                if (state.StepIdByExecutionId.TryGetValue(cancelled.ExecutionId, out var cancelledStepId)
+                    && state.RetryScheduledForExecutionIdByStepId.GetValueOrDefault(cancelledStepId) == cancelled.ExecutionId)
+                {
+                    state.RetryNotBeforeByStepId.Remove(cancelledStepId);
+                    state.RetryDelayMsByStepId.Remove(cancelledStepId);
+                    state.RetryScheduledForExecutionIdByStepId.Remove(cancelledStepId);
+                }
+
                 break;
 
             case FlowEvent.WorkflowPaused paused:
