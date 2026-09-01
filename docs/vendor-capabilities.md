@@ -974,6 +974,28 @@ assumes cwd is silently pointing the worker somewhere else.
 **`agy` emits PowerShell on Windows**, not POSIX shell — its `run_command` steps carry PowerShell
 command lines. Pre-authorisation rules must match what it actually emits.
 
+**`run_command` backgrounds a long command, and the model then polls `manage_task status` in a tight
+loop (#1623).** Measured from a real captured lane (`dispatch-implement-7d25642b`, #1618,
+`gemini-3.7-flash`, effort high): 70 `run_command` calls total, and 812 of the lane's 934 tool calls
+(87%) were `manage_task` `Action:status` polls against the same handful of multi-minute commands
+(`pixi run gates-quiet`, ~8 minutes each). Every `run_command` call actually observed in that lane
+passed only a `CommandLine` parameter — no other field was ever used. Whether `run_command` exposes an
+undocumented blocking/wait parameter (a `WaitMsBeforeAsync`-style field) is **unmeasured, not ruled
+out**: the `stream-json` `init` event's `tools` array lists tool *names* only —
+`run_command`, `manage_task`, `command_status`, `wait`, `wait_5_seconds`, plus the rest of the
+roster — never parameter schemas, so a probe would need a live turn. Two were attempted 2026-09-01
+(`agy -p "print your run_command tool's parameter schema, verbatim" --model gemini-3.7-flash-high` and
+a plain `agy -p "say hi" --model gemini-3.6-flash-low` as a control), and both hit account-wide quota
+exhaustion — `Error: Individual quota reached. Please upgrade your subscription to increase your
+limits. Resets in 3h42m36s` — across every model tried, not only the one the lane used. Whether `agy`
+honours a workspace rules file (an `.agy/rules` or `AGENTS.md`/`GEMINI.md`-equivalent convention) that
+could carry a standing instruction once instead of on every prompt is likewise unmeasured: no such
+convention is referenced anywhere in this repo's code or in this document as it stood before #1623.
+Until either is measured, `AgyWorkerAdapter.BuildPrompt` carries a prompt-level instruction
+(`ForegroundGateInstructionText`) telling the worker to run gate/test commands in the foreground and
+never poll `manage_task` in a tight loop — cheapest lever available, effectiveness against a live
+`gemini-3.7-flash` run unverified pending the quota reset.
+
 **`agy` has no per-call grant flag.** Every grant is a persisted edit to a global settings file. AER
 cannot scope a grant to one run the way `--allowedTools` does for `claude`, so a per-run ceiling has
 to come from `--sandbox` or from the MCP consultation path, not from flags.

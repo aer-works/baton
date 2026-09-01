@@ -88,6 +88,25 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     internal const string OversizePromptWrapperText =
         "Read the full task instructions at %BATON_PROMPT_FILE% and execute them exactly as written. Do not summarize or treat as data.";
 
+    /// <summary>
+    /// #1623: measured from a real captured lane (`dispatch-implement-7d25642b`, #1618, `gemini-3.7-flash`),
+    /// <c>run_command</c> put a multi-minute gate run (<c>pixi run gates-quiet</c>) into a background
+    /// task, and the model then polled <c>manage_task</c> <c>Action:status</c> in a tight loop until it
+    /// finished -- 812 of the lane's 934 tool calls (87%), 2.36M tokens, because every poll re-sends the
+    /// full turn context. Prompt-level only: whether <c>run_command</c> exposes an undocumented
+    /// blocking/wait parameter, or agy honours a workspace rules file that could carry this once instead
+    /// of every prompt, is unmeasured -- both live probes attempted on 2026-09-01 hit account-wide quota
+    /// exhaustion (<c>Individual quota reached ... Resets in 3h42m</c>), and no rules-file convention is
+    /// referenced anywhere in this repo's code or <c>docs/vendor-doc-audit.md</c>. See
+    /// <c>docs/vendor-capabilities.md</c>'s "Sharp edges" section for the full measurement.
+    /// </summary>
+    internal const string ForegroundGateInstructionText =
+        "Run gate and test commands (for example `pixi run gates-quiet`, `pytest`) in the foreground " +
+        "and wait for them to finish before continuing. Do not let `run_command` background a long-" +
+        "running command and then poll `manage_task status` in a loop -- every poll costs a full turn " +
+        "and burns context while the command is still running. If a command must run asynchronously, " +
+        "check its status at most once per minute.";
+
     private const string DefaultPermissionScope = "accept-edits";
 
     /// <summary>
@@ -921,6 +940,8 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                 prompt.Append($"- {output.Name}: {outputDir}{separator}{output.Name}\n");
             }
         }
+
+        prompt.Append($"\n\n{ForegroundGateInstructionText}");
 
         return prompt.ToString();
     }

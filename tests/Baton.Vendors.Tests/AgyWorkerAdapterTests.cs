@@ -393,6 +393,19 @@ public class AgyWorkerAdapterTests
         Assert.Contains($"guidelines: {inputVar1}", prompt);
     }
 
+    /// <summary>
+    /// #1623: every agy prompt carries the foreground-gate instruction, so a lane never re-derives the
+    /// polling behaviour measured in the #1618 lane (812 of 934 tool calls were `manage_task status`
+    /// polls against one backgrounded `run_command`).
+    /// </summary>
+    [Fact]
+    public void The_prompt_instructs_agy_to_run_gates_in_the_foreground_and_never_poll_manage_task()
+    {
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.Contains(AgyWorkerAdapter.ForegroundGateInstructionText, GetPrompt(target));
+    }
+
     [Fact]
     public void A_contract_with_no_inputs_omits_the_inputs_section()
     {
