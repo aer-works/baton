@@ -6,6 +6,8 @@ using Baton.Concurrency;
 using Baton.Domain;
 using Baton.Store;
 using Baton.Templates;
+using static Baton.Cli.Tests.TestSupport.ParkedStepFixture;
+using static Baton.Cli.Tests.TestSupport.ProcessIdentityFixture;
 
 namespace Baton.Cli.Tests;
 
@@ -534,11 +536,10 @@ public class StatusCommandEndToEndTests
     /// <summary>
     /// #1513: a parked step whose engine is provably dead is the exact live signature this issue was
     /// filed against -- "parked ... retries HH:MM" alone reads as a promise the ledger cannot back
-    /// (spec/baton.md §7 has why). Same technique as
-    /// <c>FleetStatusToolTests.DeadProcessIdentity</c>: spawn a real process, capture its identity
-    /// while genuinely alive, then kill it, so <c>EngineLivenessProbe</c> sees an OS-confirmed-dead
-    /// PID rather than a fabricated one that might coincidentally collide with something else on the
-    /// host.
+    /// (spec/baton.md §7 has why). <see cref="TestSupport.ProcessIdentityFixture.DeadProcessIdentity"/>
+    /// spawns a real process, captures its identity while genuinely alive, then kills it, so
+    /// <c>EngineLivenessProbe</c> sees an OS-confirmed-dead PID rather than a fabricated one that
+    /// might coincidentally collide with something else on the host.
     /// </summary>
     [Fact]
     public async Task Status_of_a_parked_step_with_a_dead_engine_names_it_and_says_manual_intervention_is_needed()
@@ -567,24 +568,6 @@ public class StatusCommandEndToEndTests
         finally
         {
             DirectoryCleanup.DeleteRecursively(testRoot);
-        }
-    }
-
-    private static (int Pid, DateTimeOffset StartTime) DeadProcessIdentity()
-    {
-        var psi = OperatingSystem.IsWindows()
-            ? new ProcessStartInfo("ping.exe", "-n 30 127.0.0.1") { CreateNoWindow = true }
-            : new ProcessStartInfo("sleep", "30") { CreateNoWindow = true };
-
-        using var process = Process.Start(psi)!;
-        try
-        {
-            return (process.Id, new DateTimeOffset(process.StartTime).ToUniversalTime());
-        }
-        finally
-        {
-            process.Kill();
-            process.WaitForExit();
         }
     }
 
@@ -677,61 +660,12 @@ public class StatusCommandEndToEndTests
     }
 
     /// <summary>
-    /// Hand-writes a snapshot plus an <c>ExecutionFailed</c>(<see cref="FailureClassification.ExhaustedUntil"/>)
-    /// / <c>StepRetryScheduled</c> pair directly to <c>flow.jsonl</c> — the shape #594's retry
-    /// scheduling actually records for a quota park — rather than driving it through
-    /// <see cref="RunCommand"/>, whose <see cref="ShellCommandWorkerAdapter"/> has no way to report
-    /// a quota classification.
+    /// Hand-writes a snapshot plus a bare <c>ExecutionFailed</c>(<see cref="FailureClassification.ExhaustedUntil"/>,
+    /// <c>RetryNotBefore: null</c>) — the "reset unknown" shape, distinct from <see cref="ParkedStepFixture.WriteParkedStepFixtureAsync"/>'s
+    /// pending-<c>StepRetryScheduled</c> shape — directly to <c>flow.jsonl</c>, rather than driving it
+    /// through <see cref="RunCommand"/>, whose <see cref="ShellCommandWorkerAdapter"/> has no way to
+    /// report a quota classification.
     /// </summary>
-    private static async Task<(string SnapshotPath, string LogPath, ExecutionId ExecutionId, DateTimeOffset RetryNotBefore)>
-        WriteParkedStepFixtureAsync(
-            string testRoot,
-            string roomDirectory,
-            FailureClassification classification = FailureClassification.ExhaustedUntil,
-            TimeSpan? retryIn = null,
-            int? enginePid = null,
-            DateTimeOffset? engineStartTime = null)
-    {
-        Directory.CreateDirectory(roomDirectory);
-        var definition = new WorkflowDefinition(
-            new WorkflowTemplateId("parked-probe"),
-            1,
-            [new WorkflowStepDefinition(new StepId("implement"), "implement", [], ["out"], [], new RetryPolicy(3))]);
-        var snapshot = SnapshotBinder.Bind(definition);
-        var snapshotPath = Path.Combine(roomDirectory, "snapshot.json");
-        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
-
-        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
-        var executionId = new ExecutionId("exec-parked-1");
-        var request = new ExecutionRequest(
-            executionId,
-            new WorkflowId("wf-parked"),
-            new StepId("implement"),
-            "implement",
-            Inputs: [],
-            Outputs: [],
-            Timeout: TimeSpan.FromSeconds(30),
-            Environment: [],
-            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
-
-        var retryNotBefore = DateTimeOffset.UtcNow.Add(retryIn ?? TimeSpan.FromMinutes(45));
-
-        await using (var writer = new FlowEventLogWriter(logPath))
-        {
-            await writer.AppendAsync(
-                new FlowEvent.ExecutionRequestAccepted(request, EnginePid: enginePid, EngineStartTime: engineStartTime),
-                TestContext.Current.CancellationToken);
-            await writer.AppendAsync(
-                new FlowEvent.ExecutionFailed(executionId, classification, "attempt failed", retryNotBefore),
-                TestContext.Current.CancellationToken);
-            await writer.AppendAsync(
-                new FlowEvent.StepRetryScheduled(new StepId("implement"), executionId, retryNotBefore, 2_700_000),
-                TestContext.Current.CancellationToken);
-        }
-
-        return (snapshotPath, logPath, executionId, retryNotBefore);
-    }
-
     private static async Task<(string SnapshotPath, string LogPath, ExecutionId ExecutionId)>
         WriteUnknownInstantExhaustedStepFixtureAsync(
             string testRoot,

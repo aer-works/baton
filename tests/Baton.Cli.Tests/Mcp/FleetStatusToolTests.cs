@@ -6,6 +6,7 @@ using Baton.Status;
 using Baton.Store;
 using Baton.Templates;
 using Baton.Cli.Mcp;
+using static Baton.Cli.Tests.TestSupport.ProcessIdentityFixture;
 
 namespace Baton.Cli.Tests.Mcp;
 
@@ -489,28 +490,6 @@ public sealed class FleetStatusToolTests : IDisposable
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal("ExhaustedUntil", singleStep.FailureKind);
         Assert.Equal(resetInstant.ToString("O"), singleStep.ExhaustedUntil);
-    }
-
-    /// <summary>Same technique as <c>WorkflowStatusProjectorLivenessTests.DeadProcessIdentity</c>:
-    /// capture a real process's identity while it is provably alive, then kill it, so the probe's
-    /// OS-level checks see a genuinely dead PID rather than a fabricated one that might coincidentally
-    /// collide with something else running on the host.</summary>
-    private static (int Pid, DateTimeOffset StartTime) DeadProcessIdentity()
-    {
-        var psi = OperatingSystem.IsWindows()
-            ? new ProcessStartInfo("ping.exe", "-n 30 127.0.0.1") { CreateNoWindow = true }
-            : new ProcessStartInfo("sleep", "30") { CreateNoWindow = true };
-
-        using var process = Process.Start(psi)!;
-        try
-        {
-            return (process.Id, new DateTimeOffset(process.StartTime).ToUniversalTime());
-        }
-        finally
-        {
-            process.Kill();
-            process.WaitForExit();
-        }
     }
 
     /// <summary>
