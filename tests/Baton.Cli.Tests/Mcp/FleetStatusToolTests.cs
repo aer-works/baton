@@ -159,34 +159,25 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Equal("Running", singleStep.State);
         Assert.Equal("exec-active-1", singleStep.Execution);
         Assert.NotNull(singleStep.Timestamp);
-        // #1509/#1510: a step's very first execution has no failure history to derive a real
-        // attempt ordinal or failure classification from -- both fields must be OMITTED, never
-        // defaulted to "attempt 1" or a fabricated classification. Object-level Assert.Null cannot
-        // tell an omitted key apart from a serialized null, so also pin the wire shape directly
-        // (PR #1504 review finding A: only a serialized assertion catches a dropped
-        // JsonIgnore(WhenWritingNull)).
-        Assert.Null(singleStep.Attempt);
-        Assert.Null(singleStep.MaxAttempts);
+        // #1522: attempt is derived from lifetime execution count (1 on first execution), while
+        // failure fields (failureKind, retryEligible) stay omitted for a step that hasn't failed.
+        Assert.Equal(1, singleStep.Attempt);
+        Assert.Equal(1, singleStep.MaxAttempts);
         Assert.Null(singleStep.FailureKind);
         Assert.Null(singleStep.RetryEligible);
         var wire = JsonSerializer.Serialize(singleRoom);
-        Assert.DoesNotContain("\"attempt\"", wire);
-        Assert.DoesNotContain("\"maxAttempts\"", wire);
+        Assert.Contains("\"attempt\":1", wire);
+        Assert.Contains("\"maxAttempts\":1", wire);
         Assert.DoesNotContain("\"failureKind\"", wire);
         Assert.DoesNotContain("\"retryEligible\"", wire);
     }
 
     [Fact]
-    public async Task ExhaustedUntilFailure_AttemptUndercountsByOne_AKnownFinding()
+    public async Task ExhaustedUntilFailure_SurfacesCorrectAttemptOrdinal()
     {
-        // #1509 finding (see report-1509.md): StateProjector deliberately does NOT increment
-        // ConsecutiveFailureCount for FailureClassification.ExhaustedUntil (0026: a paced,
-        // quota-exhausted wait is not a spent retry-budget attempt). Since `attempt` is derived
-        // from that same count, the execution that actually reported ExhaustedUntil renders one
-        // ordinal LOW -- here, a step's first-ever execution reports ExhaustedUntil and therefore
-        // renders no `attempt` at all (count stays 0), even though `failureKind`/`retryEligible`
-        // both correctly surface. This test pins the actual (imperfect but never-fabricated)
-        // behavior, not an idealized one.
+        // #1522: StateProjector persists a lifetime execution counter incremented on every
+        // ExecutionRequestAccepted, so an ExhaustedUntil failure correctly renders its execution
+        // ordinal (here, attempt 1 of 3) even though ConsecutiveFailureCount is not incremented.
         var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
         var room = Path.Combine(defaultRoomsDir, "exhausted-room");
         Directory.CreateDirectory(room);
@@ -217,7 +208,70 @@ public sealed class FleetStatusToolTests : IDisposable
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal("ExhaustedUntil", singleStep.FailureKind);
         Assert.True(singleStep.RetryEligible);
-        Assert.Null(singleStep.Attempt);
+        Assert.Equal(1, singleStep.Attempt);
+        Assert.Equal(3, singleStep.MaxAttempts);
+    }
+
+    [Fact]
+    public async Task RetryWithRevision_MaintainsLifetimeExecutionOrdinalAcrossResume()
+    {
+        // #1522: Issue #1509 named failure mode: a step that failed twice, was revised via
+        // RetryWithRevision, and is now on its 3rd real execution must surface attempt 3 of 3
+        // (rather than resetting to attempt 1 or null).
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "revision-retry-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-revision"), "agent-worker", [], ["plan.md"], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("revision-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+
+        // Attempt 1: accepted and failed
+        var firstExecId = new ExecutionId("exec-rev-1");
+        var firstReq = new ExecutionRequest(
+            firstExecId, new WorkflowId("revision-wf"), stepDef.StepId, stepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(firstReq), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(firstExecId, FailureClassification.Retryable, "first crash"),
+            TestContext.Current.CancellationToken);
+
+        // Attempt 2: accepted, failed, and paused
+        var secondExecId = new ExecutionId("exec-rev-2");
+        var secondReq = firstReq with { ExecutionId = secondExecId };
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(secondReq), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(secondExecId, FailureClassification.Retryable, "second crash"),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(new FlowEvent.WorkflowPaused(secondExecId, stepDef.StepId), TestContext.Current.CancellationToken);
+
+        // Operator decision: RetryWithRevision
+        var decId = new DecisionId("dec-rev-1");
+        await writer.AppendAsync(
+            new FlowEvent.ExternalDecisionRecorded(decId, secondExecId, DecisionType.RetryWithRevision, null, null),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(new FlowEvent.WorkflowResumed(decId), TestContext.Current.CancellationToken);
+
+        // Attempt 3: accepted (running)
+        var thirdExecId = new ExecutionId("exec-rev-3");
+        var thirdReq = firstReq with { ExecutionId = thirdExecId };
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(thirdReq), TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
+        Assert.Equal("Running", singleStep.State);
+        Assert.Equal("exec-rev-3", singleStep.Execution);
+        Assert.Equal(3, singleStep.Attempt);
+        Assert.Equal(3, singleStep.MaxAttempts);
     }
 
     [Fact]

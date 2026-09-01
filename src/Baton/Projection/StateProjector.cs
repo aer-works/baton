@@ -80,7 +80,7 @@ public static class StateProjector
 
         var flowState = DeriveFlowState(state, snapshot);
         var finalByteOffset = logByteOffset > 0 ? logByteOffset : (checkpoint?.ByteOffset ?? 0);
-        var newCheckpoint = new ProjectionCheckpoint(totalEventOffset, state.DeepCopy(), finalByteOffset, Version: 2);
+        var newCheckpoint = new ProjectionCheckpoint(totalEventOffset, state.DeepCopy(), finalByteOffset, Version: 3);
         return (flowState, newCheckpoint);
     }
 
@@ -95,6 +95,8 @@ public static class StateProjector
                     state.LatestExecutionIdByStepId[acceptedStepId] = accepted.Request.ExecutionId;
                     state.UpstreamExecutionIdsByStepId[acceptedStepId] = new Dictionary<StepId, ExecutionId>(accepted.Request.UpstreamExecutionIds);
                     state.StepIdByExecutionId[accepted.Request.ExecutionId] = acceptedStepId;
+                    state.ExecutionCountByStepId[acceptedStepId] =
+                        state.ExecutionCountByStepId.GetValueOrDefault(acceptedStepId) + 1;
 
                     // This dispatch is the consequence a prior decision was owed, if any — fulfilled now.
                     state.PendingSupplementaryExecutionIdByStepId.Remove(acceptedStepId);
@@ -242,7 +244,8 @@ public static class StateProjector
                     stepDefinition.StepId,
                     StepStatus.Pending,
                     LatestExecutionId: null,
-                    UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>()));
+                    UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+                    ExecutionCount: state.ExecutionCountByStepId.GetValueOrDefault(stepDefinition.StepId)));
                 continue;
             }
 
@@ -279,7 +282,8 @@ public static class StateProjector
                 state.RetryDelayMsByStepId.TryGetValue(stepDefinition.StepId, out var rdm) ? rdm : null,
                 state.RetryScheduledForExecutionIdByStepId.TryGetValue(stepDefinition.StepId, out var rfe) ? rfe : null,
                 state.LatestExecutionFailedRetryNotBeforeByStepId.GetValueOrDefault(stepDefinition.StepId),
-                linkedFromExecutionId));
+                linkedFromExecutionId,
+                state.ExecutionCountByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

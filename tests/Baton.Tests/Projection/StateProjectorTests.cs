@@ -1,6 +1,9 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Baton.Domain;
 using Baton.Projection;
+using Baton.Store;
+using Baton.Tests.Shared;
 
 namespace Baton.Tests.Projection;
 
@@ -950,4 +953,115 @@ public class StateProjectorTests
             new WorkflowStepDefinition(Architect, "architect", ["goal"], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(3)),
             new WorkflowStepDefinition(Critic, "critic", ["plan"], ["review"], DependsOn: [Architect], RetryPolicy: new RetryPolicy(3)),
         ]);
+
+    [Fact]
+    public void ExecutionCount_increments_on_every_ExecutionRequestAccepted_and_survives_RetryWithRevision_and_Success()
+    {
+        var exec1 = new ExecutionId("exec-1");
+        var exec2 = new ExecutionId("exec-2");
+        var exec3 = new ExecutionId("exec-3");
+        var decisionId = new DecisionId("decision-1");
+        var snapshot = ThreeAttemptSnapshot();
+
+        // 1. First execution accepted and failed
+        var events = new List<FlowEvent>
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec1, Architect)),
+            new FlowEvent.ExecutionFailed(exec1, FailureClassification.Retryable),
+        };
+        var state1 = StateProjector.Project(events, snapshot);
+        var arch1 = StepFor(state1, Architect);
+        Assert.Equal(1, arch1.ExecutionCount);
+        Assert.Equal(1, arch1.ConsecutiveFailureCount);
+
+        // 2. Second execution accepted and failed with ExhaustedUntil (which doesn't increment ConsecutiveFailureCount)
+        events.Add(new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec2, Architect)));
+        events.Add(new FlowEvent.ExecutionFailed(exec2, FailureClassification.ExhaustedUntil));
+        var state2 = StateProjector.Project(events, snapshot);
+        var arch2 = StepFor(state2, Architect);
+        Assert.Equal(2, arch2.ExecutionCount);
+        Assert.Equal(1, arch2.ConsecutiveFailureCount); // ExhaustedUntil skipped ConsecutiveFailureCount increment
+
+        // 3. Paused, RetryWithRevision, Resumed
+        events.Add(new FlowEvent.WorkflowPaused(exec2, Architect));
+        events.Add(new FlowEvent.ExternalDecisionRecorded(decisionId, exec2, DecisionType.RetryWithRevision, null, null));
+        events.Add(new FlowEvent.WorkflowResumed(decisionId));
+        var statePausedResumed = StateProjector.Project(events, snapshot);
+        var archPausedResumed = StepFor(statePausedResumed, Architect);
+        Assert.Equal(2, archPausedResumed.ExecutionCount);
+        Assert.Equal(0, archPausedResumed.ConsecutiveFailureCount); // RetryWithRevision cleared ConsecutiveFailureCount
+
+        // 4. Third execution accepted (post-RetryWithRevision) and succeeded
+        events.Add(new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec3, Architect)));
+        var state3Running = StateProjector.Project(events, snapshot);
+        var arch3Running = StepFor(state3Running, Architect);
+        Assert.Equal(3, arch3Running.ExecutionCount);
+
+        events.Add(new FlowEvent.ExecutionSucceeded(exec3));
+        var state3Succeeded = StateProjector.Project(events, snapshot);
+        var arch3Succeeded = StepFor(state3Succeeded, Architect);
+        Assert.Equal(3, arch3Succeeded.ExecutionCount);
+        Assert.Equal(0, arch3Succeeded.ConsecutiveFailureCount);
+        Assert.Equal(StepStatus.Succeeded, arch3Succeeded.Status);
+    }
+
+    [Fact]
+    public void StaleCheckpoint_MissingExecutionCountByStepId_IsRejectedRatherThanUndercounted()
+    {
+        // #1522 review finding 2: the old determinism test called the same pure function twice with
+        // identical arguments -- it could not fail. This is the arm that actually discriminates: a
+        // checkpoint.json shaped exactly like one a pre-#1522 binary would have written (Version: 2,
+        // no ExecutionCountByStepId key at all) must be REJECTED by ProjectionCheckpointStore.Load
+        // and force a full replay, not be trusted with the missing counter defaulting to empty.
+        var tempDir = Path.Combine(Path.GetTempPath(), "baton_stale_checkpoint_execcount_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var snapshot = TwoStepSnapshot();
+            var exec1 = new ExecutionId("exec-1");
+            var exec2 = new ExecutionId("exec-2");
+
+            var midwayEvents = new List<FlowEvent>
+            {
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec1, Architect)),
+                new FlowEvent.ExecutionFailed(exec1, FailureClassification.Retryable),
+            };
+            var (_, checkpointMidway) = StateProjector.ProjectAndCheckpoint(midwayEvents, snapshot);
+
+            var allEvents = new List<FlowEvent>(midwayEvents)
+            {
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec2, Architect)),
+                new FlowEvent.ExecutionSucceeded(exec2),
+            };
+
+            // Simulate a checkpoint.json written by the pre-#1522 binary: Version 2, and the
+            // ExecutionCountByStepId key absent entirely (not present-but-null -- absent, because
+            // that binary never knew the key existed).
+            var json = JsonSerializer.Serialize(checkpointMidway, FlowEventLogJson.Options);
+            var node = JsonNode.Parse(json)!.AsObject();
+            node["Version"] = 2;
+            node["State"]!.AsObject().Remove("ExecutionCountByStepId");
+
+            var checkpointFilePath = ProjectionCheckpointStore.GetCheckpointFilePath(tempDir);
+            Directory.CreateDirectory(Path.GetDirectoryName(checkpointFilePath)!);
+            File.WriteAllText(checkpointFilePath, node.ToJsonString());
+
+            var loadedCheckpoint = ProjectionCheckpointStore.Load(tempDir);
+
+            var tailState = StateProjector.Project(allEvents, snapshot, loadedCheckpoint);
+            var fullReplayState = StateProjector.Project(allEvents, snapshot, checkpoint: null);
+
+            // With the guard tightened to `Version < 3`, the stale Version-2 checkpoint is rejected
+            // (Load returns null) and the room falls back to a full replay -- so the two ordinals
+            // agree. Before that fix, Load accepted the Version-2 checkpoint, the missing key
+            // defaulted to an empty dictionary, and the tail-only projection undercounted.
+            Assert.Null(loadedCheckpoint);
+            Assert.Equal(StepFor(fullReplayState, Architect).ExecutionCount, StepFor(tailState, Architect).ExecutionCount);
+            Assert.Equal(2, StepFor(fullReplayState, Architect).ExecutionCount);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
 }

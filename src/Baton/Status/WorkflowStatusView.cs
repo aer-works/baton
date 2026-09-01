@@ -40,26 +40,22 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("liveness")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Liveness = null,
-    // #1509: a CONSECUTIVE-FAILURE-derived ordinal, not a true lifetime execution count -- Flow
-    // persists StepState.ConsecutiveFailureCount, not a monotonic attempt counter, so this is the
-    // most honest number derivable from what's actually recorded: ConsecutiveFailureCount+1 while
-    // Running (this attempt hasn't failed yet), ConsecutiveFailureCount itself once Failed (the
-    // latest attempt IS the Nth consecutive failure). Omitted -- never fabricated -- whenever
-    // ConsecutiveFailureCount is 0 (indistinguishable from "never failed" vs. "nothing recorded")
-    // or Status is neither Running nor Failed. Two known ways this undercounts relative to a true
-    // execution ordinal, both because ConsecutiveFailureCount itself is defined that way
-    // (StateProjector.cs): a FailureClassification.ExhaustedUntil failure does not increment the
-    // count (0026 obliges the engine not to spend a retry-budget attempt against an exhausted
-    // quota), so that execution's own ordinal renders one low; a DecisionType.RetryWithRevision
-    // resume resets the count to 0, so the next real failure after a human-revised retry renders as
-    // attempt 1 again rather than continuing the count. Both are reported findings (see
-    // report-1509.md), not silently swallowed -- fixing them needs a persisted lifetime counter Flow
-    // does not have today, which is bigger than this field's brief authorizes.
+    // #1509/#1522: a lifetime execution ordinal derived from StateProjector's per-step execution
+    // counter (incremented on every FlowEvent.ExecutionRequestAccepted), not from
+    // ConsecutiveFailureCount. Monotonically increases across retries and survives
+    // DecisionType.RetryWithRevision and FailureClassification.ExhaustedUntil without undercounting.
+    // Present for Running and Failed steps that have executed; omitted for Pending steps that have
+    // not had an execution accepted or steps whose status is neither Running nor Failed.
     [property: JsonPropertyName("attempt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     int? Attempt = null,
-    // #1509: the step definition's RetryPolicy.MaxAttempts, carried alongside Attempt so a
-    // consumer can render "attempt 3/5" without a second lookup. Present only when Attempt is.
+    // #1509/#1522 finding 3: the step definition's RetryPolicy.MaxAttempts -- the PER-ROUND retry
+    // budget RetryEngine.MayRetry gates on via ConsecutiveFailureCount, unrelated to Attempt's
+    // lifetime execution ordinal. NOT a denominator for Attempt: RetryWithRevision resets
+    // ConsecutiveFailureCount but not the lifetime count, so a revised step's Attempt can exceed
+    // MaxAttempts (e.g. "attempt 4" against a MaxAttempts of 3), and an ExhaustedUntil outcome
+    // consumes no retry budget (decision 0026) while still incrementing Attempt. A consumer must
+    // render the two fields separately, never as "attempt N/M". Present only when Attempt is.
     [property: JsonPropertyName("maxAttempts")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     int? MaxAttempts = null,
@@ -210,20 +206,12 @@ public static class WorkflowStatusProjector
                 };
             }
 
-            // #1509/#1510: StepState already carries everything -- ConsecutiveFailureCount,
-            // LatestFailureClassification, and (via stepDefByStepId) RetryPolicy.MaxAttempts -- this
-            // is just the one place that was discarding it before it reached this view. Gated on
-            // ConsecutiveFailureCount > 0, not merely Running/Failed: a step's first-ever execution
-            // is indistinguishable from "unknown" if it were rendered as "attempt 1" (the count
-            // defaults to 0 both when a step genuinely never failed and when nothing was ever
-            // recorded for it) -- so a step with no failure history omits the field entirely rather
-            // than asserting attempt 1. See WorkflowStatusStepView.Attempt's own remarks for the two
-            // known cases (ExhaustedUntil, RetryWithRevision) where this still undercounts once a
-            // failure genuinely has happened.
+            // #1509/#1510/#1522: derived from StepState.ExecutionCount (lifetime ExecutionRequestAccepted
+            // count), independent of ConsecutiveFailureCount reset semantics. Present for Running and
+            // Failed steps that have executed; omitted for Pending or unexecuted steps.
             int? attempt = step switch
             {
-                { Status: StepStatus.Running, ConsecutiveFailureCount: > 0 } => step.ConsecutiveFailureCount + 1,
-                { Status: StepStatus.Failed, ConsecutiveFailureCount: > 0 } => step.ConsecutiveFailureCount,
+                { Status: StepStatus.Running or StepStatus.Failed, ExecutionCount: > 0 } => step.ExecutionCount,
                 _ => null,
             };
             int? maxAttempts = attempt is not null && stepDefByStepId.TryGetValue(step.StepId, out var attemptStepDef)
