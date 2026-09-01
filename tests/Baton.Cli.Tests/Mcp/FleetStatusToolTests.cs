@@ -621,6 +621,90 @@ public sealed class FleetStatusToolTests : IDisposable
     }
 
     /// <summary>
+    /// #1582 review (MED-4): on a single-step room, `gated.All(dead)` and `!gated.Any(alive)` are
+    /// indistinguishable -- every other test in this class is single-step, so none of them would
+    /// catch <see cref="FleetStatusTool"/>'s predicate being written the wrong way. Two independent
+    /// (no DependsOn) gated steps -- one confirmed dead, one "unknown" (no recorded engine identity,
+    /// same shape <see cref="EngineLivenessProbeTests.Probe_failure_arm_returns_unknown_when_identity_is_missing_or_invalid"/>
+    /// exercises directly) -- discriminates them: `All(dead)` correctly stays "Running" (one gated
+    /// step is not confirmed dead), while `!Any(alive)` would wrongly read "Stalled" (neither gated
+    /// step is confirmed alive). This is the exact false-`"Stalled"` the predicate's own comment says
+    /// it exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_OneDeadGatedStepAndOneUnknownGatedStep_StaysRunning()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "dead-plus-unknown-gated-steps-room");
+        Directory.CreateDirectory(room);
+
+        var deadStepDef = new WorkflowStepDefinition(new StepId("step-dead"), "agent-worker", [], [], [], new RetryPolicy(3));
+        var unknownStepDef = new WorkflowStepDefinition(new StepId("step-unknown"), "agent-worker", [], [], [], new RetryPolicy(3));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("dead-plus-unknown-wf"), 1, [deadStepDef, unknownStepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var (deadPid, deadStartTime) = DeadProcessIdentity();
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+
+        var deadExecId = new ExecutionId("exec-dead-1");
+        var deadReq = new ExecutionRequest(
+            deadExecId, new WorkflowId("dead-plus-unknown-wf"), deadStepDef.StepId, deadStepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(deadReq, EnginePid: deadPid, EngineStartTime: deadStartTime),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionStarted(deadExecId, (uint)deadPid), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionExited(deadExecId, 1, CoreExitReason.Natural, null), TestContext.Current.CancellationToken);
+        var deadRetryNotBefore = DateTimeOffset.UtcNow.AddHours(4);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(deadExecId, FailureClassification.Retryable, "Worker exited with non-zero code 1.", deadRetryNotBefore),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRetryScheduled(deadStepDef.StepId, deadExecId, deadRetryNotBefore, 14_400_000),
+            TestContext.Current.CancellationToken);
+
+        // No EnginePid/EngineStartTime recorded -- the pre-#1375-ledger shape EngineLivenessProbe
+        // reports "unknown" for (missing identity), not "dead".
+        var unknownExecId = new ExecutionId("exec-unknown-1");
+        var unknownReq = new ExecutionRequest(
+            unknownExecId, new WorkflowId("dead-plus-unknown-wf"), unknownStepDef.StepId, unknownStepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionRequestAccepted(unknownReq, EnginePid: null, EngineStartTime: null),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionStarted(unknownExecId, 999999), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new CoreEvent.ExecutionExited(unknownExecId, 1, CoreExitReason.Natural, null), TestContext.Current.CancellationToken);
+        var unknownRetryNotBefore = DateTimeOffset.UtcNow.AddHours(4);
+        await writer.AppendAsync(
+            new FlowEvent.ExecutionFailed(unknownExecId, FailureClassification.Retryable, "Worker exited with non-zero code 1.", unknownRetryNotBefore),
+            TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRetryScheduled(unknownStepDef.StepId, unknownExecId, unknownRetryNotBefore, 14_400_000),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        Assert.Equal(2, singleRoom.Steps!.Count);
+        Assert.Equal("dead", singleRoom.Steps!.Single(s => s.Id == "step-dead").Liveness);
+        Assert.Equal("unknown", singleRoom.Steps!.Single(s => s.Id == "step-unknown").Liveness);
+    }
+
+    /// <summary>
     /// #1513 polarity, opposite direction: the identical parked-retry shape, but the engine that
     /// scheduled it is genuinely alive -- an ordinary healthy backoff must keep reading "Running", or
     /// the fix would just be trading one false reading for another (every paced retry, alive or not,
@@ -696,6 +780,14 @@ public sealed class FleetStatusToolTests : IDisposable
     /// if this machine does not have that room under `~/.baton/rooms` -- the room is local live
     /// evidence, not a checked-in fixture.
     /// </summary>
+    /// <remarks>
+    /// #1582 review (MED-3): this used to skip on directory existence alone, which hard-FAILS (not
+    /// skips) the instant the operator recovers the room per spec/baton.md §3's own recovery path --
+    /// the directory still exists, now with a terminal.json, so `Assert.Equal("Stalled", ...)` below
+    /// would fail against a room that has since gone `Succeeded`. Guarding on shape instead (no
+    /// terminal.json, and the one step is still Failed with a liveness verdict recorded) makes
+    /// recovery a skip, not a red suite.
+    /// </remarks>
     [Fact]
     public async Task ActiveRoom_RealZombieRoomFromIssue1513_ProjectsAsStalledNotRunning()
     {
@@ -705,6 +797,12 @@ public sealed class FleetStatusToolTests : IDisposable
         if (!Directory.Exists(sourceRoom))
         {
             Assert.Skip("this machine has no ~/.baton/rooms/dispatch-implement-a0c38801 -- local live evidence, not a checked-in fixture");
+        }
+
+        if (File.Exists(Path.Combine(sourceRoom, TerminalSentinelWriter.TerminalSentinelFileName)))
+        {
+            Assert.Skip("dispatch-implement-a0c38801 has since reached a terminal state (recovered, e.g. via a fresh " +
+                "`baton run` per spec/baton.md §3) -- no longer the parked-retry-with-dead-engine shape this test targets");
         }
 
         var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
@@ -719,6 +817,13 @@ public sealed class FleetStatusToolTests : IDisposable
         var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
+        var singleStep = Assert.Single(singleRoom.Steps!);
+        if (singleStep.State != "Failed" || singleStep.Liveness is null)
+        {
+            Assert.Skip("dispatch-implement-a0c38801's step no longer reads Failed-with-a-liveness-verdict -- " +
+                "no longer the parked-retry-with-dead-engine shape this test targets");
+        }
+
         Assert.NotEqual("Running", singleRoom.State);
         Assert.Equal("Stalled", singleRoom.State);
     }

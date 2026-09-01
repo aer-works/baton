@@ -267,9 +267,11 @@ value the ledger cannot actually support: there is still no operator-supplied re
 surface (`FlowEvent.ExternalDecisionRecorded` carries none), so `rejected` stays a boolean, not a
 `reason` field that would always read `null`.
 
-**#1513 corrects #1462's own choice, not just a gap.** #1462 deliberately kept `fleet_status`'s
-room-level `state` unchanged even for a Running step with a confirmed-dead engine, reasoning that
-`liveness` was an additive signal for the caller to combine, never folded into `state` itself. Issue
+**#1513 closes a gap #1462 left, not a choice it made.** #1462 added `liveness` as an additive
+per-step signal and did not address room-level `state` at all — its issue body frames the change as
+extending two fleet views with the same two fields, never weighing whether to fold liveness into
+`state`, and neither its own spec text nor the test doc comment it wrote states a reason for leaving
+`state` alone. #1513 is the PR that first considers the room-level question. Issue
 #1513 was filed against a room (`dispatch-implement-2c5dcd8d`) whose `flow.jsonl` appeared stalled on
 `executionRequestAccepted` with its deliverable already on disk — but that room's engine was in fact
 still alive and finished naturally minutes later (`terminal.json`: `Succeeded`); the reproducible
@@ -292,13 +294,39 @@ now a `Failed` step still carrying a `RetryNotBefore` is too (no expiry check �
 gate as long as `RetryNotBefore` is set at all, since a stale-but-still-set value is itself part of
 the bug this closes), since that step's own promise ("this will retry") rests on the identical fact —
 the pump that recorded `StepRetryScheduled` staying alive long enough to act on it (§7: there is no
-daemon reaper; `MutationInterface`'s scheduling loop `Task.Delay`s the wait **in-process**). A
-confirmed-dead engine behind a parked retry is recoverable via `baton resume` (it dispatches a fresh
-linked execution off the step's `LatestExecutionId` regardless of `RetryNotBefore` —
-`MutationInterface.RecordResumeAsync` does not gate on it, though it refuses a multi-step worker or a
-`NonProcess` binding — a caller `baton resume` refuses still has plain `baton run` available), so
-`"Stalled"` reads as "nothing is currently making progress, but this is not done," never as a
-`Failed` room a caller might reasonably discard.
+daemon reaper; `MutationInterface`'s scheduling loop `Task.Delay`s the wait **in-process**).
+
+**`baton resume` does not recover these rooms.** `MutationInterface.RecordResumeAsync` does dispatch a
+fresh linked execution off the step's `LatestExecutionId` regardless of `RetryNotBefore`, gated only
+on the target not being a multi-step worker or a `NonProcess` binding — but `ResumeCommand.ExecuteAsync`
+refuses before that method is ever reached, the moment the bindings entry has no `SessionId`
+recorded, and nothing in this codebase writes a non-null one today (adapters do not yet capture a
+vendor session id into the room ledger on their own — that capture is #1381, open). Every room this
+section describes reaches that refusal. `--message`/`--message-file` is also mandatory on `baton
+resume` (`ResumeOptions.cs`) — exactly one is required, so an operator recovering a stalled room has
+to invent one even where it applies.
+
+`baton redispatch` is not a substitute either, for an unrelated reason: it refuses any parent room
+with no `terminal.json`, and a room in this shape has none by definition (`RedispatchCommand.cs`).
+
+**The verb that actually recovers a room in this shape, verified by running it against a copy of one
+of #1513's own four stalled rooms rather than assumed: a fresh `baton run` against the room's own
+`workflow.json`/`bindings.json`, `--room-dir` pointed at the room.** `RunCommand` recognizes the
+existing `snapshot.json`, accepts the room instead of refusing it, and re-enters the same in-process
+wait the original pump was doing — nothing dispatches again until `RetryNotBefore` elapses, and the
+process driving that wait has to stay alive for it to fire, exactly as the mechanism above describes.
+This is the same re-drive the "known limitation" paragraph below already assumes exists; that
+paragraph's own caveat (briefly misreported as still `"Stalled"` while a live pump is in fact waiting)
+is the accurate scoping of what this recovers and what it does not. `baton cancel` was also checked
+rather than assumed: without `--execution` it refuses (no `Running` step to resolve), and with the
+parked execution's id explicitly named, it records a too-late `CancellationRequested` against an
+execution that already finished and then **does not return** — it re-enters the identical in-process
+`Task.Delay` for the same doomed retry before it would consider redispatching, so it is not a working
+step toward recovery on its own.
+
+So `"Stalled"` reads as "nothing is currently making progress, but this is not done, and recovering
+it needs the operator to start a fresh `baton run` pointed at the room" — never as a `Failed` room a
+caller might reasonably discard, and never as a room `baton resume` will quietly fix on its own.
 
 **Known limitation, not closed by this change: a re-drive can still misreport briefly.** If an
 operator revives a stalled room with a fresh `baton run` (rather than `baton resume`) while the room

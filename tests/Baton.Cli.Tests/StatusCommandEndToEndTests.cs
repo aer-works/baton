@@ -541,7 +541,7 @@ public class StatusCommandEndToEndTests
     /// host.
     /// </summary>
     [Fact]
-    public async Task Status_of_a_parked_step_with_a_dead_engine_names_it_and_points_at_baton_resume()
+    public async Task Status_of_a_parked_step_with_a_dead_engine_names_it_and_says_manual_intervention_is_needed()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
@@ -558,7 +558,9 @@ public class StatusCommandEndToEndTests
             var expectedLocalTime = retryNotBefore.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
             Assert.Contains(
                 $"implement: parked (retryable) — retries {expectedLocalTime}, but the engine that scheduled " +
-                "this retry is no longer alive and nothing else will act on it; run `baton resume` to continue",
+                "this retry is no longer alive and nothing else will act on it; this needs manual " +
+                "intervention — re-run `baton run` against this room's own workflow.json and " +
+                "bindings.json with --room-dir pointed at it (see spec/baton.md §7)",
                 text);
         }
         finally

@@ -248,6 +248,10 @@ function chipsHtml(room, running, focusStep){
     : st === "Failed" && room.rejected ? ["REJECTED","c-warn"]
     : st === "Succeeded" ? ["SUCCEEDED","c-ok"]
     : st === "Failed" ? ["FAILED","c-bad"]
+    // #1582: Stalled means a scheduled retry with no scheduler left to fire it -- nothing moves
+    // it without a person, so it gets the "needs you" colour, never the idle grey the generic
+    // fallback below would give an unrecognized state.
+    : st === "Stalled" ? ["STALLED","c-warn"]
     : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"]);
   if(running && running.liveness === "dead") chips.push(["ZOMBIE","c-bad"]);
   const tb = timeboxChip(room, running);
@@ -603,11 +607,16 @@ function underhoodHtml(list){
 }
 function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms){
   const running = rooms.filter(r => r.state === "Running");
+  // #1582: a Stalled room -- a retry scheduled inside a process that no longer exists -- gets its
+  // own bucket rather than falling into Running (wrong: nothing is happening) or the generic
+  // exact-match buckets below (which would drop it off the page entirely, since "Stalled" matches
+  // none of them and is truthy so it also misses the `other` catch-all).
+  const stalled = rooms.filter(r => r.state === "Stalled");
   const failed  = rooms.filter(r => r.state === "Failed");
   const done    = rooms.filter(r => r.state === "Succeeded");
   const other   = rooms.filter(r => !r.state);
   const byNewest = (a,b) => (newestStepTime(b)||"").localeCompare(newestStepTime(a)||"");
-  running.sort(byNewest); failed.sort(byNewest); done.sort(byNewest);
+  running.sort(byNewest); stalled.sort(byNewest); failed.sort(byNewest); done.sort(byNewest);
 
   const dismissedSet = dismissed instanceof Set ? dismissed : new Set(Array.isArray(dismissed) ? dismissed : []);
   const isDismissed = (r) => r && r.path && dismissedSet.has(r.path);
@@ -622,6 +631,10 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
 
   let html = underhoodHtml(underhood);
   html += `<h2>Running · ${running.length}</h2>` + (running.map(r => laneHtml(r, timelines, false)).join("") || `<div class="lane"><div class="ev">none</div></div>`);
+  // Ranked above Failed and kept out of the collapsible Terminal section (unlike Failed/Succeeded):
+  // a stalled room isn't finished, and nothing but a person will ever move it, so it stays as
+  // visible as Running rather than one click away.
+  html += `<h2>Stalled · ${stalled.length}</h2>` + (stalled.map(r => laneHtml(r, timelines, false)).join("") || `<div class="lane"><div class="ev">none</div></div>`);
 
   const termParts = [];
   if(visibleDone.length > 0 || visibleFailed.length === 0){

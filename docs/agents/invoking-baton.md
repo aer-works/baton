@@ -167,9 +167,10 @@ available two other ways, and both give you the same set of paths without parsin
   `linkedFrom` (#1359) names the predecessor execution when the step's current one was started by
   `baton resume`; anything that was dispatched or retried normally shows `null` there. `rejected` (#1377)
   is `true` when a human `baton decide reject` settled some step, so `state: "Failed"`/`error: null`
-  never gets misread as an unrecorded crash. `liveness` (#1375) is present only on a step reading
-  `"Running"`, `"alive" | "dead" | "unknown"` from the same probe the human `baton status` line already
-  uses — so a SIGKILLed `baton run` stops reading as indefinitely `"Running"` to a polling agent.
+  never gets misread as an unrecorded crash. `liveness` (#1375/#1513) is present on a step reading
+  `"Running"`, or a `"Failed"` step still carrying a pending `RetryNotBefore` — `"alive" | "dead" |
+  "unknown"` from the same probe the human `baton status` line already uses — so a SIGKILLed `baton
+  run` stops reading as indefinitely `"Running"` (or as an ordinary parked retry) to a polling agent.
 - **`usage`/`linkedFromUsage` (#1360)** cost per execution — the second field is the linked-from
   execution's own separate figure, present exactly when `linkedFrom` is. Shape:
   `{wallClockMs, tokensIn?, tokensOut?, turns?}`. The clock figure lands the moment Core has recorded

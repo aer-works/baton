@@ -586,8 +586,13 @@ public static class StatusCommand
             var probeResult = EngineLivenessProbe.Probe(accepted?.EnginePid, accepted?.EngineStartTime);
             if (probeResult.Status == EngineLivenessStatus.Dead)
             {
+                // #1582 review (HIGH-1): `baton resume`/`baton redispatch` both refuse a room in this
+                // shape, for two different reasons -- spec/baton.md §3 has the refusal chain and why
+                // a fresh `baton run --room-dir` is the recovery below instead.
                 return $"parked ({classification}) — retries {localRetryTime}, but the engine that scheduled " +
-                    "this retry is no longer alive and nothing else will act on it; run `baton resume` to continue";
+                    "this retry is no longer alive and nothing else will act on it; this needs manual " +
+                    "intervention — re-run `baton run` against this room's own workflow.json and " +
+                    "bindings.json with --room-dir pointed at it (see spec/baton.md §7)";
             }
         }
 

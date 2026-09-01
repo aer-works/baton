@@ -26,10 +26,9 @@ public sealed class FleetStatusTool : IMcpTool
     // #1513: NOT a WorkflowOutcome member -- deliberately a fleet_status-only display word, so it
     // can never be confused for a ledger outcome by a consumer that already switches on
     // WorkflowOutcome's five (spec/baton.md §3). Distinct from "Failed": a stalled room is not
-    // permanently done -- `baton resume` can revive it (a fresh `baton run` can too, but only
-    // clears this reading once it actually dispatches; #1577 is the gap while it is still waiting
-    // out the same backoff) -- this says "nothing is currently making progress", not "this cannot
-    // succeed".
+    // permanently done -- a fresh `baton run` against the room can revive it (`baton resume` cannot;
+    // #1582 review found it refuses every room this reaches -- spec/baton.md §3 has the full
+    // refusal chain) -- this says "nothing is currently making progress", not "this cannot succeed".
     private const string StalledDisplayState = "Stalled";
 
     // #1513: confirms EVERY step whose liveness this projection probes reads "dead" -- not merely
@@ -37,12 +36,12 @@ public sealed class FleetStatusTool : IMcpTool
     // steps keeping the workflow un-terminal (a Running step, or a Failed step still carrying a
     // RetryNotBefore at all, expired or not -- see spec/baton.md §3), so this is already scoped to
     // the steps whose promise this room's Running reading rests on. Requiring "all dead" rather than
-    // "none alive" matters for a multi-step DAG: a sibling step that has not started yet, or one
-    // whose own liveness probe comes back "unknown" (a pre-#1375 ledger with no recorded identity, or
-    // a Win32Exception probing a PID this process cannot inspect), must not let an unrelated sibling's
-    // confirmed-dead engine downgrade the whole room -- "none alive" alone would. Fail-closed the
-    // OTHER way here: uncertain (any "unknown", or no gated steps at all) stays "Running" rather than
-    // risk a false "Stalled" an operator would wrongly abandon.
+    // "none alive" matters for a multi-step DAG: a sibling step whose own liveness probe comes back
+    // "unknown" (a pre-#1375 ledger with no recorded identity, or a Win32Exception probing a PID this
+    // process cannot inspect) must not let an unrelated sibling's confirmed-dead engine downgrade the
+    // whole room -- "none alive" alone would. Fail-closed the OTHER way here: uncertain (any
+    // "unknown", or no gated steps at all) stays "Running" rather than risk a false "Stalled" an
+    // operator would wrongly abandon.
     private static bool IsConfirmedStalled(IReadOnlyList<FleetStepStatusView> steps)
     {
         var gated = steps.Where(s => s.Liveness is not null).ToList();
