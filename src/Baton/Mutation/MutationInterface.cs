@@ -936,9 +936,10 @@ public static class MutationInterface
                             // marks this same latch (also wired into the busy `waitCandidates` wait
                             // below, for the sibling-still-in-flight shape), so a park that would
                             // otherwise sit until `delayTask` — possibly a day out on a vendor quota
-                            // reset — wakes on the next round instead. Minimal, quota-park-only
-                            // counterpart to the fuller non-process arrest seam #1556 is building;
-                            // that seam should absorb this latch rather than keep two.
+                            // reset — wakes on the next round instead. See
+                            // InFlightExecutionRegistry.MarkParkedCancelIntent's own doc for the
+                            // #1556 follow-up this latch is meant to fold into (F6, #1605 review:
+                            // record once, not restated here).
                             var parkedCancelWake = inFlightExecutions.NextParkedCancelWake();
 
                             var deferralCandidates = new List<Task> { delayTask, parkedCancelWake };
@@ -955,6 +956,18 @@ public static class MutationInterface
                             // (no awaited token observation anywhere in the round), both tasks arrive
                             // here already cancelled, WhenAny picks the delay task again, and the loop
                             // spins without ever noticing the stop (Test12's 30s timeout under load).
+                            // F1 sub-point (#1605 review): this guard wins the race over
+                            // `parkedCancelWake` below whenever both fire around the same instant — a
+                            // parked-cancel mark landing in the same tick as a host stop is dropped:
+                            // this call returns without ever draining it, RequestStopAsync below only
+                            // reaches a live process's CancellationTokenSource (the parked step has
+                            // none), and the in-memory mark itself does not survive process exit.
+                            // Accepted, not fixed: this pump call is exiting either way, the parked
+                            // step was never going to settle through it once a host stop lands, and
+                            // CancelRequestFile.DeleteStalePendingRequest sweeps any still-pending
+                            // request file on the room's next `baton run` regardless — so the worst
+                            // case is the operator re-issuing `baton cancel` once that run starts, not
+                            // a request that silently vanishes with no trace.
                             if (completedWait == deferralHostStopWatcher || cancellationToken.IsCancellationRequested)
                             {
                                 hostStopRequested = true;
@@ -963,6 +976,17 @@ public static class MutationInterface
                             }
                             else if (completedWait == parkedCancelWake)
                             {
+                                // F8 (#1605 review): reset BEFORE drain, load-bearing, not incidental
+                                // ordering. A mark landing between the two calls below still lands
+                                // safely either way: ResetParkedCancelWake only swaps in a fresh latch
+                                // if the one it is given is still current, so a mark racing this reset
+                                // either signals the brand-new latch (caught next round instantly,
+                                // since it is already complete) or still lands in the set the drain
+                                // just below reads. Drain-then-reset would instead let that same mark
+                                // signal the OLD, already-fired latch (a no-op — TrySetResult on a
+                                // completed TCS does nothing) and then get its own fresh latch swapped
+                                // out from under it by the reset that follows, stalling the intent
+                                // until some unrelated future mark happens to notice it pending.
                                 inFlightExecutions.ResetParkedCancelWake(parkedCancelWake);
                                 await SettleParkedCancelIntentsAsync(state, inFlightExecutions, eventLogWriter, ioCancellationToken)
                                     .ConfigureAwait(false);
@@ -1071,6 +1095,9 @@ public static class MutationInterface
                 }
                 if (completed == waitParkedCancelWake)
                 {
+                    // F8 (#1605 review): reset-before-drain is load-bearing here too — see the same
+                    // ordering's full explanation at this loop's idle-deferral branch above
+                    // (`parkedCancelWake`'s own ResetParkedCancelWake call).
                     inFlightExecutions.ResetParkedCancelWake(waitParkedCancelWake);
                     await SettleParkedCancelIntentsAsync(state, inFlightExecutions, eventLogWriter, ioCancellationToken)
                         .ConfigureAwait(false);
@@ -1257,8 +1284,12 @@ public static class MutationInterface
     /// <see cref="FlowEvent.WorkflowResumed"/>'s Reject decision already overwrites Failed to
     /// Rejected for a paused step (<see cref="Projection.StateProjector"/>'s own
     /// <c>WorkflowResumed</c> case). A target that no longer matches a parked step by the time this
-    /// runs (redispatched already, or never was one) is silently dropped — the poller's own bounded
-    /// retry is what surfaces a genuinely unreachable target, not this method.
+    /// runs (redispatched already, or never was one) is silently dropped here — see the comment at
+    /// the drop site below for the narrow race that produces this and why it self-heals. F5 (#1605
+    /// review): that drop is NOT surfaced by <see cref="CancelRequestPoller"/>'s bounded 5-tick retry
+    /// ceiling — the parked path deliberately bypasses that ceiling (its own <c>isParked</c> early
+    /// return) — so a genuinely unreachable target is instead caught by the poller's ordinary
+    /// settled-vs-still-running check re-evaluating against fresh state on its own next tick.
     /// </summary>
     private static async Task SettleParkedCancelIntentsAsync(
         FlowState state,
@@ -1271,6 +1302,24 @@ public static class MutationInterface
         {
             if (!IsParkedRetryTarget(state, executionId))
             {
+                // This guard serves two purposes, not one: it is the fail-closed rejection of a
+                // target that was never a real park to begin with (a mismatched/stale execution id —
+                // Marking_an_intent_for_a_mismatched_execution_id... pins exactly this), AND it is
+                // where the F8 (#1605 review) delayTask-wins interleaving below lands. Neither
+                // resolves the same way, but both fall through the same drop.
+                //
+                // The interleaving: a mark lands in the exact instant this round's own deferral timer
+                // (not the parked-cancel wake) fires and moves the step off this parked shape — a
+                // redispatch minting a new ExecutionId — dropping the stale id silently here instead
+                // of settling it. Known, not fixed here. It is NOT silently lost end to end: the
+                // poller never consumed the request file for a parked mark (its own isParked branch
+                // just re-marks, never consumes), and the request's Target is always the ORIGINAL
+                // literal execution id in this scenario ('latest' can never resolve to a parked step
+                // in the first place — RunningExecutionResolver only sees Running steps, F2's own
+                // point). So the poller's next tick re-checks that same stale id, finds it no longer
+                // matches any step's LatestExecutionId, and reports the ordinary "too late (it already
+                // settled)" verdict — an honest, if imprecise, outcome (the intent was not wrong, just
+                // reported as arriving after the fact), not a request that vanishes with no trace.
                 continue;
             }
 
