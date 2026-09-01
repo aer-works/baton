@@ -15,6 +15,15 @@ namespace Baton.Cli;
 /// poller adds no second recording path of its own. Started and stopped by <see cref="RunCommand"/>
 /// alongside its own <see cref="MutationInterface.StartWorkflowAsync"/> call — the registry it is
 /// given must be the same instance that call bound to the run's <c>IEventLogWriter</c>.
+/// <para>
+/// #1563 (S0 of the quota design, #802): a target that has no live process to deliver to AND is not
+/// genuinely settled — a step Failed with a scheduled <see cref="Domain.StepState.RetryNotBefore"/>,
+/// the shape a vendor-quota park leaves behind — is marked via
+/// <see cref="InFlightExecutionRegistry.MarkParkedCancelIntent"/> instead of being told it is too
+/// late. That mark records nothing by itself; the pump's own idle-deferral wait validates and
+/// appends the durable events once it wakes, exactly as <c>RequestCancellationAsync</c> does for a
+/// live process.
+/// </para>
 /// </summary>
 public static class CancelRequestPoller
 {
@@ -141,20 +150,39 @@ public static class CancelRequestPoller
             return;
         }
 
-        // Delivered was false: re-check projection to differentiate settled from still-running/unregistered.
+        // Delivered was false: re-check projection to differentiate settled from still-running/parked.
         var settleCheckReader = new FlowEventLogReader(logPath);
         var settleCheckEvents = await settleCheckReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
         var settleCheckState = StateProjector.Project(settleCheckEvents, snapshot);
-        var stillRunning = settleCheckState.Steps.Any(s => s.Status == StepStatus.Running && s.LatestExecutionId == targetExecutionId);
+        var targetStep = settleCheckState.Steps.FirstOrDefault(s => s.LatestExecutionId == targetExecutionId);
+        var stillRunning = targetStep?.Status == StepStatus.Running;
 
-        if (!stillRunning)
+        // #1563 (S0 of the quota design, #802 "three independent locks" finding): a step-tied target sitting on a future
+        // RetryNotBefore has no live process to register with — the worker already exited — but it
+        // is not "already settled" either. The pump is parked in its idle-deferral wait, possibly
+        // for as long as a vendor quota reset (MutationInterface's deferralCandidates). Mark the
+        // intent on the SAME registry that wait watches instead of reporting the false "too late"
+        // verdict below. Idempotent: safe to re-mark on every tick until the pump drains it.
+        var isParked = targetStep is { Status: StepStatus.Failed, RetryNotBefore: not null };
+        if (isParked)
+        {
+            inFlightExecutions.MarkParkedCancelIntent(targetExecutionId);
+        }
+
+        if (!stillRunning && !isParked)
         {
             RetryCounters.TryRemove(retryKey, out _);
+            // The one-word difference that keeps this honest once the seam above can actually
+            // settle a park: an execution the seam itself just cancelled did settle BECAUSE of this
+            // request, not despite it — reporting "too late" for that case is the exact false claim
+            // #802's "three independent locks" finding measured, just for the step-less case this method does not yet cover.
+            var arrestedByThisRequest = targetStep?.Status == StepStatus.Cancelled;
             try
             {
-                Console.Error.WriteLine(
-                    $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}', which is "
-                    + "not currently in flight — too late (it already settled).");
+                Console.Error.WriteLine(arrestedByThisRequest
+                    ? $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}' — arrested by this request."
+                    : $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}', which is "
+                        + "not currently in flight — too late (it already settled).");
             }
             catch
             {
@@ -165,7 +193,7 @@ public static class CancelRequestPoller
             return;
         }
 
-        // Target STILL projects Running: count a bounded retry.
+        // Target STILL projects Running or parked: count a bounded retry.
         var retries = RetryCounters.AddOrUpdate(retryKey, 1, (_, current) => current + 1);
         if (retries >= 5)
         {

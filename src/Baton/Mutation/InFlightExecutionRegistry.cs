@@ -20,6 +20,8 @@ public sealed class InFlightExecutionRegistry
 {
     private readonly Lock _lock = new();
     private readonly Dictionary<ExecutionId, CancellationTokenSource> _entries = new();
+    private readonly HashSet<ExecutionId> _parkedCancelIntents = new();
+    private TaskCompletionSource _parkedCancelWake = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IEventLogWriter? _eventLogWriter;
 
     /// <summary>
@@ -110,6 +112,66 @@ public sealed class InFlightExecutionRegistry
         lock (_lock)
         {
             _eventLogWriter = eventLogWriter;
+        }
+    }
+
+    /// <summary>
+    /// #1563 (S0 of the quota design, #802 §"S0's mechanism"): marks a cancel intent for a target
+    /// this pump has no live PROCESS dispatch for — the worker already exited and the step sits on
+    /// a future <see cref="Domain.StepState.RetryNotBefore"/> (a quota park) — and wakes whichever of
+    /// the pump's two waits is currently parked (the idle-deferral wait when nothing else is in
+    /// flight, or the busy wait when a DIFFERENT step's dispatch still is) so the next round can
+    /// validate and record it from projected state, the same intent-first discipline
+    /// <see cref="RequestCancellationAsync"/> already follows for a live process. Idempotent:
+    /// re-marking the same id before the pump drains it is a no-op. Deliberately narrower than the
+    /// fuller pump-side arrest seam #1556 is building (<c>MarkArrestIntent</c>/<c>DrainArrestIntents</c>
+    /// covering every non-process shape, not just a quota-parked retry) — #1556 should fold this
+    /// latch into that machinery rather than keep both.
+    /// </summary>
+    public void MarkParkedCancelIntent(ExecutionId targetExecutionId)
+    {
+        lock (_lock)
+        {
+            _parkedCancelIntents.Add(targetExecutionId);
+            _parkedCancelWake.TrySetResult();
+        }
+    }
+
+    /// <summary>Every parked-cancel intent marked since the last drain, and clears them.</summary>
+    internal IReadOnlyList<ExecutionId> DrainParkedCancelIntents()
+    {
+        lock (_lock)
+        {
+            var drained = _parkedCancelIntents.ToList();
+            _parkedCancelIntents.Clear();
+            return drained;
+        }
+    }
+
+    /// <summary>
+    /// The awaitable the deferral wait parks on alongside its delay and host-stop watchers. Captured
+    /// fresh each time the wait is entered — never reused across rounds without going through
+    /// <see cref="ResetParkedCancelWake"/> — so a mark that lands anywhere before this is captured is
+    /// never lost: the returned task is already complete, and the caller's own <c>WhenAny</c> resolves
+    /// it immediately.
+    /// </summary>
+    internal Task NextParkedCancelWake()
+    {
+        lock (_lock)
+        {
+            return _parkedCancelWake.Task;
+        }
+    }
+
+    /// <summary>Swaps in a fresh wake latch, but only if <paramref name="observed"/> is still the current one.</summary>
+    internal void ResetParkedCancelWake(Task observed)
+    {
+        lock (_lock)
+        {
+            if (_parkedCancelWake.Task == observed)
+            {
+                _parkedCancelWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
         }
     }
 
