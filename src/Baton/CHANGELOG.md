@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.1](https://github.com/philipreese/baton/compare/flow-v0.26.0...flow-v0.26.1) (2026-09-01)
+
+
+### Miscellaneous
+
+* **flow:** Synchronize core versions
+
 ## [0.26.0](https://github.com/philipreese/baton/compare/flow-v0.25.0...flow-v0.26.0) (2026-09-01)
 
 
