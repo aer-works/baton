@@ -915,11 +915,12 @@ definition has no exit event yet and needs every line scanned, not just the last
   sibling `heartbeat_at`-absent message.
 
   **`pending_push_age_s`, a second field this same review pass added to the SAME `/heartbeat` ping
-  body `derived_at` rides:** `derived_at` alone cannot distinguish "the fleet is quiet" from "derivation keeps
-  succeeding but every snapshot PUSH keeps failing" (a 413 from the 1 MB push cap, a 5xx, a network
-  blip) — dropping the pre-#1613 `pushed_at` staleness check removed the only signal that used to
-  catch a failing push, and this PR's own terminal-timeline addition made the 413 case more likely
-  by growing the typical payload. `pending_push_age_s` is seconds since the pusher's last
+  body `derived_at` rides:** the gap `derived_at` alone leaves open is `pusher.py`'s own comment
+  above this field's definition — a healthy derivation loop sitting behind a POST that will not
+  land, for any of the ordinary transport reasons a mailbox POST can fail. Dropping the pre-#1613
+  `pushed_at` staleness check removed the only signal that used to catch that; this PR's own
+  terminal-timeline addition also raised the odds of hitting it, by growing the typical payload
+  toward the push route's own size cap. `pending_push_age_s` is seconds since the pusher's last
   SUCCESSFUL push, present only while `should_push_snapshot` says content is actually waiting to go
   out — absent on a healthy, nothing-changed fleet, so a legitimately quiet lane never false-fires.
   Fleet Glass alarms "Push failing" once it exceeds a threshold on the same order as the
