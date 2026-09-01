@@ -191,6 +191,20 @@ public static class OutputMaterializer
     /// </summary>
     private static string? TryReadFinalResponse(string outputDirectory, IWorkerResponseParser responseParser)
     {
+        var line = TryReadLastNonBlankLine(outputDirectory);
+        return line is null ? null : responseParser.TryParseFinalResponse(line, out var response) ? response : null;
+    }
+
+    /// <summary>
+    /// The file read this shares with <see cref="OutcomeClassifier"/>'s substantial-work evidence
+    /// (#1586 S1 review F5): same path, same missing-file/IO-exception bail, same "last non-blank
+    /// line only" contract. Extracted so the two readers cannot drift apart on what counts as the
+    /// worker's final line while still parsing it differently — <see cref="TryReadFinalResponse"/>
+    /// above and <see cref="OutcomeClassifier"/>'s own call site each apply their own vendor-specific
+    /// parser to the line this returns.
+    /// </summary>
+    internal static string? TryReadLastNonBlankLine(string outputDirectory)
+    {
         var stdoutPath = Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName);
         if (!File.Exists(stdoutPath))
         {
@@ -210,12 +224,10 @@ public static class OutputMaterializer
         for (var i = lines.Length - 1; i >= 0; i--)
         {
             var line = lines[i];
-            if (string.IsNullOrWhiteSpace(line))
+            if (!string.IsNullOrWhiteSpace(line))
             {
-                continue;
+                return line;
             }
-
-            return responseParser.TryParseFinalResponse(line, out var response) ? response : null;
         }
 
         return null;

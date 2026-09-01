@@ -63,6 +63,25 @@ public static class RedispatchCommand
         // silent redispatch of a failed/cancelled lane.
         var parentTerminal = await TerminalSentinelWriter.TryReadAsync(options.ParentRoomDirectoryPath, cancellationToken)
             .ConfigureAwait(false);
+
+        // #1586 S1 (ratified amendment, consumer obligation item 2): an Indeterminate parent refuses
+        // bare, mirroring #1604's signage pattern (a diagnosis plus a concrete next step) rather than
+        // the ordinary warn-and-proceed a Failed/Cancelled parent gets below. "Indeterminate" means
+        // journal facts alone could not decide success vs failure — redispatching it silently would
+        // treat an unresolved room as though it were an ordinary failed one, discarding the exact
+        // ambiguity the state exists to preserve. Unconditional in this slice: there is no
+        // conductor-resolution verb yet (#1608) and no `--force` escape hatch to name — S2/#1608
+        // landing is what turns this from "always refuses" into "refuses unless resolved".
+        if (parentTerminal is not null && string.Equals(parentTerminal.State, WorkflowOutcome.Indeterminate, StringComparison.Ordinal))
+        {
+            throw new CliArgumentException(
+                $"Parent room '{options.ParentRoomDirectoryPath}' settled Indeterminate — journal facts "
+                + "alone could not decide whether it succeeded or failed, so redispatching it would "
+                + "silently discard that ambiguity rather than resolve it.",
+                "a conductor must resolve the room first (recording a justification) before it can be "
+                + "redispatched — see spec/baton.md §3. That resolution verb does not exist yet (#1608).");
+        }
+
         if (parentTerminal is not null && !string.Equals(parentTerminal.State, WorkflowOutcome.Succeeded, StringComparison.Ordinal))
         {
             Console.Error.WriteLine(

@@ -112,6 +112,30 @@ public sealed class FleetStatusToolTests : IDisposable
     }
 
     [Fact]
+    public async Task TerminalFastPath_PassesThroughAnIndeterminateSentinelVerbatim()
+    {
+        // #1586 S1: WorkflowOutcome.Indeterminate's own remarks explain why this fabricates the shape
+        // directly rather than deriving it. The terminal fast path copies sentinel.State verbatim
+        // (FleetStatusTool.ProcessRoomAsync, never re-deriving it via WorkflowOutcome.Describe), so
+        // this proves the glass-facing pipeline round-trips the value rather than dropping or renaming
+        // it.
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "indeterminate-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Indeterminate", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Indeterminate", singleRoom.State);
+    }
+
+    [Fact]
     public async Task ActiveRoom_ProjectsFromSnapshotAndEvents()
     {
         var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);

@@ -519,9 +519,18 @@ public static class StatusCommand
         // Post-#1115 / 0026 §5 (#1116): an un-obligated ExhaustedUntil step (null RetryNotBefore;
         // see MutationInterface.GetRetryObligations) renders
         // "parked (vendor quota) — reset unknown".
+        // #1586 S1: RetryForeclosed excluded from that branch -- a FlowEvent.StepRetryForeclosed
+        // also clears RetryNotBefore while leaving LatestFailureClassification at ExhaustedUntil
+        // (StateProjector), so without this guard a foreclosed step (settled Terminal, nothing will
+        // ever dispatch it again) would render as still waiting on an unknown vendor reset -- the
+        // exact opposite of what foreclosure means, and the same misreport class #1513/#1582 were
+        // paid for. Falls through to plain "Failed" below; a foreclosure-specific rendering is S2's
+        // to add once a verb produces one in practice.
         if (step.Status == StepStatus.Failed)
         {
-            if (step.LatestFailureClassification == FailureClassification.ExhaustedUntil && step.RetryNotBefore is null)
+            if (step.LatestFailureClassification == FailureClassification.ExhaustedUntil
+                && step.RetryNotBefore is null
+                && !step.RetryForeclosed)
             {
                 return "parked (vendor quota) — reset unknown";
             }

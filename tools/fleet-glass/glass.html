@@ -339,6 +339,11 @@ function chipsHtml(room, running, focusStep){
     // it without a person, so it gets the "needs you" colour, never the idle grey the generic
     // fallback below would give an unrecognized state.
     : st === "Stalled" ? ["STALLED","c-warn"]
+    // #1586 S1: Indeterminate means journal facts alone could not decide success vs failure -- a
+    // conductor has to look, same "needs you" colour as Stalled, distinct label. No production
+    // writer emits this state yet (WorkflowOutcome.Indeterminate's own remarks); this branch is
+    // ahead of that so the render is already correct once S2/#1608 land.
+    : st === "Indeterminate" ? ["INDETERMINATE","c-warn"]
     : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"]);
   if(running && running.liveness === "dead") chips.push(["ZOMBIE","c-bad"]);
   const tb = timeboxChip(room, running);
@@ -723,11 +728,16 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   // exact-match buckets below (which would drop it off the page entirely, since "Stalled" matches
   // none of them and is truthy so it also misses the `other` catch-all).
   const stalled = rooms.filter(r => r.state === "Stalled");
+  // #1586 S1: same hole Stalled itself closed pre-#1582 -- a truthy, unrecognized state string
+  // matches none of the exact-match buckets below AND isn't `!r.state`, so without its own bucket
+  // it would vanish off the page entirely rather than surface anywhere. No production writer emits
+  // this state yet; the bucket exists so the render is already correct once one does.
+  const indeterminate = rooms.filter(r => r.state === "Indeterminate");
   const failed  = rooms.filter(r => r.state === "Failed");
   const done    = rooms.filter(r => r.state === "Succeeded");
   const other   = rooms.filter(r => !r.state);
   const byNewest = (a,b) => (newestStepTime(b)||"").localeCompare(newestStepTime(a)||"");
-  running.sort(byNewest); stalled.sort(byNewest); failed.sort(byNewest); done.sort(byNewest);
+  running.sort(byNewest); stalled.sort(byNewest); indeterminate.sort(byNewest); failed.sort(byNewest); done.sort(byNewest);
 
   const dismissedSet = dismissed instanceof Set ? dismissed : new Set(Array.isArray(dismissed) ? dismissed : []);
   const isDismissed = (r) => r && r.path && dismissedSet.has(r.path);
@@ -748,6 +758,10 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   // visible as Running rather than one click away.
   const stalledDismissAll = visibleStalled.length > 0 ? `<a class="dismissall" data-section="stalled">dismiss all</a>` : "";
   html += `<h2><span>Stalled · ${visibleStalled.length}</span>${stalledDismissAll}</h2><div class="lanes">` + (visibleStalled.map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
+  // Same placement reasoning as Stalled above: an Indeterminate room isn't finished either -- it
+  // needs a conductor's recorded resolution, never a silent default -- so it stays out of the
+  // collapsible Terminal section too, as visible as Running/Stalled rather than one click away.
+  html += `<h2>Indeterminate · ${indeterminate.length}</h2><div class="lanes">` + (indeterminate.map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
 
   const termParts = [];
   if(visibleDone.length > 0 || visibleFailed.length === 0){

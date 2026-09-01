@@ -99,6 +99,9 @@ public class ProjectionCheckpointTests
         Assert.Equal(expected.LatestExecutionFailedRetryNotBefore, actual.LatestExecutionFailedRetryNotBefore);
         Assert.Equal(expected.LinkedFromExecutionId, actual.LinkedFromExecutionId);
         Assert.Equal(expected.ExecutionCount, actual.ExecutionCount);
+        Assert.Equal(expected.LatestCapturedResponseFile, actual.LatestCapturedResponseFile);
+        Assert.Equal(expected.LatestUnsatisfiedOutputNames, actual.LatestUnsatisfiedOutputNames);
+        Assert.Equal(expected.RetryForeclosed, actual.RetryForeclosed);
         Assert.Equal(expected.UpstreamExecutionIds.Count, actual.UpstreamExecutionIds.Count);
         foreach (var (k, v) in expected.UpstreamExecutionIds)
         {
@@ -154,9 +157,20 @@ public class ProjectionCheckpointTests
             new FlowEvent.ExternalDecisionRecorded(decision1, exec4, DecisionType.Supersede, TargetStepId: Step4, SupplementaryExecutionId: execSupp),
             new FlowEvent.WorkflowResumed(decision1),
 
-            // 5. ExecutionFailed
+            // 5. ExecutionFailed, with a captured response (#1606) folded onto the same event since
+            // Step5 gets no further events in the tail below -- letting LatestCapturedResponseFile /
+            // LatestUnsatisfiedOutputNames survive untouched to the final state too
             new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec5, Step5), 104, now),
-            new FlowEvent.ExecutionFailed(exec5, FailureClassification.Retryable, "Connection timeout", retryNotBefore),
+            new FlowEvent.ExecutionFailed(
+                exec5, FailureClassification.Permanent, "Contract not satisfied: 'advice.md' is missing.",
+                CapturedResponseFile: ".captured-response.md", UnsatisfiedOutputNames: ["advice.md"]),
+
+            // 5b. StepRetryScheduled & StepRetryForeclosed -- same "no further tail events" reasoning:
+            // the foreclosure survives untouched to the final state, which is what lets
+            // AssertStepStateEqual's RetryForeclosed comparison discriminate a checkpoint DeepCopy bug
+            // rather than compare false==false.
+            new FlowEvent.StepRetryScheduled(Step5, exec5, retryNotBefore, 5000),
+            new FlowEvent.StepRetryForeclosed(Step5, exec5, "dead pump, unfireable park"),
 
             // 6. StepRetryScheduled
             new FlowEvent.StepRetryScheduled(Step6, exec6, retryNotBefore, 5000),
@@ -179,7 +193,8 @@ public class ProjectionCheckpointTests
         var (midwayState, checkpointMidway) = StateProjector.ProjectAndCheckpoint(midwayEvents, snapshot);
         Assert.Equal(midwayEvents.Count, checkpointMidway.EventOffset);
 
-        // Guard assertions: verify each of the 21 checkpoint collections is non-empty at checkpoint boundary
+        // Guard assertions: verify each of the 22 checkpoint collections is non-empty at checkpoint boundary
+        Assert.NotEmpty(checkpointMidway.State.RetryForeclosedStepIds);
         Assert.NotEmpty(checkpointMidway.State.LatestExecutionIdByStepId);
         Assert.NotEmpty(checkpointMidway.State.UpstreamExecutionIdsByStepId);
         Assert.NotEmpty(checkpointMidway.State.TerminalStatusByExecutionId);

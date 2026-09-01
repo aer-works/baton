@@ -345,4 +345,32 @@ public class DependencyResolverTests
 
         Assert.Contains(Architect, ready);
     }
+
+    // #1586 S1: the named trap from the ratified state-truth design (see StateProjectorTests' own
+    // StepRetryForeclosed fixtures for the fuller citation) -- the exact fixture above, but with
+    // StepState.RetryForeclosed set, is the red test that must NOT come back ready.
+    // Both polarities from one shared shape: the fixture two tests up is the "false" control (still
+    // ready without foreclosure), this is the "true" arm.
+    [Fact]
+    public void A_foreclosed_ExhaustedUntil_step_is_not_ready_even_though_its_paced_retry_has_come_due()
+    {
+        var executionId = new ExecutionId("A1");
+        var state = new FlowState(
+            new WorkflowDefinitionSnapshotId("snapshot-1"),
+            [
+                new StepState(
+                    Architect, StepStatus.Failed, executionId, NoUpstream,
+                    ConsecutiveFailureCount: 0,
+                    LatestFailureClassification: FailureClassification.ExhaustedUntil,
+                    RetryNotBefore: Now.AddMinutes(-1),
+                    RetryDelayMs: 60_000,
+                    RetryScheduledForExecutionId: executionId,
+                    RetryForeclosed: true),
+                Pending(Critic),
+            ]);
+
+        var ready = DependencyResolver.GetReadySteps(state, TwoStepSnapshot(), Now);
+
+        Assert.DoesNotContain(Architect, ready);
+    }
 }

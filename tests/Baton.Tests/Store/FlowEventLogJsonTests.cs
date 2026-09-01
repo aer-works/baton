@@ -43,6 +43,8 @@ public class FlowEventLogJsonTests
         new FlowEvent.ExternalDecisionRecorded(DecisionId, ExecutionId, DecisionType.Resume, StepId, null),
         new FlowEvent.WorkflowResumed(DecisionId),
         new FlowEvent.StepRetryScheduled(StepId, ExecutionId, FixedInstant, 100),
+        new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park", ForeclosedBy: "settle"),
+        new FlowEvent.ZeroOutputsDespiteSubstantialWork(ExecutionId, "4 turns, 500 output tokens"),
     ];
 
     /// <summary>

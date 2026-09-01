@@ -6,6 +6,7 @@ using Baton.Domain;
 using Baton.Outcomes;
 using Baton.Projection;
 using Baton.Scheduling;
+using Baton.Status;
 using Baton.Store;
 
 namespace Baton.Mutation;
@@ -691,11 +692,22 @@ public static class MutationInterface
                             // null worktree path.
                         }
 
+                        // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own
+                        // #1567 comment explains — the durable request, not the binding's current
+                        // resolution, since this is the crash-recovery path classifying from recorded
+                        // facts alone.
+                        var usageParser = request.Adapter is { } recoveryAdapter
+                            ? StandardWorkerUsageParsers.Default.GetValueOrDefault(recoveryAdapter)
+                            : null;
+
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
-                            grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser);
+                            grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
+                            usageParser: usageParser);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
+                            .ConfigureAwait(false);
+                        await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, executionId, classification, ioCancellationToken)
                             .ConfigureAwait(false);
                     }
 
@@ -1212,14 +1224,24 @@ public static class MutationInterface
             // request shape that predates the mode, and those were never promised an audit.
             var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
             var worktreePath = binding.Target.WorkingDirectory;
+            // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own #1567
+            // comment explains — prepared.Request.Adapter, not the binding, so this site and the
+            // crash-recovery site below both read the same source (identical value here, since
+            // prepared.Request.Adapter is frozen from this binding at preparation).
+            var usageParser = prepared.Request.Adapter is { } liveAdapter
+                ? StandardWorkerUsageParsers.Default.GetValueOrDefault(liveAdapter)
+                : null;
             var classification = OutcomeClassifier.Classify(
-                dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider, grantAuditMode, worktreePath, binding.ResponseParser);
+                dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
+                grantAuditMode, worktreePath, binding.ResponseParser, usageParser);
 
             // Never gated on dispatchCancellationToken: that token having fired is exactly what
             // produced this outcome (Cancelled) in the first place, so recording it must not itself
             // be cancellable by the same signal — the outcome append always completes once
             // dispatch has returned.
             await eventLogWriter.AppendAsync(ToOutcomeEvent(prepared.Request.ExecutionId, classification), CancellationToken.None)
+                .ConfigureAwait(false);
+            await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, prepared.Request.ExecutionId, classification, CancellationToken.None)
                 .ConfigureAwait(false);
         }
         catch (CommandLineTooLongException ex)
@@ -1274,6 +1296,42 @@ public static class MutationInterface
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
             _ => throw new ArgumentOutOfRangeException(nameof(classification), classification.Verdict, "Unknown OutcomeVerdict."),
         };
+
+    /// <summary>
+    /// #1586 S1 (the #1594 ruling's tripwire): a no-op unless <paramref name="classification"/> carries
+    /// <see cref="OutcomeClassification.SubstantialWorkNoOutputsEvidence"/> — appends
+    /// <see cref="FlowEvent.ZeroOutputsDespiteSubstantialWork"/> right alongside the outcome event
+    /// <see cref="ToOutcomeEvent"/> mapped, from every caller that classifies an outcome — both the
+    /// just-completed live dispatch and the branch that settles a dead pump's recorded exit — so the
+    /// tripwire fires identically regardless of which one produced the classification.
+    /// <c>spec/baton.md</c> §3 names the two call sites; the same "one seam, every caller of it"
+    /// placement #1594's own integration constraint required of the capture arm this mirrors.
+    /// </summary>
+    private static async Task AppendZeroOutputsTripwireIfAnyAsync(
+        IEventLogWriter eventLogWriter, ExecutionId executionId, OutcomeClassification classification, CancellationToken cancellationToken)
+    {
+        if (classification.SubstantialWorkNoOutputsEvidence is not { } evidence)
+        {
+            return;
+        }
+
+        try
+        {
+            Console.Error.WriteLine(
+                $"TRIPWIRE (#1594): execution '{executionId.Value}' produced NONE of its declared " +
+                $"outputs, yet {evidence} -- this room's classification may not reflect what actually " +
+                "happened. Investigate before trusting it.");
+        }
+        catch (IOException)
+        {
+            // Same best-effort posture as the #1594 capture line this mirrors (OutcomeClassifier.Classify) —
+            // a broken stderr pipe must not itself orphan the execution; the durable event below still
+            // records the fact regardless of whether this line reached the console.
+        }
+
+        await eventLogWriter.AppendAsync(new FlowEvent.ZeroOutputsDespiteSubstantialWork(executionId, evidence), cancellationToken)
+            .ConfigureAwait(false);
+    }
 
     /// <summary>
     /// #1563 (S0 of the quota design, #802): resolves every parked-cancel intent the registry's

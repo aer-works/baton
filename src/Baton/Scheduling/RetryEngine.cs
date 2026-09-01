@@ -22,6 +22,12 @@ public static class RetryEngine
     /// <see cref="StepStatus.Cancelled"/> is never retried regardless of policy: cancellation is a
     /// decision to stop, not a failure to route around, and this predicate only ever returns true for a
     /// step whose latest attempt is <see cref="StepStatus.Failed"/>.
+    /// <see cref="StepState.RetryForeclosed"/> true bypasses everything below straight to
+    /// <c>false</c> (#1586 S1): a <see cref="Domain.FlowEvent.StepRetryForeclosed"/> voided this
+    /// step's scheduled retry deliberately — unconditionally, regardless of remaining
+    /// <see cref="RetryPolicy.MaxAttempts"/> budget or <see cref="FailureClassification.ExhaustedUntil"/>'s
+    /// own bypass of it, the same way <see cref="StepState.LinkedFromExecutionId"/> below already
+    /// short-circuits for an unrelated reason.
     /// <see cref="StepState.LinkedFromExecutionId"/> not null bypasses everything above straight to
     /// <c>false</c> (issue #1359 F4): a failed resume is never auto-retried by the settling pump.
     /// <c>baton resume</c>'s own contract is "one message per resume invocation" — a MaxAttempts-driven
@@ -34,6 +40,11 @@ public static class RetryEngine
     {
         ArgumentNullException.ThrowIfNull(stepState);
         ArgumentNullException.ThrowIfNull(retryPolicy);
+
+        if (stepState.RetryForeclosed)
+        {
+            return false;
+        }
 
         if (stepState.LinkedFromExecutionId is not null)
         {

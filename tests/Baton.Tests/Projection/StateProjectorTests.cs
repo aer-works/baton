@@ -593,6 +593,179 @@ public class StateProjectorTests
         Assert.Null(architect.RetryDelayMs);
     }
 
+    // #1586 S1: FlowEvent.StepRetryForeclosed -- the missing primitive the state-truth design's own
+    // proposal on #1586 names. No producer appends this event in this slice; every fixture below
+    // fabricates it directly, exactly as the slice's own scope note permits.
+
+    [Fact]
+    public void StepRetryForeclosed_clears_the_pending_retry_fields_and_records_the_flag()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var retryNotBefore = DateTimeOffset.UnixEpoch.AddHours(4);
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota", retryNotBefore),
+            new FlowEvent.StepRetryScheduled(Architect, executionId, retryNotBefore, RetryDelayMs: 60_000),
+            new FlowEvent.StepRetryForeclosed(Architect, executionId, "dead pump, unfireable park", ForeclosedBy: "settle"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.True(architect.RetryForeclosed);
+        Assert.Null(architect.RetryNotBefore);
+        Assert.Null(architect.RetryDelayMs);
+        Assert.Null(architect.RetryScheduledForExecutionId);
+    }
+
+    [Fact]
+    public void StepRetryForeclosed_is_a_noop_when_ForExecutionId_does_not_match_the_currently_scheduled_retry()
+    {
+        // #1586 S1: the all-or-nothing guard (mirroring ExecutionCancelled's own retry-field clear,
+        // #1605) -- a foreclosure naming a STALE execution id must not touch a retry re-scheduled
+        // since, for either half of the change: the flag must stay unset AND the fields must stay
+        // populated. A half-applied foreclosure (flag set, fields intact, or the reverse) would make
+        // DeriveWorkflowStatus's two independent deliverability disjuncts (RetryNotBefore is not null
+        // / MayRetry) disagree with each other.
+        var staleExecutionId = new ExecutionId("exec-1");
+        var currentExecutionId = new ExecutionId("exec-2");
+        var retryNotBefore = DateTimeOffset.UnixEpoch.AddHours(4);
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(currentExecutionId, Architect)),
+            new FlowEvent.ExecutionFailed(currentExecutionId, FailureClassification.ExhaustedUntil, "quota", retryNotBefore),
+            new FlowEvent.StepRetryScheduled(Architect, currentExecutionId, retryNotBefore, RetryDelayMs: 60_000),
+            // Names the OLDER execution -- the retry now scheduled belongs to currentExecutionId.
+            new FlowEvent.StepRetryForeclosed(Architect, staleExecutionId, "stale foreclosure"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.False(architect.RetryForeclosed);
+        Assert.Equal(retryNotBefore, architect.RetryNotBefore);
+        Assert.Equal(60_000, architect.RetryDelayMs);
+        Assert.Equal(currentExecutionId, architect.RetryScheduledForExecutionId);
+    }
+
+    [Fact]
+    public void A_fresh_ExecutionRequestAccepted_reopens_a_foreclosed_step()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var retryNotBefore = DateTimeOffset.UnixEpoch.AddHours(4);
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota", retryNotBefore),
+            new FlowEvent.StepRetryScheduled(Architect, executionId, retryNotBefore, RetryDelayMs: 60_000),
+            new FlowEvent.StepRetryForeclosed(Architect, executionId, "dead pump"),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.False(StepFor(state, Architect).RetryForeclosed);
+    }
+
+    [Fact]
+    public void RetryWithRevision_reopens_a_foreclosed_step()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var retryNotBefore = DateTimeOffset.UnixEpoch.AddHours(4);
+        var decisionId = new DecisionId("decision-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota", retryNotBefore),
+            new FlowEvent.StepRetryScheduled(Architect, executionId, retryNotBefore, RetryDelayMs: 60_000),
+            new FlowEvent.StepRetryForeclosed(Architect, executionId, "dead pump"),
+            new FlowEvent.WorkflowPaused(executionId, Architect),
+            new FlowEvent.ExternalDecisionRecorded(decisionId, executionId, DecisionType.RetryWithRevision, null, null),
+            new FlowEvent.WorkflowResumed(decisionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.False(StepFor(state, Architect).RetryForeclosed);
+    }
+
+    [Fact]
+    public void StepRetryForeclosed_survives_an_incremental_checkpoint_resume()
+    {
+        // The DeepCopy landmine: ProjectionCheckpointState.DeepCopy constructs a new instance
+        // POSITIONALLY, so a trailing member relying only on its `?? new()` init default (as
+        // RetryForeclosedStepIds does, for replay-safety against an older checkpoint's serialized
+        // JSON) is silently dropped here if DeepCopy's own constructor call forgets to pass it along
+        // -- exactly the shape #1606 hit first with LatestCapturedResponseFileByStepId /
+        // LatestUnsatisfiedOutputNamesByStepId. A plain ApplyEvent unit test cannot catch this: it
+        // never DeepCopies. Resuming from a checkpoint over the SAME events (zero new events to
+        // replay) isolates the checkpoint's own carried state as the only source of truth.
+        var executionId = new ExecutionId("exec-1");
+        var retryNotBefore = DateTimeOffset.UnixEpoch.AddHours(4);
+        var events = new List<FlowEvent>
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota", retryNotBefore),
+            new FlowEvent.StepRetryScheduled(Architect, executionId, retryNotBefore, RetryDelayMs: 60_000),
+            new FlowEvent.StepRetryForeclosed(Architect, executionId, "dead pump"),
+        };
+
+        var (freshState, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot());
+        Assert.True(StepFor(freshState, Architect).RetryForeclosed);
+
+        // Same full event list, plus the prior checkpoint: StateProjector.Project's `logByteOffset: 0`
+        // default takes the "full event list supplied" branch (skipCount = checkpoint.EventOffset ==
+        // events.Count), so DeepCopy is exercised and NOTHING is replayed on top of it.
+        var resumedState = StateProjector.Project(events, TwoStepSnapshot(), checkpoint);
+
+        Assert.True(StepFor(resumedState, Architect).RetryForeclosed);
+    }
+
+    // The state-truth design's own named red test on #1586 ("assert both polarities"): a parked
+    // room's projection must go Terminal WITH the foreclosure event and stay Running WITHOUT it. Same
+    // event log, one event apart.
+
+    [Fact]
+    public void Foreclosing_an_unfireable_ExhaustedUntil_park_lets_the_workflow_reach_Terminal()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var retryNotBefore = DateTimeOffset.UnixEpoch.AddHours(4);
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota", retryNotBefore),
+            new FlowEvent.StepRetryScheduled(Architect, executionId, retryNotBefore, RetryDelayMs: 60_000),
+            new FlowEvent.StepRetryForeclosed(Architect, executionId, "dead pump, unfireable park"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.Equal(WorkflowStatus.Terminal, state.Status);
+    }
+
+    [Fact]
+    public void The_same_park_without_foreclosure_keeps_the_workflow_Running()
+    {
+        // Polarity partner: identical log, minus the StepRetryForeclosed event -- proves the Terminal
+        // reading above is caused by the foreclosure, not incidentally by the ExhaustedUntil shape
+        // itself (which #1513's own design deliberately keeps Running/"Stalled", never Terminal, absent
+        // a settle).
+        var executionId = new ExecutionId("exec-1");
+        var retryNotBefore = DateTimeOffset.UnixEpoch.AddHours(4);
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.ExhaustedUntil, "quota", retryNotBefore),
+            new FlowEvent.StepRetryScheduled(Architect, executionId, retryNotBefore, RetryDelayMs: 60_000),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.Equal(WorkflowStatus.Running, state.Status);
+    }
+
     [Fact]
     public void RetryWithRevision_with_a_SupplementaryExecutionId_projects_it_as_pending_for_the_referenced_step()
     {

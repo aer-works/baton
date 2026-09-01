@@ -1,3 +1,4 @@
+using System.Reflection;
 using Baton.Domain;
 using Baton.Status;
 
@@ -130,6 +131,51 @@ public class WorkflowOutcomeAndExitCodeTests
         var state = TerminalState([Step("a", StepStatus.Succeeded)]);
 
         Assert.Equal(RunExitCode.Succeeded, RunExitCodeResolver.Resolve(Result(state, waitTimedOut: true)));
+    }
+
+    // #1586 S1: the discriminating check that this slice did NOT wire the #1608 swap (the #1594
+    // capture arm flipping onto Indeterminate is explicitly that issue's job, not this one's — S1's
+    // own scope note names this exact shape as the example of what not to do). A captured-response
+    // Failed step must describe identically before and after this slice; this pins "after".
+    [Fact]
+    public void A_captured_response_step_still_describes_as_Failed_not_Indeterminate()
+    {
+        var step = new StepState(
+            new StepId("a"), StepStatus.Failed, new ExecutionId("exec-1"), new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.Permanent,
+            LatestFailureReason: "Contract not satisfied: 'advice.md' is missing. Response captured to '.captured-response.md'; awaiting conductor resolution.",
+            LatestCapturedResponseFile: ".captured-response.md",
+            LatestUnsatisfiedOutputNames: ["advice.md"]);
+        var state = TerminalState([step]);
+
+        Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(state));
+        Assert.NotEqual(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+    }
+
+    // #1586 S1 review F1: the operator's amendment 1 called this a "tripwire pattern" that sweeps
+    // every predicate that must learn a new WorkflowOutcome member -- a mechanism the repo did not
+    // actually have (no reflection over the constant set anywhere, no vocabulary checker under
+    // tools/). This test IS that mechanism: the failure message doubles as the sweep list, so
+    // whoever adds a seventh member reads it here rather than discovering the gap via
+    // RunExitCodeResolver's silent wildcard (the concrete failure this closes).
+    [Fact]
+    public void The_WorkflowOutcome_vocabulary_is_pinned_so_a_new_member_forces_the_consumer_sweep()
+    {
+        var members = typeof(WorkflowOutcome)
+            .GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Where(f => f.IsLiteral)
+            .Select(f => (string)f.GetRawConstantValue()!)
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "Cancelled", "Failed", "Indeterminate", "Paused", "Running", "Succeeded",
+            ],
+            members);
+        // Adding a member? Sweep: RunExitCodeResolver.Resolve, RedispatchCommand's parent gate,
+        // StatusCommand, FleetStatusTool, glass.html chipsHtml + render buckets, spec/baton.md §3's
+        // table.
     }
 
     private static FlowState TerminalState(IReadOnlyList<StepState> steps) =>

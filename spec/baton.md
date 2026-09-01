@@ -284,9 +284,8 @@ is exactly the case an operator scanning `fleet_status` most needs protecting fr
 (never `WorkflowStatusView.State`/`WorkflowOutcome`/`state.Status` itself — `RunExitCodeResolver` and
 `TerminalSentinelWriter` are unaffected, and `status --json` keeps reporting its own `state`
 unchanged, though it now also carries `liveness` on the widened set of steps described below) to
-`"Stalled"` — a sixth display string, but `fleet_status`-only: it is never folded into
-`WorkflowOutcome` itself, whose five members (`Running`/`Paused`/`Succeeded`/`Failed`/`Cancelled`)
-stay untouched — whenever the room reads
+`"Stalled"` — a `fleet_status`-only display string never folded into `WorkflowOutcome` itself —
+whenever the room reads
 `Running` and every step whose `liveness` this projection computes reads `"dead"` with none reading
 `"alive"`. The condition `liveness` is computed under
 (`WorkflowStatusProjector.Project`, `src/Baton/Status/WorkflowStatusView.cs`) also widened: previously only a `Running` step was probed;
@@ -353,6 +352,96 @@ still probes the dead original pump's `EnginePid` until then, so `fleet_status` 
 than fixed here — closing it needs the new pump to record its own liveness before dispatch, which
 belongs with #1556's arrest-predicate/pump-liveness plumbing rather than bolted on separately.
 
+### The terminal vocabulary, and the two-predicate model (#1586 S1)
+
+`WorkflowOutcome` (`src/Baton/Status/WorkflowOutcome.cs`) has **six** members today:
+
+| Value | Meaning |
+|---|---|
+| `Running` | At least one step's latest attempt is still in flight, or Flow crashed before recording its outcome |
+| `Paused` | Nothing running; at least one step idle at a decision point |
+| `Succeeded` | Every step succeeded |
+| `Failed` | At least one step failed or was rejected, and the room did not settle any other terminal way |
+| `Cancelled` | At least one step was cancelled and nothing failed |
+| `Indeterminate` | Journal facts alone could not decide success vs failure — see below |
+
+**The two-predicate model.** A room's completion has always actually been two separate questions:
+*execution outcome* (did the worker's process finish, crash, or get cancelled — `OutcomeVerdict` /
+`FailureClassification`, Flow's own observation) and *contract completion* (did the declared outputs
+end up satisfied — `ContractValidator`, a fact about the filesystem). Every value above except
+`Indeterminate` is a case where the two predicates agree, or where one alone is enough to decide
+(`Cancelled` short-circuits contract completion entirely) — with one live exception until #1608
+lands: the #1594 captured-response shape (below) is a genuine disagreement between the two predicates
+that still settles `Failed` today, not `Indeterminate`. `Indeterminate` is what the schema has
+never had a word for: the two predicates *disagree* — most concretely, #1594's shape, where the
+worker plainly did substantial work (a response-bearing envelope) but the contract's declared
+output(s) are simply absent, so "did this succeed" cannot be read off the journal alone. A worktree
+fingerprint that fails to reconcile at settle time is the same shape from a different source. This is
+a **single added enum value, not a two-field split** — the schema keeps its one `state` string; the
+two predicates live in code (`OutcomeClassification`/`ContractValidator`), not as two parallel
+top-level fields.
+
+**No producer in this slice.** S1 adds the vocabulary, the vocabulary's consumer obligations below,
+and the missing retry-foreclosure primitive (next paragraph) — nothing in `src/` writes
+`Indeterminate` to a room yet. `baton settle` (S2, tracked on #1586) is expected to be able to settle
+a room *to* `Indeterminate`; #1608 separately tracks flipping #1594's captured-response arm onto it
+once it exists. Until either lands, the value is reachable only by a test fabricating a `terminal.json`/
+status-view shape directly.
+
+**Consumer obligations, ratified with the value itself.** `baton redispatch` refuses a bare
+`Indeterminate` parent outright, with a diagnosis naming the missing resolution verb
+(`RedispatchCommand.cs`) — unlike an ordinary `Failed`/`Cancelled` parent, which redispatches with a
+stderr warning. The fleet glass renders a distinct `INDETERMINATE` chip and its own always-visible
+section, the same placement `"Stalled"` earned in #1513/#1582 (`tools/fleet-glass/glass.html`).
+**Nothing settles FROM `Indeterminate` except an explicit, recorded conductor resolution** — never
+silently, never by default; that resolution verb is #1608's to build, not S1's.
+
+**`FlowEvent.StepRetryForeclosed`** (`src/Baton/Domain/FlowEvent.cs`) is the missing primitive the
+quota-park symptom this section opened with rests on: before this slice, three events could clear a
+step's `RetryNotBefore`/`RetryDelayMs`/`RetryScheduledForExecutionId` — `ExecutionRequestAccepted` (a
+fresh dispatch), a `RetryWithRevision`-carrying `WorkflowResumed`, and `ExecutionCancelled`'s own
+park-abort clear (#1563) — but none of them voids a scheduled retry *without* either dispatching a new
+attempt or cancelling the execution outright. Clearing the fields alone would be wrong: an
+`ExhaustedUntil` step bypasses `RetryPolicy.MaxAttempts` by design, so a cleared `RetryNotBefore` with
+nothing else changed re-arms the step for immediate re-dispatch against a still-exhausted quota.
+`StepRetryForeclosed` instead records the foreclosure as its own fact (`StepState.RetryForeclosed`),
+which `RetryEngine.MayRetry` checks unconditionally ahead of every other bypass. Only the first two of
+the three events above reopen a foreclosed step (`ExecutionCancelled` terminates the execution rather
+than reopening it, so it does not clear `RetryForeclosed`) — a foreclosure is never permanent, but only
+a fresh dispatch or a deliberate revision lifts one. A `Supersede` decision's own consequence dispatch is
+not a third lifting path: it reopens through the same `ExecutionRequestAccepted` the first clause already
+names, and a foreclosed step can never actually be the target of one in the first place —
+`ExternalDecisionValidator` refuses any `Supersede` whose target's `StepStatus` is not `Succeeded`
+(#271), and `StepState.RetryForeclosed` cannot be true for a step whose status IS `Succeeded`: reaching
+`Succeeded` requires the `ExecutionRequestAccepted` that set the step's latest execution, and that same
+event unconditionally clears `RetryForeclosedStepIds` for the step (`StateProjector`'s
+`ExecutionRequestAccepted` case), independent of which retry it was dispatching. No verb in `src/`
+appends this event yet either; S1 ships the primitive and its projection, replay-tested (including
+the checkpoint `DeepCopy` hazard #1606 hit first for
+`LatestCapturedResponseFileByStepId`/`LatestUnsatisfiedOutputNamesByStepId`), for S2's `baton settle`
+to call.
+
+**`FlowEvent.ZeroOutputsDespiteSubstantialWork`** (`src/Baton/Domain/FlowEvent.cs`) is the unconditional
+tripwire the #1594 ruling's amendment 3 names: recorded independent of `OutcomeVerdict`/
+`FailureClassification`, so it fires whether or not `OutputMaterializer`'s response capture
+alongside it succeeded. Unlike the two vocabulary members above, **this one has a live producer in
+S1** — `OutcomeClassifier.Classify` computes the evidence (`OutcomeClassification.SubstantialWorkNoOutputsEvidence`)
+whenever a worker's own final usage line (read via the resolved adapter's `IWorkerUsageParser`, the
+same seam `ExecutionUsageProjector` uses) reports real turns/tokens while every one of the contract's
+declared outputs reads `Missing`, and `MutationInterface` appends the event from both classification
+call sites — the live dispatch path and the crash-recovery `ToClassify` branch — right alongside the
+outcome event, plus a loud `Console.Error` line. Scoped deliberately to the natural-exit-0,
+contract-unsatisfied shape (#1594's own): a non-zero exit or a timeout never computes the evidence,
+since those failures are already self-explaining and this tripwire targets specifically the case
+where nothing else says why the work vanished. Diagnostic only — `StateProjector` records it durably
+but it drives no `StepState`/`FlowState` consequence; it exists to be loud, not to change scheduling.
+
+**`settledAt`/`settledBy` remain unimplemented — S2 scope, not S1's.** The proposal on #1586 §2
+names two additive `terminal.json` fields (`settledAt`: ISO-8601 UTC, `settledBy`:
+`"pump"`/`"settle"`/`"validation-refused"`) that let a reader tell "this room finished" from "this
+room was declared finished after its pump died". Reserved here as a forward pointer only — no field
+exists on `WorkflowStatusView` yet, and none should until S2 has a real writer for it.
+
 ### Exit codes
 
 `RunExitCode` (`src/Baton.Cli/RunExitCodeResolver.cs`), returned by `run`, `dispatch`, and
@@ -378,7 +467,10 @@ reaches here)... a caller that cares about 'still going' reads `status --json`'s
 instead."*). Concretely: a harness runs `baton dispatch` without `--wait`, the lane reaches a gate and
 pauses — the process exits **1**. Reading that as "a step failed" and abandoning a healthy, paused
 room is the single most consequential misreading this table can produce, because §5's entire gate
-contract depends on that paused room still being there to `baton decide` against. **The rule: exit code
+contract depends on that paused room still being there to `baton decide` against. `Indeterminate`
+(#1586 S1, above) also folds into exit code 1 today — genuinely unreachable in this slice (no
+producer), but named rather than left to an unlabelled wildcard, the same discipline the rest of this
+switch already follows. **The rule: exit code
 1 alone never tells you whether the room is done. Read `state` from `terminal.json` or `baton status
 --json` to distinguish `Failed` from `Running`/`Paused`.** `--wait` makes `run`/`dispatch` block until
 the room reaches Terminal or the wait is itself cancelled; `run`'s own `--wait-timeout` (#1378) bounds

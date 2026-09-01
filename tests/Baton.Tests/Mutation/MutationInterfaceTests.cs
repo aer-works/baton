@@ -180,6 +180,60 @@ public class MutationInterfaceTests
     }
 
     [Fact]
+    public async Task StartWorkflowAsync_appends_the_ZeroOutputsDespiteSubstantialWork_tripwire_through_the_live_dispatch_path()
+    {
+        // #1586 S1 (the #1594 ruling's tripwire), the wiring OutcomeClassifierTests cannot reach: that
+        // suite pins SubstantialWorkNoOutputsEvidence at OutcomeClassifier.Classify's unit level with a
+        // fake usage parser; nothing exercised MutationInterface's own
+        // AppendZeroOutputsTripwireIfAnyAsync call site actually appending the event to a real journal
+        // off a real dispatch's own ExecutionStreamLogger-captured .stdout.log. This is that proof, for
+        // the live-dispatch call site specifically (the crash-recovery ToClassify call site is the
+        // other one MutationInterface.cs wires this from; that one is exercised by the projection-level
+        // tests, not a second live process here).
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var scriptDirectory = Path.Combine(roomDirectory, "scripts");
+        try
+        {
+            var stepId = new StepId("substantial-but-silent");
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-tripwire"),
+                new WorkflowTemplateId("tripwire"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(stepId, "silent", [], ["output.txt"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["silent"] = new WorkerBinding.Process(
+                    new WorkerContract("silent", [], [new ProducedOutput("output.txt")], []),
+                    EmitSubstantialUsageThenExitWithoutWriting(scriptDirectory),
+                    TimeSpan.FromSeconds(30),
+                    Adapter: "agy"),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-tripwire"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            var stepState = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Failed, stepState.Status);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var tripwire = Assert.Single(events.OfType<FlowEvent.ZeroOutputsDespiteSubstantialWork>());
+            Assert.Contains("4 turn", tripwire.Evidence);
+            Assert.Contains("500", tripwire.Evidence);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
     public async Task StartWorkflowAsync_records_a_Retryable_ExecutionFailed_when_the_OS_itself_refuses_the_spawn()
     {
         // The refusal family's generic member (#747's review): BatonException, not the typed guard.

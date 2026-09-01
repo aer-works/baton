@@ -96,6 +96,43 @@ public class EngineLivenessProbeTests
         Assert.Equal("Pending", StatusCommand.FormatStepStatus(pendingStep, []));
     }
 
+    [Fact]
+    public void FormatStepStatus_does_not_render_an_unfireable_park_for_a_foreclosed_step()
+    {
+        // #1586 S1 (second-reader finding): a FlowEvent.StepRetryForeclosed clears RetryNotBefore
+        // the same way an unobligated ExhaustedUntil park does (MutationInterface.GetRetryObligations
+        // leaves no obligation for either), but the two mean opposite things -- one is still waiting
+        // on an unknown vendor reset, the other is settled and will never dispatch again. Without the
+        // RetryForeclosed guard, this would render "parked (vendor quota) — reset unknown", the exact
+        // misreport #1513/#1582 were paid to fix, for a room that is in fact done.
+        var emptyUpstreams = new Dictionary<StepId, ExecutionId>();
+        var foreclosedStep = new StepState(
+            StepId, StepStatus.Failed, LatestExecutionId: ExecutionId, emptyUpstreams,
+            LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryNotBefore: null,
+            RetryForeclosed: true);
+
+        Assert.Equal("Failed", StatusCommand.FormatStepStatus(foreclosedStep, []));
+    }
+
+    [Fact]
+    public void FormatStepStatus_still_renders_the_unfireable_park_when_not_foreclosed()
+    {
+        // Polarity partner: identical fixture, RetryForeclosed false -- proves the guard above is
+        // about foreclosure specifically, not incidentally about the ExhaustedUntil/null-RetryNotBefore
+        // shape itself, which StatusCommandEndToEndTests's own
+        // Status_of_an_unknown_instant_exhausted_step_renders_parked_vendor_quota_reset_unknown pins
+        // end to end through the CLI.
+        var emptyUpstreams = new Dictionary<StepId, ExecutionId>();
+        var unforeclosedStep = new StepState(
+            StepId, StepStatus.Failed, LatestExecutionId: ExecutionId, emptyUpstreams,
+            LatestFailureClassification: FailureClassification.ExhaustedUntil,
+            RetryNotBefore: null,
+            RetryForeclosed: false);
+
+        Assert.Equal("parked (vendor quota) — reset unknown", StatusCommand.FormatStepStatus(unforeclosedStep, []));
+    }
+
     private static ExecutionRequest MakeRequest(string execId) =>
         new(new ExecutionId(execId), WorkflowId, StepId, "worker", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
 }

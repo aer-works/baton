@@ -25,7 +25,8 @@ public sealed class FleetStatusTool : IMcpTool
 {
     // #1513: NOT a WorkflowOutcome member -- deliberately a fleet_status-only display word, so it
     // can never be confused for a ledger outcome by a consumer that already switches on
-    // WorkflowOutcome's five (spec/baton.md §3). Distinct from "Failed": a stalled room is not
+    // WorkflowOutcome's own members (six as of #1586 S1's Indeterminate; spec/baton.md §3). Distinct
+    // from "Failed": a stalled room is not
     // permanently done -- a fresh `baton run` against the room can revive it (`baton resume` cannot;
     // #1582 review found it refuses every room this reaches -- spec/baton.md §3 has the full
     // refusal chain) -- this says "nothing is currently making progress", not "this cannot succeed".

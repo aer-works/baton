@@ -18,6 +18,34 @@ public static class WorkflowOutcome
     public const string Failed = "Failed";
     public const string Cancelled = "Cancelled";
 
+    /// <summary>
+    /// #1586 S1 (state-truth design, ratified 2026-09-01 amendment): journal facts alone cannot
+    /// distinguish success from failure for this room — the two-predicate model (execution outcome vs
+    /// contract completion) disagrees with itself, e.g. work-evidence contradicts contract-evidence
+    /// (#1594's missing-output-with-envelope shape is the canonical instance) or a worktree fingerprint
+    /// does not reconcile at settle time. A single added value, not a two-field split, per the ruling's
+    /// own wording.
+    /// <para>
+    /// <b>No producer in this slice.</b> <see cref="Describe"/> never returns this today — the vocabulary
+    /// exists so every consumer can be swept and tested ahead of #2's <c>baton settle</c> verb (which
+    /// may settle a room TO this value) and #1608's classification-path swap (which flips the #1594
+    /// capture shape onto it). Wiring either producer here was explicitly deferred (S1's own scope
+    /// note): flipping the #1594 capture arm onto this value is #1608's job, not S1's — every
+    /// captured-response room's <see cref="Describe"/> reading is unchanged by this slice
+    /// (<c>WorkflowOutcomeAndExitCodeTests</c> pins that). Tests exercising the consumers below fabricate
+    /// a <c>terminal.json</c>/status view carrying this string directly rather than deriving it from a
+    /// journal, since nothing in <c>src/</c> can derive it yet.
+    /// </para>
+    /// <para>
+    /// <b>Consumer obligations (ruling item 2, spelled out in full in <c>spec/baton.md</c> §3):</b>
+    /// a room reading this refuses bare <c>baton redispatch</c> with a diagnosis
+    /// (<c>Baton.Cli.RedispatchCommand</c>); the fleet glass renders a distinct chip; leaving this
+    /// value always requires a conductor's own recorded justification — it is not a state a room
+    /// exits on its own.
+    /// </para>
+    /// </summary>
+    public const string Indeterminate = "Indeterminate";
+
     public static string Describe(FlowState state)
     {
         ArgumentNullException.ThrowIfNull(state);
