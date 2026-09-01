@@ -324,12 +324,11 @@ found it — closed by #1586.** Without `--execution` it refuses (no `Running` s
 the parked execution's id explicitly named, it used to take the room's lock, clobber the one artifact
 naming which engine died, and never come back — `CancelCommand`'s own dead-holder-check comment is
 the canonical account of that old failure and today's guard against it, not restated here. #1586's fix
-runs before any acquire: `CancelCommand` reads the holder sidecar's recorded pid through the identical
-`EngineLivenessProbe` `baton status`'s parked-status line already consults (never a second,
-independently-invented liveness check), and a dead holder with a step still owed a future retry is
-refused outright, pointed at the `baton run --room-dir` recovery above, sidecar untouched. A holder
-the lock is still genuinely OS-held by (a live pump) falls through unchanged to the pre-existing
-behaviour.
+runs before any acquire: `CancelCommand` reuses the same `EngineLivenessProbe` arbiter this section's
+`baton status` line already relies on to read the holder sidecar's recorded pid, so a dead holder with
+a step still owed a future retry is refused outright, pointed at the `baton run --room-dir` recovery
+above, sidecar untouched. A holder the lock is still genuinely OS-held by (a live pump) falls through
+unchanged to the pre-existing behaviour.
 
 **#1586 also closed the discoverability half: `baton redispatch`'s own missing-`terminal.json`
 refusal, and `baton status`'s dead-engine parked line, now cite the identical `baton run --room-dir`
