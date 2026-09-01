@@ -61,8 +61,8 @@ Warning: Spec line 4 ('gh issue view 1500') implies shell instructions (gh), but
 This is a **warning, never a refusal** — the heuristic is not a parser and cannot know a matched line
 is inert prose ("pixie dust") or that the worker will route around it; it only shortens the loop from
 "the lane discovers its instructions are unexecutable mid-flight" to "the operator sees it before the
-room exists." `DispatchCommand` wraps the lint call so a throwing heuristic degrades to a skipped lint
-rather than a refused dispatch — the promise above is enforced there, not just asserted here.
+room exists." That promise is a try/catch in `DispatchCommand` around the lint call, not just an
+assertion on this page — see `DispatchSpecLinter`'s own class doc for why the wrapping is needed.
 
 **Two known gaps, disclosed rather than fixed — the specifics of each, and why the shell one is
 larger, live on `DispatchSpecLinter`'s own class doc; record-once, not restated here.** In short: the
