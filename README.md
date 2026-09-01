@@ -26,7 +26,7 @@ Baton does not authenticate to any model provider. It spawns the vendor's own fi
 (`claude`, `agy`) as a subprocess, and that CLI uses whatever login the operator already established
 on their own machine.
 
-**AER never reads, copies, forwards, or stores a vendor credential** — no API keys, no OAuth tokens,
+**Baton never reads, copies, forwards, or stores a vendor credential** — no API keys, no OAuth tokens,
 no access to the OS credential store, and it never places a credential into a config directory. This
 is an enforced invariant, not an intention: see
 [`VendorCredentialIsolationTests`](tests/Baton.Architecture.Tests/VendorCredentialIsolationTests.cs).
