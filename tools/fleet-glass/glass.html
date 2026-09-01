@@ -251,17 +251,165 @@ function chipsHtml(room, running, focusStep){
 }
 
 // -----------------------------------------------------------------------------------------------
-// #1505 item 3: per-room event timeline, content-free (pusher.py's extract_timeline keeps only
-// type+timestamp), keyed by room PATH (never name -- fleet_status dedupes by path, and a
-// name-keyed join could hand one room's timeline to a differently-rooted same-named room). Only
-// present for rooms pusher.py judged non-terminal at push time.
+// #1505 item 3 & #1536: per-room event timeline, content-free (pusher.py's extract_timeline keeps
+// only type+timestamp), keyed by room PATH (never name -- fleet_status dedupes by path, and a
+// name-keyed join could hand one room's timeline to a differently-rooted same-named room).
+// #1536 item 1: timelines are persisted across page refreshes in localStorage (try/catch-wrapped,
+// capped at 100 entries per room, absent rooms dropped).
+// #1536 item 2: raw event types map to friendly legible names with raw types in title tooltips.
 // -----------------------------------------------------------------------------------------------
+const TIMELINE_STORAGE_KEY = "baton.glass.timelines";
+const TIMELINE_ROOM_CAP = 100;
+
+const EVENT_NAMES = {
+  // Flow events (FlowEvent.cs)
+  "flow.executionRequestAccepted": "worker accepted",
+  "executionRequestAccepted": "worker accepted",
+  "flow.executionRequestRejected": "worker rejected",
+  "executionRequestRejected": "worker rejected",
+  "flow.executionSucceeded": "execution succeeded",
+  "executionSucceeded": "execution succeeded",
+  "flow.executionFailed": "execution failed",
+  "executionFailed": "execution failed",
+  "flow.executionCancelled": "execution cancelled",
+  "executionCancelled": "execution cancelled",
+  "flow.cancellationRequested": "cancellation requested",
+  "cancellationRequested": "cancellation requested",
+  "flow.workflowPaused": "workflow paused",
+  "workflowPaused": "workflow paused",
+  "flow.externalDecisionRecorded": "decision recorded",
+  "externalDecisionRecorded": "decision recorded",
+  "flow.workflowResumed": "workflow resumed",
+  "workflowResumed": "workflow resumed",
+  "flow.stepRetryScheduled": "retry scheduled",
+  "stepRetryScheduled": "retry scheduled",
+
+  // Core events (CoreEvent.cs)
+  "core.executionStarted": "execution started",
+  "executionStarted": "execution started",
+  "core.executionExited": "execution exited",
+  "executionExited": "execution exited",
+
+  // Room events (RoomEvent.cs)
+  "room.heldWorkDispatched": "held work dispatched",
+  "heldWorkDispatched": "held work dispatched",
+  "room.heldWorkEscalated": "held work escalated",
+  "heldWorkEscalated": "held work escalated",
+  "room.heldWorkResolved": "held work resolved",
+  "heldWorkResolved": "held work resolved",
+  "room.grantRecorded": "grant recorded",
+  "grantRecorded": "grant recorded",
+  "room.grantAmended": "grant amended",
+  "grantAmended": "grant amended",
+  "room.grantRevoked": "grant revoked",
+  "grantRevoked": "grant revoked",
+  "room.escalationRaised": "escalation raised",
+  "escalationRaised": "escalation raised",
+  "room.turnHostDormancyEntered": "dormancy entered",
+  "turnHostDormancyEntered": "dormancy entered",
+  "room.turnHostDormancyCleared": "dormancy cleared",
+  "turnHostDormancyCleared": "dormancy cleared",
+  "room.runtimePermissionAsked": "permission asked",
+  "runtimePermissionAsked": "permission asked",
+  "room.runtimePermissionAnswered": "permission answered",
+  "runtimePermissionAnswered": "permission answered",
+  "room.runtimePermissionRevoked": "permission revoked",
+  "runtimePermissionRevoked": "permission revoked",
+  "room.workflowSwitched": "workflow switched",
+  "workflowSwitched": "workflow switched",
+  "room.standingPermissionRevoked": "standing permission revoked",
+  "standingPermissionRevoked": "standing permission revoked",
+  "room.workerJoined": "worker joined",
+  "workerJoined": "worker joined",
+  "room.workerRenamed": "worker renamed",
+  "workerRenamed": "worker renamed",
+  "room.orchestratorAssigned": "orchestrator assigned",
+  "orchestratorAssigned": "orchestrator assigned",
+
+  // Special / synthetic
+  "unreadable": "unreadable",
+  "unknown": "unknown",
+};
+
+function friendlyEventName(rawType){
+  if(!rawType) return "";
+  if(EVENT_NAMES[rawType]) return EVENT_NAMES[rawType];
+  const unprefixed = String(rawType).replace(/^(flow|core|room)\./, "");
+  if(EVENT_NAMES[unprefixed]) return EVENT_NAMES[unprefixed];
+  return String(rawType);
+}
+
+function loadPersistedTimelines(){
+  try {
+    if(typeof localStorage === "undefined" || !localStorage) return {};
+    const raw = localStorage.getItem(TIMELINE_STORAGE_KEY);
+    if(!raw) return {};
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
+  } catch(e) {
+    return {};
+  }
+}
+
+function savePersistedTimelines(timelines){
+  try {
+    if(typeof localStorage === "undefined" || !localStorage) return;
+    if(!timelines || typeof timelines !== "object") return;
+    localStorage.setItem(TIMELINE_STORAGE_KEY, JSON.stringify(timelines));
+  } catch(e) {
+    // Storage access blocked or quota exceeded
+  }
+}
+
+function entryKey(e){
+  if(!e || typeof e !== "object") return "";
+  return `${e.type ?? ""}__${e.timestamp ?? ""}`;
+}
+
+function mergeTimelineEntries(existing, incoming, cap = TIMELINE_ROOM_CAP){
+  const res = Array.isArray(existing) ? existing.slice() : [];
+  if(!Array.isArray(incoming) || !incoming.length){
+    return res.length > cap ? res.slice(-cap) : res;
+  }
+  const seen = new Set(res.map(entryKey));
+  for(const e of incoming){
+    if(!e || typeof e !== "object") continue;
+    const key = entryKey(e);
+    if(!seen.has(key)){
+      seen.add(key);
+      res.push(e);
+    }
+  }
+  return res.length > cap ? res.slice(-cap) : res;
+}
+
+function updateAccumulatedTimelines(existingTimelines, rooms, incomingTimelines){
+  const result = {};
+  if(!Array.isArray(rooms)) return result;
+  const existing = (existingTimelines && typeof existingTimelines === "object") ? existingTimelines : {};
+  const incoming = (incomingTimelines && typeof incomingTimelines === "object") ? incomingTimelines : {};
+
+  for(const room of rooms){
+    if(!room || !room.path) continue;
+    const path = room.path;
+    const prev = existing[path] || [];
+    const inc = incoming[path] || [];
+    const merged = mergeTimelineEntries(prev, inc, TIMELINE_ROOM_CAP);
+    if(merged.length > 0){
+      result[path] = merged;
+    }
+  }
+  return result;
+}
+
 function timelineHtml(room, timelines){
   const entries = timelines && room.path ? timelines[room.path] : null;
   if(!Array.isArray(entries) || !entries.length) return "";
   const rows = entries.map(e => {
     const a = age(e.timestamp);
-    return `<div class="tl-entry"><span class="tl-type mono">${esc(e.type)}</span><span class="tl-age">${a ? a + " ago" : ""}</span></div>`;
+    const rawType = e.type || "";
+    const label = friendlyEventName(rawType);
+    return `<div class="tl-entry"><span class="tl-type mono" title="${esc(rawType)}">${esc(label)}</span><span class="tl-age">${a ? a + " ago" : ""}</span></div>`;
   }).join("");
   return `<details><summary>Timeline · ${entries.length}</summary>${rows}</details>`;
 }
@@ -687,6 +835,7 @@ window.addEventListener("hashchange", applyRoute);
   }
   window.mcpHandle = mcp;
   let lastGood = null;
+  let accumulatedTimelines = loadPersistedTimelines();
   // #1486: heartbeat_at (hourly ping, independent of the change-gated snapshot) is what tells a
   // dead pusher apart from a quiet fleet whose pushed_at is legitimately stale. Loud only past
   // ~2 missed beats + slop, so one delayed cycle doesn't cry wolf.
@@ -698,6 +847,8 @@ window.addEventListener("hashchange", applyRoute);
       if(typeof snap === "string"){ try { snap = JSON.parse(snap); } catch { snap = null; } }
       if(snap && Array.isArray(snap.rooms)){
         lastGood = snap;
+        accumulatedTimelines = updateAccumulatedTimelines(accumulatedTimelines, snap.rooms, snap.timelines);
+        savePersistedTimelines(accumulatedTimelines);
         const hbMs = snap.heartbeat_at ? Date.now() - Date.parse(snap.heartbeat_at) : null;
         const pushMs = snap.pushed_at ? Date.now() - Date.parse(snap.pushed_at) : null;
         const running = snap.rooms.some(r => r.state === "Running");
@@ -710,7 +861,7 @@ window.addEventListener("hashchange", applyRoute);
         } else {
           banner("");
         }
-        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, snap.timelines, snap.stale_hidden_count);
+        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count);
       } else if(snap && snap.rooms === null){
         $("content").innerHTML = "";
         banner("<b>No snapshot pushed yet.</b> The mailbox is live but the fleet machine hasn't pushed data.");
