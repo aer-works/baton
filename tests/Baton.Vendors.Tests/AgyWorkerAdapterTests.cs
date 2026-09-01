@@ -394,16 +394,19 @@ public class AgyWorkerAdapterTests
     }
 
     /// <summary>
-    /// #1623: every agy prompt carries the foreground-gate instruction, so a lane never re-derives the
-    /// polling behaviour measured in the #1618 lane (812 of 934 tool calls were `manage_task status`
-    /// polls against one backgrounded `run_command`).
+    /// #1623: every agy prompt carries the foreground instruction, so a lane never re-derives the
+    /// backgrounded-`run_command`/tight-`manage_task`-poll behaviour <c>docs/vendor-capabilities.md</c>'s
+    /// "Sharp edges" section records against a real captured lane.
     /// </summary>
     [Fact]
-    public void The_prompt_instructs_agy_to_run_gates_in_the_foreground_and_never_poll_manage_task()
+    public void The_prompt_instructs_agy_to_run_commands_in_the_foreground_and_never_poll_manage_task()
     {
         var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
 
-        Assert.Contains(AgyWorkerAdapter.ForegroundGateInstructionText, GetPrompt(target));
+        var prompt = GetPrompt(target);
+        Assert.Contains("in the foreground", prompt);
+        Assert.Contains("manage_task status", prompt);
+        Assert.Contains(AgyWorkerAdapter.ForegroundGateInstructionText, prompt);
     }
 
     [Fact]
