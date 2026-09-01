@@ -24,7 +24,10 @@ public class QuotaParkCancelArrestTests
     private static readonly StepId StepB = new("step-b");
     private static readonly TimeSpan PumpCompletionTimeout = TimeSpan.FromSeconds(30);
 
-    private static async Task<T> WaitForEventAsync<T>(FlowEventLogReader reader, Task pumpTask, CancellationToken cancellationToken)
+    // Returns the found event AND the exact events snapshot it was found in (F3, #1605 review):
+    // callers that need to assert a state fact true AT THE MOMENT the event appeared (not
+    // "eventually", which a later, unrelated read could satisfy vacuously) read off this same list.
+    private static async Task<(T Found, IReadOnlyList<FlowEvent> Events)> WaitForEventAsync<T>(FlowEventLogReader reader, Task pumpTask, CancellationToken cancellationToken)
         where T : FlowEvent
     {
         var stopwatch = Stopwatch.StartNew();
@@ -33,7 +36,7 @@ public class QuotaParkCancelArrestTests
             var events = await reader.ReadAllAsync(cancellationToken);
             if (events.OfType<T>().FirstOrDefault() is { } found)
             {
-                return found;
+                return (found, events);
             }
 
             Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(20), $"Timed out waiting for {typeof(T).Name}.");
@@ -145,9 +148,19 @@ public class QuotaParkCancelArrestTests
 
     // Polarity: an intent marked for a target that is NOT the currently-parked step's latest
     // execution is silently dropped by the pump's fail-closed validation (IsParkedRetryTarget) —
-    // the real park is left untouched, not spuriously settled — and the pump keeps waiting exactly
-    // as it would have with no mark at all. The poller's own bounded retry, not this seam, is what
-    // eventually surfaces a genuinely unreachable target.
+    // the real park is left untouched, not spuriously settled. F4 (#1605 review): the previous
+    // version of this test proved that with an ambient-token cancel, but a pre-cancelled token can
+    // win the deferral wait's WhenAny outright (the host-stop guard, same race as the F1 sub-point
+    // documented at this loop's own `deferralHostStopWatcher` check) and skip the wait — and with it
+    // SettleParkedCancelIntentsAsync/IsParkedRetryTarget — entirely, so the old assertions (no
+    // CancellationRequested/ExecutionCancelled at all) were satisfied vacuously whether or not the
+    // discrimination logic under test ever ran. Fixed deterministically, with no clock and no host
+    // stop: mark BOTH the mismatched id and the real parked one before the pump ever wakes for
+    // either. The real one settling is the positive control that the wake/drain path actually ran
+    // (a broken settle hangs this test out to WaitAsync's timeout, not a silent pass); the mismatched
+    // one never settling — whether IsParkedRetryTarget drops it in the same drain as the real one or
+    // a later one — is what actually proves it discriminates rather than settling everything the
+    // wake fires for.
     [Fact]
     public async Task Marking_an_intent_for_a_mismatched_execution_id_leaves_the_real_park_untouched()
     {
@@ -157,7 +170,6 @@ public class QuotaParkCancelArrestTests
         var now = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
         var fakeTime = new FakeTimeProvider(now);
         var farFutureReset = now.AddDays(1);
-        using var cts = new CancellationTokenSource();
 
         try
         {
@@ -208,24 +220,31 @@ public class QuotaParkCancelArrestTests
                 inFlightExecutions: registry,
                 timeProvider: fakeTime,
                 jitterSource: () => 0.0,
-                cancellationToken: cts.Token);
+                cancellationToken: TestContext.Current.CancellationToken);
 
+            // Mark the mismatched id first — if IsParkedRetryTarget did not actually validate
+            // against projected state, this alone could spuriously settle the real park.
             registry.MarkParkedCancelIntent(mismatchedTarget);
+            // Then mark the REAL target: its settlement below is the positive control (F4) proving
+            // the wake/drain path genuinely ran — a broken drain hangs this test out to the WaitAsync
+            // timeout below instead of a same-shape negative silently passing for the wrong reason.
+            registry.MarkParkedCancelIntent(firstAttempt);
 
-            // A hostStop is the deterministic way out of a wait this test deliberately never
-            // resolves any other way: if the mismatched mark had wrongly settled the real park,
-            // the pump would already have returned Terminal/Cancelled before this Cancel() even
-            // has an effect, and the assertions below would catch it either way.
-            await cts.CancelAsync();
             var finalState = await pumpTask.WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
 
+            Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
             var stepState = finalState.Steps.Single(s => s.StepId == StepA);
-            Assert.Equal(StepStatus.Failed, stepState.Status);
-            Assert.Equal(farFutureReset, stepState.RetryNotBefore);
+            Assert.Equal(StepStatus.Cancelled, stepState.Status);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
-            Assert.DoesNotContain(events, e => e is FlowEvent.CancellationRequested);
-            Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionCancelled);
+            // The real target settled...
+            Assert.Contains(events, e => e is FlowEvent.CancellationRequested c && c.ExecutionId == firstAttempt);
+            Assert.Contains(events, e => e is FlowEvent.ExecutionCancelled c && c.ExecutionId == firstAttempt);
+            // ...but the mismatched one never did — dropped by IsParkedRetryTarget's fail-closed
+            // check whenever it was drained, not settled alongside the real one just because both
+            // were marked before the pump's first wake.
+            Assert.DoesNotContain(events, e => e is FlowEvent.CancellationRequested c && c.ExecutionId == mismatchedTarget);
+            Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionCancelled c && c.ExecutionId == mismatchedTarget);
         }
         finally
         {
@@ -239,7 +258,10 @@ public class QuotaParkCancelArrestTests
     // DIFFERENT step sitting quota-parked while this one's dispatch is still live — is spelled
     // out once, beside that wiring, at MutationInterface.cs's own `#1563` comment on
     // `waitParkedCancelWake`. This drives a real (short) OS process for StepB so
-    // `inFlight.Count > 0` is genuine, not simulated.
+    // `inFlight.Count > 0` is genuine, not simulated. F3 (#1605 review): proving the BUSY branch
+    // specifically (not the idle one, also wired to the same latch, catching it after StepB
+    // happens to finish first) needs a state discriminator, not just a short sleep — see the
+    // assertion beside `WaitForEventAsync<FlowEvent.ExecutionCancelled>` below.
     [Fact]
     public async Task Cancel_delivered_while_a_sibling_step_is_genuinely_in_flight_still_settles_the_parked_step()
     {
@@ -311,12 +333,22 @@ public class QuotaParkCancelArrestTests
             // StepB's own request being accepted (not StepA's, already in the log from the
             // fabricated history above) is the positive signal that this round dispatched it —
             // joining `inFlight` — before the pump moves on to the busy `waitCandidates` branch
-            // this finding targets, rather than the idle-deferral one.
+            // this finding targets, rather than the idle-deferral one. Its ExecutionId is captured
+            // here for the state discriminator below (F3).
+            ExecutionId? stepBExecutionId = null;
             var stopwatchForStepB = Stopwatch.StartNew();
-            while (!(await reader.ReadAllAsync(TestContext.Current.CancellationToken))
-                .OfType<FlowEvent.ExecutionRequestAccepted>()
-                .Any(e => e.Request.StepId == StepB))
+            while (stepBExecutionId is null)
             {
+                var eventsSoFar = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+                stepBExecutionId = eventsSoFar.OfType<FlowEvent.ExecutionRequestAccepted>()
+                    .Where(e => e.Request.StepId == StepB)
+                    .Select(e => (ExecutionId?)e.Request.ExecutionId)
+                    .FirstOrDefault();
+                if (stepBExecutionId is not null)
+                {
+                    break;
+                }
+
                 Assert.True(stopwatchForStepB.Elapsed < TimeSpan.FromSeconds(20), "Timed out waiting for StepB's dispatch.");
                 Assert.False(pumpTask.IsCompleted, "expected StepB to still be dispatching when this check runs");
                 await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: poll interval inside a 20s-bounded loop, not the wait ceiling itself
@@ -327,7 +359,16 @@ public class QuotaParkCancelArrestTests
             // Positive signal, polled well inside StepB's 4s sleep: proves the busy branch's own
             // WhenAny woke on the mark rather than waiting for StepB's dispatch, a host stop, or
             // fakeTime (never advanced) to reach the far-future RetryNotBefore.
-            await WaitForEventAsync<FlowEvent.ExecutionCancelled>(reader, pumpTask, TestContext.Current.CancellationToken);
+            var (_, eventsAtCancel) = await WaitForEventAsync<FlowEvent.ExecutionCancelled>(reader, pumpTask, TestContext.Current.CancellationToken);
+
+            // F3 (#1605 review): the wait above alone can pass via a vacuous path — StepB finishes
+            // first (winning its own race against the 4s sleep under load), the pump moves to the
+            // IDLE branch, and THAT branch's wake (also wired to the same latch) catches the mark
+            // instead of the busy branch this test targets. Binding "the busy wait delivered while
+            // StepB was genuinely in flight" to a state fact instead of a clock: on this exact same
+            // read, StepB must not have recorded ExecutionSucceeded yet — if it had, the idle path
+            // (not the busy one) is what caught this.
+            Assert.DoesNotContain(eventsAtCancel, e => e is FlowEvent.ExecutionSucceeded s && s.ExecutionId == stepBExecutionId!.Value);
 
             var finalState = await pumpTask.WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
 
