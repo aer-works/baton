@@ -50,17 +50,28 @@
   --chip-ok:#1D2E1E; --chip-run:#1A2735; --chip-warn:#332818; --chip-bad:#331D1B; --chip-idle:#242830;
 }
 body{background:var(--paper); color:var(--ink); font:15px/1.55 'Public Sans',system-ui,sans-serif; margin:0; padding:20px 16px 60px;}
-main{max-width:36rem; margin:0 auto;}
+main{max-width:62rem; margin:0 auto;}
 h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline;}
 h1 .fresh{font:400 .72rem var(--mono); color:var(--ink-soft);}
-h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.08em;}
+h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.08em; display:flex; justify-content:space-between; align-items:baseline;}
+.dismissall{text-transform:none; font-family:'Public Sans',sans-serif; font-size:.72rem; font-weight:500; letter-spacing:normal; color:var(--accent); cursor:pointer; text-decoration:none;}
+.lanes{display:grid; grid-template-columns:1fr; gap:.45rem; margin:.45rem 0;}
+@media (min-width: 768px){
+  .lanes{grid-template-columns:repeat(auto-fill, minmax(29rem, 1fr));}
+}
+@media (max-width: 600px){
+  body{padding:12px 10px 48px;}
+  .lane{padding:.5rem .6rem;}
+  .doc{padding:.75rem .9rem;}
+  .item{padding:.5rem .65rem;}
+}
 .masthead{display:flex; align-items:flex-start; gap:.55rem;}
 .batonmark{flex:0 0 auto; margin-top:.1rem;}
 .titleblock{flex:1; min-width:0;}
 .kicker{margin:.15rem 0 0; font:500 .72rem 'Public Sans'; color:var(--ink-soft); letter-spacing:.04em;}
 .downbeat{height:2px; margin:.55rem 0 .15rem; background:linear-gradient(90deg, var(--accent), var(--line) 60%, transparent); border-radius:2px;}
-.tabs{display:flex; gap:.35rem; margin:.7rem 0 .3rem;}
-.tabbtn{font:600 .74rem 'Public Sans'; padding:.35em 1em; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--ink-soft); cursor:pointer;}
+.tabs{display:flex; gap:.35rem; margin:.7rem 0 .3rem; user-select:none; -webkit-user-select:none;}
+.tabbtn{font:600 .74rem 'Public Sans'; padding:.35em 1em; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--ink-soft); cursor:pointer; user-select:none; -webkit-user-select:none;}
 .tabbtn.active{background:var(--accent); color:#fff; border-color:var(--accent);}
 .tabpanel{display:none;}
 .tabpanel.active{display:block;}
@@ -69,14 +80,14 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .dismissnote a{color:var(--accent); text-decoration:none; cursor:pointer;}
 .dismissbtn{background:transparent; border:none; color:var(--ink-soft); font:600 .85rem/1 var(--mono); cursor:pointer; padding:.1em .35em; border-radius:4px; line-height:1;}
 .dismissbtn:hover{background:var(--chip-idle); color:var(--ink);}
-.lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:.45rem 0; background:var(--card);}
+.lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:0; background:var(--card);}
 .lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
 .lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .roomid, .lane .project{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end;}
 .lane .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
-.lane .deliverables{font-size:.74rem; margin-top:.3rem;}
+.lane .deliverables{font-size:.74rem; margin-top:.3rem; user-select:none; -webkit-user-select:none;}
 .lane .deliverables a{color:var(--accent); text-decoration:none; cursor:pointer;}
 .lane details{margin:.4rem 0 0; font-size:.74rem;}
 .lane details summary{font:600 .72rem 'Public Sans'; color:var(--ink-soft);}
@@ -98,7 +109,7 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 details{margin:.6rem 0;}
 summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .mono{font-family:var(--mono); font-size:.9em;}
-.filter{font-size:.8rem; color:var(--ink-soft); margin:.4rem 0 1rem;}
+.filter{font-size:.8rem; color:var(--ink-soft); margin:.4rem 0 1rem; user-select:none; -webkit-user-select:none;}
 .filter a{color:var(--accent); text-decoration:none; cursor:pointer;}
 .item{border:1px solid var(--line); border-radius:12px; padding:.6rem .8rem; margin:.45rem 0; background:var(--card); cursor:pointer;}
 .item .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
@@ -116,6 +127,17 @@ summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .doc dt{font:600 .72rem 'Public Sans'; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; margin-top:.6rem;}
 .doc dd{font-size:.84rem; color:var(--ink); margin:.15rem 0 .5rem 0; overflow-x:auto;}
 .doc dd pre{margin:.3rem 0;}
+.doc table{width:100%; border-collapse:collapse; margin:.8rem 0; font-size:.84rem;}
+.doc th,.doc td{border:1px solid var(--line); padding:.45rem .65rem; text-align:left; vertical-align:top;}
+.doc th{background:var(--paper); font-family:'Public Sans',sans-serif; font-weight:600; font-size:.78rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em;}
+.doc tr:nth-child(even){background:var(--paper);}
+.table-wrap{overflow-x:auto; margin:.8rem 0;}
+.table-wrap table{margin:0;}
+.doc blockquote{border-left:3px solid var(--accent); margin:.6rem 0; padding:.3rem .8rem; color:var(--ink-soft); background:var(--paper); border-radius:0 6px 6px 0;}
+.doc blockquote p{margin:.2em 0;}
+.doc hr{border:none; border-top:1px solid var(--line); margin:1.2rem 0;}
+.doc ol,.doc ul{margin:.5rem 0; padding-left:1.4rem;}
+.doc li{margin:.2rem 0;}
 .finding{border:1px solid var(--line); border-radius:10px; padding:.65rem .85rem; margin:.5rem 0; background:var(--paper);}
 .finding .finding-top{display:flex; justify-content:space-between; align-items:baseline; gap:.5rem;}
 .finding .finding-claim{font:600 .86rem 'Public Sans'; color:var(--ink);}
@@ -482,7 +504,7 @@ function updateAccumulatedTimelines(existingTimelines, rooms, incomingTimelines)
   return result;
 }
 
-function timelineHtml(room, timelines){
+function timelineHtml(room, timelines, isOpen = false){
   const entries = timelines && room.path ? timelines[room.path] : null;
   if(!Array.isArray(entries) || !entries.length) return "";
   const rows = entries.map(e => {
@@ -491,7 +513,7 @@ function timelineHtml(room, timelines){
     const label = friendlyEventName(rawType);
     return `<div class="tl-entry"><span class="tl-type mono" title="${esc(rawType)}">${esc(label)}</span><span class="tl-age">${a ? a + " ago" : ""}</span></div>`;
   }).join("");
-  return `<details><summary>Timeline · ${entries.length}</summary>${rows}</details>`;
+  return `<details class="tl-details" data-room-path="${esc(room.path)}"${isOpen ? " open" : ""}><summary>Timeline · ${entries.length}</summary>${rows}</details>`;
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -618,7 +640,7 @@ document.addEventListener("click", async (ev) => {
   }
 });
 
-function laneHtml(room, timelines, dismissable = false){
+function laneHtml(room, timelines, dismissable = false, openTimelines = null){
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   // Chips key off the step that actually failed, not array position: in A->B->C with B
@@ -651,12 +673,13 @@ function laneHtml(room, timelines, dismissable = false){
   const dismissBtn = (dismissable && room.path)
     ? `<button class="dismissbtn" data-path="${esc(room.path)}" title="Dismiss room" aria-label="Dismiss">×</button>`
     : "";
+  const isTlOpen = !!(openTimelines && room.path && openTimelines.has(room.path));
   return `<div class="lane"><div class="top"><span class="name">${title}</span><span class="chips">${chipsHtml(room, running, focusStep)}${dismissBtn}</span></div>
     ${roomIdLine}
     ${projectLineHtml(room)}
     ${bindingLineHtml(room)}
     ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${tryLine}${err}${ageLine}
-    ${timelineHtml(room, timelines)}
+    ${timelineHtml(room, timelines, isTlOpen)}
     ${copyButtonsHtml(room, running)}
     ${deliverables}</div>`;
 }
@@ -671,9 +694,29 @@ function underhoodHtml(list){
     return `<div class="lane"><div class="top"><span class="name">${esc(w.name)}</span></div>
       <div class="ev">${bits.join(" · ")}</div>${commit}</div>`;
   }).join("");
-  return `<h2>Under the hood · ${list.length}</h2>` + rows;
+  return `<h2>Under the hood · ${list.length}</h2><div class="lanes">` + rows + `</div>`;
+}
+function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCount){
+  if(totalDismissed <= 0) return "";
+  const parts = [];
+  if(failedCount > 0){
+    parts.push(failedCount === 1 && totalDismissed > 1 ? "1 of them Failed" : failedCount === 1 && totalDismissed === 1 ? "1 of them Failed" : `${failedCount} Failed`);
+  }
+  if(stalledCount > 0){
+    parts.push(stalledCount === 1 && totalDismissed > 1 && failedCount === 0 ? "1 of them Stalled" : stalledCount === 1 && totalDismissed === 1 ? "1 of them Stalled" : `${stalledCount} Stalled`);
+  }
+  const detail = parts.join(", ");
+  const countLabel = totalDismissed === 1 ? "1 hidden" : `${totalDismissed} hidden`;
+  return `${countLabel}${detail ? ` · ${detail}` : ""} · <a id="restore-dismissed">restore</a>`;
 }
 function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms){
+  const openTimelinePaths = new Set();
+  if(typeof document !== "undefined"){
+    for(const el of document.querySelectorAll("#content details.tl-details[open]")){
+      if(el.dataset.roomPath) openTimelinePaths.add(el.dataset.roomPath);
+    }
+  }
+
   const running = rooms.filter(r => r.state === "Running");
   // #1582: a Stalled room -- a retry scheduled inside a process that no longer exists -- gets its
   // own bucket rather than falling into Running (wrong: nothing is happening) or the generic
@@ -689,20 +732,22 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   const dismissedSet = dismissed instanceof Set ? dismissed : new Set(Array.isArray(dismissed) ? dismissed : []);
   const isDismissed = (r) => r && r.path && dismissedSet.has(r.path);
 
+  const dismissedStalled = stalled.filter(isDismissed);
+  const visibleStalled = stalled.filter(r => !isDismissed(r));
   const dismissedFailed = failed.filter(isDismissed);
   const visibleFailed = failed.filter(r => !isDismissed(r));
   const dismissedDone = done.filter(isDismissed);
   const visibleDone = done.filter(r => !isDismissed(r));
 
-  const totalDismissed = dismissedFailed.length + dismissedDone.length;
-  const failedDismissed = dismissedFailed.length;
+  const totalDismissed = dismissedFailed.length + dismissedDone.length + dismissedStalled.length;
 
   let html = underhoodHtml(underhood);
-  html += `<h2>Running · ${running.length}</h2>` + (running.map(r => laneHtml(r, timelines, false)).join("") || `<div class="lane"><div class="ev">none</div></div>`);
+  html += `<h2>Running · ${running.length}</h2><div class="lanes">` + (running.map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
   // Ranked above Failed and kept out of the collapsible Terminal section (unlike Failed/Succeeded):
   // a stalled room isn't finished, and nothing but a person will ever move it, so it stays as
   // visible as Running rather than one click away.
-  html += `<h2>Stalled · ${stalled.length}</h2>` + (stalled.map(r => laneHtml(r, timelines, false)).join("") || `<div class="lane"><div class="ev">none</div></div>`);
+  const stalledDismissAll = visibleStalled.length > 0 ? `<a class="dismissall" data-section="stalled">dismiss all</a>` : "";
+  html += `<h2><span>Stalled · ${visibleStalled.length}</span>${stalledDismissAll}</h2><div class="lanes">` + (visibleStalled.map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
 
   const termParts = [];
   if(visibleDone.length > 0 || visibleFailed.length === 0){
@@ -715,20 +760,23 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
 
   let termContent = "";
   if(visibleFailed.length > 0){
-    termContent += `<h2>Failed · ${visibleFailed.length}</h2>` + visibleFailed.slice(0,12).map(r => laneHtml(r, timelines, true)).join("");
+    const failedDismissAll = `<a class="dismissall" data-section="failed">dismiss all</a>`;
+    termContent += `<h2><span>Failed · ${visibleFailed.length}</span>${failedDismissAll}</h2><div class="lanes">` + visibleFailed.slice(0,12).map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") + `</div>`;
   }
   if(visibleDone.length > 0){
-    termContent += `<h2>Succeeded · ${visibleDone.length}</h2>` + visibleDone.slice(0,40).map(r => laneHtml(r, timelines, true)).join("");
+    const doneDismissAll = `<a class="dismissall" data-section="succeeded">dismiss all</a>`;
+    termContent += `<h2><span>Succeeded · ${visibleDone.length}</span>${doneDismissAll}</h2><div class="lanes">` + visibleDone.slice(0,40).map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") + `</div>`;
   }
   if(!visibleFailed.length && !visibleDone.length){
-    termContent += `<div class="lane"><div class="ev">none</div></div>`;
+    termContent += `<div class="lanes"><div class="lane"><div class="ev">none</div></div></div>`;
   }
 
   // Preserve the section's open/closed state across a re-render -- otherwise every dismiss/restore
   // click (which rebuilds #content from scratch) would slam an opened Terminal section shut again.
   const terminalWasOpen = !!($("terminal-details") && $("terminal-details").open);
   html += `<details id="terminal-details"${terminalWasOpen ? " open" : ""}><summary>Terminal · ${termSummary}</summary>${termContent}</details>`;
-  if(other.length) html += `<details><summary>Unreadable entries · ${other.length}</summary>${other.slice(0,20).map(r => laneHtml(r, timelines)).join("")}</details>`;
+  const unreadableWasOpen = !!($("unreadable-details") && $("unreadable-details").open);
+  if(other.length) html += `<details id="unreadable-details"${unreadableWasOpen ? " open" : ""}><summary>Unreadable entries · ${other.length}</summary><div class="lanes">${other.slice(0,20).map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("")}</div></details>`;
   $("content").innerHTML = html;
   $("fresh").textContent = freshLabel(pushedAt, "pushed ") || "push time unknown";
   const hb = freshLabel(heartbeatAt, "pusher alive ");
@@ -740,12 +788,7 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
 
   const dismissNoteEl = $("dismissnote");
   if(dismissNoteEl){
-    if(totalDismissed > 0){
-      const failCount = failedDismissed > 0 ? ` (${failedDismissed} failed)` : "";
-      dismissNoteEl.innerHTML = `dismissed ${totalDismissed}${failCount} · <a id="restore-dismissed">restore</a>`;
-    } else {
-      dismissNoteEl.innerHTML = "";
-    }
+    dismissNoteEl.innerHTML = formatDismissedNote(totalDismissed, dismissedFailed.length, dismissedStalled.length, dismissedDone.length);
   }
 }
 // "pushed X ago" measures the SNAPSHOT (legitimately stale on a quiet fleet, #1457's change-gate);
@@ -850,19 +893,52 @@ function renderMarkdown(text){
   // regexes' (.*)$ anchors (JS "." never matches \r), so normalize before splitting.
   const lines = esc(text ?? "").replace(/\r\n?/g, "\n").split("\n");
   let html = "";
-  let inCode = false, inList = false;
-  let para = [], table = [];
+  let inCode = false, inList = null;
+  let para = [], table = [], bq = [];
   const flushPara = () => {
     if(para.length){
       html += `<p>${inline(para.join(" "))}</p>`;
       para = [];
     }
   };
-  const flushTable = () => {
-    if(table.length){
-      html += `<pre><code>${table.join("\n")}</code></pre>`;
-      table = [];
+  const flushList = () => {
+    if(inList === "ul"){ html += "</ul>"; inList = null; }
+    else if(inList === "ol"){ html += "</ol>"; inList = null; }
+  };
+  const flushBq = () => {
+    if(bq.length){
+      html += `<blockquote><p>${inline(bq.join(" "))}</p></blockquote>`;
+      bq = [];
     }
+  };
+  const parseCells = (line) => {
+    const clean = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+    const protectedLine = clean.replace(/\\\|/g, "\u0000");
+    return protectedLine.split("|").map(c => c.replace(/\u0000/g, "|").trim());
+  };
+  const isSeparatorRow = (line) => {
+    const cells = parseCells(line);
+    return cells.length > 0 && cells.every(c => /^:?-+:?$/.test(c));
+  };
+  const flushTable = () => {
+    if(!table.length) return;
+    if(table.length >= 2 && isSeparatorRow(table[1])){
+      const headers = parseCells(table[0]);
+      const rows = table.slice(2).map(parseCells);
+      let tHtml = '<div class="table-wrap"><table><thead><tr>';
+      tHtml += headers.map(h => `<th>${inline(h)}</th>`).join("");
+      tHtml += '</tr></thead><tbody>';
+      for(const row of rows){
+        tHtml += '<tr>';
+        tHtml += row.map(c => `<td>${inline(c)}</td>`).join("");
+        tHtml += '</tr>';
+      }
+      tHtml += '</tbody></table></div>';
+      html += tHtml;
+    } else {
+      html += `<pre><code>${table.join("\n")}</code></pre>`;
+    }
+    table = [];
   };
   const inline = (s) => s
     .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -873,7 +949,8 @@ function renderMarkdown(text){
     if(raw.trim().startsWith("```")){
       flushPara();
       flushTable();
-      if(inList){ html += "</ul>"; inList = false; }
+      flushBq();
+      flushList();
       html += inCode ? "</code></pre>" : "<pre><code>";
       inCode = !inCode;
       continue;
@@ -883,38 +960,73 @@ function renderMarkdown(text){
     if(heading){
       flushPara();
       flushTable();
-      if(inList){ html += "</ul>"; inList = false; }
+      flushBq();
+      flushList();
       const level = heading[1].length;
       html += `<h${level}>${inline(heading[2])}</h${level}>`;
       continue;
     }
+    if(/^(\s*[-*_]\s*){3,}$/.test(raw)){
+      flushPara();
+      flushTable();
+      flushBq();
+      flushList();
+      html += "<hr>";
+      continue;
+    }
+    const bqMatch = raw.match(/^\s*(?:>|&gt;)\s?(.*)$/);
+    if(bqMatch){
+      flushPara();
+      flushTable();
+      flushList();
+      bq.push(bqMatch[1]);
+      continue;
+    }
+    flushBq();
     const bullet = raw.match(/^\s*[-*]\s+(.*)$/);
     if(bullet){
       flushPara();
       flushTable();
-      if(!inList){ html += "<ul>"; inList = true; }
+      if(inList !== "ul"){
+        flushList();
+        html += "<ul>";
+        inList = "ul";
+      }
       html += `<li>${inline(bullet[1])}</li>`;
+      continue;
+    }
+    const numMatch = raw.match(/^\s*\d+\.\s+(.*)$/);
+    if(numMatch){
+      flushPara();
+      flushTable();
+      if(inList !== "ol"){
+        flushList();
+        html += "<ol>";
+        inList = "ol";
+      }
+      html += `<li>${inline(numMatch[1])}</li>`;
       continue;
     }
     if(raw.trim() === ""){
       flushPara();
       flushTable();
-      if(inList){ html += "</ul>"; inList = false; }
+      flushList();
       continue;
     }
     if(/^\s*\|/.test(raw)){
       flushPara();
-      if(inList){ html += "</ul>"; inList = false; }
+      flushList();
       table.push(raw);
       continue;
     }
     flushTable();
-    if(inList){ html += "</ul>"; inList = false; }
+    flushList();
     para.push(raw.trim());
   }
   flushPara();
   flushTable();
-  if(inList) html += "</ul>";
+  flushBq();
+  flushList();
   if(inCode) html += "</code></pre>";
   return html;
 }
@@ -986,6 +1098,7 @@ function applyRoute(){
   $("tab-inbox").classList.toggle("active", onInbox);
   $("tab-btn-fleet").classList.toggle("active", !onInbox);
   $("tab-btn-inbox").classList.toggle("active", onInbox);
+  if(window.getSelection) { try { window.getSelection().removeAllRanges(); } catch(e){} }
   if(!onInbox) return;
   if(h.startsWith("#inbox:")){
     const id = decodeURIComponent(h.slice(7));
@@ -1020,6 +1133,23 @@ document.addEventListener("click", (ev) => {
     }
     return;
   }
+  const dismissAllBtn = ev.target.closest(".dismissall");
+  if(dismissAllBtn){
+    const section = dismissAllBtn.dataset.section;
+    if(lastGood && Array.isArray(lastGood.rooms)){
+      const targetState = section === "failed" ? "Failed" : section === "succeeded" ? "Succeeded" : section === "stalled" ? "Stalled" : null;
+      if(targetState){
+        for(const r of lastGood.rooms){
+          if(r && r.path && r.state === targetState){
+            dismissedRooms.add(r.path);
+          }
+        }
+        savePersistedDismissed(dismissedRooms);
+        render(lastGood.rooms, lastGood.pushed_at, lastGood.underhood, lastGood.heartbeat_at, accumulatedTimelines, lastGood.stale_hidden_count, dismissedRooms);
+      }
+    }
+    return;
+  }
   const restoreBtn = ev.target.closest("#restore-dismissed");
   if(restoreBtn){
     dismissedRooms.clear();
@@ -1038,6 +1168,8 @@ document.addEventListener("click", (ev) => {
   if(inboxLink){
     inboxRoomFilter = inboxLink.dataset.room || "";
     location.hash = "#inbox";
+    if(window.getSelection) { try { window.getSelection().removeAllRanges(); } catch(e){} }
+    if(document.activeElement && typeof document.activeElement.blur === "function") document.activeElement.blur();
   }
 });
 window.addEventListener("hashchange", applyRoute);
