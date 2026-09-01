@@ -6,10 +6,10 @@ using Xunit;
 namespace Baton.Cli.Tests;
 
 /// <summary>
-/// Unit tests for <see cref="RunCommand.EchoStreamJsonLine"/> (#882, #1540, #1561) — see that
-/// method's own doc comment for what it renders versus echoes verbatim. Issue #1561's pre-fix switch
-/// silently dropped agy's incremental status events, any unrecognized envelope type, and claude's
-/// failure-carrying <c>result</c> line; this file pins all three plus the polarity checks around them.
+/// Unit tests for <see cref="RunCommand.EchoStreamJsonLine"/> (#882, #1540, #1561). Issue #1561's
+/// pre-fix switch silently dropped agy's incremental status events, any unrecognized envelope type,
+/// and claude's failure-carrying <c>result</c> line; this file pins all three plus the polarity
+/// checks around them.
 /// </summary>
 public class RunCommandEchoTests
 {
