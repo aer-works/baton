@@ -487,9 +487,36 @@ public class CapturedWorkerStreamTests
                 1,
                 [new WorkflowStepDefinition(new StepId("worker"), "worker", [], ["out.txt"], [], new RetryPolicy(1))]);
 
+            // #1550: the Windows branch used to invoke `powershell -NoProfile -Command "Write-Output
+            // '...'; Start-Sleep -Seconds 30"`. That never actually ran as a script. .NET's
+            // ArgumentList escapes the embedded quotes as `\"`; cmd.exe has no concept of
+            // backslash-escaped quotes, so its `/c` handling strips only the first/last quote of the
+            // whole argument and leaves both `\"` sequences intact; and powershell.exe's own
+            // CommandLineToArgvW-style argv parsing then treats each `\"` as a literal quote character
+            // rather than a region delimiter, so `-Command` collected the remaining tokens as a bare
+            // *string literal* (`"Write-Output '...'; Start-Sleep -Seconds 30"`), which PowerShell just
+            // evaluates and prints verbatim. Measured directly (a throwaway diagnostic reproducing the
+            // exact ArgumentList invocation): exits in ~150ms, stdout is the raw script source text,
+            // Start-Sleep never runs, and `echo done > out.txt` fires almost immediately afterward. The
+            // test's own assertion happened to still pass by accident -- the misparsed stdout literally
+            // contains the substring "pre-cancel output line" as part of the echoed script source --
+            // but nothing about cancellation-in-flight was ever exercised: the "cancelled" run had
+            // already finished on its own well before cts.Cancel() fired.
+            //
+            // Replaced with a quote-free command line: no `"` characters anywhere, so .NET's single
+            // outer quote pair (added because the string contains spaces) is the only pair cmd.exe's
+            // `/c` first/last-quote-strip rule ever sees, and `ping` stands in for the long-running
+            // step instead of Start-Sleep -- `timeout` was tried and rejected, since it fails with
+            // "input redirection is not supported" because BatonProcessRunner.cs closes the child's
+            // redirected stdin.
+            // #1547: the wait below must outlast MarkerWaitSeconds (see below) by a wide margin.
+            // Cancellation job-terminates the whole tree the instant cts.Cancel() fires, so a wait
+            // this long costs nothing on the passing path -- it only guards against the marker-wait
+            // ever taking so long that the child would have finished naturally and written out.txt on
+            // its own, which is exactly what the #1550 discriminator above checks for.
             var cmdLine = OperatingSystem.IsWindows()
-                ? "powershell -NoProfile -Command \"Write-Output 'pre-cancel output line'; Start-Sleep -Seconds 30\" & echo done > %BATON_OUTPUT_DIR%\\out.txt"
-                : "echo 'pre-cancel output line' && sleep 30 && echo done > \"$BATON_OUTPUT_DIR/out.txt\"";
+                ? "echo pre-cancel output line & ping -n 301 127.0.0.1 > nul & echo done > %BATON_OUTPUT_DIR%\\out.txt"
+                : "echo 'pre-cancel output line' && sleep 300 && echo done > \"$BATON_OUTPUT_DIR/out.txt\"";
 
             var bindings = new Dictionary<string, WorkerBindingConfigEntry>
             {
@@ -497,7 +524,7 @@ public class CapturedWorkerStreamTests
                     "shell",
                     new WorkerContract("worker", [], [new ProducedOutput("out.txt")], []),
                     cmdLine,
-                    TimeSpan.FromSeconds(90))
+                    TimeSpan.FromSeconds(400))
             };
 
             var workflowFile = Path.Combine(testRoot, "workflow.json");
@@ -511,12 +538,28 @@ public class CapturedWorkerStreamTests
             // persistence. Wait on the marker instead: poll the execution directory this run allocates
             // until its (now eagerly-created, #1525) .stdout.log actually contains the pre-cancel line,
             // then cancel. Bounded so a genuine regression still fails the test instead of hanging it.
+            //
+            // #1547: 20s wasn't enough -- main run 33458670493 failed this exact NotNull assert at ~21s
+            // under CI load (windows-shard-other, no spawn-failure or stream-logger warning in the log,
+            // just the bare timeout). Refuted as a product-side ordering gap by the failure location
+            // alone: this NotNull fires strictly before cts.Cancel() below, so no cancel-path code has
+            // run yet when it fails -- corroborated by BatonProcessRunner.cs's RunWithLiveCapture,
+            // which drains every chunk through its live foreach and only raises Exited after that loop
+            // returns, so CoreDispatcher.cs can never observe MarkTerminal before every AppendStdout for
+            // a given process. With #1550's quote-free command line fixed, a 20-iteration local
+            // measurement of this same marker-wait put every run at 246-356ms -- tight, sub-second,
+            // nowhere near 20s -- so 60s is a headroom judgment over the observed >20s CI outlier and
+            // that local baseline, not a second measurement of the CI tail itself, which isn't
+            // reproducible on a dev host (see the #945 comment elsewhere in this file on the same
+            // theme). A genuine regression in stdout persistence still fails this test well inside 60s;
+            // only the CI-load tail needed the room.
+            const int MarkerWaitSeconds = 60;
             using var cts = new CancellationTokenSource();
             var runOptions = new RunOptions(workflowFile, bindingsFile, roomDirectory);
             var runTask = RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: cts.Token);
 
             var artifactsDir = Path.Combine(roomDirectory, "artifacts");
-            var markerDeadline = DateTime.UtcNow.AddSeconds(20);
+            var markerDeadline = DateTime.UtcNow.AddSeconds(MarkerWaitSeconds);
             string? stdoutFileWithMarker = null;
             while (DateTime.UtcNow < markerDeadline && stdoutFileWithMarker is null)
             {
@@ -548,9 +591,9 @@ public class CapturedWorkerStreamTests
 
                 if (stdoutFileWithMarker is null)
                 {
-                    // Poll interval inside a real-condition loop bounded by markerDeadline above
-                    // (20s), not a fixed sleep standing in for synchronization -- the loop exits the
-                    // instant the marker text appears, so 50ms only bounds how late the test notices.
+                    // Poll interval inside a real-condition loop bounded by markerDeadline above, not a
+                    // fixed sleep standing in for synchronization -- the loop exits the instant the
+                    // marker text appears, so 50ms only bounds how late the test notices.
                     // wait-ok: poll interval, not a synchronization sleep -- see markerDeadline above
                     await Task.Delay(50, TestContext.Current.CancellationToken);
                 }
@@ -576,6 +619,14 @@ public class CapturedWorkerStreamTests
 
             var content = await File.ReadAllTextAsync(stdoutFile, TestContext.Current.CancellationToken);
             Assert.Contains("pre-cancel output line", content);
+
+            // #1550 discriminator: without this, the test above would pass identically whether or not
+            // cancellation actually interrupted the worker -- exactly the failure mode the quoting bug
+            // above produced silently. Job-termination on cancel kills the whole `cmd /c echo & ping &
+            // echo` tree, so the trailing `echo done > out.txt` never runs; a worker that instead ran to
+            // completion on its own would have written it.
+            var outFile = Path.Combine(execDirs[0], "out.txt");
+            Assert.False(File.Exists(outFile), $"out.txt exists at {outFile} -- the worker ran to completion instead of being cancelled");
         }
         finally
         {
