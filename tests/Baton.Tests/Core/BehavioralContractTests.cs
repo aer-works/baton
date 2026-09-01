@@ -263,14 +263,42 @@ public class BehavioralContractTests
     /// <summary>
     /// Rust equivalent: <c>capture_output_with_timeout_delivers_chunks_then_timed_out_exit</c> (#79) --
     /// chunks emitted before a timeout kill must still be delivered, not discarded.
+    /// <para>
+    /// #1588: the child must be one that CANNOT finish on its own (<c>ping -n 61</c>, ~60s), because
+    /// what this pins is what a <em>timeout kill</em> does to already-emitted chunks -- so the timeout
+    /// has to be the thing that ends the run, on every machine. The former child (<c>ping -n 4</c>,
+    /// ~3s) left only a 2.5s margin over the deadline, and under build-lock contention that margin
+    /// closed in both directions. Both were seen on 2026-09-01, within an hour of each other, and
+    /// naming which was seen where matters -- a future reader uses this to tell a timer-starvation
+    /// recurrence from a delivery one:
+    /// <list type="bullet">
+    /// <item><c>Assert.Throws</c> ("no exception was thrown") -- <b>on <c>main</c>, in CI.</b> The
+    /// child finished naturally before a starved timer fired, so the timeout kill this test exists to
+    /// observe never happened at all.</item>
+    /// <item><c>Assert.NotEmpty</c> ("collection was empty") -- <b>locally</b>, under
+    /// <c>pixi run gates-quiet</c> with concurrent lanes holding the build lock. No stdout chunk had
+    /// been delivered by the time the deadline fired.</item>
+    /// </list>
+    /// The second is recorded as an observation, deliberately without a mechanism: <c>echo hello</c>
+    /// is the only stdout write in this run (<c>&gt;nul</c> binds to <c>ping</c> alone), so either it
+    /// had not been written yet -- <c>cmd.exe</c> not having reached <c>echo</c> within 500ms under
+    /// contention -- or it was written and dropped. Reading <c>BatonProcessRunner</c>'s drain path
+    /// makes the second look impossible, and if it ever were true a longer deadline would <em>hide</em>
+    /// a <c>Baton.Core</c> defect rather than fix it. So the claim here stops at what was measured.
+    /// The deadline is 2s rather than 500ms because it must comfortably exceed how long a
+    /// <em>loaded</em> machine takes to produce and deliver that chunk, which is this test's premise
+    /// rather than its subject. Neither number weakens what is asserted -- a build that failed to
+    /// deliver chunks from a killed run still fails <c>Assert.NotEmpty</c>, and one that delivered
+    /// them after <c>Exited</c> still fails the ordering check.
+    /// </para>
     /// </summary>
     [Fact]
     public void Run_CaptureEnabledWithTimeout_DeliversChunksThenTimedOutExit()
     {
-        (string prog, string[] args) = ("cmd", ["/c", "echo hello & ping -n 4 127.0.0.1 >nul"]);
+        (string prog, string[] args) = ("cmd", ["/c", "echo hello & ping -n 61 127.0.0.1 >nul"]);
         List<BatonEventArgs> events = [];
 
-        using BatonTask task = new BatonTask(prog, args).WithCaptureOutput().WithTimeout(TimeSpan.FromMilliseconds(500));
+        using BatonTask task = new BatonTask(prog, args).WithCaptureOutput().WithTimeout(TimeSpan.FromSeconds(2));
         task.EventRaised += (_, e) => events.Add(e);
 
         BatonTimeoutException ex = Assert.Throws<BatonTimeoutException>(task.Run);
@@ -316,17 +344,33 @@ public class BehavioralContractTests
     /// <summary>
     /// Rust equivalent: <c>capture_output_with_cancel_delivers_chunks_then_cancel_requested_exit</c>
     /// (#79) -- chunks emitted before a cancel kill must still be delivered.
+    /// <para>
+    /// #1588: same reasoning as <see cref="Run_CaptureEnabledWithTimeout_DeliversChunksThenTimedOutExit"/>,
+    /// with cancellation in place of the deadline -- the child cannot be allowed to finish on its own,
+    /// or the run ends without the cancel kill this exists to observe. Swept here rather than left for
+    /// the next red build: this case had not failed yet in CI, but it is the identical race, and fixing
+    /// only the one that happened to go red first is how the flake returns under a different name.
+    /// </para>
+    /// <para>
+    /// The 300ms cancel became 2s for a reason worth recording, because it was measured rather than
+    /// assumed: with only the child lengthened, this case failed <c>Assert.NotEmpty</c> on the very
+    /// next run. 300ms is not reliably enough, on a loaded machine, for this run's single stdout write
+    /// to be produced and delivered -- so the cancel was firing before the delivery this test exists to
+    /// observe could happen, and the short child had been masking it by making the whole run short
+    /// enough to look deliberate. Same premise-versus-subject split as the timeout case: that a chunk
+    /// exists before the kill is the setup, and only what happens to it afterwards is the assertion.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task RunAsync_CaptureEnabledCancelledMidRun_DeliversChunksThenCancelRequestedExit()
     {
-        (string prog, string[] args) = ("cmd", ["/c", "echo hello & ping -n 4 127.0.0.1 >nul"]);
+        (string prog, string[] args) = ("cmd", ["/c", "echo hello & ping -n 61 127.0.0.1 >nul"]);
         List<BatonEventArgs> events = [];
 
         using BatonTask task = new BatonTask(prog, args).WithCaptureOutput();
         task.EventRaised += (_, e) => events.Add(e);
         using CancellationTokenSource cts = new();
-        cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+        cts.CancelAfter(TimeSpan.FromSeconds(2));
 
         BatonCancelException ex = await Assert.ThrowsAsync<BatonCancelException>(() => task.RunAsync(cts.Token));
         Assert.Equal(BatonErrorCode.Cancelled, ex.ErrorCode);
