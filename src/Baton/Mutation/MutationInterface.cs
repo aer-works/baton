@@ -508,7 +508,9 @@ public static class MutationInterface
             stepState.UpstreamExecutionIds,
             GrantAuditMode: binding.GrantAuditMode,
             LinkedFromExecutionId: previousExecutionId,
-            SessionId: sessionId);
+            SessionId: sessionId,
+            Adapter: processBinding.Adapter,
+            Model: processBinding.Model);
 
         // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
         await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken).ConfigureAwait(false);
@@ -1103,7 +1105,9 @@ public static class MutationInterface
             binding is WorkerBinding.Process processBinding ? processBinding.Timeout : null,
             environment,
             upstreamExecutionIds,
-            GrantAuditMode: binding.GrantAuditMode);
+            GrantAuditMode: binding.GrantAuditMode,
+            Adapter: (binding as WorkerBinding.Process)?.Adapter,
+            Model: (binding as WorkerBinding.Process)?.Model);
 
 
         // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.

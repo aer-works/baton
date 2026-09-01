@@ -236,6 +236,81 @@ public class FlowEventSerializationTests
         var accepted = Assert.IsType<FlowEvent.ExecutionRequestAccepted>(deserialized);
         Assert.Equal(GrantAuditMode.AuditedNotEnforced, accepted.Request.GrantAuditMode);
     }
+
+    private static string LegacyExecutionRequestAcceptedJsonWithNoRecordedAdapter()
+    {
+        // Issue #1567: Adapter/Model are the newest additive members on ExecutionRequest -- the same
+        // durability claim GrantAuditMode's own legacy fixture above pins, mirrored for the field this
+        // PR adds. A line written before #1567 landed has neither property at all.
+        var request = new ExecutionRequest(
+            ExecutionId,
+            new WorkflowId("wf-1"),
+            StepId,
+            "claude",
+            Inputs: ["/artifacts/execution_1/goal.md"],
+            Outputs: ["/artifacts/execution_2/report.md"],
+            Timeout: TimeSpan.FromMinutes(10),
+            Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            Adapter: "claude",
+            Model: "sonnet");
+
+        var current = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.ExecutionRequestAccepted(request),
+            typeof(FlowEvent),
+            FlowEventLogJson.Options);
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(current)!.AsObject();
+        var requestNode = node["Request"]!.AsObject();
+
+        Assert.True(requestNode.Remove(nameof(ExecutionRequest.Adapter)));
+        Assert.True(requestNode.Remove(nameof(ExecutionRequest.Model)));
+
+        return node.ToJsonString();
+    }
+
+    [Fact]
+    public void Deserializing_legacy_ExecutionRequestAccepted_without_Adapter_or_Model_deserializes_with_both_null()
+    {
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(
+            LegacyExecutionRequestAcceptedJsonWithNoRecordedAdapter(), FlowEventLogJson.Options);
+
+        var accepted = Assert.IsType<FlowEvent.ExecutionRequestAccepted>(deserialized);
+        Assert.Equal(ExecutionId, accepted.Request.ExecutionId);
+        Assert.Null(accepted.Request.Adapter);
+        Assert.Null(accepted.Request.Model);
+    }
+
+    [Fact]
+    public void Deserializing_current_ExecutionRequestAccepted_with_Adapter_and_Model_sets_both()
+    {
+        // The polarity control for the test above: same event shape, Adapter/Model present rather
+        // than stripped. Without this arm, an implementation that never read either property at all
+        // would pass the legacy test -- null is what it asserts.
+        var request = new ExecutionRequest(
+            ExecutionId,
+            new WorkflowId("wf-1"),
+            StepId,
+            "claude",
+            Inputs: ["/artifacts/execution_1/goal.md"],
+            Outputs: ["/artifacts/execution_2/report.md"],
+            Timeout: TimeSpan.FromMinutes(10),
+            Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            Adapter: "agy",
+            Model: "gemini-3-pro");
+
+        var currentJson = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.ExecutionRequestAccepted(request),
+            typeof(FlowEvent),
+            FlowEventLogJson.Options);
+
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(currentJson, FlowEventLogJson.Options);
+
+        var accepted = Assert.IsType<FlowEvent.ExecutionRequestAccepted>(deserialized);
+        Assert.Equal("agy", accepted.Request.Adapter);
+        Assert.Equal("gemini-3-pro", accepted.Request.Model);
+    }
 }
 
 

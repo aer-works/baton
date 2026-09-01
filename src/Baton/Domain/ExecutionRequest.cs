@@ -34,6 +34,39 @@ namespace Baton.Domain;
 /// actually continued, rather than trusting an unrecorded assertion. <c>null</c> for every ordinary
 /// dispatch and retry, same as <paramref name="LinkedFromExecutionId"/>.
 /// </param>
+/// <param name="Adapter">
+/// The vendor adapter bound to <see cref="Worker"/> at accept time (e.g. <c>"claude"</c>,
+/// <c>"agy"</c>), recorded so a later failover rebind of <c>bindings.json</c> cannot retroactively
+/// re-attribute this execution's already-recorded usage to whichever vendor is bound now (issue
+/// #1567, quota-design S1 — full design in the 2026-09-01 proposal comment on #802). Before this
+/// field existed, <see cref="Status.ExecutionUsageProjector"/> recovered the vendor by reading
+/// <c>Adapter</c> out of the room's <em>current</em> <c>bindings.json</c> at read time — harmless
+/// only because a room's adapter never changed mid-run. Failover changes that.
+/// <para>
+/// For an ordinary dispatch this is also the adapter that actually ran: the same resolved
+/// <see cref="Mutation.WorkerBinding.Process"/> both spawns the process and supplies this value. It
+/// is deliberately <em>not</em> that guarantee on the crash-recovery resubmit path
+/// (<c>MutationInterface</c>'s <c>toResubmit</c> loop, M10 Phase 3): that path re-dispatches a
+/// previously accepted request verbatim while re-resolving the binding from the CURRENT bindings
+/// file, so a rebind between the crash and the resubmit makes this field name the pre-crash vendor
+/// while a different one actually runs — tracked as issue #1583, not fixed by this field.
+/// </para>
+/// <c>null</c> covers two cases, same defaulting rule as
+/// <see cref="FlowEvent.ExecutionFailed.Reason"/>: every <c>flow.jsonl</c> line written before this
+/// field existed — an older journal must still replay, and its attribution still falls back to the
+/// bindings.json read this field exists to stop relying on — and any non-process
+/// (<see cref="Mutation.WorkerBinding.NonProcess"/>) dispatch, which has no vendor adapter to name.
+/// </param>
+/// <param name="Model">
+/// The model string this execution actually dispatched with, recorded alongside
+/// <paramref name="Adapter"/> for the same reason. <c>null</c> covers three cases, not two: every
+/// pre-existing journal line; a non-process (<see cref="Mutation.WorkerBinding.NonProcess"/>) dispatch,
+/// which has no vendor model to name; and — reachable today, not merely hypothetical — a vendor swap
+/// with no explicit <c>--model</c>, where <c>RoleDispatch.ToBinding</c> and
+/// <c>RedispatchCommand</c> both deliberately drop the prior vendor's model string rather than hand
+/// the new vendor a model name it may not recognize (#1082), so a real execution can run, and burn
+/// real usage, on the new vendor's own default model while this field is still null.
+/// </param>
 public sealed record ExecutionRequest(
     ExecutionId ExecutionId,
     WorkflowId WorkflowId,
@@ -46,4 +79,6 @@ public sealed record ExecutionRequest(
     IReadOnlyDictionary<StepId, ExecutionId> UpstreamExecutionIds,
     GrantAuditMode? GrantAuditMode = null,
     ExecutionId? LinkedFromExecutionId = null,
-    string? SessionId = null);
+    string? SessionId = null,
+    string? Adapter = null,
+    string? Model = null);

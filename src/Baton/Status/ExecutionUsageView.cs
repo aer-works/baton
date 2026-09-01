@@ -35,12 +35,11 @@ public sealed record ExecutionUsageView(
 /// <para>
 /// Token/turn counts are read from the execution's already-captured <c>.stdout.log</c>
 /// (<see cref="ExecutionStreamLogger"/>) — never a new ledger event, per the issue's own preference
-/// for deriving over recording twice. Reconstructs just enough worker-binding context:
-/// <see cref="FlowEvent.ExecutionRequestAccepted"/> in <paramref name="entries"/> names the execution's
-/// worker role, and (when <paramref name="roomDirectoryPath"/> is supplied and the room's <c>bindings.json</c>
-/// still exists) that role's own config entry names the adapter it was actually dispatched through. Only that one
-/// adapter's <see cref="IWorkerUsageParser.TryParseFinalUsage"/> is tried, and only against the last
-/// non-blank line of the captured stream.
+/// for deriving over recording twice. Which adapter's parser to trust is resolved by preferring the
+/// accepted request's own recorded <see cref="ExecutionRequest.Adapter"/> — see that field's doc
+/// comment (issue #1567) for why, and for the one path where it is not the guarantee it usually is.
+/// Only the resolved adapter's <see cref="IWorkerUsageParser.TryParseFinalUsage"/> is tried, and
+/// only against the last non-blank line of the captured stream.
 /// </para>
 /// </summary>
 public static class ExecutionUsageProjector
@@ -67,12 +66,17 @@ public static class ExecutionUsageProjector
         var startedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var exitedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var workerNameByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
+        var recordedAdapterByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
 
         foreach (var entry in entries)
         {
             if (entry is LogEntry.FlowLogEntry { Event: FlowEvent.ExecutionRequestAccepted accepted })
             {
                 workerNameByExecutionId[accepted.Request.ExecutionId.Value] = accepted.Request.Worker;
+                if (accepted.Request.Adapter is { Length: > 0 } recordedAdapter)
+                {
+                    recordedAdapterByExecutionId[accepted.Request.ExecutionId.Value] = recordedAdapter;
+                }
             }
 
             if (entry is not LogEntry.CoreLogEntry { WriterUtcTimestamp: { } timestamp } coreEntry)
@@ -113,7 +117,8 @@ public static class ExecutionUsageProjector
             }
 
             workerNameByExecutionId.TryGetValue(executionId, out var workerName);
-            var usage = TryReadWorkerUsage(artifactsRootPath, executionId, workerName, bindings, adapters);
+            recordedAdapterByExecutionId.TryGetValue(executionId, out var recordedAdapter);
+            var usage = TryReadWorkerUsage(artifactsRootPath, executionId, workerName, recordedAdapter, bindings, adapters);
             result[executionId] = new ExecutionUsageView(wallClockMs, usage?.TokensIn, usage?.TokensOut, usage?.Turns);
         }
 
@@ -170,13 +175,23 @@ public static class ExecutionUsageProjector
         string artifactsRootPath,
         string executionId,
         string? workerName,
+        string? recordedAdapter,
         IReadOnlyDictionary<string, string> bindings,
         IReadOnlyDictionary<string, TParser>? adapters)
         where TParser : IWorkerUsageParser
     {
-        if (workerName is null
+        // #1567: the recorded adapter wins whenever present -- see ExecutionRequest.Adapter's doc for
+        // why, and for the resubmit-path case (#1583) where it isn't the guarantee it usually is. The
+        // bindings.json fallback below covers lines that predate the field, and non-process
+        // dispatches, which never carry one.
+        var adapterName = recordedAdapter;
+        if (adapterName is null && workerName is not null)
+        {
+            bindings.TryGetValue(workerName, out adapterName);
+        }
+
+        if (adapterName is null
             || adapters is null
-            || !bindings.TryGetValue(workerName, out var adapterName)
             || !adapters.TryGetValue(adapterName, out var adapter))
         {
             return null;
