@@ -12,7 +12,7 @@ public sealed record ProjectionCheckpoint(
     long EventOffset,
     ProjectionCheckpointState State,
     long ByteOffset = 0,
-    int Version = 2);
+    int Version = 3);
 
 /// <summary>
 /// Serializable snapshot of <see cref="StateProjector"/>'s internal working dictionaries and sets.

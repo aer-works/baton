@@ -221,11 +221,15 @@ function timeboxChip(room, running){
 // RetryEngine.MayRetry's verdict) now do reach the payload per-step -- see FleetStatusTool.cs.
 // Both stay presence-gated the same way liveness/try already are: a step that hasn't executed
 // renders no attempt chip, a step that never failed renders no failure-kind chip.
+// #1522 review finding 3: `attempt` (lifetime execution ordinal) and `maxAttempts` (the per-round
+// retry budget, ConsecutiveFailureCount basis) do not share a denominator -- RetryWithRevision can
+// push `attempt` past `maxAttempts` (e.g. attempt 4 against a MaxAttempts of 3), and an
+// ExhaustedUntil outcome increments `attempt` while spending no retry budget. The chip renders
+// `attempt` alone; it never builds an "N/M" ratio from the two.
 // -----------------------------------------------------------------------------------------------
 function attemptChip(step){
   if(!step || step.attempt == null) return null;
-  const label = step.maxAttempts != null ? `attempt ${step.attempt}/${step.maxAttempts}` : `attempt ${step.attempt}`;
-  return [label, "c-idle"];
+  return [`attempt ${step.attempt}`, "c-idle"];
 }
 function failureKindChip(step){
   if(!step || !step.failureKind) return null;

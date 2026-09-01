@@ -196,6 +196,11 @@ public sealed class FleetStatusTool : IMcpTool
                 return null;
             }
 
+            // #1522 review finding 4: `terminal.json` is a frozen WorkflowStatusView snapshot, never
+            // re-derived once written (TerminalSentinelWriter). A room that went terminal before
+            // #1522 carries its old ConsecutiveFailureCount-derived Attempt/MaxAttempts forever,
+            // by design -- this fast-path copies s.Attempt/s.MaxAttempts verbatim rather than
+            // re-projecting, so it has no way to upgrade a stale sentinel's semantics after the fact.
             var sentinelSteps = sentinel.Steps.Select(s => new FleetStepStatusView(
                 s.Id,
                 s.State,

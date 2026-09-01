@@ -49,8 +49,13 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("attempt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     int? Attempt = null,
-    // #1509: the step definition's RetryPolicy.MaxAttempts, carried alongside Attempt so a
-    // consumer can render "attempt 3/5" without a second lookup. Present only when Attempt is.
+    // #1509/#1522 finding 3: the step definition's RetryPolicy.MaxAttempts -- the PER-ROUND retry
+    // budget RetryEngine.MayRetry gates on via ConsecutiveFailureCount, unrelated to Attempt's
+    // lifetime execution ordinal. NOT a denominator for Attempt: RetryWithRevision resets
+    // ConsecutiveFailureCount but not the lifetime count, so a revised step's Attempt can exceed
+    // MaxAttempts (e.g. "attempt 4" against a MaxAttempts of 3), and an ExhaustedUntil outcome
+    // consumes no retry budget (decision 0026) while still incrementing Attempt. A consumer must
+    // render the two fields separately, never as "attempt N/M". Present only when Attempt is.
     [property: JsonPropertyName("maxAttempts")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     int? MaxAttempts = null,
