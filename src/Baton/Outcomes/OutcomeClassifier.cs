@@ -136,7 +136,8 @@ public static class OutcomeClassifier
 
     /// <summary>
     /// Classifies <paramref name="result"/> per this table:
-    /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied</c> → Succeeded;
+    /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied + no ToolDenied/ExhaustedUntil signal in the stream</c> → Succeeded;
+    /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied + a ToolDenied/ExhaustedUntil signal in the stream</c> → Failed (#914/#1622);
     /// <c>NaturalExit + code 0 + an unsatisfied ProducedOutput</c> → Indeterminate (#1593/#1594/#1608, unless a dead worker without result on an untouched workspace);
     /// <c>NaturalExit</c> otherwise, or <c>TimedOut</c> → Failed;
     /// <c>CancelRequested</c> → Cancelled.
@@ -273,20 +274,40 @@ public static class OutcomeClassifier
                 }
             }
 
-            // #914: an auto-denied tool is the ONLY thing that vetoes an otherwise-satisfied exit-0
-            // run — agy denies a tool, exits 0, and the worker still writes its contract output, so
-            // nothing else here would catch it. Gate specifically on ToolDenied: quota exhaustion
-            // (ExhaustedUntil) cannot reach a *satisfied* contract, and gating narrowly keeps this from
-            // ever stamping some other classification with the auto-denied message below.
+            // #914/#1622: an auto-denied tool and mid-lane quota exhaustion are the two things that
+            // veto an otherwise-satisfied exit-0 run — agy denies a tool (or a vendor's quota runs out
+            // mid-turn), exits 0, and the worker still writes its contract output, so nothing else here
+            // would catch it. Gated specifically on these two classifications: any other classification
+            // (Retryable, Permanent) never fires here today (neither adapter's TryClassifyFailure emits
+            // them from stderr/stdout prose), and gating narrowly keeps this from ever stamping some
+            // other classification with either message below.
+            //
+            // #1622: exit code is not the only exhaustion signal. TryClassifyFailure already reads
+            // result.StdoutTail — the same stream the exit-1 path parses via
+            // TryClassifyQuotaExhaustion — so an exit-0 execution that emitted the vendor's quota
+            // signal mid-stream is classified ExhaustedUntil (parked by RetryEngine like the exit-1
+            // case) rather than Succeeded, even though the contract it happened to satisfy on the way
+            // out reads clean.
             if (failureClassifier is not null && failureClassifier.TryClassifyFailure(
-                    result.StderrTail, result.StdoutTail, timeProvider ?? TimeProvider.System, out var classifiedFailure, out var retryNotBefore)
-                && classifiedFailure == FailureClassification.ToolDenied)
+                    result.StderrTail, result.StdoutTail, timeProvider ?? TimeProvider.System, out var classifiedFailure, out var retryNotBefore))
             {
-                return new OutcomeClassification(
-                    OutcomeVerdict.Failed,
-                    classifiedFailure,
-                    WithStderr("Execution failed: a required tool was auto-denied.", result.StderrTail),
-                    retryNotBefore);
+                if (classifiedFailure == FailureClassification.ToolDenied)
+                {
+                    return new OutcomeClassification(
+                        OutcomeVerdict.Failed,
+                        classifiedFailure,
+                        WithStderr("Execution failed: a required tool was auto-denied.", result.StderrTail),
+                        retryNotBefore);
+                }
+
+                if (classifiedFailure == FailureClassification.ExhaustedUntil)
+                {
+                    return new OutcomeClassification(
+                        OutcomeVerdict.Failed,
+                        classifiedFailure,
+                        WithStderr("Execution exited 0, but the vendor's quota-exhaustion signal was present in the stream.", result.StderrTail),
+                        retryNotBefore);
+                }
             }
 
             return new OutcomeClassification(OutcomeVerdict.Succeeded);

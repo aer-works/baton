@@ -1237,7 +1237,43 @@ public class ClaudeWorkerAdapterTests
         Assert.Null(retryNotBefore);
     }
 
+    /// <summary>
+    /// #1622: exit code is not the only exhaustion signal. Room dispatch-implement-d6101c3c exited 0
+    /// with the vendor's quota-exhaustion signal already in the stream, and settled Succeeded with
+    /// staged-but-uncommitted work. This is the real integration arm — <see cref="ClaudeWorkerAdapter"/>
+    /// itself as the <see cref="IFailureClassifier"/>, parsing a genuine multi-line stream-json tail —
+    /// unlike the OutcomeClassifierTests.cs arms in Baton.Tests, which stand in a canned classifier
+    /// double (Baton cannot reference Baton.Vendors, Architecture Rule 2, so this is the one place the
+    /// real parse and OutcomeClassifier.Classify can run together).
+    /// </summary>
+    [Fact]
+    public void Classify_vetoes_a_satisfied_exit_0_run_when_the_real_stream_json_stdout_tail_carries_credits_required()
+    {
+        var streamJsonTail = """
+            {"type":"system","subtype":"init","session_id":"s-123","tools":["Bash"]}
+            {"type":"assistant","message":{"content":[{"type":"text","text":"Attempting operation..."}]}}
+            {"type":"result","subtype":"error","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}
+            """;
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            IFailureClassifier adapter = new ClaudeWorkerAdapter();
 
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: streamJsonTail),
+                contract,
+                directory,
+                adapter);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
