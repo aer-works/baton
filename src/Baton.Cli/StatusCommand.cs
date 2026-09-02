@@ -248,7 +248,7 @@ public static class StatusCommand
     /// renders as prose via <paramref name="resolveAdapter"/>'s adapter, everything else keeps
     /// <see cref="EscapeNonPrintable"/>'s existing safety net. <paramref name="lineAssemblers"/> holds
     /// one <see cref="StreamLineAssembler"/> per log file, keyed the same way as
-    /// <paramref name="streamOffsets"/>, so a line split across two polls renders exactly once.
+    /// <paramref name="streamOffsets"/> -- see that type's own doc comment for what holding one buys.
     /// Public as a test seam, matching FormatStepStatus and EscapeNonPrintable: the reader-side
     /// rollover behavior is asserted directly (the workflow review's medium finding).
     /// </summary>

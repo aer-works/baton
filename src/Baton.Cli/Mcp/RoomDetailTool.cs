@@ -312,10 +312,10 @@ public sealed class RoomDetailTool : IMcpTool
     }
 
     /// <summary>
-    /// #1574 architectural constraint 1: resolves the adapter that produced this execution's stdout
-    /// from the room's already-loaded <c>bindings.json</c> plus <c>flow.jsonl</c>'s own record of
-    /// which worker ran it (<see cref="RoomAdapterLookup"/>). A second, independent read of
-    /// <c>flow.jsonl</c> from the one <see cref="ReadTimelineAsync"/> already does -- acceptable here
+    /// #1574 architectural constraint 1: resolves the adapter that produced this execution's stdout,
+    /// via <see cref="RoomAdapterLookup"/> (see that type's doc comment for the resolution source and
+    /// priority). A second, independent read of <c>flow.jsonl</c> from the one
+    /// <see cref="ReadTimelineAsync"/> already does -- acceptable here
     /// since <c>room_detail</c> is an on-demand debug call, not a poll loop, and any failure fails
     /// open to a null adapter (raw JSON passthrough), never a throw.
     /// </summary>
