@@ -18,6 +18,11 @@ namespace Baton.Cli;
 /// <param name="TokenBudget">The <c>--token-budget</c> override (#1623). Null keeps the parent's.</param>
 /// <param name="Workstream">The <c>--workstream</c> override (#1619) — see spec/baton.md §2 for the inheritance/clear/override contract, mirroring <see cref="Label"/>'s own.</param>
 /// <param name="WorkstreamSpecified">True when <c>--workstream</c> was explicitly provided, even if blank — mirrors <see cref="LabelSpecified"/>.</param>
+/// <param name="Attachments">
+/// The <c>--attach</c> context files (#1576, mirroring <c>baton dispatch</c>'s own #1500 flag) copied
+/// into the child room. Only meaningful alongside <see cref="SpecFilePath"/>; <see cref="RedispatchCommand"/>
+/// refuses the combination outright when null — see its own refusal for the reason, not restated here.
+/// </param>
 /// <param name="MaxToolSteps">The <c>--max-tool-steps</c> override (#1686 review F2). Null keeps the parent's.</param>
 public sealed record RedispatchOptions(
     string ParentRoomDirectoryPath,
@@ -34,4 +39,5 @@ public sealed record RedispatchOptions(
     long? TokenBudget = null,
     string? Workstream = null,
     bool WorkstreamSpecified = false,
+    IReadOnlyList<string>? Attachments = null,
     int? MaxToolSteps = null);

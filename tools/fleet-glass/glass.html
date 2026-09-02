@@ -192,6 +192,11 @@ footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px s
 .detail-path{font-size:.72rem; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; margin:.2rem 0;}
 .detail-path.expanded{white-space:normal; word-break:break-all;}
 .section-heading{font:600 .7rem 'Public Sans'; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin:.6rem 0 .2rem;}
+.stdout-asof{text-transform:none; letter-spacing:normal; font-weight:400;}
+/* #1710: a bounded, internally-scrolling box regardless of viewport -- its own max-height rather than
+   growing with the pane (#1693's own rules let the pane itself grow unbounded on the phone breakpoint;
+   a multi-KB stdout tail must not drag the whole page down with it there). */
+.stdout-tail{font-size:.72rem; line-height:1.35; white-space:pre-wrap; word-break:break-word; max-height:12rem; overflow-y:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.5rem .6rem;}
 .detail-back-btn{display:none; align-self:flex-start; background:var(--paper); border:1px solid var(--line); border-radius:6px; padding:.25em .7em; font:500 .74rem 'Public Sans'; cursor:pointer; color:var(--ink); margin-bottom:.4rem;}
 @media (max-width:900px){
   .board-detail-layout{flex-direction:column;}
@@ -854,6 +859,22 @@ function stepUsageLine(step){
   if(tk) bits.push(tk);
   return bits.length ? `<div class="ev mono">${esc(step.id)}: ${bits.join(" · ")}</div>` : null;
 }
+// #1710: a bounded stdout tail for a Running room's detail pane, riding `room.live.stdoutTail`
+// (pusher.py's own `stdout_tail_for_room`) -- absent-safe like every other `live` field, so this
+// renders nothing on a terminal room, a Running room whose pusher predates #1710, or one with no
+// captured stdout yet. `derivedAt` (the snapshot's OWN `derived_at`, spec/baton.md §6) is what "as
+// of <age>" reads -- the tail is only ever as fresh as the pusher's last successful derivation, not
+// `Date.now()` at render time.
+function stdoutTailHtml(room, derivedAt){
+  const tail = room.state === "Running" && room.live && typeof room.live.stdoutTail === "string"
+    ? room.live.stdoutTail : null;
+  if(!tail) return "";
+  const asOfAge = age(derivedAt);
+  const asOf = asOfAge ? `<span class="stdout-asof">as of ${esc(asOfAge)} ago</span>` : "";
+  return `<div class="section-heading">stdout ${asOf}</div>
+    <div class="stdout-tail mono">${esc(tail)}</div>
+    <div class="verbs">${copyButtonHtml(tail, "copy stdout")}</div>`;
+}
 function fullTelemetryHtml(room){
   if(room.state === "Running"){
     return liveTelemetryHtml(room) || `<div class="ev">—</div>`;
@@ -983,7 +1004,7 @@ function conductorDetailHtml(conductor){
 // Full detail: path (tap to expand), role/adapter/model/effort, error, step timeline, full
 // telemetry, deliverables link, and the same state-appropriate copy verbs the old per-lane card
 // used to carry directly (copyButtonsHtml, unchanged -- read-only, copies only, never executes).
-function roomDetailHtml(room, timelines, openTimelinePaths){
+function roomDetailHtml(room, timelines, openTimelinePaths, derivedAt){
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   const failedStep = (room.steps||[]).find(s => s.state === "Failed");
@@ -1007,18 +1028,19 @@ function roomDetailHtml(room, timelines, openTimelinePaths){
     ${err}${tryLine}
     <div class="section-heading">Telemetry</div>
     ${fullTelemetryHtml(room)}
+    ${stdoutTailHtml(room, derivedAt)}
     <div class="section-heading">Timeline</div>
     ${timelineHtml(room, timelines, isTlOpen) || `<div class="ev">no timeline entries</div>`}
     ${copyButtonsHtml(room, running, terminal)}
     ${deliverables}`;
 }
-function detailPaneHtml(selectedKey, roomsByPath, conductor, timelines, openTimelinePaths, backOnclick){
+function detailPaneHtml(selectedKey, roomsByPath, conductor, timelines, openTimelinePaths, backOnclick, derivedAt){
   const backBtn = backOnclick ? `<button class="detail-back-btn" id="board-back">&larr; Back to board</button>` : "";
   if(!selectedKey) return backBtn + `<div class="empty">Select a card.</div>`;
   if(selectedKey === CONDUCTOR_KEY) return backBtn + conductorDetailHtml(conductor);
   const room = roomsByPath.get(selectedKey);
   if(!room) return backBtn + `<div class="empty">That room is no longer in the fleet snapshot.</div>`;
-  return backBtn + roomDetailHtml(room, timelines, openTimelinePaths);
+  return backBtn + roomDetailHtml(room, timelines, openTimelinePaths, derivedAt);
 }
 function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCount){
   if(totalDismissed <= 0) return "";
@@ -1038,7 +1060,7 @@ function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCoun
 // (≤480px). Bucketing/dismiss/pagination logic below is unchanged from the pre-#1678 section
 // layout -- only how the buckets get PAINTED (columns + cards + pane instead of <h2> sections +
 // full lane cards) is new.
-function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms, conductor = lastGood && lastGood.conductor){
+function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms, conductor = lastGood && lastGood.conductor, derivedAt = lastGood && lastGood.derived_at){
   const openTimelinePaths = new Set();
   if(typeof document !== "undefined"){
     for(const el of document.querySelectorAll("#content details.tl-details[open]")){
@@ -1153,13 +1175,18 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
     + `<div class="board-column-wrap${phoneActiveColumn === "running" ? " active-col" : ""}">${runningColumn}</div>`
     + `<div class="board-column-wrap${phoneActiveColumn === "done" ? " active-col" : ""}">${doneColumn}</div>`
     + `</div></div>`
-    + `<div class="board-detail-side">${detailPaneHtml(selectedCardKey, roomsByPath, conductor, timelines, openTimelinePaths, true)}</div>`
+    + `<div class="board-detail-side">${detailPaneHtml(selectedCardKey, roomsByPath, conductor, timelines, openTimelinePaths, true, derivedAt)}</div>`
     + `</div>`;
 
   const unreadableWasOpen = !!($("unreadable-details") && $("unreadable-details").open);
   const other20 = other.length ? `<details id="unreadable-details"${unreadableWasOpen ? " open" : ""}><summary>Unreadable entries · ${other.length}</summary><div class="lanes">${other.slice(0,20).map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("")}</div></details>` : "";
 
   $("content").innerHTML = boardHtml + other20;
+  // #1710: newest stdout at the bottom -- the pane is rebuilt wholesale every render, so there is no
+  // scroll position to preserve; just land on the newest line each time, same convention the tail
+  // itself follows (oldest first, newest last).
+  const stdoutTailEl = $("content").querySelector(".stdout-tail");
+  if(stdoutTailEl) stdoutTailEl.scrollTop = stdoutTailEl.scrollHeight;
   $("fresh").textContent = freshLabel(pushedAt, "pushed ") || "push time unknown";
   const hb = freshLabel(heartbeatAt, "pusher alive ");
   if(hb) $("fresh").textContent += " · " + hb;
@@ -1788,7 +1815,7 @@ window.addEventListener("hashchange", applyRoute);
         } else {
           banner("");
         }
-        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count, dismissedRooms, snap.conductor);
+        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count, dismissedRooms, snap.conductor, snap.derived_at);
       } else if(snap && snap.rooms === null){
         $("content").innerHTML = "";
         $("dismissnote").innerHTML = "";
