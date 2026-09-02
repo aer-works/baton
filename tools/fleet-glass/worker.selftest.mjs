@@ -10,6 +10,9 @@ import {
   decodeDeliverablesCursor,
   computeDeliverablesPage,
   computeFleetStatusPage,
+  computeDeliverBatch,
+  deliverableBatchKeyFor,
+  deliverableReadOutcome,
   isValidFleetStatusPage,
   maxIsoOrNull,
 } from "./worker.core.mjs";
@@ -150,6 +153,105 @@ check("no heartbeat recorded yet, but a push has landed: the push time is still 
       maxIsoOrNull(null, "2026-09-02T07:34:00Z") === "2026-09-02T07:34:00Z");
 check("neither heartbeat nor push recorded yet: stays absent, never fabricated",
       maxIsoOrNull(null, null) === null);
+
+// -- #1690 item 2: deliver batching folds K items into ONE inbox:batch:<id> blob + the index --
+{
+  const items = [
+    { id: "d1", room: "/r/a", content: "content one" },
+    { id: "d2", room: "/r/a", content: "content two" },
+  ];
+  const { index, batchContent, stored, evicted } = computeDeliverBatch([], items, "batch-1", 500);
+  check("computeDeliverBatch stores every item's content under one batch object", stored === 2);
+  check("the batch content carries both items keyed by id",
+        batchContent.d1 === "content one" && batchContent.d2 === "content two");
+  check("the index stamps each entry with the batch id it lives in",
+        index.every((m) => m.batch_id === "batch-1"));
+  check("the index carries no raw content (metadata only)",
+        index.every((m) => !("content" in m)));
+  check("nothing evicted under the cap", evicted.length === 0);
+}
+{
+  // A malformed item (no id, or no room) is skipped, same posture worker.js's old inline loop had.
+  const items = [
+    { id: "ok", room: "/r/a", content: "x" },
+    { room: "/r/a", content: "no id" },
+    { id: "no-room", content: "x" },
+  ];
+  const { batchContent, stored } = computeDeliverBatch([], items, "batch-2", 500);
+  check("a malformed item (missing id or room) is skipped, not stored", stored === 1 && Object.keys(batchContent).length === 1);
+}
+{
+  // A second /deliver POST for an id already in the index replaces it (same dedupe-by-id semantics
+  // the pre-#1690 inline loop had via index.filter(...).unshift(...)).
+  const existing = [{ id: "d1", room: "/r/a", batch_id: "old-batch", pushed_at: "2026-09-01T00:00:00Z" }];
+  const { index, orphanedBatchIds } = computeDeliverBatch(existing, [{ id: "d1", room: "/r/a", content: "v2" }], "new-batch", 500);
+  check("re-delivering an existing id replaces its index entry (new batch_id, not duplicated)",
+        index.length === 1 && index[0].batch_id === "new-batch");
+  check("(F5) re-delivering an id orphans its PREVIOUS batch blob -- nothing else references " +
+        "'old-batch' any more, so it comes back for worker.js to delete",
+        orphanedBatchIds.includes("old-batch"));
+}
+{
+  // (F5 control) re-delivering an id whose previous batch is STILL referenced by another,
+  // non-evicted index entry must NOT orphan it -- two ids can share one batch blob.
+  const existing = [
+    { id: "d1", room: "/r/a", batch_id: "shared-batch", pushed_at: "t1" },
+    { id: "d2", room: "/r/a", batch_id: "shared-batch", pushed_at: "t2" },
+  ];
+  const { orphanedBatchIds } = computeDeliverBatch(existing, [{ id: "d1", room: "/r/a", content: "v2" }], "new-batch", 500);
+  check("(F5 control) a batch still referenced by another surviving entry is NOT reported orphaned",
+        !orphanedBatchIds.includes("shared-batch"));
+}
+{
+  // INBOX_CAP eviction still fires the same way, just over batch-stamped entries.
+  const existing = Array.from({ length: 5 }, (_, i) => ({ id: `old-${i}`, room: "/r/a", batch_id: `b-${i}`, pushed_at: `t${i}` }));
+  const { index, evicted, orphanedBatchIds } = computeDeliverBatch(existing, [{ id: "new-1", room: "/r/a", content: "x" }], "b-new", 3);
+  check("INBOX_CAP eviction trims the index to the cap", index.length === 3);
+  check("eviction returns exactly the overflowed entries for the caller to clean up",
+        evicted.length === 3 && evicted.every((m) => m.id.startsWith("old-")));
+  check("(F5) every evicted entry's OWN batch id (unshared with any surviving entry) is reported " +
+        "orphaned, for worker.js to reclaim the blob",
+        evicted.every((m) => orphanedBatchIds.includes(m.batch_id)));
+}
+{
+  // F12 (2026-09-02 review): two items sharing an id within ONE POST must not double-count `stored`
+  // -- the filter-then-unshift above collapses them to a single index entry.
+  const items = [
+    { id: "dup", room: "/r/a", content: "first" },
+    { id: "dup", room: "/r/a", content: "second" },
+  ];
+  const { index, stored } = computeDeliverBatch([], items, "batch-dup", 500);
+  check("(F12) a duplicate id within one POST produces exactly ONE index entry", index.length === 1);
+  check("(F12) `stored` counts distinct ids, not loop iterations -- was double-counting this case",
+        stored === 1);
+}
+
+// -- #1690 item 2: deliverable_read's id -> batch resolution --
+{
+  const index = [
+    { id: "batched-1", batch_id: "batch-a" },
+    { id: "legacy-1" }, // no batch_id -- delivered before #1690
+  ];
+  check("an item with a batch_id resolves to its inbox:batch:<id> key",
+        deliverableBatchKeyFor(index, "batched-1") === "inbox:batch:batch-a");
+  check("an item with no batch_id (legacy, pre-#1690) resolves to null -- caller falls back to inbox:item:<id>",
+        deliverableBatchKeyFor(index, "legacy-1") === null);
+  check("an id absent from the index entirely also resolves to null, never throws",
+        deliverableBatchKeyFor(index, "nonexistent") === null);
+}
+
+// -- F8 (2026-09-02 review): deliverable_read's outcome must distinguish "known but not yet
+// replicated" from a genuinely nonexistent id -- KV's eventual consistency across colos means the
+// index can propagate before the batch blob does.
+check("(F8) content found: reports found=true with the content, regardless of batchKey",
+      deliverableReadOutcome("the content", "inbox:batch:x").found === true
+      && deliverableReadOutcome("the content", "inbox:batch:x").content === "the content");
+check("(F8) content missing but the index claims a batch_id: pending, not not-found",
+      deliverableReadOutcome(null, "inbox:batch:x").found === false
+      && deliverableReadOutcome(null, "inbox:batch:x").pending === true);
+check("(F8 control) content missing AND no batchKey (genuinely unknown id): not-found, not pending",
+      deliverableReadOutcome(null, null).found === false
+      && deliverableReadOutcome(null, null).pending === false);
 
 if (failures.length) {
   console.error(`worker.selftest.mjs: FAIL -- ${failures.length} check(s):`);

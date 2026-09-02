@@ -244,8 +244,8 @@ schedule background work or wait for a wake-up, because nothing resumes the turn
 ## `baton redispatch` — rerunning a terminal room with an amended brief
 
 ```
-baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--model <m>] [--effort <e>]
-                          [--workspace <dir>] [--output <path>] [--timeout <minutes>]
+baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>]... [--adapter <vendor>] [--model <m>]
+                          [--effort <e>] [--workspace <dir>] [--output <path>] [--timeout <minutes>]
                           [--token-budget <n>] [--label <text>] [--workstream <slug>]
 ```
 
@@ -253,10 +253,13 @@ baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--mod
 room vs. overrides, the Terminal/single-role refusals, and where lineage is recorded — is
 `spec/baton.md` §2; this page does not restate it.
 
-The spec/grant mismatch lint above and `--attach` are both dispatch-only (#1500's literal scope) —
-`redispatch` runs neither, even though rewriting a brief after a lane failed is plausibly the likeliest
-moment to introduce an instruction the grant cannot execute; tracked as a follow-up rather than wired
-in here (#1500 second-reader LOW-1, filed as #1576).
+**The spec/grant mismatch lint above and `--attach` now also run on `redispatch`'s `--spec` path
+(#1576), the identical way `dispatch` already runs them.** Both go through `RoleSpecMaterializer`, the
+seam `DispatchCommand`'s own role path and `RedispatchCommand`'s amended-spec path now share, so
+neither can silently diverge from the other again — see `spec/baton.md` §2 for why an amended brief
+is exactly the moment a grant/instruction mismatch is likeliest to appear. `--attach` is refused
+outright when `--spec` is omitted: `spec/baton.md` §2 states why (record-once, not restated here).
+<!-- record-once-ok: #1576 spec/baton.md -->
 
 ## What a dispatch leaves in the room
 

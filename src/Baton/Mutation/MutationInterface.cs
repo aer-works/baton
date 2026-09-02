@@ -150,7 +150,8 @@ public static class MutationInterface
         var succeededExecutionIds = latestCheckpoint.State.SucceededExecutionIds;
 
         ExternalDecisionValidator.Validate(
-            state, snapshot, succeededExecutionIds, referencedExecutionId, decisionType, targetStepId, supplementaryExecutionId);
+            state, snapshot, succeededExecutionIds, referencedExecutionId, decisionType, targetStepId, supplementaryExecutionId,
+            roomDirectoryPath);
 
         var decisionId = new DecisionId(Guid.NewGuid().ToString("n"));
 

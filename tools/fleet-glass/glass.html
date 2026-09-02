@@ -36,6 +36,10 @@
   of pushed_at, and `pending_push_age_s` (2026-09-01 review finding) is the "Push failing" banner's
   own signal -- see the banner code's own comments below for why pushed_at alone false-fired and why
   derived_at alone cannot see a failing push.
+
+  `pusher.writeBudgetExhaustedUntil` (#1690, absent-safe the same way) is the one final snapshot the
+  pusher sends when its daily KV write-budget ledger runs out, and takes priority over every other
+  banner below -- spec/baton.md §6, "Fleet Glass write budget".
 -->
 <title>Fleet Glass</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1758,7 +1762,17 @@ window.addEventListener("hashchange", applyRoute);
         const derivedMs = snap.derived_at ? Date.now() - Date.parse(snap.derived_at) : null;
         const pendingPushMs = typeof snap.pending_push_age_s === "number" ? snap.pending_push_age_s * 1000 : null;
         const running = snap.rooms.some(r => r.state === "Running");
-        if(hbMs == null){
+        // #1690: writeBudgetExhaustedUntil (absent-safe -- an unredeployed pusher never sends a
+        // `pusher` section at all) is the LAST snapshot the pusher intentionally sends before it
+        // stops pushing for the rest of the UTC day, once its daily KV write budget ledger runs out
+        // (spec/baton.md §6, "Fleet Glass write budget"). Checked FIRST: this is an intentional,
+        // self-explained stop, not a failure the other banners below would otherwise misdiagnose as
+        // a dead pusher or a stuck derivation once pushed_at/derived_at start aging past it.
+        const budgetExhaustedUntil = snap.pusher && typeof snap.pusher.writeBudgetExhaustedUntil === "string"
+          ? snap.pusher.writeBudgetExhaustedUntil : null;
+        if(budgetExhaustedUntil){
+          banner(`<b>Write budget exhausted for today.</b> The pusher hit its daily KV write cap and stopped snapshot pushes until ${esc(budgetExhaustedUntil)} — deliverables may still be landing. Data below is from the last push before the stop.`);
+        } else if(hbMs == null){
           banner("<b>No heartbeat recorded yet.</b> heartbeat_at is unset — redeploy worker.js and the pusher for #1486, or the mailbox hasn't received one yet.");
         } else if(!isFinite(hbMs) || hbMs > HEARTBEAT_DEAD_MS){
           banner(`<b>Pusher likely dead.</b> No heartbeat in ${esc(age(snap.heartbeat_at) || "over 2.5h")} — the fleet machine may be off or the pusher process may have stopped. Data below is from the last push.`);

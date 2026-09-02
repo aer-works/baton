@@ -64,6 +64,8 @@ public class ExternalDecisionValidatorTests
     private static StepState PendingSupersede(StepId stepId, ExecutionId executionId) =>
         new(stepId, StepStatus.Succeeded, executionId, NoUpstream, IsPendingSupersedeTarget: true);
 
+    private const string RoomDirectoryPath = "/rooms/room-1";
+
     private static void Validate(
         FlowState state,
         WorkflowDefinitionSnapshot snapshot,
@@ -74,7 +76,13 @@ public class ExternalDecisionValidatorTests
         IReadOnlySet<ExecutionId>? succeededExecutionIds = null) =>
         ExternalDecisionValidator.Validate(
             state, snapshot, succeededExecutionIds ?? NoSucceededExecutions, referencedExecutionId, decisionType,
-            targetStepId, supplementaryExecutionId);
+            targetStepId, supplementaryExecutionId, RoomDirectoryPath);
+
+    private static StepState PausedAwaitingResolution(StepId stepId, ExecutionId executionId, StepStatus pausedOutcome) =>
+        new(
+            stepId, StepStatus.Paused, executionId, NoUpstream, PauseRecordedForLatestExecution: true,
+            PausedOutcome: pausedOutcome, IndeterminateAwaitingResolution: true,
+            IndeterminateProducer: IndeterminateProducer.CapturedResponse);
 
     [Fact]
     public void Resume_against_a_currently_paused_execution_is_valid()
@@ -106,6 +114,49 @@ public class ExternalDecisionValidatorTests
 
         var exception = Record.Exception(() =>
             Validate(state, Snapshot(new PausePoint([])), DecisionType.Reject, CriticExecutionId));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void A_decision_against_a_paused_step_with_an_unresolved_indeterminate_capture_is_refused()
+    {
+        // #1655 ruling (option 1) — see ExternalDecisionValidator's own remarks for the mechanism.
+        var state = new FlowState(
+            new WorkflowDefinitionSnapshotId("snapshot-1"),
+            [
+                Succeeded(Architect, ArchitectExecutionId),
+                PausedAwaitingResolution(Critic, CriticExecutionId, StepStatus.Failed),
+                Pending(Publisher),
+            ]);
+
+        var exception = Assert.Throws<InvalidExternalDecisionException>(() =>
+            Validate(state, Snapshot(new PausePoint([])), DecisionType.Resume, CriticExecutionId));
+
+        Assert.Contains(RoomDirectoryPath, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(Critic.Value, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("baton resolve", exception.Message, StringComparison.Ordinal);
+        // Review of #1705: the room can hold more than one unresolved capture, and ResolveCommand
+        // refuses a room-level resolve then -- the message must name the execution it already knows.
+        Assert.Contains($"--execution {CriticExecutionId}", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_decision_against_the_same_step_is_admissible_once_CaptureResolved_clears_the_flag()
+    {
+        // Polarity partner: once resolution has cleared IndeterminateAwaitingResolution (the same
+        // projection CaptureResolved drives in StateProjector), the ordinary Paused admission applies
+        // again — decide is not permanently locked out, only until resolved.
+        var state = new FlowState(
+            new WorkflowDefinitionSnapshotId("snapshot-1"),
+            [
+                Succeeded(Architect, ArchitectExecutionId),
+                Paused(Critic, CriticExecutionId, StepStatus.Failed),
+                Pending(Publisher),
+            ]);
+
+        var exception = Record.Exception(() =>
+            Validate(state, Snapshot(new PausePoint([])), DecisionType.Resume, CriticExecutionId));
 
         Assert.Null(exception);
     }

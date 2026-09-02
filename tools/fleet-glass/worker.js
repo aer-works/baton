@@ -30,12 +30,18 @@
  *    newest-first, optionally filtered by room), and `deliverable_read` (one item's full content).
  *    Read auth is the unguessable URL segment -- same posture as the operator's private ntfy topics.
  *
- * Storage, all in one KV namespace:
+ * Storage, all in one KV namespace (#1690 folded this to ONE write per /push and TWO per /deliver
+ * batch -- spec/baton.md §6, "Fleet Glass write budget", has the full arithmetic):
  *  - "snapshot"          : the fleet snapshot, verbatim JSON, carrying pushed_at so consumers can
  *                          render honest staleness; absent data renders as absent, never fabricated.
  *                          Also carries `derived_at` (#1613 item 2) whenever the pusher included one
  *                          in the push body -- NOT part of pusher.py's own snapshot_hash, so its
- *                          presence never gates the #1457 change-gate.
+ *                          presence never gates the #1457 change-gate. Also carries `terminal_archive`
+ *                          (#1656, folded in by #1690 item 2 -- previously its own KV key, written by
+ *                          a second `env.FLEET.put` on every push that had one): the plain (no `page`)
+ *                          fleet_status response strips it back out on the READ side so it never
+ *                          inflates the everyday response; a paged call reads it out of this same
+ *                          value instead of a separate key.
  *  - "heartbeat_at"      : JSON `{"at": ISO-8601, "derived_at"?: ISO-8601, "pending_push_age_s"?:
  *                          number}` (#1613 item 2 widened this from a bare ISO-8601 string;
  *                          `pending_push_age_s` was added by a 2026-09-01 review finding; a bare
@@ -45,19 +51,31 @@
  *                          count as a snapshot content change and trigger the change-gate (#1457)
  *                          to push early.
  *  - "inbox:index"       : JSON array of deliverable METADATA (no content), newest-first, capped at
- *                          INBOX_CAP entries -- what deliverables_list returns.
- *  - "inbox:item:<id>"   : one deliverable's full content (or a withheld stub), keyed by the id the
- *                          pusher assigned it -- what deliverable_read returns.
- *  - "terminal_archive"  : JSON array of EVERY terminal room (#1656), split out of the /push body's
- *                          `terminal_archive` field so it never inflates the plain `snapshot` value
- *                          -- fleet_status's `rooms` only ever carries non-terminal rooms plus the
- *                          newest N terminal ones (pusher.py's HOT_TERMINAL_CAP); the rest is read
- *                          back a page at a time via fleet_status's own `page`/`limit` arguments.
+ *                          INBOX_CAP entries -- what deliverables_list returns. Each entry carries a
+ *                          `batch_id` (#1690 item 2) naming which "inbox:batch:<id>" blob holds its
+ *                          content; an entry with no `batch_id` predates #1690 and resolves through
+ *                          the legacy "inbox:item:<id>" key instead.
+ *  - "inbox:batch:<id>"  : ONE JSON object `{itemId: content, ...}` per /deliver POST (#1690 item 2)
+ *                          -- every item in that POST's content, keyed by item id, in a single KV
+ *                          value. Replaces the pre-#1690 "inbox:item:<id>" per-item key (K+1 writes
+ *                          for a K-item batch); deliverable_read resolves an id to its batch via the
+ *                          index's `batch_id`, falling back to "inbox:item:<id>" for anything
+ *                          delivered before this change. Refcounted (F5, 2026-09-02 review):
+ *                          `computeDeliverBatch` returns `orphanedBatchIds` -- batch ids no
+ *                          remaining index entry references after this POST's eviction or
+ *                          re-delivery -- and handleDeliver deletes those blobs, so KV storage no
+ *                          longer grows without bound the way the pre-fix (unreclaimed) version did.
+ *  - "inbox:item:<id>"   : LEGACY (pre-#1690) per-item content key, one deliverable's full content
+ *                          (or a withheld stub) -- still read as deliverable_read's fallback, never
+ *                          written to by a current pusher.
  */
 
 import {
   computeDeliverablesPage,
   computeFleetStatusPage,
+  computeDeliverBatch,
+  deliverableBatchKeyFor,
+  deliverableReadOutcome,
   isValidFleetStatusPage,
   maxIsoOrNull,
 } from "./worker.core.mjs";
@@ -184,23 +202,26 @@ async function handleDeliver(request, env) {
   const items = Array.isArray(parsed?.items) ? parsed.items : null;
   if (!items) return new Response("expected {\"items\": [...]}", { status: 400 });
 
-  let index = await readInboxIndex(env);
-  let stored = 0;
-  for (const item of items) {
-    if (!item || typeof item.id !== "string" || !item.id) continue;
-    if (typeof item.room !== "string" || !item.room) continue;
-    await env.FLEET.put(`inbox:item:${item.id}`, String(item.content ?? ""));
-    const { content: _content, ...meta } = item;
-    index = index.filter((m) => m.id !== item.id);
-    index.unshift({ ...meta, pushed_at: item.pushed_at || new Date().toISOString() });
-    stored += 1;
+  const existingIndex = await readInboxIndex(env);
+  // #1690 item 2: one inbox:batch:<id> blob for the WHOLE POST plus the index -- 2 KV writes per
+  // batch regardless of item count K (was K+1: one inbox:item:<id> put per item, pre-#1690).
+  const batchId = crypto.randomUUID();
+  const { index, batchContent, stored, evicted, orphanedBatchIds } = computeDeliverBatch(existingIndex, items, batchId, INBOX_CAP);
+
+  for (const m of evicted) {
+    // A LEGACY (pre-#1690) evicted entry costs a delete: its content lives at its own
+    // inbox:item:<id> key.
+    if (!m.batch_id) await env.FLEET.delete(`inbox:item:${m.id}`);
   }
-  if (index.length > INBOX_CAP) {
-    const evicted = index.slice(INBOX_CAP);
-    index = index.slice(0, INBOX_CAP);
-    for (const m of evicted) {
-      await env.FLEET.delete(`inbox:item:${m.id}`);
-    }
+  // F5 (2026-09-02 review): reclaim a batched entry's underlying `inbox:batch:<id>` blob once NO
+  // remaining index entry references it (eviction, or this same POST re-delivering an id under a
+  // new batch id) -- pre-fix, these were left orphaned forever, growing KV storage without bound
+  // even though storage isn't write-budgeted the way writes are.
+  for (const orphanId of orphanedBatchIds) {
+    await env.FLEET.delete(`inbox:batch:${orphanId}`);
+  }
+  if (stored > 0) {
+    await env.FLEET.put(`inbox:batch:${batchId}`, JSON.stringify(batchContent));
   }
   await env.FLEET.put("inbox:index", JSON.stringify(index));
   return json({ ok: true, stored, index_size: index.length });
@@ -247,12 +268,15 @@ async function handleMcp(request, env) {
       // the SAME tool rather than a new one so worker.js's TOOLS array stays exactly the three
       // read-only names FleetGlassReadOnlyTests pins.
       if (isValidFleetStatusPage(args.page)) {
-        const raw = await env.FLEET.get("terminal_archive");
+        // #1690 item 2: terminal_archive now lives INSIDE the "snapshot" KV value (no separate
+        // "terminal_archive" key -- folding it in is what took the /push handler from 2 writes to
+        // 1), so a paged call reads the same key the plain call does and pulls its own field out.
+        const raw = await env.FLEET.get("snapshot");
         let archive = [];
         if (raw) {
           try {
             const parsed = JSON.parse(raw);
-            archive = Array.isArray(parsed) ? parsed : [];
+            archive = Array.isArray(parsed?.terminal_archive) ? parsed.terminal_archive : [];
           } catch {
             archive = [];
           }
@@ -276,10 +300,15 @@ async function handleMcp(request, env) {
       if (stored === null) {
         return json(rpcResult(id, toolText(JSON.stringify({ pushed_at: null, rooms: null, heartbeat_at: heartbeatAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS, note: "no snapshot pushed yet" }))));
       }
+      // #1690 item 2: terminal_archive rides inside storedSnapshot now (folded in on write), but the
+      // PLAIN (no `page`) response must stay exactly as small as it was when it lived in its own key
+      // -- stripped here, on the read side, rather than never stored. A paged call reads it back via
+      // the isValidFleetStatusPage branch above.
+      const { terminal_archive: _archive, ...restSnapshot } = storedSnapshot;
       // heartbeat_at/derived_at/pending_push_age_s are merged in at read time, never written into
       // the "snapshot" value itself -- that keeps them out of pusher.py's change-gate hash (see
       // this file's header).
-      const snapshot = { ...storedSnapshot, heartbeat_at: heartbeatDisplayAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS };
+      const snapshot = { ...restSnapshot, heartbeat_at: heartbeatDisplayAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS };
       return json(rpcResult(id, toolText(JSON.stringify(snapshot))));
     }
     if (name === "deliverables_list") {
@@ -297,9 +326,40 @@ async function handleMcp(request, env) {
     if (name === "deliverable_read") {
       const itemId = params?.arguments?.id;
       if (!itemId) return json(rpcResult(id, toolError("id is required")));
-      const content = await env.FLEET.get(`inbox:item:${itemId}`);
-      if (content === null) return json(rpcResult(id, toolError(`no deliverable with id ${itemId}`)));
-      return json(rpcResult(id, toolText(content)));
+      // #1690 item 2: resolve id -> its inbox:batch:<id> blob via the index's own batch_id stamp,
+      // falling back to the legacy per-item key for anything delivered before this change (or a
+      // missing/corrupt batch blob).
+      const index = await readInboxIndex(env);
+      const batchKey = deliverableBatchKeyFor(index, itemId);
+      let content = null;
+      if (batchKey) {
+        const batchRaw = await env.FLEET.get(batchKey);
+        if (batchRaw) {
+          try {
+            const batch = JSON.parse(batchRaw);
+            if (batch && Object.prototype.hasOwnProperty.call(batch, itemId)) content = batch[itemId];
+          } catch {
+            // Corrupt batch blob -- fall through to the legacy key below.
+          }
+        }
+      }
+      if (content === null) {
+        content = await env.FLEET.get(`inbox:item:${itemId}`);
+      }
+      // F8 (2026-09-02 review): KV is eventually consistent across colos -- there is a real window
+      // where the index (read above, via readInboxIndex) has propagated while its
+      // inbox:batch:<id> blob has not, which is exactly how an operator can see an id in
+      // deliverables_list and then have deliverable_read 404 on it a moment later.
+      // deliverableReadOutcome tells that apart from a genuinely nonexistent id.
+      const outcome = deliverableReadOutcome(content, batchKey);
+      if (!outcome.found) {
+        if (outcome.pending) {
+          return json(rpcResult(id, toolError(
+            `deliverable ${itemId} is known but its content has not replicated yet -- retry in a minute`)));
+        }
+        return json(rpcResult(id, toolError(`no deliverable with id ${itemId}`)));
+      }
+      return json(rpcResult(id, toolText(outcome.content)));
     }
     return json(rpcResult(id, toolError(`unknown tool: ${name}`)));
   }
@@ -342,17 +402,12 @@ export default {
       // Legacy body is a bare rooms array; newer pushers send {rooms, underhood, ...} --
       // spread object bodies so extra sections ride along, keep wrapping bare arrays.
       const payload = Array.isArray(parsed) ? { rooms: parsed } : parsed;
-      // #1656: `terminal_archive` (every terminal room; pusher.py's own hot-set cap keeps `rooms`
-      // itself to non-terminal + the newest N terminal only, see pusher.py's HOT_TERMINAL_CAP)
-      // rides the SAME push body but is stored under its OWN key, never folded into "snapshot" --
-      // the whole point of the split is that a plain (no `page`) fleet_status call stays small
-      // regardless of how many terminal rooms the fleet has ever accumulated. Read back a page at a
-      // time only when `page` is passed (see handleMcp's fleet_status branch above).
-      const { terminal_archive: terminalArchive, ...hotPayload } = payload;
-      if (Array.isArray(terminalArchive)) {
-        await env.FLEET.put("terminal_archive", JSON.stringify(terminalArchive));
-      }
-      const snapshot = JSON.stringify({ pushed_at: new Date().toISOString(), ...hotPayload });
+      // #1690 item 2: `terminal_archive` (every terminal room; pusher.py's own hot-set cap keeps
+      // `rooms` itself to non-terminal + the newest N terminal only, see pusher.py's
+      // HOT_TERMINAL_CAP) rides straight into `payload` below, no separate KV key or write of its
+      // own -- this file's own header docstring is the canonical record of who reads it back out
+      // and how (the fleet_status handler, both the plain and the `page` branch).
+      const snapshot = JSON.stringify({ pushed_at: new Date().toISOString(), ...payload });
       await env.FLEET.put("snapshot", snapshot);
       return new Response("ok", { status: 200 });
     }
