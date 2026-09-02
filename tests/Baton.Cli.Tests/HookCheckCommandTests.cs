@@ -221,4 +221,120 @@ public class HookCheckCommandTests
 
         Assert.Equal(HookCheckCommand.AllowedExitCode, exitCode);
     }
+
+    [Theory]
+    [InlineData("git merge-base --is-ancestor a b", HookCheckCommand.AllowedExitCode)]
+    [InlineData("git diff --stat", HookCheckCommand.AllowedExitCode)]
+    [InlineData("git status", HookCheckCommand.AllowedExitCode)]
+    [InlineData("git difftool --extcmd=calc -y HEAD~1 HEAD", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git grep -Ocalc foo", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git grep --open-files-in-pager=calc foo", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git -c alias.x=!calc x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git push --dry-run", HookCheckCommand.DeniedExitCode)]
+    [InlineData("gh api repos/x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("gh pr view 1", HookCheckCommand.AllowedExitCode)]
+    // #1683 F1: denied by ABSENCE now -- `git grep*` left the review allow list (the harness's own
+    // Grep tool covers a reviewer's need), which is what closes the four spellings that walked past
+    // the anchored `git grep -O*` deny. Three of them were measured spawning a pager.
+    [InlineData("git grep -nOcalc foo", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git grep --ignore-case -Ocalc foo", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git grep --open-files=calc foo", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git grep  -Ocalc foo", HookCheckCommand.DeniedExitCode)]
+    // #1683 F2: the arbitrary file write `shell_commands_are_read_only: true` was asserting away.
+    [InlineData("git log -1 --output=C:/x --format=format:y", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git show --output C:/x", HookCheckCommand.DeniedExitCode)]
+    // A quote inside the option name: the shell splits words before removing quotes, so git still
+    // receives `--output=C:/x`. Second-reader finding on this PR; see IsDeniedByOptionToken's remarks.
+    [InlineData("git log -1 --outpu\"t\"=C:/x --format=format:y", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git log --oneline -5", HookCheckCommand.AllowedExitCode)] // the near-miss control
+    [InlineData("git log --grep=\"--output\"", HookCheckCommand.AllowedExitCode)] // quoted VALUE, allowed
+    // #1683 F3: both polarities of the respelled `git merge *` deny, one condition apart.
+    [InlineData("git merge origin/main", HookCheckCommand.DeniedExitCode)]
+    public void Review_role_command_allow_deny_polarities_from_catalog(string command, int expectedExitCode)
+    {
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        var shellPatternsRaw = review.Grant.ShellCommandPatterns is { Count: > 0 }
+            ? "claude:" + string.Join(",", review.Grant.ShellCommandPatterns)
+            : "claude:";
+        var deniedShellPatternsRaw = review.Grant.DeniedShellCommandPatterns is { Count: > 0 }
+            ? "claude:" + string.Join(",", review.Grant.DeniedShellCommandPatterns)
+            : "claude:";
+        var deniedShellOptionTokensRaw = review.Grant.DeniedShellOptionTokens is { Count: > 0 }
+            ? "claude:" + string.Join(",", review.Grant.DeniedShellOptionTokens)
+            : "claude:";
+
+        var payload = """{"tool_name": "Bash", "tool_input": {"command": COMMAND_JSON}}"""
+            .Replace("COMMAND_JSON", System.Text.Json.JsonSerializer.Serialize(command));
+        using var stdin = new StringReader(payload);
+        using var stderr = new StringWriter();
+
+        var exitCode = HookCheckCommand.Execute(
+            stdin, stderr, "claude:Edit,Write",
+            shellPatternsRaw: shellPatternsRaw,
+            deniedShellPatternsRaw: deniedShellPatternsRaw,
+            deniedShellOptionTokensRaw: deniedShellOptionTokensRaw);
+
+        Assert.Equal(expectedExitCode, exitCode);
+    }
+
+    [Fact]
+    public void The_option_token_channel_is_what_denies_the_output_write_not_the_pattern_lists()
+    {
+        // The discriminating control for the row above (#1683 F2, gate `v-and-v`): with the option-token
+        // channel absent, the SAME command line under the SAME allow/deny pattern lists is allowed --
+        // `git log*` admits it, no deny pattern is anchored where the option sits, and #659's
+        // metacharacter scan never sees it because no redirection is involved. So the deny above is
+        // this channel's doing, not something the pattern lists were already covering.
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        var shellPatternsRaw = "claude:" + string.Join(",", review.Grant.ShellCommandPatterns!);
+        var deniedShellPatternsRaw = "claude:" + string.Join(",", review.Grant.DeniedShellCommandPatterns!);
+        const string command = "git log -1 --output=C:/x --format=format:y";
+
+        var payload = """{"tool_name": "Bash", "tool_input": {"command": COMMAND_JSON}}"""
+            .Replace("COMMAND_JSON", System.Text.Json.JsonSerializer.Serialize(command));
+        using var stdin = new StringReader(payload);
+        using var stderr = new StringWriter();
+
+        var exitCode = HookCheckCommand.Execute(
+            stdin, stderr, "claude:Edit,Write",
+            shellPatternsRaw: shellPatternsRaw,
+            deniedShellPatternsRaw: deniedShellPatternsRaw,
+            deniedShellOptionTokensRaw: null);
+
+        Assert.Equal(HookCheckCommand.AllowedExitCode, exitCode);
+    }
+
+    [Fact]
+    public void An_unscoped_shell_grant_still_enforces_a_denied_option_token()
+    {
+        // #1683 F2: the shape that used to fall through the nesting under
+        // shellPatternList.Patterns.Count > 0 -- see HookCheckCommand's own comment at the
+        // toolName == "Bash" check for the per-vendor divergence this closes.
+        using var stdin = new StringReader(
+            """{"tool_name": "Bash", "tool_input": {"command": "git log --output=C:/x"}}""");
+        using var stderr = new StringWriter();
+
+        var exitCode = HookCheckCommand.Execute(
+            stdin, stderr, "claude:Edit,Write",
+            shellPatternsRaw: "claude:",
+            deniedShellPatternsRaw: "claude:",
+            deniedShellOptionTokensRaw: "claude:--output");
+
+        Assert.Equal(HookCheckCommand.DeniedExitCode, exitCode);
+    }
+
+    [Fact]
+    public void The_denied_option_token_variable_matches_the_adapter_side_contract()
+    {
+        // Baton.Vendors cannot reference Baton.Cli, so the name is a plain string contract mirrored on
+        // both sides; each asserts the literal in its own suite. If they drift, this channel reads
+        // absent and the option-token rung silently stops enforcing -- and unlike the pattern channels
+        // there is no --disallowedTools half to catch it.
+        Assert.Equal(
+            "BATON_HOOK_DENIED_SHELL_OPTION_TOKENS",
+            HookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
+        Assert.Equal(
+            Baton.Vendors.ClaudeWorkerAdapter.DeniedShellOptionTokensVariable,
+            HookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
+    }
 }

@@ -33,8 +33,13 @@ if (args.Length >= 1 && args[0] == "hook-check")
     var shellPatterns = Environment.GetEnvironmentVariable(HookCheckCommand.ShellPatternsEnvironmentVariable);
     var deniedShellPatterns =
         Environment.GetEnvironmentVariable(HookCheckCommand.DeniedShellPatternsEnvironmentVariable);
+    // #1683 F2: the option-token deny rung, read the same way. Hook-only on this vendor -- no
+    // --disallowedTools entry expresses it (ShellCommandPatternMatcher.IsDeniedByOptionToken).
+    var deniedShellOptionTokens = Environment.GetEnvironmentVariable(
+        HookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
     return HookCheckCommand.Execute(
-        Console.In, Console.Error, deniedTools, outputDir, workspaceDir, shellPatterns, deniedShellPatterns);
+        Console.In, Console.Error, deniedTools, outputDir, workspaceDir, shellPatterns, deniedShellPatterns,
+        deniedShellOptionTokens);
 }
 
 // #554: the same idea for agy, and a separate command because the two vendors share none of the
@@ -54,8 +59,12 @@ if (args.Length >= 1 && args[0] == "agy-hook-check")
     // exemption remains claude-only and is not extended here.
     var agyOutputDir = Environment.GetEnvironmentVariable("BATON_OUTPUT_DIR");
     var agyWorkspaceDir = Environment.GetEnvironmentVariable(HookCheckCommand.WorkspaceEnvironmentVariable);
+    // #1683 F2: the option-token deny rung, read like the two channels above.
+    var agyDeniedShellOptionTokens = Environment.GetEnvironmentVariable(
+        AgyHookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
     return AgyHookCheckCommand.Execute(
-        Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns);
+        Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns,
+        agyDeniedShellOptionTokens);
 }
 
 // #1458: folded from the standalone Baton.Mcp.Host executable -- a stdio MCP server (vendor CLIs

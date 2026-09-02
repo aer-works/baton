@@ -685,6 +685,44 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
+    public void Resolving_a_grant_with_denied_option_tokens_emits_that_channel_too()
+    {
+        // #1683 F2. The hook is the ONLY enforcement of this rung on either vendor -- there is no
+        // --disallowedTools half -- so an unemitted channel is not a lost narrowing, it is the whole
+        // rung silently gone. Pinned separately from the pattern channel above because the two are
+        // matched by different rules and a field can be threaded to one and not the other.
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(
+            ReadFiles: true, RunShellCommands: true, NetworkAccess: true,
+            DeniedShellOptionTokens: ["--output"]);
+
+        var target = adapter.Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant),
+            ArchitectContract);
+
+        Assert.Contains(
+            target.Environment!,
+            env => env.Name == AgyWorkerAdapter.DeniedShellOptionTokensVariable && env.Value == "agy:--output");
+    }
+
+    [Fact]
+    public void A_grant_with_no_denied_option_tokens_still_emits_that_channel_present_but_empty()
+    {
+        // Same always-emitted contract as the two channels beside it: "agy:" at minimum, so the hook
+        // can tell "nothing denied" from "the channel broke".
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(ReadFiles: true, RunShellCommands: true, NetworkAccess: true);
+
+        var target = adapter.Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant),
+            ArchitectContract);
+
+        Assert.Contains(
+            target.Environment!,
+            env => env.Name == AgyWorkerAdapter.DeniedShellOptionTokensVariable && env.Value == "agy:");
+    }
+
+    [Fact]
     public void A_grant_with_no_denies_still_emits_the_denied_shell_patterns_variable_present_but_empty()
     {
         // The channel is always emitted ("agy:" at minimum) so the hook can tell "no standing denies"
@@ -1692,7 +1730,7 @@ public class AgyWorkerAdapterTests
 
         Baton.Cli.AgyHookCheckCommand.Execute(
             stdin, stdout, deniedTools, shellPatternsRaw: shellPatterns,
-            deniedShellPatternsRaw: deniedShellPatterns);
+            deniedShellPatternsRaw: deniedShellPatterns, deniedShellOptionTokensRaw: "agy:");
 
         using var doc = JsonDocument.Parse(stdout.ToString());
         var decision = doc.RootElement.GetProperty("decision").GetString()!;

@@ -247,6 +247,13 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             // why an allow-only channel is still a strict improvement there.
             (DeniedShellPatternsVariable,
                 $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellPatterns(invocation.PermissionGrant)}"),
+            // #1683 F2. Unlike the two channels above this one has NO --disallowedTools half here --
+            // BuildDisallowedTools emits nothing from it, deliberately (the reasoning is canonical on
+            // ShellCommandPatternMatcher.IsDeniedByOptionToken), so the hook is claude's only
+            // enforcement of an option-token deny. Empty on the raw PermissionScope path for the same
+            // reason the denied-pattern channel is: that string has no deny concept to parse out of it.
+            (DeniedShellOptionTokensVariable,
+                $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellOptionTokens(invocation.PermissionGrant)}"),
         };
 
         // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
@@ -347,6 +354,16 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// vendor's only enforcement of a standing "never" the way it is on agy.
     /// </summary>
     public const string DeniedShellPatternsVariable = AgyWorkerAdapter.DeniedShellPatternsVariable;
+
+    /// <summary>
+    /// #1683 F2's option-token deny channel, same literal as
+    /// <c>AgyWorkerAdapter.DeniedShellOptionTokensVariable</c> (record-once: declared there, referenced
+    /// here). <b>Read this alongside <see cref="DeniedShellPatternsVariable"/>, whose "belt-and-braces"
+    /// framing does not carry over</b>: that channel has a vendor-flag half and this one has none, so a
+    /// silently-dead hook (#530) leaves this rung unenforced where it leaves that one standing.
+    /// </summary>
+    public const string DeniedShellOptionTokensVariable =
+        AgyWorkerAdapter.DeniedShellOptionTokensVariable;
 
     /// <summary>
     /// The environment variable name Claude Code reads for its subagent fan-out depth cap.
@@ -994,6 +1011,14 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// <em>whole</em> of what <c>--disallowedTools</c> carries (withheld categories ride the ask band);
     /// off the gate it rides alongside them. Enforced independently of the <c>PreToolUse</c> hook, so it
     /// survives a silently-dead hook (#530) — which is why claude needs no hook-side deny check.
+    /// <para>
+    /// <b><see cref="PermissionGrant.DeniedShellOptionTokens"/> deliberately emits nothing here
+    /// (#1683 F2)</b> — that rung is hook-only on this vendor. The reasoning and the measurement gap
+    /// behind that choice live on <c>ShellCommandPatternMatcher.IsDeniedByOptionToken</c>; a change to
+    /// this line edits it there first. Pinned by
+    /// <c>ClaudeWorkerAdapterTests.Denied_option_tokens_ride_the_hook_channel_and_deliberately_reach_no_vendor_flag</c>,
+    /// so wiring it onto the flag fails a test rather than passing quietly.
+    /// </para>
     /// </summary>
     private static IEnumerable<string> StandingShellDenials(PermissionGrant? grant) =>
         grant?.DeniedShellCommandPatterns is { Count: > 0 } denied

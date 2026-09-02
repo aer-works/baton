@@ -148,6 +148,16 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// </summary>
     public const string DeniedShellPatternsVariable = "BATON_HOOK_DENIED_SHELL_PATTERNS";
 
+    /// <summary>
+    /// The environment variable carrying this invocation's <b>denied shell option tokens</b>
+    /// (<see cref="PermissionGrant.DeniedShellOptionTokens"/>, #1683 F2). A third channel rather than
+    /// more entries on <see cref="DeniedShellPatternsVariable"/> because a hook reading one list cannot
+    /// tell which of the two matching rules an entry wants; the rules themselves are stated on
+    /// <c>ShellCommandPatternMatcher.IsDeniedByOptionToken</c>. That method also records why no vendor
+    /// flag carries this rung on either vendor, which makes both hooks its sole enforcement.
+    /// </summary>
+    public const string DeniedShellOptionTokensVariable = "BATON_HOOK_DENIED_SHELL_OPTION_TOKENS";
+
 
     /// <summary>
     /// The name of the workspace directory AER owns and points every agy worker at, holding the
@@ -296,6 +306,18 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     {
         return grant?.DeniedShellCommandPatterns is { Count: > 0 } patterns
             ? string.Join(',', patterns)
+            : string.Empty;
+    }
+
+    /// <summary>
+    /// The standing denied option tokens for <see cref="DeniedShellOptionTokensVariable"/> —
+    /// comma-joined, empty when none. Mirror of <see cref="BuildDeniedShellPatterns"/> over
+    /// <see cref="PermissionGrant.DeniedShellOptionTokens"/> (#1683 F2).
+    /// </summary>
+    internal static string BuildDeniedShellOptionTokens(PermissionGrant? grant)
+    {
+        return grant?.DeniedShellOptionTokens is { Count: > 0 } tokens
+            ? string.Join(',', tokens)
             : string.Empty;
     }
 
@@ -496,6 +518,8 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             (DeniedToolsVariable, $"{DeniedToolsVendorTag}:{BuildDeniedTools(invocation.PermissionGrant)}"),
             (ShellPatternsVariable, $"{ShellPatternsVendorTag}:{BuildShellPatterns(invocation.PermissionGrant)}"),
             (DeniedShellPatternsVariable, $"{ShellPatternsVendorTag}:{BuildDeniedShellPatterns(invocation.PermissionGrant)}"),
+            (DeniedShellOptionTokensVariable,
+                $"{ShellPatternsVendorTag}:{BuildDeniedShellOptionTokens(invocation.PermissionGrant)}"),
         };
 
         // agy home redirect (#442): non-shell bindings get HOME and USERPROFILE redirected to an
