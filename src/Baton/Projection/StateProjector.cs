@@ -473,13 +473,29 @@ public static class StateProjector
 
     private static string DescribeArrest(FlowEvent.ExecutionArrested arrested)
     {
-        // #1623 re-review N6: ContextLevelTokens (already TokensIn + cache-read + cache-creation) is
-        // the aggregate this arrest was measured against; fall back to raw TokensIn for a WorkerUsage
-        // that never set it (e.g. a synthetic/legacy value with no level tracking).
-        var contextTokens = arrested.Usage?.ContextLevelTokens ?? arrested.Usage?.TokensIn ?? 0;
-        var tokens = contextTokens + (arrested.Usage?.TokensOut ?? 0);
-        return tokens > 0
-            ? $"Execution arrested: token budget exceeded ({tokens} tokens measured) — awaiting conductor resolution."
+        // #1682: total over the two known producers (spec/baton.md §3). Pre-#1682 ledger lines carry
+        // no Reason, so null falls into the TokenBudget arm rather than a fabricated third case.
+        return arrested.Reason switch
+        {
+            ArrestReason.ToolStepCap => arrested.ToolStepCount is { } steps and > 0
+                ? $"Execution arrested: tool-step cap exceeded ({steps} tool steps measured) — awaiting conductor resolution."
+                : "Execution arrested: tool-step cap exceeded — awaiting conductor resolution.",
+            ArrestReason.TokenBudget or null => DescribeTokenBudgetArrest(arrested),
+            _ => throw new ArgumentOutOfRangeException(nameof(arrested), arrested.Reason, "Unknown ArrestReason."),
+        };
+    }
+
+    private static string DescribeTokenBudgetArrest(FlowEvent.ExecutionArrested arrested)
+    {
+        // #1682: BilledTokens (Σ input + Σ output [+ Σ cache_creation]) is what the budget actually
+        // arrests on now -- ContextLevelTokens + TokensOut was #1623's "not shown reachable" reading,
+        // replaced wholesale rather than kept as a fallback (spec/baton.md §3 states the arithmetic).
+        // A pre-#1682 ledger line's WorkerUsage never set BilledTokens, so this falls back to the old
+        // ContextLevelTokens + TokensOut reading for that legacy case only.
+        var billed = arrested.Usage?.BilledTokens
+            ?? (arrested.Usage?.ContextLevelTokens ?? arrested.Usage?.TokensIn ?? 0) + (arrested.Usage?.TokensOut ?? 0);
+        return billed > 0
+            ? $"Execution arrested: token budget exceeded ({billed} billed tokens measured) — awaiting conductor resolution."
             : "Execution arrested: token budget exceeded — awaiting conductor resolution.";
     }
 

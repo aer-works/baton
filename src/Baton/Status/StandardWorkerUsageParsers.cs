@@ -217,6 +217,49 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
             return null;
         }
     }
+
+    /// <summary>
+    /// #1682: the number of <c>tool_use</c> content blocks a <c>"type":"assistant"</c> message
+    /// carries — every block, not just the first (unlike <see cref="TryParseToolName"/>, whose single
+    /// display name would undercount a multi-tool turn). Same top-level shape
+    /// <see cref="TryParseToolName"/> reads, deliberately not delegating to it.
+    /// </summary>
+    public int CountToolSteps(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return 0;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "assistant"
+                || !root.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object
+                || !message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+            {
+                return 0;
+            }
+
+            var count = 0;
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.ValueKind == JsonValueKind.Object
+                    && block.TryGetProperty("type", out var blockType) && blockType.GetString() == "tool_use")
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+        catch (JsonException)
+        {
+            return 0;
+        }
+    }
 }
 
 /// <summary>
@@ -383,4 +426,13 @@ public sealed class AgyUsageParser : IWorkerUsageParser
             return null;
         }
     }
+
+    /// <summary>
+    /// #1682: 1 for any <c>"step_type":"tool"</c> step_update carrying a <c>tool_name</c> — the SAME
+    /// gate <see cref="TryParseToolName"/> uses, deliberately with no <c>state</c> filter: agy emits a
+    /// line at <c>state:"ACTIVE"</c> and a second at its terminal state for the SAME tool call, both
+    /// counted here. spec/baton.md §3 has the measured calibration for why that double count is the
+    /// right one, not a stricter DONE-only alternative.
+    /// </summary>
+    public int CountToolSteps(string rawLine) => TryParseToolName(rawLine) is not null ? 1 : 0;
 }

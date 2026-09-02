@@ -171,7 +171,9 @@ public static class RoleDispatch
             // #1623: verify is the engine's own step, never operator-overridden here -- a role either
             // declares one or it doesn't. The token budget follows timeoutOverride's own pattern.
             VerifyPixiTask: role.VerifyPixiTask,
-            TokenBudget: tokenBudgetOverride ?? role.TokenBudget);
+            TokenBudget: tokenBudgetOverride ?? role.TokenBudget,
+            // #1682: no dispatch-time override axis exists for this one -- see WorkerBindingConfigEntry.MaxToolSteps's own doc.
+            MaxToolSteps: role.MaxToolSteps);
     }
 
     /// <summary>

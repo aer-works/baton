@@ -36,6 +36,12 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// that declares none; <c>--token-budget</c> overrides this per dispatch
 /// (<see cref="RoleDispatch.ToBinding"/>'s own parameter).
 /// </param>
+/// <param name="MaxToolSteps">
+/// #1682 (contract: <c>spec/baton.md</c> §3): the default per-execution tool-step ceiling -- a second
+/// arrest trigger, independent of <see cref="TokenBudget"/>, fired by <c>Mutation.TokenBudgetMonitor</c>
+/// on tool-step LINE COUNT rather than token volume. Null means no cap for a role that declares none.
+/// No dispatch-time override exists for this axis.
+/// </param>
 public sealed record WorkerRole(
     string Id,
     string Tier,
@@ -48,7 +54,8 @@ public sealed record WorkerRole(
     string Purpose,
     IReadOnlyList<WorkerRoleOutput> Outputs,
     string? VerifyPixiTask = null,
-    long? TokenBudget = null);
+    long? TokenBudget = null,
+    int? MaxToolSteps = null);
 
 /// <summary>
 /// One file a role's dispatch produces in <c>BATON_OUTPUT_DIR</c> (#897) — the structured, per-role
@@ -174,7 +181,8 @@ public static class WorkerRoleCatalog
                 Purpose: raw.Purpose,
                 Outputs: raw.Outputs.Select(o => ResolveOutput(raw.Id, o)).ToList(),
                 VerifyPixiTask: raw.VerifyPixiTask,
-                TokenBudget: raw.TokenBudget));
+                TokenBudget: raw.TokenBudget,
+                MaxToolSteps: raw.MaxToolSteps));
         }
 
         return roles;
@@ -272,7 +280,9 @@ public static class WorkerRoleCatalog
         // #1623: optional like the three above, for the same reason -- most roles declare neither and
         // omitting them is exactly "no engine-run verify, no token budget", the WorkerRole defaults.
         string? VerifyPixiTask = null,
-        long? TokenBudget = null);
+        long? TokenBudget = null,
+        // #1682: optional for the same reason -- most roles declare no tool-step cap.
+        int? MaxToolSteps = null);
 
     private sealed record RawOutput(
         [property: JsonRequired] string Name,
