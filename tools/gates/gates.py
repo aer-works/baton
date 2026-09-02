@@ -544,10 +544,10 @@ def selftest():
             _write_stub_pixi(bin_dir, real_gates_py, call_log, fast_exit=7)
             env = dict(os.environ)
             env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
-            # #1651 F1: main() (:618-619) already popped GIT_ENV_KEYS from THIS process's
-            # os.environ before selftest() ran, so `env = dict(os.environ)` above starts clean
-            # regardless of what .githooks/pre-push:19 does -- copying it gave the hook's own
-            # `unset` line no discriminating control. Poison GIT_DIR/GIT_INDEX_FILE into the
+            # #1651 F1: main()'s GIT_ENV_KEYS pop (its first statement) already popped these keys
+            # from THIS process's os.environ before selftest() ran, so `env = dict(os.environ)`
+            # above starts clean regardless of what .githooks/pre-push's own `unset` line does --
+            # copying it gave that line no discriminating control. Poison GIT_DIR/GIT_INDEX_FILE into the
             # subprocess's env here so the hook itself has to scrub them; the stub records what it
             # actually saw (see _write_stub_pixi) and the miss arm below asserts on that record.
             hookenv_decoy = os.path.join(td, "hookenv-decoy", ".git")
