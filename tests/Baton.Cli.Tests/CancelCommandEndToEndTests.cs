@@ -3,6 +3,7 @@ using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Status;
 using Baton.Store;
 using Baton.Templates;
 
@@ -214,6 +215,47 @@ public class CancelCommandEndToEndTests
 
             await Assert.ThrowsAsync<WorkerBindingConfigException>(
                 () => CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// F3 (#1607 review): a bare `baton run --bindings &lt;elsewhere&gt;` never copies bindings.json
+    /// into the room directory (spec/baton.md §2) — <see cref="WriteThreeStepBindingsAsync"/> writes it
+    /// into <c>testRoot</c>, not <paramref name="roomDirectory"/>, which is exactly that shape. Proves
+    /// the augmented message names the defaulted path and still says --bindings is available, without
+    /// changing the underlying exception type every other command's missing-bindings case also throws.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_with_the_defaulted_bindings_path_missing_names_it_and_points_at_the_flag()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteThreeStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteThreeStepBindingsAsync(testRoot);
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+
+            var finalState = (await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken)).State;
+            Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
+
+            var defaultBindingsPath = BatonPaths.RoomBindingsFile(roomDirectory);
+            Assert.False(File.Exists(defaultBindingsPath), "bare 'baton run' must not have copied bindings.json into the room");
+
+            var architectExecutionId = finalState.Steps.First(s => s.StepId.Value == "architect").LatestExecutionId;
+            Assert.NotNull(architectExecutionId);
+
+            var cancelOptions = new CancelOptions(roomDirectory, architectExecutionId.Value.Value, defaultBindingsPath);
+            var ex = await Assert.ThrowsAsync<WorkerBindingConfigException>(
+                () => CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains(defaultBindingsPath, ex.Message, StringComparison.Ordinal);
+            Assert.Contains("--bindings", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("default", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {

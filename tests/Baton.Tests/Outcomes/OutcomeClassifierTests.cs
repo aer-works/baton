@@ -1,3 +1,4 @@
+using Baton.Tests.Projection;
 using Baton.Tests.TestSupport;
 using Baton.Dispatch;
 using Baton.Domain;
@@ -6,6 +7,22 @@ using Baton.Status;
 
 namespace Baton.Tests.Outcomes;
 
+/// <summary>
+/// #1607 flake fix (found while gating, unrelated to #1607's own change): several tests here drive
+/// <see cref="OutcomeClassifier.Classify"/> with a <see cref="FakeResponseParser"/> that returns a
+/// non-null response, which reaches <c>OutputMaterializer.TryCaptureFinalResponse</c>'s success arm and
+/// writes a real, unguarded <c>Console.Error.WriteLine("CAPTURED (#1594): ...")</c> — the same
+/// process-global stream <see cref="ConsoleErrorCaptureCollection"/> exists to serialize access to.
+/// Before this fix, this class ran in xUnit's normal parallel pool and could interleave with any test
+/// in that collection (observed: <c>RoomTurnThrottleTests.A_partial_throttle_file_overrides_only_the_field_it_names</c>,
+/// which asserts stderr is empty after temporarily swapping it via <c>Console.SetError</c>, occasionally
+/// captured this class's stray write instead). Joining the same collection is the fix: the collection
+/// docstring's own scope ("every test class that captures loud-fallback stderr") reads as
+/// SetError-swapping only, but the actual invariant it protects is "nothing else may write to the real
+/// stream while a member holds it swapped" — a class that writes it unguarded needs the same
+/// serialization as a class that swaps it.
+/// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public class OutcomeClassifierTests
 {
     [Fact]

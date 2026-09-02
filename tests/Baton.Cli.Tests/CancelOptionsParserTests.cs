@@ -53,9 +53,11 @@ public class CancelOptionsParserTests
     }
 
     [Fact]
-    public void A_missing_bindings_option_throws()
+    public void An_omitted_bindings_option_defaults_to_the_room_s_own_bindings_json_1607()
     {
-        Assert.Throws<CliArgumentException>(() => CancelOptionsParser.Parse(["task", "--execution", "exec-1"]));
+        var options = CancelOptionsParser.Parse(["task", "--execution", "exec-1"]);
+
+        Assert.Equal(Path.Combine(Path.GetFullPath("task"), "bindings.json"), options.BindingsFilePath);
     }
 
     [Fact]

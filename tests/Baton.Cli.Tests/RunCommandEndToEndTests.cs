@@ -423,13 +423,25 @@ public class RunCommandEndToEndTests
 
             var pumpTask = RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
 
-            // Wait for MutationInterface's own ConcurrencyGuard (flow.lock) to be held: that only
-            // happens inside StartWorkflowAsync, called strictly AFTER RunCommand's one-time
-            // CancelRequestFile.DeleteStalePendingRequest sweep at start-up — so once this is true,
-            // writing the request file below can never race that sweep and be deleted out from
-            // under this test before the poller ever sees it.
+            // Wait for MutationInterface's own ConcurrencyGuard (flow.lock) to be held BY THE PUMP
+            // ITSELF, not merely held by someone: a generic ConcurrencyGuard.IsHeld probe cannot tell
+            // this pump's own long-lived hold apart from WorktreeWorkspaces.Provision's transient
+            // acquire-then-release of the SAME lock file a few statements earlier in
+            // RunCommand.ExecuteAsync (WorktreeWorkspaces.cs's own "worktree provisioning" holder
+            // description). #1649: IsHeld can observe THAT hold, race ahead, and write the request
+            // file before RunCommand's own CancelRequestFile.DeleteStalePendingRequest sweep (further
+            // down the same method, but still before this pump's real acquire) has run, so the sweep
+            // deletes the just-written request out from under this test (this is what made
+            // A_cancel_request_against_a_resumed_parked_room_is_consumed_when_settling_the_park_terminates_the_run
+            // ~40% flaky, misread once as an #1607 F1 regression — it reproduces unchanged at #1607's
+            // own merge-base). Checking the holder sidecar's description instead of the bare lock
+            // discriminates the two: it is only ever "baton run pump (pid N)" once THIS pump's own
+            // acquire — which happens strictly after the sweep — has landed. #1649 covers the
+            // production-side race a real concurrent `baton cancel` could still hit; this fixes only
+            // the test's own false positive.
             var lockDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
-            while (!ConcurrencyGuard.IsHeld(roomDirectory))
+            while (!(ConcurrencyGuard.ReadHolderInfo(roomDirectory).HolderDescription ?? string.Empty)
+                .StartsWith("baton run pump", StringComparison.Ordinal))
             {
                 Assert.True(DateTime.UtcNow < lockDeadline, "Timed out waiting for the pump to acquire flow.lock.");
                 Assert.False(pumpTask.IsCompleted, "expected the pump to still be running (parked) when this check runs");
