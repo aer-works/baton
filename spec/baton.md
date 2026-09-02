@@ -935,7 +935,7 @@ on is refuted.** #1691 proposed that room `38c24d11` is a RATE anomaly where #16
 TOTAL anomaly, and that a windowed billed-rate limit (proposal: 250,000 billed tokens in any trailing
 5 minutes) could therefore ship as a role default. Measured over the whole room corpus rather than the
 three rooms the issue named — `python tools/room-rate-sweep/sweep.py --sweep`, which is the register
-for these numbers and is re-runnable as the corpus grows — **no such value exists.** Seven
+for these numbers and is re-runnable as the corpus grows — **no such value exists.** Six
 `dispatch-implement` rooms that PRODUCED THEIR WORK burned billed tokens FASTER than `38c24d11`'s
 68,240/minute, topping out at 123,531/minute (1.81×), and the closest is still 1.07× — the populations
 do not merely overlap, they interleave with no gap to put a threshold in. Those figures involve no
@@ -944,11 +944,24 @@ measured exactly. "Produced their work" is the load-bearing filter and is strict
 `Natural` uncancelled exit says only that the PROCESS ended cleanly, so the sweep reads the outcome
 events instead (at least one `executionSucceeded`, no `executionFailed`); `dispatch-implement-e5567544`
 passes the weaker test while journalling `executionFailed: Contract not satisfied` three times and is
-excluded (#1707 review, which caught it counted). Nor does the answer turn on the window's width or on
-how agy's per-line times are reconstructed: across every width swept (`--window`, 0.5 to 15 minutes) and
-under both reconstructions (`--offsets uniform|duration`) the runaway's windowed peak sits BELOW
-`dispatch-implement-6142bd07`'s, so no width reverses the ordering and no percentile rule isolates a
-room that sits mid-pack. The concrete cost is pinned in `BilledRateReplayTests`: the proposed 250,000
+excluded (#1707 review, which caught it counted). **Corrected 2026-09-02 (#1707 review §1c): the answer
+does not rest on any reconstruction, and the prior text here — a windowed sweep across
+`--offsets uniform|duration` — should never have been the load-bearing leg, because both
+reconstructions rescale onto the same measured `executionStarted`..`executionExited` span and so
+cannot in principle represent burstiness the span does not already imply.** A reconstruction-free bound
+follows instead from the `separation` block alone, by pigeonhole over disjoint 5-minute windows:
+`dispatch-implement-46d513e7` billed 1,754,518 over a 14.2-minute span, so across `⌈14.2/5⌉ = 3`
+disjoint windows some one of them held at least `1,754,518 / 3 = 584,839` — no offset, no modelling, no
+reconstruction. The runaway's own true peak is bounded above by its entire per-execution total, 794,940
+(single-execution arithmetic: `794,940 / 698.948 s = 68,235/min`, matching the recorded 68,240/min). Any
+limit that arrests the runaway while sparing `46d513e7` must therefore sit in `(584,839, 794,940]` —
+which requires the runaway to have concentrated at least 73.6% of its whole burn into 5 of its 11.65
+minutes, against reconstructed peaks of 464,238 (uniform) and 372,774 (duration), kept here only as
+illustration of how far short of that band both land. The same bound applies to the rest of the
+delivered population: `dispatch-implement-55aa75ae` floors at 473,318, `dispatch-implement-46e842cd` at
+401,799, `dispatch-implement-6142bd07` at 399,600, `dispatch-implement-17d325bf` at 349,769,
+`dispatch-implement-7d25642b` at 336,908 — so the proposed 250,000 provably false-arrests all six
+delivered rooms, not only `6142bd07`. The concrete cost is pinned in `BilledRateReplayTests`: the proposed 250,000
 arrests `38c24d11` at usage line 27 of 70 (278,565 billed, 65% of the burn saved) **and arrests
 `dispatch-implement-6142bd07` at usage line 30 of 221** — an `implement` lane that journalled
 `executionSucceeded` with no failure, at 1,198,800 billed, under the shipped budget and cap, which
@@ -979,10 +992,19 @@ while timing the other by arrival would make the trigger mean two different thin
 2026-09-02 (#1707 review): an earlier draft of this paragraph said agy "carries no time field at all",
 which is false — every agy `step_update` carries `duration_seconds`, that step's own elapsed time.** It
 is not a wall-clock stamp and cannot be used live, but it gives the sweep a second, independent
-reconstruction (`--offsets duration`) that cross-checks the uniform one; both reproduce every replay
-result in `BilledRateReplayTests` exactly. No timestamped billed history exists anywhere on disk for a
-completed room, so a reconstruction of some kind is unavoidable when reading history, and the sweep says
-which one it used at every use. **There is deliberately no warm-up**: for an execution's first 5 minutes
+reconstruction (`--offsets duration`) that cross-checks the uniform one. **Corrected 2026-09-02 (#1707
+review F2): the two reconstructions do NOT reproduce every replay result exactly, and the prior claim
+here was unfalsifiable from the tree.** `BilledRateReplayTests` is fixtured exclusively under
+`--offsets uniform` — the sweep's own `--offsets` argparse default — so its exact assertions
+(`464,238` for the runaway's disabled-trigger peak, `278,565`/`255,121` at arrest) are uniform-only
+numbers; no test arm runs `--offsets duration`, and none of this repository's checked-in fixtures cover
+it. What is true and checkable is narrower: both reconstructions preserve the same ordering and the
+same arrest/no-arrest outcome on every case `BilledRateReplayTests` exercises. They do not agree on the
+runaway's own peak — the duration reconstruction puts it at 372,774 against uniform's 464,238 (and the
+disabled-cap comparison at 623,222 against 538,687) — so a claim that hinges on the exact figure, not
+merely the ordering, must say which reconstruction it used. No timestamped billed history exists
+anywhere on disk for a completed room, so a reconstruction of some kind is unavoidable when reading
+history, and the sweep says which one it used at every use. **There is deliberately no warm-up**: for an execution's first 5 minutes
 the trailing window covers the whole run, so an armed limit behaves as a second, tighter budget over
 that opening stretch. A warm-up would blind the trigger to exactly the opening burst it exists to see —
 the runaway's own crossing lands between 2.6 and 4.5 minutes depending on which reconstruction is used,
@@ -1044,9 +1066,17 @@ arrested) `implement` rooms under `~/.baton/rooms` — `dispatch-implement-3dc5e
 **Corrected 2026-09-02 (#1691): those two figures are the NON-deduped sums, taken before #1686 review
 F6's `message.id` dedupe landed in the same PR that stated them. Under the accounting that actually
 shipped they are 344,225 and 228,536** (recompute with `python tools/room-rate-sweep/sweep.py --sweep`),
-so 1,200,000 is ~3.5× the higher measured normal rather than the ~2× this paragraph derives it as. The
-value is left unchanged: it errs loose, not tight, and the number that would justify moving it is itself
-under-read on claude by #1706 above, so re-deriving it belongs with that fix rather than here. The OLD
+so 1,200,000 is ~3.5× the higher measured normal rather than the ~2× this paragraph derives it as.
+**Corrected 2026-09-02 (#1707 review F4): this budget does NOT "err loose, not tight" — the PR's own
+`fasterAndDelivered` corpus shows it arresting four delivered agy lanes in a single execution, each
+over the shipped 1,200,000 ceiling and each carrying `produced_work: true`: `dispatch-implement-7d25642b`
+(2,358,353, ~2× the budget), `dispatch-implement-46d513e7` (1,754,518), `dispatch-implement-55aa75ae`
+(1,419,955), and `dispatch-implement-46e842cd` (1,205,398). Only `dispatch-implement-6142bd07`
+(1,198,800) and `dispatch-implement-17d325bf` (1,049,306) sit under it. The budget is left unchanged in
+THIS PR regardless — not because it is loose, but because the fix is blocked on an operator ruling this
+PR does not make: whether `implement`'s ceiling should move per-vendor or the scalar should simply rise,
+and the number that would settle either question is itself under-read on claude by #1706 above, so
+re-deriving it belongs with that fix rather than here.** The OLD
 600,000 default, read under the NEW billed-token arithmetic rather than the OLD level-based one it was
 tuned for, would already false-arrest the FIRST of those two ordinary, successful lanes mid-run — the
 new default is set to roughly 2× the higher of the two measured normal totals, giving headroom for a

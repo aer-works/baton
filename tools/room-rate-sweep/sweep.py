@@ -12,6 +12,7 @@ paragraph: the corpus grows, and the numbers move with it.
     python tools/room-rate-sweep/sweep.py --sweep
     python tools/room-rate-sweep/sweep.py --sweep --window 2 --offsets duration
     python tools/room-rate-sweep/sweep.py --emit-fixture tests/Baton.Tests/Fixtures/billed-rate-rooms.json
+    python tools/room-rate-sweep/sweep.py --selftest
 
 What it measures, and what it assumes
 -------------------------------------
@@ -41,6 +42,13 @@ places:
 Neither agy reconstruction is authoritative. What makes the #1691 conclusion safe is that it does not
 rest on either: `--sweep`'s billed-per-minute column is total / measured span, exact on both vendors
 with no reconstruction at all, and the separation question is answered there.
+
+Corrected 2026-09-02 (#1707 review F10): the width sweep behind the "no width reverses the ordering"
+claim in spec/baton.md SS3 was run by hand at W in {1, 2, 3, 5, 8, 10} minutes -- `--window` takes one
+value per invocation, there is no built-in multi-width loop, and the range was previously stated two
+different ways with neither recorded anywhere re-runnable. This docstring is now that single record;
+spec/baton.md SS3 no longer restates a range of its own -- its refutation argument was replaced by a
+reconstruction-free pigeonhole bound that does not depend on sweeping widths at all.
 """
 
 import argparse
@@ -133,15 +141,20 @@ def billed_samples(stdout_log, span, offsets="uniform"):
                         "cache_read_input_tokens", "cache_creation_input_tokens")):
                     continue
                 message_id = message.get("id")
-                if isinstance(message_id, str) and message_id:
-                    # #1686 review F6/F4: repeated ids carry an IDENTICAL usage object (verified over
-                    # these captures), so first sighting wins, exactly as the monitor does it.
-                    if message_id in seen_ids:
-                        continue
-                    seen_ids.add(message_id)
+                # #1686 review F6/F4: repeated ids carry an IDENTICAL usage object (verified over these
+                # captures), so first sighting wins, exactly as the monitor does it.
+                if isinstance(message_id, str) and message_id and message_id in seen_ids:
+                    continue
                 stamp = record.get("timestamp")
                 if not stamp:
                     continue
+                # #1707 review F7: register the id only once a usable (timestamped) sample is actually
+                # in hand -- the same guard tools/fleet-glass/pusher.py:extract_live_counts already
+                # carries. Registering before this point would poison seen_ids on a first-sighting line
+                # that has usage but no timestamp, permanently dropping every later, timestamped repeat
+                # of that same id.
+                if isinstance(message_id, str) and message_id:
+                    seen_ids.add(message_id)
                 claude.append((
                     (_parse_time(stamp) - started).total_seconds(),
                     usage.get("input_tokens") or 0,
@@ -256,6 +269,11 @@ def command_sweep(args):
     rows.sort(key=lambda r: r["per_minute"], reverse=True)
     print("role prefix: %s   window: %g min   agy offsets: %s   rooms swept: %d"
           % (args.role_prefix, args.window, args.offsets, len(rows)))
+    # #1707 review F/M4: `peakWin` is EXACT for claude (the line's own timestamp) and RECONSTRUCTED for
+    # agy (module docstring) -- both agy reconstructions rescale onto the same measured span, so a
+    # peakWin comparison between two agy rows cannot by construction detect burstiness the span does not
+    # already imply. `tok/min` (total / measured span) carries no such caveat on either vendor.
+    print("(peakWin is EXACT on claude, RECONSTRUCTED on agy -- see --offsets and the module docstring)")
     print("%-8s %9s %9s %10s %7s %5s %-16s %-6s %-5s %s"
           % ("vendor", "tok/min", "peakWin", "total", "min", "n", "reason", "canc", "work", "room"))
     for row in rows:
@@ -333,7 +351,11 @@ def command_emit_fixture(args):
                 "EXACT on both vendors -- no reconstruction is involved in this block, which is why "
                 "the #1691 conclusion rests on it. `fasterAndDelivered` lists every swept room that "
                 "burned faster than the reference AND produced its work (>=1 executionSucceeded, 0 "
-                "executionFailed)."),
+                "executionFailed). `executions` (#1707 review F6) is the one field that tells a reader "
+                "whether a row's figures are comparable: `totalBilled` comes from the FIRST execution's "
+                "log alone while `minutes` spans the room's first executionStarted to its last "
+                "executionExited, so on any row with executions > 1 the rate is understated and "
+                "totalBilled may not belong to the execution that delivered."),
             "rolePrefix": args.role_prefix,
             "referenceRoom": reference["room"],
             "referenceTokensPerMinute": reference["per_minute"],
@@ -341,7 +363,7 @@ def command_emit_fixture(args):
             "roomsThatDelivered": sum(1 for r in rows if r["produced_work"]),
             "fasterAndDelivered": [
                 {"room": r["room"], "vendor": r["vendor"], "tokensPerMinute": r["per_minute"],
-                 "totalBilled": r["total"], "minutes": r["minutes"]}
+                 "totalBilled": r["total"], "minutes": r["minutes"], "executions": r["executions"]}
                 for r in sorted(faster, key=lambda r: r["per_minute"], reverse=True)
             ],
         }
@@ -352,8 +374,54 @@ def command_emit_fixture(args):
     return 0
 
 
+def _selftest_dedupe_does_not_poison_on_a_missing_timestamp():
+    """#1707 review F7: a first-sighting claude line with usage but no `timestamp` must be dropped
+    WITHOUT blocking a later, timestamped repeat of the same message.id from being counted -- the same
+    guard tools/fleet-glass/pusher.py:extract_live_counts already carries. Proves the fix by construction:
+    two lines share one message.id, the first has no timestamp, the second does; before the fix the
+    first line poisoned seen_ids and the second was silently dropped too, yielding zero samples.
+    """
+    import tempfile
+
+    lines = [
+        json.dumps({"type": "assistant", "message": {
+            "id": "m1", "usage": {"input_tokens": 5, "output_tokens": 3}}}),
+        json.dumps({"type": "assistant", "timestamp": "2026-09-01T00:00:10Z", "message": {
+            "id": "m1", "usage": {"input_tokens": 5, "output_tokens": 3}}}),
+    ]
+    with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False, encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+        path = handle.name
+    try:
+        started = _parse_time("2026-09-01T00:00:00Z")
+        vendor, samples = billed_samples(path, (started, started))
+        assert vendor == "claude", "expected claude, got %r" % (vendor,)
+        assert samples == [(10.0, 5, 3, 0)], (
+            "expected the timestamped repeat to be counted once, got %r" % (samples,))
+    finally:
+        os.unlink(path)
+
+
+def command_selftest(_args):
+    tests = [_selftest_dedupe_does_not_poison_on_a_missing_timestamp]
+    failed = 0
+    for test in tests:
+        name = test.__name__
+        try:
+            test()
+        except AssertionError as exc:
+            failed += 1
+            print("FAIL %s: %s" % (name, exc), file=sys.stderr)
+        else:
+            print("OK %s" % name)
+    print("selftest: %d of %d passed" % (len(tests) - failed, len(tests)))
+    return 1 if failed else 0
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--selftest", action="store_true",
+                        help="run this script's own unit tests (no room corpus needed)")
     parser.add_argument("--sweep", action="store_true", help="print the per-room rate table")
     parser.add_argument("--role-prefix", default="dispatch-implement",
                         help="which rooms to sweep (default: dispatch-implement)")
@@ -371,6 +439,9 @@ def main(argv):
                         help="how agy per-line offsets are reconstructed; ignored on claude, whose "
                              "offsets are measured. See the module docstring.")
     args = parser.parse_args(argv)
+
+    if args.selftest:
+        return command_selftest(args)
 
     if not os.path.isdir(ROOMS):
         print("no room corpus at %s -- nothing to sweep." % ROOMS, file=sys.stderr)

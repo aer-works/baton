@@ -475,8 +475,9 @@ public static class StateProjector
     {
         // #1682/#1691: total over the three known producers (spec/baton.md §3). Pre-#1682 ledger lines
         // carry no Reason, so null falls into the TokenBudget arm rather than a fabricated third case.
-        // ArrestReasonExhaustivenessTests pins this switch total against Enum.GetValues<ArrestReason>()
-        // so a new member fails a gate rather than the throwing default arm below in production.
+        // StateProjectorTests.ExecutionArrested_DescribeArrest_covers_every_ArrestReason_member pins
+        // this switch total against Enum.GetValues<ArrestReason>() so a new member fails a gate rather
+        // than the throwing default arm below in production.
         return arrested.Reason switch
         {
             ArrestReason.ToolStepCap => arrested.ToolStepCount is { } steps and > 0

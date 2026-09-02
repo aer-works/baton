@@ -28,7 +28,7 @@ namespace Baton.Tests.Mutation;
 /// the measured-vs-reconstructed distinction and the direction of the reconstruction's error are
 /// stated, and neither is restated in this file. In one clause: claude offsets are measured, agy
 /// offsets are not. What does NOT depend on any of it is the separation argument in
-/// <see cref="CALIBRATION_no_rate_limit_separates_the_runaway_from_normal_lanes_that_completed"/> —
+/// <see cref="CALIBRATION_no_rate_limit_separates_the_runaway_from_lanes_that_delivered"/> —
 /// spec/baton.md §3 says why that one is assumption-free.
 /// </para>
 /// </summary>
@@ -241,13 +241,15 @@ public sealed class BilledRateReplayTests
         // the real ClaudeUsageParser with their lines' OWN timestamps -- the only rooms in the corpus
         // where the windowed rate is measured rather than reconstructed.
         //
-        // Read the peaks with the caveat stated: claude's mid-stream `assistant` usage carries a
-        // message_start PLACEHOLDER output_tokens (median 3-4 over these two captures), so the billed
-        // figure the monitor can see on claude is essentially cache_creation alone and under-reads the
-        // vendor's own modelUsage by ~2.6x. These rooms therefore look SLOW to this trigger by
-        // construction, which is precisely how #1691's premise was arrived at -- an agy runaway
-        // compared against claude references. spec/baton.md §3 and the follow-up issue cited there
-        // carry it; do not read 129,143 as "this lane's true 5-minute burn".
+        // Read the peaks with the caveat stated. **Corrected 2026-09-02 (#1707 review F8/L2): claude's
+        // mid-stream `assistant` usage carries a message_start PLACEHOLDER on BOTH the input and output
+        // side, not "output tokens" alone -- the missing input side is 3.7x the missing output side
+        // (#1706). So the billed figure the monitor can see on claude is essentially cache_creation
+        // alone, and "~2.6x" was one room's under-read ratio (dispatch-implement-3dc5e21a's), not a
+        // per-vendor constant -- the other evidence room's ratio is 1.29x. These rooms therefore look
+        // SLOW to this trigger by construction, which is precisely how #1691's premise was arrived at --
+        // an agy runaway compared against claude references. spec/baton.md §3 and #1706, the issue cited
+        // there, carry it; do not read 129,143 as "this lane's true 5-minute burn".
         var room = LoadFixture()[roomName];
         Assert.Equal("claude", room.Vendor);
         Assert.True(room.OffsetsAreMeasured);

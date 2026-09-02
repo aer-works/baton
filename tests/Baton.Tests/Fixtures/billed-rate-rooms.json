@@ -3279,54 +3279,60 @@
     }
   },
   "separation": {
-    "_comment": "Billed tokens per minute = total / measured executionStarted..executionExited span. EXACT on both vendors -- no reconstruction is involved in this block, which is why the #1691 conclusion rests on it. `fasterAndDelivered` lists every swept room that burned faster than the reference AND produced its work (>=1 executionSucceeded, 0 executionFailed).",
+    "_comment": "Billed tokens per minute = total / measured executionStarted..executionExited span. EXACT on both vendors -- no reconstruction is involved in this block, which is why the #1691 conclusion rests on it. `fasterAndDelivered` lists every swept room that burned faster than the reference AND produced its work (>=1 executionSucceeded, 0 executionFailed). `executions` (#1707 review F6) is the one field that tells a reader whether a row's figures are comparable: `totalBilled` comes from the FIRST execution's log alone while `minutes` spans the room's first executionStarted to its last executionExited, so on any row with executions > 1 the rate is understated and totalBilled may not belong to the execution that delivered.",
     "rolePrefix": "dispatch-implement",
     "referenceRoom": "dispatch-implement-38c24d11",
     "referenceTokensPerMinute": 68240,
-    "roomsSwept": 123,
-    "roomsThatDelivered": 86,
+    "roomsSwept": 127,
+    "roomsThatDelivered": 90,
     "fasterAndDelivered": [
       {
         "room": "dispatch-implement-46d513e7",
         "vendor": "agy",
         "tokensPerMinute": 123531,
         "totalBilled": 1754518,
-        "minutes": 14.2
+        "minutes": 14.2,
+        "executions": 1
       },
       {
         "room": "dispatch-implement-55aa75ae",
         "vendor": "agy",
         "tokensPerMinute": 109068,
         "totalBilled": 1419955,
-        "minutes": 13.02
+        "minutes": 13.02,
+        "executions": 1
       },
       {
         "room": "dispatch-implement-46e842cd",
         "vendor": "agy",
         "tokensPerMinute": 104052,
         "totalBilled": 1205398,
-        "minutes": 11.58
+        "minutes": 11.58,
+        "executions": 1
       },
       {
         "room": "dispatch-implement-6142bd07",
         "vendor": "agy",
         "tokensPerMinute": 101121,
         "totalBilled": 1198800,
-        "minutes": 11.86
+        "minutes": 11.86,
+        "executions": 1
       },
       {
         "room": "dispatch-implement-17d325bf",
         "vendor": "agy",
         "tokensPerMinute": 97920,
         "totalBilled": 1049306,
-        "minutes": 10.72
+        "minutes": 10.72,
+        "executions": 1
       },
       {
         "room": "dispatch-implement-7d25642b",
         "vendor": "agy",
         "tokensPerMinute": 73091,
         "totalBilled": 2358353,
-        "minutes": 32.27
+        "minutes": 32.27,
+        "executions": 1
       }
     ]
   }
