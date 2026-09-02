@@ -1500,6 +1500,34 @@ definition has no exit event yet and needs every line scanned, not just the last
   derivation-stuck check above, independent of whether any room is Running (a failing push is not
   scoped to active lanes the way the derivation-stuck check is).
 
+  **`stdoutTail` (#1710).** A bounded live tail of the Running execution's own `.stdout.log`: the
+  last ~40 lines (`STDOUT_TAIL_MAX_LINES`), hard-capped at ~4 KB per room
+  (`STDOUT_TAIL_MAX_BYTES`, `pusher.py`'s `stdout_tail_for_room`), read straight off disk the same
+  bounded-tail-window way `live`'s other fields are — no engine change, no on-demand path, since the
+  glass's `baton` MCP connector is the Cloudflare worker serving KV, not the fleet machine (the
+  constraint that decides this design, #1710's own issue body). Over-cap content drops the OLDEST
+  lines first (`stdout_tail_for_room`'s own docstring is the canonical record of the truncation
+  direction and its leading `…` marker, not restated here). Every line passes the SAME secret-gate
+  patterns the deliverables path uses
+  (`secret_hit_index`) — a matching line becomes `[withheld]`, never dropping the whole tail the way
+  a deliverable's whole-content withholding does; `_gate_tail_lines`'s own docstring in `pusher.py`
+  is the canonical record of the missing-patterns-file fallback, not restated here. Absent, never a
+  fabricated empty string, on a terminal room (terminal rooms carry no `live` section at all — their
+  report is the record) and on a Running room whose execution has no captured stdout yet.
+
+  **Costs bytes and churn, never a write.** This rides the existing snapshot push the change-gate
+  already gates (#1457), so it never adds a KV write of its own.
+  Unlike `toolCalls`/`outputTokens`/`lastActivityAt`, `quantize_live_for_hash` does NOT quantize
+  `stdoutTail` for hashing — a Running room's tail changing (new stdout since the last push) already
+  flips the hash the same cycle its OTHER `live` fields would, since a Running room already changes
+  the hash on essentially every push while it is actively producing output; quantizing the tail text
+  itself would buy nothing the value-quantization above doesn't already buy for the fields that
+  actually caused #1690's incident (a churn source with no real-content correlate). The write-budget
+  ledger (below) counts writes, never bytes, so this field's only cost against it is the same
+  snapshot-push accounting every other `live` field already pays into — `pusher.py --selftest`'s own
+  arithmetic-gate arm proves the worst-day write total is identical whether or not any Running room
+  carries a `stdoutTail`.
+
 **Board + detail-pane IA (#1678, operator ruling 2026-09-02, Combo C+E).** `glass.html`'s Fleet tab
 is a three-column state board — Needs You (the conductor pinned first, then Stalled + Indeterminate
 rooms) / Running / Done (Failed + Succeeded, dismissible) — with a detail pane that opens on
