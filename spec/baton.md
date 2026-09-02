@@ -776,18 +776,50 @@ and settled `Indeterminate` even though the worker's own exit and output contrac
    repo-level declaration mechanism this issue picks (never also a `[tool.baton]` table in
    `pixi.toml`/`pyproject.toml`) — a plain-text file works for any workspace, pixi-based or not, which
    is the whole point since a foreign workspace's own task runner is unknown to this engine.
-   **Read from the workspace's COMMITTED tree (`git show HEAD:.baton/verify`), at dispatch time, before
-   the worker is spawned (#1708).** Both halves are load-bearing: a worker with write access to its own
-   workspace must never be able to author the command that grades it, and a worker with shell access
-   could commit one, so a committed read taken *after* the worker ran would be no boundary at all. A
-   fresh dispatch still takes a fresh snapshot, so a `baton redispatch` against a workspace whose
-   declaration changed never runs a stale command. Two deliberate costs, both fail-closed: an
-   **uncommitted** `.baton/verify` does not take effect, and a workspace that is not a git repository
+   **Read from the workspace's REVIEWED tree — `git show <merge-base of HEAD and origin/main>:.baton/verify`
+   — at dispatch time, before the worker is spawned (#1708).** Both halves are load-bearing: a worker
+   with write access to its own workspace must never be able to author the command that grades it, and
+   a worker with shell access could commit one, so a read taken *after* the worker ran, or taken from
+   the branch tip, would be no boundary at all. The merge-base is what makes the boundary hold across
+   *executions* and not only within one: an `implement` lane committing and pushing is its ordinary
+   designed behaviour, so `HEAD` on a lane branch contains the lane's own work, and a second dispatch
+   or a `baton redispatch` into the same worktree would otherwise be graded by a file the previous
+   worker wrote. Nothing a lane commits on its own branch changes what grades it. A fresh dispatch
+   still takes a fresh snapshot, so a `baton redispatch` against a workspace whose *reviewed* declaration
+   changed never runs a stale command.
+
+   **Scope, precisely — the one shape where that wider claim does not hold.** When no merge-base can be
+   computed (no remote at all, a default branch that is not `main`, unrelated histories) the read falls
+   back to `HEAD` and the engine appends the diagnostic-only
+   `FlowEvent.VerifyDeclarationUnreviewed(ExecutionId, Digest)`. On such a workspace the boundary is the
+   narrower, per-execution one: this execution still cannot author what grades it, but an earlier lane's
+   commit on the current branch is inside the baseline. That is announced rather than silent, which is
+   the whole point of the event. `origin/main` is one fixed ref on purpose and is never discovered from
+   `refs/remotes/origin/HEAD` or `remote.origin.*`: discovery would read repository config a worker can
+   write, which is the boundary this read exists to hold — so a repo whose default branch is not `main`
+   takes the loud fallback rather than a quiet, steerable answer.
+
+   Two deliberate costs, both fail-closed: an **uncommitted** `.baton/verify` does not take effect (and
+   neither does one committed only on the lane's branch), and a workspace that is not a git repository
    (or whose `git` cannot spawn) declares nothing, falling through to the role default rather than to a
    worker-writable file. When the working-tree file differs from what was read, the engine appends the
    diagnostic-only `FlowEvent.VerifyDeclarationIgnored(ExecutionId, CommittedDigest, WorkingTreeDigest)`
-   — no `StepState` field, no status surface, no verdict consequence: the journal is the whole record,
-   and it is what tells an operator that the file in their workspace is not what graded the run.
+   — **on every execution that drift is observed, whatever the verdict**, because "did anything touch my
+   verify declaration?" is a question an operator asks after a failed, arrested or cancelled run just as
+   often as after a clean one. No `StepState` field, no status surface, no verdict consequence for
+   either event: the journal is the whole record, and it is what tells an operator that the file in
+   their workspace is not what graded the run.
+
+   **The `git` spawns that produce this value are hardened (#1708), because their stdout decides what
+   command grades the run** — a stricter job than `pixi task list`'s, whose output only chooses between
+   running a gate and not. They run with a scrubbed environment (an allowlist, so no ambient `GIT_*`
+   redirects the read and no `~/.gitconfig` is consulted), a `PATH` with every relative or
+   workspace-rooted entry removed (so a `git.exe` dropped into the dispatched workspace cannot answer
+   the question), `-c core.hooksPath=` and `--no-textconv` (so nothing written into the workspace's
+   `.git/config` or `.gitattributes` filters — or executes against — the bytes), `--no-pager`, and
+   **stdout only**, so a warning git writes to stderr can never be taken for the declaration's own first
+   non-comment line. `Baton.Mutation.VerifyCommandResolver`'s single hardened-spawn helper is where all
+   of that is applied; there is no second, unhardened path to this value.
 3. `WorkerRole.VerifyPixiTask` (`implement` → `gates-quiet`; every other shipped role → none) — today's
    only source, run as `pixi run <task>`, unchanged. Baton's own repo keeps working unchanged under
    this arm: no `.baton/verify` file here and no `--verify` on baton's own dispatches.
@@ -812,13 +844,28 @@ repo-declared command line is not pre-probed at all.** It runs through `cmd.exe 
 intrinsic (`echo`, `call`, `exit`, `cd`) is perfectly runnable while resolving to no file on PATH — so
 the filesystem lookup that used to run here answered a question the shell was never going to ask, and
 answering it wrong skipped a real gate. The exit code decides instead: a command line that cannot run
-fails, and a failing verify is a `VerifyFailed` with output, never a silent pass. **`VerifyNotRun` therefore
-has exactly one producer: a SUCCESSFUL `pixi task list` whose output positively does not contain the
-role's task.** A probe that fails — non-zero exit from a stale lockfile, a failed solve, an unparseable
+fails, and a failing verify is a `VerifyFailed` with output, never a silent pass. **`VerifyNotRun` has
+exactly two producers, and both are POSITIVE evidence that `pixi run <task>` does not exist in this
+workspace** — never an inference from something failing:
+
+- **The workspace is not a pixi project** (#1708): no `pixi.toml`, and no `pyproject.toml` carrying a
+  `[tool.pixi]` table, in the dispatched directory or any ancestor. A filesystem read, taken **before**
+  any spawn. Reason: `"no pixi project: gates-quiet"`. The ancestor walk mirrors pixi's own manifest
+  discovery and is load-bearing: a monorepo package dispatched with `--workspace` is a real pixi
+  workspace whose manifest sits at the repo root, and calling that "not a pixi project" would skip a
+  gate that plainly exists. Every uncertain answer (an unreadable manifest, an unresolvable path) is
+  read as "it is a pixi project", which defers to the probe and then to the real run.
+- **A SUCCESSFUL `pixi task list` whose output positively does not contain the role's task.** Reason:
+  `"task absent: gates-quiet"` — #1702's own measured shape.
+
+A probe that fails — non-zero exit from a stale lockfile, a failed solve, an unparseable
 manifest, a concurrent lock, or `pixi` refusing to spawn at all — is an engine-environment problem and
-is never read as absence; it reports runnable and lets the real run decide, which fails closed. If not
-runnable, the engine appends
-`FlowEvent.VerifyNotRun(ExecutionId, Reason)` — `"task absent: gates-quiet"` — and stops: **no
+is never read as absence; it reports runnable and lets the real run decide, which fails closed. **The
+ordering between the two is what keeps those compatible**: the manifest check runs first, so a
+non-pixi workspace on a host with no `pixi` at all is answered by the filesystem, while a workspace
+that *is* a pixi project and whose `pixi` will not spawn stays "the engine's own tool is broken" and
+never softens into a not-run. If not runnable, the engine appends
+`FlowEvent.VerifyNotRun(ExecutionId, Reason)` and stops: **no
 `VerifyStarted` (never started), no `VerifyFailed`, and no
 `Indeterminate` settle.** The execution's own already-`Succeeded` classification (this branch is only
 reached when it is) decides `StepStatus`/`WorkflowOutcome` unassisted, exactly as if the role declared

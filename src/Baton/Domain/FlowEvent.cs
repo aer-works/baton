@@ -27,6 +27,7 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(VerifyFailed), "verifyFailed")]
 [JsonDerivedType(typeof(VerifyNotRun), "verifyNotRun")]
 [JsonDerivedType(typeof(VerifyDeclarationIgnored), "verifyDeclarationIgnored")]
+[JsonDerivedType(typeof(VerifyDeclarationUnreviewed), "verifyDeclarationUnreviewed")]
 [JsonDerivedType(typeof(ExecutionArrested), "executionArrested")]
 [JsonDerivedType(typeof(ExecutionIndeterminate), "executionIndeterminate")]
 [JsonDerivedType(typeof(CaptureResolved), "captureResolved")]
@@ -250,6 +251,34 @@ public abstract record FlowEvent
         ExecutionId ExecutionId,
         string? CommittedDigest,
         string? WorkingTreeDigest) : FlowEvent;
+
+    /// <summary>
+    /// #1708 M1: the declaration that graded this execution came from <c>HEAD</c> rather than from the
+    /// merge-base with <c>origin/main</c>, because no merge-base could be computed — no remote, a
+    /// default branch that is not <c>main</c>, or unrelated histories. The per-execution boundary still
+    /// holds (the value was read before the worker spawned), but the WIDER property does not: on this
+    /// workspace, a commit made by an earlier lane on the current branch is inside what grades the next
+    /// one, and nothing has reviewed it. This is what says so out loud instead of leaving it to be
+    /// inferred from the absence of a ref.
+    /// <para>
+    /// <b>Diagnostic only</b>, exactly like <see cref="VerifyDeclarationIgnored"/> — no
+    /// <see cref="StepState"/> field, no <c>WorkflowStatusView</c> surface, no <c>fleet_status</c>
+    /// plumbing, no <see cref="Status.WorkflowOutcome"/> consequence. It changes no verdict and needs no
+    /// reader beyond <c>flow.jsonl</c>; do not "complete" it into one.
+    /// </para>
+    /// <para>
+    /// Appended only when a declaration was actually FOUND that way. A workspace with no reviewed
+    /// baseline and no <c>.baton/verify</c> at all has nothing unreviewed to announce — it runs the role
+    /// default, same as any other.
+    /// </para>
+    /// </summary>
+    /// <param name="Digest">
+    /// <see cref="Mutation.VerifyCommandResolver.DeclarationDigest"/> of the command line that was read,
+    /// so the journal names WHICH unreviewed line took effect rather than only that one did.
+    /// </param>
+    public sealed record VerifyDeclarationUnreviewed(
+        ExecutionId ExecutionId,
+        string? Digest) : FlowEvent;
 
     /// <summary>
     /// #1623 (contract: <c>spec/baton.md</c> §3; the addendum's own words are quoted on

@@ -26,6 +26,16 @@ public static class TempGitRepository
         Run(path, "commit", "--allow-empty", "-m", message);
     }
 
+    /// <summary>
+    /// Points <c>refs/remotes/origin/main</c> at the current <c>HEAD</c>, making everything committed so
+    /// far the REVIEWED baseline #1708 M1 grades against and everything after it a lane's own,
+    /// unreviewed branch work. Written as a ref rather than by adding a real remote and fetching: the
+    /// resolver resolves <c>origin/main</c> through the ordinary ref lookup, so a real remote would add
+    /// network and a second repository without changing what is under test.
+    /// </summary>
+    public static void SetReviewedBaselineAtHead(string path) =>
+        Run(path, "update-ref", "refs/remotes/origin/main", "HEAD");
+
     private static void Run(string workingDirectory, params string[] args)
     {
         var startInfo = new ProcessStartInfo("git")

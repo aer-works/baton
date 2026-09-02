@@ -78,10 +78,13 @@ public sealed class VerifyCommandResolverTests
             WriteRepoDeclaration(workspace, "\n  \n# a comment\n  python -c \"import sys; sys.exit(0)\"  \n");
             TempGitRepository.CommitAll(workspace, "declare verify");
 
+            TempGitRepository.SetReviewedBaselineAtHead(workspace);
+
             var committed = await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
                 workspace, TestContext.Current.CancellationToken);
 
-            Assert.Equal("python -c \"import sys; sys.exit(0)\"", committed);
+            Assert.Equal("python -c \"import sys; sys.exit(0)\"", committed.CommandLine);
+            Assert.False(committed.Unreviewed);
         }
         finally
         {
@@ -105,6 +108,7 @@ public sealed class VerifyCommandResolverTests
             TempGitRepository.InitWithEverythingCommitted(workspace);
             WriteRepoDeclaration(workspace, "python -c \"import sys; sys.exit(1)\"");
             TempGitRepository.CommitAll(workspace, "declare verify");
+            TempGitRepository.SetReviewedBaselineAtHead(workspace);
 
             // The worker, mid-execution, replaces it with a verifier that always passes.
             WriteRepoDeclaration(workspace, "cmd /c exit 0");
@@ -112,11 +116,11 @@ public sealed class VerifyCommandResolverTests
             var committed = await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
                 workspace, TestContext.Current.CancellationToken);
 
-            Assert.Equal("python -c \"import sys; sys.exit(1)\"", committed);
+            Assert.Equal("python -c \"import sys; sys.exit(1)\"", committed.CommandLine);
             Assert.Equal("cmd /c exit 0", VerifyCommandResolver.ReadWorkingTreeRepoDeclaration(workspace));
 
             // ...and what actually runs is the committed line, never the worker's.
-            var resolved = VerifyCommandResolver.Resolve(committed, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+            var resolved = VerifyCommandResolver.Resolve(committed.CommandLine, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
             Assert.Equal("python -c \"import sys; sys.exit(1)\"", resolved!.Label);
         }
         finally
@@ -136,14 +140,16 @@ public sealed class VerifyCommandResolverTests
         try
         {
             TempGitRepository.InitWithEverythingCommitted(workspace);
+            TempGitRepository.SetReviewedBaselineAtHead(workspace);
             WriteRepoDeclaration(workspace, "cmd /c exit 0");
 
             var committed = await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
                 workspace, TestContext.Current.CancellationToken);
 
-            Assert.Null(committed);
+            Assert.Null(committed.CommandLine);
+            Assert.False(committed.Unreviewed);
 
-            var resolved = VerifyCommandResolver.Resolve(committed, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+            var resolved = VerifyCommandResolver.Resolve(committed.CommandLine, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
             Assert.Equal(VerifyCommandSource.RoleDefault, resolved!.Source);
         }
         finally
@@ -171,17 +177,18 @@ public sealed class VerifyCommandResolverTests
 
             // The dispatched workspace declares nothing of its own, so it declares nothing at all --
             // never the root's line.
-            Assert.Null(await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
-                package, TestContext.Current.CancellationToken));
+            Assert.Null((await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
+                package, TestContext.Current.CancellationToken)).CommandLine);
 
             // ...and when it does declare its own, that is the one read.
             WriteRepoDeclaration(package, "python -c \"import sys; sys.exit(1)\"");
             TempGitRepository.CommitAll(repoRoot, "declare package verify");
+            TempGitRepository.SetReviewedBaselineAtHead(repoRoot);
 
             Assert.Equal(
                 "python -c \"import sys; sys.exit(1)\"",
-                await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
-                    package, TestContext.Current.CancellationToken));
+                (await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
+                    package, TestContext.Current.CancellationToken)).CommandLine);
         }
         finally
         {
@@ -197,8 +204,8 @@ public sealed class VerifyCommandResolverTests
         {
             WriteRepoDeclaration(workspace, "cmd /c exit 0");
 
-            Assert.Null(await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
-                workspace, TestContext.Current.CancellationToken));
+            Assert.Null((await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
+                workspace, TestContext.Current.CancellationToken)).CommandLine);
         }
         finally
         {
@@ -209,13 +216,137 @@ public sealed class VerifyCommandResolverTests
     [Fact]
     public async Task ReadCommittedRepoDeclarationAsync_returns_null_when_git_itself_cannot_spawn()
     {
-        // Fails closed rather than throwing: this runs on the dispatch path, before the worker is
-        // spawned, so an exception here would abort a dispatch over an absent optional file.
+        // Fails closed rather than throwing -- see RunGitAsync's own doc for why nothing on this path
+        // may raise.
         var workspace = CreateTempWorkspace();
         try
         {
-            Assert.Null(await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
-                workspace, TestContext.Current.CancellationToken, gitProgram: "this-is-not-a-real-git-binary-12345"));
+            Assert.Null((await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
+                workspace, TestContext.Current.CancellationToken, gitProgram: "this-is-not-a-real-git-binary-12345")).CommandLine);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    // ---- #1708 M1: the baseline is the merge-base with origin/main, not HEAD ----
+
+    /// <summary>
+    /// #1708 M1, red-first: the boundary is per-EXECUTION only if a lane's own commits are outside it.
+    /// Here the reviewed baseline declares nothing, and the branch then COMMITS <c>exit 0</c> — exactly
+    /// what an <c>implement</c> lane does as its ordinary designed behaviour. Against the pre-M1 code the
+    /// read was <c>HEAD</c>'s, so <c>exit 0</c> came back and graded the next dispatch into the same
+    /// worktree; the merge-base read returns nothing and falls through to the role default.
+    /// </summary>
+    [Fact]
+    public async Task ReadCommittedRepoDeclarationAsync_ignores_a_declaration_the_branch_committed_after_the_reviewed_base()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+            TempGitRepository.SetReviewedBaselineAtHead(workspace);
+
+            // The lane commits its own declaration on its own branch, on top of the reviewed base.
+            WriteRepoDeclaration(workspace, "exit 0");
+            TempGitRepository.CommitAll(workspace, "lane declares its own verify");
+
+            // The control arm: HEAD really does hold it, so this test can distinguish "read the base"
+            // from "read nothing at all". Without this the assertion below would pass on a broken read.
+            Assert.Equal("exit 0", GitShowAtHead(workspace));
+
+            var committed = await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
+                workspace, TestContext.Current.CancellationToken);
+
+            Assert.Null(committed.CommandLine);
+            Assert.False(committed.Unreviewed);
+
+            var resolved = VerifyCommandResolver.Resolve(committed.CommandLine, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+            Assert.Equal(VerifyCommandSource.RoleDefault, resolved!.Source);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    /// <summary>
+    /// The other polarity: a declaration that IS in the reviewed base still takes effect, and a lane
+    /// committing a different one on top does not replace it. Without this arm the test above would also
+    /// pass for a read that returned <c>null</c> unconditionally.
+    /// </summary>
+    [Fact]
+    public async Task ReadCommittedRepoDeclarationAsync_reads_the_reviewed_base_declaration_not_the_branch_tip_one()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            WriteRepoDeclaration(workspace, "python -c \"import sys; sys.exit(1)\"");
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+            TempGitRepository.SetReviewedBaselineAtHead(workspace);
+
+            WriteRepoDeclaration(workspace, "exit 0");
+            TempGitRepository.CommitAll(workspace, "lane rewrites the verify declaration");
+            Assert.Equal("exit 0", GitShowAtHead(workspace));
+
+            var committed = await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
+                workspace, TestContext.Current.CancellationToken);
+
+            Assert.Equal("python -c \"import sys; sys.exit(1)\"", committed.CommandLine);
+            Assert.False(committed.Unreviewed);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    /// <summary>
+    /// No <c>origin/main</c> at all (no remote, or a default branch that is not <c>main</c>): the read
+    /// falls back to <c>HEAD</c> — the narrower, per-execution boundary — and SAYS SO, so the wider claim
+    /// is never made silently. spec/baton.md §3 scopes this; <c>FlowEvent.VerifyDeclarationUnreviewed</c>
+    /// is what carries it into the journal.
+    /// </summary>
+    [Fact]
+    public async Task ReadCommittedRepoDeclarationAsync_falls_back_to_HEAD_and_reports_unreviewed_with_no_origin_main()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            WriteRepoDeclaration(workspace, "python -c \"import sys; sys.exit(1)\"");
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+
+            var committed = await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
+                workspace, TestContext.Current.CancellationToken);
+
+            Assert.Equal("python -c \"import sys; sys.exit(1)\"", committed.CommandLine);
+            Assert.True(committed.Unreviewed);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    /// <summary>
+    /// Unreviewed is a fact about a declaration, not about a repository: a workspace with no reviewed
+    /// baseline AND no declaration has nothing to announce, so the flag stays false and the journal
+    /// stays quiet.
+    /// </summary>
+    [Fact]
+    public async Task ReadCommittedRepoDeclarationAsync_does_not_report_unreviewed_when_there_is_no_declaration_at_all()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+
+            var committed = await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
+                workspace, TestContext.Current.CancellationToken);
+
+            Assert.Null(committed.CommandLine);
+            Assert.False(committed.Unreviewed);
         }
         finally
         {
@@ -331,29 +462,145 @@ public sealed class VerifyCommandResolverTests
     public async Task CheckRunnableAsync_role_default_reports_runnable_when_pixi_itself_cannot_spawn()
     {
         // Pins the CheckPixiTaskAsync BatonException arm's own contract -- see its comment for why.
+        // RepoRoot() rather than null so this really does exercise that arm: #1708 M2's manifest check
+        // runs FIRST, and a workspace with no pixi project would short-circuit to not-run before the
+        // spawn was ever attempted.
         var resolved = VerifyCommandResolver.Resolve(
             committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
 
         var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
-            resolved!, workingDirectory: null, CancellationToken.None, pixiProgram: "this-is-not-a-real-pixi-binary-12345");
+            resolved!, RepoRoot(), CancellationToken.None, pixiProgram: "this-is-not-a-real-pixi-binary-12345");
 
         Assert.True(runnable);
         Assert.Null(reason);
     }
 
-    private static string CreateTempWorkspace()
+    // ---- #1708 M2: a workspace that is not a pixi project at all ----
+
+    /// <summary>
+    /// #1708 M2, red-first: <c>pixi run &lt;task&gt;</c> cannot exist in a workspace with no pixi
+    /// manifest, and the filesystem says so positively — the same class of evidence as "the task list ran
+    /// and did not name it", not the "the probe failed" class H2 refuses to read as absence.
+    /// <c>DispatchCommandEndToEndTests</c> carries the end-to-end arm and the regression it pins.
+    /// </summary>
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_is_not_runnable_when_the_workspace_is_not_a_pixi_project()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"verify-resolver-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(path);
-        return path;
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, workspace, TestContext.Current.CancellationToken);
+
+            Assert.False(runnable);
+            Assert.Equal("no pixi project: gates-quiet", reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
     }
 
-    private static void WriteRepoDeclaration(string workspace, string content)
+    /// <summary>
+    /// The polarity that keeps the check honest, and the reason it is an ANCESTOR walk rather than a
+    /// single <c>File.Exists</c> — spec/baton.md §3 states the monorepo shape this protects, which is
+    /// #1708 H2's failure reintroduced from the other side.
+    /// </summary>
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_finds_a_pixi_manifest_in_an_ANCESTOR_of_the_workspace()
     {
-        var batonDir = Path.Combine(workspace, ".baton");
-        Directory.CreateDirectory(batonDir);
-        File.WriteAllText(Path.Combine(batonDir, "verify"), content);
+        var root = CreateTempWorkspace();
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "pixi.toml"), "[workspace]\nname = \"m2-fixture\"\n", TestContext.Current.CancellationToken);
+            var package = Path.Combine(root, "packages", "thing");
+            Directory.CreateDirectory(package);
+
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+            // pixi itself is pointed at an unspawnable name so this asserts only the manifest gate: the
+            // walk found the ancestor manifest, so the "not a pixi project" arm did NOT fire and the
+            // engine-environment arm (runnable, let the real run decide) did.
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, package, TestContext.Current.CancellationToken, pixiProgram: "this-is-not-a-real-pixi-binary-12345");
+
+            Assert.True(runnable);
+            Assert.Null(reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(root);
+        }
     }
+
+    /// <summary>
+    /// A <c>pyproject.toml</c> carrying <c>[tool.pixi]</c> is a pixi manifest too — pixi's own discovery
+    /// accepts both, and treating only <c>pixi.toml</c> as a project would call a real pixi workspace
+    /// unverifiable.
+    /// </summary>
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_accepts_a_pyproject_toml_pixi_manifest()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(workspace, "pyproject.toml"),
+                "[project]\nname = \"m2-fixture\"\n\n[tool.pixi.workspace]\nchannels = []\n",
+                TestContext.Current.CancellationToken);
+
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, workspace, TestContext.Current.CancellationToken, pixiProgram: "this-is-not-a-real-pixi-binary-12345");
+
+            Assert.True(runnable);
+            Assert.Null(reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    /// <summary>
+    /// The manifest check is a ROLE-DEFAULT concern only. An override or repo-declared command line is
+    /// never <c>pixi run &lt;task&gt;</c> by construction, so a non-pixi workspace says nothing about
+    /// whether it can run — #1708 H3's "nothing else is probed at all" is not weakened by M2.
+    /// </summary>
+    [Fact]
+    public async Task CheckRunnableAsync_a_non_pixi_workspace_does_not_block_an_override_command()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: "exit 0", roleVerifyPixiTask: "gates-quiet");
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, workspace, TestContext.Current.CancellationToken);
+
+            Assert.True(runnable);
+            Assert.Null(reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    private static string CreateTempWorkspace() => VerifyDeclarationWorkspace.CreateTemp();
+
+    private static void WriteRepoDeclaration(string workspace, string content) =>
+        VerifyDeclarationWorkspace.WriteDeclaration(workspace, content);
+
+    private static string? GitShowAtHead(string workspace) => VerifyDeclarationWorkspace.ShowAtHead(workspace);
 
 
     /// <summary>The real baton repo checkout — its own <c>pixi task list</c> is what CheckRunnableAsync's role-default arms probe.</summary>

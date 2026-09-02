@@ -870,6 +870,53 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     }
 
     /// <summary>
+    /// #1708 M2, red-first: the shape #1702's own PR body describes ("got <c>command not found</c>",
+    /// which reads like an absent MANIFEST rather than an absent task) — a foreign workspace carrying no
+    /// pixi manifest anywhere above it. Between #1708 H2 and M2 the engine spawned the real
+    /// <c>pixi run gates-quiet</c> there, it failed, and the step settled <c>Indeterminate</c>: #1702's
+    /// measured symptom, restored. It must settle the same way the missing-task shape above does —
+    /// <c>VerifyNotRun</c>, <c>Succeeded</c>, output delivered.
+    /// </summary>
+    [Fact]
+    public async Task Dispatching_implement_against_a_workspace_that_is_not_a_pixi_project_settles_Succeeded_and_still_delivers_output()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            // Deliberately NO pixi.toml and no pyproject.toml, here or in any ancestor (the temp root
+            // is not inside a pixi project) -- that absence is the whole fixture.
+            var workspace = Path.Combine(testRoot, "workspace");
+            Directory.CreateDirectory(workspace);
+
+            var specPath = await WriteSpecAsync(testRoot, "Make the bounded change.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var outputPath = Path.Combine(testRoot, "changes-out.md");
+            var options = new DispatchOptions("implement", specPath, roomDirectory, Adapter: "fake", OutputPath: outputPath);
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new GrantConsumingContractOutputWorkerAdapter(satisfyOutputs: true),
+            };
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken, workspaceDirectory: workspace);
+            Console.SetOut(originalOut);
+
+            var step = Assert.Single(result.State.Steps);
+            Assert.Equal(StepStatus.Succeeded, step.Status);
+            Assert.False(step.IndeterminateAwaitingResolution);
+            Assert.Equal("no pixi project: gates-quiet", step.VerifyNotRunReason);
+            Assert.True(File.Exists(outputPath), $"expected the declared output copied to '{outputPath}'.");
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
     /// #1708 M1: the widened half of #1702's <c>--output</c> fix, pinned. The copy is keyed on the step
     /// having executed and the file existing — not on a natural exit — so a CANCELLED execution's
     /// half-written report is delivered too. That is deliberate (spec/baton.md §3): a partial report is

@@ -349,9 +349,10 @@ public static class StateProjector
             case FlowEvent.ExecutionRequestRejected:
             case FlowEvent.ZeroOutputsDespiteSubstantialWork:
             case FlowEvent.VerifyDeclarationIgnored:
+            case FlowEvent.VerifyDeclarationUnreviewed:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
-                // VerifyDeclarationIgnored is listed here on purpose rather than by falling off the end
-                // of this switch -- see its own doc for why it stays reader-less (#1708 H1).
+                // The two VerifyDeclaration* events are listed here on purpose rather than by falling off
+                // the end of this switch -- see their own docs for why they stay reader-less (#1708 H1/M1).
                 break;
 
             case FlowEvent.ExecutionIndeterminate indeterminate:

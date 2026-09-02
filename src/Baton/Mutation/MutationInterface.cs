@@ -1677,14 +1677,24 @@ public static class MutationInterface
                 : null;
             var effectiveCancellationToken = linkedCancellation?.Token ?? dispatchCancellationToken;
 
-            // #1708 H1: the workspace's committed .baton/verify is read HERE, before the worker is
+            // #1708 H1/M1: the workspace's REVIEWED .baton/verify is read HERE, before the worker is
             // spawned -- not in the verify block below, which runs against a working tree the worker has
-            // just had write access to. Both halves matter: committed (a worker cannot silently edit
-            // HEAD's blob) and pre-dispatch (a worker with shell access could commit one). See
-            // VerifyCommandResolver.ReadCommittedRepoDeclarationAsync for what a failed read falls back to.
-            var committedVerifyDeclaration = await VerifyCommandResolver
+            // just had write access to. Both halves matter: the merge-base with origin/main (so neither
+            // an edit to the working tree nor a commit on the lane's own branch is inside it) and
+            // pre-dispatch. See VerifyCommandResolver.ReadCommittedRepoDeclarationAsync for what a failed
+            // read falls back to, and for the one shape (no merge-base) that is announced as unreviewed.
+            var committedVerify = await VerifyCommandResolver
                 .ReadCommittedRepoDeclarationAsync(binding.Target.WorkingDirectory, dispatchCancellationToken)
                 .ConfigureAwait(false);
+            var committedVerifyDeclaration = committedVerify.CommandLine;
+            if (committedVerify.Unreviewed)
+            {
+                await eventLogWriter.AppendAsync(
+                    new FlowEvent.VerifyDeclarationUnreviewed(
+                        prepared.Request.ExecutionId,
+                        VerifyCommandResolver.DeclarationDigest(committedVerifyDeclaration)),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
 
             // Rests on ICoreDispatcher's contract that cancellation via its token argument comes back
             // as a normal CoreDispatchResult (CoreExitReason.CancelRequested), never as
@@ -1740,26 +1750,26 @@ public static class MutationInterface
             // #1708 H1: the repo-declaration arm is the pre-dispatch committed snapshot above; a
             // redispatch still re-reads it (a fresh dispatch takes a fresh snapshot), which is the
             // no-stale-command property spec/baton.md §3 states.
-            ResolvedVerifyCommand? resolvedVerify = null;
-            if (classification.Verdict == OutcomeVerdict.Succeeded)
+            // #1708 L1: appended on DRIFT, whatever the verdict -- not only on a Succeeded execution,
+            // and whatever the precedence outcome, including when --verify would have won anyway. The
+            // operator-facing fact is "the file in your workspace is not what graded this run", which is
+            // true either way; spec/baton.md §3 states why it is owed after a failed, arrested or
+            // cancelled run too.
+            var workingTreeDeclaration = VerifyCommandResolver.ReadWorkingTreeRepoDeclaration(binding.Target.WorkingDirectory);
+            if (!string.Equals(workingTreeDeclaration, committedVerifyDeclaration, StringComparison.Ordinal))
             {
-                var workingTreeDeclaration = VerifyCommandResolver.ReadWorkingTreeRepoDeclaration(binding.Target.WorkingDirectory);
-                if (!string.Equals(workingTreeDeclaration, committedVerifyDeclaration, StringComparison.Ordinal))
-                {
-                    // Journaled whatever the precedence outcome is -- including when --verify would have
-                    // won anyway. The operator-facing fact is "the file in your workspace is not what
-                    // graded this run", and that is true either way.
-                    await eventLogWriter.AppendAsync(
-                        new FlowEvent.VerifyDeclarationIgnored(
-                            prepared.Request.ExecutionId,
-                            VerifyCommandResolver.DeclarationDigest(committedVerifyDeclaration),
-                            VerifyCommandResolver.DeclarationDigest(workingTreeDeclaration)),
-                        CancellationToken.None).ConfigureAwait(false);
-                }
-
-                resolvedVerify = VerifyCommandResolver.Resolve(
-                    committedVerifyDeclaration, binding.VerifyCommandOverride, binding.VerifyPixiTask);
+                await eventLogWriter.AppendAsync(
+                    new FlowEvent.VerifyDeclarationIgnored(
+                        prepared.Request.ExecutionId,
+                        VerifyCommandResolver.DeclarationDigest(committedVerifyDeclaration),
+                        VerifyCommandResolver.DeclarationDigest(workingTreeDeclaration)),
+                    CancellationToken.None).ConfigureAwait(false);
             }
+
+            ResolvedVerifyCommand? resolvedVerify = classification.Verdict == OutcomeVerdict.Succeeded
+                ? VerifyCommandResolver.Resolve(
+                    committedVerifyDeclaration, binding.VerifyCommandOverride, binding.VerifyPixiTask)
+                : null;
 
             if (resolvedVerify is not null)
             {

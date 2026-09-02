@@ -141,18 +141,58 @@ public static class VerifyRunner
     /// here — the probe's own caller decides what an unspawnable <c>pixi</c> means (not runnable, never
     /// a silent pass), which is a different mapping than <see cref="RunProcessAsync"/>'s.
     /// </summary>
+    /// <param name="stdoutOnly">
+    /// #1708 L3: drop stderr instead of interleaving it into the returned output. Off by default — the
+    /// verify run and the <c>pixi task list</c> probe both WANT the combined stream, because for them the
+    /// output is diagnostic text. On for the declaration read, whose output is PARSED; spec/baton.md §3
+    /// states what an interleaved warning would cost there.
+    /// </param>
+    /// <param name="environmentAllowList">
+    /// #1708 L3: when non-null, the child inherits ONLY these ambient variables (plus
+    /// <paramref name="environmentOverrides"/>) instead of the whole environment. Null keeps the
+    /// inherit-everything default described below.
+    /// </param>
+    /// <param name="environmentOverrides">Variables set explicitly on the child, whatever the allowlist says.</param>
     internal static async Task<(int ExitCode, string Output)> CaptureAsync(
-        string program, IReadOnlyList<string> args, string? workingDirectory, CancellationToken cancellationToken)
+        string program,
+        IReadOnlyList<string> args,
+        string? workingDirectory,
+        CancellationToken cancellationToken,
+        bool stdoutOnly = false,
+        IReadOnlyList<string>? environmentAllowList = null,
+        IReadOnlyDictionary<string, string>? environmentOverrides = null)
     {
         var output = new System.Text.StringBuilder();
-        // Deliberately no WithClearEnv(): unlike a vendor worker dispatch, this spawns the engine's own
-        // trusted tool (`pixi`, which itself needs its host toolchain's PATH/CONDA_PREFIX/etc. to
-        // resolve) rather than an adapter-sandboxed process, so it inherits the ambient environment the
-        // same way a human running `pixi run gates-quiet` by hand would.
+        // No WithClearEnv() by default: unlike a vendor worker dispatch, the default caller spawns the
+        // engine's own trusted tool (`pixi`, which itself needs its host toolchain's PATH/CONDA_PREFIX/etc.
+        // to resolve) rather than an adapter-sandboxed process, so it inherits the ambient environment the
+        // same way a human running `pixi run gates-quiet` by hand would. A caller whose child's OUTPUT is
+        // a trust boundary rather than a hint passes an allowlist instead (#1708 L3 --
+        // VerifyCommandResolver's git spawns).
         // Process-level timeout is omitted (F3): buildlock's own loud timeout bounds each lock-competing
         // step instead of an arbitrary overall wall-clock ceiling causing spurious Indeterminate settlements.
         using var task = new BatonTask(program, [.. args])
             .WithCaptureOutput(true);
+
+        if (environmentAllowList is not null)
+        {
+            task.WithClearEnv(true);
+            foreach (var name in environmentAllowList)
+            {
+                if (Environment.GetEnvironmentVariable(name) is { } value)
+                {
+                    task.WithEnv(name, value);
+                }
+            }
+        }
+
+        if (environmentOverrides is not null)
+        {
+            foreach (var (name, value) in environmentOverrides)
+            {
+                task.WithEnv(name, value);
+            }
+        }
 
         if (workingDirectory is not null)
         {
@@ -164,6 +204,8 @@ public static class VerifyRunner
         {
             switch (e.Kind)
             {
+                case BatonTaskEventKind.StderrChunk when stdoutOnly:
+                    break;
                 case BatonTaskEventKind.StdoutChunk or BatonTaskEventKind.StderrChunk when e.Data is { } data:
                     output.Append(System.Text.Encoding.UTF8.GetString(data));
                     break;

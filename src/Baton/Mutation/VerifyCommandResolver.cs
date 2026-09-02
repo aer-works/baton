@@ -31,10 +31,31 @@ public sealed record ResolvedVerifyCommand(
     string Label);
 
 /// <summary>
+/// #1708 M1: what <see cref="VerifyCommandResolver.ReadCommittedRepoDeclarationAsync"/> established about
+/// the workspace's declaration — the command line itself, plus whether the commit it came from had been
+/// through review.
+/// </summary>
+/// <param name="CommandLine">
+/// The declared command line, or <c>null</c> for anything short of a positive read (no repo, no such
+/// path in the tree, <c>git</c> unspawnable, a cancelled probe).
+/// </param>
+/// <param name="Unreviewed">
+/// <see langword="true"/> when the read fell back to <c>HEAD</c> because <c>origin/main</c> does not
+/// resolve, so the declaration is whatever the current branch tip holds and a lane's own commit COULD
+/// have authored it. Diagnostic only — it changes nothing about what runs, and is journaled as
+/// <see cref="Domain.FlowEvent.VerifyDeclarationUnreviewed"/>. Always <see langword="false"/> when
+/// <paramref name="CommandLine"/> is <c>null</c>: there is nothing to call unreviewed.
+/// </param>
+public sealed record CommittedVerifyDeclaration(string? CommandLine, bool Unreviewed)
+{
+    public static readonly CommittedVerifyDeclaration None = new(null, false);
+}
+
+/// <summary>
 /// #1702 (contract: <c>spec/baton.md</c> §3, "Verify command resolution"): resolves the verify command
 /// for a workspace — precedence order and rationale are stated there, not restated here.
 /// <para>
-/// #1708 H1: the repo-declaration arm is a value the CALLER read from the workspace's COMMITTED tree
+/// #1708 H1: the repo-declaration arm is a value the CALLER read from the workspace's REVIEWED tree
 /// before the worker ever ran (<see cref="ReadCommittedRepoDeclarationAsync"/>), never a working-tree
 /// read taken afterwards. spec/baton.md §3 states why both halves are load-bearing.
 /// </para>
@@ -67,52 +88,151 @@ public static class VerifyCommandResolver
     }
 
     /// <summary>
-    /// #1708 H1: the workspace's <c>.baton/verify</c> as <c>HEAD</c> holds it, via
-    /// <c>git show HEAD:.baton/verify</c>. <b>Call this before dispatching the worker</b> — spec/baton.md
-    /// §3 states why the timing matters as much as the source.
+    /// The remote-tracking ref the reviewed baseline is taken from (#1708 M1). Deliberately one fixed
+    /// name rather than a discovered default branch — spec/baton.md §3 states why, and what that costs.
+    /// </summary>
+    private const string ReviewedBaselineRef = "origin/main";
+
+    /// <summary>
+    /// #1708 H1/M1: the workspace's <c>.baton/verify</c> as the REVIEWED tree holds it — the merge-base
+    /// of <c>HEAD</c> with <see cref="ReviewedBaselineRef"/>, so nothing a lane commits on its own branch
+    /// can change what grades it. <b>Call this before dispatching the worker</b> — spec/baton.md §3 states
+    /// why the timing matters as much as the source.
     /// <para>
-    /// Anything short of a positive read returns <c>null</c> — no repo, no <c>HEAD</c>, the path absent
-    /// from the tree, <c>git</c> unspawnable, a cancelled probe. spec/baton.md §3 records what that
-    /// costs and why it is the safe direction; <see cref="Domain.FlowEvent.VerifyDeclarationIgnored"/> announces
-    /// it at runtime.
+    /// When no merge-base can be computed the read falls back to <c>HEAD</c> and reports
+    /// <see cref="CommittedVerifyDeclaration.Unreviewed"/> — the causes, and the narrower boundary that
+    /// leaves, are scoped in spec/baton.md §3 rather than re-derived here.
+    /// </para>
+    /// <para>
+    /// Anything short of a positive read returns <see cref="CommittedVerifyDeclaration.None"/> — no repo,
+    /// no <c>HEAD</c>, the path absent from the tree, <c>git</c> unspawnable, a cancelled probe.
+    /// spec/baton.md §3 records what that costs and why it is the safe direction.
     /// </para>
     /// </summary>
-    public static async Task<string?> ReadCommittedRepoDeclarationAsync(
+    public static async Task<CommittedVerifyDeclaration> ReadCommittedRepoDeclarationAsync(
         string? workspaceDirectory, CancellationToken cancellationToken, string gitProgram = "git")
     {
         if (string.IsNullOrWhiteSpace(workspaceDirectory))
         {
-            return null;
+            return CommittedVerifyDeclaration.None;
         }
 
-        int exitCode;
-        string output;
+        // `git merge-base` exits non-zero for BOTH an unresolvable ref (128) and unrelated histories
+        // (1); neither is distinguishable from the other in a way that matters here, and both mean "no
+        // reviewed baseline exists", so both take the HEAD fallback rather than feeding an empty
+        // revision into the read below.
+        var (baseExit, baseOutput) = await RunGitAsync(
+            gitProgram, ["merge-base", "HEAD", ReviewedBaselineRef], workspaceDirectory, cancellationToken)
+            .ConfigureAwait(false);
+        var mergeBase = baseExit == 0 ? baseOutput.Trim() : null;
+        var unreviewed = string.IsNullOrEmpty(mergeBase);
+        var revision = unreviewed ? "HEAD" : mergeBase!;
+
+        // The `./` prefix is load-bearing: `git show <rev>:<path>` resolves <path> against the
+        // REPOSITORY ROOT, while `<rev>:./<path>` resolves it against the cwd. Without it, a
+        // workspace that is a subdirectory of a repo (a monorepo package) would be graded by the
+        // ROOT's declaration -- a file belonging to a directory nobody dispatched -- and the
+        // drift comparison, which reads the working tree relative to the workspace, would be
+        // comparing two different files.
+        var (exitCode, output) = await RunGitAsync(
+            gitProgram, ["show", "--no-textconv", $"{revision}:./{RepoDeclarationRelativePath}"], workspaceDirectory, cancellationToken)
+            .ConfigureAwait(false);
+
+        var commandLine = exitCode == 0 ? ExtractCommandLine(output.Split('\n')) : null;
+        return commandLine is null ? CommittedVerifyDeclaration.None : new CommittedVerifyDeclaration(commandLine, unreviewed);
+    }
+
+    /// <summary>
+    /// #1708 L3: every <c>git</c> spawn on the pre-dispatch declaration path, run so that neither the
+    /// workspace's own contents nor the engine's ambient environment can steer it — spec/baton.md §3
+    /// enumerates each measure and what it is for, and this method is the single place they are applied.
+    /// <para>
+    /// A spawn failure or cancellation is reported as a non-zero exit with empty output rather than
+    /// thrown, because this runs ahead of the worker and an optional file must never abort a dispatch.
+    /// Every caller reads that as "nothing established", which falls through to the role default and
+    /// never to a worker-authored command.
+    /// </para>
+    /// </summary>
+    private static async Task<(int ExitCode, string Output)> RunGitAsync(
+        string gitProgram, IReadOnlyList<string> args, string workingDirectory, CancellationToken cancellationToken)
+    {
+        string[] hardened = ["--no-pager", "-c", "core.hooksPath=", .. args];
         try
         {
-            // The `./` prefix is load-bearing: `git show HEAD:<path>` resolves <path> against the
-            // REPOSITORY ROOT, while `HEAD:./<path>` resolves it against the cwd. Without it, a
-            // workspace that is a subdirectory of a repo (a monorepo package) would be graded by the
-            // ROOT's declaration -- a file belonging to a directory nobody dispatched -- and the
-            // drift comparison below, which reads the working tree relative to the workspace, would
-            // be comparing two different files.
-            (exitCode, output) = await VerifyRunner.CaptureAsync(
-                gitProgram, ["show", $"HEAD:./{RepoDeclarationRelativePath}"], workspaceDirectory, cancellationToken)
+            return await VerifyRunner.CaptureAsync(
+                gitProgram, hardened, workingDirectory, cancellationToken,
+                stdoutOnly: true,
+                environmentAllowList: GitEnvironmentAllowList,
+                environmentOverrides: new Dictionary<string, string> { ["PATH"] = ScrubbedPath(workingDirectory) })
                 .ConfigureAwait(false);
         }
         catch (BatonException)
         {
-            // git unspawnable. Unlike CheckRunnableAsync's own "let the real run decide" arms, there is
-            // no later attempt that could recover this one -- the only safe reading of "I could not
-            // establish what the repo committed" is "nothing", which costs a fallthrough to the role
-            // default and never a worker-authored command.
-            return null;
+            return (-1, string.Empty);
         }
         catch (OperationCanceledException)
         {
-            return null;
+            return (-1, string.Empty);
+        }
+    }
+
+    /// <summary>
+    /// The ambient variables the scrubbed <c>git</c> spawn keeps (#1708 L3) — an ALLOWLIST, so a
+    /// variable nobody thought about is excluded by construction rather than by remembering to name it.
+    /// Everything here is Windows process plumbing <c>git</c> needs to start and find its own install
+    /// (this project ships Windows-only, #1405); no <c>GIT_*</c>, and no <c>HOME</c>/<c>USERPROFILE</c>,
+    /// which is how <c>~/.gitconfig</c> stays out of a read whose output is a boundary.
+    /// <c>PATH</c> is deliberately NOT here: it is always replaced wholesale by
+    /// <see cref="ScrubbedPath"/> rather than inherited.
+    /// </summary>
+    private static readonly string[] GitEnvironmentAllowList =
+        ["PATHEXT", "SystemRoot", "SystemDrive", "windir", "ComSpec", "TEMP", "TMP", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA"];
+
+    /// <summary>
+    /// The ambient <c>PATH</c> with every entry that the WORKSPACE could control removed (#1708 L3):
+    /// relative entries (which resolve against the spawn's cwd — the worker-writable workspace) and any
+    /// absolute entry at or under the workspace itself. Without this, dropping a <c>git.exe</c> into a
+    /// dispatched workspace that also contributes a <c>PATH</c> entry would let the workspace answer the
+    /// question of what its own reviewed declaration says.
+    /// </summary>
+    private static string ScrubbedPath(string workspaceDirectory)
+    {
+        var ambient = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        string workspaceFull;
+        try
+        {
+            workspaceFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspaceDirectory));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // An unresolvable workspace path cannot be compared against, so keep only the entries that
+            // are unambiguously not workspace-relative -- the fail-closed reading.
+            workspaceFull = string.Empty;
         }
 
-        return exitCode == 0 ? ExtractCommandLine(output.Split('\n')) : null;
+        var kept = ambient
+            .Split(Path.PathSeparator, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Where(entry => Path.IsPathFullyQualified(entry))
+            .Where(entry => workspaceFull.Length == 0 || !IsAtOrUnder(entry, workspaceFull));
+
+        return string.Join(Path.PathSeparator, kept);
+    }
+
+    private static bool IsAtOrUnder(string candidate, string root)
+    {
+        string full;
+        try
+        {
+            full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // Unresolvable, so it cannot be shown NOT to be under the workspace -- drop it.
+            return true;
+        }
+
+        return string.Equals(full, root, StringComparison.OrdinalIgnoreCase)
+            || full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -185,10 +305,83 @@ public static class VerifyCommandResolver
             return (true, null);
         }
 
+        // #1708 M2: the workspace positively having NO pixi manifest is evidence of absence in the same
+        // class as "pixi task list ran and did not list the task" -- a role default of `pixi run <task>`
+        // simply does not exist in a workspace that is not a pixi project. Checked HERE, before the
+        // spawn, and by reading the filesystem rather than by interpreting a failed probe: that ordering
+        // is what keeps #1708 H2 intact. Once a manifest IS found, every probe failure below (including
+        // pixi missing from PATH entirely) stays "the engine's own tool is broken", reports runnable,
+        // and lets the real run decide.
+        if (!HasPixiManifest(workingDirectory))
+        {
+            return (false, $"no pixi project: {command.Label}");
+        }
+
         // pixiProgram defaults to the real "pixi" -- overridable only so a test can point this at
         // an unspawnable name and exercise the "pixi itself is broken" fallback below without
         // needing an actually-broken pixi installation.
         return await CheckPixiTaskAsync(command.Label, workingDirectory, pixiProgram, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="workingDirectory"/> is inside a pixi project, mirroring pixi's own
+    /// manifest discovery: a <c>pixi.toml</c>, or a <c>pyproject.toml</c> carrying a <c>[tool.pixi]</c>
+    /// table, in that directory or ANY ancestor. spec/baton.md §3 states why the ancestor walk is
+    /// load-bearing rather than an optimization.
+    /// <para>
+    /// Every uncertain answer is <see langword="true"/> (no directory to inspect, an unreadable
+    /// <c>pyproject.toml</c>, an inaccessible ancestor): "not runnable" is the claim that needs positive
+    /// evidence, so an unsure answer takes the fail-closed direction spec/baton.md §3 describes.
+    /// </para>
+    /// </summary>
+    private static bool HasPixiManifest(string? workingDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            return true;
+        }
+
+        DirectoryInfo? dir;
+        try
+        {
+            dir = new DirectoryInfo(Path.GetFullPath(workingDirectory));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return true;
+        }
+
+        for (; dir is not null; dir = dir.Parent)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "pixi.toml")))
+            {
+                return true;
+            }
+
+            var pyproject = Path.Combine(dir.FullName, "pyproject.toml");
+            if (!File.Exists(pyproject))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (File.ReadAllText(pyproject).Contains("[tool.pixi", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            catch (IOException)
+            {
+                return true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task<(bool, string?)> CheckPixiTaskAsync(
