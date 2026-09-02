@@ -161,8 +161,9 @@ public static class CancelRequestFile
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Best-effort, same doctrine as TerminalSentinelWriter.DeleteStaleSentinel: a rename that
-            // cannot land (the file vanished, or is transiently held) must not crash the poll loop —
+            // Best-effort, the same shape TerminalSentinelWriter.DeleteStaleSentinel's opt-in
+            // `bestEffort: true` takes (its default fails closed): a rename that cannot land
+            // (the file vanished, or is transiently held) must not crash the poll loop —
             // the worst case is this same request being read again next tick.
             try
             {

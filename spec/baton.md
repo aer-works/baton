@@ -539,7 +539,10 @@ in a multi-step room, both need a follow-up `baton run --room-dir` to dispatch a
 §7 already describes for a stalled room (F4, #1608 review — the acceptance case was previously
 undocumented, reading as though only rejection needed it). `baton resolve` names that follow-up
 invocation on stdout whenever the state it returns is not `WorkflowStatus.Terminal`, so a harness never
-has to infer it — see "Consumer obligations" above for the sentinel side of the same non-Terminal case.
+has to infer it — naming `baton decide` instead when that state is `Paused` (the pause-point case below,
+where `baton run` re-enters the same unfulfilled obligation and cannot move the room), and
+`baton run --room-dir` otherwise. See "Consumer obligations" above for the sentinel side of the same
+non-Terminal case.
 
 **Unless the step declares a `PausePoint`.** Every claim above about `baton resolve` being the *only*
 path to an unresolved `Indeterminate` step assumes the step is not also a pause point.
@@ -557,7 +560,7 @@ path (the same step read `Failed(Permanent)` with `MayRetry` false before #1608,
 `PauseEngine` interaction) — #1608 changed what the eventual terminal word *is*, not whether a pause
 point can intercept it first. Whether `ExternalDecisionValidator` should refuse an unresolved capture
 outright, or `DescribeTerminal` should let a recorded decision outrank the flag, is an open owner call,
-not settled by this slice.
+not settled by this slice (#1655).
 
 **`FlowEvent.StepRetryForeclosed`** (`src/Baton/Domain/FlowEvent.cs`) is the missing primitive the
 quota-park symptom this section opened with rests on: before this slice, three events could clear a

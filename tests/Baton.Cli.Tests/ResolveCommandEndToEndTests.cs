@@ -245,6 +245,66 @@ public class ResolveCommandEndToEndTests
     }
 
     [Fact]
+    public async Task An_explicit_execution_naming_an_already_accepted_capture_is_admitted_and_re_materializes_the_missing_output()
+    {
+        // #1608 re-review finding 4: ResolveCommand's repair-admission clause (the `isRepairableAccepted`
+        // half of its explicit-`--execution` gate) is the ONLY operator-reachable route into the crash
+        // repair this PR's "fact then files" order depends on -- and both MutationInterface-layer crash
+        // tests call RecordCaptureResolutionAsync directly, so deleting the clause left the whole suite
+        // green while the repair became unreachable from the CLI. This drives the real
+        // ResolveCommand.ExecuteAsync, so removing the clause turns it red.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-repair-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var executionId = await SeedAcceptedButUnwrittenAsync(testRoot, roomDirectory);
+
+            var result = await ResolveCommand.ExecuteAsync(
+                new ResolveOptions(roomDirectory, executionId.Value, Accept: true),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(StepStatus.Succeeded, Assert.Single(result.State.Steps).Status);
+            var outputPath = Path.Combine(roomDirectory, "artifacts", $"execution_{executionId.Value}", "advice.md");
+            Assert.Equal(
+                "the worker's real answer",
+                await File.ReadAllTextAsync(outputPath, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_reject_naming_that_same_already_accepted_execution_is_still_refused()
+    {
+        // Polarity partner of the repair admission above, one condition apart (--reject rather than
+        // --accept-capture): the clause's `accepted &&` half must not let a rejection reinterpret
+        // someone else's earlier accept as a repair. Untested at either layer before this.
+        // Scope: this reaches ResolveCommand's own gate only -- MutationInterface's identical gate
+        // (RecordCaptureResolutionAsync's `target is not null && accepted`) is unreachable from here
+        // because the CLI refuses first, and stays covered by inspection rather than by a test.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-repair-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var executionId = await SeedAcceptedButUnwrittenAsync(testRoot, roomDirectory);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => ResolveCommand.ExecuteAsync(
+                new ResolveOptions(roomDirectory, executionId.Value, Accept: false, Reason: "changed my mind"),
+                TestContext.Current.CancellationToken));
+            Assert.Contains("no unresolved indeterminate capture", ex.Message, StringComparison.Ordinal);
+
+            var outputPath = Path.Combine(roomDirectory, "artifacts", $"execution_{executionId.Value}", "advice.md");
+            Assert.False(File.Exists(outputPath), "a refused reject must not have re-materialized anything.");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Resolving_a_room_with_no_bound_snapshot_throws_SnapshotLoadException()
     {
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
@@ -281,6 +341,30 @@ public class ResolveCommandEndToEndTests
             Path.Combine(outputDirectory, Baton.Outcomes.OutputMaterializer.CapturedResponseFileName),
             Baton.Outcomes.OutputMaterializer.CapturedResponseHeader + "\n\n" + capturedBody,
             TestContext.Current.CancellationToken);
+
+        return executionId;
+    }
+
+    /// <summary>
+    /// The durable shape a crash between "fact" and "files" leaves behind: an accepted
+    /// <see cref="FlowEvent.CaptureResolved"/> on the ledger whose declared output was never written.
+    /// Fabricated by hand rather than driven through a real kill — the thing under test is the CLI's
+    /// admission of that shape as a repair request, not crash mechanics.
+    /// </summary>
+    private static async Task<ExecutionId> SeedAcceptedButUnwrittenAsync(string testRoot, string roomDirectory)
+    {
+        var executionId = await SeedIndeterminateRoomAsync(testRoot, roomDirectory, "advice.md", "the worker's real answer");
+
+        await using (var writer = new FlowEventLogWriter(Path.Combine(roomDirectory, "flow.jsonl")))
+        {
+            await writer.AppendAsync(
+                new FlowEvent.CaptureResolved(new StepId("a"), executionId, Accepted: true, ResolvedOutputNames: ["advice.md"]),
+                TestContext.Current.CancellationToken);
+        }
+
+        Assert.False(
+            File.Exists(Path.Combine(roomDirectory, "artifacts", $"execution_{executionId.Value}", "advice.md")),
+            "the fixture must reproduce fact-present/file-missing, not an ordinary accept.");
 
         return executionId;
     }

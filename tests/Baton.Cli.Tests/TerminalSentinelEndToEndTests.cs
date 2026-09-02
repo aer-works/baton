@@ -502,12 +502,83 @@ public class TerminalSentinelEndToEndTests
                 File.Exists(sentinelPath),
                 $"'baton resolve --reject' with retry budget remaining must invalidate the now-stale sentinel. stderr: {stderr}");
 
-            // record-once-ok: #1608 src/Baton.Cli/Program.cs
-            // #1608 review finding 4: `resolve` never re-drives the DAG itself, so a room it leaves
-            // non-Terminal must name the follow-up invocation rather than reading as though nothing is
-            // needed.
+            // #1608 review finding 4: a non-Terminal room must name its follow-up invocation — see
+            // Program.cs's post-`resolve` step (and spec/baton.md §3) for why.
             Assert.Contains("Room is not yet complete", stdout, StringComparison.Ordinal);
             Assert.Contains("--room-dir", stdout, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_real_CLI_resolve_on_a_still_Paused_room_names_baton_decide_not_baton_run()
+    {
+        // #1608 re-review finding 1: the post-`resolve` guidance was unconditional over "non-Terminal",
+        // and `baton run` is the wrong verb for one of the two non-Terminal shapes. A step declaring a
+        // PausePoint that settles Indeterminate is Paused with the flag still set (spec/baton.md §3);
+        // accepting its capture clears the flag but not the pause -- only WorkflowResumed removes that --
+        // so `baton run` against it re-enters the same unfulfilled obligation and a harness following the
+        // printed instruction loops. Asserted against the REAL binary's stdout because Program.cs is what
+        // branches; a projection-layer assertion would pass whether or not the branch exists.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-paused-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            Directory.CreateDirectory(roomDirectory);
+            var definition = new WorkflowDefinition(
+                new WorkflowTemplateId("resolve-paused-test"), 1,
+                [
+                    new WorkflowStepDefinition(
+                        new StepId("a"), "a", [], ["advice.md"], [], new RetryPolicy(1),
+                        PausePoint: new PausePoint([])),
+                ]);
+            var snapshot = SnapshotBinder.Bind(definition);
+            await SnapshotBinder.PersistAsync(
+                snapshot, Path.Combine(roomDirectory, "snapshot.json"), TestContext.Current.CancellationToken);
+
+            var executionId = new ExecutionId($"exec-{Guid.NewGuid():N}");
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(
+                    new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
+                        executionId, new WorkflowId("wf"), new StepId("a"), "a", [], [], TimeSpan.FromSeconds(30), [],
+                        new Dictionary<StepId, ExecutionId>())),
+                    TestContext.Current.CancellationToken);
+                await writer.AppendAsync(
+                    new FlowEvent.ExecutionIndeterminate(
+                        executionId, "captured, awaiting conductor resolution",
+                        Baton.Outcomes.OutputMaterializer.CapturedResponseFileName, ["advice.md"]),
+                    TestContext.Current.CancellationToken);
+                await writer.AppendAsync(
+                    new FlowEvent.WorkflowPaused(executionId, new StepId("a")),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var outputDirectory = Path.Combine(roomDirectory, "artifacts", $"execution_{executionId.Value}");
+            Directory.CreateDirectory(outputDirectory);
+            await File.WriteAllTextAsync(
+                Path.Combine(outputDirectory, Baton.Outcomes.OutputMaterializer.CapturedResponseFileName),
+                Baton.Outcomes.OutputMaterializer.CapturedResponseHeader + "\n\nthe worker's real answer",
+                TestContext.Current.CancellationToken);
+
+            using var process = StartBatonProcess(
+                "resolve", roomDirectory, "--execution", executionId.Value, "--accept-capture");
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            Assert.True(
+                stdout.Contains("Workflow status: Paused", StringComparison.Ordinal),
+                $"the fixture must leave a genuinely Paused room, or this pins nothing. stdout: {stdout} stderr: {stderr}");
+            Assert.Contains("Room is not yet complete", stdout, StringComparison.Ordinal);
+            Assert.Contains("baton decide", stdout, StringComparison.Ordinal);
+            Assert.DoesNotContain("--room-dir", stdout, StringComparison.Ordinal);
         }
         finally
         {

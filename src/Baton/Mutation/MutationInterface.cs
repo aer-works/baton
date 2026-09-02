@@ -340,20 +340,10 @@ public static class MutationInterface
                 }
             }
 
-            // record-once-ok: #1608 spec/baton.md
-            // #1608 review finding 5: journaled BEFORE the writes below, not after — "fact then
-            // files", not "files then fact". Writing first (the original order) meant a crash between
-            // the write and the append left a declared output honestly on disk with the room still
-            // reading Indeterminate and the step still resolvable; a conductor with no way to know a
-            // partial write happened could then run --reject, recording a rejection while the earlier
-            // file from the abandoned accept silently stayed put (InvalidCaptureResolutionException's
-            // OWN prior remarks reasoned about the mid-write IOException only, never this case). Fact
-            // first accepts the mirror risk instead — a crash after this append and before some/all of
-            // the writes below leaves the ledger reading Succeeded with a declared output still
-            // missing — because that shape is self-healing and the other one was not: see
-            // ReconcileAcceptedCaptureAsync below, which an explicit `--execution` naming this same
-            // execution id re-enters into on any later `baton resolve` call, re-materializing exactly
-            // this gap from the still-durable capture rather than refusing it as "already resolved".
+            // #1608 review finding 5: "fact then files" — this append deliberately precedes the writes
+            // below, trading a self-healing gap (ledger Succeeded, declared output still missing) for
+            // the un-healable one the reverse order left open. spec/baton.md §3 holds why; the healing
+            // half is ReconcileAcceptedCaptureAsync below, which a later explicit --execution re-enters.
             await eventLogWriter.AppendAsync(
                     new FlowEvent.CaptureResolved(target.StepId, executionId, accepted, reason, resolvedOutputNames),
                     cancellationToken)
@@ -399,6 +389,19 @@ public static class MutationInterface
     /// the same "just run it again" idempotent-retry shape the pre-#1608-review write order already
     /// promised — restored, not abandoned, by moving what "again" means past the fact instead of
     /// before it.
+    /// <para>
+    /// #1608 re-review finding 3 — what "missing" means, and its two edges. A declared output counts as
+    /// missing when it is absent <b>or</b> zero-length, so the likeliest crash shape (killed mid-write,
+    /// leaving an empty file <see cref="File.Exists"/> reports as present) is repairable rather than
+    /// reported as nothing-to-repair. A <b>torn but non-empty</b> write is NOT detected and needs manual
+    /// repair: nothing recorded on <see cref="FlowEvent.CaptureResolved"/> says how long the body should
+    /// have been, and re-deriving it by re-reading the capture on every call would clobber a declared
+    /// output a human deliberately edited after acceptance — the case this same existence-only predicate
+    /// is what protects. In the other direction, an accepted capture whose stripped body is genuinely
+    /// empty (nothing requires a non-empty body) reads as permanently repairable, so the ordinary
+    /// exactly-once duplicate refusal never fires for that room; stated rather than defended against,
+    /// since the repair itself stays idempotent and appends no second fact.
+    /// </para>
     /// </summary>
     /// <returns>
     /// <see cref="ReconciliationOutcome.NothingToRepair"/> when every declared output the resolving
@@ -416,7 +419,16 @@ public static class MutationInterface
     {
         var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, resolution.ExecutionId);
         var outputNames = resolution.ResolvedOutputNames ?? [];
-        var missingNames = outputNames.Where(name => !File.Exists(Path.Combine(outputDirectory, name))).ToList();
+        var missingNames = outputNames.Where(name =>
+        {
+            // #1608 re-review finding 3: absent OR zero-length. File.WriteAllTextAsync opens with
+            // FileMode.Create, so a kill DURING the write -- not merely between the append and the
+            // loop -- leaves a file that exists and is empty; existence alone would report that as
+            // NothingToRepair and the caller would tell the operator the room has nothing to fix.
+            // One FileInfo stat answers both, rather than an Exists check the Length read could race.
+            var info = new FileInfo(Path.Combine(outputDirectory, name));
+            return !info.Exists || info.Length == 0;
+        }).ToList();
 
         if (missingNames.Count == 0)
         {

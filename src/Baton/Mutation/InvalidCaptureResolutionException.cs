@@ -24,7 +24,9 @@ namespace Baton.Mutation;
 /// ordinary fresh resolution (the step is no longer awaiting one) — it is admitted as a repair request
 /// instead and re-materializes exactly the names still missing from the still-durable captured
 /// response, idempotently, without appending a second fact. See
-/// <c>MutationInterface.ReconcileAcceptedCaptureAsync</c>'s own remarks.
+/// <c>MutationInterface.ReconcileAcceptedCaptureAsync</c>'s own remarks. Until that re-run happens the
+/// room's <c>terminal.json</c> is stale too — this throw escapes before <c>Program.cs</c> reaches its
+/// sentinel step, so a file-watcher keeps reading the pre-resolution word (#1608 re-review finding 6).
 /// </para>
 /// </summary>
 public sealed class InvalidCaptureResolutionException : BatonFlowException

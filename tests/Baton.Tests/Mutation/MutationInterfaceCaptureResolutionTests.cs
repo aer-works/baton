@@ -313,6 +313,90 @@ public class MutationInterfaceCaptureResolutionTests
         }
     }
 
+    [Fact]
+    public async Task A_crash_DURING_the_write_leaving_a_zero_length_output_is_repaired_like_a_missing_one()
+    {
+        // #1608 re-review finding 3: the repair predicate was existence-only, but File.WriteAllTextAsync
+        // opens with FileMode.Create -- so the likeliest instance of the window "fact then files"
+        // deliberately opens (killed mid-write, not between the append and the loop) leaves a file that
+        // EXISTS and is empty. Existence-only read that as NothingToRepair and the caller then told the
+        // operator the room had no unresolved capture, for a room whose declared output is empty.
+        var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) = await SeedIndeterminateRoomAsync(
+            outputName: "advice.md", capturedBody: "the worker's real answer");
+        try
+        {
+            await using (var crashWriter = new FlowEventLogWriter(logPath))
+            {
+                await crashWriter.AppendAsync(
+                    new FlowEvent.CaptureResolved(A, executionId, Accepted: true, ResolvedOutputNames: ["advice.md"]),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var outputPath = Path.Combine(ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId), "advice.md");
+            await File.WriteAllTextAsync(outputPath, string.Empty, TestContext.Current.CancellationToken);
+            Assert.Equal(0, new FileInfo(outputPath).Length);
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var state = await MutationInterface.RecordCaptureResolutionAsync(
+                roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                accepted: true, reason: null, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(StepStatus.Succeeded, Assert.Single(state.Steps, s => s.StepId == A).Status);
+            Assert.Equal(
+                "the worker's real answer",
+                await File.ReadAllTextAsync(outputPath, TestContext.Current.CancellationToken));
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events.OfType<FlowEvent.CaptureResolved>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task A_non_empty_declared_output_edited_after_acceptance_is_left_exactly_as_it_is()
+    {
+        // Polarity partner of the zero-length repair above, one condition apart (the file has content).
+        // Widening "missing" to zero-length must NOT widen it to "differs from the capture": the repair
+        // is what stops a later `baton resolve` clobbering a human's edit, so this arm is what keeps the
+        // finding-3 fix from becoming "always rewrite".
+        var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) = await SeedIndeterminateRoomAsync(
+            outputName: "advice.md", capturedBody: "the worker's real answer");
+        try
+        {
+            await using (var crashWriter = new FlowEventLogWriter(logPath))
+            {
+                await crashWriter.AppendAsync(
+                    new FlowEvent.CaptureResolved(A, executionId, Accepted: true, ResolvedOutputNames: ["advice.md"]),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var outputPath = Path.Combine(ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId), "advice.md");
+            await File.WriteAllTextAsync(outputPath, "the conductor's own edit", TestContext.Current.CancellationToken);
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var ex = await Assert.ThrowsAsync<InvalidCaptureResolutionException>(() =>
+                MutationInterface.RecordCaptureResolutionAsync(
+                    roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                    accepted: true, reason: null, cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Contains("no unresolved indeterminate capture", ex.Message, StringComparison.Ordinal);
+
+            Assert.Equal(
+                "the conductor's own edit",
+                await File.ReadAllTextAsync(outputPath, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     /// <summary>
     /// #1608: pins <see cref="MutationInterface"/>'s own private <c>ToOutcomeEvent</c> switch —
     /// every other test above fabricates <see cref="FlowEvent.ExecutionIndeterminate"/> directly, so

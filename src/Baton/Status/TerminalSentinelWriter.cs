@@ -73,14 +73,31 @@ public static class TerminalSentinelWriter
     /// Without this, retrying a room that previously failed pre-ledger leaves the old
     /// <c>terminal.json</c> in place for the whole duration of the new, genuinely in-progress
     /// attempt — exactly the false "already done" signal a file-watcher (this file's whole reason to
-    /// exist) must never see. Best-effort in full, not only for absence (#1608 review finding 8):
-    /// <see cref="File.Delete"/> is already a silent no-op when the file is absent, but still throws
-    /// for a locked file (a concurrent reader on Windows without <see cref="FileShare.Delete"/>) —
-    /// swallowed the same way <c>CancelRequestFile</c>'s own best-effort rename is, since one call site
-    /// (<c>Program.cs</c>'s post-<c>resolve</c> step) runs this AFTER a mutation is already durable, and
-    /// a delete failure there must not report a resolution as having failed when it in fact succeeded.
+    /// exist) must never see. <see cref="File.Delete"/> is already a silent no-op when the file is
+    /// absent, but still throws for a locked file (a concurrent reader on Windows without
+    /// <see cref="FileShare.Delete"/>), and the two call sites want opposite things from that throw
+    /// (#1608 re-review finding 2):
+    /// <list type="bullet">
+    /// <item><description>
+    /// <paramref name="bestEffort"/> <c>false</c> — the default, and what <c>RunCommand</c> uses
+    /// before a fresh pump: a stale sentinel that could not be removed is precisely the false
+    /// "already done" reading above, so the run must not start. The refusal is a typed
+    /// <see cref="StaleSentinelDeletionException"/> rather than a raw <see cref="IOException"/>, so
+    /// <c>Program.cs</c> prints it as a clean refusal instead of a stack trace.
+    /// </description></item>
+    /// <item><description>
+    /// <paramref name="bestEffort"/> <c>true</c> — <c>Program.cs</c>'s post-<c>resolve</c> step,
+    /// which runs AFTER a mutation is already durable: a delete failure there must not report a
+    /// resolution as having failed when it in fact succeeded, so it warns on stderr and returns, the
+    /// same shape <c>CancelRequestFile</c>'s own best-effort rename uses.
+    /// </description></item>
+    /// </list>
     /// </remarks>
-    public static void DeleteStaleSentinel(string roomDirectoryPath)
+    /// <exception cref="StaleSentinelDeletionException">
+    /// The sentinel exists and could not be deleted, and <paramref name="bestEffort"/> is
+    /// <c>false</c>.
+    /// </exception>
+    public static void DeleteStaleSentinel(string roomDirectoryPath, bool bestEffort = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         var path = Path.Combine(roomDirectoryPath, TerminalSentinelFileName);
@@ -90,6 +107,18 @@ public static class TerminalSentinelWriter
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            if (!bestEffort)
+            {
+                throw new StaleSentinelDeletionException(
+                    $"Could not delete the stale terminal sentinel '{path}': {ex.Message}. Refusing to start: left in " +
+                    "place it would read as 'already done' to anything watching this room for the whole duration of " +
+                    "this attempt.",
+                    ex)
+                {
+                    TryInvocation = $"close whatever holds '{path}' open, then re-run this command",
+                };
+            }
+
             try
             {
                 Console.Error.WriteLine($"Could not delete stale sentinel '{path}': {ex.Message}");

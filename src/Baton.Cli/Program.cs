@@ -270,13 +270,27 @@ try
         // from ever clearing — a resolved-but-reopened room a harness can never redispatch again. No
         // other verb can turn a Terminal room back non-Terminal, so this is scoped to `resolve` alone
         // rather than a general post-command rule.
-        TerminalSentinelWriter.DeleteStaleSentinel(resolvedNonTerminalRoomDirectoryPath);
+        // bestEffort: the resolution above is already durable, so a sentinel this call cannot delete
+        // must not report a succeeded resolution as failed (#1608 re-review finding 2 — see
+        // DeleteStaleSentinel's own remarks for the opposite choice at RunCommand's call site).
+        TerminalSentinelWriter.DeleteStaleSentinel(resolvedNonTerminalRoomDirectoryPath, bestEffort: true);
 
         // #1608 review finding 4: `resolve` never re-drives the DAG itself (spec/baton.md §3) — a
         // rejected, retry-eligible step OR an accepted step that just made a downstream step
         // deliverable both leave this room genuinely non-Terminal with nothing left to notice, unless
         // told. Named here rather than left implicit so a harness never has to infer the follow-up.
-        Console.WriteLine($"Room is not yet complete — {RecoveryGuidance.RunRoomDirInstruction}.");
+        //
+        // #1608 re-review finding 1: branched on the returned state, because `baton run` is the wrong
+        // verb for one of the two non-Terminal shapes. A step that declares a PausePoint and settles
+        // Indeterminate is Paused with the flag still set (spec/baton.md §3), and resolving it clears
+        // the flag but not the pause — only FlowEvent.WorkflowResumed removes it — so the room is
+        // still Paused here, and a `baton run` against it re-enters the same unfulfilled obligation
+        // and returns Paused again. `baton decide` is the verb that discharges it; FlowStateReporter
+        // above has already printed the execution id and supersede targets it needs.
+        Console.WriteLine(result.State.Status == WorkflowStatus.Paused
+            ? "Room is not yet complete — this room is still paused; record the pause decision with "
+              + "`baton decide` (arguments printed above), which is what resumes it."
+            : $"Room is not yet complete — {RecoveryGuidance.RunRoomDirInstruction}.");
     }
 
     // #1359: baton resume gets the same truthful exit-code table as run/dispatch — its own design
@@ -304,6 +318,17 @@ catch (BatonFlowException ex) when (ex is Baton.Concurrency.WorkflowLockedExcept
     // moment. The room is left exactly as it was; the exit code alone says "retry later".
     WriteErrorWithTry(ex);
     return args[0] is "run" or "dispatch" or "redispatch" or "resume" ? (int)RunExitCode.RoomHeld : 1;
+}
+catch (Baton.Status.StaleSentinelDeletionException ex)
+{
+    // #1608 re-review finding 2: a stale terminal.json that could not be deleted refuses the run
+    // rather than starting a pump behind a false "already done" signal. Kept out of the catch below
+    // deliberately: that one would answer a locked sentinel by trying to WRITE the very same locked
+    // path (WriteValidationRefusedAsync -> File.Move onto terminal.json), turning a clean refusal
+    // back into the raw IOException this arm exists to remove -- the same "leave the room exactly as
+    // it was" carve-out shape #1374 F1 uses above.
+    WriteErrorWithTry(ex);
+    return args[0] is "run" or "dispatch" or "redispatch" or "resume" ? (int)RunExitCode.ValidationRefused : 1;
 }
 catch (BatonFlowException ex)
 {

@@ -216,7 +216,10 @@ or records a rejection and leaves the step resolved-but-`Failed`. See `docs/disp
 section for exactly which outputs a capture can and can't ever resolve into. `baton resolve` never
 re-drives the DAG itself, either way — in a multi-step lane, check its stdout / the returned `state`
 for whether the room reached Terminal; if not (a downstream step just became deliverable, or a
-rejected step still has retry budget), re-run `baton run --room-dir <room-dir>` (spec/baton.md §3).
+rejected step still has retry budget), re-run `baton run --room-dir <room-dir>` — except on a room left
+`Paused`, where `baton decide` is the verb that moves it and `baton run` cannot. `baton resolve` names
+whichever of the two applies on its own stdout; follow that rather than the general rule
+(spec/baton.md §3).
 
 ---
 
