@@ -112,9 +112,10 @@ pattern index matched, and the hit is logged. If the patterns file is MISSING or
 fails CLOSED: every deliverable in that run is withheld, stub included, until an operator fixes it --
 see `load_secret_patterns`'s docstring for why that state is deliberately never memorized as "done".
 
-Dedupe is per (room, artifact, content-hash) -- `push_state_file` (gitignored) remembers the hash
-last pushed for each (room, artifact) pair, and a run that finds an unchanged hash skips re-pushing
-it. A room with zero declared outputs (typically a Failed room) still gets ONE deliverable, carrying
+Dedupe is per (room_path, artifact, content-hash) -- `push_state_file` (gitignored) remembers the hash
+last pushed for each (room_path, artifact) pair, and a run that finds an unchanged hash skips re-pushing
+it (matching the snapshot half's path-keyed join, #1617; room name is kept for display only). A room
+with zero declared outputs (typically a Failed room) still gets ONE deliverable, carrying
 only the verdict summary, so a failure with nothing to show is still visible in the inbox.
 
 A PER-ITEM pattern hit IS memorized as pushed, unlike the missing-patterns-file case: its stub was
@@ -1123,8 +1124,8 @@ def save_push_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def find_terminal_rooms(rooms_root: Path) -> list[tuple[str, Path]]:
-    """(room_name, room_dir) for every room directory that carries a terminal.json.
+def find_terminal_rooms(rooms_root: Path) -> list[tuple[str, str, Path]]:
+    """(room_path, room_name, room_dir) for every room directory that carries a terminal.json.
 
     A room with no terminal.json is still running (or was never dispatched) -- outside this
     function's job, which is only to find TERMINAL rooms; the fleet snapshot half already covers
@@ -1135,7 +1136,7 @@ def find_terminal_rooms(rooms_root: Path) -> list[tuple[str, Path]]:
     found = []
     for child in sorted(rooms_root.iterdir()):
         if child.is_dir() and (child / "terminal.json").is_file():
-            found.append((child.name, child))
+            found.append((str(child), child.name, child))
     return found
 
 
@@ -1184,11 +1185,16 @@ def _apply_secret_gate(content_bytes: bytes, local_path: str, patterns: list[re.
     return text, False, None, None
 
 
-def build_item(room: str, room_dir: Path, artifact_path: Path, verdict: dict,
-                patterns: list[re.Pattern] | None) -> dict:
+def build_item(room_path: str, room_dir: Path, artifact_path: Path, verdict: dict,
+                patterns: list[re.Pattern] | None, room_name: str | None = None) -> dict:
     """One deliverable for a declared output artifact. `artifact_path` is absolute (terminal.json
     stores absolute paths); the item's "artifact" field is that path relative to the room dir, so
-    dedupe keys and inbox rows never carry the operator's home directory."""
+    dedupe keys and inbox rows never carry the operator's home directory.
+
+    Keyed by room PATH (#1617, matching the snapshot half's timeline join; room_name is kept for
+    display only)."""
+    if room_name is None:
+        room_name = room_dir.name if room_dir is not None else Path(room_path).name
     try:
         raw = artifact_path.read_bytes()
     except OSError as ex:
@@ -1201,8 +1207,9 @@ def build_item(room: str, room_dir: Path, artifact_path: Path, verdict: dict,
     content, withheld, stub_reason, pattern_index = _apply_secret_gate(raw, str(artifact_path), patterns)
     title = extract_title(raw.decode("utf-8", errors="replace"), artifact_path.name) if not withheld else artifact_path.name
     item = {
-        "id": f"{room}::{rel}::{content_hash[:16]}",
-        "room": room,
+        "id": f"{room_path}::{rel}::{content_hash[:16]}",
+        "room": room_path,
+        "room_name": room_name,
         "artifact": rel,
         "title": title,
         "content_hash": content_hash,
@@ -1218,20 +1225,27 @@ def build_item(room: str, room_dir: Path, artifact_path: Path, verdict: dict,
     if stub_reason:
         item["stub_reason"] = stub_reason
     if pattern_index is not None:
-        log(f"secret-gate: {room}/{rel} matched pattern #{pattern_index}: withheld")
+        log(f"secret-gate: {room_name}/{rel} matched pattern #{pattern_index}: withheld")
     return item
 
 
-def build_verdict_only_item(room: str, verdict: dict, room_dir: Path | None = None) -> dict:
+def build_verdict_only_item(room_path: str, verdict: dict, room_dir: Path | None = None,
+                            room_name: str | None = None) -> dict:
     """A room with zero declared outputs (typically Failed) still gets one inbox entry, so a
-    failure with nothing to show is still visible rather than silently absent."""
+    failure with nothing to show is still visible rather than silently absent.
+
+    Keyed by room PATH (#1617, matching the snapshot half's timeline join; room_name is kept for
+    display only)."""
+    if room_name is None:
+        room_name = room_dir.name if room_dir is not None else Path(room_path).name
     text = json.dumps(verdict, indent=2, sort_keys=True)
     content_hash = sha256_hex(text.encode("utf-8"))
     item = {
-        "id": f"{room}::__verdict__::{content_hash[:16]}",
-        "room": room,
+        "id": f"{room_path}::__verdict__::{content_hash[:16]}",
+        "room": room_path,
+        "room_name": room_name,
         "artifact": None,
-        "title": f"{room} — {verdict.get('state') or 'unknown'}",
+        "title": f"{room_name} — {verdict.get('state') or 'unknown'}",
         "content_hash": content_hash,
         "withheld": False,
         "verdict": verdict,
@@ -1249,7 +1263,7 @@ def build_verdict_only_item(room: str, verdict: dict, room_dir: Path | None = No
 def gather_deliverables(rooms_root: Path, state: dict, patterns: list[re.Pattern] | None) -> list[dict]:
     """Every not-yet-pushed deliverable across all terminal rooms under rooms_root.
 
-    "not yet pushed" is decided per (room, artifact) against `state[key] == content_hash` -- an
+    "not yet pushed" is decided per (room_path, artifact) against `state[key] == content_hash` -- an
     unchanged hash is skipped. Deliberately NOT memorized into `state` here (the caller does that,
     only after a successful network push): when `patterns is None`, every item this run is withheld
     for that reason alone, and it must be re-offered on the NEXT run too, in case an operator has
@@ -1259,28 +1273,28 @@ def gather_deliverables(rooms_root: Path, state: dict, patterns: list[re.Pattern
         log("secret-gate: secret_patterns_file missing/unreadable — WITHHOLDING EVERYTHING this run (fail closed)")
 
     items = []
-    for room, room_dir in find_terminal_rooms(rooms_root):
+    for room_path, room_name, room_dir in find_terminal_rooms(rooms_root):
         terminal = load_terminal(room_dir)
         if terminal is None:
             continue
         verdict = verdict_summary(terminal)
         outputs = declared_outputs(terminal)
         if not outputs:
-            item = build_verdict_only_item(room, verdict, room_dir)
-            key = f"{room}::{item['artifact']}"
+            item = build_verdict_only_item(room_path, verdict, room_dir, room_name=room_name)
+            key = f"{room_path}::{item['artifact']}"
             if state.get(key) != item["content_hash"]:
                 items.append(item)
             continue
         for artifact_path in outputs:
-            item = build_item(room, room_dir, artifact_path, verdict, patterns)
-            key = f"{room}::{item['artifact']}"
+            item = build_item(room_path, room_dir, artifact_path, verdict, patterns, room_name=room_name)
+            key = f"{room_path}::{item['artifact']}"
             if state.get(key) != item["content_hash"]:
                 items.append(item)
     return items
 
 
 def mark_pushed(state: dict, items: list[dict]) -> dict:
-    """New state dict with each item's (room, artifact) -> content_hash recorded. Pure, so callers
+    """New state dict with each item's (room_path, artifact) -> content_hash recorded. Pure, so callers
     control exactly when a successful push is allowed to count as "seen"."""
     updated = dict(state)
     for item in items:
@@ -1484,7 +1498,11 @@ def _selftest() -> int:
         check("missing patterns file returns the None sentinel", missing_patterns is None)
 
         items = gather_deliverables(rooms_root, {}, missing_patterns)
-        by_room = {i["room"]: i for i in items if i["artifact"]}
+        by_room = {i["room_name"]: i for i in items if i["artifact"]}
+        check("deliverable item carries room path in 'room'",
+              by_room["room-a"]["room"] == str(rooms_root / "room-a"))
+        check("deliverable item carries room name in 'room_name'",
+              by_room["room-a"]["room_name"] == "room-a")
         check("fail-closed: room-a's real report is withheld when patterns are missing",
               by_room["room-a"]["withheld"] is True
               and "patterns file missing" in by_room["room-a"]["stub_reason"]
@@ -1493,7 +1511,7 @@ def _selftest() -> int:
               all("prompt" not in (i.get("artifact") or "") and "stdout" not in (i.get("artifact") or "")
                   for i in items))
         check("a room with zero declared outputs still yields one verdict-only item",
-              any(i["room"] == "room-b" and i["artifact"] is None and i["verdict"]["error"] == "boom"
+              any(i["room_name"] == "room-b" and i["artifact"] is None and i["verdict"]["error"] == "boom"
                   for i in items))
 
         # -- patterns present, no hit: real content passes through --
@@ -1503,13 +1521,13 @@ def _selftest() -> int:
         check("an empty-but-present patterns file parses to [] (not the fail-closed sentinel)",
               clean_patterns == [])
         items2 = gather_deliverables(rooms_root, {}, clean_patterns)
-        report = next(i for i in items2 if i["room"] == "room-a" and i["artifact"])
+        report = next(i for i in items2 if i["room_name"] == "room-a" and i["artifact"])
         check("clean content is uploaded verbatim when nothing matches",
               report["withheld"] is False and "Report A" in report["content"])
         check("title comes from the first markdown heading", report["title"] == "Report A")
         check("deliverable carries ISO-8601 created_at from artifact mtime",
               isinstance(report.get("created_at"), str) and "T" in report["created_at"])
-        verdict_only = next(i for i in items2 if i["room"] == "room-b")
+        verdict_only = next(i for i in items2 if i["room_name"] == "room-b")
         check("verdict-only deliverable carries created_at from terminal.json mtime",
               isinstance(verdict_only.get("created_at"), str) and "T" in verdict_only["created_at"])
         unreadable_item = build_item("room-x", tmp / "nonexistent", tmp / "nonexistent" / "missing.md", {}, [])
@@ -1523,7 +1541,7 @@ def _selftest() -> int:
         _make_room(rooms_root, "room-c", [("secret.md", "token: sk-abcdefghijklmnop\n")])
         hit_patterns = load_secret_patterns(hit_patterns_file)
         items3 = gather_deliverables(rooms_root, {}, hit_patterns)
-        secret_item = next(i for i in items3 if i["room"] == "room-c")
+        secret_item = next(i for i in items3 if i["room_name"] == "room-c")
         check("a pattern hit withholds the content", secret_item["withheld"] is True)
         check("the stub names the matched pattern's INDEX, not its text",
               secret_item["stub_reason"] == "matched pattern #0" and "sk-" not in secret_item["content"])
@@ -1532,7 +1550,7 @@ def _selftest() -> int:
         state_after = mark_pushed({}, items2)
         items4 = gather_deliverables(rooms_root, state_after, clean_patterns)
         check("dedupe skips an already-pushed, unchanged artifact",
-              not any(i["room"] == "room-a" and i["artifact"] == "artifacts/execution_x/report.md"
+              not any(i["room_name"] == "room-a" and i["artifact"] == "artifacts/execution_x/report.md"
                       for i in items4))
 
         # -- polarity: changed content is offered again despite matching state key --
@@ -1540,7 +1558,7 @@ def _selftest() -> int:
             "# Report A v2\n\nchanged\n", encoding="utf-8")
         items5 = gather_deliverables(rooms_root, state_after, clean_patterns)
         check("dedupe re-offers an artifact whose content changed",
-              any(i["room"] == "room-a" and i["title"] == "Report A v2" for i in items5))
+              any(i["room_name"] == "room-a" and i["title"] == "Report A v2" for i in items5))
 
         # -- fail-closed is never memorized: gather_deliverables only reads state, it never writes
         # it -- main() is what decides whether to persist, and it skips that when patterns is None
@@ -1552,6 +1570,41 @@ def _selftest() -> int:
         second = gather_deliverables(rooms_root, {}, still_missing)
         check("a fail-closed run offers the same items every time (nothing here marks it done)",
               [i["id"] for i in first] == [i["id"] for i in second] and len(first) > 0)
+
+        # -- #1617: deliverables join keyed by room path, not room name --
+        shared_root1 = tmp / "cluster1" / "rooms"
+        shared_root2 = tmp / "cluster2" / "rooms"
+        shared_root1.mkdir(parents=True)
+        shared_root2.mkdir(parents=True)
+        room1_dir = _make_room(shared_root1, "same-name", [("report.md", "# Same Content\n")])
+        room2_dir = _make_room(shared_root2, "same-name", [("report.md", "# Same Content\n")])
+
+        items_r1 = gather_deliverables(shared_root1, {}, clean_patterns)
+        items_r2 = gather_deliverables(shared_root2, {}, clean_patterns)
+        check("deliverable item 'room' is the full room path string",
+              items_r1[0]["room"] == str(room1_dir) and items_r2[0]["room"] == str(room2_dir))
+        check("deliverable item 'room_name' carries the directory name for display",
+              items_r1[0]["room_name"] == "same-name" and items_r2[0]["room_name"] == "same-name")
+        check("deliverable item ids are distinct between same-named rooms in different paths",
+              items_r1[0]["id"] != items_r2[0]["id"]
+              and str(room1_dir) in items_r1[0]["id"]
+              and str(room2_dir) in items_r2[0]["id"])
+
+        # Dedupe keying: mark room1 pushed into state.
+        state_with_r1 = mark_pushed({}, items_r1)
+        check("state keys dedupe by room path, not room name",
+              f"{room1_dir}::artifacts/execution_x/report.md" in state_with_r1
+              and "same-name::artifacts/execution_x/report.md" not in state_with_r1)
+
+        # Scanning room2 with state_with_r1 must NOT skip room2's deliverable (same name, same content, different path)
+        items_r2_after_r1 = gather_deliverables(shared_root2, state_with_r1, clean_patterns)
+        check("same-named room in different path is NOT skipped by dedupe when another room with same name and content was pushed",
+              len(items_r2_after_r1) == 1 and items_r2_after_r1[0]["room"] == str(room2_dir))
+
+        # (Control) scanning room1 again with state_with_r1 IS skipped by dedupe
+        items_r1_again = gather_deliverables(shared_root1, state_with_r1, clean_patterns)
+        check("(control) identical room path with unchanged content IS skipped by dedupe",
+              len(items_r1_again) == 0)
 
     # -- deliver_url derivation --
     check("deliver_url derives from push_url by swapping the path segment",
