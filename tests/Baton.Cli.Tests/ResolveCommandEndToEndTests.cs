@@ -79,6 +79,71 @@ public class ResolveCommandEndToEndTests
         }
     }
 
+    /// <summary>
+    /// F1 (#1593 review): admits exactly one verb for a ContractFailure producer, per
+    /// <c>ResolveCommand.ResolveExplicitExecutionAsync</c>'s own admission logic. Distinct from a
+    /// VerifyFailed/Arrested producer
+    /// (<c>MutationInterfaceCaptureResolutionTests.A_verify_failed_Indeterminate_step_is_refused_by_baton_resolve</c>),
+    /// which admits neither.
+    /// </summary>
+    [Fact]
+    public async Task A_ContractFailure_step_refuses_accept_capture_but_admits_reject()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var executionId = await SeedContractFailureRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            var acceptEx = await Assert.ThrowsAsync<CliArgumentException>(() => ResolveCommand.ExecuteAsync(
+                new ResolveOptions(roomDirectory, executionId.Value, Accept: true),
+                TestContext.Current.CancellationToken));
+            Assert.Contains("no captured response to accept", acceptEx.Message, StringComparison.Ordinal);
+            Assert.Contains("--reject --reason", acceptEx.TryInvocation, StringComparison.Ordinal);
+
+            var result = await ResolveCommand.ExecuteAsync(
+                new ResolveOptions(roomDirectory, executionId.Value, Accept: false, Reason: "workspace inspected, redispatching"),
+                TestContext.Current.CancellationToken);
+
+            var step = Assert.Single(result.State.Steps);
+            Assert.Equal(StepStatus.Failed, step.Status);
+            Assert.False(step.IndeterminateAwaitingResolution);
+            Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(result.State));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// F1 (#1593 review): <c>ResolveSingleCandidateAsync</c> (no <c>--execution</c> given) must give
+    /// the SAME discriminated refusal an explicit <c>--execution</c> gets, rather than silently
+    /// selecting the sole candidate and letting <c>MutationInterface.RecordCaptureResolutionAsync</c>
+    /// refuse it two layers deeper with the generic "has no unresolved indeterminate capture" message.
+    /// </summary>
+    [Fact]
+    public async Task Resolving_the_sole_candidate_with_accept_capture_against_a_ContractFailure_step_gives_the_discriminated_refusal()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            await SeedContractFailureRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => ResolveCommand.ExecuteAsync(
+                new ResolveOptions(roomDirectory, ExecutionId: null, Accept: true),
+                TestContext.Current.CancellationToken));
+
+            Assert.Contains("no captured response to accept", ex.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("has no unresolved indeterminate capture", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [Fact]
     public async Task Accepting_a_capture_in_a_multi_step_DAG_leaves_the_downstream_step_dispatchable_and_baton_run_picks_it_up()
     {
@@ -346,6 +411,32 @@ public class ResolveCommandEndToEndTests
     }
 
     /// <summary>
+    /// F1 (#1593 review): fabricates a room settled Indeterminate by the #1593 contract-failure
+    /// producer — same <see cref="FlowEvent.ExecutionIndeterminate"/> shape
+    /// <see cref="SeedIndeterminateRoomAsync"/> uses, deliberately with a null
+    /// <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/> so the projector's
+    /// <see cref="Domain.IndeterminateProducer.ContractFailure"/> discriminant fires instead of
+    /// <see cref="Domain.IndeterminateProducer.CapturedResponse"/>.
+    /// </summary>
+    private static async Task<ExecutionId> SeedContractFailureRoomAsync(
+        string testRoot, string roomDirectory, string outputName)
+    {
+        var executionId = await RunOrdinaryFailureAsync(testRoot, roomDirectory, outputName);
+
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        await using (var writer = new FlowEventLogWriter(logPath))
+        {
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionIndeterminate(
+                    executionId, "Contract not satisfied — worker exited 0 with work possibly on disk; awaiting conductor resolution.",
+                    CapturedResponseFile: null, UnsatisfiedOutputNames: [outputName]),
+                TestContext.Current.CancellationToken);
+        }
+
+        return executionId;
+    }
+
+    /// <summary>
     /// The durable shape a crash between "fact" and "files" leaves behind — an accepted
     /// <see cref="FlowEvent.CaptureResolved"/> whose declared output is not on disk — constructed
     /// directly, since what these fixtures test is the CLI's admission of that shape as a repair
@@ -370,7 +461,7 @@ public class ResolveCommandEndToEndTests
         return executionId;
     }
 
-    /// <summary>Runs a single step to an ordinary Failed (declared output never written, exit 0).</summary>
+    /// <summary>Runs a single step to an ordinary Failed (exit 1).</summary>
     private static async Task<ExecutionId> RunOrdinaryFailureAsync(
         string testRoot, string roomDirectory, string outputName = "advice.md")
     {
@@ -405,7 +496,7 @@ public class ResolveCommandEndToEndTests
         {
             ["a"] = new WorkerBindingConfigEntry(
                 "shell", new WorkerContract("a", [], [new ProducedOutput(outputName)], []),
-                PromptTemplate: "exit 0", TimeSpan.FromSeconds(30)),
+                PromptTemplate: "exit 1", TimeSpan.FromSeconds(30)),
         };
 
         var path = Path.Combine(directory, "bindings.json");

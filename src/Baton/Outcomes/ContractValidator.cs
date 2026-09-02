@@ -279,10 +279,19 @@ public static class ContractValidator
             _ => element.GetRawText(),
         };
 
-        return rendered.Length <= MaxRenderedValueLength
-            ? rendered
-            : string.Concat(TrimWithoutSplittingSurrogatePair(rendered, MaxRenderedValueLength), "…(truncated)");
+        return ClampRenderedValue(rendered);
     }
+
+    /// <summary>
+    /// N1 (#1664 re-review): the same per-value clamp <see cref="DescribeElement"/> uses, exposed so
+    /// <see cref="Workspaces.WorktreeProvisioner.DescribeStrayPaths"/> can bound each stray path the
+    /// identical way rather than growing a second copy of the "one long value must not eat the whole
+    /// reason" rule.
+    /// </summary>
+    internal static string ClampRenderedValue(string value) =>
+        value.Length <= MaxRenderedValueLength
+            ? value
+            : string.Concat(TrimWithoutSplittingSurrogatePair(value, MaxRenderedValueLength), "…(truncated)");
 
     /// <summary>
     /// Keeps the last <paramref name="length"/> characters of <paramref name="value"/>, cutting from
@@ -325,6 +334,15 @@ public static class ContractValidator
     /// </summary>
     public static string TrimWithoutSplittingSurrogatePair(string value, int length)
     {
+        // N1 (#1664 re-review): a caller-computed length (a reason's remaining budget minus an
+        // already-assembled suffix) can go negative when the suffix alone overruns the cap. Clamping
+        // here, not just in each caller, is what keeps `value[..cut]` from throwing regardless of how
+        // many callers this gains.
+        if (length <= 0)
+        {
+            return string.Empty;
+        }
+
         if (value.Length <= length)
         {
             return value;

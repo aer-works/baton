@@ -76,7 +76,7 @@ public class PumpCheckpointCarryTests
         // which is what parks step-a in a Patient deferral with its failed attempt still latest.
         ["worker-a"] = new WorkerBinding.Process(
             new WorkerContract("worker-a", [], [new ProducedOutput("out.txt")], []),
-            ExitCleanlyWithoutWriting(),
+            ExitWithFailureCode(),
             TimeSpan.FromSeconds(30)),
     };
 

@@ -12,7 +12,15 @@ public sealed record ProjectionCheckpoint(
     long EventOffset,
     ProjectionCheckpointState State,
     long ByteOffset = 0,
-    int Version = 3);
+    // N3 (#1664 re-review): bumped from 3 to 4 because IndeterminateProducerByStepId is new in this
+    // PR and its absence from an already-shipped checkpoint is NOT the ordinary
+    // trailing-optional-coalesces-to-empty shape the other members above document — an empty map here
+    // means "no producer for a step that IS awaiting resolution", which every admission predicate
+    // reads as a producer no verb admits, not as "unknown, go find out". A pre-existing awaiting-
+    // resolution room's checkpoint would otherwise deserialize as permanently unresolvable.
+    // ProjectionCheckpointStore.Load's version gate is what actually forces the full replay this
+    // depends on.
+    int Version = 4);
 
 /// <summary>
 /// Serializable snapshot of <see cref="StateProjector"/>'s internal working dictionaries and sets.
@@ -49,7 +57,8 @@ public sealed record ProjectionCheckpointState(
     HashSet<StepId>? RetryForeclosedStepIds = null,
     HashSet<StepId>? IndeterminateAwaitingResolutionStepIds = null,
     Dictionary<StepId, string?>? IndeterminateReasonByStepId = null,
-    HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null)
+    HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null,
+    Dictionary<StepId, IndeterminateProducer?>? IndeterminateProducerByStepId = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -97,6 +106,15 @@ public sealed record ProjectionCheckpointState(
     /// resolved by verify outcome or terminal Flow event — same trailing-optional replay-safety shape.
     /// </summary>
     public HashSet<ExecutionId> UnmatchedVerifyExecutionIds { get; init; } = UnmatchedVerifyExecutionIds ?? new();
+
+    /// <summary>
+    /// F1 (#1593 review): a companion to <see cref="IndeterminateAwaitingResolutionStepIds"/>, never a
+    /// second flag — which of <see cref="Domain.IndeterminateProducer"/>'s four sources raised it, for
+    /// <c>baton resolve</c>'s admission test. Same trailing-optional replay-safety shape as
+    /// <see cref="RetryForeclosedStepIds"/> above, and the same <see cref="DeepCopy"/> load-bearing note
+    /// applies.
+    /// </summary>
+    public Dictionary<StepId, IndeterminateProducer?> IndeterminateProducerByStepId { get; init; } = IndeterminateProducerByStepId ?? new();
 
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
@@ -158,5 +176,6 @@ public sealed record ProjectionCheckpointState(
         new HashSet<StepId>(RetryForeclosedStepIds),
         new HashSet<StepId>(IndeterminateAwaitingResolutionStepIds),
         new Dictionary<StepId, string?>(IndeterminateReasonByStepId),
-        new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds));
+        new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds),
+        new Dictionary<StepId, IndeterminateProducer?>(IndeterminateProducerByStepId));
 }

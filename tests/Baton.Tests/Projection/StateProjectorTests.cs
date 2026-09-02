@@ -1438,7 +1438,7 @@ public class StateProjectorTests
             var tailState = StateProjector.Project(allEvents, snapshot, loadedCheckpoint);
             var fullReplayState = StateProjector.Project(allEvents, snapshot, checkpoint: null);
 
-            // With the guard tightened to `Version < 3`, the stale Version-2 checkpoint is rejected
+            // With the guard tightened to `Version < 4`, the stale Version-2 checkpoint is rejected
             // (Load returns null) and the room falls back to a full replay -- so the two ordinals
             // agree. Before that fix, Load accepted the Version-2 checkpoint, the missing key
             // defaulted to an empty dictionary, and the tail-only projection undercounted.

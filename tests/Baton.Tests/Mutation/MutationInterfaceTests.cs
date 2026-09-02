@@ -10,8 +10,9 @@ namespace Baton.Tests.Mutation;
 /// <summary>
 /// Integration tests: these spawn real processes through the managed <c>BatonTask</c> engine
 /// (M7 Phase 7's acceptance criteria — a three-step linear workflow runs end-to-end through
-/// <see cref="MutationInterface.StartWorkflowAsync"/> and a clean exit with no output is
-/// classified <c>ExecutionFailed</c>). No mocking of Baton.Core itself.
+/// <see cref="MutationInterface.StartWorkflowAsync"/>). No mocking of Baton.Core itself. A clean
+/// exit-0 with no output classifies <c>ExecutionIndeterminate</c>, not <c>ExecutionFailed</c>
+/// (#1593) — see <see cref="StartWorkflowAsync_classifies_a_clean_exit_with_no_output_as_ExecutionIndeterminate"/>.
 /// </summary>
 public class MutationInterfaceTests
 {
@@ -135,7 +136,7 @@ public class MutationInterfaceTests
     }
 
     [Fact]
-    public async Task StartWorkflowAsync_classifies_a_clean_exit_with_no_output_as_ExecutionFailed()
+    public async Task StartWorkflowAsync_classifies_a_clean_exit_with_no_output_as_ExecutionIndeterminate()
     {
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
@@ -166,12 +167,13 @@ public class MutationInterfaceTests
 
             var stepState = Assert.Single(finalState.Steps);
             Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.True(stepState.IndeterminateAwaitingResolution);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
-            var failedEvent = events.OfType<FlowEvent.ExecutionFailed>().Single();
-            Assert.Null(failedEvent.FailureClassification);
-            Assert.NotNull(failedEvent.Reason);
-            Assert.Contains("output.txt", failedEvent.Reason);
+            var indeterminateEvent = events.OfType<FlowEvent.ExecutionIndeterminate>().Single();
+            Assert.NotNull(indeterminateEvent.Reason);
+            Assert.Contains("output.txt", indeterminateEvent.Reason);
+            Assert.Contains("work possibly on disk", indeterminateEvent.Reason);
         }
         finally
         {
@@ -433,7 +435,13 @@ public class MutationInterfaceTests
     [Fact]
     public async Task StartWorkflowAsync_skips_verify_when_execution_classification_is_failed()
     {
-        // #1623 / F6: a failed worker never triggers verify
+        // #1623 / F6: a failed worker never triggers verify. #1593 (found-while-fixing, this PR): a
+        // clean exit-0 with a missing declared output no longer classifies ExecutionFailed -- it
+        // settles Indeterminate instead, so ExitCleanlyWithoutWriting() no longer produces the "an
+        // ordinary Failed worker" shape this test needs. Swapped for ExitWithFailureCode(), the same
+        // migration the review found legitimate across MutationInterfaceRetryBackoffTests,
+        // PumpCheckpointCarryTests, LiveCancellationEndToEndTests and ResolveCommandEndToEndTests --
+        // missed here originally since this file wasn't in that sweep.
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
         var logPath = Path.Combine(roomDirectory, "flow.jsonl");
@@ -449,7 +457,7 @@ public class MutationInterfaceTests
             {
                 ["architect"] = new WorkerBinding.Process(
                     new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
-                    ExitCleanlyWithoutWriting() with { WorkingDirectory = RepoRoot() },
+                    ExitWithFailureCode() with { WorkingDirectory = RepoRoot() },
                     TimeSpan.FromSeconds(30),
                     VerifyPixiTask: "buildlock-selftest"),
             };

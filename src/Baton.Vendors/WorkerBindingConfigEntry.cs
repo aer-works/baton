@@ -67,6 +67,15 @@ namespace Baton.Vendors;
 /// once at parse time (<c>Baton.Cli.DispatchOptionsParser.SanitizeWorkstream</c>). Null when never
 /// supplied.
 /// </param>
+/// <param name="WorktreeBaseSha">
+/// N2 (#1664 re-review): the commit <paramref name="Worktree"/>'s <see cref="WorktreeWorkspace.Ref"/>
+/// resolved to at provisioning time (<see cref="Workspaces.WorktreeProvisioner.ResolveBaseCommit"/>),
+/// stamped by <see cref="WorktreeWorkspaces"/> in the SAME expression that nulls
+/// <paramref name="Worktree"/> and sets <paramref name="IsWorktree"/> — so the value the fix reads is
+/// captured before the field carrying it is cleared, unlike the symbolic ref this replaces. Null
+/// whenever <paramref name="IsWorktree"/> is false, or the ref could not be resolved against the
+/// source repository.
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -87,7 +96,8 @@ public sealed record WorkerBindingConfigEntry(
     string? Label = null,
     string? VerifyPixiTask = null,
     long? TokenBudget = null,
-    string? Workstream = null);
+    string? Workstream = null,
+    string? WorktreeBaseSha = null);
 
 
 /// <summary>

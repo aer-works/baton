@@ -513,7 +513,10 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             // #1089: only when streaming is there a `result` event on stdout to detect; in text mode the
             // stdout is the answer, so wiring the detector would just scan prose for nothing. Null there
             // keeps the guard failing safe.
-            DetectsTerminalSuccess: invocation.StreamJson ? IsTerminalSuccessLine : null);
+            DetectsTerminalSuccess: invocation.StreamJson ? IsTerminalSuccessLine : null,
+            // F6 (#1593 review): same streaming gate as DetectsTerminalSuccess above, but fires on a
+            // terminal `result` event of ANY status — see IsTerminalResultLine.
+            DetectsTerminalResult: invocation.StreamJson ? IsTerminalResultLine : null);
     }
 
     /// <summary>
@@ -537,6 +540,36 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                 && root.TryGetProperty("event", out var eventProp) && eventProp.GetString() == "result"
                 && root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object
                 && result.TryGetProperty("status", out var status) && status.GetString() == "SUCCESS";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// F6 (#1593 review): true iff <paramref name="rawLine"/> is agy's terminal `result` marker of ANY
+    /// status — the same envelope <see cref="IsTerminalSuccessLine"/> matches, minus that method's
+    /// <c>status == "SUCCESS"</c> clause. Distinguishes "the worker finished and self-reported a
+    /// FAILURE" (a contract failure with a result record) from "the worker died mid-stream with no
+    /// result at all" (a dead worker) — <see cref="Outcomes.OutcomeClassifier"/>'s dead-worker predicate
+    /// needs exactly this fact, which <see cref="IsTerminalSuccessLine"/> cannot supply since it reads
+    /// false in both cases.
+    /// </summary>
+    internal static bool IsTerminalResultLine(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            return root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("event", out var eventProp) && eventProp.GetString() == "result"
+                && root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object;
         }
         catch (JsonException)
         {
