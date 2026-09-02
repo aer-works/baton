@@ -51,6 +51,11 @@ namespace Baton.Cli;
 /// </param>
 /// <param name="Attachments">The <c>--attach</c> context files copied into the room (#1500).</param>
 /// <param name="ListCapabilities">True when <c>--list-capabilities</c> was passed to print discoverability info (#1500).</param>
+/// <param name="TokenBudget">
+/// The <c>--token-budget</c> escape hatch (#1623) — per-execution token ceiling, independent of the
+/// role like <paramref name="Timeout"/>. Role dispatch only, rejected for a workflow template the same
+/// way <paramref name="Timeout"/> is. Null keeps the role's own default (<c>Baton.Vendors.WorkerRole.TokenBudget</c>).
+/// </param>
 /// <param name="RepoPath">
 /// <c>--repo</c> (#1645): a checkout whose <see cref="InstalledVersionDrift"/> release version this
 /// dispatch's installed <c>baton</c> is compared against, printing a WARN on stderr when behind. Null
@@ -72,4 +77,5 @@ public sealed record DispatchOptions(
     string? Workstream = null,
     IReadOnlyList<string>? Attachments = null,
     bool ListCapabilities = false,
+    long? TokenBudget = null,
     string? RepoPath = null);

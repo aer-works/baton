@@ -14,7 +14,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -63,6 +63,7 @@ public static class DispatchOptionsParser
         string? workflowId = null;
         string? outputPath = null;
         TimeSpan? timeout = null;
+        long? tokenBudget = null;
         string? label = null;
         string? workstream = null;
         string? repoPath = null;
@@ -104,6 +105,9 @@ public static class DispatchOptionsParser
                     break;
                 case "--timeout":
                     timeout = ParseTimeout(RequireValue(args, ref i, arg));
+                    break;
+                case "--token-budget":
+                    tokenBudget = ParseTokenBudget(RequireValue(args, ref i, arg));
                     break;
                 case "--label":
                     label = SanitizeLabel(RequireValue(args, ref i, arg));
@@ -180,7 +184,26 @@ public static class DispatchOptionsParser
             timeout, label, workstream,
             attachments.Count > 0 ? attachments : null,
             listCapabilities,
+            tokenBudget,
             repoPath is null ? null : Path.GetFullPath(repoPath));
+    }
+
+    /// <summary>
+    /// Parses <c>--token-budget</c>'s value (#1623): a positive whole number of tokens. No ceiling like
+    /// <c>--timeout</c>'s <see cref="MaxTimeoutMinutes"/> — an operator raising their own role's budget
+    /// is not the runaway-consumption failure mode this issue exists to arrest; only a role with no
+    /// budget declared and no override runs unwatched.
+    /// </summary>
+    private static long ParseTokenBudget(string rawValue)
+    {
+        if (!long.TryParse(rawValue, out var tokens) || tokens <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--token-budget {rawValue}' is not a positive whole number of tokens. {Usage}",
+                "pass a positive integer, e.g. --token-budget 600000.");
+        }
+
+        return tokens;
     }
 
     /// <summary>

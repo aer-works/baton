@@ -151,7 +151,9 @@ public static class WorkerBindingResolver
             target = target with { OnStdoutLine = line => onWorkerStdoutLine(capturedWorkerName, line) };
         }
 
-        return new WorkerBinding.Process(entry.Contract, target, entry.Timeout, adapter, entry.GrantAuditMode, entry.Adapter, entry.Model, adapter);
+        return new WorkerBinding.Process(
+            entry.Contract, target, entry.Timeout, adapter, entry.GrantAuditMode, entry.Adapter, entry.Model, adapter,
+            entry.VerifyPixiTask, entry.TokenBudget);
     }
 
 

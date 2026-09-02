@@ -119,6 +119,104 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
             return false;
         }
     }
+
+    /// <summary>
+    /// #1623: reads <c>message.usage</c> off a mid-stream <c>"type":"assistant"</c> line — measured
+    /// 2026-09-01 (docs/vendor-capabilities.md's "The terminal result line is not the only place this
+    /// lives" finding) to carry the same four keys this class's own <see cref="TryParseFinalUsage"/>
+    /// reads off the terminal line: <c>input_tokens</c>/<c>output_tokens</c>/
+    /// <c>cache_creation_input_tokens</c>/<c>cache_read_input_tokens</c>. <c>num_turns</c> and
+    /// <c>output_tokens_details.thinking_tokens</c> are NOT claimed on this line (that finding did not
+    /// re-check them), so this deliberately leaves <see cref="WorkerUsage.Turns"/>/
+    /// <see cref="WorkerUsage.ThinkingTokens"/> null here rather than reusing the terminal-line reader.
+    /// The per-line/per-turn summing contract is <see cref="IWorkerUsageParser.TryParseIncrementalUsage"/>'s.
+    /// </summary>
+    public bool TryParseIncrementalUsage(string rawLine, out WorkerUsage? usage)
+    {
+        usage = null;
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var typeProp)
+                || typeProp.GetString() != "assistant"
+                || !root.TryGetProperty("message", out var message)
+                || message.ValueKind != JsonValueKind.Object
+                || !message.TryGetProperty("usage", out var usageProp)
+                || usageProp.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            long? tokensIn = usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens) ? inTokens : null;
+            long? tokensOut = usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens) ? outTokens : null;
+            long? cacheReadTokens = usageProp.TryGetProperty("cache_read_input_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue) ? cacheReadValue : null;
+            long? cacheCreationTokens = usageProp.TryGetProperty("cache_creation_input_tokens", out var cacheCreationProp) && cacheCreationProp.TryGetInt64(out var cacheCreationValue) ? cacheCreationValue : null;
+
+            if (tokensIn is null && tokensOut is null && cacheReadTokens is null && cacheCreationTokens is null)
+            {
+                return false;
+            }
+
+            usage = new WorkerUsage(tokensIn, tokensOut, CacheReadTokens: cacheReadTokens, CacheCreationTokens: cacheCreationTokens);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// #1623: a <c>"type":"assistant"</c> message's <c>tool_use</c> content block name, per the
+    /// standard Anthropic Messages API streaming shape claude's own <c>stream-json</c> output is built
+    /// on — not independently doc-audited the way the usage fields above are (docs/vendor-capabilities.md
+    /// carries no dedicated finding for this specific field), so this degrades to null on any shape
+    /// drift rather than throwing. First matching block wins; a message with several tool calls in one
+    /// turn is a real but rare shape this simplifies rather than enumerating.
+    /// </summary>
+    public string? TryParseToolName(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "assistant"
+                || !root.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object
+                || !message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.ValueKind == JsonValueKind.Object
+                    && block.TryGetProperty("type", out var blockType) && blockType.GetString() == "tool_use"
+                    && block.TryGetProperty("name", out var nameProp) && nameProp.GetString() is { Length: > 0 } name)
+                {
+                    return name;
+                }
+            }
+
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 }
 
 /// <summary>
@@ -201,6 +299,88 @@ public sealed class AgyUsageParser : IWorkerUsageParser
         catch (JsonException)
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// #1623: reads <c>step_update.usage</c> off a DONE-state <c>"event":"step_update"</c> line —
+    /// measured live against a real agy lane's captured <c>.stdout.log</c> (2026-09-02): a
+    /// <c>step_type":"agent_response"</c> step's DONE update carries the identical
+    /// <c>input_tokens</c>/<c>output_tokens</c>/<c>thinking_tokens</c>/<c>cache_read_tokens</c>/
+    /// <c>total_tokens</c> shape this class's own <see cref="TryParseFinalUsage"/> reads off the
+    /// terminal <c>result</c> event's <c>usage</c> object -- same field names, different envelope. One
+    /// line = one step's own usage; see <see cref="IWorkerUsageParser.TryParseIncrementalUsage"/> for
+    /// the output-additive/input-level split a caller applies to it.
+    /// </summary>
+    public bool TryParseIncrementalUsage(string rawLine, out WorkerUsage? usage)
+    {
+        usage = null;
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("event", out var eventProp) || eventProp.GetString() != "step_update"
+                || !root.TryGetProperty("step_update", out var stepUpdate) || stepUpdate.ValueKind != JsonValueKind.Object
+                || !stepUpdate.TryGetProperty("state", out var stateProp) || stateProp.GetString() != "DONE"
+                || !stepUpdate.TryGetProperty("usage", out var usageProp) || usageProp.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            long? tokensIn = usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens) ? inTokens : null;
+            long? tokensOut = usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens) ? outTokens : null;
+            long? cacheReadTokens = usageProp.TryGetProperty("cache_read_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue) ? cacheReadValue : null;
+            long? thinkingTokens = usageProp.TryGetProperty("thinking_tokens", out var thinkingProp) && thinkingProp.TryGetInt64(out var thinkingValue) ? thinkingValue : null;
+
+            if (tokensIn is null && tokensOut is null && cacheReadTokens is null && thinkingTokens is null)
+            {
+                return false;
+            }
+
+            usage = new WorkerUsage(tokensIn, tokensOut, CacheReadTokens: cacheReadTokens, ThinkingTokens: thinkingTokens);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// #1623: a <c>"step_type":"tool"</c> step_update's own <c>tool_name</c> — measured against the
+    /// same real agy lane capture <see cref="TryParseIncrementalUsage"/>'s doc names.
+    /// </summary>
+    public string? TryParseToolName(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("event", out var eventProp) || eventProp.GetString() != "step_update"
+                || !root.TryGetProperty("step_update", out var stepUpdate) || stepUpdate.ValueKind != JsonValueKind.Object
+                || !stepUpdate.TryGetProperty("step_type", out var stepTypeProp) || stepTypeProp.GetString() != "tool"
+                || !stepUpdate.TryGetProperty("tool_name", out var toolNameProp))
+            {
+                return null;
+            }
+
+            return toolNameProp.GetString() is { Length: > 0 } name ? name : null;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 }

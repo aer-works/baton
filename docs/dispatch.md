@@ -11,7 +11,7 @@ interactive session (chat) is a different path with a different prompt and a con
 ```
 baton dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
                     [--workspace <dir>] [--workflow-id <label>] [--output <path>] [--timeout <minutes>]
-                    [--label <text>] [--workstream <slug>] [--attach <file>]...
+                    [--token-budget <n>] [--label <text>] [--workstream <slug>] [--attach <file>]...
 
 baton dispatch --list-capabilities
 ```
@@ -29,6 +29,7 @@ baton dispatch --list-capabilities
 | `--workflow-id <label>` | A label forwarded to the run; defaults to the materialised template id. |
 | `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. |
 | `--timeout <minutes>` | Override the dispatched role's own catalog timeout for just this dispatch — a role that legitimately needs longer than its fixed tier timebox (an orchestrator coordinating sub-lanes, say) does not have to die mid-flight. Role dispatch only — refused up front on a template dispatch, the same way `--output` is: each phase carries its own role's timeout, so there is no single one to override. Must be a positive whole number of minutes; rejected outright above a 24h ceiling (a non-interactive dispatch has no confirmation prompt to gate a larger value behind); merely flagged on stderr above 2h. |
+| `--token-budget <n>` | Override the dispatched role's own default per-execution token ceiling (#1623) for just this dispatch — measured incrementally from the same usage the vendor's own `stream-json` output reports mid-execution, not merely the terminal line. Crossing it arrests the execution (cancels it, mid-flight) and settles the step `Indeterminate` for a conductor to resolve — never a silent retry. Role dispatch only, same refusal as `--timeout` on a template. Must be a positive whole number of tokens; no ceiling (raising your own budget is not the runaway-consumption failure mode this exists to arrest). Per-role defaults are listed in `spec/baton.md` §3; every other role runs unwatched unless this flag is passed. |
 | `--label <text>` | Display text only, e.g. `"the #1496 env-snapshot lane"` — so Fleet Glass shows something legible instead of the bare `dispatch-<role>-<8 hex>` directory name. Never part of the room directory's own name. Trimmed, newline-folded, capped at `DispatchOptionsParser.MaxLabelLength` chars; full contract in `spec/baton.md` §2. |
 | `--workstream <slug>` | A grouping key, not a title — unlike `--label`, IS later used as a Windows directory name (`~/.baton/by-workstream/<slug>`), so it is refused rather than truncated/folded when it fails the slug grammar, and lowercased on success. Persisted onto the room's `bindings.json` the same way `--label` is; full contract (grammar, the by-workstream junction, `baton redispatch`'s inheritance) in `spec/baton.md` §2. |
 | `--attach <file>` | Repeatable (#1500). Copies `<file>` into the room's `artifacts/attachments/` directory before the worker starts, and appends one line to the prompt naming every attached file and that directory. Keeps a brief short instead of pasting context documents inline. Role dispatch only — refused up front on a template dispatch, the same way `--output`/`--timeout` are. Content is operator-supplied and **inbound**: it is never scanned and never published, because the mailbox pusher reads only `terminal.json`'s declared step outputs and an attachment is never one of them (not the deliverable secret gate withholding it — there is nothing for that gate to see in the first place). Each named file must exist; a missing one is a typed argument error before the room is created. |
@@ -69,6 +70,26 @@ assertion on this page — see `DispatchSpecLinter`'s own class doc for why the 
 larger, live on `DispatchSpecLinter`'s own class doc; record-once, not restated here.** In short: the
 shell check cannot tell an allowlisted command from a forbidden one, and the network check can miss an
 unrelated command a scoped shell doesn't actually cover.
+
+### The engine-run verify step (#1623)
+
+`implement` declares an engine-run verify command (`pixi run gates-quiet`) — the ENGINE runs it once,
+never itself holding a lock across the run (`spec/baton.md` §3 states the actual locking mechanism),
+after the worker's own process exits 0 with its output contract satisfied; the worker itself is never
+asked to run gates or tests and never sees the command. `review`/`advise` and
+every other role declare none. A verify failure is never a blind retry: it settles the step
+`Indeterminate`, with the failing gate members and a bounded output tail recorded as room facts
+(`verifyStarted`/`verifyPassed`/`verifyFailed` in `flow.jsonl`) — a conductor resolves it, the same way
+an ambiguous captured-response outcome does (spec/baton.md §3).
+
+### The per-execution token budget (#1623)
+
+`implement`/`review`/`advise` carry default budgets; every other role runs unwatched unless `--token-budget` is passed.
+Usage is read incrementally from the vendor's own `stream-json` output as it arrives, not just the
+terminal line, so a poll loop or a runaway tool-call sequence is caught mid-flight rather than after
+the fact. Crossing the budget arrests the execution (cancels it, never lets it keep running) and
+settles the step `Indeterminate` — `executionArrested` in `flow.jsonl` carries the measured usage and
+the last few tool names observed.
 
 ### The auto-provisioned worktree, and what it costs
 
@@ -222,8 +243,8 @@ schedule background work or wait for a wake-up, because nothing resumes the turn
 
 ```
 baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--model <m>] [--effort <e>]
-                          [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>]
-                          [--workstream <slug>]
+                          [--workspace <dir>] [--output <path>] [--timeout <minutes>]
+                          [--token-budget <n>] [--label <text>] [--workstream <slug>]
 ```
 
 `<room-dir>` names the parent room to rerun. The full contract — what each flag inherits from that

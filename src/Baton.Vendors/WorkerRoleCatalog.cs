@@ -21,6 +21,21 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// <see cref="Effort"/>) is resolved from the role's <see cref="Tier"/> in <c>WorkerTiers.json</c>.
 /// A role never names a vendor or model directly, so a model swap never touches a role's capability.
 /// </summary>
+/// <param name="VerifyPixiTask">
+/// #1623 (contract: <c>spec/baton.md</c> §3, "Engine-run verify and the token budget", which states
+/// the actual build-lock mechanism -- not restated here): the <c>pixi run &lt;task&gt;</c> task name
+/// the ENGINE runs once, itself holding no lock across the run, once this role's worker has exited 0
+/// with a satisfied output contract -- never the worker itself. Null (every role but
+/// <c>implement</c>) means no verify step; the worker's own exit-0 + satisfied-contract IS the whole
+/// story for that role, same as before this issue.
+/// </param>
+/// <param name="TokenBudget">
+/// #1623 (contract: <c>spec/baton.md</c> §3): the default per-execution token ceiling for this role
+/// (measured from the same usage the vendor's stream-json reports mid-execution, not just the
+/// terminal line) -- crossing it arrests the execution. Null means no budget is enforced for a role
+/// that declares none; <c>--token-budget</c> overrides this per dispatch
+/// (<see cref="RoleDispatch.ToBinding"/>'s own parameter).
+/// </param>
 public sealed record WorkerRole(
     string Id,
     string Tier,
@@ -31,7 +46,9 @@ public sealed record WorkerRole(
     TimeSpan Timeout,
     bool ProducesVerdict,
     string Purpose,
-    IReadOnlyList<WorkerRoleOutput> Outputs);
+    IReadOnlyList<WorkerRoleOutput> Outputs,
+    string? VerifyPixiTask = null,
+    long? TokenBudget = null);
 
 /// <summary>
 /// One file a role's dispatch produces in <c>BATON_OUTPUT_DIR</c> (#897) — the structured, per-role
@@ -155,7 +172,9 @@ public static class WorkerRoleCatalog
                 Timeout: TimeSpan.FromMinutes(raw.TimeoutMinutes),
                 ProducesVerdict: raw.VerdictSchema,
                 Purpose: raw.Purpose,
-                Outputs: raw.Outputs.Select(o => ResolveOutput(raw.Id, o)).ToList()));
+                Outputs: raw.Outputs.Select(o => ResolveOutput(raw.Id, o)).ToList(),
+                VerifyPixiTask: raw.VerifyPixiTask,
+                TokenBudget: raw.TokenBudget));
         }
 
         return roles;
@@ -249,7 +268,11 @@ public static class WorkerRoleCatalog
         // capability only `review` uses.
         IReadOnlyList<string>? ShellCommandPatterns = null,
         IReadOnlyList<string>? DeniedShellCommandPatterns = null,
-        bool ShellCommandsAreReadOnly = false);
+        bool ShellCommandsAreReadOnly = false,
+        // #1623: optional like the three above, for the same reason -- most roles declare neither and
+        // omitting them is exactly "no engine-run verify, no token budget", the WorkerRole defaults.
+        string? VerifyPixiTask = null,
+        long? TokenBudget = null);
 
     private sealed record RawOutput(
         [property: JsonRequired] string Name,

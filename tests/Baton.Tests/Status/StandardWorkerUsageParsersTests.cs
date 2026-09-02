@@ -85,4 +85,109 @@ public sealed class StandardWorkerUsageParsersTests
         Assert.Null(usage.ThinkingTokens);
         Assert.Null(usage.CacheCreationTokens);
     }
+
+    // #1623: incremental (mid-stream) usage/tool-name reads, evaluated as usage arrives for the
+    // token-budget watch. Claude's fixture matches docs/vendor-capabilities.md's 2026-09-01 finding
+    // (message.usage on every "type":"assistant" line); agy's fixture is captured verbatim from a real
+    // lane's .stdout.log (2026-09-02, ~/.aer/rooms/wb1396-advise-agy).
+
+    [Fact]
+    public void Claude_parser_reads_incremental_usage_off_a_midstream_assistant_line()
+    {
+        var parser = new ClaudeUsageParser();
+        const string line = """
+            {"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":24619,"output_tokens":3,"cache_creation_input_tokens":24619,"cache_read_input_tokens":0}}}
+            """;
+
+        var parsed = parser.TryParseIncrementalUsage(line, out var usage);
+
+        Assert.True(parsed);
+        Assert.Equal(24619, usage!.TokensIn);
+        Assert.Equal(3, usage.TokensOut);
+        Assert.Equal(24619, usage.CacheCreationTokens);
+        Assert.Equal(0, usage.CacheReadTokens);
+        Assert.Null(usage.Turns);
+        Assert.Null(usage.ThinkingTokens);
+    }
+
+    [Fact]
+    public void Claude_parser_TryParseIncrementalUsage_ReturnsFalse_for_the_terminal_result_line()
+    {
+        var parser = new ClaudeUsageParser();
+        const string line = """{"type":"result","usage":{"input_tokens":1,"output_tokens":1}}""";
+
+        Assert.False(parser.TryParseIncrementalUsage(line, out var usage));
+        Assert.Null(usage);
+    }
+
+    [Fact]
+    public void Claude_parser_reads_the_first_tool_use_name_off_an_assistant_line()
+    {
+        var parser = new ClaudeUsageParser();
+        const string line = """
+            {"type":"assistant","message":{"content":[{"type":"text","text":"running"},{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}
+            """;
+
+        Assert.Equal("Bash", parser.TryParseToolName(line));
+    }
+
+    [Fact]
+    public void Claude_parser_TryParseToolName_ReturnsNull_when_no_tool_use_block_is_present()
+    {
+        var parser = new ClaudeUsageParser();
+        const string line = """{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}""";
+
+        Assert.Null(parser.TryParseToolName(line));
+    }
+
+    [Fact]
+    public void Agy_parser_reads_incremental_usage_off_a_DONE_step_update()
+    {
+        // Captured verbatim (2026-09-02) from a real agy lane's .stdout.log.
+        var parser = new AgyUsageParser();
+        const string line = """
+            {"event":"step_update","step_update":{"conversation_id":"8ccbe59b-b86f-4efc-9169-5d75dcda3fb4","step_index":1,"state":"DONE","step_type":"agent_response","duration_seconds":4.1532041,"usage":{"input_tokens":14347,"output_tokens":262,"thinking_tokens":175,"cache_read_tokens":0,"total_tokens":14609}}}
+            """;
+
+        var parsed = parser.TryParseIncrementalUsage(line, out var usage);
+
+        Assert.True(parsed);
+        Assert.Equal(14347, usage!.TokensIn);
+        Assert.Equal(262, usage.TokensOut);
+        Assert.Equal(175, usage.ThinkingTokens);
+        Assert.Equal(0, usage.CacheReadTokens);
+    }
+
+    [Fact]
+    public void Agy_parser_TryParseIncrementalUsage_ReturnsFalse_for_a_non_DONE_step_update()
+    {
+        var parser = new AgyUsageParser();
+        const string line = """
+            {"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response"}}
+            """;
+
+        Assert.False(parser.TryParseIncrementalUsage(line, out var usage));
+        Assert.Null(usage);
+    }
+
+    [Fact]
+    public void Agy_parser_reads_the_tool_name_off_a_tool_step_update()
+    {
+        // Captured verbatim (2026-09-02) from the same real agy lane.
+        var parser = new AgyUsageParser();
+        const string line = """
+            {"event":"step_update","step_update":{"conversation_id":"8ccbe59b-b86f-4efc-9169-5d75dcda3fb4","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"view_file","tool_info":{"name":"view_file","parameters":{"AbsolutePath":"x"}}}}
+            """;
+
+        Assert.Equal("view_file", parser.TryParseToolName(line));
+    }
+
+    [Fact]
+    public void Agy_parser_TryParseToolName_ReturnsNull_for_a_non_tool_step_update()
+    {
+        var parser = new AgyUsageParser();
+        const string line = """{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response"}}""";
+
+        Assert.Null(parser.TryParseToolName(line));
+    }
 }

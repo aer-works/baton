@@ -1852,6 +1852,28 @@ alphabet.
 is about `--conversation` specifically and could be withdrawn by any agy release without notice —
 which is exactly why no design should rest on it again.
 
+### claude sub-agent turns DO appear as top-level `"type":"assistant"` usage lines on stdout (#1623 re-review N5, 2026-09-02)
+
+Measured against real, already-captured `implement` lanes' `.stdout.log` files under `~/.baton/rooms`
+(read-only; no new run) rather than a fresh fan-out prompt, since the fleet already carries dozens of
+them. Filtering each room's stream-json for `.type=="assistant" and .parent_tool_use_id != null and
+.message.usage != null` returns a non-zero count in every `implement` room checked that used a
+sub-agent tool call — one room alone (`dispatch-implement-5f92cb84`) had 96 such lines. So a
+sub-agent's own turns are **not** invisible to `Baton.Mutation.TokenBudgetMonitor`'s mid-stream read
+(`StandardWorkerUsageParsers.cs`'s claude parser matches every `"type":"assistant"` line with no
+`parent_tool_use_id` discrimination) — this settles the first branch of N5's "either answer is wrong"
+pair, and rules out simple under-counting from absence.
+
+**What this measurement does not settle: the second branch is live instead.** A sub-agent turn's own
+`message.usage.input_tokens` reflects that sub-agent's own (typically much smaller) context, not the
+parent conversation's. `TokenBudgetMonitor.OnStdoutLine` replaces `_inputLevel` unconditionally on
+every matching line (`TokenBudgetMonitor.cs`), so a sub-agent turn arriving after a large main-loop
+turn can **lower** the tracked level rather than raise it — the old sum-based read could only ever grow;
+this level-based read can shrink on exactly the turns that mean the most work is happening. Neither
+this capture nor the PR distinguishes claude's own turns from a sub-agent's by `parent_tool_use_id`, so
+the budget's replace-on-every-line behaviour is measurably wrong in the fan-out shape, not merely
+unmeasured. `spec/baton.md` §3 records this as an open gap rather than a silent one.
+
 ### Still not settled — recorded as untested, not refuted
 
 - **`defer`'s single-tool-call limit.** Three attempts failed to make the model batch tool calls

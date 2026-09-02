@@ -102,7 +102,7 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   workflow nobody has decided.
 - **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
   [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]
-  [--label <text>] [--workstream <slug>]`**
+  [--token-budget <n>] [--label <text>] [--workstream <slug>]`**
   — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
   template (`src/Baton.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
   directory under `BatonPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
@@ -126,7 +126,9 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   Persisted onto every entry of that
   room's own `bindings.json` (`WorkerBindingConfigEntry.Label`) rather than a new file, since bindings
   already exists for every room regardless of terminal state — see §6 schema for how `fleet_status`
-  reads it back. `--workstream` (#1619, rung 1 of #1614's ruling) is a **grouping key, not a title** —
+  reads it back. `--token-budget` (#1623) overrides the dispatched role's own default per-execution
+  token ceiling — §3's "Engine-run verify and the token budget" subsection is the full contract; this
+  entry only names the flag. `--workstream` (#1619, rung 1 of #1614's ruling) is a **grouping key, not a title** —
   a room keeps its generated hex identity on disk; the slug only makes several rooms (e.g. an
   implement lane and its review redispatch) read as one workstream in Fleet Glass. Do not conflate it
   with `--label`: a label is 60-char free display text never written into a path
@@ -168,14 +170,15 @@ cancel`, and `baton supply` continue an already-dispatched room; §5 covers `dec
 forward — it settles one execution's `Indeterminate` verdict and stops.
 
 **`baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
-<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>] [--workstream
-<slug>]`** (#1441) reruns
+<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label
+<text>] [--workstream <slug>]`** (#1441) reruns
 a single-role `baton dispatch` room into a fresh one, once the operator finds the brief was wrong or
 incomplete — without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch
 `baton dispatch` would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the
 new room's own directory is always freshly generated (`RedispatchOptionsParser.cs`) — a redispatch is
 never a resume, same rule as §2's dispatch entry above. Every flag inherits the parent room's recorded
-`bindings.json` entry as its default — adapter, model, effort, workspace, timeout, and (#1499) label —
+`bindings.json` entry as its default — adapter, model, effort, workspace, timeout, token budget (#1623),
+and (#1499) label —
 and is overridden by whichever flag the operator actually passes (`RedispatchCommand.InheritBinding`);
 `--output` is the one exception, never inherited, because a prior `--output`'s destination copy path is
 not persisted anywhere in the room (only the produced output's customized *name* is, on the bindings
@@ -224,8 +227,8 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
-| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
+| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `resolve` | `baton resolve <room-dir> [--execution <execution-id>] --accept-capture \| --reject --reason <text>` | `ResolveOptionsParser.cs` |
@@ -504,11 +507,25 @@ fields. `StepStatus` itself stays untouched by this ruling too: a step whose lat
 `Domain.StepState.IndeterminateAwaitingResolution` (`Status.WorkflowOutcome.DescribeTerminal`, checked
 ahead of the ordinary `Failed`/`Rejected` read).
 
-**Producer, since #1608.** `OutcomeClassifier.Classify`'s #1594 captured-response arm is the one live
-producer — every other Failed/Cancelled/Succeeded path is unchanged. `baton settle` (S2, tracked on
-#1586) is expected to be able to settle a room *to* `Indeterminate` for the worktree-fingerprint shape
-above; until it lands, that second source is reachable only by a test fabricating a `terminal.json`/
-status-view shape directly, same as before #1608.
+**Three producers, since #1608 and #1623.** S1 added only the vocabulary, its consumer obligations
+below, and the missing retry-foreclosure primitive (next paragraph) — nothing in `src/` wrote
+`Indeterminate` from that slice alone. What writes it now:
+
+| Producer | Event | Landed |
+|---|---|---|
+| `OutcomeClassifier.Classify`'s #1594 captured-response arm | `FlowEvent.ExecutionIndeterminate` | #1608 |
+| The role's engine-run verify command exited non-zero after a clean, contract-satisfied worker exit | `FlowEvent.VerifyFailed` | #1623 |
+| A live execution crossed its role's token budget and was arrested | `FlowEvent.ExecutionArrested` | #1623 |
+
+Every other Failed/Cancelled/Succeeded path is unchanged. All three raise the **one** flag
+`Domain.StepState.IndeterminateAwaitingResolution` (`Projection.StateProjector`), which is the single
+predicate `Status.WorkflowOutcome.DescribeTerminal` and `Scheduling.RetryEngine.MayRetry` each read —
+one arm apiece, never one check per producer. The #1623 pair additionally carry human-readable
+diagnostic text on `Domain.StepState.IndeterminateReason`; that field is **display only and never a
+gate** (`WorkflowOutcomeAndExitCodeTests.An_IndeterminateReason_without_the_flag_describes_as_Failed_not_Indeterminate`
+is the discriminating control for that claim). `baton settle` (S2, tracked on #1586) is expected to be
+able to settle a room *to* `Indeterminate` for the worktree-fingerprint shape above; until it lands,
+that fourth source is reachable only by a test fabricating a `terminal.json`/status-view shape directly.
 
 **Consumer obligations, ratified with the value itself.** `baton redispatch` refuses a bare
 `Indeterminate` parent outright, with a diagnosis naming the resolution verb
@@ -517,8 +534,17 @@ stderr warning. The fleet glass renders a distinct `INDETERMINATE` chip and its 
 section, the same placement `"Stalled"` earned in #1513/#1582 (`tools/fleet-glass/glass.html`).
 **Nothing settles FROM `Indeterminate` except an explicit, recorded conductor resolution** — never
 silently, never by default. `baton resolve` (#1608, `src/Baton.Cli/ResolveCommand.cs` +
-`Mutation.MutationInterface.RecordCaptureResolutionAsync`) is that resolution verb — see §2's table
-for its grammar. It reads the step's `LatestCapturedResponseFile`/`LatestUnsatisfiedOutputNames`
+`Mutation.MutationInterface.RecordCaptureResolutionAsync`) is that resolution verb **for the
+captured-response producer specifically** — see §2's table for its grammar. It is *not* a resolution
+path for the other two producers: `RecordCaptureResolutionAsync` admits a target on
+`LatestCapturedResponseFile is not null` as well as the `IndeterminateAwaitingResolution` flag, so a
+verify-failed or arrested step (which has no captured response to accept or reject) is refused rather
+than admitted, in either direction. Those two reopen only through a fresh dispatch —
+`ExecutionRequestAccepted` clears the flag, per `StateProjector`. `baton redispatch` against the same
+parent room is not that fresh dispatch: its Indeterminate-parent gate refuses unconditionally and
+nothing ever clears it for these two producers, so redispatch is permanently unavailable here — only
+a brand-new `baton dispatch` room reopens the step. `baton resolve` reads the step's
+`LatestCapturedResponseFile`/`LatestUnsatisfiedOutputNames`
 (already surfaced on `WorkflowStatusView`/`terminal.json`/`status --json`, per the schema below);
 `--accept-capture` writes the captured response (header stripped,
 `Outcomes.OutputMaterializer.StripCapturedResponseHeader`) under each declared output name and settles
@@ -628,6 +654,73 @@ names two additive `terminal.json` fields (`settledAt`: ISO-8601 UTC, `settledBy
 room was declared finished after its pump died". Reserved here as a forward pointer only — no field
 exists on `WorkflowStatusView` yet, and none should until S2 has a real writer for it.
 
+### Engine-run verify and the token budget (#1623)
+
+Two more producers, both ratified together (operator ruling, 2026-09-01 night, "option 3 ratified",
+plus the same night's addendum on token consumption).
+
+**The engine-run verify step.** A role may declare a `pixi run <task>` verify command (`implement` →
+`gates-quiet`; `review`/`advise`/every other role → none, `WorkerRole.VerifyPixiTask`). On worker exit
+0 with its output contract satisfied, the ENGINE — never the worker — runs the declared command once,
+serialized against other lanes by the build lock each gate member takes for itself
+(`tools/buildlock.py`); the engine holds no lock across the run (see N1 below). It runs via
+`Baton.Mutation.VerifyRunner`, at the live-dispatch call site only (`MutationInterface`'s
+`DispatchAndRecordOutcomeAsync`, between `OutcomeClassifier.Classify` returning `Succeeded` and the
+outcome event append; deliberately not inside `Classify` itself, which also runs on the crash-recovery
+replay branch against a possibly-defunct workspace). `FlowEvent.VerifyStarted`/`VerifyPassed` are
+diagnostic-only; `FlowEvent.VerifyFailed` (`FailingMembers`/`Tail`, parsed from `tools/gates/gates.py`'s
+own deterministic `summarise()` line) settles the step `Indeterminate` — never a blind retry, the
+ruling's own wording — via the same `StateProjector.ApplyIndeterminate` helper the budget arrest below
+shares. An operator cancel landing inside the verify window is the one exception: `VerifyFailedKind.Cancelled`
+observed together with the caller's own cancellation token already firing means the journal *can*
+decide (it holds the cancel), so `MutationInterface` appends `FlowEvent.ExecutionCancelled` instead —
+room reads `Cancelled`, retry stays open, `VerifyStarted` survives as the diagnostic record of what was
+running. A verify *timeout* still settles `Indeterminate` through the ordinary `VerifyFailed` path.
+Worker briefs no longer ask for the full gate suite themselves; the prompt-level foreground instruction
+from #1625 (`AgyWorkerAdapter.ForegroundGateInstructionText`) stays as belt (any slow command, not just
+gates, should run in the foreground) now that this is the braces.
+
+**The per-execution token budget.** Every role carries a default token ceiling
+(`WorkerRole.TokenBudget`: `implement` 600,000, `review` 250,000, `advise` 150,000; every other role
+none), overridable per dispatch with `--token-budget`. These figures are carried over unchanged from
+before the #1623 re-review; they have not been re-derived against the new `context_level + Σoutput`
+quantity below (see N2/F1 in the re-review response — nobody has yet shown, or ruled out, that 600,000
+is still the right ceiling for `implement` under the new arithmetic; treat this ceiling as
+unverified-but-unchanged, not as freshly justified). `Baton.Mutation.TokenBudgetMonitor` accumulates
+usage from the SAME per-vendor `IWorkerUsageParser` seam `ExecutionUsageProjector` reads post-hoc, but
+incrementally — `IWorkerUsageParser.TryParseIncrementalUsage` reads claude's mid-stream
+`"type":"assistant"` `message.usage` and agy's DONE-state `"step_update"` `usage` (both measured
+against real captures, `docs/vendor-capabilities.md` and this PR's own test fixtures respectively) —
+composed onto `CoreDispatchTarget.OnStdoutLine` the same way `CoreDispatcher`'s own
+`DetectsTerminalSuccess` composes onto an existing sink, never replacing one. The monitored quantity is
+`context_level + Σoutput_tokens`: the output side is additive across turns, but the input side is a
+*level* (`latest(input_tokens + cache_read_input_tokens + cache_creation_input_tokens)`) that each new
+turn's reading replaces rather than adds to — `IWorkerUsageParser`'s own doc states why (never restated
+here); `TokenBudgetMonitor` is the worked example. `context_level` is bounded above by the model's own context window (claude ~200k tokens as
+of this writing; other vendors' windows are larger and not pinned here), so a runaway `implement` lane
+sitting at a full 200k-token context still needs `Σoutput ≥ 400,000` to cross the 600,000 ceiling — this
+spec does not show whether that is reachable inside a 90-minute lane; the re-review response records the
+absence of that measurement rather than asserting either answer. The monitor reads every top-level `"type":"assistant"` line with no discrimination by
+`parent_tool_use_id`. `docs/vendor-doc-audit.md` (#1623 re-review N5) is the canonical measurement:
+against real `implement` rooms' captured `.stdout.log` files, a sub-agent's own turns DO appear on this
+stream — and because the input side is a level the caller replaces (above), that measurably lowers the
+tracked level on exactly the turns where the most work is happening, a live gap rather than merely an
+unmeasured one. Not the same surface `cost.subagent-tokens-excluded` (`tools/vendor-verify/verify.py`)
+measures, which is the terminal
+`usage` object under `--output-format json`, not this mid-stream one.
+Crossing the budget cancels the execution via a linked `CancellationTokenSource` (never the
+operator-facing `CancellationRequested`/`ExecutionCancelled` pair — that's intent; this is the engine's
+own) and appends `FlowEvent.ExecutionArrested` (`Usage`, `LastToolNames` — the last few tool calls
+observed, from the same incremental read) instead of an ordinary outcome. Settles `Indeterminate`, same
+as a verify failure. A role with no budget and no `--token-budget` override runs unwatched, same as
+before this issue; a role whose resolved adapter has no registered `IWorkerUsageParser` also runs
+unwatched rather than refusing to dispatch.
+
+**The shared mechanism.** Both producers route through the one `StateProjector.ApplyIndeterminate`
+helper — flag, reason text, foreclosure; the `IndeterminateAwaitingResolution` flag is what
+`WorkflowOutcome.DescribeTerminal` and `RetryEngine.MayRetry` each check (one arm apiece), per the
+producer table above; `StepState.IndeterminateReason` stays display-only, never itself a gate.
+
 ### Exit codes
 
 `RunExitCode` (`src/Baton.Cli/RunExitCodeResolver.cs`), returned by `run`, `dispatch`, and
@@ -654,10 +747,14 @@ instead."*). Concretely: a harness runs `baton dispatch` without `--wait`, the l
 pauses — the process exits **1**. Reading that as "a step failed" and abandoning a healthy, paused
 room is the single most consequential misreading this table can produce, because §5's entire gate
 contract depends on that paused room still being there to `baton decide` against. `Indeterminate`
-(#1586 S1, above) also folds into exit code 1 — reachable since #1608's producer landed — named
+(#1586 S1, above) also folds into exit code 1 — reachable since all three of §3's producers landed
+(#1608's captured-response settle, #1623's `VerifyFailed` and `ExecutionArrested`), and named here
 rather than left to an unlabelled wildcard, the same discipline the rest of this switch already
-follows. Read `state` (below) to tell it apart from an ordinary `Failed`, and `baton resolve` (§2) is
-what a harness reaches for once it does. **The rule: exit code
+follows. A caller's `$?`/`%ERRORLEVEL%` branch sees `Failed`; read `state` (below) to tell it apart
+from an ordinary `Failed`. What a harness reaches for once it does depends on which producer settled
+it — `baton resolve` (§2) for a captured response, a fresh dispatch for a verify failure or an
+arrest. The step's own failure reason (`StepState.IndeterminateReason`, mirrored onto
+`LatestFailureReason` and so onto the schema's step `reason`) is what names which. **The rule: exit code
 1 alone never tells you whether the room is done. Read `state` from `terminal.json` or `baton status
 --json` to distinguish `Failed` from `Running`/`Paused`.** `--wait` makes `run`/`dispatch` block until
 the room reaches Terminal or the wait is itself cancelled; `run`'s own `--wait-timeout` (#1378) bounds

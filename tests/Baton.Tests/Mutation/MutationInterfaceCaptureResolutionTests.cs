@@ -500,6 +500,118 @@ public class MutationInterfaceCaptureResolutionTests
     }
 
     /// <summary>
+    /// #1623/#1644 merge: `Indeterminate` has three producers now, but only one of them leaves a
+    /// captured response, and `baton resolve` exists solely to accept or reject that capture. A step
+    /// settled Indeterminate by <see cref="FlowEvent.VerifyFailed"/> must therefore be REFUSED here
+    /// even though its <see cref="StepState.IndeterminateAwaitingResolution"/> reads true — the flag
+    /// alone is not this verb's admission test.
+    /// <para>
+    /// Asserted on the <c>--reject</c> path specifically, because that is the one that was reachable:
+    /// <c>--accept</c> already refused such a step further in, on its null captured file.
+    /// <see cref="MutationInterface.RecordCaptureResolutionAsync"/>'s own guard comment states what
+    /// admitting it would have cost; not restated here. The second assertion (no
+    /// <see cref="FlowEvent.CaptureResolved"/> in the log) is what pins that consequence rather than
+    /// only the message.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_verify_failed_Indeterminate_step_is_refused_by_baton_resolve()
+    {
+        var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) =
+            await SeedVerifyFailedRoomAsync();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var ex = await Assert.ThrowsAsync<InvalidCaptureResolutionException>(() =>
+                MutationInterface.RecordCaptureResolutionAsync(
+                    roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                    accepted: false, reason: "not my problem",
+                    cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Contains("no unresolved indeterminate capture", ex.Message, StringComparison.Ordinal);
+
+            var events = await new FlowEventLogReader(logPath).ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.CaptureResolved>());
+
+            // The refusal must not have quietly settled the step either: it is still Indeterminate,
+            // still awaiting a fix-and-redispatch rather than a resolution.
+            Assert.True(Baton.Projection.StateProjector.Project(events, snapshot)
+                .Steps.Single().IndeterminateAwaitingResolution);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// The discriminating control for the test above, one condition apart: the identical call shape
+    /// against a step whose Indeterminate DID come with a captured response is admitted and resolves.
+    /// Without this arm, the refusal above would pass equally against a guard that had simply broken
+    /// <c>baton resolve</c> outright.
+    /// </summary>
+    [Fact]
+    public async Task A_captured_response_Indeterminate_step_is_still_admitted_by_the_same_call_shape()
+    {
+        var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) = await SeedIndeterminateRoomAsync(
+            outputName: "advice.md", capturedBody: "the worker's real answer");
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var state = await MutationInterface.RecordCaptureResolutionAsync(
+                roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                accepted: false, reason: "not my problem",
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.False(state.Steps.Single().IndeterminateAwaitingResolution);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Fabricates a room settled Indeterminate by the #1623 verify producer rather than the #1608
+    /// capture one: same <see cref="StepState.IndeterminateAwaitingResolution"/> flag, deliberately no
+    /// captured response anywhere.
+    /// </summary>
+    private static async Task<(string RoomDirectory, string ArtifactsRoot, string LogPath, ExecutionId ExecutionId, WorkflowDefinitionSnapshot Snapshot)>
+        SeedVerifyFailedRoomAsync()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var executionId = new ExecutionId($"exec-{Guid.NewGuid():N}");
+
+        var snapshot = new WorkflowDefinitionSnapshot(
+            new WorkflowDefinitionSnapshotId($"snapshot-{Guid.NewGuid():N}"),
+            new WorkflowTemplateId("resolve-test"),
+            WorkflowTemplateVersion: 1,
+            Steps: [new WorkflowStepDefinition(A, "stub-worker", [], [], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+        Directory.CreateDirectory(roomDirectory);
+
+        await using (var writer = new FlowEventLogWriter(logPath))
+        {
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
+                    executionId, new WorkflowId("wf"), A, "stub-worker", [], [], TimeSpan.FromSeconds(30), [],
+                    new Dictionary<StepId, ExecutionId>())),
+                TestContext.Current.CancellationToken);
+            await writer.AppendAsync(
+                new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+                TestContext.Current.CancellationToken);
+        }
+
+        ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
+        return (roomDirectory, artifactsRoot, logPath, executionId, snapshot);
+    }
+
+    /// <summary>
     /// Fabricates a room already settled Indeterminate: one step's execution carries a projected
     /// <see cref="FlowEvent.ExecutionIndeterminate"/>, and its output directory holds the real captured
     /// file (header + body), the same shape <see cref="OutputMaterializer.TryCaptureFinalResponse"/>

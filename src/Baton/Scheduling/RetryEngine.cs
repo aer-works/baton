@@ -36,14 +36,20 @@ public static class RetryEngine
     /// <see cref="ExecutionRequest"/> carries no <see cref="ExecutionRequest.LinkedFromExecutionId"/>
     /// of its own, so a retry would also silently clear the very link this verb exists to record.
     /// <see cref="StepState.IndeterminateAwaitingResolution"/> true bypasses everything else straight
-    /// to <c>false</c> (#1608): an unresolved <see cref="Domain.FlowEvent.ExecutionIndeterminate"/>
+    /// to <c>false</c> (#1608, #1623) — one arm covering all three of its producers, never one check
+    /// per producer. An unresolved <see cref="Domain.FlowEvent.ExecutionIndeterminate"/>
     /// carries no <see cref="FailureClassification"/> to gate on (<see cref="FailureClassification.Permanent"/>
     /// is a different verdict's vocabulary), so this is its own explicit arm rather than a value the
     /// predicate below would happen to allow through — a null <see cref="StepState.LatestFailureClassification"/>
     /// is ordinarily retryable, and Indeterminate's <c>Reason</c>/<c>CapturedResponseFile</c> shape
-    /// leaves that field null too. Only a recorded <c>baton resolve</c> clears this flag; once
-    /// cleared (accepted, or rejected with budget remaining), the predicate below applies exactly as
-    /// it would to any other Failed step.
+    /// leaves that field null too. For the #1623 producers
+    /// (<see cref="Domain.FlowEvent.VerifyFailed"/>, <see cref="Domain.FlowEvent.ExecutionArrested"/>)
+    /// the same arm is what makes "never a blind retry" explicit rather than an accident of the
+    /// <see cref="FailureClassification.Permanent"/> those two also record. For a captured-response
+    /// settle, only a recorded <c>baton resolve</c> clears the flag; once cleared (accepted, or
+    /// rejected with budget remaining), the predicate below applies exactly as it would to any other
+    /// Failed step. A verify-failed or arrested step is not a <c>baton resolve</c> target at all (it
+    /// has no captured response to accept or reject) — it reopens only through a fresh dispatch.
     /// </summary>
     public static bool MayRetry(StepState stepState, RetryPolicy retryPolicy)
     {
@@ -60,6 +66,10 @@ public static class RetryEngine
             return false;
         }
 
+        // #1608 / #1623: retry-ineligible by an explicit arm, not merely a side effect of
+        // RetryForeclosed above (the ruling's own wording). ONE arm for every producer in
+        // spec/baton.md §3's producer table, because they raise one flag rather than each carrying
+        // its own field to check here.
         if (stepState.IndeterminateAwaitingResolution)
         {
             return false;

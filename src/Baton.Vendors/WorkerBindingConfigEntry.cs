@@ -51,6 +51,14 @@ namespace Baton.Vendors;
 /// than a new file, is spec/baton.md §2/§6. Sanitized once at parse time
 /// (<c>Baton.Cli.DispatchOptionsParser.SanitizeLabel</c>). Null when never supplied.
 /// </param>
+/// <param name="VerifyPixiTask">
+/// #1623: <see cref="WorkerRole.VerifyPixiTask"/>, carried onto the resolved
+/// <c>Baton.Mutation.WorkerBinding.Process</c> unchanged — the engine, never the worker, runs it.
+/// </param>
+/// <param name="TokenBudget">
+/// #1623: <see cref="WorkerRole.TokenBudget"/>, or the <c>--token-budget</c> override
+/// (<see cref="RoleDispatch.ToBinding"/>'s <c>tokenBudgetOverride</c>) when one was supplied.
+/// </param>
 /// <param name="Workstream">
 /// The operator-supplied <c>--workstream</c> slug (#1619, rung 1 of #1614's ruling) — a grouping key,
 /// not a title: unlike <paramref name="Label"/> it IS path-written, as the directory name of a
@@ -77,6 +85,8 @@ public sealed record WorkerBindingConfigEntry(
     GrantAuditMode GrantAuditMode = GrantAuditMode.Enforced,
     bool IsWorktree = false,
     string? Label = null,
+    string? VerifyPixiTask = null,
+    long? TokenBudget = null,
     string? Workstream = null);
 
 
