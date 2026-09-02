@@ -783,9 +783,9 @@ public class StateProjectorTests
         var state = StateProjector.Project(events, TwoStepSnapshot());
 
         var architect = StepFor(state, Architect);
-        // Single-added-enum-value ruling: StepStatus itself stays Failed. IndeterminateAwaitingResolution
-        // is what actually distinguishes this from an ordinary Failed step -- pinned separately by
-        // WorkflowOutcomeAndExitCodeTests since WorkflowOutcome.DescribeTerminal is what reads it.
+        // See StateProjector's ExecutionIndeterminate case comment for the single-added-enum-value
+        // ruling this pins. WorkflowOutcome.DescribeTerminal is what reads the flag below at the
+        // room level; pinned separately by WorkflowOutcomeAndExitCodeTests.
         Assert.Equal(StepStatus.Failed, architect.Status);
         Assert.True(architect.IndeterminateAwaitingResolution);
         Assert.Equal(".captured-response.md", architect.LatestCapturedResponseFile);
@@ -862,11 +862,9 @@ public class StateProjectorTests
     public void A_fresh_ExecutionRequestAccepted_clears_an_unresolved_indeterminate_capture()
     {
         // Review finding on this PR: mirrors A_fresh_ExecutionRequestAccepted_reopens_a_foreclosed_step
-        // above -- defensive symmetry, not a currently-reachable path (MayRetry refuses the step
-        // unconditionally while this flag is set, and ExternalDecisionValidator refuses a decide
-        // against it, so only CaptureResolved clears it today). Pinned anyway so a future producer
-        // that ever mints a fresh execution for this step cannot leave WorkflowOutcome pinned to
-        // Indeterminate underneath a legitimate new attempt.
+        // above -- defensive symmetry, not a currently-reachable path today. See StateProjector's own
+        // #1608 review comment on this same clear (ExecutionRequestAccepted arm) for why it's pinned
+        // anyway.
         var executionId = new ExecutionId("exec-1");
         var redriveExecutionId = new ExecutionId("exec-2");
         var events = new FlowEvent[]

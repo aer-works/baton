@@ -449,15 +449,11 @@ public class TerminalSentinelEndToEndTests
     [Fact]
     public async Task A_real_CLI_resolve_reject_with_retry_budget_remaining_invalidates_the_stale_sentinel()
     {
-        // #1608 review finding 1: 'baton resolve --reject' on a step with retry budget remaining
-        // clears IndeterminateAwaitingResolution and re-arms RetryEngine.MayRetry's ordinary
-        // predicate, so the room's own ledger can read Running again -- but the LAST time this room
-        // was Terminal (when it first settled Indeterminate), Program's shared post-pump step wrote a
-        // terminal.json sentinel for it. Without Program's own invalidation on the resolve path, that
-        // sentinel would still claim a Terminal, Indeterminate room a harness has to treat as done --
-        // the same class of staleness RunCommand's own delete already guards on the run path (the
-        // tests above). RetryPolicy(3) here matters: every existing resolve fixture elsewhere uses
-        // RetryPolicy(1), which always leaves budget exhausted and so never exercises this arm at all.
+        // #1608 review finding 1 -- see Program.cs's post-pump `resolve` handling (search "review
+        // finding 1") for why 'baton resolve --reject' with retry budget remaining must invalidate
+        // the stale terminal.json sentinel here. RetryPolicy(3) here matters: every existing resolve
+        // fixture elsewhere uses RetryPolicy(1), which always leaves budget exhausted and so never
+        // exercises this arm at all.
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-sentinel-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try

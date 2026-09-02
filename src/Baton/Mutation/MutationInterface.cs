@@ -181,17 +181,16 @@ public static class MutationInterface
     /// the DAG once a rejection leaves the step retry-eligible again.
     /// </summary>
     /// <param name="accepted">
-    /// <c>true</c>: the capture honestly satisfies its declared output(s) — writes each declared name
-    /// in the step's <see cref="StepState.LatestUnsatisfiedOutputNames"/> with the captured response's
-    /// body. The prose-safe/all-or-nothing rule is not re-derived here: reaching an unresolved capture
-    /// at all already proves <see cref="Outcomes.OutputMaterializer.TryCaptureFinalResponse"/>'s gate
-    /// passed for every name in that list. When that list names more than one output, every name gets
-    /// the SAME captured body verbatim — there is only ever one captured response per execution, never
-    /// one per declared name, so a two-name capture (e.g. two prose-safe `.md` outputs on one contract)
-    /// produces two identical files. No shipped role hits this today (every multi-output role's second
-    /// output is structured, which blocks the capture from forming at all per
-    /// <see cref="Outcomes.OutputMaterializer"/>'s own gate), so this is latent rather than live.
-    /// <c>false</c>: no file is written; <paramref name="reason"/> is required.
+    /// Same boolean as <see cref="FlowEvent.CaptureResolved.Accepted"/> — see its remarks for what
+    /// each value means and why the prose-safe/all-or-nothing rule (spec/baton.md §3, "Consumer
+    /// obligations") is not re-derived here. When the unsatisfied-output list names more than one
+    /// output, every name gets the SAME captured body verbatim on acceptance — there is only ever
+    /// one captured response per execution, never one per declared name, so a two-name capture (e.g.
+    /// two prose-safe `.md` outputs on one contract) produces two identical files. No shipped role
+    /// hits this today (every multi-output role's second output is structured, which blocks the
+    /// capture from forming at all per <see cref="Outcomes.OutputMaterializer"/>'s own gate), so this
+    /// is latent rather than live. <c>false</c>: no file is written; <paramref name="reason"/> is
+    /// required.
     /// </param>
     /// <exception cref="InvalidCaptureResolutionException">
     /// <paramref name="executionId"/> names no step with an unresolved

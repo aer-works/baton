@@ -65,11 +65,9 @@ public class OutcomeClassifierTests
         }
     }
 
-    // #1594/#1608 (see OutputMaterializer's class remarks for the ruling): a missing declared output's
-    // response recovered from the worker's own terminal result envelope is EXTRACTED into an
-    // engine-owned dotfile and ATTACHED as a room fact -- it never lands under the declared output
-    // name, and the verdict is always Indeterminate, never Succeeded and never Failed(Permanent) —
-    // only a recorded conductor resolution ('baton resolve') settles it either way.
+    // #1594/#1608 -- see OutcomeClassifier.Classify's own remarks on the captured-response arm for
+    // why this settles Indeterminate rather than Succeeded/Failed(Permanent), and
+    // OutputMaterializer's class remarks for the capture ruling itself.
 
     [Fact]
     public void Classify_captures_a_missing_outputs_response_and_settles_Indeterminate_leaving_the_declared_output_unwritten()

@@ -30,24 +30,13 @@ public static class WorkflowOutcome
     /// reads <see cref="StepState.IndeterminateAwaitingResolution"/> true — projected from
     /// <see cref="Domain.FlowEvent.ExecutionIndeterminate"/>, which
     /// <see cref="Outcomes.OutcomeClassifier.Classify"/>'s captured-response arm now emits instead of
-    /// <c>Failed(Permanent)</c> (spec/baton.md §3's "one live exception" is closed). A worktree
-    /// fingerprint failing to reconcile at settle time is a second, still-unimplemented source —
-    /// <c>baton settle</c> (S2, tracked on #1586) is expected to be able to settle a room TO this value
-    /// for that case; #1608 only closed the #1594 captured-response arm.
+    /// <c>Failed(Permanent)</c> (spec/baton.md §3's "one live exception" is closed). The second,
+    /// still-unimplemented producer (a worktree fingerprint failing to reconcile at settle time) is
+    /// spec/baton.md §3's problem, not this class's — see "Producer, since #1608" there.
     /// </para>
     /// <para>
-    /// <b>Consumer obligations (ruling item 2, spelled out in full in <c>spec/baton.md</c> §3):</b>
-    /// a room reading this refuses bare <c>baton redispatch</c> with a diagnosis
-    /// (<c>Baton.Cli.RedispatchCommand</c>); the fleet glass renders a distinct chip; leaving this
-    /// value always requires a conductor's own recorded justification — never silently, never by
-    /// default. <c>baton resolve</c> (#1608) is that recorded resolution: it reads a room's
-    /// <see cref="StepState.LatestCapturedResponseFile"/>/<see cref="StepState.LatestUnsatisfiedOutputNames"/>,
-    /// applies the prose-safe/all-or-nothing rule (<c>docs/dispatch.md</c>'s "Roles" section,
-    /// <see cref="Outcomes.OutputMaterializer"/>'s gating) — already enforced once, at capture time, so
-    /// reaching an unresolved capture at all is proof the rule passed — and either writes the real
-    /// declared output(s) and settles the step <see cref="StepStatus.Succeeded"/>, or records a
-    /// rejection and leaves it <see cref="StepStatus.Failed"/> but resolved (no longer
-    /// <see cref="Indeterminate"/> at the room level).
+    /// <b>Consumer obligations (ruling item 2)</b> — spelled out in full in <c>spec/baton.md</c> §3,
+    /// "Consumer obligations, ratified with the value itself". Not re-derived here.
     /// </para>
     /// </summary>
     public const string Indeterminate = "Indeterminate";
