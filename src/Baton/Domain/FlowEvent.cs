@@ -198,8 +198,8 @@ public abstract record FlowEvent
         string? Reason = null) : FlowEvent;
 
     /// <summary>
-    /// #1608: Flow has classified a completed execution as <see cref="Outcomes.OutcomeVerdict.Indeterminate"/> —
-    /// the two-predicate model's disagreement case (spec/baton.md §3). Distinct from
+    /// #1608: Flow has classified a completed execution as <see cref="Outcomes.OutcomeVerdict.Indeterminate"/>
+    /// — see that type's own remarks for what disagrees with what. Distinct from
     /// <see cref="ExecutionFailed"/> rather than reusing it with a sentinel classification: a reader
     /// of this journal sees the disagreement as its own fact, not a <c>Failed</c> collapsed onto a
     /// null <see cref="FailureClassification"/>. Carries no <see cref="FailureClassification"/> at

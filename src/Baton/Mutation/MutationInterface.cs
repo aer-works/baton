@@ -172,12 +172,11 @@ public static class MutationInterface
 
     /// <summary>
     /// #1608: the conductor resolution surface — <c>baton resolve</c>'s own mutation-surface entry
-    /// point, and the only path ever allowed to write under a declared output name from a
-    /// <see cref="Outcomes.OutputMaterializer.CapturedResponse"/> (spec/baton.md §3). Unlike every
-    /// other entry point above, this never pumps: an unresolved
+    /// point; see <see cref="FlowEvent.CaptureResolved"/>'s own remarks for the exclusivity claim this
+    /// enforces. Unlike every other entry point above, this never pumps: an unresolved
     /// <see cref="FlowEvent.ExecutionIndeterminate"/> is unreachable from <c>baton decide</c>
-    /// (<see cref="ExternalDecisionValidator"/> only ever admits a Paused step, or a quota-parked
-    /// Failed one), so nothing downstream is waiting on this call the way a paused workflow waits on
+    /// (<see cref="ExternalDecisionValidator"/> only ever admits a Paused step, or a step parked on a
+    /// pending retry deadline), so nothing downstream is waiting on this call the way a paused workflow waits on
     /// <see cref="RecordDecisionAsync"/> — a follow-up <c>baton run --room-dir</c> is what re-drives
     /// the DAG once a rejection leaves the step retry-eligible again.
     /// </summary>

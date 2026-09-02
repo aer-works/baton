@@ -11,10 +11,9 @@ namespace Baton.Cli;
 /// <summary>
 /// <c>baton resolve</c> (#1608): exposes <see cref="MutationInterface.RecordCaptureResolutionAsync"/>
 /// on the CLI. Unlike <see cref="DecideCommand"/>/<see cref="CancelCommand"/>, this never loads worker
-/// bindings and never pumps — an unresolved indeterminate capture is unreachable from
-/// <c>baton decide</c> (<c>ExternalDecisionValidator</c> only admits a Paused step, or a quota-parked
-/// Failed one), so nothing here dispatches, and there is nothing to bind for a room that already
-/// settled Indeterminate.
+/// bindings and never pumps — see <see cref="MutationInterface.RecordCaptureResolutionAsync"/>'s own
+/// remarks for why an unresolved indeterminate capture is unreachable any other way — so nothing here
+/// dispatches, and there is nothing to bind for a room that already settled Indeterminate.
 /// </summary>
 public static class ResolveCommand
 {

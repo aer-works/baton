@@ -197,10 +197,10 @@ fires while it is among the missing outputs (an all-or-nothing capture that coul
 missing and `branch.diff` is already present and valid. See `src/Baton/Outcomes/OutputMaterializer.cs`
 for the capture mechanism and `src/Baton/Mutation/MutationInterface.cs`'s
 `RecordCaptureResolutionAsync` for the resolution: it does not re-derive prose-safety at resolution
-time — reaching an unresolved capture at all already proves the gate passed, at capture time, for
-every declared name it stands in for. `--accept-capture` strips the engine's own banner
+time (see `OutputMaterializer`'s own class remarks for why that would be redundant).
+`--accept-capture` strips the engine's own banner
 (`OutputMaterializer.StripCapturedResponseHeader`) and writes the remaining body under each of those
-declared name(s) — the one path ever allowed to write under a declared name from a capture.
+declared name(s) — `baton resolve` is the one permitted writer here (spec/baton.md §3 rules why).
 `--reject --reason <text>` writes nothing; the reason is the room fact's own justification.
 
 | Role | Tier | Writes | For |

@@ -206,8 +206,8 @@ missing at settle time but the worker's terminal response was recoverable, a ste
 never a declared name) the response was captured into, alongside `steps[].unsatisfiedOutputs` naming
 which declared outputs are still unwritten — present only on a step whose own `state` still reads
 `Failed`, and readable from `status --json`/`terminal.json` without opening the execution directory.
-That step's own **room** settles the top-level `state` `Indeterminate`, not `Failed` (#1608 — the
-two-predicate model's disagreement case, `spec/baton.md` §3) — a bare `baton redispatch` refuses an
+That step's own **room** settles the top-level `state` `Indeterminate`, not `Failed` (#1608 — see
+`spec/baton.md` §3 for why) — a bare `baton redispatch` refuses an
 `Indeterminate` parent outright, so read `state` before assuming a captured-response room is an
 ordinary retryable failure. The missing output stays missing until a conductor resolves the capture:
 `baton resolve <room-dir> [--execution <id>] --accept-capture | --reject --reason <text>` either
