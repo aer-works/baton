@@ -29,13 +29,26 @@ namespace Baton.Cli;
 /// reads it to report <see cref="RunExitCode.Timeout"/> ahead of the state-based classification —
 /// the room itself is still Paused, not "timed out" by anything the ledger recorded.
 /// </param>
+/// <param name="CancellationQueued">
+/// #1650 F2: true when <see cref="CancelCommand"/> took its live-pump fall-through — the cancellation
+/// was written to a <c>cancel.request</c> file for some other pump to consume, not applied by this
+/// call. Only <see cref="CancelCommand"/> ever sets it; every other command leaves it at its default,
+/// so the shared exit-code path is unchanged for <c>decide</c> and <c>supply</c>.
+/// <para>
+/// It exists because <see cref="State"/> alone cannot tell the two outcomes apart: the fall-through
+/// re-projects the room and returns whatever it finds, so a cancel that did nothing but drop a request
+/// file into an already-Terminal, all-succeeded room is indistinguishable from one that carried the
+/// room there itself. <see cref="MutationExitCodeResolver"/> is what reads it.
+/// </para>
+/// </param>
 public sealed record CommandResult(
     FlowState State,
     WorkflowDefinitionSnapshot Snapshot,
     bool ResumedFromSnapshot = false,
     string? RoomDirectoryPath = null,
     IReadOnlyList<WorktreeTeardownResult>? WorktreeTeardowns = null,
-    bool WaitTimedOut = false)
+    bool WaitTimedOut = false,
+    bool CancellationQueued = false)
 {
     /// <summary>Defaults to empty rather than <c>null</c> for callers that omit the argument.</summary>
     public IReadOnlyList<WorktreeTeardownResult> WorktreeTeardowns { get; init; } = WorktreeTeardowns ?? [];

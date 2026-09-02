@@ -45,9 +45,24 @@ public static class RunCommand
     /// file named is a different template (#628).
     /// </exception>
     /// <exception cref="Baton.Concurrency.WorkflowLockedException">
-    /// Another Flow instance already holds this room directory's lock.
+    /// Another Flow instance already holds this room directory's lock. The pump's own guard
+    /// (<see cref="MutationInterface.StartWorkflowAsync"/>) stays deliberately fail-fast: losing it
+    /// means a second pump owns this room, and waiting for it is exactly the wrong behaviour.
+    /// <para>
+    /// #1650 F3, stated because the guard's fail-fast property no longer describes the <em>command</em>:
+    /// two bounded waits now precede it on this same invocation — <see cref="WorktreeWorkspaces.Provision"/>
+    /// and the <c>FlowEventLogWriter</c> open — so a second <c>baton run</c> against a live pump can
+    /// spend up to two <see cref="Baton.Concurrency.RoutineHoldBudget"/> intervals before this guard
+    /// ever gets its turn, and normally refuses with the type below rather than this one. Fail-fast
+    /// here is now a property of the last step, not of the run.
+    /// </para>
     /// </exception>
-    /// <exception cref="Baton.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
+    /// <exception cref="Baton.Store.FlowJournalHeldException">
+    /// #816's journal-held refusal. What a second <c>baton run</c> gets against a live pump, in place
+    /// of the lock refusal above (#1650 F3): the writer scoped below is opened before
+    /// <see cref="MutationInterface.StartWorkflowAsync"/>'s guard is ever reached, so it is contended
+    /// first. <see cref="DecideCommand"/> holds the reasoning.
+    /// </exception>
     /// <param name="inFlightExecutions">
     /// M15 Phase 4's (issue #140) caller-retained delivery point — forwarded to
     /// <see cref="MutationInterface.StartWorkflowAsync"/>. A caller that retains one can signal a

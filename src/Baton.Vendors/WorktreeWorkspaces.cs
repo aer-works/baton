@@ -129,7 +129,21 @@ public static class WorktreeWorkspaces
         ArgumentNullException.ThrowIfNull(bindings);
         ArgumentException.ThrowIfNullOrWhiteSpace(roomDirectoryPath);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, "worktree provisioning");
+        // #1646 / CancelCommand's #1495 finding: this used to acquire the flow lock unconditionally,
+        // even when no entry declares a worktree at all — the common case, and the exact shape
+        // RunWaitEndToEndTests hit (an ordinary shell-worker bindings file with zero Worktree
+        // entries). Nothing below the guard does anything for such a walk, so there is nothing here
+        // to serialize and no reason to contend a live pump's lock over it.
+        if (!bindings.Values.Any(entry => entry.Worktree is not null))
+        {
+            return (bindings, [], []);
+        }
+
+        // #1646: bounded rather than fail-fast for the rarer walk that does have a worktree to
+        // provision — the same live-pump exit tail every sibling command loses to, sized once in
+        // RoutineHoldBudget rather than restated here. Still bounded: a room genuinely held by a
+        // second live pump must surface as a refusal, not be waited on for that pump's whole step.
+        using var guard = ConcurrencyGuard.AcquireWithin(roomDirectoryPath, RoutineHoldBudget.Duration, "worktree provisioning");
 
         Dictionary<string, WorkerBindingConfigEntry>? rewritten = null;
         var provisioned = new List<ProvisionedWorktree>();

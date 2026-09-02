@@ -99,7 +99,12 @@ public static class MutationInterface
     /// appending anything — an invalid decision throws and leaves the log untouched.
     /// </summary>
     /// <exception cref="WorkflowLockedException">
-    /// Another Flow instance already holds <paramref name="roomDirectoryPath"/>'s lock.
+    /// Another Flow instance still held <paramref name="roomDirectoryPath"/>'s lock after
+    /// <see cref="RoutineHoldBudget"/> elapsed. #1650 F1: bounded rather than fail-fast, unlike
+    /// <see cref="StartWorkflowAsync"/>'s guard — a decision is the operator-facing half of a
+    /// <c>run --wait</c> handoff, and the holder it normally loses to is that same run's pump in the
+    /// act of releasing. Failing fast here turns the routine tail into a refusal the operator can
+    /// only answer by retrying the identical command. A second live pump mid-step still refuses.
     /// </exception>
     /// <exception cref="InvalidExternalDecisionException">The decision violates one of the validation rules.</exception>
     public static async Task<FlowState> RecordDecisionAsync(
@@ -130,7 +135,10 @@ public static class MutationInterface
         ArgumentNullException.ThrowIfNull(eventLogWriter);
         ArgumentNullException.ThrowIfNull(dispatcher);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, holderDescription);
+        // #1650 F1: AcquireWithin, not the fail-fast Acquire every other entry point here takes —
+        // see this method's own <exception> doc and RoutineHoldBudget for why the decision path is
+        // the one that must absorb a routine overlap rather than refuse it.
+        using var guard = ConcurrencyGuard.AcquireWithin(roomDirectoryPath, RoutineHoldBudget.Duration, holderDescription);
 
         var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
         var log = await eventLogReader.ReadSnapshotFromOffsetAsync(checkpoint?.ByteOffset ?? 0, cancellationToken).ConfigureAwait(false);

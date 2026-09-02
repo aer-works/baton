@@ -259,11 +259,11 @@ try
         return (int)RunExitCodeResolver.Resolve(result);
     }
 
-    // Unchanged for cancel/decide/supply — #1356 scoped its exit-code table to run/dispatch only;
-    // widening it to the rest was not asked for and is not done here.
-    return result.State.Status == WorkflowStatus.Terminal && result.State.Steps.All(step => step.Status == StepStatus.Succeeded)
-        ? 0
-        : 1;
+    // Still the 0/1 contract for cancel/decide/supply — #1356 scoped its exit-code table to
+    // run/dispatch only; widening it to the rest was not asked for and is not done here. #1650 F2
+    // moved the expression itself into MutationExitCodeResolver (which also handles cancel's queued
+    // arm) so its arms are assertable without spawning a process.
+    return MutationExitCodeResolver.Resolve(result);
 }
 catch (BatonFlowException ex) when (ex is Baton.Concurrency.WorkflowLockedException or Baton.Store.FlowJournalHeldException)
 {
