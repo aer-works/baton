@@ -68,6 +68,14 @@ public static class HookCheckCommand
     public const string DeniedShellPatternsEnvironmentVariable = "BATON_HOOK_DENIED_SHELL_PATTERNS";
 
     /// <summary>
+    /// #1683 F2's channel — same literal as
+    /// <c>ClaudeWorkerAdapter.DeniedShellOptionTokensVariable</c>, which owns the canonical "why"
+    /// (record-once). NOT belt-and-braces the way the channel above is; that adapter member says why.
+    /// </summary>
+    public const string DeniedShellOptionTokensEnvironmentVariable =
+        "BATON_HOOK_DENIED_SHELL_OPTION_TOKENS";
+
+    /// <summary>
     /// Exit code 2, fed back to Claude Code as a blocking <c>PreToolUse</c> error (stderr becomes
     /// the reason shown to the model) — the only exit code that mechanism treats as a denial.
     /// </summary>
@@ -95,7 +103,7 @@ public static class HookCheckCommand
     public static int Execute(
         TextReader stdin, TextWriter stderr, string? deniedToolsRaw, string? outboxDirectory = null,
         string? workspaceDirectory = null, string? shellPatternsRaw = null,
-        string? deniedShellPatternsRaw = null)
+        string? deniedShellPatternsRaw = null, string? deniedShellOptionTokensRaw = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stderr);
@@ -104,7 +112,7 @@ public static class HookCheckCommand
         {
             return Decide(
                 stdin, stderr, deniedToolsRaw, outboxDirectory, workspaceDirectory, shellPatternsRaw,
-                deniedShellPatternsRaw);
+                deniedShellPatternsRaw, deniedShellOptionTokensRaw);
         }
         catch (Exception ex)
         {
@@ -136,7 +144,8 @@ public static class HookCheckCommand
 
     private static int Decide(
         TextReader stdin, TextWriter stderr, string? deniedToolsRaw, string? outboxDirectory,
-        string? workspaceDirectory, string? shellPatternsRaw, string? deniedShellPatternsRaw)
+        string? workspaceDirectory, string? shellPatternsRaw, string? deniedShellPatternsRaw,
+        string? deniedShellOptionTokensRaw)
     {
         // Always drain stdin before deciding anything, even when there is nothing to check
         // against below: Claude Code is the writer on the other end of this pipe, and exiting
@@ -301,6 +310,25 @@ public static class HookCheckCommand
                 {
                     stderr.WriteLine($"AER: the 'Bash' command is denied under this session's scoped " +
                                      $"shell grant — {result.Reason}.");
+                    return DeniedExitCode;
+                }
+
+                // #1683 F2's rung, in the position its own caller contract requires (see
+                // ShellCommandPatternMatcher.IsDeniedByOptionToken). Scoped to this same branch on
+                // purpose: it inherits #1459's engagement condition rather than inventing a second,
+                // stricter absent-handling rule behind a deliberately permissive one -- if this channel
+                // is missing, BATON_HOOK_SHELL_PATTERNS is missing too and the whole branch is already
+                // skipped. Whole-line tokenization, not per-segment: the line reaching here is already
+                // segmented-and-allowed, and every segment's tokens are its tokens.
+                var deniedOptionTokenList = ShellPatternList.Parse(deniedShellOptionTokensRaw, VendorTag);
+                if (deniedOptionTokenList.Status == ShellPatternListStatus.Present &&
+                    Baton.Vendors.ShellCommandPatternMatcher.IsDeniedByOptionToken(
+                        shellCommandLine, deniedOptionTokenList.Patterns))
+                {
+                    stderr.WriteLine(
+                        "AER: the 'Bash' command carries an option this session's grant denies outright " +
+                        "(a standing option-token 'never', matched anywhere on the line rather than at " +
+                        "its start) and was refused.");
                     return DeniedExitCode;
                 }
             }

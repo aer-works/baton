@@ -1623,11 +1623,13 @@ composition never widens mid-room through any verb.
 **The `review` role's ceiling: read-only `git`/`gh`, enforced, not a flat shell refusal (#1456,
 operator-approved reversal of #1355).** `WorkerRoles.json`'s `review` entry now carries
 `run_shell_commands: true` scoped by `shell_command_patterns` to exactly: `git diff`, `log`, `show`,
-`blame`, `status`, `grep`, `rev-parse`, `merge-base`, `ls-files`, and `git branch --list`; and `gh pr
+`blame`, `status`, `rev-parse`, `merge-base`, `ls-files`, and `git branch --list`; and `gh pr
 view`/`diff`/`checks`, `gh issue view`. `denied_shell_command_patterns` closes the named mutating
-families (`commit`, `push`, `merge`, `checkout`, `switch`, `reset`, `clean`, `gh pr
-comment`/`edit`/`merge`, `gh issue comment`/`edit`, `gh label`) as a standing, subtractive "never"
-(0022's DenyAlways) on top of the allowlist. Trailing-`*` shell patterns are matched on word boundaries: a pattern `P*` matches a command line iff the line equals `P` or starts with `P` followed by whitespace (`git diff*` matches `git diff --stat` and `git diff`, never `git difftool`; `git merge*` never matches `git merge-base`). Flag-driven escapes that word-boundary matching alone does not stop (`git difftool*`, `git grep -O*`, `git grep --open-files-in-pager*`, `git -c *`, `git submodule*`) are denied explicitly in `denied_shell_command_patterns`. `gh api` is deliberately **not** granted: its HTTP
+families (`commit`, `push`, `merge `, `checkout`, `switch`, `reset`, `clean`, `gh pr
+comment`/`edit`/`merge`, `gh issue comment`/`edit`, `gh label`, `gh extension`) as a standing, subtractive "never"
+(0022's DenyAlways) on top of the allowlist. Trailing-`*` shell patterns are matched on word boundaries. **The full accepting set is three cases, not one** (#1683 F4 — this sentence previously read as an `iff` over the first two and was false in both copies of the rule): a pattern `P*` matches a command line when the line **equals** `P`, when it **starts with `P` followed by whitespace**, or when it starts with `P` and `P`'s last space-delimited token is **flag-shaped** (begins `-`), in which case any continuation matches — `=`-attached (`git grep --open-files-in-pager*` matches `…-pager=calc`) or directly attached (`git grep -O*` matches `-Ocalc`). So `git diff*` matches `git diff --stat` and `git diff`, never `git difftool` or `git diff-index`; `git merge *` never matches `git merge-base`; and `git log*` does **not** match `git log=x`, the ungated `=` widening #1683 F6 closed. `ShellCommandPatternMatcher`'s own class comment is canonical for this rule and is what a change to it edits first.
+
+**A deny pattern can bound a command family; it cannot bound an *option* — #1683 F1/F2, and the reason is `ShellCommandPatternMatcher`'s own, canonical there rather than restated here.** Two things changed in this ceiling as a result. `git grep` **left the allowlist**, taking with it the two deny entries #1679 had added for `-O`/`--open-files-in-pager` (a reviewing harness has its own Grep tool, and three spellings were measured spawning a pager past those entries). And a third deny rung was added alongside the two lists above: **`denied_shell_option_tokens`**, whose matching rule and deliberate over-match are stated on `ShellCommandPatternMatcher.IsDeniedByOptionToken`. `review` carries `--output`, because `git log`/`show`/`diff` all accept `--output=<file>` with `--format=format:<bytes>` — an arbitrary file write, invisible to #659's metacharacter scan because no redirection is involved, under this role's own `shell_commands_are_read_only: true` assertion. That assertion is the author's claim rather than a derived fact (`PermissionGrant.ShellCommandsAreReadOnly` says so), and this is what it took to make it true. **The rung is enforced by the two `PreToolUse` hooks and by nothing else, on either vendor** — see `ClaudeWorkerAdapter.StandingShellDenials` for why no vendor flag carries it, including what stays unmeasured. `gh api` is deliberately **not** granted: its HTTP
 method is a runtime flag/field (`-X`, `-f`), not something `ShellCommandPatternMatcher`'s glob
 prefix-match can bind to GET-only, so admitting it would be an unenforced hole wearing a scoped
 label rather than an actually-scoped grant.
@@ -1761,7 +1763,10 @@ a granted read tool can reach the operator's real home — this is pre-existing 
 and `advise`, not something this probe measured or bounded. Unprobed: the subagent/`manage_task`
 tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects
 tracked in #1679 — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
-restated here. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
+restated here. Note that the six probed commands were run against the lists **as they stood then**,
+so #1679 and #1683 changed the lists under that measurement: the mechanism it measured is unaffected
+(nothing about how the hook narrows changed), but no probe covers the current `git grep`-free
+allowlist or the `denied_shell_option_tokens` rung, which reaches agy only through this same hook. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
 `ShellCommandPatterns` now resolves to `--dangerously-skip-permissions` and lets the hook do the
 narrowing; a grant with shell but no patterns still refuses, because nothing would bound it. A hook
 that cannot start reads as an allow on this vendor, so for `review` specifically a broken hook widens

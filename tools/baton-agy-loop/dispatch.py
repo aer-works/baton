@@ -417,6 +417,11 @@ def build_bindings(
             permission_grant["DeniedShellCommandPatterns"] = s["denied_shell_command_patterns"]
         if s.get("shell_commands_are_read_only"):
             permission_grant["ShellCommandsAreReadOnly"] = s["shell_commands_are_read_only"]
+        # #1683 F2: threaded exactly like the two lists above. Omitting it here is not "no deny by
+        # default" -- it is the review role's --output write escape silently reopening for every lane
+        # dispatched through this tool while the C# front door closes it.
+        if s.get("denied_shell_option_tokens"):
+            permission_grant["DeniedShellOptionTokens"] = s["denied_shell_option_tokens"]
 
         produced_outputs = [{"Name": s["output_name"]}]
         if s.get("verdict_schema"):
@@ -705,6 +710,7 @@ BUILT_IN = {
     # `grant_refusal` exactly like any other incoherent grant.
     "shell_command_patterns": None,
     "denied_shell_command_patterns": None,
+    "denied_shell_option_tokens": None,
     "shell_commands_are_read_only": False,
 }
 
@@ -1036,6 +1042,8 @@ def build_parser(argv=None) -> argparse.ArgumentParser:
                         help="Comma-separated Bash(pattern) allowlist scoping --run-shell-commands (e.g. 'git diff*,git log*'). Normally supplied by a template; ClaudeWorkerAdapter emits Bash(pattern) per entry.")
     parser.add_argument("--denied-shell-command-patterns", default=None,
                         help="Comma-separated standing-deny patterns (0022 DenyAlways) refused regardless of the allowlist.")
+    parser.add_argument("--denied-shell-option-tokens", default=None,
+                        help="Comma-separated literal option-token prefixes (e.g. '--output') refused wherever they appear on the command line, not only at its start (#1683). A deny PATTERN is anchored at the start of the line and cannot bound an option that can be reordered, clustered or abbreviated.")
     parser.add_argument("--verdict-schema", action="store_true", default=None,
                         help="Also require a schema-checked verdict.json (spec §4.2). The review template sets this; the flag exists to add it to an ad-hoc dispatch or (--no-verdict-schema) drop it from one.")
     parser.add_argument("--no-verdict-schema", dest="verdict_schema", action="store_false")
@@ -1146,7 +1154,7 @@ def main() -> int:
         for flag_name in ("adapter", "model", "effort", "timeout_minutes", "read_files",
                           "write_files", "run_shell_commands", "network_access", "verdict_schema",
                           "shell_commands_are_read_only", "shell_command_patterns",
-                          "denied_shell_command_patterns"):
+                          "denied_shell_command_patterns", "denied_shell_option_tokens"):
             if getattr(args, flag_name) is not None:
                 print(f"error: --lane resolves every step's settings from its template; "
                       f"an explicit --{flag_name.replace('_', '-')} would be silently ignored, so it is refused.",
@@ -1184,13 +1192,15 @@ def main() -> int:
             if getattr(args, key) is None:
                 setattr(args, key, value)
 
-        # #1456: the two pattern flags arrive from --shell-command-patterns/--denied-shell-command-
-        # patterns as a comma-string (CLI convention, matching every other comma-joined channel in
+        # #1456 (+ #1683's option-token list): the three list flags arrive from --shell-command-
+        # patterns/--denied-shell-command-patterns/--denied-shell-option-tokens as a comma-string
+        # (CLI convention, matching every other comma-joined channel in
         # this codebase) but from a template (baton templates --json's shell_command_patterns) as an
         # already-parsed JSON list -- the merge above just picked whichever source won and left its
         # native shape alone. Normalize to a list here, once, so build_bindings never has to care
         # which source it came from.
-        for list_key in ("shell_command_patterns", "denied_shell_command_patterns"):
+        for list_key in ("shell_command_patterns", "denied_shell_command_patterns",
+                         "denied_shell_option_tokens"):
             value = getattr(args, list_key)
             if isinstance(value, str):
                 setattr(args, list_key, [p.strip() for p in value.split(",") if p.strip()])
@@ -1244,6 +1254,7 @@ def main() -> int:
             "worktree_ref": args.review_ref,
             "shell_command_patterns": args.shell_command_patterns,
             "denied_shell_command_patterns": args.denied_shell_command_patterns,
+            "denied_shell_option_tokens": args.denied_shell_option_tokens,
             "shell_commands_are_read_only": args.shell_commands_are_read_only,
         }]
     else:

@@ -85,6 +85,14 @@ public static class AgyHookCheckCommand
         Baton.Vendors.AgyWorkerAdapter.DeniedShellPatternsVariable;
 
     /// <summary>
+    /// Mirror-name for <see cref="Baton.Vendors.AgyWorkerAdapter.DeniedShellOptionTokensVariable"/>
+    /// (#1683 F2) — owned there because that adapter emits it, read here. See it for what the channel
+    /// is and why neither vendor has a flag half for it.
+    /// </summary>
+    public const string DeniedShellOptionTokensEnvironmentVariable =
+        Baton.Vendors.AgyWorkerAdapter.DeniedShellOptionTokensVariable;
+
+    /// <summary>
     /// agy reads the verdict from stdout and the process exit code carries no gating meaning — a
     /// denial and an allow both exit 0. Compare <see cref="HookCheckCommand.DeniedExitCode"/>, where
     /// the exit code <i>is</i> the signal.
@@ -118,7 +126,7 @@ public static class AgyHookCheckCommand
     public static int Execute(
         TextReader stdin, TextWriter stdout, string? deniedToolsRaw, string? shellPatternsRaw = null,
         string? outboxDirectory = null, string? workspaceDirectory = null,
-        string? deniedShellPatternsRaw = null)
+        string? deniedShellPatternsRaw = null, string? deniedShellOptionTokensRaw = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stdout);
@@ -127,7 +135,7 @@ public static class AgyHookCheckCommand
         {
             stdout.Write(Decide(
                 stdin, deniedToolsRaw, shellPatternsRaw, outboxDirectory, workspaceDirectory,
-                deniedShellPatternsRaw));
+                deniedShellPatternsRaw, deniedShellOptionTokensRaw));
         }
         catch
         {
@@ -151,7 +159,8 @@ public static class AgyHookCheckCommand
 
     private static string Decide(
         TextReader stdin, string? deniedToolsRaw, string? shellPatternsRaw,
-        string? outboxDirectory, string? workspaceDirectory, string? deniedShellPatternsRaw)
+        string? outboxDirectory, string? workspaceDirectory, string? deniedShellPatternsRaw,
+        string? deniedShellOptionTokensRaw)
     {
         // Drain stdin first and unconditionally: agy is the writer on the other end of this pipe,
         // and exiting before reading its full payload risks a blocked write on its side for any
@@ -324,6 +333,32 @@ public static class AgyHookCheckCommand
                     return DenyJson(
                         $"AER: the command line '{commandLine}' is denied because it does not match the " +
                         "shell command patterns allowed by this session's grant.");
+                }
+            }
+
+            // #1683 F2's rung, in the position its caller contract requires (see
+            // ShellCommandPatternMatcher.IsDeniedByOptionToken) and inside this branch, so it introduces
+            // no absent-handling rule of its own: the two channels it is emitted alongside have already
+            // denied run_command in the case where a channel went missing.
+            var deniedOptionTokenList = ShellPatternList.Parse(deniedShellOptionTokensRaw, VendorTag);
+            if (deniedOptionTokenList.Status == ShellPatternListStatus.Present &&
+                deniedOptionTokenList.Patterns.Count > 0)
+            {
+                if (commandLine is null)
+                {
+                    return DenyJson(
+                        "AER: the 'run_command' tool has standing denied option tokens, but this gate could " +
+                        "not read toolCall.args.CommandLine in the hook payload and denied this call rather " +
+                        "than allowing it unchecked.");
+                }
+
+                if (Baton.Vendors.ShellCommandPatternMatcher.IsDeniedByOptionToken(
+                        commandLine, deniedOptionTokenList.Patterns))
+                {
+                    return DenyJson(
+                        $"AER: the command line '{commandLine}' carries an option this session's grant " +
+                        "denies outright (a standing option-token 'never', matched anywhere on the line " +
+                        "rather than at its start) and was refused.");
                 }
             }
         }

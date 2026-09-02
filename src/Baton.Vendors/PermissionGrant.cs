@@ -48,6 +48,15 @@ namespace Baton.Vendors;
 /// wants for a future scoped-shell-without-network grant. False (the default) leaves every existing
 /// grant's coherence check exactly as conservative as it was before this field existed.
 /// </param>
+/// <param name="DeniedShellOptionTokens">
+/// #1683 F2's deny rung for an <em>option</em> rather than a command family — literal token prefixes
+/// (e.g. <c>"--output"</c>), subtractive like <see cref="DeniedShellCommandPatterns"/> above and
+/// beating any allow, but matched by a different rule and enforced somewhere else. Both of those
+/// differences, why the field exists at all, and what it deliberately over-matches are stated once on
+/// <c>ShellCommandPatternMatcher.IsDeniedByOptionToken</c>; read that, not a paraphrase here. The one
+/// consequence a reader of THIS type needs: it is the field standing between an author's
+/// <see cref="ShellCommandsAreReadOnly"/> assertion and a shell that can in fact write a file.
+/// </param>
 public sealed record PermissionGrant(
     bool ReadFiles = false,
     bool WriteFiles = false,
@@ -55,7 +64,8 @@ public sealed record PermissionGrant(
     IReadOnlyList<string>? ShellCommandPatterns = null,
     bool NetworkAccess = false,
     IReadOnlyList<string>? DeniedShellCommandPatterns = null,
-    bool ShellCommandsAreReadOnly = false)
+    bool ShellCommandsAreReadOnly = false,
+    IReadOnlyList<string>? DeniedShellOptionTokens = null)
 {
     /// <summary>
     /// True when every category is unset — the structured equivalent of a blank
@@ -65,7 +75,8 @@ public sealed record PermissionGrant(
     /// </summary>
     public bool IsEmpty => !ReadFiles && !WriteFiles && !RunShellCommands && !NetworkAccess
         && (ShellCommandPatterns is null || ShellCommandPatterns.Count == 0)
-        && (DeniedShellCommandPatterns is null || DeniedShellCommandPatterns.Count == 0);
+        && (DeniedShellCommandPatterns is null || DeniedShellCommandPatterns.Count == 0)
+        && (DeniedShellOptionTokens is null || DeniedShellOptionTokens.Count == 0);
 
     /// <summary>
     /// The categories this grant WITHHOLDS that a granted shell reaches anyway — empty when the

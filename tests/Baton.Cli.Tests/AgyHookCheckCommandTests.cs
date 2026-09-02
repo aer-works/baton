@@ -452,6 +452,19 @@ public class AgyHookCheckCommandTests
     [InlineData("git push --dry-run", "deny")]
     [InlineData("gh api repos/x", "deny")]
     [InlineData("gh pr view 1", "allow")]
+    // #1683 F1 -- denied by absence once `git grep*` left the review allow list; F2 -- the --output
+    // write escape, now closed by the option-token channel; F3 -- the respelled `git merge *` deny.
+    // The parity requirement: agy's hook reaches the same verdict on every one of these as claude's.
+    [InlineData("git grep -nOcalc foo", "deny")]
+    [InlineData("git grep --ignore-case -Ocalc foo", "deny")]
+    [InlineData("git grep --open-files=calc foo", "deny")]
+    [InlineData("git grep  -Ocalc foo", "deny")]
+    [InlineData("git log -1 --output=C:/x --format=format:y", "deny")]
+    [InlineData("git show --output C:/x", "deny")]
+    [InlineData("git log -1 --outpu\"t\"=C:/x --format=format:y", "deny")]
+    [InlineData("git log --oneline -5", "allow")]
+    [InlineData("git log --grep=\"--output\"", "allow")]
+    [InlineData("git merge origin/main", "deny")]
     public void Review_role_command_allow_deny_polarities_from_catalog(string command, string expectedDecision)
     {
         var review = Baton.Vendors.WorkerRoleCatalog.For("review");
@@ -460,6 +473,9 @@ public class AgyHookCheckCommandTests
             : "agy:";
         var deniedShellPatternsRaw = review.Grant.DeniedShellCommandPatterns is { Count: > 0 }
             ? "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns)
+            : "agy:";
+        var deniedShellOptionTokensRaw = review.Grant.DeniedShellOptionTokens is { Count: > 0 }
+            ? "agy:" + string.Join(",", review.Grant.DeniedShellOptionTokens)
             : "agy:";
 
         var payload = $$"""
@@ -475,11 +491,48 @@ public class AgyHookCheckCommandTests
         var exitCode = AgyHookCheckCommand.Execute(
             stdin, stdout, "agy:write_to_file,replace_file_content",
             shellPatternsRaw: shellPatternsRaw,
-            deniedShellPatternsRaw: deniedShellPatternsRaw);
+            deniedShellPatternsRaw: deniedShellPatternsRaw,
+            deniedShellOptionTokensRaw: deniedShellOptionTokensRaw);
 
         Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
         using var doc = JsonDocument.Parse(stdout.ToString());
         Assert.Equal(expectedDecision, doc.RootElement.GetProperty("decision").GetString());
+    }
+
+    [Fact]
+    public void The_option_token_channel_is_what_denies_the_output_write_not_the_pattern_lists()
+    {
+        // agy's copy of claude's discriminating control (#1683 F2): same command line, same allow/deny
+        // pattern lists, option-token channel absent -> allowed. Without this arm the deny row above
+        // would not distinguish the new channel from the lists that were already there.
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        const string command = "git log -1 --output=C:/x --format=format:y";
+        var payload = $$"""
+            {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+             "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+             "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}}, "Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                         "name":"run_command"},
+             "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+            """;
+        using var stdin = new StringReader(payload);
+        using var stdout = new StringWriter();
+
+        AgyHookCheckCommand.Execute(
+            stdin, stdout, "agy:write_to_file,replace_file_content",
+            shellPatternsRaw: "agy:" + string.Join(",", review.Grant.ShellCommandPatterns!),
+            deniedShellPatternsRaw: "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns!),
+            deniedShellOptionTokensRaw: null);
+
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal("allow", doc.RootElement.GetProperty("decision").GetString());
+    }
+
+    [Fact]
+    public void The_denied_option_token_variable_matches_the_adapter_side_contract()
+    {
+        Assert.Equal(
+            "BATON_HOOK_DENIED_SHELL_OPTION_TOKENS",
+            AgyHookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
     }
 
     private sealed class ThrowingReader : TextReader
