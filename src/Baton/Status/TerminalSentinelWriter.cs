@@ -73,14 +73,62 @@ public static class TerminalSentinelWriter
     /// Without this, retrying a room that previously failed pre-ledger leaves the old
     /// <c>terminal.json</c> in place for the whole duration of the new, genuinely in-progress
     /// attempt — exactly the false "already done" signal a file-watcher (this file's whole reason to
-    /// exist) must never see. Best-effort: <see cref="File.Delete"/> is already a silent no-op when
-    /// the file is absent.
+    /// exist) must never see. <see cref="File.Delete"/> is already a silent no-op when the file is
+    /// absent, but still throws for a locked file (a concurrent reader on Windows without
+    /// <see cref="FileShare.Delete"/>), and the two call sites want opposite things from that throw
+    /// (#1608 re-review finding 2):
+    /// <list type="bullet">
+    /// <item><description>
+    /// <paramref name="bestEffort"/> <c>false</c> — the default, and what <c>RunCommand</c> uses
+    /// before a fresh pump: a stale sentinel that could not be removed is precisely the false
+    /// "already done" reading above, so the run must not start. The refusal is a typed
+    /// <see cref="StaleSentinelDeletionException"/> rather than a raw <see cref="IOException"/>, so
+    /// <c>Program.cs</c> prints it as a clean refusal instead of a stack trace.
+    /// </description></item>
+    /// <item><description>
+    /// <paramref name="bestEffort"/> <c>true</c> — <c>Program.cs</c>'s post-<c>resolve</c> step,
+    /// which runs AFTER a mutation is already durable: a delete failure there must not report a
+    /// resolution as having failed when it in fact succeeded, so it warns on stderr and returns, the
+    /// same shape <c>CancelRequestFile</c>'s own best-effort rename uses.
+    /// </description></item>
+    /// </list>
     /// </remarks>
-    public static void DeleteStaleSentinel(string roomDirectoryPath)
+    /// <exception cref="StaleSentinelDeletionException">
+    /// The delete failed and <paramref name="bestEffort"/> is <c>false</c>. Not only a locked
+    /// sentinel: an absent room directory raises <see cref="DirectoryNotFoundException"/> here too,
+    /// which is unreachable from the shipped call site (<c>RunCommand</c> creates the directory
+    /// first) but is part of this method's contract now that it has a public default.
+    /// </exception>
+    public static void DeleteStaleSentinel(string roomDirectoryPath, bool bestEffort = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         var path = Path.Combine(roomDirectoryPath, TerminalSentinelFileName);
-        File.Delete(path);
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (!bestEffort)
+            {
+                throw new StaleSentinelDeletionException(
+                    $"Could not delete the stale terminal sentinel '{path}': {ex.Message}. Refusing to start: left in " +
+                    "place it would read as 'already done' to anything watching this room for the whole duration of " +
+                    "this attempt.",
+                    ex)
+                {
+                    TryInvocation = $"close whatever holds '{path}' open, then re-run this command",
+                };
+            }
+
+            try
+            {
+                Console.Error.WriteLine($"Could not delete stale sentinel '{path}': {ex.Message}");
+            }
+            catch
+            {
+            }
+        }
     }
 
     /// <summary>

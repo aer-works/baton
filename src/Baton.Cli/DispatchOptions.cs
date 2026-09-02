@@ -56,6 +56,12 @@ namespace Baton.Cli;
 /// role like <paramref name="Timeout"/>. Role dispatch only, rejected for a workflow template the same
 /// way <paramref name="Timeout"/> is. Null keeps the role's own default (<c>Baton.Vendors.WorkerRole.TokenBudget</c>).
 /// </param>
+/// <param name="RepoPath">
+/// <c>--repo</c> (#1645): a checkout whose <see cref="InstalledVersionDrift"/> release version this
+/// dispatch's installed <c>baton</c> is compared against, printing a WARN on stderr when behind. Null
+/// falls back to <c>BATON_REPO</c> (<see cref="Baton.Status.BatonEnvironmentSnapshot.RepoOverride"/>);
+/// neither present means no checkout is discoverable and the check is skipped, not refused.
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -71,4 +77,5 @@ public sealed record DispatchOptions(
     string? Workstream = null,
     IReadOnlyList<string>? Attachments = null,
     bool ListCapabilities = false,
-    long? TokenBudget = null);
+    long? TokenBudget = null,
+    string? RepoPath = null);

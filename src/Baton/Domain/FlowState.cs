@@ -171,17 +171,33 @@ public enum StepStatus
 /// <c>true</c>, independent of <see cref="LatestFailureClassification"/> or
 /// <see cref="ConsecutiveFailureCount"/>.
 /// </param>
+/// <param name="IndeterminateAwaitingResolution">
+/// The single flag for <see cref="Status.WorkflowOutcome.Indeterminate"/>, whichever of its three
+/// producers set it (#1608's <see cref="FlowEvent.ExecutionIndeterminate"/> captured-response settle,
+/// and #1623's <see cref="FlowEvent.VerifyFailed"/> / <see cref="FlowEvent.ExecutionArrested"/>) —
+/// <c>true</c> while one of those has been projected for this step's latest execution and nothing has
+/// since reopened or resolved it (<see cref="FlowEvent.CaptureResolved"/>, or a fresh
+/// <see cref="FlowEvent.ExecutionRequestAccepted"/>). Drives two independent reads:
+/// <see cref="Status.WorkflowOutcome.Describe"/> reports the room <c>Indeterminate</c> whenever any
+/// step reads <c>true</c> here (ahead of the ordinary <see cref="Failed"/>/<see cref="Rejected"/>
+/// check, even though <see cref="Status"/> itself stays <see cref="Failed"/> — the "single added enum
+/// value" ruling adds this at the room-level word only, never at <see cref="StepStatus"/>), and
+/// <see cref="Scheduling.RetryEngine.MayRetry"/> refuses unconditionally while this is <c>true</c>,
+/// the same explicit-arm shape as <see cref="RetryForeclosed"/>. An accepted resolution flips the
+/// step's <b>raw</b> status to <see cref="Succeeded"/> in the same projected step that clears this —
+/// but this can also read <c>true</c> while <see cref="Status"/> is <see cref="Paused"/>, not only
+/// <see cref="Failed"/> — a step declaring a <see cref="PausePoint"/> settles into
+/// <see cref="Paused"/> with this flag still set (spec/baton.md §3, "Unless the step declares a
+/// <c>PausePoint</c>", for the mechanism and what follows from it). Never true while
+/// <see cref="Status"/> is <see cref="Succeeded"/> or <see cref="Cancelled"/>.
+/// </param>
 /// <param name="IndeterminateReason">
-/// #1623: non-null exactly when a <see cref="FlowEvent.VerifyFailed"/> or
-/// <see cref="FlowEvent.ExecutionArrested"/> has been projected against this step's latest execution —
-/// the diagnostic text doubles as the flag. <see cref="Status.WorkflowOutcome.DescribeTerminal"/> reads
-/// this ahead of <see cref="StepStatus.Failed"/> to report
-/// <see cref="Status.WorkflowOutcome.Indeterminate"/> instead, and
-/// <see cref="Scheduling.RetryEngine.MayRetry"/> refuses unconditionally while this is set — the same
-/// "never a blind retry" shape <see cref="RetryForeclosed"/> already gives #1586 S1's own producer.
-/// Distinct field from <see cref="RetryForeclosed"/> (which this also sets) because a captured-response
-/// Indeterminate candidate (#1608, a separate, still-unmerged producer) may end up needing a different
-/// flag; see that issue for the merge-order note.
+/// #1623: the human-readable diagnostic for an Indeterminate settled by
+/// <see cref="FlowEvent.VerifyFailed"/> or <see cref="FlowEvent.ExecutionArrested"/> — which gate
+/// members failed, or what the arrest measured. <b>Diagnostic only: never a gate.</b>
+/// <see cref="IndeterminateAwaitingResolution"/> is the one flag every reader branches on, so the
+/// captured-response producer (which records its own account on
+/// <see cref="LatestFailureReason"/> instead) leaves this null while still reading Indeterminate.
 /// </param>
 public sealed record StepState(
     StepId StepId,
@@ -204,6 +220,7 @@ public sealed record StepState(
     string? LatestCapturedResponseFile = null,
     IReadOnlyList<string>? LatestUnsatisfiedOutputNames = null,
     bool RetryForeclosed = false,
+    bool IndeterminateAwaitingResolution = false,
     string? IndeterminateReason = null);
 
 /// <summary>

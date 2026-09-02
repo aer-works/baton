@@ -73,4 +73,26 @@ public class StatusOptionsParserTests
         Assert.True(options.Json);
         Assert.False(options.Follow);
     }
+
+    [Fact]
+    public void The_repo_option_parses_to_an_absolute_path()
+    {
+        var options = StatusOptionsParser.Parse(["task", "--repo", "."]);
+
+        Assert.Equal(Path.GetFullPath("."), options.RepoPath);
+    }
+
+    [Fact]
+    public void Omitting_repo_leaves_it_null()
+    {
+        var options = StatusOptionsParser.Parse(["task"]);
+
+        Assert.Null(options.RepoPath);
+    }
+
+    [Fact]
+    public void A_repo_option_with_no_value_throws()
+    {
+        Assert.Throws<CliArgumentException>(() => StatusOptionsParser.Parse(["task", "--repo"]));
+    }
 }

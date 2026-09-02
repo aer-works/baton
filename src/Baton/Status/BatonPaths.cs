@@ -178,6 +178,16 @@ public static class BatonPaths
     public const string RoomRegistryFileName = "room-registry.jsonl";
 
     /// <summary>
+    /// <c>{Root}/draining.json</c> — the tool-refresh drain marker. <see cref="DrainMarker"/> owns what
+    /// it means and who refuses under it; this type only names where it lives, the same split
+    /// <see cref="RoomRegistryFile"/> has with <see cref="RoomRegistryStore"/>.
+    /// </summary>
+    public static string DrainMarkerFile => Path.Combine(Root, DrainMarkerFileName);
+
+    /// <summary>Filename of <see cref="DrainMarkerFile"/> relative to a root.</summary>
+    public const string DrainMarkerFileName = "draining.json";
+
+    /// <summary>
     /// The canonical key for a record directory: absolute, with any trailing separator removed, so
     /// <c>C:\x\run</c>, <c>C:\x\run\</c> and <c>C:\x\..\x\run</c> all resolve to one entry.
     /// </summary>

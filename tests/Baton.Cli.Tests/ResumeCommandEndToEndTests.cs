@@ -19,8 +19,16 @@ namespace Baton.Cli.Tests;
 /// process-spawn tests prove it for <c>run</c>.
 /// </summary>
 [Collection(WorkingDirectoryCollection.Name)]
-public class ResumeCommandEndToEndTests
+public class ResumeCommandEndToEndTests : IDisposable
 {
+    private readonly IsolatedBatonHome _batonHome = new();
+
+    public void Dispose()
+    {
+        _batonHome.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
     // Instance, not static (#1388 review F10): xUnit gives each [Fact] its own class instance, so an
     // instance field gives each test its own ResumeObservingWorkerAdapter -- a static one accumulated
     // every test's invocations for the class's whole lifetime, which made ObservedInvocations.First()
@@ -304,7 +312,7 @@ public class ResumeCommandEndToEndTests
         }
     }
 
-    private static Process StartBatonProcess(params string[] args)
+    private Process StartBatonProcess(params string[] args)
     {
         var startInfo = new ProcessStartInfo("dotnet")
         {
@@ -313,6 +321,9 @@ public class ResumeCommandEndToEndTests
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        // #1645: hand the child the same storage root -- IsolatedBatonHome's scope stops at this
+        // process boundary, and the `resume` arm below is a real subprocess.
+        startInfo.Environment[BatonPaths.HomeEnvironmentVariable] = _batonHome.Path;
         startInfo.ArgumentList.Add("exec");
         startInfo.ArgumentList.Add(typeof(RunCommand).Assembly.Location);
         foreach (var arg in args)

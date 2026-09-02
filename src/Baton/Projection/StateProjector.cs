@@ -110,6 +110,18 @@ public static class StateProjector
                     // same "the pump is dispatching it, so whatever blocked it is moot" reasoning the
                     // clears above already rest on.
                     state.RetryForeclosedStepIds.Remove(acceptedStepId);
+
+                    // #1608 review: the same "the pump is dispatching it, so whatever blocked it is
+                    // moot" reasoning applies to an unresolved Indeterminate, whichever of its three
+                    // producers set it. For the captured-response producer nothing ever reaches this
+                    // while true (MayRetry refuses the step unconditionally and
+                    // ExternalDecisionValidator refuses a decide against it, so only CaptureResolved
+                    // clears the flag before any fresh dispatch can be admitted) — cleared here anyway,
+                    // defensively, so a future producer (S2's baton settle, or a new DecisionType) that
+                    // ever mints a fresh execution for this step cannot leave WorkflowOutcome pinned to
+                    // Indeterminate and MayRetry permanently false underneath a legitimate new attempt.
+                    // The reason text is cleared in the same breath as the flag, never separately.
+                    state.IndeterminateAwaitingResolutionStepIds.Remove(acceptedStepId);
                     state.IndeterminateReasonByStepId.Remove(acceptedStepId);
                 }
                 else
@@ -320,18 +332,88 @@ public static class StateProjector
             case FlowEvent.ZeroOutputsDespiteSubstantialWork:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
                 break;
+
+            case FlowEvent.ExecutionIndeterminate indeterminate:
+                // #1608: projects to StepStatus.Failed, same as FlowEvent.ExecutionFailed — the
+                // "single added enum value" ruling adds Indeterminate at the room-level word only
+                // (WorkflowOutcome.DescribeTerminal, below), never at StepStatus. What actually
+                // distinguishes this from an ordinary Failed step is IndeterminateAwaitingResolutionStepIds.
+                state.TerminalStatusByExecutionId[indeterminate.ExecutionId] = StepStatus.Failed;
+                if (state.StepIdByExecutionId.TryGetValue(indeterminate.ExecutionId, out var indeterminateStepId))
+                {
+                    state.ConsecutiveFailureCountByStepId[indeterminateStepId] =
+                        state.ConsecutiveFailureCountByStepId.GetValueOrDefault(indeterminateStepId) + 1;
+                    state.LatestFailureClassificationByStepId[indeterminateStepId] = null;
+                    state.LatestFailureReasonByStepId[indeterminateStepId] = indeterminate.Reason;
+                    state.LatestExecutionFailedRetryNotBeforeByStepId[indeterminateStepId] = null;
+                    state.LatestCapturedResponseFileByStepId[indeterminateStepId] = indeterminate.CapturedResponseFile;
+                    state.LatestUnsatisfiedOutputNamesByStepId[indeterminateStepId] =
+                        indeterminate.UnsatisfiedOutputNames is null ? null : new List<string>(indeterminate.UnsatisfiedOutputNames);
+                    state.IndeterminateAwaitingResolutionStepIds.Add(indeterminateStepId);
+                }
+
+                break;
+
+            case FlowEvent.CaptureResolved resolved:
+                // Guarded on StepId matching the event's own recorded target, the same discipline
+                // FlowEvent.StepRetryForeclosed's ForExecutionId guard already follows — a stale
+                // resolution (replayed against a step a later fresh dispatch has since moved past)
+                // must be a no-op, not a misapplication to whichever execution the id now maps to.
+                if (state.StepIdByExecutionId.TryGetValue(resolved.ExecutionId, out var resolvedStepId)
+                    && resolvedStepId == resolved.StepId)
+                {
+                    state.IndeterminateAwaitingResolutionStepIds.Remove(resolvedStepId);
+                    state.IndeterminateReasonByStepId.Remove(resolvedStepId);
+
+                    if (resolved.Accepted)
+                    {
+                        // #1608 review finding 5: this event is journaled BEFORE the real output
+                        // file(s) it describes (MutationInterface.RecordCaptureResolutionAsync) — the
+                        // opposite of ExecutionSucceeded's own clear below, which only ever records a
+                        // write already durable on disk. A replay can therefore project Succeeded here
+                        // for a file that is not (yet, or ever) actually on disk; that gap is what
+                        // RecordCaptureResolutionAsync's own repair path (ReconcileAcceptedCaptureAsync)
+                        // exists to close on a later matching --execution, not something this pure
+                        // projection can see or correct.
+                        state.TerminalStatusByExecutionId[resolved.ExecutionId] = StepStatus.Succeeded;
+                        state.ConsecutiveFailureCountByStepId[resolvedStepId] = 0;
+                        state.LatestFailureClassificationByStepId[resolvedStepId] = null;
+                        state.LatestFailureReasonByStepId[resolvedStepId] = null;
+                        state.LatestCapturedResponseFileByStepId[resolvedStepId] = null;
+                        state.LatestUnsatisfiedOutputNamesByStepId[resolvedStepId] = null;
+                    }
+
+                    // Rejected: Status stays Failed, LatestCapturedResponseFile/UnsatisfiedOutputNames
+                    // stay recorded (the audit trail of what was captured and refused) — only
+                    // IndeterminateAwaitingResolutionStepIds above changes, which is what lets
+                    // WorkflowOutcome.DescribeTerminal read this as an ordinary Failed step again and
+                    // RetryEngine.MayRetry re-apply its ordinary predicate instead of refusing outright.
+                }
+
+                break;
         }
     }
 
     /// <summary>
-    /// #1623: shared apply for both Indeterminate producers (<see cref="FlowEvent.VerifyFailed"/>,
-    /// <see cref="FlowEvent.ExecutionArrested"/>) — settles the execution's terminal status as
-    /// <see cref="StepStatus.Failed"/> (so <see cref="DeriveWorkflowStatus"/>'s existing deliverability
-    /// predicate reaches Terminal the same way any other failure does) while also recording
-    /// <paramref name="reason"/> onto <see cref="ProjectionCheckpointState.IndeterminateReasonByStepId"/>
-    /// and foreclosing retry — <see cref="Scheduling.RetryEngine.MayRetry"/> also checks the reason
-    /// directly (not merely the foreclosure side effect), per the ruling's "retry-ineligible by an
-    /// explicit arm, not an accident of a default."
+    /// #1623: shared apply for the two verify-side Indeterminate producers
+    /// (<see cref="FlowEvent.VerifyFailed"/>, <see cref="FlowEvent.ExecutionArrested"/>) — settles the
+    /// execution's terminal status as <see cref="StepStatus.Failed"/> (so
+    /// <see cref="DeriveWorkflowStatus"/>'s existing deliverability predicate reaches Terminal the same
+    /// way any other failure does), raises the one Indeterminate flag
+    /// (<see cref="ProjectionCheckpointState.IndeterminateAwaitingResolutionStepIds"/> — the same flag
+    /// #1608's <see cref="FlowEvent.ExecutionIndeterminate"/> arm raises, so all three producers reach
+    /// <see cref="Status.WorkflowOutcome.DescribeTerminal"/> and
+    /// <see cref="Scheduling.RetryEngine.MayRetry"/> through one predicate rather than two parallel
+    /// ones), records <paramref name="reason"/> alongside it as diagnostic text, and forecloses retry.
+    /// <see cref="Scheduling.RetryEngine.MayRetry"/> refuses on the flag directly, not merely on the
+    /// foreclosure side effect, per the ruling's "retry-ineligible by an explicit arm, not an accident
+    /// of a default."
+    /// <para>
+    /// Deliberately leaves <see cref="ProjectionCheckpointState.LatestCapturedResponseFileByStepId"/>
+    /// untouched: <c>baton resolve</c> discriminates its capture-resolution targets on that file, not
+    /// on the Indeterminate flag, so a verify-failed step is Indeterminate without becoming a
+    /// capture-resolution target (<c>Mutation.MutationInterface.RecordCaptureResolutionAsync</c>).
+    /// </para>
     /// </summary>
     private static void ApplyIndeterminate(ProjectionCheckpointState state, ExecutionId executionId, string reason)
     {
@@ -344,6 +426,7 @@ public static class StateProjector
         state.ConsecutiveFailureCountByStepId[stepId] = state.ConsecutiveFailureCountByStepId.GetValueOrDefault(stepId) + 1;
         state.LatestFailureClassificationByStepId[stepId] = FailureClassification.Permanent;
         state.LatestFailureReasonByStepId[stepId] = reason;
+        state.IndeterminateAwaitingResolutionStepIds.Add(stepId);
         state.IndeterminateReasonByStepId[stepId] = reason;
         state.RetryForeclosedStepIds.Add(stepId);
         state.RetryNotBeforeByStepId.Remove(stepId);
@@ -428,6 +511,7 @@ public static class StateProjector
                 state.LatestCapturedResponseFileByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.LatestUnsatisfiedOutputNamesByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.RetryForeclosedStepIds.Contains(stepDefinition.StepId),
+                state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId),
                 state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 

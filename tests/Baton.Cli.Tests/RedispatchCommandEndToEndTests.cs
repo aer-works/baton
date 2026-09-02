@@ -24,6 +24,8 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
             ["fake-noop"] = new ContractOutputWorkerAdapter(satisfyOutputs: false),
         };
 
+    private readonly IsolatedBatonHome _batonHome = new();
+
     private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
     private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
     private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
@@ -43,6 +45,7 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
         Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
+        _batonHome.Dispose();
     }
 
     [Fact]
@@ -498,6 +501,14 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
 
             Assert.Contains("Indeterminate", ex.Message, StringComparison.Ordinal);
             Assert.False(Directory.Exists(childRoom));
+
+            // F1 (PR #1644 review): the refusal must name the real resolution verb and its flags,
+            // not claim one doesn't exist -- #1608 shipped `baton resolve` in the same PR.
+            Assert.NotNull(ex.TryInvocation);
+            Assert.Contains(
+                $"baton resolve {parentRoom} [--execution <id>] --accept-capture | --reject --reason <text>",
+                ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("does not exist", ex.TryInvocation, StringComparison.Ordinal);
         }
         finally
         {

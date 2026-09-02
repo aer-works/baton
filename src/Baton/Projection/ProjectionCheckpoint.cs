@@ -47,6 +47,7 @@ public sealed record ProjectionCheckpointState(
     Dictionary<StepId, string?>? LatestCapturedResponseFileByStepId = null,
     Dictionary<StepId, List<string>?>? LatestUnsatisfiedOutputNamesByStepId = null,
     HashSet<StepId>? RetryForeclosedStepIds = null,
+    HashSet<StepId>? IndeterminateAwaitingResolutionStepIds = null,
     Dictionary<StepId, string?>? IndeterminateReasonByStepId = null,
     HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null)
 {
@@ -71,10 +72,23 @@ public sealed record ProjectionCheckpointState(
     public HashSet<StepId> RetryForeclosedStepIds { get; init; } = RetryForeclosedStepIds ?? new();
 
     /// <summary>
-    /// #1623: which steps carry a projected <see cref="FlowEvent.VerifyFailed"/> or
-    /// <see cref="FlowEvent.ExecutionArrested"/> not since reopened, and the diagnostic text to show for
-    /// it — same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above, and
-    /// the same <see cref="DeepCopy"/> load-bearing note applies.
+    /// Which steps carry an unresolved <see cref="Status.WorkflowOutcome.Indeterminate"/> settle, from
+    /// any of its three producers: a projected <see cref="FlowEvent.ExecutionIndeterminate"/> not since
+    /// resolved by a <see cref="FlowEvent.CaptureResolved"/> (#1608), or a projected
+    /// <see cref="FlowEvent.VerifyFailed"/>/<see cref="FlowEvent.ExecutionArrested"/> not since
+    /// reopened (#1623). Same trailing-optional replay-safety shape as
+    /// <see cref="RetryForeclosedStepIds"/> above, including that member's own <b>load-bearing in
+    /// <see cref="DeepCopy"/></b> warning — this hit the identical hazard the same day it was added,
+    /// not a fresh one.
+    /// </summary>
+    public HashSet<StepId> IndeterminateAwaitingResolutionStepIds { get; init; } = IndeterminateAwaitingResolutionStepIds ?? new();
+
+    /// <summary>
+    /// #1623: the diagnostic text to show for a verify-failure/arrest Indeterminate — a companion to
+    /// <see cref="IndeterminateAwaitingResolutionStepIds"/>, never a second flag, and always written
+    /// and cleared in the same breath as it. Same trailing-optional replay-safety shape as
+    /// <see cref="RetryForeclosedStepIds"/> above, and the same <see cref="DeepCopy"/> load-bearing
+    /// note applies.
     /// </summary>
     public Dictionary<StepId, string?> IndeterminateReasonByStepId { get; init; } = IndeterminateReasonByStepId ?? new();
 
@@ -142,6 +156,7 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<StepId, string?>(LatestCapturedResponseFileByStepId),
         LatestUnsatisfiedOutputNamesByStepId.ToDictionary(kvp => kvp.Key, kvp => kvp.Value is null ? null : new List<string>(kvp.Value)),
         new HashSet<StepId>(RetryForeclosedStepIds),
+        new HashSet<StepId>(IndeterminateAwaitingResolutionStepIds),
         new Dictionary<StepId, string?>(IndeterminateReasonByStepId),
         new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds));
 }

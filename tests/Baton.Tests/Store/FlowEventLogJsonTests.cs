@@ -50,6 +50,8 @@ public class FlowEventLogJsonTests
         new FlowEvent.VerifyFailed(ExecutionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check", VerifyFailedKind.GatesFailed),
         new FlowEvent.ExecutionArrested(ExecutionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000), ["manage_task"]),
         new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover"),
+        new FlowEvent.ExecutionIndeterminate(ExecutionId, "reason", ".captured-response.md", ["advice.md"]),
+        new FlowEvent.CaptureResolved(StepId, ExecutionId, Accepted: true, Reason: "capture honestly satisfies advice.md", ResolvedOutputNames: ["advice.md"]),
     ];
 
     /// <summary>

@@ -8,9 +8,10 @@ namespace Baton.Cli;
 /// The exit codes <c>baton run</c>/<c>baton dispatch</c> return (#1356) — distinct per failure class so a
 /// caller can branch on <c>$?</c>/<c>%ERRORLEVEL%</c> alone, without parsing <c>status --json</c>.
 /// <c>baton resume</c> (#1359) also routes here, on its own design ruling that it gets the same
-/// truthful completion contract. <c>baton cancel</c>/<c>baton decide</c>/<c>baton supply</c> keep their
-/// pre-existing 0/1 contract (<c>Program</c> only routes here for <c>run</c>/<c>dispatch</c>/<c>resume</c>)
-/// — those commands were not named in #1356's scope, and folding them in was not asked for.
+/// truthful completion contract. <c>baton cancel</c>/<c>baton decide</c>/<c>baton resolve</c>/<c>baton
+/// supply</c> keep their pre-existing 0/1 contract (<c>Program</c> only routes here for
+/// <c>run</c>/<c>dispatch</c>/<c>resume</c>) — those commands were not named in #1356's scope (or, for
+/// <c>resolve</c>, #1608's), and folding them in was not asked for.
 /// </summary>
 public enum RunExitCode
 {
@@ -76,12 +77,15 @@ public static class RunExitCodeResolver
             WorkflowOutcome.Succeeded => RunExitCode.Succeeded,
             WorkflowOutcome.Cancelled => RunExitCode.Cancelled,
             WorkflowOutcome.Failed => ResolveFailed(result.State.Steps),
-            // #1623 landed the first two producers (engine-run verify failure, token-budget arrest) —
-            // this arm is live and tested (WorkflowOutcomeAndExitCodeTests) as of that PR. "We don't
-            // know" is not the same failure as "genuinely still going", and the two arms below say
-            // exactly that about the cases they DO cover, but a caller's `$?`/`%ERRORLEVEL%` branch
-            // still only sees Failed here — status --json's `state` field is where the distinction
-            // actually surfaces.
+            // #1608 / #1623: WorkflowOutcome.Describe returns this whenever a step reads
+            // IndeterminateAwaitingResolution true — live and tested for all three of its producers
+            // (the classifier's captured-response settle, an engine-run verify failure, a token-budget
+            // arrest), each pinned in WorkflowOutcomeAndExitCodeTests through this exact Resolve call.
+            // Folded into exit code 1 rather than a distinct code: a caller's `$?`/`%ERRORLEVEL%`
+            // branch still can't distinguish this from an ordinary Failed on the exit code alone —
+            // "we don't know" is not the same failure as a genuine one, but this table stays four
+            // codes wide (#1356's own scope), and `status --json`'s `state` field is what a caller
+            // reads to tell them apart.
             WorkflowOutcome.Indeterminate => RunExitCode.Failed,
             // Running or Paused: the pump returned short of Terminal (no --wait, or --wait's poll
             // loop was cancelled -- e.g. Ctrl-C -- before the room settled; a --wait-timeout expiry

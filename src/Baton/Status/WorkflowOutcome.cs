@@ -4,8 +4,9 @@ namespace Baton.Status;
 
 /// <summary>
 /// The single coarse outcome word for a <see cref="FlowState"/> — "Running", "Paused", or, once
-/// <see cref="WorkflowStatus.Terminal"/> is reached, which of "Succeeded" / "Failed" / "Cancelled" it
-/// settled into. <see cref="WorkflowStatus"/> itself only says the pump reached its fixed point, not
+/// <see cref="WorkflowStatus.Terminal"/> is reached, which of "Succeeded" / "Failed" / "Cancelled" /
+/// "Indeterminate" (#1608 — journal facts alone could not decide, see <see cref="Indeterminate"/>'s
+/// own remarks) it settled into. <see cref="WorkflowStatus"/> itself only says the pump reached its fixed point, not
 /// which one — every other terminal-outcome consumer (<c>StatusCommand</c>'s <c>--json</c>,
 /// <c>RunExitCodeResolver</c>, the terminal sentinel) needs this same word, so it is computed here
 /// once rather than re-derived per caller (#1356).
@@ -26,24 +27,26 @@ public static class WorkflowOutcome
     /// does not reconcile at settle time. A single added value, not a two-field split, per the ruling's
     /// own wording.
     /// <para>
-    /// <b>First producers landed by #1623</b> (contract: <c>spec/baton.md</c> §3):
-    /// <see cref="DescribeTerminal"/> reads a step's
-    /// <see cref="StepState.IndeterminateReason"/> — set by <see cref="FlowEvent.VerifyFailed"/> or
-    /// <see cref="FlowEvent.ExecutionArrested"/> — ahead of <see cref="Failed"/>/<see cref="Rejected"/>.
-    /// #1608's own producer (the #1594 captured-response arm settling here instead of
-    /// <see cref="Failed"/>) is a separate, still-unmerged PR (#1644 as of this writing) — every
-    /// captured-response room's <see cref="Describe"/> reading is unchanged by #1623
-    /// (<c>WorkflowOutcomeAndExitCodeTests</c> pins that; <c>spec/baton.md</c> §3 names the exact test).
-    /// Whichever of #1623/#1644 merges second should fold both into a single check here
-    /// rather than leaving two Indeterminate arms side by side — noted so the merge order is explicit,
-    /// not silent.
+    /// <b>Three producers, one reading.</b> <see cref="DescribeTerminal"/> returns this whenever any
+    /// step reads <see cref="StepState.IndeterminateAwaitingResolution"/> true — a single predicate,
+    /// deliberately not one check per producer. What raises it:
+    /// <list type="bullet">
+    /// <item><see cref="Domain.FlowEvent.ExecutionIndeterminate"/> (#1608), which
+    /// <see cref="Outcomes.OutcomeClassifier.Classify"/>'s captured-response arm emits instead of
+    /// <c>Failed(Permanent)</c> — spec/baton.md §3's "one live exception" is closed.</item>
+    /// <item><see cref="Domain.FlowEvent.VerifyFailed"/> (#1623): the role's verify command exited
+    /// non-zero after the worker itself exited 0 with a satisfied output contract.</item>
+    /// <item><see cref="Domain.FlowEvent.ExecutionArrested"/> (#1623): a live execution crossed its
+    /// role's token budget and was arrested.</item>
+    /// </list>
+    /// The last two carry their diagnostic on <see cref="StepState.IndeterminateReason"/>, which is
+    /// text for a human and never a second gate. The remaining, still-unimplemented producer (a
+    /// worktree fingerprint failing to reconcile at settle time) is spec/baton.md §3's problem, not
+    /// this class's — see "Producer, since #1608" there.
     /// </para>
     /// <para>
-    /// <b>Consumer obligations (ruling item 2, spelled out in full in <c>spec/baton.md</c> §3):</b>
-    /// a room reading this refuses bare <c>baton redispatch</c> with a diagnosis
-    /// (<c>Baton.Cli.RedispatchCommand</c>); the fleet glass renders a distinct chip; leaving this
-    /// value always requires a conductor's own recorded justification — it is not a state a room
-    /// exits on its own.
+    /// <b>Consumer obligations (ruling item 2)</b> — spelled out in full in <c>spec/baton.md</c> §3,
+    /// "Consumer obligations, ratified with the value itself". Not re-derived here.
     /// </para>
     /// </summary>
     public const string Indeterminate = "Indeterminate";
@@ -89,12 +92,13 @@ public static class WorkflowOutcome
             return Succeeded;
         }
 
-        // #1623: checked ahead of the ordinary Failed/Rejected read below -- a verify failure or a
-        // token-budget arrest is projected as an underlying StepStatus.Failed (see
-        // StateProjector.ApplyIndeterminate) so RetryEngine/DeriveWorkflowStatus's existing
-        // deliverability machinery needs no separate StepStatus value, but the room-level outcome must
-        // read Indeterminate, not Failed, for a step carrying this reason.
-        if (steps.Any(step => step.IndeterminateReason is not null))
+        // #1608 / #1623: checked ahead of the ordinary Failed/Rejected read below — an unresolved
+        // indeterminate step IS Status.Failed, whether a captured-response settle, a verify failure or
+        // a token-budget arrest put it there (the single-added-enum-value ruling keeps StepStatus
+        // itself untouched), so this must win the room-level word or every such room would misreport
+        // Failed again, exactly the collapse #1608 exists to undo. One predicate for all three
+        // producers: they unify at StateProjector, not here.
+        if (steps.Any(step => step.IndeterminateAwaitingResolution))
         {
             return Indeterminate;
         }

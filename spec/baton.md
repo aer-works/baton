@@ -166,6 +166,8 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
 A room's model is always pinned in `bindings.json` at dispatch time — there is no runtime model
 choice a harness makes mid-lane; §9 covers the bindings contract. `baton resume`, `baton decide`, `baton
 cancel`, and `baton supply` continue an already-dispatched room; §5 covers `decide` specifically.
+`baton resolve` (#1608, §3 below) also targets an already-dispatched room, but never drives it
+forward — it settles one execution's `Indeterminate` verdict and stops.
 
 **`baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
 <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label
@@ -229,6 +231,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
+| `resolve` | `baton resolve <room-dir> [--execution <execution-id>] --accept-capture \| --reject --reason <text>` | `ResolveOptionsParser.cs` |
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
 | `cancel` | `baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]` | `Program.cs` |
 | `status` | `baton status <room-dir> [--follow] [--json]` | `StatusOptionsParser.cs` |
@@ -354,7 +357,14 @@ absence alone.
 room that previously failed pre-ledger does not leave the old `terminal.json` in place for the whole
 duration of a new, genuinely in-progress attempt. A file-watching harness must expect `terminal.json`
 to vanish and reappear across a re-dispatch of the same room directory, not treat its disappearance
-as an error.
+as an error. **And that delete can refuse the run (#1608 re-review).** When the stale sentinel cannot
+be deleted — held open by a reader without `FileShare.Delete` — `baton run`/`dispatch`/`redispatch`
+refuse before the pump starts, exiting `ValidationRefused` with a message naming the locked file,
+rather than pumping behind a record that reads "already done"; only the post-`resolve` delete
+(`Program.cs`, which runs after a durable mutation) swallows that failure and warns instead. So the
+mirror of the absence list above holds too: **presence** can mean "a previous attempt's sentinel this
+attempt refused to start behind", and a harness keyed on the file existing must read the exit code
+before treating it as the current dispatch's result.
 
 `baton status` is read-only, produces no `CommandResult`, and always exits 0 when it manages to print a
 status at all (`Program.cs`) — it cannot complete a room or substitute for watching the
@@ -477,35 +487,110 @@ belongs with #1556's arrest-predicate/pump-liveness plumbing rather than bolted 
 `FailureClassification`, Flow's own observation) and *contract completion* (did the declared outputs
 end up satisfied — `ContractValidator`, a fact about the filesystem). Every value above except
 `Indeterminate` is a case where the two predicates agree, or where one alone is enough to decide
-(`Cancelled` short-circuits contract completion entirely) — with one live exception until #1608
-lands: the #1594 captured-response shape (below) is a genuine disagreement between the two predicates
-that still settles `Failed` today, not `Indeterminate`. `Indeterminate` is what the schema has
+(`Cancelled` short-circuits contract completion entirely). `Indeterminate` is what the schema had
 never had a word for: the two predicates *disagree* — most concretely, #1594's shape, where the
 worker plainly did substantial work (a response-bearing envelope) but the contract's declared
-output(s) are simply absent, so "did this succeed" cannot be read off the journal alone. A worktree
-fingerprint that fails to reconcile at settle time is the same shape from a different source. This is
-a **single added enum value, not a two-field split** — the schema keeps its one `state` string; the
-two predicates live in code (`OutcomeClassification`/`ContractValidator`), not as two parallel
-top-level fields.
+output(s) are simply absent, so "did this succeed" cannot be read off the journal alone. #1608 closed
+that one live exception: `OutcomeClassifier.Classify`'s captured-response arm settles
+`OutcomeVerdict.Indeterminate` (carrying no `FailureClassification` at all — that vocabulary answers
+"why did a genuine failure happen", not "why can this not yet be read off the journal"), never
+`Failed(Permanent)`. A worktree fingerprint that fails to reconcile at settle time is the same shape
+from a different source, still unimplemented (`baton settle`, S2, tracked on #1586). This is a
+**single added enum value, not a two-field split** — the schema keeps its one `state` string; the two
+predicates live in code (`OutcomeClassification`/`ContractValidator`), not as two parallel top-level
+fields. `StepStatus` itself stays untouched by this ruling too: a step whose latest execution is
+`Indeterminate` still projects `StepStatus.Failed` (`Domain.FlowEvent.ExecutionIndeterminate`,
+`Projection.StateProjector`); the room-level word is what changes, driven by
+`Domain.StepState.IndeterminateAwaitingResolution` (`Status.WorkflowOutcome.DescribeTerminal`, checked
+ahead of the ordinary `Failed`/`Rejected` read).
 
-**No producer in S1 itself.** S1 added the vocabulary, the vocabulary's consumer obligations below, and
-the missing retry-foreclosure primitive (next paragraph) — nothing in `src/` wrote `Indeterminate` to a
-room from that slice alone. #1623 (below) is the first landed producer, for the engine-run verify step
-and the per-execution token budget specifically. `baton settle` (S2, tracked on #1586) is still expected
-to be able to settle a room *to* `Indeterminate` for other reasons (a worktree-fingerprint
-reconciliation failure); #1608 separately tracks flipping #1594's captured-response arm onto it — as of
-this writing that is PR #1644, still open, not #1623's concern. Until #1608 lands, a captured-response
-Failed step continues to describe as `Failed`, never `Indeterminate`
-(`WorkflowOutcomeAndExitCodeTests.A_captured_response_step_still_describes_as_Failed_not_Indeterminate`
-pins this).
+**Three producers, since #1608 and #1623.** S1 added only the vocabulary, its consumer obligations
+below, and the missing retry-foreclosure primitive (next paragraph) — nothing in `src/` wrote
+`Indeterminate` from that slice alone. What writes it now:
+
+| Producer | Event | Landed |
+|---|---|---|
+| `OutcomeClassifier.Classify`'s #1594 captured-response arm | `FlowEvent.ExecutionIndeterminate` | #1608 |
+| The role's engine-run verify command exited non-zero after a clean, contract-satisfied worker exit | `FlowEvent.VerifyFailed` | #1623 |
+| A live execution crossed its role's token budget and was arrested | `FlowEvent.ExecutionArrested` | #1623 |
+
+Every other Failed/Cancelled/Succeeded path is unchanged. All three raise the **one** flag
+`Domain.StepState.IndeterminateAwaitingResolution` (`Projection.StateProjector`), which is the single
+predicate `Status.WorkflowOutcome.DescribeTerminal` and `Scheduling.RetryEngine.MayRetry` each read —
+one arm apiece, never one check per producer. The #1623 pair additionally carry human-readable
+diagnostic text on `Domain.StepState.IndeterminateReason`; that field is **display only and never a
+gate** (`WorkflowOutcomeAndExitCodeTests.An_IndeterminateReason_without_the_flag_describes_as_Failed_not_Indeterminate`
+is the discriminating control for that claim). `baton settle` (S2, tracked on #1586) is expected to be
+able to settle a room *to* `Indeterminate` for the worktree-fingerprint shape above; until it lands,
+that fourth source is reachable only by a test fabricating a `terminal.json`/status-view shape directly.
 
 **Consumer obligations, ratified with the value itself.** `baton redispatch` refuses a bare
-`Indeterminate` parent outright, with a diagnosis naming the missing resolution verb
+`Indeterminate` parent outright, with a diagnosis naming the resolution verb
 (`RedispatchCommand.cs`) — unlike an ordinary `Failed`/`Cancelled` parent, which redispatches with a
 stderr warning. The fleet glass renders a distinct `INDETERMINATE` chip and its own always-visible
 section, the same placement `"Stalled"` earned in #1513/#1582 (`tools/fleet-glass/glass.html`).
 **Nothing settles FROM `Indeterminate` except an explicit, recorded conductor resolution** — never
-silently, never by default; that resolution verb is #1608's to build, not S1's.
+silently, never by default. `baton resolve` (#1608, `src/Baton.Cli/ResolveCommand.cs` +
+`Mutation.MutationInterface.RecordCaptureResolutionAsync`) is that resolution verb **for the
+captured-response producer specifically** — see §2's table for its grammar. It is *not* a resolution
+path for the other two producers: `RecordCaptureResolutionAsync` admits a target on
+`LatestCapturedResponseFile is not null` as well as the `IndeterminateAwaitingResolution` flag, so a
+verify-failed or arrested step (which has no captured response to accept or reject) is refused rather
+than admitted, in either direction. Those two reopen only through a fresh dispatch —
+`ExecutionRequestAccepted` clears the flag, per `StateProjector`. It reads the step's
+`LatestCapturedResponseFile`/`LatestUnsatisfiedOutputNames`
+(already surfaced on `WorkflowStatusView`/`terminal.json`/`status --json`, per the schema below);
+`--accept-capture` writes the captured response (header stripped,
+`Outcomes.OutputMaterializer.StripCapturedResponseHeader`) under each declared output name and settles
+the step `Succeeded` — the one path ever allowed to write under a declared name from a capture,
+per `OutputMaterializer`'s own ruling — while `--reject --reason <text>` writes nothing and leaves the
+step resolved-but-`Failed`. Either way a `Domain.FlowEvent.CaptureResolved` room fact records which,
+carrying the conductor's own justification (required for `--reject`; the accept/reject choice already
+speaks for itself for `--accept-capture`). **Fact then files, not files then fact (#1608 review finding
+5).** `--accept-capture` journals `CaptureResolved` *before* writing the declared output(s) it names —
+the fact is durable first, deliberately accepting that a crash between the two can leave the ledger
+reading `Succeeded` with an output still missing, rather than the opposite gap the reverse order left
+open (a declared output honestly on disk with the room still reading `Indeterminate` and the step still
+resolvable, so a later `--reject` could record a rejection while the earlier file silently stayed put).
+That gap self-heals: an explicit `baton resolve --execution <id>` naming an execution already accepted
+for this exact id is treated as a repair request, not an invalid target, and re-materializes any missing
+declared output(s) from the still-durable captured response — a no-op if nothing is missing (the
+ordinary exactly-once refusal still applies then), and a fail-closed `InvalidCaptureResolutionException`
+if the captured response itself is also gone, with nothing left to re-derive from. The prose-safe/all-or-nothing rule
+(`docs/dispatch.md`'s "Roles" section) is not re-derived at resolution time: reaching an unresolved
+capture at all already proves `OutputMaterializer.TryCaptureFinalResponse`'s gate passed for every name
+in that list, at capture time. `RetryEngine.MayRetry` refuses an unresolved capture unconditionally,
+via its own explicit arm on `StepState.IndeterminateAwaitingResolution` — deliberately not by reusing
+`FailureClassification.Permanent`'s semantics, since `Indeterminate` carries no classification at all;
+once resolved (accepted, or rejected with retry budget remaining), the step's ordinary retry
+eligibility applies again. `baton resolve` never re-drives the DAG itself, in either direction — a
+rejected, retry-eligible step, *and* an accepted step that leaves a downstream step newly deliverable
+in a multi-step room, both need a follow-up `baton run --room-dir` to dispatch again, the same recovery
+§7 already describes for a stalled room (F4, #1608 review — the acceptance case was previously
+undocumented, reading as though only rejection needed it). `baton resolve` names that follow-up
+invocation on stdout whenever the state it returns is not `WorkflowStatus.Terminal`, so a harness never
+has to infer it — naming `baton decide` instead when that state is `Paused` (the pause-point case below,
+where `baton run` re-enters the same unfulfilled obligation and cannot move the room), and
+`baton run --room-dir` otherwise. See "Consumer obligations" above for the sentinel side of the same
+non-Terminal case.
+
+**Unless the step declares a `PausePoint`.** Every claim above about `baton resolve` being the *only*
+path to an unresolved `Indeterminate` step assumes the step is not also a pause point.
+`Scheduling.PauseEngine.GetPauseObligations` reaches a `Failed` step with `RetryEngine.MayRetry` false
+through the same round-settled check regardless of *why* retry is refused, so a step that both declares
+`PausePoint` and settles `ExecutionIndeterminate` becomes `StepStatus.Paused` with
+`IndeterminateAwaitingResolution` still set — and `ExternalDecisionValidator` admits any `Paused` step
+to `baton decide`, unresolved capture or not. Two consequences: the room reads `Paused`, not
+`Indeterminate`, while it waits (`WorkflowOutcome.Describe` checks `Status` before `DescribeTerminal`
+is ever reached — expected, since `Paused` is not itself a terminal word); and a `baton decide` against
+that pause leaves `IndeterminateAwaitingResolution` set with no `CaptureResolved` ever appended, so a
+later Terminal read of that room still reports `Indeterminate` even though a conductor already decided
+its fate through `baton decide` rather than `baton resolve`. Both are pre-existing shapes of the pause
+path (the same step read `Failed(Permanent)` with `MayRetry` false before #1608, with an identical
+`PauseEngine` interaction) — #1608 changed what the eventual terminal word *is*, not whether a pause
+point can intercept it first. Whether `ExternalDecisionValidator` should refuse an unresolved capture
+outright, or `DescribeTerminal` should let a recorded decision outrank the flag, is an open owner call,
+not settled by this slice (#1655).
 
 **`FlowEvent.StepRetryForeclosed`** (`src/Baton/Domain/FlowEvent.cs`) is the missing primitive the
 quota-park symptom this section opened with rests on: before this slice, three events could clear a
@@ -616,7 +701,7 @@ checks side by side — noted here so the merge order is explicit, not silent.
 ### Exit codes
 
 `RunExitCode` (`src/Baton.Cli/RunExitCodeResolver.cs`), returned by `run`, `dispatch`, and
-`resume` only — `cancel`/`decide`/`supply` keep the unchanged binary success/failure code
+`resume` only — `cancel`/`decide`/`resolve`/`supply` keep the unchanged binary success/failure code
 (`Program.cs`):
 
 | Code | Name | Meaning |
@@ -639,10 +724,14 @@ instead."*). Concretely: a harness runs `baton dispatch` without `--wait`, the l
 pauses — the process exits **1**. Reading that as "a step failed" and abandoning a healthy, paused
 room is the single most consequential misreading this table can produce, because §5's entire gate
 contract depends on that paused room still being there to `baton decide` against. `Indeterminate`
-(#1586 S1, above) also folds into exit code 1 today — with §3's producers (`VerifyFailed`,
-`ExecutionArrested`), this arm is live and tested (`WorkflowOutcomeAndExitCodeTests`); a caller's
-`$?`/`%ERRORLEVEL%` branch sees `Failed` while `status --json`'s `state` field reports `Indeterminate` for
-a conductor to resolve. **The rule: exit code
+(#1586 S1, above) also folds into exit code 1 — reachable since all three of §3's producers landed
+(#1608's captured-response settle, #1623's `VerifyFailed` and `ExecutionArrested`), and named here
+rather than left to an unlabelled wildcard, the same discipline the rest of this switch already
+follows. A caller's `$?`/`%ERRORLEVEL%` branch sees `Failed`; read `state` (below) to tell it apart
+from an ordinary `Failed`. What a harness reaches for once it does depends on which producer settled
+it — `baton resolve` (§2) for a captured response, a fresh dispatch for a verify failure or an
+arrest. The step's own failure reason (`StepState.IndeterminateReason`, mirrored onto
+`LatestFailureReason` and so onto the schema's step `reason`) is what names which. **The rule: exit code
 1 alone never tells you whether the room is done. Read `state` from `terminal.json` or `baton status
 --json` to distinguish `Failed` from `Running`/`Paused`.** `--wait` makes `run`/`dispatch` block until
 the room reaches Terminal or the wait is itself cancelled; `run`'s own `--wait-timeout` (#1378) bounds
@@ -1563,6 +1652,33 @@ decision's scope) or about a vendor CLI's own OS support (`docs/vendor-doc-audit
 Code cloud session doing *development* work on this repo from a Linux sandbox — not a second support
 target; nothing is built, tested, or packaged for it, and `osx-arm64` is dropped outright.
 
+**Installation and versioning (#1645).** `baton` ships as a self-built, unpublished `dotnet tool` —
+README's *Installing `baton`* section owns the commands. Its release version is one value,
+`Directory.Build.props`'s `<Version>` under `src/Baton.Cli`, read by `VersionInfo` at build time
+(`baton --version`) and by `InstalledVersionDrift` at dispatch time; nothing else in the tree carries a
+second copy of it. Refreshing an installed copy — packing, uninstalling, purging the version's NuGet
+cache entry, reinstalling, verifying the reinstall actually took — is `pixi run tool-refresh`
+(`tools/tool-refresh/refresh.py`, whose own docstring has the exact drain predicate), which refuses to
+start while a room under `~/.baton/rooms` still looks live, rather than risk the access-denied
+uninstall failure a still-running lane causes.
+
+Draining is **two halves** (operator ruling, 2026-09-02), because waiting alone leaves a gap between
+"no room is live" and the uninstall actually running. (1) Before its first liveness read the refresh
+writes a drain marker at `{BATON_HOME}/draining.json`, and removes it on every exit path — success, a
+failed step, an exception, Ctrl-C. **The refusing population is exactly `baton dispatch`, `baton
+redispatch` and `baton resume`** — the verbs that start a lane — and this sentence is the register of
+it; `src/Baton/Status/DrainMarker.cs` implements it and records why each exclusion is what it is
+(`baton status` in particular must never refuse: the drain predicate shells out to it). A refusal exits
+`ValidationRefused` (2), names the marker path, and reads the marker fail-closed — one that exists but
+cannot be parsed still refuses. For `dispatch`/`redispatch` the refusal leaves the room directory
+holding a `terminal.json` refusal record, which the drain predicate skips as terminal; `resume` writes
+nothing. (2) `--wait` then blocks until the live count reaches zero, reprinting the remaining rooms and
+their liveness every 30 s. A marker whose writer was killed outright is cleared with `pixi run
+tool-refresh --abort`, which every refusal names. Because an
+operator can forget to run it, `baton dispatch`/`baton status` independently WARN on stderr — never
+failing the exit code — when the installed version is behind a discoverable checkout's (`--repo`, or
+`BATON_REPO`); `InstalledVersionDrift` is the one evaluator both read.
+
 ### C-11 — The tailnet drill-down plane (glass v2.5)
 
 Ratified with the operator 2026-08-31, out of the glass v2 design session (#1502). This entry is the
@@ -1636,6 +1752,13 @@ untracked file before the next push, still matches -- the receipt does not re-ve
 diff HEAD` cannot see. A clean tree gaining any file `git status --porcelain` reports (tracked or
 untracked) is still caught, because that flips the dirty bool itself -- a `.gitignore`d file is not
 reported by `--porcelain` either, so it is not caught by that path or any other.
+
+**Measured 2026-09-02 (#1648):** git exports `GIT_DIR`/`GIT_INDEX_FILE`/etc. to every hook, and
+`gates.py`'s own selftest fixture spawned `git init` in a temp dir without scrubbing them, so a
+push under `.githooks/pre-push` re-initialized the pushing repo itself instead of the fixture's
+temp dir -- `.githooks/pre-push` now `unset`s the `GIT_*` keys before invoking anything, and
+`gates.py` scrubs them from its own process environment and passes an explicit scrubbed `env=` to
+every git subprocess its fixtures spawn.
 
 ---
 

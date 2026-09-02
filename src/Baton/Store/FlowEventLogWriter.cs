@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Baton.Concurrency;
 using Baton.Domain;
 
 namespace Baton.Store;
@@ -40,6 +42,15 @@ public sealed class FlowEventLogWriter : IEventLogWriter, ICoreEventLogWriter, I
         _leaveOpen = leaveOpen;
     }
 
+    /// <summary>
+    /// #1650 F1: bounded rather than fail-fast on a sharing violation. The holder this open usually
+    /// loses to is a live <c>baton run</c> pump on its way out, which releases <c>flow.lock</c> and
+    /// only <em>then</em> disposes its own writer — so this handle is the LAST of the room's
+    /// resources to clear, and a sibling command that has already waited out the lock still finds
+    /// the journal held for the remainder of that same tail. Failing fast here made #1646's fix
+    /// rename the flake rather than close it. See <see cref="RoutineHoldBudget"/> for what the wait
+    /// is sized against; a hold that outlasts it is not the routine tail and still refuses.
+    /// </summary>
     /// <exception cref="FlowJournalHeldException">See that type's own docs for why (#816).</exception>
     private static FileStream OpenAppendStream(string logFilePath)
     {
@@ -49,28 +60,56 @@ public sealed class FlowEventLogWriter : IEventLogWriter, ICoreEventLogWriter, I
             Directory.CreateDirectory(directory);
         }
 
-        try
+        // Stopwatch, not DateTime.UtcNow, for the monotonic-deadline reason ConcurrencyGuard's own
+        // AcquireWithinCore gives: a wall clock can step backwards and silently stretch this wait.
+        var elapsed = Stopwatch.StartNew();
+
+        // What keeps a non-sharing IOException fail-fast is the IsSharingViolation predicate on BOTH
+        // filters below, not the loop's placement — the control test for this catch
+        // (A_genuinely_different_IOException_surfaces_as_itself_not_the_journal_held_refusal, a parent
+        // segment that is itself a file) propagates on the first pass either way. The placement buys
+        // something narrower: Directory.CreateDirectory sits outside both the loop and the Stopwatch,
+        // so it can neither be retried nor spend any of the budget.
+        while (true)
         {
-            return new FileStream(
-                logFilePath,
-                FileMode.Append,
-                FileAccess.Write,
-                FileShare.Read,
-                bufferSize: 1,
-                useAsync: true);
-        }
-        catch (IOException ex) when (FileHolderProbe.IsSharingViolation(ex))
-        {
-            // Name the holder while it is still held (the probe runs here, in-process, not in a
-            // post-hoc step where a transient holder would already be gone). This turns the #398
-            // Windows-CI flake from "used by another process, holder unknown" into a named culprit.
-            throw new FlowJournalHeldException(
-                $"'{logFilePath}' is held open by another process — usually this room's live " +
-                "'baton run' engine, which keeps the ledger open for its whole run, though any " +
-                "sibling baton command mid-append briefly holds it too. Retry once nothing else " +
-                "holds the ledger; for a decision, the workflow's latest attempt must be Paused " +
-                $"with no live 'baton run' (see 'baton status'). Current holder: {FileHolderProbe.DescribeHolders(logFilePath)}",
-                ex);
+            try
+            {
+                return new FileStream(
+                    logFilePath,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.Read,
+                    bufferSize: 1,
+                    useAsync: true);
+            }
+            catch (IOException ex) when (FileHolderProbe.IsSharingViolation(ex) && elapsed.Elapsed < RoutineHoldBudget.Duration)
+            {
+                // Thread.Sleep rather than Task.Delay, matching ConcurrencyGuard: this runs from a
+                // constructor on a possibly-starved pool, and a retry that cannot be scheduled is a
+                // retry that does not happen.
+                Thread.Sleep(TimeSpan.FromMilliseconds(25));
+            }
+            catch (IOException ex) when (FileHolderProbe.IsSharingViolation(ex))
+            {
+                // Name the holder while it is still held (the probe runs here, in-process, not in a
+                // post-hoc step where a transient holder would already be gone). This turns the #398
+                // Windows-CI flake from "used by another process, holder unknown" into a named culprit.
+                // Only on the give-up path: DescribeHolders costs hundreds of milliseconds, so paying
+                // it per retry would eat the budget it is supposed to be spent outside of.
+                throw new FlowJournalHeldException(
+                    $"'{logFilePath}' is held open by another process — usually this room's live " +
+                    "'baton run' engine, which keeps the ledger open for its whole run, though any " +
+                    "sibling baton command mid-append briefly holds it too. Still held after waiting " +
+                    // The measured wait, not RoutineHoldBudget.Duration. This branch is only reachable
+                    // once the budget is spent, so the two agree today — but a message that reports what
+                    // it actually did cannot go quietly false if that ever stops being true, which is
+                    // the same defect class as #1650 F4 one level down.
+                    $"{elapsed.Elapsed.TotalMilliseconds:0}ms, so this is not the brief tail of a " +
+                    "pump on its way out. Retry once nothing else holds the ledger; for a decision, the " +
+                    "workflow's latest attempt must be Paused with no live 'baton run' (see 'baton status'). " +
+                    $"Current holder: {FileHolderProbe.DescribeHolders(logFilePath)}",
+                    ex);
+            }
         }
     }
 

@@ -22,10 +22,14 @@ public class CancelCommandEndToEndTests
         };
 
     [Fact]
-    public async Task Cancelling_a_task_whose_journal_is_held_open_by_another_process_throws_FlowJournalHeldException_not_a_raw_IOException()
+    public async Task Cancelling_a_task_whose_journal_is_held_open_by_another_process_falls_through_gracefully_not_a_raw_IOException()
     {
         // #816's population: the same shared FlowEventLogWriter construction CancelCommand uses
-        // must surface the typed refusal too, not just DecideCommand.
+        // must surface the typed refusal too, not just DecideCommand — this used to mean the typed
+        // FlowJournalHeldException escaped CancelCommand.ExecuteAsync uncaught (an improvement over a
+        // raw IOException, but still a crash). #1646: CancelCommand's live-pump fall-through (#1495)
+        // now catches this append-open collision the same way it already caught WorkflowLockedException
+        // — see CancelCommand's own remarks for why both name the same "this room is busy" fact.
         Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows; see DecideCommandEndToEndTests' Unix arm");
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
@@ -45,8 +49,37 @@ public class CancelCommandEndToEndTests
 
             var cancelOptions = new CancelOptions(roomDirectory, architectExecutionId.Value.Value, bindingsFilePath);
 
-            await Assert.ThrowsAsync<FlowJournalHeldException>(
-                () => CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken));
+            var originalOut = Console.Out;
+            var capturedOut = new StringWriter();
+            Console.SetOut(capturedOut);
+            CommandResult result;
+            try
+            {
+                result = await CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken);
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+
+            Assert.Contains("held open", capturedOut.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+
+            var requestFilePath = Path.Combine(roomDirectory, CancelRequestFile.FileName);
+            Assert.True(File.Exists(requestFilePath), "expected the same CancelRequestFile fall-through the WorkflowLockedException path uses");
+
+            // #1650 F2: the fall-through must not turn this into exit 0. Before #1646 folded
+            // FlowJournalHeldException into the catch, this input escaped to Program's typed-exception
+            // boundary and exited 1; the room reached here is Terminal with every step Succeeded, which
+            // is precisely the shape MutationExitCodeResolver's queued arm exists to keep off 0 — see
+            // that arm's own comment for why. Asserted through the resolver Program itself calls, so
+            // this pins the actual exit code rather than a proxy for it.
+            Assert.True(result.CancellationQueued);
+            Assert.Equal(MutationExitCodeResolver.Failure, MutationExitCodeResolver.Resolve(result));
+
+            // Polarity control: the same resolver on the same room WITHOUT the queued flag is 0, so the
+            // assertion above is discriminating the fall-through rather than the room's own state.
+            Assert.Equal(MutationExitCodeResolver.Success, MutationExitCodeResolver.Resolve(result with { CancellationQueued = false }));
         }
         finally
         {

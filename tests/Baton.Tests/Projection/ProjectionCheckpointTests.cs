@@ -107,6 +107,12 @@ public class ProjectionCheckpointTests
         Assert.Equal(expected.LatestCapturedResponseFile, actual.LatestCapturedResponseFile);
         Assert.Equal(expected.LatestUnsatisfiedOutputNames, actual.LatestUnsatisfiedOutputNames);
         Assert.Equal(expected.RetryForeclosed, actual.RetryForeclosed);
+
+        // Both halves of the Indeterminate state, not just the reason: the flag is what
+        // WorkflowOutcome/RetryEngine actually read, so a checkpoint round-trip that dropped it while
+        // preserving the diagnostic text would be invisible to this helper otherwise -- the exact
+        // shape of the DeepCopy hazard ProjectionCheckpointState.RetryForeclosedStepIds documents.
+        Assert.Equal(expected.IndeterminateAwaitingResolution, actual.IndeterminateAwaitingResolution);
         Assert.Equal(expected.IndeterminateReason, actual.IndeterminateReason);
         Assert.Equal(expected.UpstreamExecutionIds.Count, actual.UpstreamExecutionIds.Count);
         foreach (var (k, v) in expected.UpstreamExecutionIds)

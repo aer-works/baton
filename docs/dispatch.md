@@ -199,13 +199,15 @@ this implements and exactly what gets captured where. In short: if every unsatis
 (never present-but-wrong) at settle time and the execution's own terminal result carried a usable
 response, that response lands in an engine file beside the declared outputs, never under a declared
 name, and a room fact records which declared names it stands in for — see
-`docs/agents/invoking-baton.md` §3 for what that fact looks like to a harness reading the room. The room
-still settles `Failed` (`FailureClassification.Permanent`, so the engine never auto-retries against the
-same, still-unsatisfied workspace); only a conductor's own recorded resolution can turn a capture into a
-satisfied contract.
+`docs/agents/invoking-baton.md` §3 for what that fact looks like to a harness reading the room. The
+room settles `Indeterminate` (#1608 — the two-predicate model's disagreement case, carrying no
+`FailureClassification` at all, spec/baton.md §3), not `Failed`; `RetryEngine.MayRetry` refuses it
+unconditionally via its own explicit arm, independent of any classification. Only a conductor's own
+recorded resolution — `baton resolve <room-dir> [--execution <id>] --accept-capture | --reject
+--reason <text>` — can turn a capture into a satisfied contract, or explicitly refuse one.
 
-The prose-safe/all-or-nothing rules that used to gate what the engine wrote now gate what a capture
-MAY later be resolved into: a plain-text output (`.md`/`.txt`/no extension, no declared
+The prose-safe/all-or-nothing rules that gate what the engine ever wrote also gate what a capture MAY
+later be resolved into: a plain-text output (`.md`/`.txt`/no extension, no declared
 `Schema`/`Condition` — `advice.md`, `changes.md`, `findings.md` above) can honestly be resolved from a
 captured response; a structured output (`verdict.json`, `patch.diff`, `turn-actions.json` above) can
 not — prose can't honestly stand in for a declared shape. `janitor`'s two outputs (`janitor.md`,
@@ -213,8 +215,13 @@ not — prose can't honestly stand in for a declared shape. `janitor`'s two outp
 fires while it is among the missing outputs (an all-or-nothing capture that could only ever resolve
 `janitor.md` is refused entirely) — a capture for this role is only possible when `janitor.md` alone is
 missing and `branch.diff` is already present and valid. See `src/Baton/Outcomes/OutputMaterializer.cs`
-for the mechanism; the `indeterminate` verdict and the conductor-side resolution verb itself are not
-built yet (#1608).
+for the capture mechanism and `src/Baton/Mutation/MutationInterface.cs`'s
+`RecordCaptureResolutionAsync` for the resolution: it does not re-derive prose-safety at resolution
+time (see `OutputMaterializer`'s own class remarks for why that would be redundant).
+`--accept-capture` strips the engine's own banner
+(`OutputMaterializer.StripCapturedResponseHeader`) and writes the remaining body under each of those
+declared name(s) — `baton resolve` is the one permitted writer here (spec/baton.md §3 rules why).
+`--reject --reason <text>` writes nothing; the reason is the room fact's own justification.
 
 | Role | Tier | Writes | For |
 |------|------|--------|-----|

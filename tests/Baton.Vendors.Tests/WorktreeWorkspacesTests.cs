@@ -54,6 +54,54 @@ public sealed class WorktreeWorkspacesTests : IDisposable
         Assert.Empty(provisioned);
     }
 
+    /// <summary>
+    /// #1646: RunWaitEndToEndTests' <c>decide</c> call raced a live <c>baton run --wait</c> pump's
+    /// flow-lock release even though its bindings declare no worktree at all — the ordinary shell-worker
+    /// shape, not the rare one. Pins the root cause: with nothing to provision, the walk must never
+    /// touch the room's flow lock, so a live holder (simulated here directly, not by racing a real pump)
+    /// cannot refuse it.
+    /// </summary>
+    [Fact]
+    public void Provision_does_not_contend_the_flow_lock_when_no_binding_declares_a_worktree()
+    {
+        using var heldByALivePump = ConcurrencyGuard.Acquire(_root, "baton run pump");
+        var bindings = Bindings(("w", Entry(workingDirectory: "C:/somewhere")));
+
+        var (result, provisioned) = WorktreeWorkspaces.Provision(bindings, _root);
+
+        Assert.Same(bindings, result);
+        Assert.Empty(provisioned);
+    }
+
+    /// <summary>
+    /// #1646: for the rarer case a binding DOES declare a worktree, the walk must still absorb a
+    /// held-then-released flow lock rather than fail fast — the same "routine overlap" shape
+    /// <see cref="ConcurrencyGuard.AcquireWithin"/> exists for. Deterministically injects the
+    /// interleaving RunWaitEndToEndTests hit under CI load only intermittently: a holder that
+    /// releases shortly after this call starts waiting, well inside the contention budget.
+    /// </summary>
+    [Fact]
+    public async Task Provision_absorbs_a_flow_lock_released_shortly_after_it_starts_waiting()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var guard = ConcurrencyGuard.Acquire(_root, "baton run pump");
+        // wait-ok: in-process release delay simulating the pump's brief post-Paused lock tail, not an external wait.
+        var releaseAfterDelay = Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken)
+            .ContinueWith(_ => guard.Dispose(), cancellationToken);
+
+        const string worker = "reviewer";
+        var expected = Path.Combine(_root, WorktreeWorkspaces.WorkspacesDirectoryName, worker);
+        Directory.CreateDirectory(expected);
+        var bindings = Bindings((worker, Entry(worktree: new WorktreeWorkspace(_root, "review-target"))));
+
+        var (result, provisioned) = await Task.Run(
+            () => WorktreeWorkspaces.Provision(bindings, _root), cancellationToken);
+        await releaseAfterDelay;
+
+        Assert.Equal(expected, result[worker].WorkingDirectory);
+        Assert.Equal(expected, Assert.Single(provisioned).WorktreePath);
+    }
+
     [Fact]
     public void Provision_refuses_a_binding_that_sets_both_a_working_directory_and_a_worktree()
     {
