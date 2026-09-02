@@ -382,6 +382,7 @@ ALLOWLIST: dict[str, str] = {
     "audit-clitripwire-selftest": "pure synthetic selftest exercising 7 CLI parser and doc drift arms",
     "flake-watch-selftest": "pure synthetic selftest exercising 5 flake disagreement discrimination arms",
     "buildlock-selftest": "pure synthetic selftest exercising subprocess serialization, crash safety, and timeouts",
+    "tool-refresh-selftest": "pure synthetic selftest exercising drain-predicate classification, version-compare, fail-loud-on-failure, and --dry-run discrimination arms, each against injected fakes",
     "baton-dispatch-selftest": "pure synthetic selftest exercising denied-tool guard, catalog names, and loader failure modes",
     "gates-selftest": "pure synthetic selftest exercising aggregation polarity plus the #1636 gate-receipt and pre-push-hook discrimination arms",
     "fmt-check": "MSBuild-driven code format verification where sabotage requires compiling the .NET solution",

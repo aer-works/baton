@@ -44,6 +44,31 @@ public static class DispatchCommand
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(adapters);
 
+        // #1645 half (1) of the drain ruling: refuse while tool-refresh is draining -- see DrainMarker
+        // for why this verb is in the refusing population and `baton status` deliberately is not.
+        // Placed at the very top, ahead of the --list-capabilities early return below: that path starts
+        // no engine and creates no room, so refusing it is not what the marker is for, but a dispatch
+        // that is about to be blocked should say so before printing a capabilities dump the operator
+        // will not get to use. It is also ahead of Directory.CreateDirectory (below), which is the point
+        // -- refresh.py's drain predicate must never see a half-provisioned room this invocation made.
+        // (Program's typed boundary does create the room afterwards to leave a ValidationRefused
+        // terminal.json in it; a room carrying terminal.json is terminal, so the predicate skips it.)
+        if (DrainMarker.RefusalMessage("dispatch") is { } drainRefusal)
+        {
+            throw new CliArgumentException(drainRefusal, DrainMarker.AbortInvocation);
+        }
+
+        // #1645 item 2: a loud, non-fatal WARN when the installed `baton` has drifted behind the repo
+        // checkout's current release — see InstalledVersionDrift's own remarks for why this never
+        // touches the exit code, and why it borrows Staleness's verdict shape rather than DriftGrace's
+        // grace-window one.
+        if (InstalledVersionDrift
+            .Evaluate(options.RepoPath, VersionInfo.GetVersion(System.Reflection.Assembly.GetExecutingAssembly()))
+            .WarnLine() is { } dispatchDriftWarning)
+        {
+            Console.Error.WriteLine(dispatchDriftWarning);
+        }
+
         if (options.ListCapabilities)
         {
             PrintCapabilities(Console.Out);

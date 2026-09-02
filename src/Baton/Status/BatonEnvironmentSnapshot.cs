@@ -16,9 +16,12 @@ namespace Baton.Status;
 /// at each consumer, unchanged; this type's only job is freezing the read, not the interpretation.
 /// </para>
 /// <para>
-/// <b>Only two fields, not the six the #1496 task named — this is the canonical record of why, the
-/// four readers' own "#1496 exempt" comments only point back here.</b> <see cref="BatonPaths"/>'s
-/// <c>BATON_HOME</c> read and <c>McpCommand.cs</c>'s <c>BATON_OUTPUT_DIR</c> read are folded here.
+/// <b>Only two fields from the original #1496 fold, not the six the task named — this is the
+/// canonical record of why, the four readers' own "#1496 exempt" comments only point back here.</b>
+/// <see cref="BatonPaths"/>'s <c>BATON_HOME</c> read and <c>McpCommand.cs</c>'s <c>BATON_OUTPUT_DIR</c>
+/// read are folded here. (A third field, <see cref="RepoOverride"/>, was added later by #1645 for a
+/// brand-new reader — <c>Baton.Cli.InstalledVersionDrift</c> — with no such history to fight; it never
+/// needed the fold/revert dance below.)
 /// The other four direct readers were tried against this snapshot and reverted, each because its own
 /// test suite sets an env var per <c>[Fact]</c> and expects the very next call to observe it — the
 /// resolution behaviour IS the subject under test there, which a frozen-at-first-access snapshot
@@ -53,7 +56,8 @@ namespace Baton.Status;
 /// </remarks>
 public sealed record BatonEnvironmentSnapshot(
     string? HomeOverride,
-    string? McpOutputDirectory)
+    string? McpOutputDirectory,
+    string? RepoOverride = null)
 {
     private static readonly Lazy<BatonEnvironmentSnapshot> ProcessSnapshot = new(CaptureFromEnvironment);
 
@@ -66,7 +70,8 @@ public sealed record BatonEnvironmentSnapshot(
     /// </summary>
     public static readonly BatonEnvironmentSnapshot Blank = new(
         HomeOverride: null,
-        McpOutputDirectory: null);
+        McpOutputDirectory: null,
+        RepoOverride: null);
 
     /// <summary>
     /// The snapshot every reader resolves against: an explicit <see cref="BeginScope"/> override on
@@ -80,7 +85,12 @@ public sealed record BatonEnvironmentSnapshot(
         // "BATON_OUTPUT_DIR" -- mirrors the literal McpCommand.cs reads. Program.cs reads the same
         // variable name for the hook-check commands; that read stays direct (see the type remarks) --
         // this field only covers the McpCommand.cs per-access read.
-        McpOutputDirectory: Environment.GetEnvironmentVariable("BATON_OUTPUT_DIR"));
+        McpOutputDirectory: Environment.GetEnvironmentVariable("BATON_OUTPUT_DIR"),
+        // "BATON_REPO" -- mirrors the literal Baton.Cli.InstalledVersionDrift.RepoEnvironmentVariable
+        // (#1645). That type lives downstream of this project (Baton.Cli depends on Baton, not the
+        // reverse), the same reason McpOutputDirectory's name above is a duplicated literal rather than
+        // a shared const.
+        RepoOverride: Environment.GetEnvironmentVariable("BATON_REPO"));
 
     /// <summary>
     /// Test-only seam (via <c>InternalsVisibleTo</c>): makes <paramref name="snapshot"/> the ambient

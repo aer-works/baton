@@ -15,10 +15,18 @@ namespace Baton.Cli.Tests;
 /// worktree workspaces before resolving worker bindings downstream, and tear down provisioned trees
 /// when reaching <see cref="WorkflowStatus.Terminal"/>.
 /// </summary>
-public class WorktreeProvisioningCommandTests
+public class WorktreeProvisioningCommandTests : IDisposable
 {
     private static readonly IReadOnlyDictionary<string, IWorkerAdapter> Adapters =
         new Dictionary<string, IWorkerAdapter> { ["shell"] = new ShellCommandWorkerAdapter() };
+
+    private readonly IsolatedBatonHome _batonHome = new();
+
+    public void Dispose()
+    {
+        _batonHome.Dispose();
+        GC.SuppressFinalize(this);
+    }
 
     [Fact]
     public async Task DecideCommand_provisions_declared_worktree_resuming_step_reads_file_there_and_tears_down_on_terminal()

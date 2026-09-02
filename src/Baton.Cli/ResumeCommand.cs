@@ -65,6 +65,14 @@ public static class ResumeCommand
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(adapters);
 
+        // #1645: this verb creates nothing, but it does put a fresh worker process into an already-bound
+        // room -- which is what holds the installed binary open. Refused ahead of the mutation, so the
+        // room is left byte-for-byte as it was. DrainMarker has the rest.
+        if (DrainMarker.RefusalMessage("resume") is { } drainRefusal)
+        {
+            throw new CliArgumentException(drainRefusal, DrainMarker.AbortInvocation);
+        }
+
         string message;
         if (options.Message is { } literalMessage)
         {

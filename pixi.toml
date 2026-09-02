@@ -293,3 +293,15 @@ fleet-glass-pusher-selftest = { cmd = "python tools/fleet-glass/pusher.py --self
 # one-step workflow whose `claude` adapter is satisfied by a local stub binary (no network), asserts
 # the declared output landed on disk, then uninstalls -- see scripts/verify-pack-roundtrip.sh.
 verify-pack = { cmd = "bash scripts/verify-pack-roundtrip.sh", depends-on = ["pack"] }
+
+# #1645: the one-command refresh of the installed global tool -- drain (refuse while a room is live),
+# pack, uninstall, purge the NuGet cache (refresh.py's own docstring has why the purge can't be
+# skipped), install from bin/pack, verify the reinstall actually took, print a resume hint. Not
+# wrapped in buildlock.py itself: the script's own `pixi run pack` call is (see pack above), and
+# wrapping twice would self-deadlock (buildlock's nesting marker only saves a wrapped command that
+# invokes ANOTHER wrapped command, not two direct acquisitions from the same process tree racing the
+# python interpreter's own startup). Not built/tested by default CI -- like pack/verify-pack, this
+# needs the checkout to pack from, and mutates this machine's real installed tool, so it stays operator-
+# run rather than gated.
+tool-refresh = { cmd = "python tools/tool-refresh/refresh.py" }
+tool-refresh-selftest = { cmd = "python -u tools/tool-refresh/refresh.py --selftest" }

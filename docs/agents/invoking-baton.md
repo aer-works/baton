@@ -8,6 +8,23 @@ It is **not** for developing Baton — that is [`CLAUDE.md`](../../CLAUDE.md) �
 reference for `baton dispatch`, which is [`docs/dispatch.md`](../dispatch.md). Where those own a fact,
 this links rather than restates.
 
+This assumes `baton` is already installed on PATH. If `baton dispatch`/`baton status` print a
+`WARN: installed baton ... is behind this checkout's ...` line, the installed tool has drifted from
+the repo it is dispatching against (#1645) — refresh it with `pixi run tool-refresh` (README's
+*Installing `baton`* section) before trusting anything below.
+
+If instead a dispatch, redispatch or resume **refuses to start** saying a tool-refresh drain is in
+progress, that is the operator refreshing the installed tool right now — nothing is wrong with your
+invocation. The exit code is `2` (`ValidationRefused`), the same one a malformed invocation gets, so
+branch on the message rather than the code alone. No work was started: for `dispatch`/`redispatch` the
+room directory does get created, but only to hold a `terminal.json` recording the refusal (the same
+validation-refusal record any pre-run refusal leaves), and `resume` leaves the room untouched. Wait and
+re-run — a refresh is seconds to a couple of minutes. If it keeps refusing long past that, the refresh
+died without clearing its marker; say so to the operator and name the marker path the refusal printed,
+rather than running `pixi run tool-refresh --abort` yourself (clearing it while a refresh is genuinely
+mid-flight is what puts a lane back onto a half-installed binary). The register for all of this is the
+C-10 entry in [`spec/baton.md`](../../spec/baton.md).
+
 Everything below is the state of the tree on the day it was written. Dispatch ergonomics
 ([#1354](https://github.com/aer-works/baton/issues/1354)), the machine completion contract
 ([#1356](https://github.com/aer-works/baton/issues/1356)), and validation errors carrying a

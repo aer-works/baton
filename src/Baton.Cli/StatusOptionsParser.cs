@@ -8,13 +8,14 @@ namespace Baton.Cli;
 /// </summary>
 public static class StatusOptionsParser
 {
-    public const string Usage = "Usage: baton status <room-dir> [--follow] [--json]";
+    public const string Usage = "Usage: baton status <room-dir> [--follow] [--json] [--repo <checkout-dir>]";
 
     public static StatusOptions Parse(IReadOnlyList<string> args)
     {
         string? roomDirectoryPath = null;
         var follow = false;
         var json = false;
+        string? repoPath = null;
 
         var i = 0;
         while (i < args.Count)
@@ -29,6 +30,17 @@ public static class StatusOptionsParser
                 case "--json":
                     json = true;
                     i++;
+                    break;
+                case "--repo":
+                    if (i + 1 >= args.Count)
+                    {
+                        throw new CliArgumentException(
+                            $"Option '--repo' requires a value. {Usage}",
+                            "pass a value after '--repo', e.g. --repo <checkout-dir>.");
+                    }
+
+                    repoPath = args[i + 1];
+                    i += 2;
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -60,6 +72,8 @@ public static class StatusOptionsParser
                 $"baton status {roomDirectoryPath} --json");
         }
 
-        return new StatusOptions(RoomDirectoryPath.Resolve(roomDirectoryPath), follow, json);
+        return new StatusOptions(
+            RoomDirectoryPath.Resolve(roomDirectoryPath), follow, json,
+            repoPath is null ? null : Path.GetFullPath(repoPath));
     }
 }
