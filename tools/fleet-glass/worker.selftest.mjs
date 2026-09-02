@@ -15,6 +15,8 @@ import {
   deliverableReadOutcome,
   isValidFleetStatusPage,
   maxIsoOrNull,
+  classifyKvError,
+  nextUtcMidnightIso,
 } from "./worker.core.mjs";
 
 const failures = [];
@@ -252,6 +254,23 @@ check("(F8) content missing but the index claims a batch_id: pending, not not-fo
 check("(F8 control) content missing AND no batchKey (genuinely unknown id): not-found, not pending",
       deliverableReadOutcome(null, null).found === false
       && deliverableReadOutcome(null, null).pending === false);
+
+// -- #1712: classifyKvError recognizes the exact daily-limit message on the exact object shape a
+// caught KV error carries; anything else stays unclassified rather than false-positiving into a 429.
+check("classifyKvError classifies the exact daily-limit message",
+      classifyKvError(new Error("KV put() limit exceeded for the day.")) === "kv-write-cap");
+check("classifyKvError classifies the message even wrapped with extra context",
+      classifyKvError(new Error("write failed: KV put() limit exceeded for the day.")) === "kv-write-cap");
+check("(control) classifyKvError leaves an unrelated KV error unclassified",
+      classifyKvError(new Error("KV GET failed: network timeout")) === null);
+check("(control) classifyKvError leaves a non-Error input unclassified, never throws",
+      classifyKvError("plain string") === null && classifyKvError(null) === null && classifyKvError(undefined) === null);
+
+// -- nextUtcMidnightIso: always the NEXT 00:00 UTC strictly after now, never the same instant --
+check("nextUtcMidnightIso from mid-day lands on the same day's next midnight",
+      nextUtcMidnightIso(Date.UTC(2026, 8, 2, 20, 2, 14)) === "2026-09-03T00:00:00.000Z");
+check("nextUtcMidnightIso from exactly midnight still advances a full day (strictly after, never equal)",
+      nextUtcMidnightIso(Date.UTC(2026, 8, 2, 0, 0, 0)) === "2026-09-03T00:00:00.000Z");
 
 if (failures.length) {
   console.error(`worker.selftest.mjs: FAIL -- ${failures.length} check(s):`);

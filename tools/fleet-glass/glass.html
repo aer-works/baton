@@ -1769,6 +1769,13 @@ window.addEventListener("hashchange", applyRoute);
   // RUNNING_SUSPICION_MS: a coalesced-but-healthy pending age never exceeds the 90s floor by more
   // than one polling interval, so only a genuinely failing push keeps growing past minutes.
   const PUSH_FAILING_MS = 10 * 60 * 1000;
+  // #1712: the daily KV write cap fails the heartbeat write right alongside the snapshot/derived
+  // write, so heartbeat_at and derived_at go stale TOGETHER -- the pre-fix version of this banner
+  // chain had no arm for that shape and fell through to "derivation may be stuck" below, which is
+  // wrong: derivation isn't stuck, the Worker can't write anything at all. "Within one push
+  // interval of each other" is the tell: a genuinely stuck derivation leaves heartbeat_at FRESH
+  // (the heartbeat write still succeeds) while only derived_at ages: See spec/baton.md §6.
+  const KV_CAP_SYNC_MS = 3 * 60 * 1000;
   mcp.watchTool("baton", "fleet_status", {}, (ev) => {
     if(ev.type === "data"){
       let snap = ev.result.payload;
@@ -1810,6 +1817,11 @@ window.addEventListener("hashchange", applyRoute);
           banner("<b>No derivation timestamp yet.</b> derived_at is unset — redeploy pusher.py for #1613, or the mailbox hasn't received one yet.");
         } else if(pendingPushMs != null && isFinite(pendingPushMs) && pendingPushMs > PUSH_FAILING_MS){
           banner(`<b>Push failing.</b> The pusher has had a snapshot waiting to go out for ${esc(dur(pendingPushMs))} even though derivation is healthy (derived_at ${esc(age(snap.derived_at))} ago) — check pusher.log for POST errors (413 from the 1 MB cap, 5xx, network). Data below may be stale.`);
+        } else if(isFinite(hbMs) && isFinite(derivedMs) && hbMs > RUNNING_SUSPICION_MS && derivedMs > RUNNING_SUSPICION_MS
+                  && Math.abs(hbMs - derivedMs) < KV_CAP_SYNC_MS){
+          // #1712: heartbeat_at and derived_at both stale, aging together -- the Worker itself is
+          // refusing writes (Cloudflare's daily KV cap), not a stuck derivation.
+          banner(`<b>The worker is refusing writes</b> (daily KV write cap hit around ${esc(age(snap.heartbeat_at))} ago; writes resume 00:00 UTC). Data below is from the last push.`);
         } else if(running && isFinite(derivedMs) && derivedMs > RUNNING_SUSPICION_MS){
           banner(`<b>Snapshot derivation may be stuck.</b> The pusher is alive (heartbeat ${esc(age(snap.heartbeat_at))} ago) but its last successful derivation was ${esc(age(snap.derived_at))} ago while rooms show Running — derive_snapshot_and_timelines may be failing every cycle.`);
         } else {

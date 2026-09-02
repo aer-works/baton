@@ -1957,6 +1957,33 @@ state transition, a new or changed deliverable, error text) lives in fields this
 touches, so it still changes the hash — and triggers a push, budget permitting — on the very next
 cycle.
 
+**#1712: the KV daily write cap is a vendor error, not a ledger event.** Measured 2026-09-02
+(`wrangler tail` on `baton-fleet`): once Cloudflare's free-tier KV namespace hits its hard daily
+write cap, every `env.FLEET.put` throws `Error: KV put() limit exceeded for the day.`, which
+`worker.js` was letting through as a bare 500 -- the pusher logged 136 `HTTP Error 500` lines in 20
+minutes and kept retrying every cycle, and because the heartbeat write fails right alongside the
+snapshot/derivation write, `heartbeat_at` and `derived_at` go stale together, which the pre-fix
+`glass.html` banner misread as "derivation may be stuck" rather than "the worker itself can't
+write." This is the HARD Cloudflare limit underneath the #1690 ledger's own SOFT exhaustion above --
+that ledger stops the pusher voluntarily before it ever spends 700/day; this is what happens if the
+real cap is hit anyway (a day with more real activity than the ledger's own arithmetic modeled, or
+a cap lower than assumed) -- discovered live via a 429, never counted in advance. Fixed at all three
+layers: `worker.core.mjs`'s `classifyKvError` recognizes the exact message on every KV put path
+(push, heartbeat, and deliver's index/batch/eviction writes) and `worker.js` answers `429
+{"reason": "kv-write-cap", "resets_at": <next 00:00 UTC>}` instead of a 500. `pusher.py`'s
+`post_json` raises `KvWriteCapError` on that specific 429; every producer that catches it
+(`mark_kv_write_cap_exhausted`) forces all three write-budget sub-budgets to their daily ceiling and
+`exhausted_notice_sent` to true in one step -- reusing the #1690 exhausted/skip-producer path rather
+than a parallel one, and deliberately never attempting the exhaustion-notice snapshot itself (it is
+exactly the write that cannot land) -- and logs one line, `kv write cap hit at <t>; no writes until
+<resets_at>`, the first and only time this happens each day (every later cycle finds the ledger
+already exhausted and never re-attempts the POST that would re-trigger it). `glass.html`'s banner
+chain gets one new arm, placed after `writeBudgetExhaustedUntil` and before "Snapshot derivation may
+be stuck": `heartbeat_at` and `derived_at` both stale and within one push interval of each other
+reads as the worker refusing writes, not a stuck derivation -- the two ages tracking together is
+exactly what a shared write failure looks like, whereas a genuinely stuck derivation leaves
+`heartbeat_at` fresh (only the derivation write is failing) while `derived_at` alone ages.
+
 ---
 
 ## §7 The daemon, narrowed
