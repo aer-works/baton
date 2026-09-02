@@ -4,6 +4,7 @@ using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Outcomes;
 using Baton.Status;
+using Baton.Workspaces;
 
 namespace Baton.Tests.Outcomes;
 
@@ -856,7 +857,12 @@ public class OutcomeClassifierTests
             Assert.Equal(OutcomeVerdict.Indeterminate, classTruncated.Verdict);
             Assert.NotNull(classTruncated.Reason);
             Assert.True(classTruncated.Reason.Length <= 500, $"Reason length {classTruncated.Reason.Length} exceeded 500 characters cap.");
-            Assert.Contains("...", classTruncated.Reason);
+            // F13 (#1593 review): the suffix now follows the cut, so a bare EndsWith("...") no longer
+            // holds — but a bare Contains("...") would pass equally on a literal "..." anywhere in an
+            // output name, which is not what this assertion means to discriminate. "... —" pins the cut
+            // immediately followed by the suffix's own leading text, keeping the discrimination the
+            // pre-suffix EndsWith form had.
+            Assert.Contains("... —", classTruncated.Reason);
             Assert.Contains("awaiting conductor resolution", classTruncated.Reason);
 
             // Polarity arm: non-pathological short reason is not truncated and does not end with ellipsis
@@ -1638,14 +1644,26 @@ public class OutcomeClassifierTests
         }
     }
 
+    /// <summary>
+    /// F4 (#1593 review): production only ever hands <c>IsWorkspaceUntouched</c> an ACTUALLY-provisioned
+    /// worktree path (<see cref="WorkerBinding.Process.IsWorktree"/>) plus the ref it was provisioned
+    /// from — never a plain <c>git init</c> directory standing in for one, which is not a worktree at
+    /// all (<see cref="WorktreeProvisioner.IsWorktree"/> reads false for it) and so exercised the WRONG
+    /// branch of <see cref="WorktreeProvisioner.IsWorkspaceUntouched"/> before this fix. Rewritten to use
+    /// a real provisioned worktree and its real base ref, so this pins the branch production actually
+    /// takes rather than the non-worktree <c>@{upstream}</c> arm.
+    /// </summary>
     [Fact]
     public void Dead_worker_without_terminal_result_on_untouched_workspace_retains_Failed_verdict()
     {
         var outboxDir = CreateTempDirectory();
-        var worktreeDir = CreateTempDirectory();
+        var sourceRepo = CreateTempDirectory();
+        var worktreeParent = CreateTempDirectory();
+        var worktreeDir = Path.Combine(worktreeParent, "workspace");
         try
         {
-            InitGitRepository(worktreeDir);
+            InitGitRepository(sourceRepo);
+            WorktreeProvisioner.Provision(worktreeDir, sourceRepo, "HEAD");
             var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
 
             // Streamed worker, but no terminal success record observed, and workspace is completely clean.
@@ -1654,7 +1672,8 @@ public class OutcomeClassifierTests
                 contract,
                 outboxDir,
                 responseParser: new FakeResponseParser(response: null),
-                worktreePath: worktreeDir);
+                worktreePath: worktreeDir,
+                worktreeBaseRef: "HEAD");
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
@@ -1664,7 +1683,39 @@ public class OutcomeClassifierTests
         finally
         {
             DirectoryCleanup.DeleteRecursively(outboxDir);
-            DirectoryCleanup.DeleteRecursively(worktreeDir);
+            DirectoryCleanup.DeleteRecursively(sourceRepo);
+            DirectoryCleanup.DeleteRecursively(worktreeParent);
+        }
+    }
+
+    /// <summary>
+    /// F4 (#1593 review): pins the no-worktree case explicitly, rather than leaving it inferred — a
+    /// room with no provisioned worktree passes <c>worktreePath: null</c>
+    /// (<c>MutationInterface</c>'s own <c>binding.IsWorktree ? ... : null</c> gate), which
+    /// <c>IsWorkspaceUntouched</c> fails closed on immediately, so the untouched-workspace retry carve-out
+    /// can never fire for a non-worktree room — it always settles Indeterminate instead, the same as a
+    /// mutated workspace would.
+    /// </summary>
+    [Fact]
+    public void Dead_worker_without_terminal_result_on_a_null_worktree_path_settles_Indeterminate()
+    {
+        var outboxDir = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: null);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
         }
     }
 

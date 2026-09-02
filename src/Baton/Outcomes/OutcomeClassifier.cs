@@ -140,7 +140,8 @@ public static class OutcomeClassifier
         GrantAuditMode grantAuditMode = GrantAuditMode.Enforced,
         string? worktreePath = null,
         IWorkerResponseParser? responseParser = null,
-        IWorkerUsageParser? usageParser = null)
+        IWorkerUsageParser? usageParser = null,
+        string? worktreeBaseRef = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(contract);
@@ -283,8 +284,14 @@ public static class OutcomeClassifier
 
         // #1593: Natural exit 0 with unsatisfied contract settles Indeterminate (spec/baton.md §3 Producers).
         // #1622: A dead streaming worker retains the retryable Failed path when untouched (WorktreeProvisioner.IsWorkspaceUntouched).
-        var isDeadWorkerWithoutResult = responseParser is not null && !result.TerminalSuccessObserved;
-        if (isDeadWorkerWithoutResult && Workspaces.WorktreeProvisioner.IsWorkspaceUntouched(worktreePath))
+        // F6 (#1593 review): keys on "no terminal result record observed" (CoreDispatchResult.TerminalResultObserved),
+        // NOT on TerminalSuccessObserved — that fact is false both when no result arrived (a dead
+        // worker) AND when one arrived reporting is_error/FAILURE (a contract failure that finished
+        // and self-reported non-success). Only the former is a "dead worker" by #1622's own
+        // vocabulary; the latter has a result record and belongs on the ordinary Indeterminate path
+        // below, not the untouched-workspace retry carve-out.
+        var isDeadWorkerWithoutResult = responseParser is not null && !result.TerminalResultObserved;
+        if (isDeadWorkerWithoutResult && Workspaces.WorktreeProvisioner.IsWorkspaceUntouched(worktreePath, worktreeBaseRef))
         {
             var (contractClassification, contractRetryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
             return new OutcomeClassification(
@@ -295,9 +302,21 @@ public static class OutcomeClassifier
                 SubstantialWorkNoOutputsEvidence: substantialWorkNoOutputsEvidence);
         }
 
+        // F2 (#1593 review): #1593's second acceptance bullet — "a room that ends Failed with
+        // uncommitted work in its workspace says so somewhere a person will see" — is unmet by the
+        // hedge alone, which reads byte-identical whether the tree holds real work or nothing. Appended
+        // to the SAME suffix BuildContractFailureReason already reserves budget for, so a long evidence
+        // string is truncated the same visible way an overflowing output list is, never silently
+        // dropped. Null (no worktree, or genuinely nothing to report) leaves the reason unchanged —
+        // the byte-pinned no-worktree case in
+        // Classify_leaves_the_reason_byte_for_byte_unchanged_when_the_worker_wrote_no_stderr.
+        var workspaceEvidence = Workspaces.WorktreeProvisioner.DescribeWorkspaceEvidence(worktreePath, worktreeBaseRef);
+        var indeterminateSuffix = " — worker exited 0 with work possibly on disk; awaiting conductor resolution."
+            + (workspaceEvidence is null ? string.Empty : $" Workspace {workspaceEvidence}.");
+
         var indeterminateReason = BuildContractFailureReason(
             validation.UnsatisfiedOutputs,
-            " — worker exited 0 with work possibly on disk; awaiting conductor resolution.");
+            indeterminateSuffix);
 
         return new OutcomeClassification(
             OutcomeVerdict.Indeterminate,
