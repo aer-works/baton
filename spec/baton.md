@@ -1144,6 +1144,70 @@ definition has no exit event yet and needs every line scanned, not just the last
   derivation-stuck check above, independent of whether any room is Running (a failing push is not
   scoped to active lanes the way the derivation-stuck check is).
 
+**Paging and the terminal hot-set cap (#1656).** Measured 2026-09-02: `deliverables_list` returned
+292 items / 160,539 bytes in one body, big enough that the operator's MCP connector reported
+"Inbox feed unavailable (upstream_error)"; `fleet_status` was 265,193 bytes / 234 rooms per push.
+Both mailbox tools (`tools/fleet-glass/worker.js`'s `handleMcp`) now page:
+- **`deliverables_list`** takes `limit` (default 50, max 200) and an opaque `cursor` — base64 of the
+  next item's own `(pushed_at, id)` identity, so a caller round-trips it verbatim with no
+  server-side per-cursor state. Response carries `items`, `count` (the total after any `room`
+  filter), and `next_cursor` (`null` once exhausted). A malformed or foreign cursor degrades to the
+  start rather than throwing, same posture as every other optional-field convention in this module.
+  The list's order is delivery order, not a `pushed_at` sort — `handleDeliver` builds the index
+  purely via `index.unshift(...)` per delivered item (`worker.js`), so "newest first" means "most
+  recently delivered to the worker," not "newest `pushed_at` first." The cursor is identity-based
+  (matched by `(id, pushed_at)`, not by position), so it tolerates a `/deliver` POST landing between
+  two `deliverables_list` calls rather than skipping or repeating items.
+- **`fleet_status`** stays a single tool (no `rooms_list` sibling — `FleetGlassReadOnlyTests` pins
+  the mailbox's `TOOLS` array to exactly `fleet_status`/`deliverables_list`/`deliverable_read`) but
+  grows a `page`/`limit` argument pair. With neither argument, `rooms` carries every non-terminal
+  room plus only the newest `HOT_TERMINAL_CAP` (40, `tools/fleet-glass/pusher.py`) terminal ones,
+  and the response gains `terminal_total` (the full terminal count). Passing `page` (0-based) pages
+  over the REST of the terminal population instead — worker.js's `/push` handler splits a
+  `terminal_archive` field out of the push body into its own KV key (`"terminal_archive"`, never
+  folded into `"snapshot"`) so a plain `fleet_status` call's response size no longer grows with the
+  fleet's all-time terminal-room count. `pusher.py`'s `split_hot_and_archive` computes the hot set
+  and archive from the SAME `newest_timestamp` measure `drop_stale_rooms` already uses, so "newest"
+  means the same thing everywhere in this module; `timelines` in the pushed body is filtered to the
+  hot set's own paths, never the wider surviving-room set, so an archived-only terminal room's
+  timeline never rides the hot push either. `tools/fleet-glass/glass.html`'s Terminal section
+  fetches additional pages on demand (a "load older" link, wired to a one-shot `fleet_status(page,
+  limit)` call through the same `watchTool` the periodic poll already uses) and merges them into the
+  rendered Failed/Succeeded buckets, deduped by room path against whatever the hot set already
+  showed.
+
+  The cap bounds only the terminal bucket. `non_terminal` rooms — Running, Stalled, Indeterminate —
+  ride the plain (no `page`) `fleet_status` response in full, uncapped; `split_hot_and_archive` never
+  slices that list, and `glass.html` never pages it either. The 265 KB / 234-room measurement above
+  was terminal-room-dominated; a fleet with many concurrently *active* rooms at once (an incident
+  storm) can still produce an unbounded default payload, and nothing in this module measures or caps
+  that case. `pusher.py` logs one line via `HOT_NONTERMINAL_WARN` (60) when the non-terminal count
+  exceeds it on a push — a signal for an operator to notice, not a cap.
+
+**`heartbeat_at` now advances on every successful push (#1656), not just on the hourly
+`/heartbeat` ping.** Measured 2026-09-02: `heartbeat_at` stayed at `07:11:28Z` across pushes at
+`07:32` and `07:34` even though both succeeded. Root cause: `should_send_derived_ping` (above)
+deliberately skips the dedicated `/heartbeat` POST whenever an actual snapshot push already landed
+a fresh `derived_at` within its own 5-minute window — correct for `derived_at` itself, but
+`heartbeat_at`'s own `at` value is ONLY ever stamped by that same POST, so a fleet pushing
+continuously (never idle long enough to need a dedicated ping, never quiet long enough to hit the
+hourly cadence) could see `heartbeat_at` sit stale for up to an hour despite every push succeeding.
+Fixed in `worker.js`'s `handleMcp` (`fleet_status`'s DISPLAYED `heartbeat_at`, not the stored KV
+value) by merging in the snapshot's own `pushed_at` — the same `maxIsoOrNull` merge `derived_at`
+already uses, and the same reasoning applies: `pushed_at` is stamped by this Worker's own receipt
+clock (`/push`'s handler, never the pusher host's clock), the identical clock-source property
+`heartbeat_at`'s `at` already has, so folding it in costs zero extra KV writes and never weakens the
+"quiet fleet apart from dead pusher" distinction §7's heading above this one describes — on a quiet
+fleet `pushed_at` is exactly as stale as `heartbeat_at` already was, so the merge is a no-op there.
+
+**The false Running ⚠ (#1549, fixed by #1656).** `glass.html`'s per-room age line marked a Running
+room ⚠ whenever its last JOURNAL event was more than 15 minutes old — but a healthy 30-minute lane
+can have zero journal events between `executionStarted` and `executionExited` (#1549's own
+measurement: 6 false STALL-shaped flags out of 6 live rooms), so every long-running tool call read
+as stale. `ageLine` now keys the ⚠ on `room.live.lastActivityAt` (the `rooms[].live` field above,
+itself a real `.stdout.log` mtime) when the room carries a `live` section at all, and falls back to
+the journal-event age only for a Running room `live` was never attached to.
+
 ---
 
 ## §7 The daemon, narrowed

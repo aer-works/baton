@@ -287,6 +287,12 @@ baton-dispatch-selftest = { cmd = "python tools/baton-agy-loop/dispatch.py --sel
 # vendor-verify/baton-dispatch above), run by whoever touches pusher.py rather than on every PR.
 fleet-glass-pusher-selftest = { cmd = "python tools/fleet-glass/pusher.py --selftest" }
 
+# #1656 F2 (2026-09-02 review): the JS-side twin of the selftest above -- worker.core.mjs's
+# deliverables_list/fleet_status paging and the heartbeat-merge (maxIsoOrNull), over synthetic
+# in-memory fixtures via plain `node`, no live Cloudflare Worker/KV. Same "operator tool, not
+# CI-wired" posture as fleet-glass-pusher-selftest.
+fleet-glass-worker-selftest = { cmd = "node tools/fleet-glass/worker.selftest.mjs" }
+
 # M13 Phase 4 (#110), the milestone's completion gate: unlike smoke-claude/smoke-mixed-vendor
 # above, this needs no live vendor auth, so it runs unattended in default CI rather than a gated
 # runbook. Packs `baton`, installs it as a real global tool from that local nupkg, runs it against a

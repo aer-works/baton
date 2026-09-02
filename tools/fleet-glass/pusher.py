@@ -851,6 +851,57 @@ def drop_stale_rooms(body: str, max_age_days: float) -> tuple[str, int]:
     return json.dumps(data), dropped
 
 
+# ---------------------------------------------------------------------------------------------
+# Hot-set capping (#1656) -- measurement and full contract: spec/baton.md §6, "Paging and the
+# terminal hot-set cap". Terminal rooms are frozen (terminal.json never changes once written) and
+# glass.html itself already only ever RENDERS the newest slice of them, so this moves the same cap
+# upstream: only the newest HOT_TERMINAL_CAP terminal rooms ride the plain fleet_status response;
+# the rest are still derived and pushed (as `terminal_archive`, a field worker.js's /push handler
+# stores under its own KV key, never inside "snapshot") but only served back a page at a time.
+# ---------------------------------------------------------------------------------------------
+
+HOT_TERMINAL_CAP = 40  # matches what glass.html already slices the Succeeded bucket to
+                        # client-side pre-#1656 (groupLanesHtml(visibleDone.slice(0,40), ...)) --
+                        # picked to keep the same "what an operator actually looks at" size, not a
+                        # new number.
+
+HOT_NONTERMINAL_WARN = 60  # F3 (2026-09-02 review): the cap above bounds only the terminal bucket
+                            # -- Running/Stalled/Indeterminate rooms ride the plain fleet_status
+                            # response in FULL, uncapped (spec/baton.md §6). This is a signal, not a
+                            # cap: one log line when concurrently-active rooms cross the threshold,
+                            # so an incident storm shows up in pusher.log rather than only as a
+                            # bigger push the day it happens.
+
+
+def nonterminal_warn_line(non_terminal_count: int) -> str | None:
+    """One log line when `non_terminal_count` exceeds HOT_NONTERMINAL_WARN, else None -- a signal,
+    not a cap. Full contract: spec/baton.md §6, "Paging and the terminal hot-set cap"."""
+    if non_terminal_count > HOT_NONTERMINAL_WARN:
+        return (f"non-terminal room count {non_terminal_count} exceeds HOT_NONTERMINAL_WARN "
+                f"({HOT_NONTERMINAL_WARN}) -- unbounded, no cap")
+    return None
+
+_TERMINAL_STATES = frozenset({"Succeeded", "Failed"})  # the two buckets glass.html's own Terminal
+                                                        # section covers (render()'s `termContent`)
+                                                        # -- Running/Stalled/Indeterminate/unreadable
+                                                        # rooms are never terminal by this measure.
+
+
+def split_hot_and_archive(room_list: list) -> tuple[list, list, int]:
+    """Splits `room_list` (fleet_status's own per-room objects) into `(hot_rooms, terminal_archive,
+    terminal_total)`. `hot_rooms` (non-terminal rooms plus the newest HOT_TERMINAL_CAP terminal
+    ones) is what rides the plain (no `page`) fleet_status response; `terminal_archive` is the FULL
+    terminal population (not just the tail beyond the cap -- a `page=0` fetch then returns the same
+    newest rooms `hot_rooms` already carried); `terminal_total` is the total terminal count. Full
+    contract, including the "newest" measure and why a malformed room degrades to non-terminal
+    rather than being dropped: spec/baton.md §6, "Paging and the terminal hot-set cap"."""
+    non_terminal = [r for r in room_list if not (isinstance(r, dict) and r.get("state") in _TERMINAL_STATES)]
+    terminal = [r for r in room_list if isinstance(r, dict) and r.get("state") in _TERMINAL_STATES]
+    terminal.sort(key=newest_timestamp, reverse=True)
+    hot_rooms = non_terminal + terminal[:HOT_TERMINAL_CAP]
+    return hot_rooms, terminal, len(terminal)
+
+
 def _git(cwd: str, *args: str) -> str:
     try:
         out = subprocess.run(
@@ -908,13 +959,22 @@ def post_json(url: str, body: str) -> None:
 SNAPSHOT_HASH_KEY = "__snapshot_hash__"
 
 
-def build_wrapped(room_list, underhood, timelines, stale_hidden_count) -> dict:
+def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
+                   terminal_total: int = 0, terminal_archive: list | None = None) -> dict:
     """The exact snapshot body main() pushes. One home so the leak selftest exercises the real push
-    path's construction, not a hand-rebuilt copy that could drift from it (PR #1508 review)."""
+    path's construction, not a hand-rebuilt copy that could drift from it (PR #1508 review).
+
+    `terminal_total`/`terminal_archive` (#1656) default to 0/None so every pre-existing call site
+    (this module's own hash/selftest fixtures) keeps working unchanged -- callers that care about
+    the hot-set split pass `room_list` as already-capped `hot_rooms` (see `split_hot_and_archive`)
+    and the FULL terminal population separately here. worker.js's /push handler strips
+    `terminal_archive` back out into its own KV key before it ever reaches "snapshot"."""
     return {"rooms": room_list,
             "underhood": underhood,
             "timelines": timelines,
-            "stale_hidden_count": stale_hidden_count}
+            "stale_hidden_count": stale_hidden_count,
+            "terminal_total": terminal_total,
+            "terminal_archive": terminal_archive or []}
 
 
 def snapshot_hash(wrapped: dict) -> str:
@@ -1442,11 +1502,22 @@ def main() -> None:
                 surviving_paths = {r.get("path") for r in (room_list or []) if isinstance(r, dict)}
                 terminal_timeline_cache = {
                     p: t for p, t in terminal_timeline_cache.items() if p in surviving_paths}
+                # #1656: split BEFORE building the wrapped body, and filter `timelines` to
+                # `hot_paths` (not the wider `surviving_paths`) -- spec/baton.md §6, "Paging and the
+                # terminal hot-set cap".
+                hot_rooms, terminal_archive, terminal_total = split_hot_and_archive(room_list or [])
+                non_terminal_count = len(room_list or []) - terminal_total
+                warn_line = nonterminal_warn_line(non_terminal_count)
+                if warn_line:
+                    log(warn_line)
+                hot_paths = {r.get("path") for r in hot_rooms if isinstance(r, dict)}
                 wrapped = build_wrapped(
-                    room_list,
+                    hot_rooms,
                     gather_underhood(cfg),
-                    {p: t for p, t in timelines.items() if p in surviving_paths},
-                    stale_hidden_count)
+                    {p: t for p, t in timelines.items() if p in hot_paths},
+                    stale_hidden_count,
+                    terminal_total=terminal_total,
+                    terminal_archive=terminal_archive)
                 current_hash = snapshot_hash(wrapped)
                 snap_state = load_push_state(state_path)
                 if should_push_snapshot(snap_state, current_hash):
@@ -1562,6 +1633,7 @@ def _make_room(root: Path, name: str, outputs_rel: list, state="Succeeded", erro
         "state": state, "steps": [], "outputs": outputs_abs, "error": error, "try": None,
     }), encoding="utf-8")
     return room_dir
+
 
 
 def _selftest() -> int:
@@ -2463,6 +2535,60 @@ def _selftest() -> int:
         push_snapshot_and_record(lambda _b: None, "{}", state, sp, h2, now_ts=95.0)
         check("cycle 5: state updated with new hash", state.get(SNAPSHOT_HASH_KEY) == h2)
         check("cycle 5: state updated with new push timestamp", state.get(LAST_PUSH_TS_KEY) == 95.0)
+
+    # -- #1656: hot-set capping (split_hot_and_archive) --
+    def _room(path, state, ts):
+        return {"path": path, "state": state, "steps": [{"id": "s1", "state": state, "timestamp": ts}]}
+
+    running_room = _room("/r/running", "Running", "2026-09-01T00:00:00Z")
+    terminal_rooms = [_room(f"/r/term-{i}", "Succeeded" if i % 2 else "Failed",
+                             f"2026-09-01T00:{i:02d}:00Z") for i in range(50)]
+    mixed = [running_room, *terminal_rooms]
+    hot, archive, total = split_hot_and_archive(mixed)
+    check("hot set keeps every non-terminal room", running_room in hot)
+    check("hot set caps terminal rooms at HOT_TERMINAL_CAP", sum(1 for r in hot if r is not running_room) == HOT_TERMINAL_CAP)
+    check("terminal_total counts every terminal room, not just the hot slice", total == 50)
+    check("archive carries the FULL terminal population, not just the tail beyond the cap", len(archive) == 50)
+    check("archive is sorted newest-first (same measure as drop_stale_rooms' newest_timestamp)",
+          archive[0]["path"] == "/r/term-49" and archive[-1]["path"] == "/r/term-0")
+    check("the hot set's terminal slice is the SAME newest rooms archive page 0 would return",
+          {r["path"] for r in hot if r is not running_room} == {r["path"] for r in archive[:HOT_TERMINAL_CAP]})
+
+    few_terminal = [running_room, terminal_rooms[0], terminal_rooms[1]]
+    hot2, archive2, total2 = split_hot_and_archive(few_terminal)
+    check("a fleet with fewer terminal rooms than the cap keeps all of them hot",
+          len(hot2) == 3 and total2 == 2)
+
+    malformed = [running_room, {"path": "/r/no-state"}, "not-a-dict"]
+    hot3, archive3, total3 = split_hot_and_archive(malformed)
+    check("a room missing 'state' degrades to non-terminal (kept, never silently dropped)",
+          any(r.get("path") == "/r/no-state" for r in hot3 if isinstance(r, dict)))
+    check("a non-dict list entry degrades to non-terminal too, never raises", "not-a-dict" in hot3)
+
+    empty_hot, empty_archive, empty_total = split_hot_and_archive([])
+    check("an empty room list yields an empty hot set, empty archive, zero total",
+          empty_hot == [] and empty_archive == [] and empty_total == 0)
+
+    wrapped_with_archive = build_wrapped(hot, [], {}, 0, terminal_total=total, terminal_archive=archive)
+    check("build_wrapped carries terminal_total/terminal_archive through to the pushed body",
+          wrapped_with_archive["terminal_total"] == 50 and len(wrapped_with_archive["terminal_archive"]) == 50)
+    check("build_wrapped defaults terminal_total/terminal_archive for callers that don't pass them "
+          "(every pre-#1656 call site keeps working unchanged)",
+          build_wrapped([], [], {}, 0) == {"rooms": [], "underhood": [], "timelines": {},
+                                            "stale_hidden_count": 0, "terminal_total": 0,
+                                            "terminal_archive": []})
+
+    # #1656 F2 (2026-09-02 review): worker_displayed_heartbeat_at, the hand-copied Python mirror of
+    # worker.js's maxIsoOrNull heartbeat merge, is deleted -- the real function now has executable
+    # coverage in tools/fleet-glass/worker.selftest.mjs (`node tools/fleet-glass/worker.selftest.mjs`
+    # / `pixi run fleet-glass-worker-selftest`), which discriminates against the actual worker.core.mjs
+    # code path instead of a copy that could drift from it silently.
+
+    # -- F3 (2026-09-02 review): non-terminal hot-set warn, a signal not a cap --
+    check("non_terminal_count at the threshold does not warn", nonterminal_warn_line(HOT_NONTERMINAL_WARN) is None)
+    check("non_terminal_count one over the threshold warns, naming the threshold",
+          nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1) is not None
+          and "HOT_NONTERMINAL_WARN" in nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1))
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)
