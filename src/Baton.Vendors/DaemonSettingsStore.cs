@@ -10,6 +10,15 @@ public sealed record DaemonSettings
     public int GlobalConcurrencyCap { get; init; } = DefaultGlobalConcurrencyCap;
     public int PerVendorConcurrencyCap { get; init; } = DefaultPerVendorConcurrencyCap;
 
+    /// <summary>
+    /// #1659: gates <see cref="Baton.Cli.Daemon.RoomRetentionSweep"/>'s automatic
+    /// <c>baton rooms prune --terminal</c> call — <c>null</c> (the default) means off, matching the
+    /// issue's "default off, so the operator opts in" ruling. A room's <c>terminal.json</c> at least
+    /// this many days old is eligible; see <c>RoomsPruneOptions.OlderThanDays</c> for the exact
+    /// predicate this value feeds.
+    /// </summary>
+    public int? RoomsRetentionDays { get; init; }
+
     public const int DefaultGlobalConcurrencyCap = 3;
     public const int DefaultPerVendorConcurrencyCap = 2;
 }

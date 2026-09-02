@@ -59,6 +59,36 @@ public class DaemonSettingsStoreTests
         }
     }
 
+    // #1659: RoomsRetentionDays defaults to null (off) -- the ruling's "default off, operator opts in".
+    [Fact]
+    public async Task Loading_a_missing_file_resolves_RoomsRetentionDays_to_null()
+    {
+        var path = TempPath();
+
+        var settings = await DaemonSettingsStore.LoadAsync(path, TestContext.Current.CancellationToken);
+
+        Assert.Null(settings.RoomsRetentionDays);
+    }
+
+    [Fact]
+    public async Task Saving_then_loading_round_trips_RoomsRetentionDays()
+    {
+        var path = TempPath();
+        try
+        {
+            var original = new DaemonSettings { RoomsRetentionDays = 14 };
+
+            await DaemonSettingsStore.SaveAsync(original, path, TestContext.Current.CancellationToken);
+            var loaded = await DaemonSettingsStore.LoadAsync(path, TestContext.Current.CancellationToken);
+
+            Assert.Equal(14, loaded.RoomsRetentionDays);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
     [Fact]
     public async Task Saving_creates_the_parent_directory_if_it_does_not_exist_yet()
     {

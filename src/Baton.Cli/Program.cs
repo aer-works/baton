@@ -74,7 +74,7 @@ if (args.Length >= 1 && args[0] == "daemon")
     return 0;
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "templates", "keep", "unkeep", "mcp", "daemon" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "templates", "keep", "unkeep", "room", "rooms", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -95,6 +95,8 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine("       baton templates [--json]");
     Console.Error.WriteLine($"       {KeepOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {UnkeepOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {RoomDeleteOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {RoomsPruneOptionsParser.Usage[7..]}");
     Console.Error.WriteLine(
         "       baton mcp [--capture-file <path>] [--memory-proposal-tool] [--fleet-status-tool] [--room-detail-tool]");
     Console.Error.WriteLine("       baton daemon [--no-mutex]");
@@ -155,6 +157,34 @@ try
     {
         var unkeepOptions = UnkeepOptionsParser.Parse(args[1..]);
         await KeepCommand.UnmarkAsync(unkeepOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
+        return 0;
+    }
+
+    // #1659: `room`/`rooms` are noun-first verb groups (only one sub-verb each today —
+    // `delete`/`prune` — but the shape leaves room for a later `room show`/`rooms list` without a new
+    // top-level word). Neither produces a CommandResult (no workflow pump), so both join
+    // keep/unkeep/status/templates above rather than the CommandResult/FlowStateReporter switch below.
+    if (args[0] == "room")
+    {
+        if (args.Length < 2 || args[1] != "delete")
+        {
+            throw new CliArgumentException($"Unknown 'baton room' sub-verb. {RoomDeleteOptionsParser.Usage}");
+        }
+
+        var roomDeleteOptions = RoomDeleteOptionsParser.Parse(args[2..]);
+        await RoomDeleteCommand.ExecuteAsync(roomDeleteOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
+        return 0;
+    }
+
+    if (args[0] == "rooms")
+    {
+        if (args.Length < 2 || args[1] != "prune")
+        {
+            throw new CliArgumentException($"Unknown 'baton rooms' sub-verb. {RoomsPruneOptionsParser.Usage}");
+        }
+
+        var roomsPruneOptions = RoomsPruneOptionsParser.Parse(args[2..]);
+        await RoomsPruneCommand.ExecuteAsync(roomsPruneOptions, Console.Out, cancellationToken: hostStopSource.Token).ConfigureAwait(false);
         return 0;
     }
 

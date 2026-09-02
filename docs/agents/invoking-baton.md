@@ -238,6 +238,11 @@ rejected step still has retry budget), re-run `baton run --room-dir <room-dir>` 
 whichever of the two applies on its own stdout; follow that rather than the general rule
 (spec/baton.md §3).
 
+Once a room is genuinely done with, `baton room delete <room-dir>` (or its batch form,
+`baton rooms prune --terminal --yes`) actually removes it — the directory, its `room-registry.jsonl`
+line(s), and (best-effort) a deliverables tombstone — refusing a non-terminal room unless `--force`;
+`spec/baton.md` §8 has the full contract, including what it cannot reach.
+
 ---
 
 ## 4. Adapter notes

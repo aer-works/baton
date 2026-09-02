@@ -1,5 +1,6 @@
 using Baton.Vendors;
 using Baton.Artifacts;
+using Baton.Cli;
 using Baton.Projection;
 using Baton.Status;
 using Microsoft.Extensions.Hosting;
@@ -12,6 +13,25 @@ namespace Baton.Cli.Daemon;
 /// </summary>
 public sealed class RoomRetentionSweep : BackgroundService
 {
+    /// <summary>
+    /// #1659: the same <see cref="DaemonSettings"/> <c>DaemonHost</c> already loads for the concurrency
+    /// caps, DI-injected here so this service can read <see cref="DaemonSettings.RoomsRetentionDays"/>
+    /// without a second settings load. <c>null</c> (every unit test's shape, via the parameterless
+    /// constructor) means "no retention config available" — <see cref="ResolveRoomsRetentionDays"/>
+    /// treats that exactly like an explicit <c>null</c> setting: retention prune stays off.
+    /// </summary>
+    private readonly DaemonSettings? _settings;
+
+    public RoomRetentionSweep()
+        : this(settings: null)
+    {
+    }
+
+    public RoomRetentionSweep(DaemonSettings? settings)
+    {
+        _settings = settings;
+    }
+
     public const string EnabledEnvironmentVariable = "BATON_RETENTION_SWEEP_ENABLED";
     public const string IntervalSecondsEnvironmentVariable = "BATON_RETENTION_SWEEP_INTERVAL_SECONDS";
     public const string ThresholdBytesEnvironmentVariable = "BATON_RETENTION_SWEEP_THRESHOLD_BYTES";
@@ -228,6 +248,60 @@ public sealed class RoomRetentionSweep : BackgroundService
         return await ArtifactPruner.PruneAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// #1659: <see cref="DaemonSettings.RoomsRetentionDays"/>, or <c>null</c> when unset/non-positive —
+    /// the daemon's own "off unless the operator opts in" default. Never reads an environment
+    /// variable, unlike every sibling <c>Get*</c>/<c>Is*</c> resolver above: this setting arrives
+    /// through <c>settings.json</c> (<see cref="DaemonSettingsStore"/>), the config surface the issue
+    /// asked for, not a new env var.
+    /// </summary>
+    internal int? ResolveRoomsRetentionDays(int? roomsRetentionDaysOverride = null)
+    {
+        var days = roomsRetentionDaysOverride ?? _settings?.RoomsRetentionDays;
+        return days is > 0 ? days : null;
+    }
+
+    /// <summary>
+    /// #1659: runs <c>baton rooms prune --terminal --older-than &lt;RoomsRetentionDays&gt; --yes</c>'s
+    /// own logic directly (<see cref="RoomsPruneCommand.ExecuteAsync"/>) rather than shelling out to
+    /// the CLI, the same in-process reuse every other daemon-hosted service in this tree already
+    /// follows. A no-op (returns 0, touches nothing) when <see cref="ResolveRoomsRetentionDays"/>
+    /// resolves to <c>null</c>. Per-room output is discarded (<see cref="TextWriter.Null"/>) — this is
+    /// a background sweep, not an operator-typed command with something to print to; only a failure is
+    /// reported, on stderr, the same posture every other per-operation catch in this type takes.
+    /// </summary>
+    public async Task<int> ExecuteRoomsRetentionPruneAsync(
+        string? registryFilePathOverride = null,
+        int? roomsRetentionDaysOverride = null,
+        CancellationToken cancellationToken = default)
+    {
+        var roomsRetentionDays = ResolveRoomsRetentionDays(roomsRetentionDaysOverride);
+        if (roomsRetentionDays is null)
+        {
+            return 0;
+        }
+
+        var registryFilePath = registryFilePathOverride ?? BatonPaths.RoomRegistryFile;
+        var options = new RoomsPruneOptions(Terminal: true, OlderThanDays: roomsRetentionDays, State: null, DryRun: false, Yes: true);
+
+        try
+        {
+            var result = await RoomsPruneCommand
+                .ExecuteAsync(options, TextWriter.Null, registryFilePath, cancellationToken)
+                .ConfigureAwait(false);
+            return result.Deleted.Count;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"RoomRetentionSweep: Error running rooms-retention prune: {ex.Message}");
+            return 0;
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -245,6 +319,18 @@ public sealed class RoomRetentionSweep : BackgroundService
                 catch (Exception ex)
                 {
                     Console.Error.WriteLine($"RoomRetentionSweep sweep iteration failed: {ex.Message}");
+                }
+            }
+
+            if (ResolveRoomsRetentionDays() is not null)
+            {
+                try
+                {
+                    await ExecuteRoomsRetentionPruneAsync(cancellationToken: stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    return;
                 }
             }
 

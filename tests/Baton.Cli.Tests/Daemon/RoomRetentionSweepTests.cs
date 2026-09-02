@@ -450,4 +450,95 @@ public class RoomRetentionSweepTests
             Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, prior);
         }
     }
+
+    // #1659: the retention hook -- RoomRetentionSweep may call `baton rooms prune --terminal` behind
+    // DaemonSettings.RoomsRetentionDays, default off.
+    [Fact]
+    public void ResolveRoomsRetentionDays_NoSettingsAndNoOverride_IsNull()
+    {
+        var sweep = new RoomRetentionSweep();
+        Assert.Null(sweep.ResolveRoomsRetentionDays());
+    }
+
+    [Fact]
+    public void ResolveRoomsRetentionDays_SettingsValue_IsUsedWhenNoOverride()
+    {
+        var sweep = new RoomRetentionSweep(new Baton.Vendors.DaemonSettings { RoomsRetentionDays = 5 });
+        Assert.Equal(5, sweep.ResolveRoomsRetentionDays());
+    }
+
+    [Fact]
+    public void ResolveRoomsRetentionDays_NonPositiveSettingsValue_IsTreatedAsOff()
+    {
+        var sweep = new RoomRetentionSweep(new Baton.Vendors.DaemonSettings { RoomsRetentionDays = 0 });
+        Assert.Null(sweep.ResolveRoomsRetentionDays());
+    }
+
+    [Fact]
+    public async Task ExecuteRoomsRetentionPruneAsync_NoRetentionConfigured_IsANoOp()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "baton_sweep_retention_test_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var roomDir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "old-room", new ExecutionId("exec-1"));
+            await WriteRoomTerminalSentinelAsync(roomDir);
+            var registryPath = Path.Combine(tempRoot, "room-registry.jsonl");
+            await Baton.Vendors.RoomRegistryStore.AppendAsync(
+                roomDir, tempRoot, registryPath, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+            var sweep = new RoomRetentionSweep(); // no DaemonSettings -> RoomsRetentionDays unset
+            var deletedCount = await sweep.ExecuteRoomsRetentionPruneAsync(
+                registryFilePathOverride: registryPath, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, deletedCount);
+            Assert.True(Directory.Exists(roomDir));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteRoomsRetentionPruneAsync_ConfiguredRetentionDays_DeletesAnOldTerminalRoom()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "baton_sweep_retention_test_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var roomDir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "old-room", new ExecutionId("exec-1"));
+            var terminalSentinelPath = await WriteRoomTerminalSentinelAsync(roomDir);
+            // Backdate the sentinel so a 1-day retention window finds it eligible.
+            File.SetLastWriteTimeUtc(terminalSentinelPath, DateTime.UtcNow.AddDays(-30));
+
+            var registryPath = Path.Combine(tempRoot, "room-registry.jsonl");
+            await Baton.Vendors.RoomRegistryStore.AppendAsync(
+                roomDir, tempRoot, registryPath, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+            var sweep = new RoomRetentionSweep(new Baton.Vendors.DaemonSettings { RoomsRetentionDays = 1 });
+            var deletedCount = await sweep.ExecuteRoomsRetentionPruneAsync(
+                registryFilePathOverride: registryPath, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, deletedCount);
+            Assert.False(Directory.Exists(roomDir));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, true);
+            }
+        }
+    }
+
+    private static async Task<string> WriteRoomTerminalSentinelAsync(string roomDir)
+    {
+        var view = new Baton.Status.WorkflowStatusView(Baton.Status.WorkflowOutcome.Succeeded, [], [], null);
+        await Baton.Status.TerminalSentinelWriter.WriteAsync(roomDir, view, TestContext.Current.CancellationToken);
+        return Path.Combine(roomDir, Baton.Status.TerminalSentinelWriter.TerminalSentinelFileName);
+    }
 }

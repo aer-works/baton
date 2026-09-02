@@ -178,6 +178,16 @@ public static class BatonPaths
     public const string RoomRegistryFileName = "room-registry.jsonl";
 
     /// <summary>
+    /// <c>{Root}/deleted-rooms.jsonl</c> — the local record <c>baton room delete</c>/<c>baton rooms
+    /// prune</c> leave behind so a deleted room's pushed deliverables can eventually be caught up on
+    /// elsewhere. See <see cref="DeletedRoomsTombstoneStore"/> (#1659) for what writes it and why.
+    /// </summary>
+    public static string DeletedRoomsFile => Path.Combine(Root, DeletedRoomsFileName);
+
+    /// <summary>Filename of <see cref="DeletedRoomsFile"/> relative to a root.</summary>
+    public const string DeletedRoomsFileName = "deleted-rooms.jsonl";
+
+    /// <summary>
     /// <c>{Root}/draining.json</c> — the tool-refresh drain marker. <see cref="DrainMarker"/> owns what
     /// it means and who refuses under it; this type only names where it lives, the same split
     /// <see cref="RoomRegistryFile"/> has with <see cref="RoomRegistryStore"/>.
