@@ -717,11 +717,13 @@ paragraph above, a display word `terminal.json`/`status --json` never emit — a
 identically across all three shapes must special-case this one divergence, the same way it already
 special-cases `linkedFrom`/`timestamp`.
 
-**`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503, extended by #1613 item 3)** are read from the
+**`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503, extended by #1584 and #1613 item 3)** are read from the
 room's own `bindings.json` (`WorkerBindingConfigWriter`/`WorkerBindingConfigParser`,
 `Baton.Vendors`). On the active-room path, scoped to whichever step this same projection currently
 calls `"Running"` — never a separate probe, and never one entry per worker role the room happens to
-define. On the **terminal-sentinel fast path** (#1613 item 3 — pre-#1613 this fast path never read
+define; `adapter`/`model` prefer the running step's recorded `ExecutionRequest.Adapter`/`.Model` values
+(#1584, matching `ExecutionUsageProjector` since #1567), falling back to `bindings.json` only when no
+execution has recorded them yet (pre-#1567 journals or non-process dispatches). On the **terminal-sentinel fast path** (#1613 item 3 — pre-#1613 this fast path never read
 `bindings.json` for these five fields at all, so they silently vanished the moment a room went
 terminal, even though the same `bindings.json` a live room reads from is still sitting right next to
 `terminal.json`), the resolution is different because there is no "Running" step left to key off:
