@@ -28,6 +28,7 @@ public sealed record ConductorManifestEntry(
 public static class DeliverCommand
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
+    private static readonly UTF8Encoding Utf8NoBom = new(false);
 
     public static async Task<DeliverResult> ExecuteAsync(
         DeliverOptions options,
@@ -64,7 +65,7 @@ public static class DeliverCommand
                   }
                 }
                 """;
-            File.WriteAllText(bindingsPath, stubBindings, Encoding.UTF8);
+            File.WriteAllText(bindingsPath, stubBindings, Utf8NoBom);
         }
 
         await RoomRegistryStore.AppendAsync(
@@ -79,7 +80,7 @@ public static class DeliverCommand
         // collide on one on-disk file and cross-contaminate each other's manifest entry. Hashed off
         // the source path itself (not its content) so re-delivering the same source with changed
         // bytes keeps overwriting the same artifact_file rather than orphaning the old one.
-        var sourcePathHashHex = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sourceFullPath)));
+        var sourcePathHashHex = Convert.ToHexStringLower(SHA256.HashData(Utf8NoBom.GetBytes(sourceFullPath)));
         var artifactFile = $"{sourcePathHashHex[..8]}-{basename}";
         var destFilePath = Path.Combine(conductorArtifactsDir, artifactFile);
         File.Copy(sourceFullPath, destFilePath, overwrite: true);
@@ -94,7 +95,7 @@ public static class DeliverCommand
         }
         else
         {
-            var text = Encoding.UTF8.GetString(fileBytes);
+            var text = Utf8NoBom.GetString(fileBytes);
             title = ExtractTitle(text, basename);
         }
 
@@ -131,7 +132,7 @@ public static class DeliverCommand
 
         if (File.Exists(manifestPath))
         {
-            var lines = File.ReadAllLines(manifestPath, Encoding.UTF8);
+            var lines = File.ReadAllLines(manifestPath, Utf8NoBom);
             foreach (var line in lines)
             {
                 if (string.IsNullOrWhiteSpace(line))
@@ -176,7 +177,7 @@ public static class DeliverCommand
         }
 
         var tempPath = $"{manifestPath}.{Guid.NewGuid():N}.tmp";
-        File.WriteAllText(tempPath, sb.ToString(), Encoding.UTF8);
+        File.WriteAllText(tempPath, sb.ToString(), Utf8NoBom);
         File.Move(tempPath, manifestPath, overwrite: true);
     }
 }

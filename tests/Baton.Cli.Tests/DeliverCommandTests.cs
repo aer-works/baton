@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+using System.Text;
+using System.Text.Json;
 using Baton.Status;
 using Baton.Vendors;
 
@@ -63,6 +64,8 @@ public sealed class DeliverCommandTests : IDisposable
         // Verify bindings.json stub
         var bindingsFile = BatonPaths.RoomBindingsFile(conductorRoom);
         Assert.True(File.Exists(bindingsFile));
+        var bindingsBytes = await File.ReadAllBytesAsync(bindingsFile, TestContext.Current.CancellationToken);
+        Assert.Equal((byte)'{', bindingsBytes[0]);
         var bindings = WorkerBindingConfigParser.Parse(await File.ReadAllTextAsync(bindingsFile, TestContext.Current.CancellationToken));
         Assert.True(bindings.ContainsKey("conductor"));
 
@@ -70,10 +73,18 @@ public sealed class DeliverCommandTests : IDisposable
         var registryEntries = await RoomRegistryStore.ReadDistinctByRoomAsync(BatonPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
         Assert.Contains(registryEntries, e => e.RoomPath.Equals(conductorRoom, StringComparison.OrdinalIgnoreCase));
 
-        // Verify manifest
+        // Verify manifest - written without BOM, first byte is '{' (0x7B)
         var manifestFile = Path.Combine(conductorRoom, "artifacts", "conductor", "manifest.jsonl");
         Assert.True(File.Exists(manifestFile));
-        var manifestLines = await File.ReadAllLinesAsync(manifestFile, TestContext.Current.CancellationToken);
+
+        var manifestBytes = await File.ReadAllBytesAsync(manifestFile, TestContext.Current.CancellationToken);
+        Assert.NotEmpty(manifestBytes);
+        Assert.Equal((byte)'{', manifestBytes[0]); // 0x7B
+        Assert.NotEqual((byte)0xEF, manifestBytes[0]); // Not UTF-8 BOM
+
+        // Round-trip through File.ReadAllLines with the same UTF8 without BOM encoding
+        var utf8NoBom = new UTF8Encoding(false);
+        var manifestLines = await File.ReadAllLinesAsync(manifestFile, utf8NoBom, TestContext.Current.CancellationToken);
         Assert.Single(manifestLines);
         var entry = JsonSerializer.Deserialize<ConductorManifestEntry>(manifestLines[0]);
         Assert.NotNull(entry);
@@ -199,5 +210,50 @@ public sealed class DeliverCommandTests : IDisposable
         var entryA = entries.Single(e => e.SourcePath == Path.GetFullPath(fileA));
         var entryB = entries.Single(e => e.SourcePath == Path.GetFullPath(fileB));
         Assert.NotEqual(entryA.ArtifactFile, entryB.ArtifactFile);
+    }
+
+    [Fact]
+    public async Task Deliver_CrossLanguageFixture_MatchesCheckedInFixtureExactBytes()
+    {
+        var repoRoot = FindRepoRoot();
+        var fixturePath = Path.Combine(repoRoot, "tests", "fixtures", "conductor-manifest.jsonl");
+        Assert.True(File.Exists(fixturePath), $"Fixture file must exist at {fixturePath}");
+
+        var expectedBytes = await File.ReadAllBytesAsync(fixturePath, TestContext.Current.CancellationToken);
+        Assert.NotEmpty(expectedBytes);
+        Assert.Equal((byte)'{', expectedBytes[0]); // 0x7B
+        Assert.NotEqual((byte)0xEF, expectedBytes[0]); // Not UTF-8 BOM
+
+        var entry = new ConductorManifestEntry(
+            "Fixture Plan",
+            "/fixtures/fixture-plan.md",
+            "2026-09-02T12:00:00.0000000Z",
+            "760c986cec5f6622f8320ce7db6ffc893c0406fcc4e18ebda30df7d599d1d78b",
+            "c44a8b84-fixture-plan.md");
+
+        var tempManifest = Path.Combine(_tempHome, "fixture-manifest.jsonl");
+        var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+        var json = JsonSerializer.Serialize(entry, jsonOptions) + "\n";
+        var utf8NoBom = new UTF8Encoding(false);
+        await File.WriteAllTextAsync(tempManifest, json, utf8NoBom, TestContext.Current.CancellationToken);
+
+        var actualBytes = await File.ReadAllBytesAsync(tempManifest, TestContext.Current.CancellationToken);
+        Assert.Equal(expectedBytes, actualBytes);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Baton.slnx")))
+            {
+                return dir.FullName;
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new FileNotFoundException("Could not locate repo root containing Baton.slnx");
     }
 }
