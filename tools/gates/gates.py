@@ -14,6 +14,7 @@ only thing worth reporting is this process's own exit code.
 Run every gate even after one fails -- fail-fast hides the others, and a session that has to
 re-run the whole set to discover the next problem starts filtering output again.
 """
+import argparse
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 
 # Sequencing (#986): one full run used to build the .NET tree twice -- `lint` forces a full
@@ -662,8 +664,69 @@ def selftest():
             print("  control FAILED: _init_temp_repo did not create its own repo under an inherited GIT_DIR/GIT_INDEX_FILE")
             ok = False
 
+    # Unrecognised-flag control (#1684): before this fix, an unknown flag fell through every
+    # `"--x" in sys.argv` check and reached run_all() -- silently running the full suite instead of
+    # refusing. This must exit 2 fast, with no gate run and no receipt written/touched.
+    with tempfile.TemporaryDirectory() as td:
+        repo = os.path.join(td, "repo")
+        os.makedirs(repo)
+        _init_temp_repo(repo)
+        write_receipt("fast", cwd=repo)
+        rp = receipt_path(repo)
+        before_mtime = os.path.getmtime(rp)
+
+        start = time.monotonic()
+        bogus = subprocess.run([sys.executable, os.path.abspath(__file__), "--bogus"],
+                               cwd=repo, capture_output=True, text=True, check=False)
+        elapsed = time.monotonic() - start
+
+        if bogus.returncode != 2:
+            print(f"  control FAILED: --bogus did not exit 2 -- got {bogus.returncode} "
+                  f"(stdout={bogus.stdout!r} stderr={bogus.stderr!r})")
+            ok = False
+        if elapsed >= 1.0:
+            print(f"  control FAILED: --bogus took {elapsed:.2f}s -- not under 1s, so it did not "
+                  f"refuse before running gate members")
+            ok = False
+        after_mtime = os.path.getmtime(rp)
+        if before_mtime != after_mtime:
+            print("  control FAILED: --bogus modified the gate receipt")
+            ok = False
+
     print("selftest: pass" if ok else "selftest: FAIL")
     return 0 if ok else 1
+
+
+def _all_members():
+    """Every gate member this file can run, build order first (OVERLAP, then BUILD_PHASE, then
+    the full test leg) -- what `--help` lists, so the listing can never drift from run_all()'s own
+    membership."""
+    seen = []
+    for name in OVERLAP + BUILD_PHASE + AFTER_BUILD_FULL:
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def build_parser():
+    """#1684: argparse, not `"--x" in sys.argv` -- an unrecognised flag must be refused (usage on
+    stderr, exit 2) rather than silently falling through to a full gate run, which is what
+    happened when `--help` was mistyped and ran the whole suite instead of printing usage."""
+    parser = argparse.ArgumentParser(
+        prog="gates.py",
+        description="Run every local gate, report one verdict, exit once.",
+        epilog="gate members (build order):\n  " + "\n  ".join(_all_members()),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--fast", action="store_true",
+                        help="skip the test suite (AFTER_BUILD_FAST instead of AFTER_BUILD_FULL)")
+    parser.add_argument("--quiet", action="store_true",
+                        help="drop a passing gate's output; tail-bound a failing gate's")
+    parser.add_argument("--selftest", action="store_true",
+                        help="run this file's own control-arm suite instead of any gate")
+    parser.add_argument("--check-receipt", action="store_true",
+                        help="exit 0 and print the skip line iff a still-valid gate receipt exists")
+    return parser
 
 
 def main():
@@ -674,14 +737,17 @@ def main():
     # os.environ deliberately poisoned to prove the explicit env= is what actually protects it).
     for k in GIT_ENV_KEYS:
         os.environ.pop(k, None)
-    if "--selftest" in sys.argv:
+
+    args = build_parser().parse_args()
+
+    if args.selftest:
         return selftest()
-    if "--check-receipt" in sys.argv:
+    if args.check_receipt:
         return check_receipt()
 
-    mode = "fast" if "--fast" in sys.argv else "full"
+    mode = "fast" if args.fast else "full"
     after_build = AFTER_BUILD_FAST if mode == "fast" else AFTER_BUILD_FULL
-    quiet = "--quiet" in sys.argv
+    quiet = args.quiet
     names, failed = run_all(after_build,
                             runner=quiet_pixi_runner if quiet else pixi_runner,
                             quiet=quiet)
