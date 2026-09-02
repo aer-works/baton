@@ -34,9 +34,21 @@ public static class DecideCommand
     /// <exception cref="InvalidExternalDecisionException">The decision violates one of the closed set's rules.</exception>
     /// <exception cref="Baton.Concurrency.WorkflowLockedException">
     /// record-once-ok: #443 src/Baton.Cli/RunCommand.cs
-    /// Another Flow instance already holds this room directory's lock.
+    /// Another Flow instance still held this room directory's lock after
+    /// <see cref="Baton.Concurrency.RoutineHoldBudget"/> elapsed. #1650 F3: no longer the refusal a
+    /// live pump produces in the common case — see <see cref="Baton.Store.FlowJournalHeldException"/>
+    /// below for what is.
     /// </exception>
-    /// <exception cref="Baton.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
+    /// <exception cref="Baton.Store.FlowJournalHeldException">
+    /// See that type's own docs for the mechanism (#816). #1650 F3: <b>this</b>, not
+    /// <see cref="Baton.Concurrency.WorkflowLockedException"/>, is what a live <c>baton run</c> pump
+    /// normally refuses this command with. #1646 stopped <see cref="WorktreeWorkspaces.Provision"/>
+    /// from taking <c>flow.lock</c> for a bindings file that declares no worktree — the common shape —
+    /// so the first resource this command now contends is the pump's own long-lived <c>flow.jsonl</c>
+    /// append handle, which the pump releases strictly <em>after</em> the lock. Both opens are bounded
+    /// (<see cref="Baton.Concurrency.RoutineHoldBudget"/>), so this is reached only by a hold that
+    /// outlasts a pump's exit tail.
+    /// </exception>
     /// <param name="inFlightExecutions">
     /// M15 Phase 4's (issue #140) additive caller-retained delivery point — see
     /// <see cref="RunCommand.ExecuteAsync"/>'s own remarks; forwarded, unchanged, to

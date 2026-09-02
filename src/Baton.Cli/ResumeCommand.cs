@@ -50,9 +50,13 @@ public static class ResumeCommand
     /// checks.
     /// </exception>
     /// <exception cref="Baton.Concurrency.WorkflowLockedException">
-    /// Another Flow instance already holds this room directory's lock.
+    /// record-once-ok: #443 src/Baton.Cli/RunCommand.cs
+    /// A second Flow instance holds the room's lock. Fail-fast here, as in <see cref="RunCommand"/>.
     /// </exception>
-    /// <exception cref="Baton.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
+    /// <exception cref="Baton.Store.FlowJournalHeldException">
+    /// #816's journal-held refusal — since #1650 F3, the likelier of these two against a live pump.
+    /// Read <see cref="DecideCommand"/> for why the two swapped places.
+    /// </exception>
     public static async Task<CommandResult> ExecuteAsync(
         ResumeOptions options,
         IReadOnlyDictionary<string, IWorkerAdapter> adapters,
