@@ -269,6 +269,7 @@ public sealed class FleetStatusTool : IMcpTool
             var terminalBinding = ConductorRoomDetector.TryResolveSoleBinding(terminalBindings);
             var (terminalRole, terminalAdapter, terminalModel, terminalEffort, terminalTimeoutMs) =
                 ProjectBindingFields(terminalBinding);
+            var terminalLineage = await TryReadLineageAsync(roomDir, cancellationToken).ConfigureAwait(false);
 
             return new FleetRoomStatusView(
                 Name: roomName,
@@ -285,7 +286,9 @@ public sealed class FleetStatusTool : IMcpTool
                 Effort: terminalEffort,
                 TimeoutMs: terminalTimeoutMs,
                 Label: ExtractRoomLabel(terminalBindings),
-                Workstream: ExtractRoomWorkstream(terminalBindings));
+                Workstream: ExtractRoomWorkstream(terminalBindings),
+                ParentRoomPath: terminalLineage.ParentRoomDirectoryPath,
+                ParentExecutionId: terminalLineage.ParentExecutionId);
         }
 
         // 2. Active room: load snapshot + flow events and project
@@ -374,6 +377,7 @@ public sealed class FleetStatusTool : IMcpTool
             var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
             var binding = TryResolveRunningBinding(bindings, steps, events);
             var (role, adapter, model, effort, timeoutMs) = ProjectBindingFields(binding);
+            var lineage = await TryReadLineageAsync(roomDir, cancellationToken).ConfigureAwait(false);
 
             // #1513: the ledger's own `Running` (WorkflowOutcome.Describe/DeriveWorkflowStatus) means
             // "not terminal, and something could still make progress" -- true whether that something
@@ -403,7 +407,9 @@ public sealed class FleetStatusTool : IMcpTool
                 Effort: effort,
                 TimeoutMs: timeoutMs,
                 Label: ExtractRoomLabel(bindings),
-                Workstream: ExtractRoomWorkstream(bindings));
+                Workstream: ExtractRoomWorkstream(bindings),
+                ParentRoomPath: lineage.ParentRoomDirectoryPath,
+                ParentExecutionId: lineage.ParentExecutionId);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -438,6 +444,26 @@ public sealed class FleetStatusTool : IMcpTool
         {
             // spec/baton.md §6 schema states the contract this degrades to.
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Thin wrapper around <see cref="InteractiveSessionMaterializer.ReadLineageAsync"/> (issue
+    /// #1620, spec/baton.md §6 schema) that additionally degrades to
+    /// <see cref="InteractiveSessionMaterializer.RoomLineage.None"/> on an I/O fault at this call
+    /// site -- the same fail-open display-metadata contract <see cref="TryLoadBindingsAsync"/>
+    /// already applies to <c>bindings.json</c>.
+    /// </summary>
+    private static async Task<InteractiveSessionMaterializer.RoomLineage> TryReadLineageAsync(
+        string roomDir, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await InteractiveSessionMaterializer.ReadLineageAsync(roomDir, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return InteractiveSessionMaterializer.RoomLineage.None;
         }
     }
 
@@ -582,7 +608,15 @@ public sealed record FleetRoomStatusView(
     // convention as Label immediately above -- spec/baton.md §6 schema.
     [property: JsonPropertyName("workstream")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Workstream = null);
+    string? Workstream = null,
+    // #1441/#1620: redispatch lineage -- see spec/baton.md §6 schema for the read side and the
+    // absence rules.
+    [property: JsonPropertyName("parentRoomPath")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ParentRoomPath = null,
+    [property: JsonPropertyName("parentExecutionId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ParentExecutionId = null);
 
 /// <summary>
 /// Status of a single workflow step within a fleet room status report.

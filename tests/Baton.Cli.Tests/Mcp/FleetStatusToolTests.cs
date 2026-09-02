@@ -1750,50 +1750,6 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(Assert.Single(rooms!).Label);
     }
 
-    /// <summary>#1499: a Pending room (no <c>flow.jsonl</c>, so no step is Running) still reports its label.</summary>
-    [Fact]
-    public async Task ActiveRoom_WithNoRunningStep_StillReportsLabelButNotTheRunningStepQuartet()
-    {
-        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
-        var room = Path.Combine(defaultRoomsDir, "pending-labeled-room");
-        Directory.CreateDirectory(room);
-
-        var stepDef = new WorkflowStepDefinition(new StepId("step-pending"), "advise", [], [], [], new RetryPolicy(1));
-        var def = new WorkflowDefinition(new WorkflowTemplateId("pending-wf"), 1, [stepDef]);
-        var snapshot = SnapshotBinder.Bind(def);
-        var snapshotPath = Path.Combine(room, "snapshot.json");
-        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
-
-        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
-        {
-            ["advise"] = new WorkerBindingConfigEntry(
-                "claude",
-                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
-                "Weigh the options.",
-                TimeSpan.FromMinutes(5),
-                Label: "env-snapshot lane"),
-        };
-        await WorkerBindingConfigWriter.SaveToFileAsync(
-            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
-
-        // No flow.jsonl at all -- FlowEventLogReader.ReadAllEntriesWithTimestampsAsync treats a
-        // missing log as zero entries, so the STEP projects Pending, never Running. (The room's own
-        // top-level `state` still reads "Running" either way -- WorkflowOutcome.Describe reports the
-        // overall WorkflowStatus, which starts Running before any step's own state does; the gate that
-        // matters here is per-step.)
-
-        var tool = new FleetStatusTool();
-        var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
-
-        Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
-        var singleRoom = Assert.Single(rooms!);
-        Assert.DoesNotContain(singleRoom.Steps ?? [], s => s.State == "Running");
-        Assert.Equal("env-snapshot lane", singleRoom.Label);
-        Assert.Null(singleRoom.Role);
-        Assert.Null(singleRoom.Adapter);
-    }
-
     /// <summary>#1619, spec/baton.md §6 schema: the terminal-sentinel fast path still surfaces a workstream.</summary>
     [Fact]
     public async Task TerminalFastPath_WithWorkstreamInBindings_ReportsWorkstream()
@@ -1848,12 +1804,122 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(Assert.Single(rooms!).Workstream);
     }
 
-    /// <summary>#1619: a Pending room (no <c>flow.jsonl</c>, so no step is Running) still reports its workstream.</summary>
+    /// <summary>#1441/#1620, spec/baton.md §6 schema: the terminal-sentinel fast path surfaces redispatch lineage.</summary>
     [Fact]
-    public async Task ActiveRoom_WithNoRunningStep_StillReportsWorkstream()
+    public async Task TerminalFastPath_WithLineageMarker_ReportsParentRoomPathAndExecutionId()
     {
         var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
-        var room = Path.Combine(defaultRoomsDir, "pending-workstream-room");
+        var room = Path.Combine(defaultRoomsDir, "redispatched-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var parentRoomPath = Path.Combine(defaultRoomsDir, "parent-room");
+        await InteractiveSessionMaterializer.WriteWorkflowRoomMarkerAsync(
+            room, parentRoomDirectoryPath: parentRoomPath, parentExecutionId: "exec-parent-1",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal(parentRoomPath, singleRoom.ParentRoomPath);
+        Assert.Equal("exec-parent-1", singleRoom.ParentExecutionId);
+    }
+
+    /// <summary>An ordinary `baton dispatch` room writes no marker at all -- both lineage fields stay absent from the wire.</summary>
+    [Fact]
+    public async Task TerminalFastPath_WithNoRoomMarker_OmitsLineageFieldsFromTheWire()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "ordinary-dispatch-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.DoesNotContain("\"parentRoomPath\"", result.Text);
+        Assert.DoesNotContain("\"parentExecutionId\"", result.Text);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Null(singleRoom.ParentRoomPath);
+        Assert.Null(singleRoom.ParentExecutionId);
+    }
+
+    /// <summary>
+    /// The fail-open half of #1620's own claim: a corrupt <c>.baton/room.json</c> marker (no enclosing
+    /// try/catch of its own around the lineage read on the terminal fast path) must degrade to absent
+    /// lineage, not an exception that drops the row -- the same posture #1499's label read already has.
+    /// </summary>
+    [Fact]
+    public async Task TerminalFastPath_WithCorruptRoomMarker_OmitsLineageButStillRendersRow()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "corrupt-marker-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var markerDir = Path.Combine(room, ".baton");
+        Directory.CreateDirectory(markerDir);
+        await File.WriteAllTextAsync(
+            Path.Combine(markerDir, BatonPaths.RoomMetadataFileName), "{ not valid json",
+            TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", singleRoom.State);
+        Assert.Null(singleRoom.ParentRoomPath);
+        Assert.Null(singleRoom.ParentExecutionId);
+    }
+
+    /// <summary>#1441/#1620: the active-room path reports lineage too -- it is written once at redispatch and never depends on run progress.</summary>
+    [Fact]
+    public async Task ActiveRoom_WithLineageMarker_ReportsParentRoomPathAndExecutionId()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "redispatched-active-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-pending"), "advise", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("pending-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var parentRoomPath = Path.Combine(defaultRoomsDir, "parent-room");
+        await InteractiveSessionMaterializer.WriteWorkflowRoomMarkerAsync(
+            room, parentRoomDirectoryPath: parentRoomPath, parentExecutionId: "exec-parent-2",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal(parentRoomPath, singleRoom.ParentRoomPath);
+        Assert.Equal("exec-parent-2", singleRoom.ParentExecutionId);
+    }
+
+    /// <summary>#1499: a Pending room (no <c>flow.jsonl</c>, so no step is Running) still reports its label.</summary>
+    [Fact]
+    public async Task ActiveRoom_WithNoRunningStep_StillReportsLabelButNotTheRunningStepQuartet()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "pending-labeled-room");
         Directory.CreateDirectory(room);
 
         var stepDef = new WorkflowStepDefinition(new StepId("step-pending"), "advise", [], [], [], new RetryPolicy(1));
@@ -1869,10 +1935,16 @@ public sealed class FleetStatusToolTests : IDisposable
                 new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
                 "Weigh the options.",
                 TimeSpan.FromMinutes(5),
-                Workstream: "w1619"),
+                Label: "env-snapshot lane"),
         };
         await WorkerBindingConfigWriter.SaveToFileAsync(
             bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        // No flow.jsonl at all -- FlowEventLogReader.ReadAllEntriesWithTimestampsAsync treats a
+        // missing log as zero entries, so the STEP projects Pending, never Running. (The room's own
+        // top-level `state` still reads "Running" either way -- WorkflowOutcome.Describe reports the
+        // overall WorkflowStatus, which starts Running before any step's own state does; the gate that
+        // matters here is per-step.)
 
         var tool = new FleetStatusTool();
         var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
@@ -1880,7 +1952,10 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.False(result.IsError);
         var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
         var singleRoom = Assert.Single(rooms!);
-        Assert.Equal("w1619", singleRoom.Workstream);
+        Assert.DoesNotContain(singleRoom.Steps ?? [], s => s.State == "Running");
+        Assert.Equal("env-snapshot lane", singleRoom.Label);
+        Assert.Null(singleRoom.Role);
+        Assert.Null(singleRoom.Adapter);
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
