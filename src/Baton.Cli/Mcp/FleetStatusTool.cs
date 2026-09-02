@@ -471,8 +471,11 @@ public sealed class FleetStatusTool : IMcpTool
     /// One construction site (the #1590/#1597 lesson) for turning a resolved binding into the five
     /// wire fields -- both the active-room path (<see cref="TryResolveRunningBinding"/>) and the
     /// terminal-sentinel fast path (<see cref="TryResolveSoleBinding"/>) resolve WHICH role
-    /// differently, but project the resolved <c>(Role, Entry)</c> pair to Role/Adapter/Model/
-    /// Effort/TimeoutMs identically (spec/baton.md §6 schema).
+    /// differently and share this same projection, but the active-room overload additionally prefers
+    /// a recorded <see cref="ExecutionRequest"/>'s Adapter/Model over the resolved
+    /// <c>(Role, Entry)</c> pair's own values (issue #1584) -- the terminal path has no recorded
+    /// request to prefer, so its Adapter/Model always come from the pair itself (spec/baton.md §6
+    /// schema).
     /// </summary>
     private static (string? Role, string? Adapter, string? Model, string? Effort, long? TimeoutMs) ProjectBindingFields(
         (string Role, WorkerBindingConfigEntry Entry)? binding,
