@@ -1974,8 +1974,9 @@ by path: `view_file` is granted whole for this role (`ReadFiles: true`), the hoo
 for the write-family tools, and `HOME`/`USERPROFILE` are not redirected for shell-granted workers, so
 a granted read tool can reach the operator's real home — this is pre-existing and identical on claude
 and `advise`, not something this probe measured or bounded. Unprobed: the subagent/`manage_task`
-tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects
-tracked in #1679 — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
+tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects, since
+fixed by #1679. `docs/vendor-doc-audit.md`'s dated entry names the full
+unprobed population, not
 restated here. Note that the six probed commands were run against the lists **as they stood then**,
 so #1679 and #1683 changed the lists under that measurement: the mechanism it measured is unaffected
 (nothing about how the hook narrows changed), but no probe covers the current `git grep`-free
