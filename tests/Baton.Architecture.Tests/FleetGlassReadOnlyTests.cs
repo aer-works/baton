@@ -45,12 +45,11 @@ public class FleetGlassReadOnlyTests
     private static readonly string[] GlassMcpToolDependencyFiles =
     [
         "src/Baton/Store/FlowEventLogReader.cs",
-        "src/Baton/Store/ProjectionCheckpointStore.cs",
-        "src/Baton/Store/RoomRegistryStore.cs",
-        "src/Baton/Store/TerminalSentinelWriter.cs",
-        "src/Baton/Templates/WorkerBindingConfigParser.cs",
+        "src/Baton/Projection/ProjectionCheckpointStore.cs",
+        "src/Baton/Status/RoomRegistryStore.cs",
+        "src/Baton/Status/TerminalSentinelWriter.cs",
+        "src/Baton.Vendors/WorkerBindingConfigParser.cs",
         "src/Baton/Templates/SnapshotBinder.cs",
-        "src/Baton/Status/WorkflowStatusProjector.cs",
         "src/Baton/Status/StandardWorkerUsageParsers.cs",
         "src/Baton/Projection/StateProjector.cs",
     ];
@@ -189,10 +188,7 @@ public class FleetGlassReadOnlyTests
         foreach (var relativePath in GlassMcpToolDependencyFiles)
         {
             var fullPath = Path.Combine(root, relativePath);
-            if (!File.Exists(fullPath))
-            {
-                continue;
-            }
+            Assert.True(File.Exists(fullPath), $"dependency listed but missing: {relativePath}");
 
             var code = StripComments(File.ReadAllText(fullPath));
 
