@@ -123,8 +123,10 @@ public class CancelRequestFileTests
     }
 
     [Fact]
-    public void DeleteStalePendingRequest_sweeps_a_pending_request_to_swept_and_never_touches_siblings()
+    public async Task DeleteStalePendingRequest_sweeps_a_legacy_pending_request_with_no_metadata_and_never_touches_siblings()
     {
+        // No WriterPid/WrittenAtUtc recorded (a pre-#1649 write, or corruption) -- nothing to
+        // discriminate on, so this keeps the pre-#1649 unconditional-sweep behaviour.
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
         Directory.CreateDirectory(roomDirectory);
         try
@@ -139,7 +141,8 @@ public class CancelRequestFileTests
             File.WriteAllText(rejectedPath, """{"Target":"rejected-exec","Reason":"prior rejection"}""");
             File.WriteAllText(sweptPath, """{"Target":"prior-swept-exec"}""");
 
-            CancelRequestFile.DeleteStalePendingRequest(roomDirectory);
+            await CancelRequestFile.DeleteStalePendingRequestAsync(
+                roomDirectory, DateTimeOffset.UtcNow, TestContext.Current.CancellationToken);
 
             Assert.False(File.Exists(pendingPath), "pending cancel.request must be swept");
             Assert.True(File.Exists(sweptPath), "cancel.request.swept must exist");
@@ -150,6 +153,97 @@ public class CancelRequestFileTests
 
             Assert.True(File.Exists(rejectedPath), "rejected sibling must not be touched");
             Assert.Equal("""{"Target":"rejected-exec","Reason":"prior rejection"}""", File.ReadAllText(rejectedPath));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1649 polarity pair (control arm): a request genuinely left behind by a crashed prior pump —
+    /// written well before this invocation started, by a pid that resolves to no running process — IS
+    /// swept. Paired with
+    /// <see cref="DeleteStalePendingRequest_leaves_a_request_written_after_this_invocation_started_alone"/>
+    /// and <see cref="DeleteStalePendingRequest_leaves_a_request_whose_writer_is_still_alive_alone"/>,
+    /// which flip one condition each and must NOT sweep — proving the AND, not just one arm of it.
+    /// </summary>
+    [Fact]
+    public async Task DeleteStalePendingRequest_sweeps_a_request_that_predates_this_invocation_from_a_dead_writer()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var pendingPath = CancelRequestFile.GetPath(roomDirectory);
+            var invocationStartUtc = DateTimeOffset.UtcNow;
+            var writtenAtUtc = invocationStartUtc.AddMinutes(-10);
+            File.WriteAllText(
+                pendingPath,
+                $$"""{"Target":"stale-exec","WriterPid":999999,"WriterProcessStartTimeUtc":"{{writtenAtUtc:O}}","WrittenAtUtc":"{{writtenAtUtc:O}}"}""");
+
+            await CancelRequestFile.DeleteStalePendingRequestAsync(
+                roomDirectory, invocationStartUtc, TestContext.Current.CancellationToken);
+
+            Assert.False(File.Exists(pendingPath), "a genuinely stale request must still be swept");
+            Assert.True(File.Exists($"{pendingPath}.swept"));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>#1649: written at/after this invocation's own start -- could be a concurrent writer racing the provisioning-to-sweep window, so it must be left for the poller regardless of writer liveness.</summary>
+    [Fact]
+    public async Task DeleteStalePendingRequest_leaves_a_request_written_after_this_invocation_started_alone()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var pendingPath = CancelRequestFile.GetPath(roomDirectory);
+            var invocationStartUtc = DateTimeOffset.UtcNow;
+            // Predates nothing -- written after invocationStartUtc, and by the same dead pid as the
+            // control arm above, so only the timestamp condition differs between the two tests.
+            var writtenAtUtc = invocationStartUtc.AddMinutes(10);
+            File.WriteAllText(
+                pendingPath,
+                $$"""{"Target":"fresh-exec","WriterPid":999999,"WriterProcessStartTimeUtc":"{{writtenAtUtc:O}}","WrittenAtUtc":"{{writtenAtUtc:O}}"}""");
+
+            await CancelRequestFile.DeleteStalePendingRequestAsync(
+                roomDirectory, invocationStartUtc, TestContext.Current.CancellationToken);
+
+            Assert.True(File.Exists(pendingPath), "a request written at/after this invocation's own start must be left for the poller");
+            Assert.False(File.Exists($"{pendingPath}.swept"));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>#1649: predates this invocation, but its writer process is still confirmed running -- not provably a crashed prior pump's leftover, so it must be left for the poller.</summary>
+    [Fact]
+    public async Task DeleteStalePendingRequest_leaves_a_request_whose_writer_is_still_alive_alone()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var pendingPath = CancelRequestFile.GetPath(roomDirectory);
+            var invocationStartUtc = DateTimeOffset.UtcNow;
+            var writtenAtUtc = invocationStartUtc.AddMinutes(-10);
+            var thisProcessStartUtc = new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime();
+            File.WriteAllText(
+                pendingPath,
+                $$"""{"Target":"live-writer-exec","WriterPid":{{Environment.ProcessId}},"WriterProcessStartTimeUtc":"{{thisProcessStartUtc:O}}","WrittenAtUtc":"{{writtenAtUtc:O}}"}""");
+
+            await CancelRequestFile.DeleteStalePendingRequestAsync(
+                roomDirectory, invocationStartUtc, TestContext.Current.CancellationToken);
+
+            Assert.True(File.Exists(pendingPath), "a request from a still-alive writer must be left for the poller");
+            Assert.False(File.Exists($"{pendingPath}.swept"));
         }
         finally
         {

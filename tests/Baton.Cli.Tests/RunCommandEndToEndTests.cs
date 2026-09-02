@@ -464,17 +464,20 @@ public class RunCommandEndToEndTests
             // this pump's own long-lived hold apart from WorktreeWorkspaces.Provision's transient
             // acquire-then-release of the SAME lock file a few statements earlier in
             // RunCommand.ExecuteAsync (WorktreeWorkspaces.cs's own "worktree provisioning" holder
-            // description). #1649: IsHeld can observe THAT hold, race ahead, and write the request
-            // file before RunCommand's own CancelRequestFile.DeleteStalePendingRequest sweep (further
-            // down the same method, but still before this pump's real acquire) has run, so the sweep
-            // deletes the just-written request out from under this test (this is what made
+            // description). Pre-#1649, IsHeld could observe THAT hold, race ahead, and write the
+            // request file before RunCommand's own CancelRequestFile.DeleteStalePendingRequestAsync
+            // sweep (further down the same method, but still before this pump's real acquire) had run,
+            // so the (then-unconditional) sweep deleted the just-written request out from under this
+            // test (this is what made
             // A_cancel_request_against_a_resumed_parked_room_is_consumed_when_settling_the_park_terminates_the_run
-            // ~40% flaky, misread once as an #1607 F1 regression — it reproduces unchanged at #1607's
+            // ~40% flaky, misread once as an #1607 F1 regression — it reproduced unchanged at #1607's
             // own merge-base). Checking the holder sidecar's description instead of the bare lock
             // discriminates the two: it is only ever "baton run pump (pid N)" once THIS pump's own
-            // acquire — which happens strictly after the sweep — has landed. #1649 covers the
-            // production-side race a real concurrent `baton cancel` could still hit; this fixes only
-            // the test's own false positive.
+            // acquire — which happens strictly after the sweep — has landed. #1649 (see
+            // A_cancel_request_written_in_the_window_between_provisioning_and_the_stale_sweep_survives_it
+            // below) separately made the production-side sweep itself discriminate a live concurrent
+            // write from a genuinely stale one, so this wait is now belt-and-braces rather than the
+            // only thing standing between this test and the flake.
             var lockDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
             while (!(ConcurrencyGuard.ReadHolderInfo(roomDirectory).HolderDescription ?? string.Empty)
                 .StartsWith("baton run pump", StringComparison.Ordinal))
@@ -496,6 +499,53 @@ public class RunCommandEndToEndTests
             Assert.True(
                 File.Exists($"{requestPath}.consumed"),
                 "expected the final tick in RunCommand's finally block to consume the request once the park settled");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1649: the production race itself, closed. A concurrent <c>baton cancel</c> that lands its
+    /// <c>cancel.request</c> write in the narrow window between <c>WorktreeWorkspaces.Provision</c> and
+    /// <c>RunCommand</c>'s own stale-request sweep must be CONSUMED, not swept as if it were a leftover
+    /// from a crashed prior pump. Hooks the internal test-only seam
+    /// (<see cref="RunCommand.ExecuteAsync(RunOptions, IReadOnlyDictionary{string, IWorkerAdapter}, InFlightExecutionRegistry?, CancellationToken, Action{string, string}?, Func{Task}?)"/>)
+    /// to write into that exact window deterministically, rather than racing real process timing to
+    /// hit it the way <see cref="A_cancel_request_against_a_resumed_parked_room_is_consumed_when_settling_the_park_terminates_the_run"/>
+    /// has to. Red on pre-#1649 code: the old unconditional sweep renamed the file to <c>.swept</c>
+    /// before the pump's own poller ever ticked, so this assertion block (no pending file, a
+    /// <c>.consumed</c> sibling, <see cref="StepStatus.Cancelled"/>) failed with the request found at
+    /// <c>.swept</c> instead.
+    /// </summary>
+    [Fact]
+    public async Task A_cancel_request_written_in_the_window_between_provisioning_and_the_stale_sweep_survives_it()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var (bindingsFilePath, executionId) = await WriteParkedRoomFixtureAsync(roomDirectory);
+            var options = new RunOptions(WorkflowFilePath: null, bindingsFilePath, roomDirectory);
+            var ct = TestContext.Current.CancellationToken;
+
+            var result = await RunCommand.ExecuteAsync(
+                options,
+                Adapters,
+                inFlightExecutions: null,
+                cancellationToken: ct,
+                onWorkerStdoutLine: null,
+                testOnlyAfterProvisionBeforeStaleSweepAsync: () => CancelRequestFile.WriteAsync(roomDirectory, executionId.Value, ct))
+                .WaitAsync(PumpCompletionTimeout, ct);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.Equal(StepStatus.Cancelled, result.State.Steps.Single().Status);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.False(File.Exists(requestPath), "expected the cancel.request written mid-window to be gone");
+            Assert.False(File.Exists($"{requestPath}.swept"), "expected the live request NOT to be swept as stale (#1649)");
+            Assert.True(File.Exists($"{requestPath}.consumed"), "expected the live request to be consumed by the poller instead");
         }
         finally
         {
