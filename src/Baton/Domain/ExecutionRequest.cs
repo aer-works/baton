@@ -44,12 +44,11 @@ namespace Baton.Domain;
 /// only because a room's adapter never changed mid-run. Failover changes that.
 /// <para>
 /// For an ordinary dispatch this is also the adapter that actually ran: the same resolved
-/// <see cref="Mutation.WorkerBinding.Process"/> both spawns the process and supplies this value. It
-/// is deliberately <em>not</em> that guarantee on the crash-recovery resubmit path
-/// (<c>MutationInterface</c>'s <c>toResubmit</c> loop, M10 Phase 3): that path re-dispatches a
-/// previously accepted request verbatim while re-resolving the binding from the CURRENT bindings
-/// file, so a rebind between the crash and the resubmit makes this field name the pre-crash vendor
-/// while a different one actually runs — tracked as issue #1583, not fixed by this field.
+/// <see cref="Mutation.WorkerBinding.Process"/> both spawns the process and supplies this value. On
+/// the crash-recovery resubmit path (<c>MutationInterface</c>'s <c>toResubmit</c> loop, M10 Phase 3),
+/// when a failover rebind between crash and resubmit causes the current binding to diverge from this
+/// recorded value, Flow journals <see cref="FlowEvent.StepRebound"/> (issue #1583) so that
+/// <see cref="Status.ExecutionUsageProjector"/> re-attributes the execution to the new binding.
 /// </para>
 /// <c>null</c> covers two cases, same defaulting rule as
 /// <see cref="FlowEvent.ExecutionFailed.Reason"/>: every <c>flow.jsonl</c> line written before this

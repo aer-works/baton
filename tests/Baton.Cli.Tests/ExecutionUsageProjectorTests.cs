@@ -424,6 +424,85 @@ public sealed class ExecutionUsageProjectorTests
         }
     }
 
+    [Fact]
+    public void A_rebound_execution_attributes_usage_to_the_new_binding_from_StepRebound()
+    {
+        // Issue #1583 (operator ruling 2026-09-01): when an execution is rebound, Flow journals
+        // FlowEvent.StepRebound naming old->new. ExecutionUsageProjector must honor that event and
+        // attribute usage using the new adapter's parser rather than the frozen ExecutionRequest's
+        // recorded adapter.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-rebound-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-rebound");
+            var stepId = new StepId("plan");
+            var start = DateTime.UtcNow;
+            WriteBindings(testRoot, ("plan", "agy"));
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId, "plan", adapter: "agy"))),
+                new LogEntry.FlowLogEntry(new FlowEvent.StepRebound(stepId, executionId, PreviousAdapter: "agy", NewAdapter: "claude")),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(3)),
+            };
+
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+            File.WriteAllText(
+                Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName),
+                """{"type":"result","num_turns":3,"usage":{"input_tokens":100,"output_tokens":50}}""" + "\n");
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot);
+
+            var view = Assert.Single(usage).Value;
+            Assert.Equal(100, view.TokensIn);
+            Assert.Equal(50, view.TokensOut);
+            Assert.Equal(3, view.Turns);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void A_rebound_execution_without_StepRebound_attributes_to_the_originally_recorded_adapter()
+    {
+        // Polarity partner to the test above: without FlowEvent.StepRebound, ExecutionUsageProjector
+        // trusts the accepted request's recorded "agy" adapter. When the log is claude-shaped,
+        // AgyUsageParser fails to parse, demonstrating that StepRebound is what flipped attribution.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-no-rebound-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-no-rebound");
+            var start = DateTime.UtcNow;
+            WriteBindings(testRoot, ("plan", "agy"));
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId, "plan", adapter: "agy"))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(3)),
+            };
+
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+            File.WriteAllText(
+                Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName),
+                """{"type":"result","num_turns":3,"usage":{"input_tokens":100,"output_tokens":50}}""" + "\n");
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot);
+
+            var view = Assert.Single(usage).Value;
+            Assert.Null(view.TokensIn);
+            Assert.Null(view.TokensOut);
+            Assert.Null(view.Turns);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static ExecutionRequest AcceptedRequest(ExecutionId executionId, string worker, string? adapter = null) => new(
         executionId,
         new WorkflowId("wf-usage-test"),

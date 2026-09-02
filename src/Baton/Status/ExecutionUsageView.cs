@@ -90,6 +90,19 @@ public static class ExecutionUsageProjector
                 }
             }
 
+            // #1583: a rebound resubmission overrides the frozen ExecutionRequest's recorded adapter.
+            if (entry is LogEntry.FlowLogEntry { Event: FlowEvent.StepRebound rebound })
+            {
+                if (rebound.NewAdapter is { Length: > 0 } newAdapter)
+                {
+                    recordedAdapterByExecutionId[rebound.ForExecutionId.Value] = newAdapter;
+                }
+                else
+                {
+                    recordedAdapterByExecutionId.Remove(rebound.ForExecutionId.Value);
+                }
+            }
+
             if (entry is not LogEntry.CoreLogEntry { WriterUtcTimestamp: { } timestamp } coreEntry)
             {
                 continue;

@@ -444,6 +444,50 @@ public sealed class RoomDetailToolTests : IDisposable
     }
 
     [Fact]
+    public async Task RoomDetail_Timeline_IncludesStepReboundWithStepId()
+    {
+        var roomDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName, "step-rebound-room");
+        Directory.CreateDirectory(roomDir);
+
+        var logPath = Path.Combine(roomDir, "flow.jsonl");
+        await using var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-rb-1");
+        var stepId = new StepId("plan");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("wf-1"),
+            stepId,
+            "stub-worker",
+            Inputs: [],
+            Outputs: [],
+            Timeout: TimeSpan.FromMinutes(1),
+            Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            Adapter: "agy");
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(
+            new FlowEvent.StepRebound(stepId, execId, PreviousAdapter: "agy", NewAdapter: "claude"),
+            TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new RoomDetailTool();
+        var result = await tool.CallAsync(Parse("""{ "room": "step-rebound-room" }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var view = JsonSerializer.Deserialize<RoomDetailView>(result.Text);
+        Assert.NotNull(view?.Timeline);
+        var entries = view!.Timeline!.Entries;
+        Assert.Equal(2, entries.Count);
+
+        Assert.Equal("flow.executionRequestAccepted", entries[0].Type);
+        Assert.Equal("plan", entries[0].StepId);
+
+        Assert.Equal("flow.stepRebound", entries[1].Type);
+        Assert.Equal("plan", entries[1].StepId);
+    }
+
+    [Fact]
     public async Task MissingRoomArgument_ReturnsError()
     {
         var tool = new RoomDetailTool();

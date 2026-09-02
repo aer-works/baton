@@ -280,6 +280,7 @@ public static class StateProjector
 
                 break;
 
+            case FlowEvent.StepRebound:
             case FlowEvent.ExecutionRequestRejected:
             case FlowEvent.ZeroOutputsDespiteSubstantialWork:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.

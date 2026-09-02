@@ -887,6 +887,31 @@ public static class MutationInterface
                 {
                     var request = acceptedRequestByExecutionId[executionId];
                     var processBinding = (WorkerBinding.Process)workerBindings[request.Worker];
+
+                    // #1583 (spec/baton.md §3, pulling S6 / #802 section 3.3 forward): when the resubmit's current binding differs
+                    // from the request's recorded Adapter/Model, journal FlowEvent.StepRebound naming old->new
+                    // before dispatching so that usage projection attributes this execution to the new binding.
+                    if (request.Adapter != processBinding.Adapter || request.Model != processBinding.Model)
+                    {
+                        var stepId = request.StepId ?? new StepId(request.Worker);
+                        await eventLogWriter.AppendAsync(
+                            new FlowEvent.StepRebound(
+                                stepId,
+                                executionId,
+                                PreviousAdapter: request.Adapter,
+                                PreviousModel: request.Model,
+                                NewAdapter: processBinding.Adapter,
+                                NewModel: processBinding.Model),
+                            ioCancellationToken).ConfigureAwait(false);
+
+                        request = request with
+                        {
+                            Adapter = processBinding.Adapter,
+                            Model = processBinding.Model,
+                        };
+                        acceptedRequestByExecutionId[executionId] = request;
+                    }
+
                     var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRootPath, executionId);
                     var prepared = new PreparedExecution(request, outputDirectory);
 

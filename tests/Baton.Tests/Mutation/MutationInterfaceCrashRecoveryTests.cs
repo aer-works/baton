@@ -435,8 +435,139 @@ public class MutationInterfaceCrashRecoveryTests
         }
     }
 
+    [Fact]
+    public async Task StartWorkflowAsync_journals_StepRebound_when_resubmitting_through_a_divergent_adapter()
+    {
+        // Issue #1583 (operator ruling 2026-09-01): when an unstarted accepted execution is resubmitted
+        // after crash-recovery with a binding whose Adapter differs from the request's recorded Adapter,
+        // Flow must journal FlowEvent.StepRebound (old->new) before dispatching.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "sonnet");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "agy", model: "gemini-3-pro");
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var rebound = Assert.Single(events.OfType<FlowEvent.StepRebound>());
+            Assert.Equal(A, rebound.StepId);
+            Assert.Equal(executionId, rebound.ForExecutionId);
+            Assert.Equal("agy", rebound.PreviousAdapter);
+            Assert.Equal("gemini-3-pro", rebound.PreviousModel);
+            Assert.Equal("claude", rebound.NewAdapter);
+            Assert.Equal("sonnet", rebound.NewModel);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_journals_StepRebound_when_resubmitting_through_a_divergent_model()
+    {
+        // Issue #1583: model divergence (same adapter, different model) also journals StepRebound.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "opus");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "claude", model: "sonnet");
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var rebound = Assert.Single(events.OfType<FlowEvent.StepRebound>());
+            Assert.Equal(A, rebound.StepId);
+            Assert.Equal(executionId, rebound.ForExecutionId);
+            Assert.Equal("claude", rebound.PreviousAdapter);
+            Assert.Equal("sonnet", rebound.PreviousModel);
+            Assert.Equal("claude", rebound.NewAdapter);
+            Assert.Equal("opus", rebound.NewModel);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_does_not_journal_StepRebound_when_resubmitting_through_an_identical_binding()
+    {
+        // Control / non-divergent case: when the binding matches the request's recorded Adapter and Model,
+        // no FlowEvent.StepRebound is emitted.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "sonnet");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "claude", model: "sonnet");
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.StepRebound>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     private static async Task<ExecutionId> AcceptRequestAsync(
-        FlowEventLogWriter writer, WorkflowId workflowId, string artifactsRoot, StepId stepId)
+        FlowEventLogWriter writer,
+        WorkflowId workflowId,
+        string artifactsRoot,
+        StepId stepId,
+        string? adapter = null,
+        string? model = null)
     {
         var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
         var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
@@ -449,7 +580,9 @@ public class MutationInterfaceCrashRecoveryTests
             Outputs: [],
             Timeout,
             ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot),
-            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            Adapter: adapter,
+            Model: model);
 
         await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request));
         return executionId;
@@ -468,9 +601,9 @@ public class MutationInterfaceCrashRecoveryTests
         WorkflowTemplateVersion: 1,
         Steps: steps);
 
-    private static Dictionary<string, WorkerBinding> MakeBindings() => new()
+    private static Dictionary<string, WorkerBinding> MakeBindings(string? adapter = null, string? model = null) => new()
     {
-        ["stub-worker"] = new WorkerBinding.Process(ProcessContract, Target, Timeout),
+        ["stub-worker"] = new WorkerBinding.Process(ProcessContract, Target, Timeout, Adapter: adapter, Model: model),
     };
 
     /// <summary>

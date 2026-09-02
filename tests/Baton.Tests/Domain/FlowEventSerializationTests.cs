@@ -90,6 +90,9 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park")];
         yield return [new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park", ForeclosedBy: "settle")];
         yield return [new FlowEvent.ZeroOutputsDespiteSubstantialWork(ExecutionId, "4 turns, 500 output tokens")];
+        // #1583
+        yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover")];
+        yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", null, "claude", null)];
     }
 
     [Theory]

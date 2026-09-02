@@ -1237,4 +1237,25 @@ public class StateProjectorTests
             DirectoryCleanup.DeleteRecursively(tempDir);
         }
     }
+
+    [Fact]
+    public void StepRebound_is_projected_without_perturbing_step_state()
+    {
+        // #1583 / S6 (spec/baton.md §3, #802 section 3.3): StepRebound is a diagnostic ledger event consumed by ExecutionUsageProjector;
+        // it does not alter step lifecycle status or retry counters.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.StepRebound(Architect, executionId, "agy", "gemini-3-pro", "claude", "sonnet", "Failover"),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.Equal(executionId, architect.LatestExecutionId);
+        Assert.Equal(0, architect.ConsecutiveFailureCount);
+    }
 }
