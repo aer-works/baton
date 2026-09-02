@@ -520,6 +520,34 @@ public class ResolveCommandEndToEndTests
     }
 
     /// <summary>
+    /// The other direction of the same discrimination: <c>--close</c> against a `ContractFailure`
+    /// room -- one `--reject`/`--accept-capture` already admit -- must still refuse, through
+    /// <see cref="ResolveCommand"/>'s own <c>ThrowDiscriminatedRefusal</c> `close` branch, not just
+    /// <c>MutationInterface</c>'s guard one layer down.
+    /// </summary>
+    [Fact]
+    public async Task Closing_a_contract_failure_room_through_the_real_CLI_parser_still_refuses()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var executionId = await SeedContractFailureRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => ResolveCommand.ExecuteAsync(
+                new ResolveOptions(roomDirectory, executionId.Value, Accept: false, Reason: "not my problem", Close: true),
+                TestContext.Current.CancellationToken));
+
+            Assert.Contains("--close", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("--reject", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
     /// The durable shape a crash between "fact" and "files" leaves behind — an accepted
     /// <see cref="FlowEvent.CaptureResolved"/> whose declared output is not on disk — constructed
     /// directly, since what these fixtures test is the CLI's admission of that shape as a repair

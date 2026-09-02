@@ -1292,6 +1292,38 @@ public class OutcomeClassifierTests
     // the arm exercising a real IFailureClassifier implementation against OutcomeClassifier.Classify has
     // to live in the project that can see both.
 
+    [Theory]
+    [InlineData(FailureClassification.Retryable)]
+    [InlineData(FailureClassification.Permanent)]
+    public void Classify_does_not_veto_a_satisfied_exit_0_run_for_a_non_ToolDenied_non_ExhaustedUntil_classification(
+        FailureClassification classification)
+    {
+        // #914 scope gate, widened by #1622 (a): ONLY ToolDenied/ExhaustedUntil veto an otherwise-
+        // satisfied exit-0 run. This is the polarity control for both vetoing tests above -- reds if a
+        // future change widens the veto to every non-null FailureClassification instead of exactly
+        // these two.
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [], []);
+            var stderr = "some other failure signature";
+            var mockClassifier = new TestQuotaClassifier(stderr, classification, null);
+
+            var result = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, stderr),
+                contract,
+                directory,
+                mockClassifier);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, result.Verdict);
+            Assert.Null(result.FailureClassification);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
     [Fact]
     public void Classify_delegates_to_IFailureClassifier_with_StdoutTail_and_carries_ExhaustedUntil()
     {

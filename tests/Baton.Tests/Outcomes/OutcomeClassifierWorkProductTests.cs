@@ -28,7 +28,7 @@ public sealed class OutcomeClassifierWorkProductTests : IDisposable
 
         var classification = OutcomeClassifier.Classify(
             new CoreDispatchResult(0, CoreExitReason.Natural, "asked for approval; nothing answered"),
-            contract, outputDirectory, worktreePath: worktree, changesTree: true);
+            contract, outputDirectory, changesTreeWorkingDirectory: worktree, changesTree: true);
 
         Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
         Assert.False(classification.WorkspaceChanged);
@@ -45,7 +45,7 @@ public sealed class OutcomeClassifierWorkProductTests : IDisposable
 
         var classification = OutcomeClassifier.Classify(
             new CoreDispatchResult(0, CoreExitReason.Natural, null),
-            contract, outputDirectory, worktreePath: worktree, changesTree: true);
+            contract, outputDirectory, changesTreeWorkingDirectory: worktree, changesTree: true);
 
         Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
         Assert.True(classification.WorkspaceChanged);
@@ -68,7 +68,7 @@ public sealed class OutcomeClassifierWorkProductTests : IDisposable
 
         var classification = OutcomeClassifier.Classify(
             new CoreDispatchResult(0, CoreExitReason.Natural, null),
-            contract, outputDirectory, worktreePath: worktree, changesTree: true);
+            contract, outputDirectory, changesTreeWorkingDirectory: worktree, changesTree: true);
 
         Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
         Assert.False(classification.WorkspaceChanged);
@@ -89,7 +89,7 @@ public sealed class OutcomeClassifierWorkProductTests : IDisposable
 
         var classification = OutcomeClassifier.Classify(
             new CoreDispatchResult(0, CoreExitReason.Natural, null),
-            contract, outputDirectory, worktreePath: worktree, changesTree: false);
+            contract, outputDirectory, changesTreeWorkingDirectory: worktree, changesTree: false);
 
         Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
         Assert.Null(classification.WorkspaceChanged);
@@ -106,7 +106,7 @@ public sealed class OutcomeClassifierWorkProductTests : IDisposable
 
         var classification = OutcomeClassifier.Classify(
             new CoreDispatchResult(0, CoreExitReason.Natural, null),
-            contract, outputDirectory, worktreePath: worktree, changesTree: true);
+            contract, outputDirectory, changesTreeWorkingDirectory: worktree, changesTree: true);
 
         Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
         Assert.True(classification.Hollow);

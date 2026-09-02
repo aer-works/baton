@@ -17,10 +17,10 @@ public enum IndeterminateProducer
     /// <summary>#1593: <see cref="FlowEvent.ExecutionIndeterminate"/> with a null <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/> — an exit-0 contract failure (or a dead worker on a mutated workspace) with no response to capture. Only <c>--reject --reason</c> admits this producer; <c>--accept-capture</c> has no capture to accept and keeps refusing.</summary>
     ContractFailure,
 
-    /// <summary>#1623: <see cref="FlowEvent.VerifyFailed"/> — the role's verify command exited non-zero after a clean, contract-satisfied worker exit. Neither <c>baton resolve</c> verb admits this producer; only a fresh <c>baton dispatch</c> reopens the step.</summary>
+    /// <summary>#1623: <see cref="FlowEvent.VerifyFailed"/> — the role's verify command exited non-zero after a clean, contract-satisfied worker exit. #1622 (d): <c>baton resolve --close --reason &lt;text&gt;</c> admits this producer, settling the step resolved-but-Failed; a fresh <c>baton dispatch</c> is still the only way to reopen it.</summary>
     VerifyFailed,
 
-    /// <summary>#1623: <see cref="FlowEvent.ExecutionArrested"/> — a live execution crossed its role's token budget and was arrested. Neither <c>baton resolve</c> verb admits this producer; only a fresh <c>baton dispatch</c> reopens the step.</summary>
+    /// <summary>#1623: <see cref="FlowEvent.ExecutionArrested"/> — a live execution crossed its role's token budget and was arrested. #1622 (d): <c>baton resolve --close --reason &lt;text&gt;</c> admits this producer, settling the step resolved-but-Failed; a fresh <c>baton dispatch</c> is still the only way to reopen it.</summary>
     Arrested,
 }
 

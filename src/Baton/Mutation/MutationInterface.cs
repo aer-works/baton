@@ -1045,6 +1045,7 @@ public static class MutationInterface
                         string? worktreeBaseRef = null;
                         IWorkerResponseParser? responseParser = null;
                         var changesTree = false;
+                        string? changesTreeWorkingDirectory = null;
                         try
                         {
                             if (workerBindings.TryGetValue(request.Worker, out var b) && b is WorkerBinding.Process p)
@@ -1063,6 +1064,11 @@ public static class MutationInterface
                                 // reads off `binding.ChangesTree` below -- crash recovery classifies
                                 // from a freshly re-resolved binding, so this is the identical value.
                                 changesTree = p.ChangesTree;
+                                // #1622/#1390: deliberately NOT gated on p.IsWorktree the way worktreePath
+                                // above is -- see OutcomeClassifier.Classify's own parameter doc for why a
+                                // tree-changing role never gets an auto-provisioned worktree, so that gate
+                                // would leave this permanently null for every real run.
+                                changesTreeWorkingDirectory = changesTree ? p.Target.WorkingDirectory : null;
                             }
                         }
                         catch (BatonFlowException)
@@ -1086,7 +1092,8 @@ public static class MutationInterface
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
-                            usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree);
+                            usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree,
+                            changesTreeWorkingDirectory: changesTreeWorkingDirectory);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
@@ -1730,9 +1737,13 @@ public static class MutationInterface
             // F4 (#1593 review): only an ACTUALLY-provisioned worktree, never the operator's own
             // repository — see WorkerBinding.Process.IsWorktree's remarks.
             var worktreePath = binding.IsWorktree ? binding.Target.WorkingDirectory : null;
+            // #1622/#1390: deliberately NOT gated on binding.IsWorktree the way worktreePath above is —
+            // see OutcomeClassifier.Classify's own changesTreeWorkingDirectory parameter doc for why.
+            var changesTreeWorkingDirectory = binding.ChangesTree ? binding.Target.WorkingDirectory : null;
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
-                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha, binding.ChangesTree);
+                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha, binding.ChangesTree,
+                changesTreeWorkingDirectory);
 
             // #1623 (contract: spec/baton.md §3): the engine's own verify
             // step, spawned here -- between Classify returning Succeeded and the outcome event append

@@ -1220,6 +1220,13 @@ and for every non-`Succeeded` step — the field's mere absence is the signal, n
 document, not the narrower `WorktreeProvisioner.Audit` the grant-audit branch uses, which only reads
 dirty-tree: #1390's second occurrence measured a workspace that was dirty with real, substantial changes
 yet nothing ever left it — no commit, no push, no PR — so "untouched" has to mean commits-over-base too).
+Fed the binding's real `WorkingDirectory` whenever `changesTree` is true, deliberately never gated on
+whether Baton itself auto-provisioned isolation for the run — a tree-changing role's `write_files` grant
+means `RoleDispatch.ToBinding` never auto-provisions one (see `WorkerBindingConfigEntry.ChangesTree`'s
+own remarks), so gating this the way the retry-veto path's `worktreePath` is gated would leave
+`workspaceChanged` unable to read anything but `true` for every real `implement`/`janitor` dispatch
+(second-reader finding, #1622). `Classify`'s own `changesTreeWorkingDirectory` parameter is the
+deliberately-separate, wider path this reads from.
 `hollow` is present under the identical gate, `true` only when `workspaceChanged` reads `false` **and**
 the contract declares zero `ProducedOutputs` — narrower than `workspaceChanged: false` alone, since every
 shipped catalog role that is tree-changing declares at least one output (the catalog's own load-time

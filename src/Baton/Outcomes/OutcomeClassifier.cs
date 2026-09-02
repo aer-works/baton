@@ -147,6 +147,23 @@ public static class OutcomeClassifier
     /// <c>NaturalExit</c> otherwise, or <c>TimedOut</c> → Failed;
     /// <c>CancelRequested</c> → Cancelled.
     /// </summary>
+    /// <param name="worktreePath">
+    /// Only an ACTUALLY-provisioned, auto-isolated worktree (<see cref="Mutation.WorkerBinding.Process.IsWorktree"/>) —
+    /// null otherwise, deliberately, per F4 (#1593 review): the retry/grant-audit reads below must
+    /// never see the operator's own working directory, routinely dirty for reasons unrelated to this
+    /// execution. <paramref name="changesTreeWorkingDirectory"/> below is the separate, wider path for
+    /// the #1622/#1390 work-product evidence, which explicitly wants the real directory.
+    /// </param>
+    /// <param name="changesTreeWorkingDirectory">
+    /// #1622/#1390: the caller's own <c>WorkingDirectory</c> when <paramref name="changesTree"/> is
+    /// true, regardless of whether it is an auto-provisioned worktree — unlike
+    /// <paramref name="worktreePath"/> above, this is never null merely because no isolation was
+    /// provisioned, since a tree-changing role's write grant means WriteFiles is true, which by
+    /// construction never gets an auto-provisioned worktree (see
+    /// <c>Baton.Vendors.RoleDispatch.ToBinding</c>'s own remarks) — so gating this on
+    /// <see cref="Mutation.WorkerBinding.Process.IsWorktree"/> the way <paramref name="worktreePath"/>
+    /// does would leave workspaceChanged/hollow permanently unable to read "changed".
+    /// </param>
     public static OutcomeClassification Classify(
         CoreDispatchResult result,
         WorkerContract contract,
@@ -158,7 +175,8 @@ public static class OutcomeClassifier
         IWorkerResponseParser? responseParser = null,
         IWorkerUsageParser? usageParser = null,
         string? worktreeBaseRef = null,
-        bool changesTree = false)
+        bool changesTree = false,
+        string? changesTreeWorkingDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(contract);
@@ -183,7 +201,7 @@ public static class OutcomeClassifier
             // falls through to today's behaviour, so the guard fails safe.
             if (result.TerminalSuccessObserved && ContractValidator.IsSatisfied(contract, outputDirectory))
             {
-                return BuildSucceededClassification(contract, worktreePath, worktreeBaseRef, changesTree);
+                return BuildSucceededClassification(contract, changesTreeWorkingDirectory, worktreeBaseRef, changesTree);
             }
 
             var (classification, retryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
@@ -314,7 +332,7 @@ public static class OutcomeClassifier
                 }
             }
 
-            return BuildSucceededClassification(contract, worktreePath, worktreeBaseRef, changesTree);
+            return BuildSucceededClassification(contract, changesTreeWorkingDirectory, worktreeBaseRef, changesTree);
         }
 
         // #1593: Natural exit 0 with unsatisfied contract settles Indeterminate (spec/baton.md §3 Producers).
@@ -559,17 +577,19 @@ public static class OutcomeClassifier
     /// ("workspaceChanged/hollow/hollowReason") specifies in full; not restated here. Shared by both
     /// places <see cref="Classify"/> settles Succeeded so the two paths cannot silently diverge.
     /// <paramref name="changesTree"/> is <see cref="Domain.WorkerBinding.Process.ChangesTree"/>,
-    /// forwarded down from <c>Mutation.MutationInterface</c>.
+    /// forwarded down from <c>Mutation.MutationInterface</c>. <paramref name="changesTreeWorkingDirectory"/>
+    /// is <see cref="Classify"/>'s own parameter of that name — see its doc for why this is never the
+    /// retry-protected <c>worktreePath</c>.
     /// </summary>
     private static OutcomeClassification BuildSucceededClassification(
-        WorkerContract contract, string? worktreePath, string? worktreeBaseRef, bool changesTree)
+        WorkerContract contract, string? changesTreeWorkingDirectory, string? worktreeBaseRef, bool changesTree)
     {
         if (!changesTree)
         {
             return new OutcomeClassification(OutcomeVerdict.Succeeded);
         }
 
-        var workspaceChanged = !Workspaces.WorktreeProvisioner.IsWorkspaceUntouched(worktreePath, worktreeBaseRef);
+        var workspaceChanged = !Workspaces.WorktreeProvisioner.IsWorkspaceUntouched(changesTreeWorkingDirectory, worktreeBaseRef);
         var hollow = !workspaceChanged && contract.ProducedOutputs.Count == 0;
         var hollowReason = hollow
             ? "the worker exited 0 with a satisfied contract, but the worktree is unchanged (no commit, " +
