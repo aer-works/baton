@@ -156,6 +156,67 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// LOW-1 (#1619 second-reader): <c>--workstream</c>'s parity gap with <c>--label</c> --
+    /// <see cref="RedispatchCommand.ExecuteAsync"/>'s amended-spec branch (:130-134) duplicates the
+    /// same inherit/override/clear rule <see cref="RedispatchCommand.InheritBinding"/> already applies
+    /// on the no-spec path, and only the label half of that duplication had an end-to-end test proving
+    /// the duplicated line actually does something -- <see cref="RedispatchBindingTests"/> only reaches
+    /// <c>InheritBinding</c> directly. Runs under an isolated <c>BatonPaths.Root</c> (see
+    /// <see cref="DispatchCommandEndToEndTests.BeginIsolatedBatonHome"/>): a resolved workstream here
+    /// writes an actual directory junction on disk, which must not land under the machine's own
+    /// <c>~/.baton</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_workstream_survives_an_amended_spec_redispatch_unless_overridden()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        var (tempHome, scope) = DispatchCommandEndToEndTests.BeginIsolatedBatonHome();
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", workstream: "w1619");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(amendedSpecPath, "Weigh the options for Y instead.", TestContext.Current.CancellationToken);
+
+            var inheritedChildRoom = Path.Combine(testRoot, "child-inherited");
+            var inheritedResult = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, inheritedChildRoom, SpecFilePath: amendedSpecPath, Adapter: "fake"),
+                Adapters, TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, inheritedResult.State.Status);
+            var inheritedBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(inheritedChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("w1619", inheritedBindings["advise"].Workstream);
+
+            var overriddenChildRoom = Path.Combine(testRoot, "child-overridden");
+            var overriddenResult = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, overriddenChildRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Workstream: "w2024"),
+                Adapters, TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, overriddenResult.State.Status);
+            var overriddenBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(overriddenChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("w2024", overriddenBindings["advise"].Workstream);
+
+            var clearedChildRoom = Path.Combine(testRoot, "child-cleared");
+            var clearedResult = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, clearedChildRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Workstream: null, WorkstreamSpecified: true),
+                Adapters, TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, clearedResult.State.Status);
+            var clearedBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(clearedChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Null(clearedBindings["advise"].Workstream);
+        }
+        finally
+        {
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "parent"));
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "child-inherited"));
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w2024", Path.Combine(testRoot, "child-overridden"));
+            scope.Dispose();
+            DirectoryCleanup.DeleteRecursively(testRoot);
+            DirectoryCleanup.DeleteRecursively(tempHome);
+        }
+    }
+
     [Fact]
     public async Task A_blank_label_clears_the_inherited_label_on_an_unchanged_spec_redispatch()
     {
@@ -207,7 +268,7 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
                 Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
             Assert.Equal("w1619", childBindings["advise"].Workstream);
 
-            var childLinkPath = Path.Combine(BatonPaths.ByWorkstream, "w1619", "child-inherited");
+            var childLinkPath = WorkstreamJunctionLinker.ResolveLinkPath("w1619", childRoom);
             Assert.True(Directory.Exists(childLinkPath), $"expected a by-workstream junction at '{childLinkPath}'");
         }
         finally
@@ -215,8 +276,8 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
             // Unlink both junctions (parent's and the redispatched child's) BEFORE the real room
             // directories they point at are removed -- see CleanupWorkstreamJunction's own doc -- while
             // the scope still resolves BatonPaths.ByWorkstream into tempHome.
-            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", "child-inherited");
-            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", "parent");
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "child-inherited"));
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "parent"));
             scope.Dispose();
             DirectoryCleanup.DeleteRecursively(testRoot);
             DirectoryCleanup.DeleteRecursively(tempHome);
@@ -253,7 +314,7 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
             // Only the parent got a junction -- the child's workstream was cleared, so
             // WorkstreamJunctionLinker never created one for "child-cleared". Still resolved through
             // the active scope, before it is disposed.
-            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", "parent");
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "parent"));
             scope.Dispose();
             DirectoryCleanup.DeleteRecursively(testRoot);
             DirectoryCleanup.DeleteRecursively(tempHome);

@@ -162,7 +162,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         {
             // Unlink before tearing down -- see CleanupWorkstreamJunction's own doc for why the order
             // matters -- while the scope (and so BatonPaths.ByWorkstream) still resolves into tempHome.
-            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", "task");
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "task"));
             scope.Dispose();
             DirectoryCleanup.DeleteRecursively(testRoot);
             DirectoryCleanup.DeleteRecursively(tempHome);
@@ -212,7 +212,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
 
             await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
 
-            var linkPath = Path.Combine(BatonPaths.ByWorkstream, "w1619", "task");
+            var linkPath = WorkstreamJunctionLinker.ResolveLinkPath("w1619", roomDirectory);
             Assert.True(Directory.Exists(linkPath), $"expected a by-workstream junction at '{linkPath}'");
             Assert.True(
                 File.Exists(Path.Combine(linkPath, "bindings.json")),
@@ -222,7 +222,110 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         {
             // Unlink before the real room directory is removed -- see CleanupWorkstreamJunction's own
             // doc for why the order matters here too.
-            CleanupWorkstreamJunction("w1619", "task");
+            CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "task"));
+            scope.Dispose();
+            DirectoryCleanup.DeleteRecursively(testRoot);
+            DirectoryCleanup.DeleteRecursively(tempHome);
+        }
+    }
+
+    /// <summary>
+    /// HIGH-1 (#1619 second-reader): the junction's own name used to be the room's leaf name alone,
+    /// which collides whenever an explicit <c>--room-dir</c> under two different parents shares a leaf
+    /// -- exactly the pattern every invoking harness uses (<c>docs/agents/invoking-baton.md</c>). Two
+    /// rooms named "lane" under different roots, dispatched into the same workstream, must each get
+    /// their own junction that resolves back into their own room, never into each other's.
+    /// </summary>
+    [Fact]
+    public async Task Dispatching_two_rooms_with_the_same_leaf_name_under_one_workstream_each_get_their_own_junction()
+    {
+        var testRootA = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-a-{Guid.NewGuid():N}");
+        var testRootB = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-b-{Guid.NewGuid():N}");
+        var (tempHome, scope) = BeginIsolatedBatonHome();
+        try
+        {
+            var specPathA = await WriteSpecAsync(testRootA, "Weigh the options for X.");
+            var roomDirectoryA = Path.Combine(testRootA, "lane");
+            var optionsA = new DispatchOptions("advise", specPathA, roomDirectoryA, Adapter: "fake", Workstream: "w1619");
+            await DispatchCommand.ExecuteAsync(optionsA, Adapters, TestContext.Current.CancellationToken);
+
+            var specPathB = await WriteSpecAsync(testRootB, "Weigh the options for Y.");
+            var roomDirectoryB = Path.Combine(testRootB, "lane");
+            var optionsB = new DispatchOptions("advise", specPathB, roomDirectoryB, Adapter: "fake", Workstream: "w1619");
+            await DispatchCommand.ExecuteAsync(optionsB, Adapters, TestContext.Current.CancellationToken);
+
+            var linkPathA = WorkstreamJunctionLinker.ResolveLinkPath("w1619", roomDirectoryA);
+            var linkPathB = WorkstreamJunctionLinker.ResolveLinkPath("w1619", roomDirectoryB);
+
+            Assert.NotEqual(linkPathA, linkPathB);
+            Assert.True(Directory.Exists(linkPathA), $"expected a by-workstream junction at '{linkPathA}'");
+            Assert.True(Directory.Exists(linkPathB), $"expected a by-workstream junction at '{linkPathB}'");
+
+            Assert.Equal(
+                BatonPaths.RecordKey(roomDirectoryA),
+                BatonPaths.RecordKey(new DirectoryInfo(linkPathA).LinkTarget!));
+            Assert.Equal(
+                BatonPaths.RecordKey(roomDirectoryB),
+                BatonPaths.RecordKey(new DirectoryInfo(linkPathB).LinkTarget!));
+
+            var bindingsThroughA = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(linkPathA, "bindings.json"), TestContext.Current.CancellationToken);
+            var bindingsThroughB = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(linkPathB, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Contains("for X", bindingsThroughA["advise"].PromptTemplate, StringComparison.Ordinal);
+            Assert.Contains("for Y", bindingsThroughB["advise"].PromptTemplate, StringComparison.Ordinal);
+        }
+        finally
+        {
+            CleanupWorkstreamJunction("w1619", Path.Combine(testRootA, "lane"));
+            CleanupWorkstreamJunction("w1619", Path.Combine(testRootB, "lane"));
+            scope.Dispose();
+            DirectoryCleanup.DeleteRecursively(testRootA);
+            DirectoryCleanup.DeleteRecursively(testRootB);
+            DirectoryCleanup.DeleteRecursively(tempHome);
+        }
+    }
+
+    /// <summary>
+    /// MED-1 (#1619 second-reader): a discriminating control for the class's own "never fails the
+    /// dispatch" contract (<see cref="WorkstreamJunctionLinker.CreateIfRequested"/>'s doc). Pre-occupying
+    /// the exact link name with a plain file (not a directory) makes <c>mklink /J</c> itself refuse --
+    /// the mklink-exit-code warning branch, not the class's own catch clause -- and the dispatch must
+    /// still reach Terminal, with the failure surfaced on stderr rather than swallowed.
+    /// </summary>
+    [Fact]
+    public async Task A_junction_that_cannot_be_created_warns_on_stderr_without_failing_the_dispatch()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var (tempHome, scope) = BeginIsolatedBatonHome();
+        var originalError = Console.Error;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var linkPath = WorkstreamJunctionLinker.ResolveLinkPath("w1619", roomDirectory);
+            Directory.CreateDirectory(Path.GetDirectoryName(linkPath)!);
+            await File.WriteAllTextAsync(linkPath, "occupied", TestContext.Current.CancellationToken);
+
+            using var stderr = new StringWriter();
+            Console.SetError(stderr);
+
+            var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake", Workstream: "w1619");
+            var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.Contains("could not create the by-workstream link", stderr.ToString(), StringComparison.Ordinal);
+            Assert.True(File.Exists(Path.Combine(roomDirectory, "bindings.json")), "the room itself must still be usable");
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            var linkPath = WorkstreamJunctionLinker.ResolveLinkPath("w1619", Path.Combine(testRoot, "task"));
+            if (File.Exists(linkPath))
+            {
+                FileCleanup.Delete(linkPath);
+            }
+
             scope.Dispose();
             DirectoryCleanup.DeleteRecursively(testRoot);
             DirectoryCleanup.DeleteRecursively(tempHome);
@@ -1134,12 +1237,15 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     /// already been removed throws <see cref="UnauthorizedAccessException"/> even non-recursively, so
     /// this must run before the real room directory it points at is deleted. Resolves
     /// <see cref="BatonPaths.ByWorkstream"/> through whatever <see cref="BatonEnvironmentSnapshot"/>
-    /// scope is active on the caller -- see <see cref="BeginIsolatedBatonHome"/>.
+    /// scope is active on the caller -- see <see cref="BeginIsolatedBatonHome"/>. Takes the room's own
+    /// directory path, not its leaf name, because <see cref="WorkstreamJunctionLinker.ResolveLinkPath"/>
+    /// keys the link's own name on a hash of that full path (HIGH-1) -- the leaf alone no longer
+    /// determines where the junction landed.
     /// </summary>
-    internal static void CleanupWorkstreamJunction(string slug, string roomName)
+    internal static void CleanupWorkstreamJunction(string slug, string roomDirectoryPath)
     {
         var slugDir = Path.Combine(BatonPaths.ByWorkstream, slug);
-        var linkPath = Path.Combine(slugDir, roomName);
+        var linkPath = WorkstreamJunctionLinker.ResolveLinkPath(slug, roomDirectoryPath);
         if (Directory.Exists(linkPath))
         {
             Directory.Delete(linkPath, recursive: false);

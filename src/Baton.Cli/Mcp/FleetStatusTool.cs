@@ -113,12 +113,26 @@ public sealed class FleetStatusTool : IMcpTool
             searchRoots.Add(BatonPaths.Rooms);
         }
 
+        // #1619 LOW-3: BatonPaths.ByWorkstream, and everything under it, is nothing but junctions back
+        // into rooms BatonPaths.Rooms (or another caller-supplied root) already scans by their real
+        // path -- walking it too would double-count every room in it under a second, junction-derived
+        // path key, since RecordKey/seenRooms dedupe on the path string, not the resolved target.
+        var byWorkstreamKey = BatonPaths.RecordKey(BatonPaths.ByWorkstream);
         foreach (var extraRoot in extraRoots)
         {
-            if (Directory.Exists(extraRoot))
+            if (!Directory.Exists(extraRoot))
             {
-                searchRoots.Add(extraRoot);
+                continue;
             }
+
+            var extraRootKey = BatonPaths.RecordKey(extraRoot);
+            if (BatonPaths.RecordKeyComparer.Equals(extraRootKey, byWorkstreamKey)
+                || extraRootKey.StartsWith(byWorkstreamKey + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            searchRoots.Add(extraRoot);
         }
 
         // spec/baton.md §8: the registry's project-root map, keyed the same way seenRooms/roomDir

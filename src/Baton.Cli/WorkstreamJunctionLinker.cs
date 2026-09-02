@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using Baton.Status;
 
 namespace Baton.Cli;
@@ -24,10 +26,9 @@ public static class WorkstreamJunctionLinker
     /// Creates the junction for <paramref name="roomDirectoryPath"/> under its workstream's link
     /// directory. A no-op when <paramref name="workstream"/> is null — the default, unlabeled case
     /// <c>--label</c> itself has, and every room minted before #1619. <b>Never throws</b>: a failed
-    /// junction (a machine policy that refuses <c>mklink</c>, a name collision with a stale entry)
-    /// degrades to a stderr warning rather than failing a dispatch whose room already exists on disk
-    /// and is already fully functional without the shortcut — this is a convenience link, not the
-    /// room's identity.
+    /// junction (a machine policy that refuses <c>mklink</c>, an occupied link name) degrades to a
+    /// stderr warning rather than failing a dispatch whose room already exists on disk and is already
+    /// fully functional without the shortcut — this is a convenience link, not the room's identity.
     /// </summary>
     public static void CreateIfRequested(string? workstream, string roomDirectoryPath)
     {
@@ -36,9 +37,9 @@ public static class WorkstreamJunctionLinker
             return;
         }
 
-        var linkDirectory = Path.Combine(BatonPaths.ByWorkstream, workstream);
-        var roomName = Path.GetFileName(Path.TrimEndingDirectorySeparator(roomDirectoryPath));
-        var linkPath = Path.Combine(linkDirectory, roomName);
+        var fullRoomPath = Path.GetFullPath(roomDirectoryPath);
+        var linkPath = ResolveLinkPath(workstream, fullRoomPath);
+        var linkDirectory = Path.GetDirectoryName(linkPath)!;
 
         try
         {
@@ -47,8 +48,20 @@ public static class WorkstreamJunctionLinker
 
             if (Directory.Exists(linkPath))
             {
-                // A fresh dispatch never reuses a room name (DispatchOptionsParser's own uniqueness
-                // guarantee) -- this only fires on a retry against an already-linked room.
+                var existingTarget = new DirectoryInfo(linkPath).LinkTarget;
+                if (existingTarget is not null
+                    && BatonPaths.RecordKeyComparer.Equals(BatonPaths.RecordKey(existingTarget), BatonPaths.RecordKey(fullRoomPath)))
+                {
+                    // A retry against a room this exact link already points at -- nothing to do.
+                    return;
+                }
+
+                // Never silent: an occupied name that does NOT already point at this room is exactly
+                // the failure mode a caller needs to know about, not one to swallow.
+                Console.Error.WriteLine(
+                    $"Warning: the by-workstream link at '{linkPath}' already exists and points at "
+                    + $"'{existingTarget ?? "a target that could not be read"}', not at '{fullRoomPath}'. Leaving "
+                    + $"it as is — the room itself is unaffected — it stays reachable at '{roomDirectoryPath}'.");
                 return;
             }
 
@@ -67,7 +80,7 @@ public static class WorkstreamJunctionLinker
             startInfo.ArgumentList.Add("mklink");
             startInfo.ArgumentList.Add("/J");
             startInfo.ArgumentList.Add(linkPath);
-            startInfo.ArgumentList.Add(Path.GetFullPath(roomDirectoryPath));
+            startInfo.ArgumentList.Add(fullRoomPath);
 
             using var process = Process.Start(startInfo)
                 ?? throw new Win32Exception("could not start 'cmd.exe'");
@@ -81,11 +94,32 @@ public static class WorkstreamJunctionLinker
                     + $"it stays reachable at '{roomDirectoryPath}'.");
             }
         }
+        // Narrow on purpose: these are what a blocked mklink or a denied CreateDirectory can actually
+        // throw. MED-1's discriminating test proves the mklink-exit-code branch above reachable without
+        // needing this catch at all (an occupied linkPath fails mklink itself, not this process); nothing
+        // has yet needed to widen this list, and anything outside it propagates and fails the dispatch
+        // deliberately, rather than being swallowed on the strength of "probably another junction failure".
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
         {
             Console.Error.WriteLine(
                 $"Warning: could not create the by-workstream link at '{linkPath}': {ex.Message}. The room "
                 + $"itself is unaffected — it stays reachable at '{roomDirectoryPath}'.");
         }
+    }
+
+    /// <summary>
+    /// The junction's full path for <paramref name="roomDirectoryPath"/> under <paramref name="workstream"/>'s
+    /// link directory. Why the leaf name alone is not used as the link name is spec/baton.md §2's
+    /// by-workstream junction paragraph — not restated here. Internal (not private) so a test can
+    /// predict where a junction lands without re-implementing the hash — see
+    /// <c>Baton.Cli.csproj</c>'s <c>InternalsVisibleTo</c>.
+    /// </summary>
+    internal static string ResolveLinkPath(string workstream, string roomDirectoryPath)
+    {
+        var fullRoomPath = Path.GetFullPath(roomDirectoryPath);
+        var roomName = Path.GetFileName(Path.TrimEndingDirectorySeparator(fullRoomPath));
+        var hash = Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(BatonPaths.RecordKey(fullRoomPath).ToLowerInvariant())))[..8].ToLowerInvariant();
+        return Path.Combine(BatonPaths.ByWorkstream, workstream, $"{roomName}-{hash}");
     }
 }

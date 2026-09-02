@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Baton.Cli;
 using Baton.Vendors;
 using Baton.Domain;
 using Baton.Status;
@@ -77,6 +78,47 @@ public sealed class FleetStatusToolTests : IDisposable
             if (Directory.Exists(extraRoot))
             {
                 DirectoryCleanup.DeleteRecursively(extraRoot);
+            }
+        }
+    }
+
+    /// <summary>
+    /// #1619 LOW-3: a harness that ever passes a by-workstream slug directory as a <c>roots</c> entry
+    /// must not double-count the room already found by the default <see cref="BatonPaths.Rooms"/>
+    /// scan -- everything under <see cref="BatonPaths.ByWorkstream"/> is a junction back into a room
+    /// the default scan already found by its real path, and <c>seenRooms</c> dedupes on the path
+    /// string (<see cref="BatonPaths.RecordKey"/>), not the resolved target.
+    /// </summary>
+    [Fact]
+    public async Task Enumeration_SkipsAByWorkstreamRoot_SoAJunctionedRoomIsNotDoubleCounted()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "room-grouped");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        WorkstreamJunctionLinker.CreateIfRequested("w1619", room);
+        var slugDir = Path.Combine(BatonPaths.ByWorkstream, "w1619");
+        try
+        {
+            var tool = new FleetStatusTool();
+            var escapedSlugDir = slugDir.Replace("\\", "\\\\");
+            var result = await tool.CallAsync(Parse($$"""{ "roots": ["{{escapedSlugDir}}"] }"""), TestContext.Current.CancellationToken);
+
+            Assert.False(result.IsError);
+            var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+            Assert.NotNull(rooms);
+            Assert.Single(rooms!);
+        }
+        finally
+        {
+            // Unlink before Dispose() tears down _tempHome and the room the junction points at.
+            var linkPath = WorkstreamJunctionLinker.ResolveLinkPath("w1619", room);
+            if (Directory.Exists(linkPath))
+            {
+                Directory.Delete(linkPath, recursive: false);
             }
         }
     }

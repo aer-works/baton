@@ -146,15 +146,20 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
 
   **The by-workstream junction directory.** When `--workstream` is passed, `DispatchCommand` also
   creates a Windows directory junction (`mklink /J` via `WorkstreamJunctionLinker`, no elevation
-  required) at `BatonPaths.ByWorkstream/<slug>/<room-name>` pointing at the room's real directory
-  under `BatonPaths.Rooms` — so `cd ~/.baton/by-workstream/<slug>` lists every room in that
-  workstream without moving a single file on disk. `BatonPaths.ByWorkstream` is **deliberately a
-  sibling of `BatonPaths.Rooms`, never a child**: `FleetStatusTool`, `RoomRetentionSweep`, and the
-  fleet-glass pusher (`pusher.py`) all walk `rooms/` exactly one level deep, and a workstream
+  required) at `BatonPaths.ByWorkstream/<slug>/<room-name>-<hash>` pointing at the room's real
+  directory under `BatonPaths.Rooms` — so `cd ~/.baton/by-workstream/<slug>` lists every room in
+  that workstream without moving a single file on disk. The `<hash>` suffix (`WorkstreamJunctionLinker.ResolveLinkPath`,
+  eight hex characters of the room's own full path) exists because `<room-name>` alone is not unique:
+  an explicit `--room-dir` — the pattern every invoking harness uses — is passed through verbatim
+  rather than minted fresh, so two rooms with different parents can share a leaf. `BatonPaths.ByWorkstream`
+  is **deliberately a sibling of `BatonPaths.Rooms`, never a child**: `FleetStatusTool`, `RoomRetentionSweep`,
+  and the fleet-glass pusher (`pusher.py`) all walk `rooms/` exactly one level deep, and a workstream
   directory nested under it would be picked up by every one of those scans and reported as a phantom
-  room with no bound snapshot. A failed junction (a machine policy refusing `mklink`, a stale name
-  collision) degrades to a stderr warning — it never fails the dispatch, since the room itself is
-  already fully functional without the shortcut.
+  room with no bound snapshot — the same reason `fleet_status`'s caller-supplied `roots` refuses to
+  walk `BatonPaths.ByWorkstream` itself (it would double-count a room already found by its real path).
+  A failed junction (a machine policy refusing `mklink`, an occupied name that resolves to a
+  different room) degrades to a stderr warning naming the existing target — it never fails the
+  dispatch, since the room itself is already fully functional without the shortcut.
 
 A room's model is always pinned in `bindings.json` at dispatch time — there is no runtime model
 choice a harness makes mid-lane; §9 covers the bindings contract. `baton resume`, `baton decide`, `baton
