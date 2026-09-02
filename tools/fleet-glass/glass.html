@@ -72,6 +72,10 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 @media (min-width: 768px){
   .lanes{grid-template-columns:repeat(auto-fill, minmax(29rem, 1fr));}
 }
+/* #1619: a workstream group spans the whole row of its enclosing .lanes grid, so its own nested
+   .lanes grid re-wraps across the full width instead of being squeezed into one outer grid cell. */
+.workstream-group{grid-column:1 / -1; margin:.15rem 0;}
+.workstream-heading{margin:0 0 .3rem; font:600 .72rem 'Public Sans'; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em;}
 @media (max-width: 600px){
   body{padding:12px 10px 48px;}
   .lane{padding:.5rem .6rem;}
@@ -744,6 +748,36 @@ function laneHtml(room, timelines, dismissable = false, openTimelines = null){
     ${copyButtonsHtml(room, running)}
     ${deliverables}</div>`;
 }
+// -----------------------------------------------------------------------------------------------
+// #1619 (rung 1 of #1614's ruling): group a state bucket's lanes by --workstream before rendering.
+// Rooms without the field render exactly as before this feature -- flat, no heading, same fail-open
+// contract projectLineHtml/bindingLineHtml already follow for their own absent-safe fields.
+// -----------------------------------------------------------------------------------------------
+function groupLanesHtml(rooms, timelines, dismissable, openTimelines){
+  if(!rooms.length) return `<div class="lane"><div class="ev">none</div></div>`;
+  const groups = new Map();
+  const ungrouped = [];
+  for(const r of rooms){
+    if(r && r.workstream){
+      if(!groups.has(r.workstream)) groups.set(r.workstream, []);
+      groups.get(r.workstream).push(r);
+    } else {
+      ungrouped.push(r);
+    }
+  }
+  if(groups.size === 0){
+    return rooms.map(r => laneHtml(r, timelines, dismissable, openTimelines)).join("");
+  }
+  let html = "";
+  for(const [slug, groupRooms] of Array.from(groups.entries()).sort((a,b) => a[0].localeCompare(b[0]))){
+    html += `<div class="workstream-group"><h3 class="workstream-heading">${esc(slug)} · ${groupRooms.length}</h3><div class="lanes">`
+      + groupRooms.map(r => laneHtml(r, timelines, dismissable, openTimelines)).join("") + `</div></div>`;
+  }
+  if(ungrouped.length){
+    html += ungrouped.map(r => laneHtml(r, timelines, dismissable, openTimelines)).join("");
+  }
+  return html;
+}
 function underhoodHtml(list){
   if(!Array.isArray(list) || !list.length) return "";
   const rows = list.map(w => {
@@ -808,16 +842,16 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   const totalDismissed = dismissedFailed.length + dismissedDone.length + dismissedStalled.length;
 
   let html = underhoodHtml(underhood);
-  html += `<h2>Running · ${running.length}</h2><div class="lanes">` + (running.map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
+  html += `<h2>Running · ${running.length}</h2><div class="lanes">` + groupLanesHtml(running, timelines, false, openTimelinePaths) + `</div>`;
   // Ranked above Failed and kept out of the collapsible Terminal section (unlike Failed/Succeeded):
   // a stalled room isn't finished, and nothing but a person will ever move it, so it stays as
   // visible as Running rather than one click away.
   const stalledDismissAll = visibleStalled.length > 0 ? `<a class="dismissall" data-section="stalled">dismiss all</a>` : "";
-  html += `<h2><span>Stalled · ${visibleStalled.length}</span>${stalledDismissAll}</h2><div class="lanes">` + (visibleStalled.map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
+  html += `<h2><span>Stalled · ${visibleStalled.length}</span>${stalledDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleStalled, timelines, true, openTimelinePaths) + `</div>`;
   // Same placement reasoning as Stalled above: an Indeterminate room isn't finished either -- it
   // needs a conductor's recorded resolution, never a silent default -- so it stays out of the
   // collapsible Terminal section too, as visible as Running/Stalled rather than one click away.
-  html += `<h2>Indeterminate · ${indeterminate.length}</h2><div class="lanes">` + (indeterminate.map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
+  html += `<h2>Indeterminate · ${indeterminate.length}</h2><div class="lanes">` + groupLanesHtml(indeterminate, timelines, false, openTimelinePaths) + `</div>`;
 
   const termParts = [];
   if(visibleDone.length > 0 || visibleFailed.length === 0){
@@ -831,11 +865,11 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   let termContent = "";
   if(visibleFailed.length > 0){
     const failedDismissAll = `<a class="dismissall" data-section="failed">dismiss all</a>`;
-    termContent += `<h2><span>Failed · ${visibleFailed.length}</span>${failedDismissAll}</h2><div class="lanes">` + visibleFailed.slice(0,12).map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") + `</div>`;
+    termContent += `<h2><span>Failed · ${visibleFailed.length}</span>${failedDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleFailed.slice(0,12), timelines, true, openTimelinePaths) + `</div>`;
   }
   if(visibleDone.length > 0){
     const doneDismissAll = `<a class="dismissall" data-section="succeeded">dismiss all</a>`;
-    termContent += `<h2><span>Succeeded · ${visibleDone.length}</span>${doneDismissAll}</h2><div class="lanes">` + visibleDone.slice(0,40).map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") + `</div>`;
+    termContent += `<h2><span>Succeeded · ${visibleDone.length}</span>${doneDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleDone.slice(0,40), timelines, true, openTimelinePaths) + `</div>`;
   }
   if(!visibleFailed.length && !visibleDone.length){
     termContent += `<div class="lanes"><div class="lane"><div class="ev">none</div></div></div>`;

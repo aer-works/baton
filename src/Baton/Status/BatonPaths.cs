@@ -70,6 +70,21 @@ public static class BatonPaths
     public const string RoomsDirectoryName = "rooms";
 
     /// <summary>
+    /// <c>{Root}/by-workstream</c> — the navigational half of #1619's <c>--workstream</c> ruling
+    /// (issue #1614): holds one Windows directory junction per room dispatched with a workstream slug,
+    /// under a subdirectory named for that slug, each junction pointing at the room's real directory
+    /// under <see cref="Rooms"/> (<c>Baton.Cli.WorkstreamJunctionLinker</c>). <b>Deliberately a sibling
+    /// of <see cref="Rooms"/>, never a child</b> — <c>FleetStatusTool</c>, <c>RoomRetentionSweep</c>,
+    /// and the fleet-glass pusher all walk <see cref="Rooms"/> exactly one level deep; a workstream
+    /// directory nested under it would be picked up by every one of those scans and reported as a
+    /// phantom room with no bound snapshot. As a sibling, none of them ever sees it.
+    /// </summary>
+    public static string ByWorkstream => Path.Combine(Root, ByWorkstreamDirectoryName);
+
+    /// <summary>Directory name of <see cref="ByWorkstream"/> relative to a root.</summary>
+    public const string ByWorkstreamDirectoryName = "by-workstream";
+
+    /// <summary>
     /// Filename, under a room's <c>.baton</c> directory, of the room marker whose <c>Kind</c> field
     /// distinguishes an interactive-session room from a workflow room. For an interactive room this
     /// file is the serialized session metadata (kind included); for a workflow room it is a minimal

@@ -172,6 +172,44 @@ public class RedispatchBindingTests
     }
 
     [Fact]
+    public void With_no_workstream_override_the_parents_workstream_is_inherited()
+    {
+        var parent = ParentEntry() with { Workstream = "w1619" };
+        var entry = RedispatchCommand.InheritBinding(parent, new RedispatchOptions("parent-room", "new-room"));
+
+        Assert.Equal("w1619", entry.Workstream);
+    }
+
+    [Fact]
+    public void An_explicit_workstream_override_wins_over_the_inherited_one()
+    {
+        var parent = ParentEntry() with { Workstream = "old-workstream" };
+        var entry = RedispatchCommand.InheritBinding(
+            parent, new RedispatchOptions("parent-room", "new-room", Workstream: "new-workstream"));
+
+        Assert.Equal("new-workstream", entry.Workstream);
+    }
+
+    [Fact]
+    public void A_specified_blank_workstream_clears_the_parents_inherited_workstream()
+    {
+        var parent = ParentEntry() with { Workstream = "old-workstream" };
+        var entry = RedispatchCommand.InheritBinding(
+            parent, new RedispatchOptions("parent-room", "new-room", Workstream: null, WorkstreamSpecified: true));
+
+        Assert.Null(entry.Workstream);
+    }
+
+    [Fact]
+    public void A_parent_with_no_workstream_stays_ungrouped_when_not_overridden()
+    {
+        var parent = ParentEntry();
+        var entry = RedispatchCommand.InheritBinding(parent, new RedispatchOptions("parent-room", "new-room"));
+
+        Assert.Null(entry.Workstream);
+    }
+
+    [Fact]
     public void A_workspace_override_replaces_a_plain_working_directory()
     {
         var parent = ParentEntry(workingDirectory: "/repo");

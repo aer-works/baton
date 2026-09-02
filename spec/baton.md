@@ -102,7 +102,7 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   workflow nobody has decided.
 - **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
   [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]
-  [--label <text>]`**
+  [--label <text>] [--workstream <slug>]`**
   — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
   template (`src/Baton.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
   directory under `BatonPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
@@ -126,14 +126,43 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   Persisted onto every entry of that
   room's own `bindings.json` (`WorkerBindingConfigEntry.Label`) rather than a new file, since bindings
   already exists for every room regardless of terminal state — see §6 schema for how `fleet_status`
-  reads it back.
+  reads it back. `--workstream` (#1619, rung 1 of #1614's ruling) is a **grouping key, not a title** —
+  a room keeps its generated hex identity on disk; the slug only makes several rooms (e.g. an
+  implement lane and its review redispatch) read as one workstream in Fleet Glass. Do not conflate it
+  with `--label`: a label is 60-char free display text never written into a path
+  (`DispatchOptionsParser.SanitizeLabel`); a workstream slug IS later used as a Windows directory name
+  (below), so it is validated rather than truncated —
+  `DispatchOptionsParser.SanitizeWorkstream` trims it, then refuses (never truncates) anything
+  over `MaxWorkstreamLength` (60) chars or outside the grammar `^[A-Za-z0-9][A-Za-z0-9._-]*$` — a
+  blank result after trimming is treated as omitted, the same as `--label`. A value that passes the
+  grammar check is then folded to lowercase, per the #1614 design record's own slug wording
+  ("path-safe, lowercase, short"): NTFS resolves `BatonPaths.ByWorkstream` directory names
+  case-insensitively while Fleet Glass's grouping (below) keys on the exact string in a
+  case-sensitive JS `Map`, so `--workstream W1619` and `--workstream w1619` fold to the same slug
+  rather than sharing one junction directory while rendering as two glass groups. Persisted the same
+  way as `--label`, onto every entry of the room's own `bindings.json`
+  (`WorkerBindingConfigEntry.Workstream`) — see §6 schema for how `fleet_status` reads it back, and
+  the paragraph immediately below for the navigation half.
+
+  **The by-workstream junction directory.** When `--workstream` is passed, `DispatchCommand` also
+  creates a Windows directory junction (`mklink /J` via `WorkstreamJunctionLinker`, no elevation
+  required) at `BatonPaths.ByWorkstream/<slug>/<room-name>` pointing at the room's real directory
+  under `BatonPaths.Rooms` — so `cd ~/.baton/by-workstream/<slug>` lists every room in that
+  workstream without moving a single file on disk. `BatonPaths.ByWorkstream` is **deliberately a
+  sibling of `BatonPaths.Rooms`, never a child**: `FleetStatusTool`, `RoomRetentionSweep`, and the
+  fleet-glass pusher (`pusher.py`) all walk `rooms/` exactly one level deep, and a workstream
+  directory nested under it would be picked up by every one of those scans and reported as a phantom
+  room with no bound snapshot. A failed junction (a machine policy refusing `mklink`, a stale name
+  collision) degrades to a stderr warning — it never fails the dispatch, since the room itself is
+  already fully functional without the shortcut.
 
 A room's model is always pinned in `bindings.json` at dispatch time — there is no runtime model
 choice a harness makes mid-lane; §9 covers the bindings contract. `baton resume`, `baton decide`, `baton
 cancel`, and `baton supply` continue an already-dispatched room; §5 covers `decide` specifically.
 
 **`baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
-<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>]`** (#1441) reruns
+<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>] [--workstream
+<slug>]`** (#1441) reruns
 a single-role `baton dispatch` room into a fresh one, once the operator finds the brief was wrong or
 incomplete — without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch
 `baton dispatch` would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the
@@ -147,7 +176,16 @@ entry's contract) — a redispatch's own `--output`, when given, works exactly l
 `--label` inherits unlike `--output` does: the parent's label IS a persisted, durable room-level fact
 (`WorkerBindingConfigEntry.Label`), not a process-local copy target, so a redispatched lane keeps
 reading as the same human-named thing — absent inherits the parent's label, specified-and-blank
-(`--label ""`) clears it, and specified-and-nonblank overrides it (`RedispatchCommand.InheritBinding`). `--spec`
+(`--label ""`) clears it, and specified-and-nonblank overrides it (`RedispatchCommand.InheritBinding`).
+`--workstream` (#1619) inherits the identical way, via its own `WorkstreamSpecified` mirror of
+`LabelSpecified` (`RedispatchOptionsParser.cs`, `RedispatchOptions.WorkstreamSpecified`) — absent
+inherits the parent's workstream, specified-and-blank clears it, specified-and-nonblank overrides it
+— so a redispatch chain keeps grouping as one workstream in Fleet Glass without the operator
+re-passing the slug on every hop, and can still deliberately break a lane out of its workstream by
+passing `--workstream ""`. `RedispatchCommand` also (re-)creates that redispatched room's
+by-workstream junction against whichever slug `InheritBinding` just resolved — inherited, cleared, or
+overridden — never the raw `--workstream` flag alone, since a bare `baton redispatch` with no
+`--workstream` flag at all must still link into the parent's workstream directory. `--spec`
 omitted reuses the parent's already-built prompt verbatim; given, the amended brief is rebuilt through
 the same `RoleDispatch.Materialize` a fresh dispatch uses, with the parent's recorded axes as defaults
 — including the inherited-unless-overridden label, applied after that rebuild since
@@ -179,8 +217,8 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--label <text>]` | `DispatchOptionsParser.cs` |
-| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>]` | `RedispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
+| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
@@ -702,7 +740,8 @@ Output: a JSON array of
   "model"?: string,       // that role's WorkerBindingConfigEntry.Model
   "effort"?: string,      // that role's WorkerBindingConfigEntry.Effort
   "timeoutMs"?: number,   // that role's WorkerBindingConfigEntry.Timeout, in milliseconds
-  "label"?: string        // #1499: the room's --label, WorkerBindingConfigEntry.Label
+  "label"?: string,       // #1499: the room's --label, WorkerBindingConfigEntry.Label
+  "workstream"?: string   // #1619: the room's --workstream, WorkerBindingConfigEntry.Workstream
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
@@ -762,6 +801,16 @@ for `role`/`adapter`/`model`/`effort`/`timeoutMs` at all. Absent when never supp
 this field — the same fail-open-for-display-metadata convention the quartet above uses. `redispatch`
 carries a room's label into its child unless overridden (§2), so a lineage of redispatches keeps
 reading as the same human-named lane.
+
+**`workstream` (#1619) is read from the same `bindings.json`, on the identical shape and gating as
+`label` immediately above** — a room-level fact stamped onto every entry at dispatch time, read off
+the first entry whose `Workstream` is non-null on both `ProcessRoomAsync` paths, absent under the same
+conditions `label` is absent under. `redispatch` carries a room's workstream into its child unless
+overridden (§2), so a lineage of redispatches keeps grouping as one workstream. Fleet Glass
+(`tools/fleet-glass/glass.html`, `groupLanesHtml`) groups each state bucket's rendered lanes by this
+field, alphabetically by slug, with a group heading spanning the lane grid; rooms with no workstream
+render as flat, ungrouped lanes exactly as every room did before #1619 — the same fail-open-to-flat
+contract `label`'s own absence already has.
 
 **`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510/#1522)** are copied verbatim from
 `WorkflowStatusStepView`, never re-derived here — see that record's own remarks for the gating

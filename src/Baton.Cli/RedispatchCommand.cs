@@ -125,10 +125,12 @@ public static class RedispatchCommand
         {
             (definition, entry) = await RebuildFromAmendedSpecAsync(workerName, parentEntry, options, cancellationToken)
                 .ConfigureAwait(false);
-            // #1499: RoleDispatch.Materialize knows nothing of labels -- apply InheritBinding's rule here too.
+            // #1499/#1619: RoleDispatch.Materialize knows nothing of labels or workstreams -- apply
+            // InheritBinding's own rule for both here too.
             entry = entry with
             {
-                Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label
+                Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label,
+                Workstream = (options.WorkstreamSpecified || options.Workstream is not null) ? options.Workstream : parentEntry.Workstream,
             };
         }
 
@@ -140,6 +142,11 @@ public static class RedispatchCommand
         }
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
+
+        // #1619: the navigational half of the ruling -- the redispatched room's workstream is whatever
+        // InheritBinding just resolved onto `entry` (inherited from the parent, cleared, or overridden),
+        // not the raw `options.Workstream` a bare `baton redispatch` never passes at all.
+        WorkstreamJunctionLinker.CreateIfRequested(entry.Workstream, options.RoomDirectoryPath);
 
         Console.Out.WriteLine($"Room directory: {options.RoomDirectoryPath}");
         Console.Out.WriteLine($"Redispatched from: {options.ParentRoomDirectoryPath}");
@@ -214,6 +221,7 @@ public static class RedispatchCommand
             Worktree = worktree,
             Timeout = options.Timeout ?? parentEntry.Timeout,
             Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label, // #1499, spec/baton.md §2
+            Workstream = (options.WorkstreamSpecified || options.Workstream is not null) ? options.Workstream : parentEntry.Workstream, // #1619, spec/baton.md §2
             // Adapter-derived, not role-derived, so it CAN be recomputed here — carrying the parent's
             // value across a vendor swap would stream-json a claude/agy worker (or text-mode a non-streaming one).
             // Grant/GrantAuditMode/worktree intent stay inherited: spec/baton.md §2 states why.
