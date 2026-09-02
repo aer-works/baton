@@ -184,7 +184,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
-| `cancel` | `baton cancel <room-dir> [--execution <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `Program.cs` |
+| `cancel` | `baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]` | `Program.cs` |
 | `status` | `baton status <room-dir> [--follow] [--json]` | `StatusOptionsParser.cs` |
 | `templates` | `baton templates [--json]` | `Program.cs` |
 | `keep` | `baton keep <room-dir>` | `KeepOptionsParser.cs` |
@@ -195,20 +195,41 @@ there is no authoring UI to browse a saved-template library visually against (Ap
 old numbering — dropped here, since there is no longer a separate register to number rulings
 against).
 
-**`cancel`'s `--execution` is now optional** (#1495): omitted, it targets "the running lane" —
-exactly one `Running` step's latest execution, refused (naming every candidate) on zero or more than
-one (`RunningExecutionResolver.cs`). Against a room whose `baton run` pump is still live, the direct
+**`cancel`'s `--execution` is now optional** (#1495): omitted, it targets "the target lane" —
+exactly one candidate's latest execution, refused (naming every candidate) on zero or more than one
+(`RunningExecutionResolver.cs`). A candidate is a currently-`Running` step, or (#1607) a quota-parked
+one — `Failed` with a scheduled `RetryNotBefore`, the identical shape `MutationInterface`'s
+`IsParkedRetryTarget` and `CancelRequestPoller`'s own `isParked` check already use. A parked
+candidate is not delivered the same way a running one is: it is settled through the dedicated path
+#1605 built (`InFlightExecutionRegistry.MarkParkedCancelIntent` /
+`MutationInterface.SettleParkedCancelIntentsAsync`), never through `CoreEventAggregation` or
+`NonProcessCancellationDetector`'s own Running-only filters, which stay unmodified and unconsulted
+for a parked target. Against a room whose `baton run` pump is still live, the direct
 mutation call cannot win `flow.lock` — `cancel` catches that specific `WorkflowLockedException` and
 writes a room-scoped `cancel.request` file instead (`CancelRequestFile.cs`), which the pump itself
 polls at a modest cadence without ever contending the lock (`CancelRequestPoller.cs`) and delivers
 through the same `FlowEvent.CancellationRequested` path `MutationInterface` already uses. The
-fall-through path re-resolves `latest` at poll time (arresting whatever is running then), whereas the
-direct path cancels the execution resolved at command time; on the fall-through path, zero or more
-than one Running at act time lands as a `.rejected` record in the room (with the diagnostic reason
-written in its body), rather than a terminal command-line refusal. This is the arrest half of §10's
-"only cancellation-then-restart" ruling, not a reopening of it: nothing here reaches into a running
-worker to redirect it — it only makes the existing stop-then-`redispatch` sequence reachable from
-outside the lane's own process.
+fall-through path re-resolves `latest` at poll time (arresting whatever is running or parked then),
+whereas the direct path cancels the execution resolved at command time; on the fall-through path, zero
+or more than one candidate at act time lands as a `.rejected` record in the room (with the diagnostic
+reason written in its body), rather than a terminal command-line refusal. This is the arrest half of
+§10's "only cancellation-then-restart" ruling, not a reopening of it: nothing here reaches into a
+running worker to redirect it — it only makes the existing stop-then-`redispatch` sequence reachable
+from outside the lane's own process.
+
+A parked candidate reached through the **direct** path (no live pump contending the lock) is
+reachable only when its `RetryNotBefore` has already elapsed — a genuinely still-future park is
+refused outright by the dead-holder check below before the resolver ever runs, since that check scans
+every step for a future deferral, not just the one being targeted. An already-overdue park raced this
+way loses to `MutationInterface`'s own retry-obligation check, which redispatches it before a
+poller-less pump's parked-cancel-intent wait is ever reached — the same outcome explicit
+`--execution` targeting an overdue park already had; #1607 did not introduce it and does not close it.
+
+**`cancel`'s `--bindings` is now optional too** (#1607 friction fix): omitted, it defaults to
+`<room-dir>/bindings.json` — the file every room already holds, since `dispatch`/`redispatch` both
+write one there before the room can be targeted at all (`CancelOptionsParser.cs`). A nonexistent
+default surfaces through the same "file not found" `WorkerBindingConfigParser` already raises for a
+bad explicit path — no new failure mode, just one fewer argument to retype for the common case.
 
 ---
 
@@ -319,8 +340,11 @@ paragraph's own caveat (briefly misreported as still `"Stalled"` while a live pu
 is the accurate scoping of what this recovers and what it does not.
 
 **`baton cancel` was also checked rather than assumed, and originally left the room worse than it
-found it — closed by #1586.** Without `--execution` it refuses (no `Running` step to resolve). With
-the parked execution's id explicitly named, it used to take the room's lock, clobber the one artifact
+found it — closed by #1586.** Without `--execution`, a room with no `Running` step used to refuse
+outright (`RunningExecutionResolver` had no notion of a parked candidate) — #1607 widened the
+resolver so a genuinely-still-parked room now targets that step the same way an explicit
+`--execution` always could (§2 above). With the parked execution's id (explicit or resolved), it
+used to take the room's lock, clobber the one artifact
 naming which engine died, and never come back — `CancelCommand`'s own dead-holder-check comment is
 the canonical account of that old failure and today's guard against it, not restated here. #1586's fix
 runs before any acquire: `CancelCommand` reuses the same `EngineLivenessProbe` arbiter this section's

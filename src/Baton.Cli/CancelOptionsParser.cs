@@ -2,16 +2,24 @@ namespace Baton.Cli;
 
 /// <summary>
 /// Parses <c>baton cancel</c>'s arguments: <c>baton cancel &lt;room-dir&gt; [--execution &lt;execution-id&gt;]
-/// --bindings &lt;bindings-file&gt; [--workflow-id &lt;id&gt;]</c>. <c>--execution</c> is optional (#1495): omitted,
-/// <see cref="CancelCommand"/> targets "the running lane" itself rather than a caller-named id. Never
-/// throws a bare <see cref="InvalidOperationException"/> for a malformed invocation — every failure
-/// here is a <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules), mirroring
+/// [--bindings &lt;bindings-file&gt;] [--workflow-id &lt;id&gt;]</c>. <c>--execution</c> is optional (#1495):
+/// omitted, <see cref="CancelCommand"/> targets "the target lane" itself rather than a caller-named id.
+/// <c>--bindings</c> is also optional (#1607 friction fix): a room a cancel targets was necessarily
+/// dispatched with its own <c>bindings.json</c> already sitting in it (<c>DispatchCommand</c>/
+/// <c>RedispatchCommand</c> both write one there), so omitting the flag defaults to
+/// <c>&lt;room-dir&gt;/bindings.json</c> rather than making the operator retype a path the room already
+/// knows — a nonexistent default surfaces as the same "file not found" <c>WorkerBindingConfigParser</c>
+/// already raises for an explicit bad path, not a new failure mode. Never throws a bare
+/// <see cref="InvalidOperationException"/> for a malformed invocation — every failure here is a
+/// <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules), mirroring
 /// <see cref="RunOptionsParser"/>.
 /// </summary>
 public static class CancelOptionsParser
 {
+    private const string BindingsFileName = "bindings.json";
+
     private const string Usage =
-        "Usage: baton cancel <room-dir> [--execution <execution-id>] --bindings <bindings-file> [--workflow-id <id>]";
+        "Usage: baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]";
 
     public static CancelOptions Parse(IReadOnlyList<string> args)
     {
@@ -57,13 +65,10 @@ public static class CancelOptionsParser
             throw new CliArgumentException($"Missing required <room-dir> argument. {Usage}");
         }
 
-        if (bindingsFilePath is null)
-        {
-            throw new CliArgumentException($"Missing required option '--bindings <bindings-file>'. {Usage}");
-        }
+        var resolvedRoomDirectoryPath = RoomDirectoryPath.Resolve(roomDirectoryPath);
+        bindingsFilePath ??= Path.Combine(resolvedRoomDirectoryPath, BindingsFileName);
 
-        return new CancelOptions(
-            RoomDirectoryPath.Resolve(roomDirectoryPath), executionId, bindingsFilePath, workflowId);
+        return new CancelOptions(resolvedRoomDirectoryPath, executionId, bindingsFilePath, workflowId);
     }
 
     private static string RequireValue(IReadOnlyList<string> args, ref int index, string optionName)
