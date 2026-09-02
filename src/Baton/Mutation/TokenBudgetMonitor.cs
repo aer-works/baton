@@ -12,7 +12,8 @@ namespace Baton.Mutation;
 /// </summary>
 /// <remarks>
 /// Wired at <c>MutationInterface.DispatchAndRecordOutcomeAsync</c>; <c>spec/baton.md</c> §3 states the
-/// composition rule this follows.
+/// composition rule this follows — in one clause, it wraps a caller's existing
+/// <c>CoreDispatchTarget.OnStdoutLine</c> sink and never replaces one.
 /// <see cref="OnStdoutLine"/> runs on <c>BatonTask</c>'s single event-delivery thread per
 /// its own documented contract, but every member here is still locked — a monitor instance is
 /// constructed once per execution and its snapshot methods are read from the awaiting async
