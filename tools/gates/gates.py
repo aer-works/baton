@@ -95,6 +95,27 @@ AFTER_BUILD_FULL = AFTER_BUILD_FAST + ["test-no-build"]
 PASS_MARK = "GATES: PASS"
 FAIL_MARK = "GATES: FAIL"
 
+# #1648: git exports these to every hook (a pre-push hook, in particular). A fixture that spawns
+# `git init`/`git -C` under an inherited GIT_DIR re-initializes the INVOKING repo, not its own path
+# argument -- this is what turned a gates-selftest fixture into a live incident. `scrubbed_env()` is
+# the general blanket ("any GIT_* key"); GIT_ENV_KEYS is the explicit list `main()` strips from its
+# own process environment, matching `.githooks/pre-push`'s own `unset` line.
+GIT_ENV_KEYS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def scrubbed_env():
+    """A copy of os.environ with every GIT_*-prefixed key removed (#1648, spec/baton.md C-12)."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 # Quiet mode (#1560): a dispatched worker that runs `gates` inherits ~2,500 tests' worth of stdout
 # into its conversation context and then re-reads it on every subsequent model call -- one small
 # renderer lane measured 1.25M input + 43.8M cache-read tokens, most of it this file's inherited
@@ -317,14 +338,22 @@ def check_receipt():
 
 
 def _init_temp_repo(path):
-    """A minimal real git repo -- the receipt tests need real `git rev-parse`/`diff` answers."""
-    subprocess.run(["git", "init", "-q", path], check=True)
-    subprocess.run(["git", "-C", path, "config", "user.email", "test@example.com"], check=True)
-    subprocess.run(["git", "-C", path, "config", "user.name", "Test"], check=True)
+    """A minimal real git repo -- the receipt tests need real `git rev-parse`/`diff` answers.
+
+    `git -C path init` (not `git init path`) and an explicit env=scrubbed_env() on every call
+    (#1648): git honours an inherited GIT_DIR over either init syntax, so under the pre-push hook
+    this used to re-initialize the INVOKING repo instead of `path`. The explicit env= makes this
+    fixture immune regardless of what gates.py's own process environment looks like -- see the
+    gates-selftest tripwire arm below, which asserts exactly that.
+    """
+    env = scrubbed_env()
+    subprocess.run(["git", "-C", path, "init", "-q"], check=True, env=env)
+    subprocess.run(["git", "-C", path, "config", "user.email", "test@example.com"], check=True, env=env)
+    subprocess.run(["git", "-C", path, "config", "user.name", "Test"], check=True, env=env)
     with open(os.path.join(path, "file.txt"), "w", encoding="utf-8") as f:
         f.write("hello\n")
-    subprocess.run(["git", "-C", path, "add", "."], check=True)
-    subprocess.run(["git", "-C", path, "commit", "-q", "-m", "initial"], check=True)
+    subprocess.run(["git", "-C", path, "add", "."], check=True, env=env)
+    subprocess.run(["git", "-C", path, "commit", "-q", "-m", "initial"], check=True, env=env)
 
 
 def _write_stub_pixi(bin_dir, real_gates_py, call_log, fast_exit=0):
@@ -534,11 +563,60 @@ def selftest():
                       f"got {miss.returncode}, gates-fast exited 7")
                 ok = False
 
+    # Tripwire (#1648): _init_temp_repo must survive an inherited GIT_DIR, not merely work in a
+    # plain shell. A DECOY repo stands in for "the real repo an inherited GIT_DIR would redirect
+    # this fixture into"; if _init_temp_repo's env=scrubbed_env() is ever dropped, git honours
+    # GIT_DIR over `-C other` and this arm goes red with the decoy's HEAD/tree/config rewritten --
+    # see the commit that added this arm for the red (scrub reverted) and green (scrub restored)
+    # transcripts.
+    with tempfile.TemporaryDirectory() as td:
+        decoy = os.path.join(td, "decoy")
+        os.makedirs(decoy)
+        _init_temp_repo(decoy)
+
+        def _decoy_state():
+            head = subprocess.run(["git", "-C", decoy, "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout
+            tree = subprocess.run(["git", "-C", decoy, "write-tree"],
+                                  capture_output=True, text=True, check=True).stdout
+            config = subprocess.run(["git", "-C", decoy, "config", "--list", "--local"],
+                                    capture_output=True, text=True, check=True).stdout
+            return head, tree, config
+
+        before = _decoy_state()
+
+        other = os.path.join(td, "other")
+        os.makedirs(other)
+        prior_git_dir = os.environ.get("GIT_DIR")
+        os.environ["GIT_DIR"] = os.path.join(decoy, ".git")
+        try:
+            _init_temp_repo(other)
+        finally:
+            if prior_git_dir is None:
+                os.environ.pop("GIT_DIR", None)
+            else:
+                os.environ["GIT_DIR"] = prior_git_dir
+
+        after = _decoy_state()
+        if before != after:
+            print("  control FAILED: _init_temp_repo under an inherited GIT_DIR clobbered the decoy repo")
+            ok = False
+        if not os.path.isdir(os.path.join(other, ".git")):
+            print("  control FAILED: _init_temp_repo did not create its own repo under an inherited GIT_DIR")
+            ok = False
+
     print("selftest: pass" if ok else "selftest: FAIL")
     return 0 if ok else 1
 
 
 def main():
+    # #1648: scrub before dispatching on any mode, so every child gate -- and every git call this
+    # process itself makes (receipt_status included) -- inherits a clean environment. This is
+    # defense in depth alongside _init_temp_repo's own explicit env=; it does not replace it,
+    # because _init_temp_repo is also reachable directly (the selftest tripwire calls it with
+    # os.environ deliberately poisoned to prove the explicit env= is what actually protects it).
+    for k in GIT_ENV_KEYS:
+        os.environ.pop(k, None)
     if "--selftest" in sys.argv:
         return selftest()
     if "--check-receipt" in sys.argv:
