@@ -15,8 +15,23 @@ version = "0.1.0"
 # activation env (not a shell) so EVERY `pixi run` build inherits it, including a dispatched worker's
 # self-gate, which is the case that needs it. Cost is a small per-build startup penalty; the win is
 # that concurrent worktree builds each own throwaway nodes and cannot collide.
+#
+# #1671: also disable Roslyn's shared VBCSCompiler.exe server, same reasoning and same scope. With
+# it on (the default), the first build after a `dotnet` install spins up a persistent VBCSCompiler
+# process (~400 MB measured) that every later build reuses -- fine for a lone interactive build, but
+# on a memory-bound box running several lanes' gates concurrently it is one more long-lived process
+# per machine competing with every worker for the same physical RAM, on top of the MSBuild node-reuse
+# fan-out above. `UseSharedCompilation` is an ordinary MSBuild property (`Microsoft.Managed.Core.targets`
+# only defaults it to `true` when unset), so an environment variable overrides it exactly like
+# MSBUILDDISABLENODEREUSE does. Chose the activation-env scope over a Directory.Build.props
+# env-gated condition: MSBUILDDISABLENODEREUSE already set this precedent for every pixi-run build,
+# so a second, narrower mechanism for the same class of setting would just be a second place to look.
+# A developer running raw `dotnet build` outside pixi (bypassing this activation entirely) is
+# unaffected -- that is what "interactive developer build" means here. Recorded once in
+# spec/baton.md's C-13 (§11).
 [activation.env]
 MSBUILDDISABLENODEREUSE = "1"
+UseSharedCompilation = "false"
 
 [tasks]
 # Every toolchain below (Go, .NET) is installed separately and is NOT
@@ -61,7 +76,21 @@ test-other = { cmd = "python tools/buildlock.py dotnet build --no-incremental &&
 # cover" note under `lint` below) -- so building again inside the same run was pure duplication.
 # Standalone use is EXPOSED to the #688 stale-assembly trap `test` exists to close: outside a
 # gates run, use `pixi run test`.
-test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build" }
+#
+# `-m:1` (#1671): this is a multi-project `dotnet test` invocation -- five xUnit assemblies, one
+# per test project -- and the fan-out that concurrency buys is across-PROJECT testhost processes,
+# not within any one assembly's own xunit collections. MEASURED which knob actually owns that:
+# a VSTest runsettings `RunConfiguration.MaxCpuCount=1` (`-- RunConfiguration.MaxCpuCount=1`) left
+# 3 concurrent `testhost.dll` processes running (proven by `Get-CimInstance Win32_Process` mid-run,
+# command lines naming three different test projects at once) -- that knob controls parallelism
+# *inside* a single vstest.console invocation given an explicit assembly list, which `dotnet test`
+# at solution scope does not go through. `-m:1` is plain MSBuild's own max-node-count, and it is
+# what actually gates the per-project fan-out here: a mid-run process snapshot showed exactly one
+# `testhost.dll` process at a time, and the log's own "Test run for X" headers -- which VSTest only
+# prints once a project's host has actually started -- appeared one project at a time instead of
+# all five up front. In-assembly parallelism (xunit's own test-collection concurrency within one
+# project) is untouched either way; `-m:1` only serializes across the five processes.
+test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1" }
 # Coverage report (#199): collects per-test-project Cobertura via coverlet, merges into an HTML
 # report + text summary at artifacts/coverage/report/ (open index.html, or read Summary.txt).
 # Results are wiped first so stale collections never skew the merge. Excludes source-generated

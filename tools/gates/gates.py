@@ -155,14 +155,36 @@ def emit_failure_output(name, data, tail_lines=QUIET_FAIL_TAIL_LINES):
     sys.stdout.buffer.flush()
 
 
-def run_gates(names, runner):
-    """Run each gate, print a per-gate line, return the names that failed."""
+def shutdown_build_servers(run=subprocess.run):
+    """Best-effort `dotnet build-server shutdown` (#1671): frees MSBuild/VBCSCompiler worker nodes.
+
+    Never raises -- this is cleanup, not a gate outcome, so a shutdown that itself fails to run
+    must not turn an otherwise-passing gates run red. `run` is injectable so the selftest below can
+    prove the CALL SITES (after a test* gate, and in main()'s finally on a raise) without spawning a
+    real `dotnet` process.
+    """
+    try:
+        run(["dotnet", "build-server", "shutdown"], check=False,
+            capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def run_gates(names, runner, shutdown=shutdown_build_servers):
+    """Run each gate, print a per-gate line, return the names that failed.
+
+    #1671: shuts down the MSBuild build servers after every gate whose name starts with "test" --
+    that is where the test-host process fan-out this exists to bound actually accumulates -- pass
+    or fail, so a failing test leg still frees the nodes for the next lane queued on buildlock.
+    """
     failed = []
     for name in names:
         code = runner(name)
         print(f"  {'pass' if code == 0 else 'FAIL':>4}  {name}  (exit {code})", flush=True)
         if code != 0:
             failed.append(name)
+        if name.startswith("test"):
+            shutdown()
     return failed
 
 
@@ -230,6 +252,20 @@ def run_all(after_build, spawner=pixi_spawner, runner=pixi_runner, quiet=False):
     return OVERLAP + BUILD_PHASE + after_build, failed
 
 
+def run_gates_and_shutdown(after_build, runner, quiet, shutdown=shutdown_build_servers, run_all_fn=run_all):
+    """`run_all`, plus a build-server shutdown that fires even if `run_all_fn` raises (#1671).
+
+    `run_gates` above already shuts down after each test* gate; this is the outer net -- e.g. for
+    `--fast` runs, which carry no test* gate at all, or a `run_all_fn` that dies before reaching
+    one. `run_all_fn`/`shutdown` are injectable so the selftest below can prove the finally fires
+    under a real exception without spawning a real `dotnet` process or a real gate run.
+    """
+    try:
+        return run_all_fn(after_build, runner=runner, quiet=quiet)
+    finally:
+        shutdown()
+
+
 RECEIPT_NAME = "baton-gate-receipt"
 RECEIPT_MAX_AGE_S = 6 * 3600
 RECEIPT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -294,6 +330,92 @@ def delete_receipt(cwd=None):
         os.remove(receipt_path(cwd))
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------------------------
+# Telemetry (#1671): free physical MB and the MSBuild/VBCSCompiler/testhost process count, taken
+# once at the start and once at the end of a run. A SEPARATE sidecar file from baton-gate-receipt
+# itself -- same shape as buildlock's own ".info" sidecar -- so this can never become part of what
+# --check-receipt matches (tree/dirty/diff_hash/timestamp, all untouched by anything below). Every
+# function here is best-effort: a telemetry read that fails must never turn a gates run red.
+# ---------------------------------------------------------------------------------------------
+
+TELEMETRY_NAME = "baton-gate-receipt.telemetry"
+BUILD_PROCESS_NAMES = ("MSBuild.exe", "VBCSCompiler.exe", "testhost.exe")
+
+
+def telemetry_path(cwd=None):
+    return os.path.join(_git_dir(cwd), TELEMETRY_NAME)
+
+
+def _free_physical_mb():
+    """Free physical RAM in MB via the Win32 API -- `None` off Windows (pixi.toml's linux-64 leg)."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    class _MemoryStatusEx(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    try:
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+            return None
+        return status.ullAvailPhys // (1024 * 1024)
+    except OSError:
+        return None
+
+
+def _build_process_count():
+    """System-wide MSBuild.exe/VBCSCompiler.exe/testhost.exe process count -- `None` off Windows.
+
+    `tasklist`, not WMI: no extra dependency (no `psutil` in this repo's Python env) and no
+    PowerShell subprocess, just the OS tool every Windows install already has on PATH.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        out = subprocess.run(
+            ["tasklist", "/fo", "csv", "/nh"],
+            capture_output=True, text=True, check=False, timeout=15,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return sum(1 for line in out.splitlines() if any(f'"{n}"' in line for n in BUILD_PROCESS_NAMES))
+
+
+def telemetry_snapshot():
+    return {"free_physical_mb": _free_physical_mb(), "build_process_count": _build_process_count()}
+
+
+def write_telemetry(mode, start, end, cwd=None):
+    """Record a start/end telemetry pair for the run that just finished. Overwrites any prior.
+
+    Best-effort like `write_receipt`: a write failure here must not flip an already-decided PASS
+    to a nonzero exit, and is never consulted by `--check-receipt`.
+    """
+    try:
+        telemetry = {
+            "mode": mode,
+            "start": start,
+            "end": end,
+            "timestamp_utc": datetime.now(timezone.utc).strftime(RECEIPT_TIME_FORMAT),
+        }
+        with open(telemetry_path(cwd), "w", encoding="utf-8") as f:
+            json.dump(telemetry, f)
+    except OSError as e:
+        print(f"gates: could not write the telemetry sidecar ({e})", flush=True)
 
 
 def _format_age(age_s):
@@ -442,6 +564,45 @@ def selftest():
         print(f"  control FAILED: the overlapped path did not report the failing gate -- {failed}")
         ok = False
 
+    # #1671: build-server shutdown must be reached on a FAILING test* gate, not only a passing run
+    # -- proven with an injected counting fake, red-first (this arm would have caught the shutdown
+    # call being placed only after a success check, or only inside a passing branch).
+    shutdown_calls = []
+    failed = run_gates(["test-x"], lambda name: 1, shutdown=lambda: shutdown_calls.append(1))
+    if failed != ["test-x"] or not shutdown_calls:
+        print(
+            f"  control FAILED: build-server shutdown was not reached after a failing test* "
+            f"gate -- failed={failed} shutdown_calls={len(shutdown_calls)}"
+        )
+        ok = False
+
+    # A non-test* gate must NOT trigger a shutdown -- it belongs to the build phase, which is
+    # covered by run_gates_and_shutdown's outer finally below, not per-gate.
+    shutdown_calls_nontest = []
+    run_gates(["lint"], lambda name: 1, shutdown=lambda: shutdown_calls_nontest.append(1))
+    if shutdown_calls_nontest:
+        print("  control FAILED: a non-test* gate name triggered a build-server shutdown")
+        ok = False
+
+    # #1671: the outer net must fire even when run_all itself raises -- e.g. a `--fast` run with
+    # no test* gate at all, or a crash before one is reached.
+    shutdown_calls_outer = []
+
+    def _raising_run_all(after_build, runner, quiet):
+        raise RuntimeError("boom")
+
+    try:
+        run_gates_and_shutdown(
+            [], None, False,
+            shutdown=lambda: shutdown_calls_outer.append(1),
+            run_all_fn=_raising_run_all,
+        )
+    except RuntimeError:
+        pass
+    if not shutdown_calls_outer:
+        print("  control FAILED: build-server shutdown was not reached when run_all raised")
+        ok = False
+
     # The quiet path (#1560), both directions: a failing overlapped gate must still be REPORTED
     # (named in the failed list -- quiet must never eat a red), and a passing gate's output must
     # actually be dropped. Both arms discriminate: without the quiet branch the second arm sees
@@ -540,6 +701,25 @@ def selftest():
         valid, _, _ = receipt_status(cwd=repo)
         if valid:
             print("  control FAILED: a receipt older than the 6h ceiling matched")
+            ok = False
+
+        # #1671: telemetry lives in its own sidecar and never perturbs --check-receipt. A valid
+        # receipt (the "full" one written just above, still forged-stale) stays INVALID after
+        # write_telemetry runs -- the discriminating half: if telemetry ever wrote into
+        # baton-gate-receipt itself instead of its own file, this control would flip to valid the
+        # moment write_telemetry's own timestamp/mode fields overwrote the forged stale one.
+        write_telemetry("full", {"free_physical_mb": 123, "build_process_count": 4}, {"free_physical_mb": 99}, cwd=repo)
+        if not os.path.exists(telemetry_path(repo)):
+            print("  control FAILED: write_telemetry did not create the sidecar file")
+            ok = False
+        valid, _, _ = receipt_status(cwd=repo)
+        if valid:
+            print("  control FAILED: writing telemetry resurrected an invalid (stale) receipt")
+            ok = False
+        with open(telemetry_path(repo), encoding="utf-8") as f:
+            telemetry = json.load(f)
+        if telemetry.get("start", {}).get("build_process_count") != 4:
+            print(f"  control FAILED: telemetry sidecar did not round-trip its snapshot -- {telemetry!r}")
             ok = False
 
         # The hook itself (sh): a forged, currently-valid receipt makes it exit 0 with the skip
@@ -682,9 +862,12 @@ def main():
     mode = "fast" if "--fast" in sys.argv else "full"
     after_build = AFTER_BUILD_FAST if mode == "fast" else AFTER_BUILD_FULL
     quiet = "--quiet" in sys.argv
-    names, failed = run_all(after_build,
-                            runner=quiet_pixi_runner if quiet else pixi_runner,
-                            quiet=quiet)
+
+    start_snapshot = telemetry_snapshot()
+    names, failed = run_gates_and_shutdown(after_build, quiet_pixi_runner if quiet else pixi_runner, quiet)
+    end_snapshot = telemetry_snapshot()
+    write_telemetry(mode, start_snapshot, end_snapshot)
+
     print()
     print(summarise(names, failed))
     if failed:

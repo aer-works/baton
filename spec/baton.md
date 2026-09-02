@@ -1970,6 +1970,64 @@ temp dir -- `.githooks/pre-push` now `unset`s the `GIT_*` keys before invoking a
 `gates.py` scrubs them from its own process environment and passes an explicit scrubbed `env=` to
 every git subprocess its fixtures spawn.
 
+### C-13 — Build fan-out is bounded; gates records what it costs (#1671)
+
+Measured 2026-09-01/02 on the 15.7 GB fleet box: lane concurrency is memory-bound, not CPU-bound.
+Each worker (`claude`/`agy`) costs ~300 MB irreducibly, but every concurrent `gates`/`gates-fast`/
+`dotnet test` run added a persistent `VBCSCompiler.exe` (~400 MB) plus MSBuild worker nodes kept
+alive by node reuse, and `dotnet test` at solution scope ran up to 3 `testhost.dll` processes
+concurrently (5 xUnit test projects; MEASURED via `Get-CimInstance Win32_Process` mid-run, command
+lines naming three distinct test projects at once). Two workers died mid-tool-call at 6 lanes / 2.2 GB
+free (#1622); three lanes now hit a ~1.4 GB floor with the build fan-out accounting for the
+difference between that and physical pressure. Four changes narrow the fan-out this repo controls:
+
+**No MSBuild node reuse, no shared Roslyn compiler server, for every pixi-run build.**
+`pixi.toml`'s `[activation.env]` already set `MSBUILDDISABLENODEREUSE=1` (#909, concurrent-worktree
+node-pool collisions); `UseSharedCompilation=false` joins it there for the same reason and the same
+scope -- an ordinary MSBuild property, overridden by an environment variable exactly like
+`MSBUILDDISABLENODEREUSE` (`Microsoft.Managed.Core.targets` only defaults it to `true` when unset).
+Chosen over a `Directory.Build.props` env-gated condition: a second mechanism for the same class of
+setting is a second place to look, and `MSBUILDDISABLENODEREUSE` already established this repo's
+answer. Scope, stated once: every `pixi run` build -- lane and gates alike -- inherits both settings;
+a `dotnet build` run directly, outside pixi's activation, does not, which is what "the interactive
+developer build is unchanged" means here.
+
+**`gates.py` shuts down the MSBuild build servers pass or fail.** `dotnet build-server shutdown`
+runs after every gate whose name starts with `test` (where the testhost fan-out actually
+accumulates) and again in an outer `finally` around the whole run (`run_gates_and_shutdown`), so a
+`--fast` run with no test leg, or a crash before one is reached, still frees the nodes for the next
+lane queued on `tools/buildlock.py`. Proven red-first: `gates.py --selftest` injects a counting fake
+in place of the real shutdown and asserts it fires on a FAILING test-shaped gate and when the inner
+run raises, not only on a passing run.
+
+**`dotnet test` serializes across the five xUnit projects, in-assembly parallelism untouched.**
+`test-no-build` (the leg `gates` runs) now passes `-m:1`, MSBuild's own max-node-count. MEASURED
+which of the two candidate knobs actually owns this: a VSTest runsettings
+`RunConfiguration.MaxCpuCount=1` left 3 concurrent `testhost.dll` processes running (that knob
+governs parallelism inside a single `vstest.console` invocation given an explicit assembly list,
+which a solution-scope `dotnet test` does not go through); `-m:1` left exactly one `testhost.dll`
+process running at a time, and the run's own "Test run for X" headers -- which VSTest prints only
+once a project's host has actually started -- appeared one project at a time rather than all five up
+front. Neither knob touches xunit's own in-assembly test-collection parallelism. Cost: the five
+projects' durations now sum rather than overlap (measured this box: ~2m parallel baseline vs ~3m17s
+serialized for the test leg alone) -- accepted, since the acceptance bound is on the whole `gates`
+run's wall time, most of which is `fmt-check`/`lint`, not this leg.
+
+**`buildlock` already covered `dotnet test`/`test-no-build`.** `tools/buildlock.py` (#1402) wraps
+every MSBuild-owning pixi task; `test`, `test-no-build`, `test-flow`, and `test-other` were all
+already invoked through it before this issue, so at most one MSBuild tree exists machine-wide
+regardless of how many lanes are running `gates` concurrently. Confirmed, not changed.
+
+**Telemetry: `gates.py` records what a run cost, in a sidecar the receipt never reads.** Free
+physical MB (`GlobalMemoryStatusEx`) and the system-wide MSBuild/VBCSCompiler/testhost process count
+(`tasklist`), sampled once at the start and once at the end of every run, land in
+`<git-dir>/baton-gate-receipt.telemetry` -- a file separate from `baton-gate-receipt` itself, the
+same shape as `buildlock`'s own `.info` sidecar, so it can never become part of what
+`--check-receipt` matches (tree/dirty/diff_hash/timestamp). Both are best-effort and `None` off
+Windows (pixi.toml's `linux-64` dev-sandbox leg carries no `GlobalMemoryStatusEx`/`tasklist`). This
+is what a future "measured `<N> MB free` → no new lane" conductor rule would read instead of the
+fixed `<2 GB free` guess it replaces -- that rule itself is not part of this change.
+
 ---
 
 ## Appendix: full subsystem ruling table
