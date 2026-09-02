@@ -1424,18 +1424,21 @@ def gather_conductor_deliverables(
         conductor_artifacts_dir = conductor_dir / "artifacts" / "conductor"
 
         try:
-            lines = manifest_path.read_text(encoding="utf-8").splitlines()
+            lines = manifest_path.read_text(encoding="utf-8-sig").splitlines()
         except Exception as ex:  # noqa: BLE001
             log(f"conductor manifest read error for {conductor_dir}: {type(ex).__name__}: {ex}")
             continue
 
-        for line in lines:
+        for line_num, line in enumerate(lines, start=1):
             if limit is not None and len(items) >= limit:
                 break
             if not line.strip():
                 continue
             try:
                 entry = json.loads(line)
+            except json.JSONDecodeError as ex:
+                log(f"conductor manifest JSONDecodeError in {conductor_dir} line {line_num}: {ex}")
+                continue
             except Exception:
                 continue
             if not isinstance(entry, dict):
@@ -2837,6 +2840,74 @@ def _selftest() -> int:
               by_source.get(str(src_b), {}).get("content") == "# B\nProject B content")
         check("same-basename sources use distinct artifact paths",
               by_source.get(str(src_a), {}).get("artifact") != by_source.get(str(src_b), {}).get("artifact"))
+
+    # -- #1673: Conductor manifest UTF-8 BOM tolerance, corrupt-line logging, and cross-language fixture --
+    with tempfile.TemporaryDirectory() as td:
+        c_root = Path(td)
+        c_room = c_root / "conductor"
+        c_art = c_room / "artifacts" / "conductor"
+        c_art.mkdir(parents=True)
+
+        c_src_bom = Path(td) / "bom-notes.md"
+        c_src_bom.write_bytes(b"# BOM Title\nContent with BOM")
+        dest_bom = c_art / "11111111-bom-notes.md"
+        dest_bom.write_bytes(b"# BOM Title\nContent with BOM")
+
+        manifest_file = c_art / "manifest.jsonl"
+        manifest_entry_bom = {
+            "title": "BOM Title",
+            "source_path": str(c_src_bom),
+            "delivered_at": "2026-09-02T12:00:00Z",
+            "sha256": sha256_hex(b"# BOM Title\nContent with BOM"),
+            "artifact_file": "11111111-bom-notes.md",
+        }
+        # (a) A manifest whose first line carries a UTF-8 BOM parses and yields the item
+        bom_bytes = b"\xef\xbb\xbf" + json.dumps(manifest_entry_bom).encode("utf-8") + b"\n"
+        manifest_file.write_bytes(bom_bytes)
+
+        bom_items = gather_deliverables(c_root, {}, [])
+        check("conductor manifest carrying UTF-8 BOM parses and yields deliverable (#1673 arm a)",
+              len(bom_items) == 1 and bom_items[0].get("title") == "BOM Title")
+
+        # (b) A garbage line is logged and skipped while good lines still yield
+        c_src_good = Path(td) / "good-notes.md"
+        c_src_good.write_bytes(b"# Good Title\nGood content")
+        dest_good = c_art / "22222222-good-notes.md"
+        dest_good.write_bytes(b"# Good Title\nGood content")
+
+        manifest_entry_good = {
+            "title": "Good Title",
+            "source_path": str(c_src_good),
+            "delivered_at": "2026-09-02T12:01:00Z",
+            "sha256": sha256_hex(b"# Good Title\nGood content"),
+            "artifact_file": "22222222-good-notes.md",
+        }
+        garbage_manifest = (
+            "corrupt garbage line that is not json\n"
+            + json.dumps(manifest_entry_bom) + "\n"
+            + "another { malformed json line\n"
+            + json.dumps(manifest_entry_good) + "\n"
+        )
+        manifest_file.write_text(garbage_manifest, encoding="utf-8")
+        garbage_items = gather_deliverables(c_root, {}, [])
+        check("garbage manifest line is skipped while good lines yield deliverables (#1673 arm b)",
+              len(garbage_items) == 2 and {i.get("title") for i in garbage_items} == {"BOM Title", "Good Title"})
+
+        # (3) Cross-language pin: parse checked-in fixture tests/fixtures/conductor-manifest.jsonl produced by C# path
+        fixture_path = HERE.parent.parent / "tests" / "fixtures" / "conductor-manifest.jsonl"
+        check("cross-language conductor manifest fixture file exists (#1673)", fixture_path.is_file())
+        fixture_raw = fixture_path.read_bytes()
+        check("cross-language fixture has no UTF-8 BOM and starts with '{'",
+              len(fixture_raw) > 0 and fixture_raw[0] == 0x7B and not fixture_raw.startswith(b"\xef\xbb\xbf"))
+
+        manifest_file.write_bytes(fixture_raw)
+        fixture_artifact = c_art / "c44a8b84-fixture-plan.md"
+        fixture_artifact.write_bytes(b"# Fixture Plan\nFixture content")
+
+        fixture_items = gather_deliverables(c_root, {}, [])
+        check("pusher selftest parses cross-language conductor manifest fixture (#1673)",
+              len(fixture_items) == 1 and fixture_items[0].get("title") == "Fixture Plan"
+              and fixture_items[0].get("kind") == "conductor")
 
     # -- #1656 F3 (2026-09-02 review): nonterminal_warn_line threshold behavior, restored alongside
     # the #1669 conductor block above rather than being displaced by it (F2, 2026-09-02 review) --
