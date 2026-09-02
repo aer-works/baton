@@ -770,9 +770,19 @@ and settled `Indeterminate` even though the worker's own exit and output contrac
    directory, whose first non-blank, non-`#`-comment line is the command line to run. The one
    repo-level declaration mechanism this issue picks (never also a `[tool.baton]` table in
    `pixi.toml`/`pyproject.toml`) — a plain-text file works for any workspace, pixi-based or not, which
-   is the whole point since a foreign workspace's own task runner is unknown to this engine. Read fresh
-   from disk on every resolve (never cached onto a binding), so a `baton redispatch` against a
-   workspace whose declaration changed since the parent's own dispatch never runs a stale command.
+   is the whole point since a foreign workspace's own task runner is unknown to this engine.
+   **Read from the workspace's COMMITTED tree (`git show HEAD:.baton/verify`), at dispatch time, before
+   the worker is spawned (#1708).** Both halves are load-bearing: a worker with write access to its own
+   workspace must never be able to author the command that grades it, and a worker with shell access
+   could commit one, so a committed read taken *after* the worker ran would be no boundary at all. A
+   fresh dispatch still takes a fresh snapshot, so a `baton redispatch` against a workspace whose
+   declaration changed never runs a stale command. Two deliberate costs, both fail-closed: an
+   **uncommitted** `.baton/verify` does not take effect, and a workspace that is not a git repository
+   (or whose `git` cannot spawn) declares nothing, falling through to the role default rather than to a
+   worker-writable file. When the working-tree file differs from what was read, the engine appends the
+   diagnostic-only `FlowEvent.VerifyDeclarationIgnored(ExecutionId, CommittedDigest, WorkingTreeDigest)`
+   — no `StepState` field, no status surface, no verdict consequence: the journal is the whole record,
+   and it is what tells an operator that the file in their workspace is not what graded the run.
 3. `WorkerRole.VerifyPixiTask` (`implement` → `gates-quiet`; every other shipped role → none) — today's
    only source, run as `pixi run <task>`, unchanged. Baton's own repo keeps working unchanged under
    this arm: no `.baton/verify` file here and no `--verify` on baton's own dispatches.
@@ -791,11 +801,20 @@ role has no authority to opt a workspace out of. A red run through this arm sett
 exactly like any other running-and-red verify.
 
 **Before running, the engine checks the resolved command is runnable** (`VerifyCommandResolver.CheckRunnableAsync`) —
-a role-default `pixi` task is checked against that workspace's own `pixi task list` output (the #1702
-measured shape); an override/repo-declared command is checked by whether its own first token resolves
-as an executable (a pure filesystem PATH lookup, no process spawn). If not runnable, the engine appends
-`FlowEvent.VerifyNotRun(ExecutionId, Reason)` — e.g. `"task absent: gates-quiet"` or `"executable not
-found: eslint"` — and stops: **no `VerifyStarted` (never started), no `VerifyFailed`, and no
+and after #1708 that probe exists for the `pixi run <task>` shape ONLY: a role-default task name checked
+against that workspace's own `pixi task list` output, the #1702 measured shape. **An override or
+repo-declared command line is not pre-probed at all.** It runs through `cmd.exe /d /c`, where a cmd
+intrinsic (`echo`, `call`, `exit`, `cd`) is perfectly runnable while resolving to no file on PATH — so
+the filesystem lookup that used to run here answered a question the shell was never going to ask, and
+answering it wrong skipped a real gate. The exit code decides instead: a command line that cannot run
+fails, and a failing verify is a `VerifyFailed` with output, never a silent pass. **`VerifyNotRun` therefore
+has exactly one producer: a SUCCESSFUL `pixi task list` whose output positively does not contain the
+role's task.** A probe that fails — non-zero exit from a stale lockfile, a failed solve, an unparseable
+manifest, a concurrent lock, or `pixi` refusing to spawn at all — is an engine-environment problem and
+is never read as absence; it reports runnable and lets the real run decide, which fails closed. If not
+runnable, the engine appends
+`FlowEvent.VerifyNotRun(ExecutionId, Reason)` — `"task absent: gates-quiet"` — and stops: **no
+`VerifyStarted` (never started), no `VerifyFailed`, and no
 `Indeterminate` settle.** The execution's own already-`Succeeded` classification (this branch is only
 reached when it is) decides `StepStatus`/`WorkflowOutcome` unassisted, exactly as if the role declared
 no verify command at all — the same "ENGINE, never the worker" ownership as an ordinary verify run, just
@@ -821,6 +840,16 @@ never written. The copy is now keyed on the step actually having executed (`Late
 null`) and the declared output file existing on disk at that execution's artifact path — the real,
 unconditional gate — regardless of what verify (running-and-green, running-and-red, or #1702's
 not-run) decided.
+
+**That gate is deliberately broader than the verify case that motivated it (#1708).** Keying on
+"the step executed and the file exists" also delivers from an execution that never exited naturally —
+an `ExecutionArrested` (token/tool-step budget), an operator `ExecutionCancelled`, or a timeout — where
+the worker was killed *during* the write and the file on disk may be **partial**. That is the intended
+behaviour, not an oversight: a partial report is better evidence than none, it is the only account of
+what the arrested worker had done, and nothing about delivering it reads as success — the room word and
+the process exit code both still say arrested/cancelled/failed, and `--output` has never been a claim
+about the verdict. A caller that needs "this file is complete" reads the terminal state, never the mere
+existence of the file.
 
 **The per-execution token budget (#1682: arrests on billed, not context level).** #1623's own review
 recorded the ceiling as "not shown reachable" from `600,000 − 200,000(context) = 400,000 needed from
@@ -1092,7 +1121,7 @@ code is the only signal a lane is even still going, and it is unreliable for tha
       "liveness"?: "alive" | "dead" | "unknown",  // #1375/#1513: present while this step reads "Running", or "Failed" with a RetryNotBefore still pending
       "exhaustedUntil"?: string,  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
       "verify"?: "not-run",       // #1702: present iff the latest attempt's resolved verify command failed its pre-flight runnability check -- an ordinarily-Succeeded step, never a gate. See "Verify command resolution" below.
-      "verifyReason"?: string     // #1702: the pre-flight verdict, e.g. "task absent: gates-quiet" or "executable not found: eslint" -- present only alongside "verify"
+      "verifyReason"?: string     // #1702: the pre-flight verdict -- "task absent: <task>", the only shape #1708 leaves reachable -- present only alongside "verify"
     }
   ],
   "outputs": [string],                 // resolved output paths

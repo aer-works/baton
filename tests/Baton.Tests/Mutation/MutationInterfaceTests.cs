@@ -438,6 +438,90 @@ public class MutationInterfaceTests
         }
     }
 
+    /// <summary>
+    /// #1708 H1, red-first end to end: a worker writes its own <c>.baton/verify</c> saying <c>exit 0</c>
+    /// during its execution, into the very workspace it was dispatched against. The engine must run the
+    /// workspace's COMMITTED declaration instead — which here goes red — and journal
+    /// <see cref="FlowEvent.VerifyDeclarationIgnored"/> naming both sides. Against the pre-fix code the
+    /// worker's file wins, verify exits 0, and the step settles <c>Succeeded</c> with its gate skipped.
+    /// </summary>
+    [Fact]
+    public async Task StartWorkflowAsync_ignores_a_verify_declaration_the_worker_wrote_and_runs_the_committed_one()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var workspace = Path.Combine(Path.GetTempPath(), $"workspace-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            // A workspace whose committed declaration fails. Nothing else in this test can make verify
+            // go red, so a red settle proves the committed line is what ran.
+            Directory.CreateDirectory(workspace);
+            Directory.CreateDirectory(Path.Combine(workspace, ".baton"));
+            await File.WriteAllTextAsync(
+                Path.Combine(workspace, ".baton", "verify"),
+                "python -c \"import sys; sys.exit(1)\"\n",
+                TestContext.Current.CancellationToken);
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-worker-authored"),
+                new WorkflowTemplateId("verify-worker-authored"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            // The worker overwrites .baton/verify with a verifier that always passes, then satisfies its
+            // own output contract and exits 0 -- an ordinary clean run that would settle Succeeded.
+            var worker = new CoreDispatchTarget(
+                "cmd",
+                ["/c", "echo exit 0 >.baton\\verify & echo plan>%BATON_OUTPUT_DIR%\\plan"])
+            {
+                WorkingDirectory = workspace,
+            };
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    worker,
+                    TimeSpan.FromSeconds(30)),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-worker-authored"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            // The worker really did write the file -- otherwise this test proves nothing about ignoring it.
+            Assert.Equal(
+                "exit 0",
+                Baton.Mutation.VerifyCommandResolver.ReadWorkingTreeRepoDeclaration(workspace));
+
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Failed, architect.Status);
+            Assert.NotNull(architect.IndeterminateReason);
+            Assert.Null(architect.VerifyNotRunReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events.OfType<FlowEvent.VerifyStarted>());
+            Assert.Single(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyPassed>());
+
+            var ignored = Assert.Single(events.OfType<FlowEvent.VerifyDeclarationIgnored>());
+            Assert.Equal(
+                VerifyCommandResolver.DeclarationDigest("python -c \"import sys; sys.exit(1)\""),
+                ignored.CommittedDigest);
+            Assert.Equal(VerifyCommandResolver.DeclarationDigest("exit 0"), ignored.WorkingTreeDigest);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
     [Fact]
     public async Task StartWorkflowAsync_verify_override_wins_over_the_role_default_and_settles_Indeterminate_when_it_runs_red()
     {

@@ -869,6 +869,58 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// #1708 M1: the widened half of #1702's <c>--output</c> fix, pinned. The copy is keyed on the step
+    /// having executed and the file existing — not on a natural exit — so a CANCELLED execution's
+    /// half-written report is delivered too. That is deliberate (spec/baton.md §3): a partial report is
+    /// better evidence than none, and the room word and process exit code both still say the run did not
+    /// succeed, so nothing here reads as a pass.
+    /// </summary>
+    [Fact]
+    public async Task Dispatching_implement_that_is_cancelled_mid_write_still_delivers_the_partial_output()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var workspace = Path.Combine(testRoot, "workspace");
+            Directory.CreateDirectory(workspace);
+
+            var specPath = await WriteSpecAsync(testRoot, "Make the bounded change.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var outputPath = Path.Combine(testRoot, "changes-out.md");
+            var options = new DispatchOptions("implement", specPath, roomDirectory, Adapter: "fake", OutputPath: outputPath);
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new PartialOutputThenBlockingWorkerAdapter(),
+            };
+
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            // The cancel is what ends this test, not the delay -- so the delay only has to outlast a
+            // process spawn plus one `echo` under build-lock contention. Generous on purpose: a short
+            // window's failure mode is File.Exists(outputPath) == false, which reads as a regression in
+            // the very thing this pins rather than as the flake it would be.
+            cancellation.CancelAfter(TimeSpan.FromSeconds(10));
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            var result = await DispatchCommand.ExecuteAsync(options, adapters, cancellation.Token, workspaceDirectory: workspace);
+            Console.SetOut(originalOut);
+
+            var step = Assert.Single(result.State.Steps);
+            Assert.NotEqual(StepStatus.Succeeded, step.Status);
+            Assert.True(
+                File.Exists(outputPath),
+                $"expected the partial output copied to '{outputPath}' even though the execution was cancelled.");
+            Assert.Contains("half-written", await File.ReadAllTextAsync(outputPath, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [Fact]
     public async Task Dispatching_implement_whose_verify_actually_runs_and_goes_red_still_settles_Indeterminate_but_still_delivers_output()
     {

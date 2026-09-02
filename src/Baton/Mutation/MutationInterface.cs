@@ -1673,6 +1673,15 @@ public static class MutationInterface
                 : null;
             var effectiveCancellationToken = linkedCancellation?.Token ?? dispatchCancellationToken;
 
+            // #1708 H1: the workspace's committed .baton/verify is read HERE, before the worker is
+            // spawned -- not in the verify block below, which runs against a working tree the worker has
+            // just had write access to. Both halves matter: committed (a worker cannot silently edit
+            // HEAD's blob) and pre-dispatch (a worker with shell access could commit one). See
+            // VerifyCommandResolver.ReadCommittedRepoDeclarationAsync for what a failed read falls back to.
+            var committedVerifyDeclaration = await VerifyCommandResolver
+                .ReadCommittedRepoDeclarationAsync(binding.Target.WorkingDirectory, dispatchCancellationToken)
+                .ConfigureAwait(false);
+
             // Rests on ICoreDispatcher's contract that cancellation via its token argument comes back
             // as a normal CoreDispatchResult (CoreExitReason.CancelRequested), never as
             // OperationCanceledException — CoreDispatcher converts BatonCancelException two layers
@@ -1719,12 +1728,31 @@ public static class MutationInterface
             // on the crash-recovery ToClassify branch (PumpToFixedPointAsync above) replaying a
             // recorded exit from a possibly-defunct workspace; a real subprocess belongs only on the
             // live-dispatch path.
-            // #1702: VerifyCommandResolver.Resolve is called fresh here, never memoized onto the
-            // binding, so a redispatch reads the workspace's CURRENT declaration — see that class's
-            // own doc for the resolution order.
-            var resolvedVerify = classification.Verdict == OutcomeVerdict.Succeeded
-                ? VerifyCommandResolver.Resolve(binding.Target.WorkingDirectory, binding.VerifyCommandOverride, binding.VerifyPixiTask)
-                : null;
+            // #1702: the resolution order lives on VerifyCommandResolver's own doc, not restated here.
+            // #1708 H1: the repo-declaration arm is the pre-dispatch committed snapshot above; a
+            // redispatch still re-reads it (a fresh dispatch takes a fresh snapshot), which is the
+            // no-stale-command property spec/baton.md §3 states.
+            ResolvedVerifyCommand? resolvedVerify = null;
+            if (classification.Verdict == OutcomeVerdict.Succeeded)
+            {
+                var workingTreeDeclaration = VerifyCommandResolver.ReadWorkingTreeRepoDeclaration(binding.Target.WorkingDirectory);
+                if (!string.Equals(workingTreeDeclaration, committedVerifyDeclaration, StringComparison.Ordinal))
+                {
+                    // Journaled whatever the precedence outcome is -- including when --verify would have
+                    // won anyway. The operator-facing fact is "the file in your workspace is not what
+                    // graded this run", and that is true either way.
+                    await eventLogWriter.AppendAsync(
+                        new FlowEvent.VerifyDeclarationIgnored(
+                            prepared.Request.ExecutionId,
+                            VerifyCommandResolver.DeclarationDigest(committedVerifyDeclaration),
+                            VerifyCommandResolver.DeclarationDigest(workingTreeDeclaration)),
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+
+                resolvedVerify = VerifyCommandResolver.Resolve(
+                    committedVerifyDeclaration, binding.VerifyCommandOverride, binding.VerifyPixiTask);
+            }
+
             if (resolvedVerify is not null)
             {
                 var (runnable, notRunnableReason) = await VerifyCommandResolver.CheckRunnableAsync(

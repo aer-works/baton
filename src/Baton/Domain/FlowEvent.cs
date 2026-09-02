@@ -26,6 +26,7 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(VerifyPassed), "verifyPassed")]
 [JsonDerivedType(typeof(VerifyFailed), "verifyFailed")]
 [JsonDerivedType(typeof(VerifyNotRun), "verifyNotRun")]
+[JsonDerivedType(typeof(VerifyDeclarationIgnored), "verifyDeclarationIgnored")]
 [JsonDerivedType(typeof(ExecutionArrested), "executionArrested")]
 [JsonDerivedType(typeof(ExecutionIndeterminate), "executionIndeterminate")]
 [JsonDerivedType(typeof(CaptureResolved), "captureResolved")]
@@ -222,6 +223,32 @@ public abstract record FlowEvent
     /// </summary>
     /// <param name="Reason"><see cref="Mutation.VerifyCommandResolver"/>'s own verdict text, never re-derived here.</param>
     public sealed record VerifyNotRun(ExecutionId ExecutionId, string Reason) : FlowEvent;
+
+    /// <summary>
+    /// #1708 H1: the workspace's working-tree <c>.baton/verify</c> differed from the one committed in
+    /// <c>HEAD</c> when this execution was dispatched, so the working-tree file was IGNORED and the
+    /// committed declaration (or, if there is none, the role default) decided what verify ran. The
+    /// self-verification boundary made audible: a worker can write that file, and this says when one
+    /// did — or, just as often, that a legitimate declaration was never committed and therefore never
+    /// took effect.
+    /// <para>
+    /// <b>Diagnostic only, and deliberately terminal as a record.</b> Same shape as
+    /// <see cref="VerifyStarted"/>/<see cref="VerifyPassed"/>: no <see cref="StepState"/> field, no
+    /// <c>WorkflowStatusView</c> surface, no <c>fleet_status</c> plumbing, no
+    /// <see cref="Status.WorkflowOutcome"/> consequence. It changes no verdict, so it needs no reader
+    /// beyond <c>flow.jsonl</c> — do not "complete" it into one.
+    /// </para>
+    /// </summary>
+    /// <param name="CommittedDigest">
+    /// <see cref="Mutation.VerifyCommandResolver.DeclarationDigest"/> of the COMMITTED command line —
+    /// null when <c>HEAD</c> holds no declaration (including a non-git workspace), which is exactly the
+    /// "an uncommitted declaration was ignored" case.
+    /// </param>
+    /// <param name="WorkingTreeDigest">The same digest of the working-tree command line; null when the file is absent or comment-only.</param>
+    public sealed record VerifyDeclarationIgnored(
+        ExecutionId ExecutionId,
+        string? CommittedDigest,
+        string? WorkingTreeDigest) : FlowEvent;
 
     /// <summary>
     /// #1623 (contract: <c>spec/baton.md</c> §3; the addendum's own words are quoted on
