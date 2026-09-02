@@ -1890,6 +1890,7 @@ def main() -> None:
                     terminal_total=terminal_total,
                     terminal_archive=terminal_archive,
                     conductor=conductor_info)
+                # record-once-ok: #1690 spec/baton.md
                 # #1690 item 3: the change-gate hashes a QUANTIZED copy (telemetry churn collapsed to
                 # a 300s bucket) -- `wrapped` itself, posted verbatim below, always carries the exact
                 # live values; only the hash's SENSITIVITY to telemetry-only churn is reduced.
