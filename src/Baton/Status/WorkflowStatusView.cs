@@ -128,7 +128,29 @@ public sealed record WorkflowStatusStepView(
     // WorkflowStatusStepView.State already gives a per-step reader over the room-level `state` alone.
     [property: JsonPropertyName("resolvedByConductor")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    bool ResolvedByConductor = false);
+    bool ResolvedByConductor = false,
+    // #1622/#1390: StepState.WorkspaceChanged verbatim -- present ONLY for a tree-changing role
+    // (implement/janitor, per RoleDispatch.ToBinding's grant-derived predicate) whose latest execution
+    // settled Succeeded; absent for every other role and every other step status, which is the "a
+    // review role -> field absent" contract spec/baton.md §3 states. `true`: the worktree carries
+    // commits over base or uncommitted changes (Workspaces.WorktreeProvisioner.IsWorkspaceUntouched's
+    // negation). `false`: neither -- the strong hollow-success signal #1390 exists to surface.
+    [property: JsonPropertyName("workspaceChanged")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? WorkspaceChanged = null,
+    // #1622/#1390: StepState.Hollow verbatim -- present under the identical gate as WorkspaceChanged
+    // above (never present without it), true only when WorkspaceChanged reads false AND the contract
+    // declared zero outputs (OutcomeClassifier.BuildSucceededClassification's own remarks explain the
+    // scope of that second condition). Does NOT reclassify the room's own `state`/`error` -- it stays
+    // "Succeeded" (spec/baton.md §3: reclassifying hollow success as Failed is the operator's design
+    // call #1390 leaves open, not this fix's to make).
+    [property: JsonPropertyName("hollow")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? Hollow = null,
+    // #1622/#1390: StepState.HollowReason verbatim -- non-null only when Hollow is true.
+    [property: JsonPropertyName("hollowReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? HollowReason = null);
 
 /// <summary>
 /// The one JSON object <c>baton status --json</c> writes to stdout (#1356's machine completion
@@ -327,7 +349,7 @@ public static class WorkflowStatusProjector
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
                 usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible,
                 exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind, verifyTail,
-                step.ResolvedByConductor));
+                step.ResolvedByConductor, step.WorkspaceChanged, step.Hollow, step.HollowReason));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))

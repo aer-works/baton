@@ -129,6 +129,14 @@ public static class StateProjector
                     // #1622 (c)/(d): a fresh dispatch is a new attempt, not a continuation of a
                     // previously conductor-resolved one -- same reasoning as the clears above.
                     state.ResolvedByConductorStepIds.Remove(acceptedStepId);
+
+                    // #1622/#1390: a fresh dispatch's own eventual ExecutionSucceeded is what sets
+                    // these next, if it settles Succeeded at all -- a prior attempt's workspaceChanged/
+                    // hollow must not survive onto this one, same "whatever was true before is moot"
+                    // reasoning as every clear above.
+                    state.WorkspaceChangedByStepId.Remove(acceptedStepId);
+                    state.HollowByStepId.Remove(acceptedStepId);
+                    state.HollowReasonByStepId.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -149,6 +157,12 @@ public static class StateProjector
                     state.LatestExecutionFailedRetryNotBeforeByStepId[succeededStepId] = null;
                     state.LatestCapturedResponseFileByStepId[succeededStepId] = null;
                     state.LatestUnsatisfiedOutputNamesByStepId[succeededStepId] = null;
+                    // #1622/#1390: carried verbatim off the event -- see FlowEvent.ExecutionSucceeded's
+                    // own remarks for the null-means-not-tree-changing-or-history-predates-the-field
+                    // reading.
+                    state.WorkspaceChangedByStepId[succeededStepId] = succeeded.WorkspaceChanged;
+                    state.HollowByStepId[succeededStepId] = succeeded.Hollow;
+                    state.HollowReasonByStepId[succeededStepId] = succeeded.HollowReason;
                 }
 
                 break;
@@ -650,7 +664,10 @@ public static class StateProjector
                 state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.IndeterminateVerifyTailByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.ResolvedByConductorStepIds.Contains(stepDefinition.StepId)));
+                state.ResolvedByConductorStepIds.Contains(stepDefinition.StepId),
+                state.WorkspaceChangedByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.HollowByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.HollowReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

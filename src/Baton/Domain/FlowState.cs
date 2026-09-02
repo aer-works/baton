@@ -269,7 +269,18 @@ public sealed record StepState(
     // `rejected`/`resolvedBy` fields read. Never true while IndeterminateAwaitingResolution is true
     // (resolving is what clears that flag); cleared on a fresh dispatch, the same lifetime as
     // RetryForeclosed/IndeterminateAwaitingResolution above.
-    bool ResolvedByConductor = false);
+    bool ResolvedByConductor = false,
+    // #1622/#1390: FlowEvent.ExecutionSucceeded.WorkspaceChanged carried the same hop -- non-null
+    // only for a tree-changing role's Succeeded settle. Null both when the step has not settled
+    // Succeeded at all and when it has but the role is not tree-changing (review/patch/fact-check/
+    // advise/orchestrate) -- WorkflowStatusStepView's own field-absence gate is what a reader uses to
+    // tell those two apart from "computed and false".
+    bool? WorkspaceChanged = null,
+    // #1622/#1390: FlowEvent.ExecutionSucceeded.Hollow, a companion to WorkspaceChanged, never a
+    // second flag.
+    bool? Hollow = null,
+    // #1622/#1390: FlowEvent.ExecutionSucceeded.HollowReason, carried alongside Hollow.
+    string? HollowReason = null);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

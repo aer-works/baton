@@ -284,5 +284,58 @@ public class RoleDispatchTests
 
         Assert.Contains("Attached files (in C:/room/artifacts/attachments): file1.txt, file2.md", binding.PromptTemplate);
     }
+
+    /// <summary>
+    /// #1622 (b)/#1390: <see cref="WorkerBindingConfigEntry.ChangesTree"/> is derived, never a second
+    /// hardcoded role-name list — read straight off every role the catalog actually declares
+    /// (<see cref="WorkerRoleCatalog.All"/>), so a role added or removed from <c>WorkerRoles.json</c>
+    /// is covered automatically. Implement/janitor are the only two whose catalog grant is BOTH
+    /// <c>write_files</c> and <c>run_shell_commands</c> today; there is no <c>fix</c> role in the
+    /// catalog (#1622's own parenthetical names one, but the catalog does not) — an assertion this
+    /// test pins by asserting the exact set rather than merely "implement and janitor are true".
+    /// </summary>
+    [Fact]
+    public void ChangesTree_is_derived_from_the_catalogs_own_write_and_shell_grant_for_every_role()
+    {
+        var expected = new Dictionary<string, bool>
+        {
+            ["advise"] = false,
+            ["implement"] = true,
+            ["review"] = false,
+            ["patch"] = false,
+            ["fact-check"] = false,
+            ["janitor"] = true,
+            ["orchestrate"] = false,
+        };
+
+        var actualRoleIds = WorkerRoleCatalog.All.Select(role => role.Id).OrderBy(id => id, StringComparer.Ordinal).ToList();
+        Assert.Equal(expected.Keys.OrderBy(id => id, StringComparer.Ordinal).ToList(), actualRoleIds);
+
+        foreach (var role in WorkerRoleCatalog.All)
+        {
+            var binding = RoleDispatch.ToBinding(role, "spec");
+            Assert.Equal(expected[role.Id], binding.ChangesTree);
+        }
+    }
+
+    /// <summary>
+    /// The specific defect the derivation exists to avoid (see
+    /// <see cref="WorkerBindingConfigEntry.ChangesTree"/>'s own remarks): a read-only role's grant can
+    /// be WIDENED to <c>WriteFiles: true</c> (audited-not-enforced) purely so a non-outbox-capable
+    /// adapter can still write its own declared report -- re-deriving <c>ChangesTree</c> from that
+    /// widened grant would misclassify e.g. <c>review</c> as tree-changing under such an adapter.
+    /// <c>fact-check</c> (no declared outputs beyond its own report, <c>write_files: false</c>) forced
+    /// onto an adapter without outbox support reaches exactly that widened-grant shape.
+    /// </summary>
+    [Fact]
+    public void ChangesTree_stays_false_even_when_the_grant_widens_write_files_for_a_non_outbox_adapter()
+    {
+        var factCheck = WorkerRoleCatalog.For("fact-check");
+        var binding = RoleDispatch.ToBinding(factCheck, "spec", adapterOverride: "agy");
+
+        Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
+        Assert.True(binding.PermissionGrant!.WriteFiles, "the widened grant this test targets must actually have fired");
+        Assert.False(binding.ChangesTree);
+    }
 }
 

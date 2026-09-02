@@ -91,6 +91,55 @@ public class StateProjectorTests
         Assert.Equal(StepStatus.Succeeded, StepFor(state, Architect).Status);
     }
 
+    /// <summary>
+    /// #1622 (b)/#1390: the seam between <c>Outcomes.OutcomeClassifier</c> (which computes
+    /// WorkspaceChanged/Hollow/HollowReason onto the classification) and
+    /// <c>Status.WorkflowStatusProjector</c> (which reads them off <c>StepState</c> for
+    /// <c>status --json</c>) is <see cref="FlowEvent.ExecutionSucceeded"/> and this projector — this
+    /// is the wiring test for that seam, independent of a real dispatch.
+    /// </summary>
+    [Fact]
+    public void A_succeeded_execution_carries_workspaceChanged_and_hollow_through_to_StepState()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId, WorkspaceChanged: false, Hollow: true, HollowReason: "no diff, no outputs"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.False(architect.WorkspaceChanged);
+        Assert.True(architect.Hollow);
+        Assert.Equal("no diff, no outputs", architect.HollowReason);
+    }
+
+    /// <summary>
+    /// The field-absence control: a plain <see cref="FlowEvent.ExecutionSucceeded"/> (the shape every
+    /// non-tree-changing role's settle, and every pre-#1622 ledger line, carries) must leave all three
+    /// fields null, not defaulted to false — the "field absent for a review role" contract.
+    /// </summary>
+    [Fact]
+    public void A_succeeded_execution_with_no_work_product_fields_leaves_them_null()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Null(architect.WorkspaceChanged);
+        Assert.Null(architect.Hollow);
+        Assert.Null(architect.HollowReason);
+    }
+
     [Fact]
     public void A_failed_execution_projects_as_Failed()
     {

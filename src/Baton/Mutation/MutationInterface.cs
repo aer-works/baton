@@ -1044,6 +1044,7 @@ public static class MutationInterface
                         string? worktreePath = null;
                         string? worktreeBaseRef = null;
                         IWorkerResponseParser? responseParser = null;
+                        var changesTree = false;
                         try
                         {
                             if (workerBindings.TryGetValue(request.Worker, out var b) && b is WorkerBinding.Process p)
@@ -1058,6 +1059,10 @@ public static class MutationInterface
                                 }
 
                                 responseParser = p.ResponseParser;
+                                // #1622/#1390: the same catalog-derived bit the live-dispatch path
+                                // reads off `binding.ChangesTree` below -- crash recovery classifies
+                                // from a freshly re-resolved binding, so this is the identical value.
+                                changesTree = p.ChangesTree;
                             }
                         }
                         catch (BatonFlowException)
@@ -1081,7 +1086,7 @@ public static class MutationInterface
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
-                            usageParser: usageParser, worktreeBaseRef: worktreeBaseRef);
+                            usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
@@ -1727,7 +1732,7 @@ public static class MutationInterface
             var worktreePath = binding.IsWorktree ? binding.Target.WorkingDirectory : null;
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
-                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha);
+                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha, binding.ChangesTree);
 
             // #1623 (contract: spec/baton.md §3): the engine's own verify
             // step, spawned here -- between Classify returning Succeeded and the outcome event append
@@ -1830,7 +1835,8 @@ public static class MutationInterface
     private static FlowEvent ToOutcomeEvent(ExecutionId executionId, OutcomeClassification classification) =>
         classification.Verdict switch
         {
-            OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(executionId),
+            OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(
+                executionId, classification.WorkspaceChanged, classification.Hollow, classification.HollowReason),
             OutcomeVerdict.Failed => new FlowEvent.ExecutionFailed(
                 executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore,
                 classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),

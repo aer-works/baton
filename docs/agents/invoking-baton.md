@@ -177,9 +177,10 @@ available two other ways, and both give you the same set of paths without parsin
   `error` — `null` when the refusal had none. Only ever populated on a pre-ledger `Failed` room (§5's
   exit-code-2 case); a settled or running room's ledger projection has no exception to carry one.
   `linkedFrom` (#1359) names the predecessor execution when the step's current one was started by
-  `baton resume`; anything that was dispatched or retried normally shows `null` there. `rejected` (#1377)
-  is `true` when a human `baton decide reject` settled some step, so `state: "Failed"`/`error: null`
-  never gets misread as an unrecorded crash. `liveness` (#1375/#1513) is present on a step reading
+  `baton resume`; anything that was dispatched or retried normally shows `null` there. `rejected`
+  (#1377, widened by #1622) is `true` when a human `baton decide reject` or a non-accepting
+  `baton resolve --reject`/`--close` settled some step, so `state: "Failed"`/`error: null` never gets
+  misread as an unrecorded crash — full rule at spec/baton.md §3. `liveness` (#1375/#1513) is present on a step reading
   `"Running"`, or a `"Failed"` step still carrying a pending `RetryNotBefore` — `"alive" | "dead" |
   "unknown"` from the same probe the human `baton status` line already uses — so a SIGKILLed `baton
   run` stops reading as indefinitely `"Running"` (or as an ordinary parked retry) to a polling agent.

@@ -60,7 +60,10 @@ public sealed record ProjectionCheckpointState(
     HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null,
     Dictionary<StepId, IndeterminateProducer?>? IndeterminateProducerByStepId = null,
     Dictionary<StepId, string?>? IndeterminateVerifyTailByStepId = null,
-    HashSet<StepId>? ResolvedByConductorStepIds = null)
+    HashSet<StepId>? ResolvedByConductorStepIds = null,
+    Dictionary<StepId, bool?>? WorkspaceChangedByStepId = null,
+    Dictionary<StepId, bool?>? HollowByStepId = null,
+    Dictionary<StepId, string?>? HollowReasonByStepId = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -142,6 +145,31 @@ public sealed record ProjectionCheckpointState(
     /// </summary>
     public HashSet<StepId> ResolvedByConductorStepIds { get; init; } = ResolvedByConductorStepIds ?? new();
 
+    /// <summary>
+    /// #1622/#1390: <see cref="Domain.FlowEvent.ExecutionSucceeded.WorkspaceChanged"/>, carried the
+    /// same hop — non-null only for a tree-changing role's Succeeded settle. Same trailing-optional
+    /// replay-safety shape as <see cref="RetryForeclosedStepIds"/> above (an older checkpoint simply
+    /// has no entry, which <c>Dictionary.GetValueOrDefault</c> reads as null — "not computed", the
+    /// same reading a fresh room with no Succeeded step yet already has), and the same
+    /// <see cref="DeepCopy"/> load-bearing note applies.
+    /// </summary>
+    public Dictionary<StepId, bool?> WorkspaceChangedByStepId { get; init; } = WorkspaceChangedByStepId ?? new();
+
+    /// <summary>
+    /// #1622/#1390: <see cref="Domain.FlowEvent.ExecutionSucceeded.Hollow"/>, a companion to
+    /// <see cref="WorkspaceChangedByStepId"/> above, never a second flag scheme. Same replay-safety
+    /// shape and <see cref="DeepCopy"/> load-bearing note.
+    /// </summary>
+    public Dictionary<StepId, bool?> HollowByStepId { get; init; } = HollowByStepId ?? new();
+
+    /// <summary>
+    /// #1622/#1390: <see cref="Domain.FlowEvent.ExecutionSucceeded.HollowReason"/>, carried alongside
+    /// <see cref="HollowByStepId"/> the same way <see cref="IndeterminateReasonByStepId"/> pairs with
+    /// <see cref="IndeterminateAwaitingResolutionStepIds"/>. Same replay-safety shape and
+    /// <see cref="DeepCopy"/> load-bearing note.
+    /// </summary>
+    public Dictionary<StepId, string?> HollowReasonByStepId { get; init; } = HollowReasonByStepId ?? new();
+
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
         new Dictionary<StepId, Dictionary<StepId, ExecutionId>>(),
@@ -205,5 +233,8 @@ public sealed record ProjectionCheckpointState(
         new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds),
         new Dictionary<StepId, IndeterminateProducer?>(IndeterminateProducerByStepId),
         new Dictionary<StepId, string?>(IndeterminateVerifyTailByStepId),
-        new HashSet<StepId>(ResolvedByConductorStepIds));
+        new HashSet<StepId>(ResolvedByConductorStepIds),
+        new Dictionary<StepId, bool?>(WorkspaceChangedByStepId),
+        new Dictionary<StepId, bool?>(HollowByStepId),
+        new Dictionary<StepId, string?>(HollowReasonByStepId));
 }

@@ -75,7 +75,12 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         int? MaxToolSteps = null,
         long? BilledRateLimit = null,
         bool IsWorktree = false,
-        string? WorktreeBaseSha = null)
+        string? WorktreeBaseSha = null,
+        // #1622/#1390: Baton.Vendors.WorkerBindingConfigEntry.ChangesTree, carried the same hop --
+        // see that field's own remarks for why it is computed once, upstream, from the catalog role's
+        // own grant rather than re-derived here. Outcomes.OutcomeClassifier reads this to decide
+        // whether to compute/attach workspaceChanged/hollow onto a Succeeded verdict at all.
+        bool ChangesTree = false)
         : WorkerBinding(Contract, GrantAuditMode);
 
     /// <summary>

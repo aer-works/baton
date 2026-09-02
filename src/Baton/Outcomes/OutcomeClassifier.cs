@@ -82,7 +82,25 @@ public sealed record OutcomeClassification(
     DateTimeOffset? RetryNotBefore = null,
     string? CapturedResponseFile = null,
     IReadOnlyList<string>? UnsatisfiedOutputNames = null,
-    string? SubstantialWorkNoOutputsEvidence = null);
+    string? SubstantialWorkNoOutputsEvidence = null,
+    // #1622/#1390: non-null only for a Succeeded verdict on a tree-changing role (`changesTree: true`
+    // was passed to Classify) -- see Classify's own "work-product evidence" block for how it is
+    // computed and WorkerBindingConfigEntry.ChangesTree's remarks for what makes a role tree-changing.
+    // Null for every other verdict, and for a Succeeded verdict on a non-tree-changing role (review,
+    // patch, fact-check, advise, orchestrate) -- the field's mere absence is the "field absent for a
+    // review role" signal spec/baton.md §3's schema states.
+    bool? WorkspaceChanged = null,
+    // #1622/#1390: true exactly when WorkspaceChanged is false AND the contract declares zero
+    // ProducedOutputs -- see Classify's own remarks for why a role's own required report (which every
+    // shipped catalog role but a bespoke zero-output contract declares) does not by itself defeat
+    // this. Null under the identical gating WorkspaceChanged uses (non-Succeeded, or a
+    // non-tree-changing role); false (not null) whenever WorkspaceChanged is true or false but the
+    // hollow condition does not hold, so a caller can distinguish "computed, and not hollow" from
+    // "never computed at all".
+    bool? Hollow = null,
+    // #1622/#1390: the one-line reason spec/baton.md §3 asks the settle append for -- non-null only
+    // when Hollow is true.
+    string? HollowReason = null);
 
 /// <summary>
 /// Maps a <see cref="CoreDispatchResult"/> plus a step's <see cref="WorkerContract"/> into one of
@@ -152,7 +170,8 @@ public static class OutcomeClassifier
         string? worktreePath = null,
         IWorkerResponseParser? responseParser = null,
         IWorkerUsageParser? usageParser = null,
-        string? worktreeBaseRef = null)
+        string? worktreeBaseRef = null,
+        bool changesTree = false)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(contract);
@@ -177,7 +196,7 @@ public static class OutcomeClassifier
             // falls through to today's behaviour, so the guard fails safe.
             if (result.TerminalSuccessObserved && ContractValidator.IsSatisfied(contract, outputDirectory))
             {
-                return new OutcomeClassification(OutcomeVerdict.Succeeded);
+                return BuildSucceededClassification(contract, worktreePath, worktreeBaseRef, changesTree);
             }
 
             var (classification, retryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
@@ -310,7 +329,7 @@ public static class OutcomeClassifier
                 }
             }
 
-            return new OutcomeClassification(OutcomeVerdict.Succeeded);
+            return BuildSucceededClassification(contract, worktreePath, worktreeBaseRef, changesTree);
         }
 
         // #1593: Natural exit 0 with unsatisfied contract settles Indeterminate (spec/baton.md §3 Producers).
@@ -549,6 +568,69 @@ public static class OutcomeClassifier
     /// fabricate — when no parser was supplied, no stdout log exists, the line does not parse, or the
     /// vendor reported neither figure.
     /// </summary>
+    /// <summary>
+    /// #1622/#1390: builds a plain <see cref="OutcomeVerdict.Succeeded"/> classification, plus —
+    /// when <paramref name="changesTree"/> is true — the work-product evidence spec/baton.md §3 asks
+    /// for. Shared by both places <see cref="Classify"/> settles Succeeded (the ordinary exit-0
+    /// satisfied-contract path, and the #1089 timeout-with-terminal-success-observed path) so the two
+    /// cannot silently diverge on what "tree-changing" evidence looks like.
+    /// </summary>
+    /// <remarks>
+    /// <b>Work-product evidence, scoped to a tree-changing role.</b> <paramref name="changesTree"/> is
+    /// <see cref="Domain.WorkerBinding.Process.ChangesTree"/> forwarded down from
+    /// <c>Mutation.MutationInterface</c> — true for a role whose CATALOG grant is both
+    /// <c>WriteFiles</c> and <c>RunShellCommands</c> (in practice, <c>implement</c>/<c>janitor</c>;
+    /// #1622's own asks name a hypothetical <c>fix</c> role too, but no such role exists in
+    /// <c>WorkerRoles.json</c> today — see <c>RoleDispatch.ToBinding</c>'s own remarks for why this is
+    /// derived, never a second hardcoded role-name list). False for every other role (<c>review</c>,
+    /// <c>patch</c>, <c>fact-check</c>, <c>advise</c>, <c>orchestrate</c>) and for any binding not
+    /// constructed through the catalog front door — <see cref="OutcomeClassification.WorkspaceChanged"/>
+    /// stays null in both cases, which is the "field absent" a review role's own <c>status --json</c>
+    /// asserts.
+    /// <para>
+    /// <b>workspaceChanged.</b> The inverse of <see cref="Workspaces.WorktreeProvisioner.IsWorkspaceUntouched"/>
+    /// — the same worktree-status probe (git status --porcelain plus commits-over-base) the #1593
+    /// dead-worker-on-an-untouched-workspace arm already reads elsewhere in this class, not the
+    /// narrower <see cref="Workspaces.WorktreeProvisioner.Audit"/> the grant-audit branch above uses
+    /// (that one only reads dirty-tree, and #1390's own second occurrence — room
+    /// dispatch-implement-24995b88 — measured a workspace that was dirty with real changes yet nothing
+    /// ever left it: no commit, no push, no PR. "Untouched" has to mean commits-over-base too, or the
+    /// exact defect that occurrence reported reappears here). Computed for a null/missing worktree path
+    /// the same way <see cref="Workspaces.WorktreeProvisioner.IsWorkspaceUntouched"/> always has: fails
+    /// closed to "untouched" only when there is genuinely nothing to read, never fabricated as changed.
+    /// </para>
+    /// <para>
+    /// <b>hollow.</b> True only when <c>workspaceChanged</c> reads false AND
+    /// <paramref name="contract"/> declares zero <see cref="WorkerContract.ProducedOutputs"/> — #1622's
+    /// own red-first fixture shape ("no diff, no outputs"). Every shipped catalog role that is
+    /// tree-changing (<c>implement</c>/<c>janitor</c>) declares at least one output (the catalog's own
+    /// load-time floor, <c>WorkerRoleCatalog.Load</c>), so in practice this fires only for a bespoke
+    /// zero-output contract dispatched directly against the engine — narrower than
+    /// <c>workspaceChanged: false</c> alone, which is the primary signal for a real implement/janitor
+    /// lane. Stated as a known scope limit rather than silently widened to "the role's own report is
+    /// the only output" — that would require guessing which declared output IS the role's own report,
+    /// which nothing in <see cref="WorkerContract"/> marks.
+    /// </para>
+    /// </remarks>
+    private static OutcomeClassification BuildSucceededClassification(
+        WorkerContract contract, string? worktreePath, string? worktreeBaseRef, bool changesTree)
+    {
+        if (!changesTree)
+        {
+            return new OutcomeClassification(OutcomeVerdict.Succeeded);
+        }
+
+        var workspaceChanged = !Workspaces.WorktreeProvisioner.IsWorkspaceUntouched(worktreePath, worktreeBaseRef);
+        var hollow = !workspaceChanged && contract.ProducedOutputs.Count == 0;
+        var hollowReason = hollow
+            ? "the worker exited 0 with a satisfied contract, but the worktree is unchanged (no commit, " +
+              "no uncommitted changes) and the contract declares no outputs -- a strong hollow-success signal"
+            : null;
+
+        return new OutcomeClassification(
+            OutcomeVerdict.Succeeded, WorkspaceChanged: workspaceChanged, Hollow: hollow, HollowReason: hollowReason);
+    }
+
     private static string? DescribeSubstantialWorkEvidence(string outputDirectory, IWorkerUsageParser? usageParser)
     {
         if (usageParser is null)

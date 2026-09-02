@@ -254,7 +254,10 @@ public sealed class FleetStatusTool : IMcpTool
                 MaxAttempts: s.MaxAttempts,
                 FailureKind: s.FailureKind,
                 RetryEligible: s.RetryEligible,
-                ExhaustedUntil: s.ExhaustedUntil
+                ExhaustedUntil: s.ExhaustedUntil,
+                WorkspaceChanged: s.WorkspaceChanged,
+                Hollow: s.Hollow,
+                HollowReason: s.HollowReason
             )).ToList();
 
             // #1613 item 3: terminal.json (the sentinel) is a frozen WorkflowStatusView -- it never
@@ -368,7 +371,10 @@ public sealed class FleetStatusTool : IMcpTool
                     stepView.MaxAttempts,
                     stepView.FailureKind,
                     stepView.RetryEligible,
-                    stepView.ExhaustedUntil));
+                    stepView.ExhaustedUntil,
+                    stepView.WorkspaceChanged,
+                    stepView.Hollow,
+                    stepView.HollowReason));
             }
 
             var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
@@ -636,4 +642,16 @@ public sealed record FleetStepStatusView(
     // renders that honestly, this field never re-derives or clears it.
     [property: JsonPropertyName("exhaustedUntil")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ExhaustedUntil = null);
+    string? ExhaustedUntil = null,
+    // #1622/#1390: copied verbatim from WorkflowStatusStepView.WorkspaceChanged/.Hollow/.HollowReason
+    // -- present only for a tree-changing role's Succeeded settle, per that record's own remarks. The
+    // glass badge #1390 asks for reads this rather than probing the worktree itself.
+    [property: JsonPropertyName("workspaceChanged")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? WorkspaceChanged = null,
+    [property: JsonPropertyName("hollow")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? Hollow = null,
+    [property: JsonPropertyName("hollowReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? HollowReason = null);

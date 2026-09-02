@@ -599,21 +599,52 @@ stderr warning. The fleet glass renders a distinct `INDETERMINATE` chip and its 
 section, the same placement `"Stalled"` earned in #1513/#1582 (`tools/fleet-glass/glass.html`).
 **Nothing settles FROM `Indeterminate` except an explicit, recorded conductor resolution** — never
 silently, never by default. `baton resolve` (#1608, `src/Baton.Cli/ResolveCommand.cs` +
-`Mutation.MutationInterface.RecordCaptureResolutionAsync`) is that resolution verb **for the
-`CapturedResponse` and `ContractFailure` producers** — see §2's table for its grammar.
+`Mutation.MutationInterface.RecordCaptureResolutionAsync`) is that resolution verb **for all four
+producers**, split across three verbs — see §2's table for the grammar and the table just below for
+which verb each producer admits.
 `RecordCaptureResolutionAsync` admits a target on `Domain.IndeterminateProducer` (F1, #1593 review), not
 a bare `LatestCapturedResponseFile` null/not-null read: `CapturedResponse` admits both
 `--accept-capture` and `--reject --reason <text>`; `ContractFailure` has no captured body to accept, so
 only `--reject --reason <text>` admits it — the conductor's own judgement after inspecting the
-workspace IS something to reject, even with nothing captured. It is *not* a resolution path for the
-other two producers: a verify-failed or arrested step (which never carries a captured response, and
-whose workspace was never in question the way a `ContractFailure` step's is) is refused in either
-direction. Those two reopen only through a fresh dispatch — `ExecutionRequestAccepted` clears the flag,
-per `StateProjector`. `baton redispatch` against the same parent room is not that fresh dispatch: its
-Indeterminate-parent gate refuses unconditionally and nothing ever clears it for these two producers, so
-redispatch is permanently unavailable here — only a brand-new `baton dispatch` room reopens the step,
-which `RedispatchCommand`'s own refusal names by producer (`Status.WorkflowStatusStepView.IndeterminateProducerKind`)
-rather than offering a verb guaranteed to throw. `baton resolve` reads the step's
+workspace IS something to reject, even with nothing captured.
+
+**`--close --reason <text>` (#1622 (d)/#1700) is the verb for the other two producers** —
+`VerifyFailed`/`ExecutionArrested`, and a step Indeterminate for no recorded producer at all (the legacy
+pre-#1593 shape) — none of which ever carried a captured response for `--accept-capture`/`--reject` to
+act on. Before #1622 these three producers had NO resolve path at all: measured 9/2 on room
+`dispatch-implement-d898ff0f`, `baton resolve --reject` answered "settled Indeterminate without a
+captured response … nothing for 'baton resolve' to accept or reject", and the only way to stop the room
+reading "awaiting conductor resolution" on the glass was `baton room delete`. `--close` settles the step
+`Failed` through the identical `Domain.FlowEvent.CaptureResolved(Accepted: false)` room fact `--reject`
+uses — same journal shape, same downstream reading, admitted for a different producer set. **The
+settle-shape table, stated once:**
+
+| Producer | `--accept-capture` | `--reject --reason` | `--close --reason` |
+|---|---|---|---|
+| `CapturedResponse` | admits — writes the capture, settles `Succeeded` | admits — settles resolved-`Failed` | refused |
+| `ContractFailure` | refused (nothing captured to accept) | admits — settles resolved-`Failed` | refused |
+| `VerifyFailed` | refused | refused | admits — settles resolved-`Failed` |
+| `ExecutionArrested` | refused | refused | admits — settles resolved-`Failed` |
+| no producer recorded (legacy) | refused | refused | admits — settles resolved-`Failed` |
+
+**Both `--reject` and `--close` clear the "awaiting conductor resolution" text (#1622 (c)/(d)).** Before
+this fix a resolved step's `error`/`LatestFailureReason` kept the pre-resolution sentence verbatim, and
+`terminal.json`'s `rejected` stayed `false` — measured 9/2 on room `dispatch-implement-f7f9b614`: after
+`baton resolve --reject --reason …` on an exit-0 contract failure, `status --json` still read `state:
+Failed`, `rejected: false`, and `error` ending "awaiting conductor resolution". `StateProjector`'s
+`CaptureResolved(Accepted: false)` arm now replaces the reason with a sentence naming the conductor and
+carrying the reason (`Projection.StateProjector.BuildConductorResolvedReason`), and marks the step so
+`rejected`/`resolvedBy` (§3 schema above) read `true`/`"conductor"` — for either verb, since both are "a
+person looked at this step and said no". `--accept-capture` is unaffected: an accepted step settles
+`Succeeded` and carries no failure reason to clear.
+
+Those three producers reopen only through a fresh dispatch (in addition to `--close`) —
+`ExecutionRequestAccepted` clears the flag, per `StateProjector`. `baton redispatch` against the same
+parent room is not that fresh dispatch: its Indeterminate-parent gate refuses unconditionally and
+nothing ever clears it for these three producers short of `--close` or a brand-new `baton dispatch`
+room, which `RedispatchCommand`'s own refusal names by producer
+(`Status.WorkflowStatusStepView.IndeterminateProducerKind`) rather than offering a verb guaranteed to
+throw. `baton resolve` reads the step's
 `LatestCapturedResponseFile`/`LatestUnsatisfiedOutputNames`
 (already surfaced on `WorkflowStatusView`/`terminal.json`/`status --json`, per the schema below);
 `--accept-capture` writes the captured response (header stripped,
@@ -1157,15 +1188,51 @@ code is the only signal a lane is even still going, and it is unreliable for tha
       "usage"?: ExecutionUsageView,
       "linkedFromUsage"?: ExecutionUsageView,
       "liveness"?: "alive" | "dead" | "unknown",  // #1375/#1513: present while this step reads "Running", or "Failed" with a RetryNotBefore still pending
-      "exhaustedUntil"?: string  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
+      "exhaustedUntil"?: string,  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
+      "resolvedByConductor"?: boolean,  // #1622 (c)/(d): true iff this step's terminal state was set by an explicit, non-accepting `baton resolve` ruling (--reject or --close); omitted when false
+      "workspaceChanged"?: boolean,     // #1622 (b)/#1390: present ONLY for a tree-changing role's (implement/janitor) Succeeded settle -- see the paragraph below the table
+      "hollow"?: boolean,               // #1622 (b)/#1390: present under the identical gate as workspaceChanged, true only when workspaceChanged is false AND the contract declares zero outputs
+      "hollowReason"?: string           // #1622 (b)/#1390: present only when hollow is true
     }
   ],
   "outputs": [string],                 // resolved output paths
   "error": string | null,
   "try": string | null,                // corrected-invocation text; only set on a pre-ledger refusal
-  "rejected": boolean                  // #1377, true iff some step settled via `DecisionType.Reject`
+  "rejected": boolean,                 // #1377, widened by #1622 (c)/(d): true iff some step settled via `DecisionType.Reject` OR a non-accepting `baton resolve` ruling (--reject/--close)
+  "resolvedBy"?: string                // #1622 (d)/#1700: "conductor" when `rejected` is true for the `baton resolve` reason; omitted otherwise
 }
 ```
+
+**`workspaceChanged`/`hollow`/`hollowReason` (#1622 (b), the engine-side half of #1390).** A worker
+whose contract is "change the tree" can exit 0 with a satisfied — often zero-output — contract and
+settle `Succeeded` having produced nothing durable: #1390's own measured cases are a permission-blocked
+worker whose declared report was trivially satisfied, and a lane that stopped one commit short (room
+`dispatch-implement-24995b88`, #1500). `workspaceChanged` is present **only** for a role whose CATALOG
+grant is both `write_files` and `run_shell_commands` — `implement`/`janitor` in the shipped
+`WorkerRoles.json` today (`RoleDispatch.ToBinding` derives the bit once, from the role's own grant,
+never re-derived downstream — see `Baton.Vendors.WorkerBindingConfigEntry.ChangesTree`'s own remarks for
+why a downstream re-derivation from a resolved binding's possibly-widened grant would misclassify a
+read-only role). Absent for every other role (`review`, `patch`, `fact-check`, `advise`, `orchestrate`)
+and for every non-`Succeeded` step — the field's mere absence is the signal, not a fabricated `false`.
+`true`: the worktree carries commits over base or uncommitted changes
+(`Workspaces.WorktreeProvisioner.IsWorkspaceUntouched`'s negation — the same worktree-status probe
+`OutcomeClassifier`'s own dead-worker-on-an-untouched-workspace arm already reads elsewhere in this
+document, not the narrower `WorktreeProvisioner.Audit` the grant-audit branch uses, which only reads
+dirty-tree: #1390's second occurrence measured a workspace that was dirty with real, substantial changes
+yet nothing ever left it — no commit, no push, no PR — so "untouched" has to mean commits-over-base too).
+`hollow` is present under the identical gate, `true` only when `workspaceChanged` reads `false` **and**
+the contract declares zero `ProducedOutputs` — narrower than `workspaceChanged: false` alone, since every
+shipped catalog role that is tree-changing declares at least one output (the catalog's own load-time
+floor); `hollow: true` fires in practice only for a bespoke zero-output contract dispatched directly
+against the engine, not a real `implement`/`janitor` lane, where `workspaceChanged: false` alone is the
+primary signal a harness reads. **This does not reclassify the room's own `state`/`error` — a hollow
+success still reads `state: "Succeeded"`.** Whether it should read `Failed` instead is the design call
+#1390 itself leaves to the operator; this fix surfaces the evidence, it does not rule on it.
+`baton status`'s human rendering appends `— hollow: <reason>` to an otherwise-plain `"Succeeded"` line
+when `hollow` is true (`StatusCommand.FormatStepStatus`); `fleet_status`/`FleetStepStatusView` copies all
+three fields verbatim off the same projection, never a second worktree probe, so the glass badge #1502
+already tracks reads the identical value a `status --json` caller would.
+
 where `ExecutionUsageView` is
 ```
 { "wallClockMs": number, "tokensIn"?: number, "tokensOut"?: number, "turns"?: number,
@@ -2207,8 +2274,13 @@ fails closed (the hook's own exit code 2 inside claude's `PreToolUse` protocol �
 convention, unrelated to §3's `ValidationRefused` CLI exit code that happens to share the number)
 with no human routing, and a tool on the denied list is denied regardless of anything else. A denial
 surfaces as `FailureClassification.ToolDenied` (§5, §7) — that is the vocabulary a harness reads.
-(#1390 tracks a measured hollow-success defect against this: a denied worker that exits 0 anyway can
-read as `Succeeded` — the classification is the contract; that bug is open, not folklore.)
+(#1390 tracked a measured hollow-success defect against this: a denied worker that exits 0 anyway can
+read as `Succeeded` — the classification is the contract. #1622 (b) closed the engine-side half: a
+tree-changing role's Succeeded settle now carries `workspaceChanged`/`hollow` evidence — see §3 schema
+above — so the classification stays `Succeeded` but is no longer indistinguishable from a real one.
+Reclassifying hollow success as a different `state` is a design call left to the operator, not settled
+by this fix; #1390's own second half — a worker's un-answerable permission question surfacing as
+Paused-with-a-question rather than Succeeded-with-prose — remains open.)
 
 **"Denied" at runtime means:** the hook exits non-zero on claude, or returns a `decision` field
 refusing the call on agy — the worker is told it was refused and continues rather than dying.
