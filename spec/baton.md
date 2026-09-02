@@ -268,7 +268,10 @@ or more than one candidate at act time lands as a `.rejected` record in the room
 reason written in its body), rather than a terminal command-line refusal. This is the arrest half of
 §10's "only cancellation-then-restart" ruling, not a reopening of it: nothing here reaches into a
 running worker to redirect it — it only makes the existing stop-then-`redispatch` sequence reachable
-from outside the lane's own process.
+from outside the lane's own process. **Ordering guarantee (#1649):** `RunCommand`'s own startup sweep
+of a leftover `cancel.request` cannot claim a live write from a `cancel` racing that same startup
+window — the discriminating rule lives on `CancelRequestFile.DeleteStalePendingRequestAsync` itself,
+not restated here.
 
 A parked candidate reached through the **direct** path (no live pump contending the lock) is
 reachable only when its `RetryNotBefore` has already elapsed AND a live pump is confirmed — a

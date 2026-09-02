@@ -1350,10 +1350,11 @@ public static class MutationInterface
                             // none), and the in-memory mark itself does not survive process exit.
                             // Accepted, not fixed: this pump call is exiting either way, the parked
                             // step was never going to settle through it once a host stop lands, and
-                            // CancelRequestFile.DeleteStalePendingRequest sweeps any still-pending
-                            // request file on the room's next `baton run` regardless — so the worst
-                            // case is the operator re-issuing `baton cancel` once that run starts, not
-                            // a request that silently vanishes with no trace.
+                            // CancelRequestFile.DeleteStalePendingRequestAsync sweeps this still-pending
+                            // request file on the room's next `baton run` once it can confirm (#1649)
+                            // the request predates that run and its writer is no longer alive — so the
+                            // worst case is the operator re-issuing `baton cancel` once that run starts,
+                            // not a request that silently vanishes with no trace.
                             if (completedWait == deferralHostStopWatcher || cancellationToken.IsCancellationRequested)
                             {
                                 hostStopRequested = true;
