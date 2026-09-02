@@ -67,6 +67,11 @@ namespace Baton.Vendors;
 /// once at parse time (<c>Baton.Cli.DispatchOptionsParser.SanitizeWorkstream</c>). Null when never
 /// supplied.
 /// </param>
+/// <param name="ToolSha">
+/// #1668: The commit SHA of the baton binary that dispatched this room, stamped at dispatch
+/// time so side-by-side tool pruning can preserve versions referenced by live rooms. Null when
+/// dispatched by a binary that predates the field or when unresolved.
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -87,7 +92,8 @@ public sealed record WorkerBindingConfigEntry(
     string? Label = null,
     string? VerifyPixiTask = null,
     long? TokenBudget = null,
-    string? Workstream = null);
+    string? Workstream = null,
+    string? ToolSha = null);
 
 
 /// <summary>
