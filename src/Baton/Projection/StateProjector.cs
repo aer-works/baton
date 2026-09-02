@@ -359,6 +359,11 @@ public static class StateProjector
                     state.IndeterminateProducerByStepId[indeterminateStepId] = indeterminate.CapturedResponseFile is not null
                         ? IndeterminateProducer.CapturedResponse
                         : IndeterminateProducer.ContractFailure;
+
+                    // Neither arm here is VerifyFailed, so a tail recorded by an earlier VerifyFailed
+                    // producer on this step must not survive being overwritten — same discipline as
+                    // the other clear sites (:127, :378).
+                    state.IndeterminateVerifyTailByStepId.Remove(indeterminateStepId);
                 }
 
                 break;

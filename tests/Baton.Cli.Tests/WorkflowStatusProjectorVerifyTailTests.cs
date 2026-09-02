@@ -51,6 +51,13 @@ public sealed class WorkflowStatusProjectorVerifyTailTests
             Assert.Equal(
                 "FAILED: could not write current pointer ... [WinError 5] Access is denied",
                 step.VerifyTail);
+
+            // F2 (#1711 review): the claim is about the `verifyTail` JSON key, not just the CLR
+            // property -- a rename of [JsonPropertyName("verifyTail")] must fail this test.
+            var json = System.Text.Json.JsonSerializer.Serialize(step);
+            Assert.Contains(
+                "\"verifyTail\":\"FAILED: could not write current pointer ... [WinError 5] Access is denied\"",
+                json);
         }
         finally
         {

@@ -1,7 +1,6 @@
 using System.Text.RegularExpressions;
 using Baton.Core;
 using Baton.Domain;
-using System.Linq;
 
 namespace Baton.Mutation;
 

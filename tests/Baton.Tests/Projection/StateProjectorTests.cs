@@ -1556,6 +1556,27 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void ExecutionIndeterminate_overwriting_the_producer_clears_the_stale_IndeterminateVerifyTail()
+    {
+        // #1711 review F3: a VerifyFailed tail must not survive the producer being overwritten by
+        // ExecutionIndeterminate's CapturedResponse/ContractFailure arms -- same clearing discipline
+        // as the other three sites (:127, :378).
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(IndeterminateProducer.CapturedResponse, architect.IndeterminateProducer);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
     public void ExecutionArrested_settles_the_step_Failed_and_records_an_IndeterminateReason()
     {
         var executionId = new ExecutionId("exec-1");
