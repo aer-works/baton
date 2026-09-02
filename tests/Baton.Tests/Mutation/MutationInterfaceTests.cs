@@ -644,6 +644,64 @@ public class MutationInterfaceTests
             var arrested = Assert.Single(events.OfType<FlowEvent.ExecutionArrested>());
             Assert.Equal(500000, arrested.Usage?.TokensIn);
             Assert.Equal(200000, arrested.Usage?.TokensOut);
+            // #1682: billed (what the budget actually arrested on) is Σ input + Σ output for this
+            // single line -- 700,000, crossing the 1,000 budget -- and the reason is recorded on the
+            // wire, not just inferred from Arrested being true.
+            Assert.Equal(700000, arrested.Usage?.BilledTokens);
+            Assert.Equal(ArrestReason.TokenBudget, arrested.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_arrests_an_execution_that_crosses_its_tool_step_cap_with_zero_usage_lines()
+    {
+        // #1682: the SECOND, independent producer -- exercises the real MutationInterface wiring the
+        // same way the token-budget test above does, but with NO TokenBudget set at all and a stream
+        // that never parses as usage, proving the cap fires "independent of usage parsing" through the
+        // live dispatch path, not just in TokenBudgetMonitorTests' isolation.
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-toolcap"),
+                new WorkflowTemplateId("toolcap"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(3))]);
+
+            // #1686 review F2: DONE, not ACTIVE -- AgyUsageParser.CountToolSteps's own doc has the fixed unit.
+            const string toolStepLine = """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"run_command"}}""";
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    new CoreDispatchTarget("cmd", ["/c", "exit 0"]),
+                    TimeSpan.FromSeconds(30),
+                    Adapter: "agy",
+                    MaxToolSteps: 2),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new ArrestingCoreDispatcher(toolStepLine, repeatCount: 3);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-toolcap"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Failed, architect.Status);
+            Assert.True(architect.RetryForeclosed);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var arrested = Assert.Single(events.OfType<FlowEvent.ExecutionArrested>());
+            Assert.Equal(ArrestReason.ToolStepCap, arrested.Reason);
+            Assert.Equal(3, arrested.ToolStepCount);
+            Assert.Null(arrested.Usage?.BilledTokens);
         }
         finally
         {
@@ -652,16 +710,20 @@ public class MutationInterfaceTests
     }
 
     /// <summary>
-    /// A fake dispatch whose stdout is a single, budget-crossing usage line — mirrors a real worker
-    /// process being torn down once <see cref="TokenBudgetMonitor"/>'s own linked cancellation fires,
-    /// per <c>ICoreDispatcher.DispatchAsync</c>'s documented "cancellation comes back as a normal
+    /// A fake dispatch whose stdout is <paramref name="repeatCount"/> copies of a single,
+    /// arrest-triggering line — mirrors a real worker process being torn down once
+    /// <see cref="TokenBudgetMonitor"/>'s own linked cancellation fires, per
+    /// <c>ICoreDispatcher.DispatchAsync</c>'s documented "cancellation comes back as a normal
     /// CoreDispatchResult" contract (never <see cref="OperationCanceledException"/>).
     /// </summary>
-    private sealed class ArrestingCoreDispatcher(string usageLine) : ICoreDispatcher
+    private sealed class ArrestingCoreDispatcher(string usageLine, int repeatCount = 1) : ICoreDispatcher
     {
         public async Task<CoreDispatchResult> DispatchAsync(ExecutionRequest request, CoreDispatchTarget target, CancellationToken cancellationToken = default)
         {
-            target.OnStdoutLine?.Invoke(usageLine);
+            for (var i = 0; i < repeatCount; i++)
+            {
+                target.OnStdoutLine?.Invoke(usageLine);
+            }
 
             var tcs = new TaskCompletionSource();
             await using var registration = cancellationToken.Register(() => tcs.TrySetResult());

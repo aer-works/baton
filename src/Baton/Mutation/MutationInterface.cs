@@ -1651,9 +1651,12 @@ public static class MutationInterface
             // unwatched rather than refusing to dispatch.
             TokenBudgetMonitor? budgetMonitor = null;
             var target = binding.Target;
-            if (binding.TokenBudget is { } tokenBudget && usageParser is not null)
+            // #1682: a monitor now arms on EITHER trigger existing -- a role with only a tool-step cap
+            // and no token budget still watches, where before this issue a budget was required for a
+            // monitor to be constructed at all.
+            if ((binding.TokenBudget is not null || binding.MaxToolSteps is not null) && usageParser is not null)
             {
-                budgetMonitor = new TokenBudgetMonitor(tokenBudget, usageParser);
+                budgetMonitor = new TokenBudgetMonitor(binding.TokenBudget, binding.MaxToolSteps, usageParser);
                 var innerOnStdoutLine = target.OnStdoutLine;
                 target = target with
                 {
@@ -1690,7 +1693,12 @@ public static class MutationInterface
                 // under-it process would only produce a Cancelled/Failed verdict that this replaces
                 // wholesale, never Succeeded.
                 await eventLogWriter.AppendAsync(
-                    new FlowEvent.ExecutionArrested(prepared.Request.ExecutionId, budgetMonitor.SnapshotUsage(), budgetMonitor.SnapshotLastToolNames()),
+                    new FlowEvent.ExecutionArrested(
+                        prepared.Request.ExecutionId,
+                        budgetMonitor.SnapshotUsage(),
+                        budgetMonitor.SnapshotLastToolNames(),
+                        budgetMonitor.ArrestReasonValue,
+                        budgetMonitor.SnapshotToolStepCount()),
                     CancellationToken.None).ConfigureAwait(false);
                 return;
             }
