@@ -121,10 +121,7 @@ public class ExternalDecisionValidatorTests
     [Fact]
     public void A_decision_against_a_paused_step_with_an_unresolved_indeterminate_capture_is_refused()
     {
-        // #1655 ruling (option 1): a step that both declares PausePoint and settles
-        // ExecutionIndeterminate reaches ExternalDecisionValidator as Paused with
-        // IndeterminateAwaitingResolution still set — baton decide must refuse it outright, naming the
-        // room, the step, and baton resolve as the recovery verb.
+        // #1655 ruling (option 1) — see ExternalDecisionValidator's own remarks for the mechanism.
         var state = new FlowState(
             new WorkflowDefinitionSnapshotId("snapshot-1"),
             [
