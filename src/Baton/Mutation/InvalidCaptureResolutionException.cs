@@ -4,9 +4,11 @@ namespace Baton.Mutation;
 /// Raised when a requested <c>baton resolve</c> (#1608) is invalid against the room's current
 /// <see cref="Domain.FlowState"/>: the named execution has no unresolved
 /// <see cref="Domain.FlowEvent.ExecutionIndeterminate"/>, a rejection was requested with no
-/// <c>--reason</c>, or a declared output name failed its reserved/traversal check. Mirrors
+/// <c>--reason</c>, a declared output name failed its reserved/traversal check, or the captured
+/// response file itself could not be read or (see below) written. Mirrors
 /// <see cref="InvalidExternalDecisionException"/>'s role for <c>baton decide</c> — rejected, never
-/// silently widened; nothing is ever appended to the log when this is thrown.
+/// silently widened; no <see cref="Domain.FlowEvent.CaptureResolved"/> is ever appended to the log
+/// when this is thrown.
 /// <para>
 /// Every name in a multi-name capture is validated before any of them is written
 /// (<c>MutationInterface.RecordCaptureResolutionAsync</c>), so a bad name never leaves an earlier one
