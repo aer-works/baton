@@ -364,4 +364,19 @@ public class DispatchOptionsParserTests
 
         Assert.Null(options.RepoPath);
     }
+
+    /// <summary>
+    /// #1653 review F5: the parity arm for <c>StatusOptionsParserTests.A_repo_option_with_no_value_throws</c>.
+    /// The two parsers reach the same refusal by different routes — Status validates inline, Dispatch
+    /// goes through the shared <c>RequireValue</c> helper — so "the other one is covered" is not
+    /// coverage of this one.
+    /// </summary>
+    [Fact]
+    public void A_repo_option_with_no_value_throws()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["review", "--spec", "t.md", "--repo"]));
+
+        Assert.Contains("--repo", ex.Message, StringComparison.Ordinal);
+    }
 }

@@ -58,9 +58,11 @@ pixi run fmt
 `baton` is distributed as a self-built, unpublished `dotnet tool` — there is no public NuGet feed;
 a single-developer project doesn't need one.
 
-**First install, or refreshing an already-installed tool: `pixi run tool-refresh`.** It drains
-(refuses while any room under `~/.baton/rooms` still looks live, with `--wait` to block until they
-finish instead), packs, uninstalls, purges the NuGet cache for that version (mandatory — NuGet
+**First install, or refreshing an already-installed tool: `pixi run tool-refresh`.** It drains — a
+marker file that the lane-starting verbs refuse under, plus a refusal (or `--wait`) while any room
+under `~/.baton/rooms` still looks live; `spec/baton.md`'s C-10 *Installation and versioning* paragraph
+states that contract in full, including which verbs refuse, and `pixi run tool-refresh --abort` clears
+a marker a killed refresh left behind — then packs, uninstalls, purges the NuGet cache for that version (mandatory — NuGet
 otherwise silently keeps serving the stale same-version package), installs from `bin/pack`, and
 verifies the reinstall actually took (`baton --version` matches, `baton templates --json` runs)
 before printing a resume hint. `--dry-run` prints every command it would run without executing any

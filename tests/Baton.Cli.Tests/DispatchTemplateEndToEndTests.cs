@@ -18,6 +18,8 @@ namespace Baton.Cli.Tests;
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchTemplateEndToEndTests : IDisposable
 {
+    private readonly IsolatedBatonHome _batonHome = new();
+
     private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
     private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
     private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
@@ -39,6 +41,7 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
         Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
+        _batonHome.Dispose();
     }
 
     [Fact]

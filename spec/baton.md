@@ -1513,7 +1513,21 @@ second copy of it. Refreshing an installed copy — packing, uninstalling, purgi
 cache entry, reinstalling, verifying the reinstall actually took — is `pixi run tool-refresh`
 (`tools/tool-refresh/refresh.py`, whose own docstring has the exact drain predicate), which refuses to
 start while a room under `~/.baton/rooms` still looks live, rather than risk the access-denied
-uninstall failure a still-running lane causes. Because an
+uninstall failure a still-running lane causes.
+
+Draining is **two halves** (operator ruling, 2026-09-02), because waiting alone leaves a gap between
+"no room is live" and the uninstall actually running. (1) Before its first liveness read the refresh
+writes a drain marker at `{BATON_HOME}/draining.json`, and removes it on every exit path — success, a
+failed step, an exception, Ctrl-C. **The refusing population is exactly `baton dispatch`, `baton
+redispatch` and `baton resume`** — the verbs that start a lane — and this sentence is the register of
+it; `src/Baton/Status/DrainMarker.cs` implements it and records why each exclusion is what it is
+(`baton status` in particular must never refuse: the drain predicate shells out to it). A refusal exits
+`ValidationRefused` (2), names the marker path, and reads the marker fail-closed — one that exists but
+cannot be parsed still refuses. For `dispatch`/`redispatch` the refusal leaves the room directory
+holding a `terminal.json` refusal record, which the drain predicate skips as terminal; `resume` writes
+nothing. (2) `--wait` then blocks until the live count reaches zero, reprinting the remaining rooms and
+their liveness every 30 s. A marker whose writer was killed outright is cleared with `pixi run
+tool-refresh --abort`, which every refusal names. Because an
 operator can forget to run it, `baton dispatch`/`baton status` independently WARN on stderr — never
 failing the exit code — when the installed version is behind a discoverable checkout's (`--repo`, or
 `BATON_REPO`); `InstalledVersionDrift` is the one evaluator both read.

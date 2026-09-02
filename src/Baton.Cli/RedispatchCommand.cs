@@ -32,6 +32,13 @@ public static class RedispatchCommand
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(adapters);
 
+        // #1645: first statement of the method so the child room this verb would create does not exist
+        // before the refusal. DrainMarker has the rest.
+        if (DrainMarker.RefusalMessage("redispatch") is { } drainRefusal)
+        {
+            throw new CliArgumentException(drainRefusal, DrainMarker.AbortInvocation);
+        }
+
         if (!Directory.Exists(options.ParentRoomDirectoryPath))
         {
             throw new CliArgumentException($"Parent room '{options.ParentRoomDirectoryPath}' does not exist.");

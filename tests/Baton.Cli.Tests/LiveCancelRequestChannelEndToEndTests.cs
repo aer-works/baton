@@ -24,8 +24,16 @@ namespace Baton.Cli.Tests;
 /// terminal-sentinel guard.
 /// </summary>
 [Collection(WorkingDirectoryCollection.Name)]
-public class LiveCancelRequestChannelEndToEndTests
+public class LiveCancelRequestChannelEndToEndTests : IDisposable
 {
+    private readonly IsolatedBatonHome _batonHome = new();
+
+    public void Dispose()
+    {
+        _batonHome.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
     // The real production registry, not a test double (Program.cs's own Main uses this exact
     // dictionary) -- the `run`/`cancel` halves below are real subprocesses of the real binary, so
     // only an adapter actually registered there (CommandWorkerAdapter's "command", here) resolves.

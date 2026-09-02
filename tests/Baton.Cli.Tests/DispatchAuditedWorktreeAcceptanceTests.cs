@@ -20,6 +20,8 @@ namespace Baton.Cli.Tests;
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
 {
+    private readonly IsolatedBatonHome _batonHome = new();
+
     private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
     private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
 
@@ -35,6 +37,7 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
     {
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
+        _batonHome.Dispose();
     }
 
     [Fact]

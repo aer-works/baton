@@ -24,6 +24,8 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
             ["fake-noop"] = new ContractOutputWorkerAdapter(satisfyOutputs: false),
         };
 
+    private readonly IsolatedBatonHome _batonHome = new();
+
     private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
     private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
     private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
@@ -43,6 +45,7 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
         Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
         Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
+        _batonHome.Dispose();
     }
 
     [Fact]
