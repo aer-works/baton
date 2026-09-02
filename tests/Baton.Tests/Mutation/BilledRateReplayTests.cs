@@ -233,8 +233,14 @@ public sealed class BilledRateReplayTests
     }
 
     [Theory]
-    [InlineData(NormalClaudeRoomA, 129_143)]
-    [InlineData(NormalClaudeRoomB, 111_244)]
+    // #1706 merge: 129,143 → 128,908 and 111,244 → 111,101. These peaks are produced by replaying the
+    // fixture's raw samples through the REAL ClaudeUsageParser, which since #1706 no longer bills the
+    // placeholder `input_tokens`/`output_tokens` columns, so each peak loses exactly the placeholder
+    // contribution of the messages inside its own window (a couple of hundred tokens). The fixture is
+    // unchanged — it records what the vendor emitted; the billing over it is what moved. Both peaks are
+    // still far under ProposedRateLimit, so #1691's conclusion is untouched.
+    [InlineData(NormalClaudeRoomA, 128_908)]
+    [InlineData(NormalClaudeRoomB, 111_101)]
     public void The_two_normal_claude_rooms_full_streams_do_NOT_arrest_at_the_proposed_limit(string roomName, long expectedPeak)
     {
         // #1691's own acceptance bullet. These are the two rooms #1686 measured, replayed here through
@@ -251,7 +257,7 @@ public sealed class BilledRateReplayTests
         // per-vendor constant -- the other evidence room's ratio is 1.29x. These rooms therefore look
         // SLOW to this trigger by construction, which is precisely how #1691's premise was arrived at --
         // an agy runaway compared against claude references. spec/baton.md §3 and #1706, the issue cited
-        // there, carry it; do not read 129,143 as "this lane's true 5-minute burn".
+        // there, carry it; do not read 128,908 as "this lane's true 5-minute burn".
         var room = LoadFixture()[roomName];
         Assert.Equal("claude", room.Vendor);
         Assert.True(room.OffsetsAreMeasured);

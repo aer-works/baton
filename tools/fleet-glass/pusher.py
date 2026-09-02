@@ -609,11 +609,22 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
                 # The floor mark keys on EITHER cache column, not on cache_creation alone, so that this
                 # and the engine's `TryParseIncrementalUsage` -- which accepts a reading on either --
                 # agree about which lines are claude usage lines at all.
+                # #1706 review M5: the floor mark and the BILLED CONTRIBUTION key on different
+                # things, and conflating them made this file disagree with the engine on exactly one
+                # real line shape. A line carrying `cache_read_input_tokens` but no
+                # `cache_creation_input_tokens` IS a claude usage line -- so it marks the floor, the
+                # same reading the engine's `TryParseIncrementalUsage` accepts -- but it carries NO
+                # measurable billed component, so it must contribute no billed tokens and must not on
+                # its own make `billedTokens` reportable. It previously reported `billedTokens: 0`
+                # there while the engine reported nothing at all: same shape, two answers, and 0 is
+                # the fabricated zero both sides exist to refuse. Pinned from the shared fixture by
+                # `_selftest_claude_billing_gate` below and by `ClaudeEngineAndPusherBillingGateTests`.
                 if numeric(cache_creation) or numeric(cache_read):
-                    billed_tokens += cache_creation if numeric(cache_creation) else 0
+                    billed_is_floor = True
+                if numeric(cache_creation):
+                    billed_tokens += cache_creation
                     turns += 1
                     usage_seen = True
-                    billed_is_floor = True
                 if numeric(in_tok) and numeric(cache_read) and numeric(cache_creation):
                     # The context LEVEL is unaffected: it is what the vendor loaded for this request,
                     # and the placeholder `input_tokens` contributes 2 tokens to a six-figure sum.
@@ -4227,6 +4238,32 @@ def _selftest() -> int:
     check("end-to-end: snapshot_hash of the quantized rooms is identical for an idle room evaluated "
           "twice, through the real build_wrapped/snapshot_hash path main() uses",
           full_hash_a == full_hash_b)
+
+    # -- #1706 review M5: the SHARED cross-language billing gate ------------------------------------
+    # One fixture file, two consumers -- this and tests/Baton.Tests/Status/
+    # ClaudeEngineAndPusherBillingGateTests.cs. Every check above transcribes its line into this file;
+    # these read the engine's own fixture, so a rule change landing on only one side fails on both.
+    gate_path = Path(__file__).resolve().parent.parent.parent / "tests" / "Baton.Tests" / "Fixtures" / "claude-billing-gate.json"
+    check("the shared claude billing-gate fixture is where both consumers look for it (#1706 M5)",
+          gate_path.is_file())
+    if gate_path.is_file():
+        gate = json.loads(gate_path.read_text(encoding="utf-8"))
+        gate_cases = gate["cases"]
+        # Guard the instrument first: absent and zero must both appear in the fixture, or an
+        # implementation collapsing the two -- the exact defect this gate closes -- passes every arm
+        # below without the file being able to notice.
+        check("the shared fixture discriminates an ABSENT billed figure from a measured 0",
+              any(c["expectedBilledTokens"] is None for c in gate_cases)
+              and any(c["expectedBilledTokens"] == 0 for c in gate_cases)
+              and any(c["expectedBilledIsFloor"] is False for c in gate_cases))
+        for gate_case in gate_cases:
+            counts = extract_live_counts(gate_case["lines"], set())
+            expected_billed = gate_case["expectedBilledTokens"]
+            check(f"shared gate [{gate_case['name']}]: billedTokens matches the engine",
+                  counts.get("billedTokens") == expected_billed
+                  if expected_billed is not None else "billedTokens" not in counts)
+            check(f"shared gate [{gate_case['name']}]: billedIsFloor matches the engine",
+                  counts.get("billedIsFloor", False) == gate_case["expectedBilledIsFloor"])
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)

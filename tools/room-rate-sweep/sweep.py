@@ -16,9 +16,27 @@ paragraph: the corpus grows, and the numbers move with it.
 
 What it measures, and what it assumes
 -------------------------------------
-Billed tokens are #1682's accounting, unchanged and deliberately not re-derived here: per usage line,
-input + output + cache_creation, deduped by message.id on claude (agy lines carry no id). cache_read
-is excluded -- spec/baton.md SS3 has the reason.
+Billed tokens are #1682's accounting as corrected by #1706, and the correction is VENDOR-ASYMMETRIC:
+
+  * agy   -> input + output per usage line. A MEASUREMENT: agy's per-turn `step_update` usage is real,
+             and its terminal `result.usage` is the exact cumulative sum of those lines (measured over
+             three real rooms, docs/vendor-capabilities.md).
+  * claude -> cache_creation ALONE. A FLOOR: the `input_tokens`/`output_tokens` on a mid-stream
+             `assistant` line are placeholder values, not that message's real figures (measured,
+             docs/vendor-capabilities.md), so summing them bills two columns that mean nothing. Every
+             claude total this tool prints is therefore a LOWER BOUND on the room's real spend -- the
+             live-seen fraction ran 0.28-0.91 across the 126-room sweep -- and the two vendors' totals
+             are NOT the same quantity. Rows are marked accordingly rather than printed in one column
+             as though they were comparable.
+
+cache_read is excluded on both -- spec/baton.md SS3 has the reason. Deduped by message.id on claude
+(agy lines carry no id). The rule is shared with `TokenBudgetMonitor` and `tools/fleet-glass/pusher.py`;
+`tests/Baton.Tests/Fixtures/claude-billing-gate.json` is the cross-language gate that keeps the three
+from drifting, and `--selftest` reads it here.
+
+The per-line SAMPLES this tool emits stay raw (the stream's own four columns), because a fixture is a
+record of what the vendor said; it is the BILLING over them that applies the rule above, in one place
+(`sample_billed`), so no consumer has to know the vendor to bill correctly.
 
 Time is the problem, and spec/baton.md SS3 states the vendor asymmetry behind it (as well as correcting
 an earlier revision of this file, which claimed agy carries no time field at all -- it carries
@@ -196,16 +214,31 @@ def billed_samples(stdout_log, span, offsets="uniform"):
     return vendor, claude
 
 
-def peak_window(samples, window=WINDOW):
-    """Largest sum of billed inside any trailing `window`."""
+def sample_billed(vendor, sample):
+    """#1706: the billed contribution of ONE raw sample, and the one place the vendor asymmetry lives.
+
+    The module docstring has the measurement. On claude only `cache_creation` is a real figure, so
+    billing `input`/`output` there sums two placeholder columns -- which is what this tool did until
+    #1706 and what made its claude rows disagree with the engine that produced them.
+    """
+    if vendor == "claude":
+        return sample[3]
+    return sample[1] + sample[2]
+
+
+def billed_total(vendor, samples):
+    return sum(sample_billed(vendor, s) for s in samples)
+
+
+def peak_window(samples, window=WINDOW, vendor="agy"):
+    """Largest sum of billed inside any trailing `window`, on `vendor`'s own accounting (#1706)."""
     width = window.total_seconds()
     best = running = 0
     oldest = 0
-    for index, sample in enumerate(samples):
-        running += sample[1] + sample[2] + sample[3]
+    for sample in samples:
+        running += sample_billed(vendor, sample)
         while samples[oldest][0] < sample[0] - width:
-            older = samples[oldest]
-            running -= older[1] + older[2] + older[3]
+            running -= sample_billed(vendor, samples[oldest])
             oldest += 1
         best = max(best, running)
     return best
@@ -231,15 +264,18 @@ def scan(role_prefix, window=WINDOW, offsets="uniform"):
         vendor, samples = billed_samples(logs[0], span, offsets)
         if not samples:
             continue
-        total = sum(s[1] + s[2] + s[3] for s in samples)
+        total = billed_total(vendor, samples)
         minutes = (span[1] - span[0]).total_seconds() / 60
         rows.append({
             "room": name,
             "vendor": vendor,
             "total": total,
+            # #1706: a claude total is a LOWER BOUND, an agy total a measurement -- carried per row so
+            # no reader has to infer it from the vendor column.
+            "billed_is_floor": vendor == "claude",
             "minutes": round(minutes, 2),
             "per_minute": round(total / minutes) if minutes else 0,
-            "peak_window": peak_window(samples, window),
+            "peak_window": peak_window(samples, window, vendor),
             "samples": len(samples),
             "reason": span[2],
             "cancelled": span[3],
@@ -274,11 +310,18 @@ def command_sweep(args):
     # peakWin comparison between two agy rows cannot by construction detect burstiness the span does not
     # already imply. `tok/min` (total / measured span) carries no such caveat on either vendor.
     print("(peakWin is EXACT on claude, RECONSTRUCTED on agy -- see --offsets and the module docstring)")
-    print("%-8s %9s %9s %10s %7s %5s %-16s %-6s %-5s %s"
+    # #1706: the two vendors' token columns are NOT the same quantity -- a claude row is a lower bound
+    # (cache_creation alone is measurable; the seen fraction ran 0.28-0.91 across the sweep), an agy row
+    # is a measurement. Printing them in one column unmarked is what made the pre-#1706 output readable
+    # as a cross-vendor comparison it cannot support, so every floor row carries a trailing `+`.
+    print("(a `+` on tok/min, peakWin and total marks a FLOOR -- claude rows only; see the docstring)")
+    print("%-8s %10s %10s %11s %7s %5s %-16s %-6s %-5s %s"
           % ("vendor", "tok/min", "peakWin", "total", "min", "n", "reason", "canc", "work", "room"))
     for row in rows:
-        print("%-8s %9d %9d %10d %7.1f %5d %-16s %-6s %-5s %s" % (
-            row["vendor"], row["per_minute"], row["peak_window"], row["total"],
+        mark = "+" if row["billed_is_floor"] else ""
+        print("%-8s %10s %10s %11s %7.1f %5d %-16s %-6s %-5s %s" % (
+            row["vendor"], "%d%s" % (row["per_minute"], mark), "%d%s" % (row["peak_window"], mark),
+            "%d%s" % (row["total"], mark),
             row["minutes"], row["samples"], row["reason"], row["cancelled"],
             "yes" if row["produced_work"] else "NO", row["room"]))
 
@@ -312,7 +355,13 @@ def command_emit_fixture(args):
             "docstring for the two reconstruction methods and what each assumes. Repeated claude "
             "message.ids are collapsed to their first sighting here, the same rule "
             "TokenBudgetMonitor applies -- verified against these captures to carry an identical "
-            "usage object per repeat. `separation` is the corpus-wide answer to whether any rate "
+            "usage object per repeat. The SAMPLES are raw -- the stream's own four columns -- while "
+            "`totalBilled`/`peakBilledIn5MinWindow` apply #1706's vendor-asymmetric billing over them: "
+            "cache_creation alone on claude (a FLOOR, flagged by `billedIsFloor`, because the "
+            "input/output columns on a mid-stream assistant line are placeholders) and input + output "
+            "on agy (a measurement). A consumer replaying the raw samples through the engine's own "
+            "ClaudeUsageParser reproduces these totals; one summing all three columns does not. "
+            "`separation` is the corpus-wide answer to whether any rate "
             "threshold exists, captured here so a test can read the measurement rather than restate "
             "it. Regenerate rather than hand-editing."),
         "rooms": {},
@@ -334,8 +383,9 @@ def command_emit_fixture(args):
             "exitReason": span[2],
             "cancelled": span[3],
             "producedWork": span[4],
-            "totalBilled": sum(s[1] + s[2] + s[3] for s in samples),
-            "peakBilledIn5MinWindow": peak_window(samples),
+            "totalBilled": billed_total(vendor, samples),
+            "billedIsFloor": vendor == "claude",
+            "peakBilledIn5MinWindow": peak_window(samples, WINDOW, vendor),
             "samples": [[round(s[0], 3), s[1], s[2], s[3]] for s in samples],
         }
 
@@ -402,8 +452,61 @@ def _selftest_dedupe_does_not_poison_on_a_missing_timestamp():
         os.unlink(path)
 
 
+def _selftest_claude_bills_cache_creation_alone_against_the_shared_gate():
+    """#1706 review M1/M5: this tool is the THIRD implementation of the claude billing rule, and it was
+    the one left on the superseded reading -- summing the two placeholder columns while the engine that
+    produced its inputs had stopped. It now bills through `sample_billed`, and the expected values come
+    from the SAME fixture the engine's ClaudeEngineAndPusherBillingGateTests and pusher.py's selftest
+    read, so a rule change landing on two of the three fails here rather than drifting silently.
+
+    Control on the harness, read first: the agy arm bills input+output over the same raw sample and must
+    NOT agree with the claude arm -- without it a `sample_billed` that returned 0 for everything, or that
+    ignored the vendor, would pass the claude assertions below.
+    """
+    gate_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "..", "tests", "Baton.Tests", "Fixtures", "claude-billing-gate.json")
+    assert os.path.isfile(gate_path), "shared billing-gate fixture not found at %s" % gate_path
+    with open(gate_path, encoding="utf-8") as handle:
+        gate = json.load(handle)
+
+    checked = 0
+    for case in gate["cases"]:
+        expected = case["expectedBilledTokens"]
+        samples = []
+        seen = set()
+        for raw in case["lines"]:
+            record = json.loads(raw)
+            if record.get("type") != "assistant":
+                continue
+            usage = (record.get("message") or {}).get("usage")
+            if not isinstance(usage, dict):
+                continue
+            message_id = (record.get("message") or {}).get("id")
+            if isinstance(message_id, str) and message_id in seen:
+                continue
+            if isinstance(message_id, str) and message_id:
+                seen.add(message_id)
+            samples.append((0.0, usage.get("input_tokens") or 0, usage.get("output_tokens") or 0,
+                            usage.get("cache_creation_input_tokens") or 0))
+        # This tool has no "absent" representation -- it sums samples -- so a null expectation is read
+        # as "nothing billable on those lines", which is 0 here and correctly reported as absent by the
+        # two consumers that CAN express absence. Stated rather than left to look like agreement.
+        want = 0 if expected is None else expected
+        got = billed_total("claude", samples)
+        assert got == want, "case %r: expected %r billed, got %r" % (case["name"], want, got)
+        checked += 1
+    assert checked == len(gate["cases"]), "not every fixture case was exercised"
+
+    control = [(0.0, 14205, 443, 0)]
+    assert billed_total("agy", control) == 14648, "the agy arm must bill input+output"
+    assert billed_total("claude", control) == 0, (
+        "the claude arm must bill cache_creation ALONE -- if this equals the agy figure, sample_billed "
+        "is not reading the vendor and every claude row above is back on the pre-#1706 accounting")
+
+
 def command_selftest(_args):
-    tests = [_selftest_dedupe_does_not_poison_on_a_missing_timestamp]
+    tests = [_selftest_dedupe_does_not_poison_on_a_missing_timestamp,
+             _selftest_claude_bills_cache_creation_alone_against_the_shared_gate]
     failed = 0
     for test in tests:
         name = test.__name__

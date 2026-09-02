@@ -18,6 +18,23 @@ public sealed class ExecutionStreamLogger
     public const string StderrRolloverFileName = ".stderr.log.1";
 
     /// <summary>
+    /// #1706 review: written beside a stream that has rolled MORE THAN ONCE, i.e. whose earliest
+    /// segments this logger has permanently discarded (each roll overwrites the single
+    /// <c>.log.1</c>). Its presence is the only evidence a later reader has that the surviving files
+    /// are not the whole stream — see <see cref="Baton.Status.ExecutionUsageProjector"/>, which
+    /// withholds its live-billed Σ rather than reporting a Σ over a partial replay. Empty by design:
+    /// the file's existence is the entire payload.
+    /// </summary>
+    public const string StdoutTruncationMarkerFileName = ".stdout.log.truncated";
+    public const string StderrTruncationMarkerFileName = ".stderr.log.truncated";
+
+    /// <summary>The truncation marker that belongs beside <paramref name="logFileName"/>.</summary>
+    private static string TruncationMarkerFileNameFor(string logFileName) =>
+        string.Equals(logFileName, StdoutLogFileName, StringComparison.Ordinal)
+            ? StdoutTruncationMarkerFileName
+            : StderrTruncationMarkerFileName;
+
+    /// <summary>
     /// True when <paramref name="fileName"/> is one of this logger's own stream files — the four
     /// names declared above, and nothing else. This is the one place that question is answered
     /// (#1345); callers filter with it rather than restating which names are the engine's.
@@ -43,7 +60,9 @@ public sealed class ExecutionStreamLogger
         string.Equals(fileName, StdoutLogFileName, StringComparison.Ordinal)
         || string.Equals(fileName, StdoutRolloverFileName, StringComparison.Ordinal)
         || string.Equals(fileName, StderrLogFileName, StringComparison.Ordinal)
-        || string.Equals(fileName, StderrRolloverFileName, StringComparison.Ordinal);
+        || string.Equals(fileName, StderrRolloverFileName, StringComparison.Ordinal)
+        || string.Equals(fileName, StdoutTruncationMarkerFileName, StringComparison.Ordinal)
+        || string.Equals(fileName, StderrTruncationMarkerFileName, StringComparison.Ordinal);
 
     private readonly string _outputDirectory;
     private readonly long _maxSizeBytes;
@@ -54,6 +73,8 @@ public sealed class ExecutionStreamLogger
     private bool _failedOnce;
     private long _stdoutSize;
     private long _stderrSize;
+    private int _stdoutRollovers;
+    private int _stderrRollovers;
 
     public ExecutionStreamLogger(string outputDirectory, long maxSizeBytes = DefaultMaxSizeBytes)
     {
@@ -109,12 +130,12 @@ public sealed class ExecutionStreamLogger
 
     public void AppendStdout(byte[] data)
     {
-        AppendChunk(StdoutLogFileName, StdoutRolloverFileName, data, ref _stdoutSize);
+        AppendChunk(StdoutLogFileName, StdoutRolloverFileName, data, ref _stdoutSize, ref _stdoutRollovers);
     }
 
     public void AppendStderr(byte[] data)
     {
-        AppendChunk(StderrLogFileName, StderrRolloverFileName, data, ref _stderrSize);
+        AppendChunk(StderrLogFileName, StderrRolloverFileName, data, ref _stderrSize, ref _stderrRollovers);
     }
 
     public void MarkTerminal()
@@ -125,7 +146,7 @@ public sealed class ExecutionStreamLogger
         }
     }
 
-    private void AppendChunk(string logFileName, string rolloverFileName, byte[] data, ref long currentSize)
+    private void AppendChunk(string logFileName, string rolloverFileName, byte[] data, ref long currentSize, ref int rolloverCount)
     {
         if (data is null || data.Length == 0)
         {
@@ -154,6 +175,22 @@ public sealed class ExecutionStreamLogger
                     if (File.Exists(logPath))
                     {
                         RetryingFileMove.Move(logPath, rolloverPath, overwrite: true);
+                    }
+
+                    rolloverCount++;
+                    if (rolloverCount > 1)
+                    {
+                        // #1706 review: this is the roll that DESTROYS data. The move above overwrote
+                        // the previous `.log.1`, so the segment it held is gone and no reader can
+                        // reconstruct the whole stream from what survives -- and no reader can INFER
+                        // that from the surviving files either (a once-rolled and a twice-rolled
+                        // `.log.1` are both a full-size file starting at an arbitrary offset). The
+                        // writer is the only party that knows, so it says so here, once, and
+                        // ExecutionUsageProjector reports its live Σ as unavailable rather than
+                        // fabricating an under-read out of a partial replay. Fail-closed: the marker's
+                        // ABSENCE is only trustworthy for streams written since this landed, which the
+                        // projector's own comment states.
+                        WriteTruncationMarker(logFileName);
                     }
 
                     currentSize = 0;
@@ -188,6 +225,30 @@ public sealed class ExecutionStreamLogger
                     Console.Error.WriteLine($"Warning: Failed to persist execution stream log in '{_outputDirectory}': {ex.Message}. Continuing to retry on subsequent chunks.");
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// #1706 review: drops the empty sentinel next to the stream whose second (or later) rollover just
+    /// discarded a segment. Deliberately best-effort and swallowed on failure — a stream log that
+    /// cannot write its own chunks is already handled by the caller's warning arm, and throwing here
+    /// would turn a retention detail into a dispatch failure. The cost of a missing marker is a
+    /// reader that reports a live Σ it should have withheld, which is the pre-#1706 behaviour, not a
+    /// worse one.
+    /// </summary>
+    private void WriteTruncationMarker(string logFileName)
+    {
+        try
+        {
+            var markerPath = Path.Combine(_outputDirectory, TruncationMarkerFileNameFor(logFileName));
+            if (!File.Exists(markerPath))
+            {
+                File.WriteAllBytes(markerPath, []);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Intentionally not rethrown -- see this method's own doc for why.
         }
     }
 }

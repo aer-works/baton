@@ -1447,9 +1447,30 @@ issue's `modelUsage` change above). `liveBilledTokens` is what `TokenBudgetMonit
 replayed over the same captured stream rather than a second implementation of its Σ — saw while the
 execution ran, i.e. the quantity a budget arrested on. `billedUnderReadTokens` is their difference.
 The three appear together or not at all, and the difference is emitted even at zero, because a
-measured zero under-read is a finding: it is what agy produces, and it is the control that makes
-claude's non-zero one meaningful. Derived on read, never a ledger event — the same
-derive-over-record-twice preference `ExecutionUsageProjector` was built on.
+measured zero under-read is a finding: it is what agy produces (measured over three real rooms —
+`docs/vendor-capabilities.md`'s finding on that vendor's terminal usage line, not restated here), and
+it is the control that makes claude's non-zero one meaningful. Derived on read, never a
+ledger event — the same derive-over-record-twice preference `ExecutionUsageProjector` was built on.
+
+**A fourth field carries WHY they are absent, and the all-or-nothing rule is enforced rather than
+merely stated (#1706 review).** Where the triple cannot be completed, the view carries
+`billedReconciliationUnavailable` and withholds all three rather than serving whichever half it has.
+An earlier revision of this contract was prose only, and the code did serve that half — so a consumer
+obeying the register was handed a partial answer in precisely the case the guard exists to flag, which
+is why the rule is now enforced in the projector and pinned in both polarities by
+`ExecutionUsageProjectorTests`. The permitted reason values, and when the reason itself is absent, are
+on `ExecutionUsageView.BilledReconciliationUnavailable`.
+
+One of them is worth a ruling rather than a field doc, because the bound behind it reads like a
+guarantee and is not. **`ExecutionStreamLogger`'s 8 MiB-plus-one-rollover ceiling is a RETENTION bound,
+never a completeness one.** Each roll overwrites the single `.stdout.log.1`, so a stream past ~16 MiB
+has permanently discarded its earliest segments and any replay over what survives is not even a floor
+of the real live Σ. The engine's response is fail-closed: the logger records the roll that destroys a
+segment, and a reader that sees that record withholds the reconciliation instead of reporting a
+partial replay as a measurement. Fail-closed only *forward* — a room that rolled twice before this
+landed carries no such record and still reports a figure. Not reachable on today's corpus (largest
+room measured ~9 MB, one rolled room in 127), which is why this is a bound to know about rather than a
+live wrong number.
 
 **Not all fields are addends — on claude, `thinkingTokens` is a breakdown of `tokensOut`, not a
 sibling count; on agy, the containment relationship is unmeasured.** Measured (#1569): on claude,

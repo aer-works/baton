@@ -355,7 +355,7 @@ public sealed class TokenBudgetReplayTests
 
     private static TokenBudgetMonitor ReplayClaudeRoom((long Out, long CacheCreation)[] messages, long? budget)
     {
-        var monitor = new TokenBudgetMonitor(budget, maxToolSteps: null, new ClaudeUsageParser());
+        var monitor = new TokenBudgetMonitor(budget, maxToolSteps: null, billedRateLimit: null, new ClaudeUsageParser());
         for (var i = 0; i < messages.Length; i++)
         {
             monitor.OnStdoutLine(ClaudeAssistantLine(i, messages[i].Out, messages[i].CacheCreation));
@@ -409,9 +409,13 @@ public sealed class TokenBudgetReplayTests
         // them by reading the snapshot's own raw fields.
         Assert.Null(usage.TokensIn);
         Assert.Null(usage.TokensOut);
-        // The floor is a floor: strictly below the terminal line's authoritative whole-tree total.
+        // The floor is a floor. #1706 review L2: `<=`, not `<` -- a floor GUARANTEES at-most, and a room
+        // whose live Σ happened to reach the terminal figure (an agy-shaped stream, or a claude room
+        // whose whole spend was cache creation) would be a correct reading that a strict `<` calls a
+        // defect. Both of these fixtures happen to sit strictly under, which is exactly why the strict
+        // form passed and had to be caught by reading rather than by running.
         Assert.Equal(terminalBilled, TerminalBilled(resultLine));
-        Assert.True(usage.BilledTokens < terminalBilled);
+        Assert.True(usage.BilledTokens <= terminalBilled);
     }
 
     [Theory]
@@ -479,7 +483,7 @@ public sealed class TokenBudgetReplayTests
         // The other direction of the same condition: agy's step_update usage carries real input and
         // output figures, so its Σ is a measurement and must not be labelled a floor. Without this arm
         // a parser that set BilledIsFloor unconditionally would pass every claude assertion above.
-        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: null, new AgyUsageParser());
+        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: null, billedRateLimit: null, new AgyUsageParser());
 
         monitor.OnStdoutLine(AgyDoneLine(14205, 443));
 

@@ -601,6 +601,38 @@ kind being falsified by it.
 *Evidence: `dispatch-implement-3dc5e21a` and `dispatch-implement-5d9686dd`'s real `.stdout.log`
 captures, claude 2.1.257 era, enumerated event-by-event rather than sampled.*
 
+### `agy`'s terminal `result.usage` IS the cumulative Σ of its per-turn lines (#1706 review, measured 2026-09-02)
+
+The claude finding above only has a meaning because the other vendor's incremental usage is a
+*measurement* rather than a floor — spec/baton.md §3 leans on agy's under-read being **zero**. That was
+an assumption, asserted from a hand-built fixture; here it is measured, on real captures, with the
+discriminating alternative (terminal = the LAST turn, not the Σ) separated by three orders of magnitude.
+
+Σ over every `state == "DONE"`, `step_type == "agent_response"` `step_update`'s `usage`, against the
+same room's terminal `result.usage`, field for field:
+
+| Room | `agent_response` usage lines | Σ vs terminal | Last turn's `input_tokens`, for contrast |
+|---|---|---|---|
+| `dispatch-implement-38c24d11` | 70 | **identical on all five fields** (`input 595,684`, `output 199,256`, `thinking 19,715`, `cache_read 8,459,818`, `total 794,940`) | 5,164 |
+| `dispatch-implement-46d513e7` | 258 | **identical on all five fields** | — |
+| `dispatch-implement-55aa75ae` | 263 | **identical on all five fields** | — |
+
+So on agy the live Σ and the authoritative terminal figure are the SAME number, and
+`billedUnderReadTokens` is a true measured zero rather than a fixture artifact. `AgyTerminalUsageIsCumulativeTests`
+pins the relationship against a line set copied from `38c24d11`'s real capture, and
+`ExecutionUsageProjectorTests`' zero-under-read control reads the same copied lines rather than a set
+constructed to sum correctly.
+
+**A trap worth naming, because it defeated an earlier attempt to measure this.** agy's terminal
+`num_turns` is **1** on all three of these rooms — including the 263-`agent_response` one. It counts
+USER turns, not agent responses, so filtering a corpus for `num_turns > 1` to find a "multi-turn" agy
+room finds nothing and looks like evidence that no such capture exists. Count `agent_response`
+`step_update` lines instead.
+
+*Evidence: the three rooms' real `.stdout.log` captures under `~/.baton/rooms`, summed
+line-by-line rather than sampled. Scoped to `agent_response` steps — `tool` steps carry no `usage`
+object and are not part of either side of this equality.*
+
 ### `agy` — works headlessly too, as of a CLI update
 
 **Superseded 2026-08-28.** The prior measurement on this row — `agy -p "/usage"` **not a built-in

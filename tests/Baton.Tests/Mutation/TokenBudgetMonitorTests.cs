@@ -225,7 +225,7 @@ public sealed class TokenBudgetMonitorTests
         // no figure left to report, and reporting a WorkerUsage of all nulls would put a fabricated 0
         // into the running Σ. That doc also records why this shape is unreachable on measured traffic;
         // this is pinned so the choice stays a decision rather than an accident.
-        var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
+        var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, billedRateLimit: null, new ClaudeUsageParser());
 
         monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"output_tokens":3}}}""");
 
