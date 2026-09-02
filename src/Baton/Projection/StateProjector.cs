@@ -80,7 +80,7 @@ public static class StateProjector
 
         var flowState = DeriveFlowState(state, snapshot);
         var finalByteOffset = logByteOffset > 0 ? logByteOffset : (checkpoint?.ByteOffset ?? 0);
-        var newCheckpoint = new ProjectionCheckpoint(totalEventOffset, state.DeepCopy(), finalByteOffset, Version: 3);
+        var newCheckpoint = new ProjectionCheckpoint(totalEventOffset, state.DeepCopy(), finalByteOffset, Version: 4);
         return (flowState, newCheckpoint);
     }
 

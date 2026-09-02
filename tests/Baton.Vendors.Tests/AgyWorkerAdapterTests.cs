@@ -120,6 +120,39 @@ public class AgyWorkerAdapterTests
         Assert.Null(target.DetectsTerminalSuccess);
     }
 
+    /// <summary>
+    /// N5/F6 (#1664 re-review): <see cref="AgyWorkerAdapter.IsTerminalResultLine"/> had zero test
+    /// coverage — this is the single fact <c>OutcomeClassifier</c>'s dead-worker predicate now keys
+    /// on (`TerminalResultObserved`), so a regression here silently reclassifies a self-reported
+    /// FAILURE result as a dead worker again. Mirrors
+    /// <see cref="StreamJson_wires_a_terminal_success_detector_that_recognises_only_agys_success_result"/>'s
+    /// shape, but asserts the wider match: a `result` event of ANY status is terminal, unlike
+    /// <see cref="AgyWorkerAdapter.IsTerminalSuccessLine"/> which only matches SUCCESS.
+    /// </summary>
+    [Fact]
+    public void StreamJson_wires_a_terminal_result_detector_that_recognises_any_result_status()
+    {
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", StreamJson: true), ArchitectContract);
+
+        Assert.NotNull(target.DetectsTerminalResult);
+        Assert.True(target.DetectsTerminalResult!(
+            """{"event":"result","result":{"status":"SUCCESS","response":"done","usage":{"total_tokens":5}}}"""));
+        // The polarity F6 exists for: a self-reported FAILURE is still a terminal RESULT, unlike
+        // DetectsTerminalSuccess above, which reads false for the identical line.
+        Assert.True(target.DetectsTerminalResult!("""{"event":"result","result":{"status":"FAILURE","is_error":true}}"""));
+        Assert.False(target.DetectsTerminalResult!("""{"event":"step_update","step_update":{"state":"DONE","step_type":"tool"}}"""));
+        Assert.False(target.DetectsTerminalResult!("not json"));
+    }
+
+    [Fact]
+    public void Without_StreamJson_no_terminal_result_detector_is_wired()
+    {
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.Null(target.DetectsTerminalResult);
+    }
+
     [Fact]
     public void The_rooms_directory_is_bound_with_add_dir_because_agy_ignores_the_process_cwd()
     {

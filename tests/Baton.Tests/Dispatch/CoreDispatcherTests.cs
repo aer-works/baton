@@ -143,6 +143,73 @@ public class CoreDispatcherTests
         }
     }
 
+    /// <summary>
+    /// N5/F6 (#1664 re-review): the two detectors run independently since F6 rewired
+    /// <c>CoreDispatcher</c>'s stdout sink (`:745-761`) to test each on every line rather than short-
+    /// circuiting once either fired — this was uncovered end to end. Wires ONLY
+    /// <see cref="CoreDispatchTarget.DetectsTerminalResult"/> (not <see cref="CoreDispatchTarget.DetectsTerminalSuccess"/>,
+    /// which stays null the way a real claude-adapter target does), so a green
+    /// <see cref="CoreDispatchResult.TerminalResultObserved"/> here proves the result latch does not
+    /// depend on the success latch also being wired.
+    /// </summary>
+    [Fact]
+    public async Task DispatchAsync_latches_TerminalResultObserved_when_only_DetectsTerminalResult_is_wired()
+    {
+        var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
+            var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
+            var baseTarget = EchoLineToStdout("RESULT_MARKER_1664");
+            var target = baseTarget with { DetectsTerminalResult = line => line.Contains("RESULT_MARKER_1664", StringComparison.Ordinal) };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+            var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(result.TerminalResultObserved);
+            Assert.False(result.TerminalSuccessObserved);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(artifactsRoot);
+            FileCleanup.Delete(logPath);
+        }
+    }
+
+    /// <summary>Polarity control for the test above: a line that never matches leaves the latch false.</summary>
+    [Fact]
+    public async Task DispatchAsync_leaves_TerminalResultObserved_false_when_the_line_never_matches()
+    {
+        var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
+            var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
+            var baseTarget = EchoLineToStdout("SOMETHING_ELSE");
+            var target = baseTarget with { DetectsTerminalResult = line => line.Contains("RESULT_MARKER_1664", StringComparison.Ordinal) };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+            var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.False(result.TerminalResultObserved);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(artifactsRoot);
+            FileCleanup.Delete(logPath);
+        }
+    }
+
+    private static CoreDispatchTarget EchoLineToStdout(string line) => OperatingSystem.IsWindows()
+        ? new CoreDispatchTarget("cmd", ["/c", $"echo {line}"])
+        : new CoreDispatchTarget("sh", ["-c", $"echo {line}"]);
+
     [Fact]
     public async Task DispatchAsync_records_Started_and_Exited_CoreEvents_to_the_log()
     {

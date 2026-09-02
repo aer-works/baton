@@ -446,6 +446,56 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// N7 (#1664 re-review): see the selection fix's own remarks
+    /// (<c>RedispatchCommand.cs</c>, the <c>indeterminateStep</c> lookup just above the Indeterminate
+    /// refusal) for why a rejected step can outrank the real target. This fixture puts the rejected
+    /// step FIRST in the array specifically to catch that ordering bug: the refusal must still name
+    /// the ContractFailure remedy (reject only), not the CapturedResponse one.
+    /// </summary>
+    [Fact]
+    public async Task A_rejected_step_sorted_before_the_pending_ContractFailure_step_does_not_win_the_remedy()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = Path.Combine(testRoot, "parent");
+            Directory.CreateDirectory(parentRoom);
+            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["advise"] = new("fake", new WorkerContract("advise", [], [new ProducedOutput("advice.md")], []), "prompt", TimeSpan.FromMinutes(30)),
+            };
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                bindings, BatonPaths.RoomBindingsFile(parentRoom), TestContext.Current.CancellationToken);
+            await TerminalSentinelWriter.WriteAsync(
+                parentRoom,
+                new WorkflowStatusView(
+                    WorkflowOutcome.Indeterminate,
+                    [
+                        // Sorted FIRST: a rejected CapturedResponse step — file survives as audit
+                        // trail, producer cleared by CaptureResolved.
+                        new WorkflowStatusStepView("rejected", "Failed", "exec-1", CapturedResponseFile: ".captured-response.md"),
+                        // Sorted SECOND: the room's real pending target.
+                        new WorkflowStatusStepView("pending", "Failed", "exec-2", IndeterminateProducerKind: "ContractFailure"),
+                    ],
+                    [],
+                    null),
+                TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, childRoom), Adapters, TestContext.Current.CancellationToken));
+
+            Assert.NotNull(ex.TryInvocation);
+            Assert.Contains("nothing to accept", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("--accept-capture | --reject", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [Fact]
     public async Task Redispatching_a_composed_template_room_is_refused()
     {

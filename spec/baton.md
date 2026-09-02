@@ -566,6 +566,16 @@ ANY status (success or self-reported failure), via `CoreDispatchTarget.DetectsTe
 arrived at all (a dead worker) AND when one arrived reporting `is_error`/`FAILURE` (a worker that
 finished and self-reported non-success — a contract failure, not a death, by #1622's own vocabulary).
 
+**The claude adapter wires no terminal-result detector (N6, #1664 review) — a live asymmetry, not a
+gap in this fix.** `DetectsTerminalResult`/`DetectsTerminalSuccess` are agy-only
+(`git grep DetectsTerminalSuccess -- src/Baton.Vendors` returns `AgyWorkerAdapter.cs` alone); a
+claude-adapter worker's `CoreDispatchResult.TerminalResultObserved` is therefore always `false`, so
+`isDeadWorkerWithoutResult` is unconditionally `true` for that vendor and the untouched-workspace read
+(`Workspaces.WorktreeProvisioner.IsWorkspaceUntouched`) alone decides whether a claude worker's dead
+exit stays retryable `Failed` or settles `Indeterminate` — agy gets the extra terminal-result
+discrimination this section describes, claude does not. Pre-existing (predates #1593), not narrowed or
+widened by it; recorded here because #1664's review found it undocumented outside a response report.
+
 **Consumer obligations, ratified with the value itself.** `baton redispatch` refuses a bare
 `Indeterminate` parent outright, with a diagnosis naming the resolution verb
 (`RedispatchCommand.cs`) — unlike an ordinary `Failed`/`Cancelled` parent, which redispatches with a

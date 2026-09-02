@@ -221,12 +221,27 @@ public static class ResolveCommand
                 + "workspace. See spec/baton.md §3.");
         }
 
-        throw new CliArgumentException(
-            $"Execution '{executionId}' in room '{roomDirectoryPath}' settled Indeterminate "
-            + "without a captured response — a verify failure or a token-budget arrest, not an "
-            + "unwritten output. There is nothing for 'baton resolve' to accept or reject.",
-            $"read the step's failure reason (`baton status {roomDirectoryPath} --json`) to see "
-            + "which, fix the underlying cause, then re-dispatch — a fresh execution reopens the "
-            + "step. See spec/baton.md §3.");
+        // F1 nit (#1664 re-review): explicit, not a catch-all else — VerifyFailed/Arrested/null are the
+        // only producers this "nothing to accept or reject" text actually describes. Both callers only
+        // reach this helper for a producer accepted's verb does not admit, so a ContractFailure step
+        // with accepted: false is unreachable today (admitted upstream at both call sites) — but the
+        // `_ => throw` below is what keeps that a measured fact rather than a silent assumption the
+        // shared else arm could someday violate.
+        if (producer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null)
+        {
+            throw new CliArgumentException(
+                $"Execution '{executionId}' in room '{roomDirectoryPath}' settled Indeterminate "
+                + "without a captured response — a verify failure or a token-budget arrest, not an "
+                + "unwritten output. There is nothing for 'baton resolve' to accept or reject.",
+                $"read the step's failure reason (`baton status {roomDirectoryPath} --json`) to see "
+                + "which, fix the underlying cause, then re-dispatch — a fresh execution reopens the "
+                + "step. See spec/baton.md §3.");
+        }
+
+        throw new InvalidOperationException(
+            $"ThrowDiscriminatedRefusal reached for execution '{executionId}' in room '{roomDirectoryPath}' "
+            + $"with producer '{producer}' and accepted={accepted} — every combination that value admits "
+            + "is handled above, so this indicates a new producer or a new admission rule reached this "
+            + "helper without a matching arm, not a step that genuinely has nothing to accept or reject.");
     }
 }

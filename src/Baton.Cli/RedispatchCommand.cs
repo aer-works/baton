@@ -102,9 +102,16 @@ public static class RedispatchCommand
             // (spec/baton.md §3's "Consumer obligations" has the reasoning; not restated here).
             // A terminal.json written before IndeterminateProducerKind existed falls back to the
             // pre-F1 hasCapture read.
+            // N7 (#1664 re-review): a REJECTED step keeps CapturedResponseFile as its audit trail
+            // (StateProjector.cs's CaptureResolved apply clears IndeterminateProducerKind but not the
+            // file) while carrying no producer — FirstOrDefault must prefer a step whose
+            // IndeterminateProducerKind is non-null over one that only has a stale CapturedResponseFile,
+            // or a rejected step sorted ahead of the actually-pending ContractFailure step would win and
+            // offer --accept-capture for a room where it throws.
             var indeterminateStep = parentTerminal.Steps.FirstOrDefault(
-                step => step.State == nameof(StepStatus.Failed)
-                    && (step.IndeterminateProducerKind is not null || step.CapturedResponseFile is not null));
+                    step => step.State == nameof(StepStatus.Failed) && step.IndeterminateProducerKind is not null)
+                ?? parentTerminal.Steps.FirstOrDefault(
+                    step => step.State == nameof(StepStatus.Failed) && step.CapturedResponseFile is not null);
             var producerKind = indeterminateStep?.IndeterminateProducerKind
                 ?? (indeterminateStep?.CapturedResponseFile is not null ? nameof(IndeterminateProducer.CapturedResponse) : null);
 

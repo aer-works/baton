@@ -217,26 +217,31 @@ append-only event ledger), and `flow.lock`. The authoritative room layout is
 [`spec/baton.md`](../../spec/baton.md) §2–§3.
 
 **A path in `outputs` IS the worker's own write (#1594/#1608, conductor-writes shape).** Baton never
-writes into a declared output itself except through the one verb below. When a declared output is
-missing at settle time but the worker's terminal response was recoverable, a step's own
-`steps[].capturedResponseFile` names an engine-owned file (in the execution's own output directory,
-never a declared name) the response was captured into, alongside `steps[].unsatisfiedOutputs` naming
-which declared outputs are still unwritten — present only on a step whose own `state` still reads
-`Failed`, and readable from `status --json`/`terminal.json` without opening the execution directory.
-That step's own **room** settles the top-level `state` `Indeterminate`, not `Failed` (#1608 — see
-`spec/baton.md` §3 for why) — a bare `baton redispatch` refuses an
-`Indeterminate` parent outright, so read `state` before assuming a captured-response room is an
-ordinary retryable failure. The missing output stays missing until a conductor resolves the capture:
-`baton resolve <room-dir> [--execution <id>] --accept-capture | --reject --reason <text>` either
-writes the capture's body under each declared name it stands in for and settles the step `Succeeded`,
-or records a rejection and leaves the step resolved-but-`Failed`. See `docs/dispatch.md`'s "Roles"
-section for exactly which outputs a capture can and can't ever resolve into. `baton resolve` never
-re-drives the DAG itself, either way — in a multi-step lane, check its stdout / the returned `state`
-for whether the room reached Terminal; if not (a downstream step just became deliverable, or a
-rejected step still has retry budget), re-run `baton run --room-dir <room-dir>` — except on a room left
-`Paused`, where `baton decide` is the verb that moves it and `baton run` cannot. `baton resolve` names
-whichever of the two applies on its own stdout; follow that rather than the general rule
-(spec/baton.md §3).
+writes into a declared output itself except through the one verb below. That step's own **room**
+settles the top-level `state` `Indeterminate`, not `Failed`, whenever journal facts alone cannot
+decide success vs. failure — a bare `baton redispatch` refuses an `Indeterminate` parent outright, so
+read `state` before assuming an Indeterminate room is an ordinary retryable failure. `spec/baton.md`
+§3's "Four producers" table is the register for what raises it and readable from
+`status --json`/`terminal.json`; per-step `steps[].indeterminateProducer` names WHICH producer, and it
+is the field to switch on, not `steps[].capturedResponseFile`'s presence — most Indeterminate steps
+today carry no captured response at all (an exit-0 worker whose declared outputs are simply absent,
+with nothing recoverable to capture), and driving `--accept-capture` off the wrong read throws. Only
+the `CapturedResponse` producer names an engine-owned file (in the execution's own output directory,
+never a declared name) on `steps[].capturedResponseFile`, alongside `steps[].unsatisfiedOutputs` naming
+which declared outputs are still unwritten. `baton resolve <room-dir> [--execution <id>]
+--accept-capture | --reject --reason <text>` is the one resolution verb, and which of its two verbs a
+step admits depends on `indeterminateProducer` — spec/baton.md §3's "Consumer obligations" section is
+the full per-producer register, summarized without restating it below: `CapturedResponse` admits either verb and
+`--accept-capture` writes the capture's body under each declared name it stands in for, settling the
+step `Succeeded`; `ContractFailure` admits only `--reject --reason <text>`, recording a rejection and
+leaving the step resolved-but-`Failed`; the other two producers admit neither verb and reopen only
+through a fresh `baton dispatch`. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
+capture can and can't ever resolve into. `baton resolve` never re-drives the DAG itself, either way —
+in a multi-step lane, check its stdout / the returned `state` for whether the room reached Terminal; if
+not (a downstream step just became deliverable, or a rejected step still has retry budget), re-run
+`baton run --room-dir <room-dir>` — except on a room left `Paused`, where `baton decide` is the verb
+that moves it and `baton run` cannot. `baton resolve` names whichever of the two applies on its own
+stdout; follow that rather than the general rule (spec/baton.md §3).
 
 Once a room is genuinely done with, `baton room delete <room-dir>` (or its batch form,
 `baton rooms prune --terminal --yes`) actually removes it — the directory, its `room-registry.jsonl`

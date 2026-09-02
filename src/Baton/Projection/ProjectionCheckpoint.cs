@@ -12,7 +12,15 @@ public sealed record ProjectionCheckpoint(
     long EventOffset,
     ProjectionCheckpointState State,
     long ByteOffset = 0,
-    int Version = 3);
+    // N3 (#1664 re-review): bumped from 3 to 4 because IndeterminateProducerByStepId is new in this
+    // PR and its absence from an already-shipped checkpoint is NOT the ordinary
+    // trailing-optional-coalesces-to-empty shape the other members above document — an empty map here
+    // means "no producer for a step that IS awaiting resolution", which every admission predicate
+    // reads as a producer no verb admits, not as "unknown, go find out". A pre-existing awaiting-
+    // resolution room's checkpoint would otherwise deserialize as permanently unresolvable.
+    // ProjectionCheckpointStore.Load's version gate is what actually forces the full replay this
+    // depends on.
+    int Version = 4);
 
 /// <summary>
 /// Serializable snapshot of <see cref="StateProjector"/>'s internal working dictionaries and sets.
