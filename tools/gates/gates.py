@@ -333,11 +333,8 @@ def delete_receipt(cwd=None):
 
 
 # ---------------------------------------------------------------------------------------------
-# Telemetry (#1671): free physical MB and the MSBuild/VBCSCompiler/testhost process count, taken
-# once at the start and once at the end of a run. A SEPARATE sidecar file from baton-gate-receipt
-# itself -- same shape as buildlock's own ".info" sidecar -- so this can never become part of what
-# --check-receipt matches (tree/dirty/diff_hash/timestamp, all untouched by anything below). Every
-# function here is best-effort: a telemetry read that fails must never turn a gates run red.
+# Telemetry (#1671). What is recorded, when, and why a separate sidecar: spec/baton.md §11 C-13.
+# Every function here is best-effort: a telemetry read that fails must never turn a gates run red.
 # ---------------------------------------------------------------------------------------------
 
 TELEMETRY_NAME = "baton-gate-receipt.telemetry"
