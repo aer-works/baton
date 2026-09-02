@@ -64,9 +64,12 @@ namespace Baton.Vendors;
 /// </para>
 /// <para>
 /// <b>The consequence for anyone editing this class:</b> under that branch the tool-name lists
-/// (<c>ReadTools</c>, <c>WriteTools</c>, <c>ShellTools</c>, <c>NetworkTools</c>) are the entire
-/// enforcement boundary — a write-capable <c>agy</c> tool missing from <c>WriteTools</c> is simply
-/// not denied. Whether those lists are complete against agy's real tool surface is unmeasured — #623,
+/// (<c>ReadTools</c>, <c>WriteTools</c>, <c>ShellTools</c>, <c>SubagentAndTaskTools</c>,
+/// <c>NetworkTools</c>) are the entire enforcement boundary — a write-capable <c>agy</c> tool missing
+/// from <c>WriteTools</c> is simply not denied, and <c>SubagentAndTaskTools</c> is withheld under
+/// either <c>!WriteFiles</c> or <c>!RunShellCommands</c> rather than only the latter, because none of
+/// its four tools is narrowed by the pattern channel that bounds <c>run_command</c> (#1387 review,
+/// F1). Whether those lists are complete against agy's real tool surface is unmeasured — #623,
 /// which is the security property here rather than a tidiness question. Removing a category from
 /// <see cref="BuildDeniedTools"/> as "redundant with the flag" is the specific edit that would make
 /// #596's over-grant real.
@@ -192,14 +195,19 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     private static readonly IReadOnlyList<string> WriteTools =
         ["write_to_file", "replace_file_content", "multi_replace_file_content", "generate_image"];
 
+    private static readonly IReadOnlyList<string> ShellTools = ["run_command"];
+
     /// <remarks>
     /// <para>
-    /// The subagent trio is withheld with the shell because it is agy's closest analogue to claude's
-    /// <c>Task</c>, and because of a bypass an independent reviewer found in the first draft:
+    /// The subagent trio is withheld with <c>manage_task</c> because it is agy's closest analogue to
+    /// claude's <c>Task</c>, and because of a bypass an independent reviewer found in the first draft:
     /// <c>define_subagent</c> takes <c>enable_write_tools</c> as an argument and
     /// <c>invoke_subagent</c> takes an optional <c>Workspace</c>. A write-withheld worker could
     /// therefore define a subagent with write tools enabled and invoke it — possibly under a
-    /// different workspace root than the one this hook was loaded from.
+    /// different workspace root than the one this hook was loaded from. <c>manage_task</c> is grouped
+    /// with them rather than with <see cref="ShellTools"/> for the reason given on <see cref="ReadTools"/>
+    /// above — it reaches background shell control that the hook's pattern channel never inspects — so
+    /// the same reasoning applies to it independent of whether <c>run_command</c> itself is bounded.
     /// </para>
     /// <para>
     /// <b>Whether a subagent's own tool calls re-enter this hook is unmeasured on agy</b>, so this
@@ -209,9 +217,16 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <see cref="ClaudeWorkerAdapter.MaxSubagentSpawnDepthVariable"/>, so withholding is the only
     /// lever available here. Tracked in #601.
     /// </para>
+    /// <para>
+    /// Withheld whenever <b>either</b> <c>WriteFiles</c> or <c>RunShellCommands</c> is false, not only
+    /// under <c>!RunShellCommands</c> as before this pass (#1387 review, F1): a write-withheld,
+    /// shell-granted role such as <c>review</c> can still reach <c>run_command</c>, and none of these
+    /// four tools is narrowed by the pattern channel that bounds <c>run_command</c> — so the spawn
+    /// lever has to stay pulled whenever writes are withheld even though shell itself is granted.
+    /// </para>
     /// </remarks>
-    private static readonly IReadOnlyList<string> ShellTools =
-        ["run_command", "manage_task", "invoke_subagent", "define_subagent", "manage_subagents"];
+    private static readonly IReadOnlyList<string> SubagentAndTaskTools =
+        ["manage_task", "invoke_subagent", "define_subagent", "manage_subagents"];
 
     /// <remarks>
     /// <c>browser_*</c> is a prefix entry (see <c>AgyHookCheckCommand</c>'s prefix support). The
@@ -250,6 +265,11 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         if (!grant.RunShellCommands)
         {
             denied.AddRange(ShellTools);
+        }
+
+        if (!grant.WriteFiles || !grant.RunShellCommands)
+        {
+            denied.AddRange(SubagentAndTaskTools);
         }
 
         if (!grant.NetworkAccess)
@@ -297,6 +317,27 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         if (grant.RunShellCommands)
         {
+            // #1387: a pattern-scoped shell grant (RunShellCommands=true, NetworkAccess=false, a
+            // non-empty ShellCommandPatterns) now defers to the hook instead of refusing --
+            // --dangerously-skip-permissions still turns run_command on at all headlessly, and the
+            // hook (AgyHookCheckCommand) does the actual narrowing. Full measurement: spec/baton.md
+            // §9's "agy now expresses this too" paragraph and docs/vendor-doc-audit.md's dated entry
+            // -- not restated here. An unscoped shell grant (no patterns) is unchanged: nothing would
+            // bound an unscoped --dangerously-skip-permissions shell, so it still refuses.
+            //
+            // This branch does not read grant.WriteFiles, so a write-granted, pattern-scoped shell
+            // grant (WriteFiles=true, RunShellCommands=true, NetworkAccess=false, patterns non-empty)
+            // also defers here rather than refusing. That is intentional, not an oversight (#1387
+            // review, F8): writes on that path are still bounded to workspace-or-outbox by
+            // AgyHookCheckCommand's write-family path check, the same bound applied when WriteFiles is
+            // withheld entirely.
+            if (grant.ShellCommandPatterns is { Count: > 0 })
+            {
+                resolvedValue = "--dangerously-skip-permissions";
+                gapReason = null;
+                return true;
+            }
+
             resolvedValue = null;
             gapReason = "agy only supports auto-approving shell command execution via " +
                 "--dangerously-skip-permissions, which also grants network access. Granting unrequested " +
@@ -867,7 +908,10 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// explicitly rather than inherited so the value is visible next to the reasoning. Generous for
     /// what the command does (parse stdin, compare a name, print an object) because the cost of
     /// overrunning is asymmetric: a timeout produces no stdout, and no stdout is an
-    /// <em>allow</em> on this vendor.
+    /// <em>allow</em> on this vendor. For a role that relies on the hook as its sole narrowing —
+    /// <c>review</c> is the first such role — a hook that cannot start therefore turns the most
+    /// restricted agy role into an unscoped shell with network and unbounded writes; a liveness
+    /// guard for that failure mode is tracked in #1680, not built here (#1387 review, F5).
     /// </summary>
     private const int HookTimeoutSeconds = 30;
 
