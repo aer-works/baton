@@ -4,10 +4,11 @@ using Baton.Domain;
 namespace Baton.Mutation;
 
 /// <summary>
-/// The result of one <see cref="VerifyRunner.RunAsync"/> call (#1623). <see cref="Passed"/> mirrors the
-/// verify command's own exit code; <see cref="FailingMembers"/>/<see cref="Tail"/> are populated only
-/// when it fails, and only when the summary line's shape is recognized — never fabricated.
-/// <see cref="Kind"/> distinguishes gate breakage from timeouts, cancellations, or engine restarts (F3).
+/// The result of one <see cref="VerifyRunner.RunProcessAsync"/> call (#1623). <see cref="Passed"/>
+/// mirrors the verify command's own exit code; <see cref="FailingMembers"/>/<see cref="Tail"/> are
+/// populated only when it fails, and only when the summary line's shape is recognized — never
+/// fabricated. <see cref="Kind"/> distinguishes gate breakage from timeouts, cancellations, or engine
+/// restarts (F3).
 /// </summary>
 public sealed record VerifyOutcome(
     bool Passed,
@@ -20,9 +21,11 @@ public sealed record VerifyOutcome(
 
 /// <summary>
 /// The engine-run verify step's own primitive (#1623; contract: <c>spec/baton.md</c> §3):
-/// spawns <c>pixi run &lt;task&gt;</c> once, under <paramref name="workingDirectory"/>, and
-/// reports pass/fail plus a bounded tail. Never invoked from inside a worker's own turn — the entire
-/// point of this issue is that the ENGINE runs this, not the model.
+/// spawns the resolved verify command (<see cref="Mutation.VerifyCommandResolver"/> since #1702 —
+/// <c>pixi run &lt;task&gt;</c> for a role default, or the platform shell for a repo-declared/overridden
+/// command line) once, under <paramref name="workingDirectory"/>, and reports pass/fail plus a bounded
+/// tail. Never invoked from inside a worker's own turn — the entire point of this issue is that the
+/// ENGINE runs this, not the model.
 /// </summary>
 /// <remarks>
 /// <c>tools/gates/gates.py</c> is the one place a gate-run's overall
@@ -48,55 +51,23 @@ public static class VerifyRunner
     /// </summary>
     private const int MaxTailChars = 4000;
 
-    public static Task<VerifyOutcome> RunAsync(
-        string pixiTask, string? workingDirectory, CancellationToken cancellationToken)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(pixiTask);
-        return RunProcessAsync("pixi", ["run", pixiTask], workingDirectory, cancellationToken);
-    }
-
     /// <summary>
-    /// The program/args-injecting form of <see cref="RunAsync"/>. Internal so a test can point this at
-    /// a fake command (a shell one-liner that exits non-zero, or prints a synthetic
-    /// <c>GATES: FAIL ...</c> line) rather than a real, minutes-long <c>pixi run gates-quiet</c> — the
-    /// same seam <c>WorkerBindingConfigWriter</c>'s own budget-injecting internal overload exists for.
-    /// Production always calls the public overload, which always names <c>pixi</c>.
+    /// The program/args-injecting form #1702 made the ONLY production entry point (MutationInterface
+    /// spawns whatever <see cref="Mutation.VerifyCommandResolver.Resolve"/> resolved — <c>pixi</c> for a
+    /// role default, <c>cmd.exe</c> for a repo-declared/overridden line — never a hardcoded <c>pixi</c>
+    /// call). Internal so a test can also point this at a fake command (a shell one-liner that exits
+    /// non-zero, or prints a synthetic <c>GATES: FAIL ...</c> line) rather than a real, minutes-long
+    /// <c>pixi run gates-quiet</c> — the same seam <c>WorkerBindingConfigWriter</c>'s own
+    /// budget-injecting internal overload exists for.
     /// </summary>
     internal static async Task<VerifyOutcome> RunProcessAsync(
         string program, IReadOnlyList<string> args, string? workingDirectory, CancellationToken cancellationToken)
     {
-        var output = new System.Text.StringBuilder();
-        // Deliberately no WithClearEnv(): unlike a vendor worker dispatch, this spawns the engine's own
-        // trusted tool (`pixi`, which itself needs its host toolchain's PATH/CONDA_PREFIX/etc. to
-        // resolve) rather than an adapter-sandboxed process, so it inherits the ambient environment the
-        // same way a human running `pixi run gates-quiet` by hand would.
-        // Process-level timeout is omitted (F3): buildlock's own loud timeout bounds each lock-competing
-        // step instead of an arbitrary overall wall-clock ceiling causing spurious Indeterminate settlements.
-        using var task = new BatonTask(program, [.. args])
-            .WithCaptureOutput(true);
-
-        if (workingDirectory is not null)
-        {
-            task.WithCwd(workingDirectory);
-        }
-
-        var exitCode = -1;
-        task.EventRaised += (_, e) =>
-        {
-            switch (e.Kind)
-            {
-                case BatonTaskEventKind.StdoutChunk or BatonTaskEventKind.StderrChunk when e.Data is { } data:
-                    output.Append(System.Text.Encoding.UTF8.GetString(data));
-                    break;
-                case BatonTaskEventKind.Exited:
-                    exitCode = e.ExitCode;
-                    break;
-            }
-        };
-
+        int exitCode;
+        string text;
         try
         {
-            await task.RunAsync(cancellationToken).ConfigureAwait(false);
+            (exitCode, text) = await CaptureAsync(program, args, workingDirectory, cancellationToken).ConfigureAwait(false);
         }
         catch (BatonCancelException ex)
         {
@@ -130,10 +101,54 @@ public static class VerifyRunner
             return VerifyOutcome.Pass;
         }
 
-        var text = output.ToString();
         var failingMembers = ParseFailingMembers(text);
         var tail = text.Length > MaxTailChars ? text[^MaxTailChars..] : text;
         return new VerifyOutcome(false, failingMembers, tail, Kind: VerifyFailedKind.GatesFailed);
+    }
+
+    /// <summary>
+    /// #1702: the bare spawn-and-capture primitive <see cref="RunProcessAsync"/> wraps with verify's
+    /// pass/fail semantics — factored out so <see cref="VerifyCommandResolver"/>'s pre-flight
+    /// runnability probe (<c>pixi task list</c>) can reuse the identical <see cref="BatonTask"/>
+    /// plumbing without inheriting a verify-specific interpretation of the exit code, which a probe has
+    /// no use for. Exceptions propagate to the caller rather than degrading to a <see cref="VerifyOutcome"/>
+    /// here — the probe's own caller decides what an unspawnable <c>pixi</c> means (not runnable, never
+    /// a silent pass), which is a different mapping than <see cref="RunProcessAsync"/>'s.
+    /// </summary>
+    internal static async Task<(int ExitCode, string Output)> CaptureAsync(
+        string program, IReadOnlyList<string> args, string? workingDirectory, CancellationToken cancellationToken)
+    {
+        var output = new System.Text.StringBuilder();
+        // Deliberately no WithClearEnv(): unlike a vendor worker dispatch, this spawns the engine's own
+        // trusted tool (`pixi`, which itself needs its host toolchain's PATH/CONDA_PREFIX/etc. to
+        // resolve) rather than an adapter-sandboxed process, so it inherits the ambient environment the
+        // same way a human running `pixi run gates-quiet` by hand would.
+        // Process-level timeout is omitted (F3): buildlock's own loud timeout bounds each lock-competing
+        // step instead of an arbitrary overall wall-clock ceiling causing spurious Indeterminate settlements.
+        using var task = new BatonTask(program, [.. args])
+            .WithCaptureOutput(true);
+
+        if (workingDirectory is not null)
+        {
+            task.WithCwd(workingDirectory);
+        }
+
+        var exitCode = -1;
+        task.EventRaised += (_, e) =>
+        {
+            switch (e.Kind)
+            {
+                case BatonTaskEventKind.StdoutChunk or BatonTaskEventKind.StderrChunk when e.Data is { } data:
+                    output.Append(System.Text.Encoding.UTF8.GetString(data));
+                    break;
+                case BatonTaskEventKind.Exited:
+                    exitCode = e.ExitCode;
+                    break;
+            }
+        };
+
+        await task.RunAsync(cancellationToken).ConfigureAwait(false);
+        return (exitCode, output.ToString());
     }
 
     private static IReadOnlyList<string>? ParseFailingMembers(string output)

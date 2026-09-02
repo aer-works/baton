@@ -752,6 +752,73 @@ Worker briefs no longer ask for the full gate suite themselves; the prompt-level
 from #1625 (`AgyWorkerAdapter.ForegroundGateInstructionText`) stays as belt (any slow command, not just
 gates, should run in the foreground) now that this is the braces.
 
+**Verify command resolution, and the not-run outcome (#1702).** The verify command run above is a
+property of the WORKSPACE being worked on, not of the role — a role's `verify_pixi_task` bakes in an
+assumption (that the workspace is this repo, or shares its task names) which fails by construction
+against a foreign workspace (measured 2026-09-02: an `implement` lane dispatched with `--workspace`
+pointing at a different, non-baton repo ran `pixi run gates-quiet` there, got "command not found",
+and settled `Indeterminate` even though the worker's own exit and output contract were already clean).
+`Baton.Mutation.VerifyCommandResolver.Resolve` resolves the command actually run, in precedence order:
+
+1. `--verify <cmd>` (`DispatchOptions.VerifyCommand` → `RoleDispatch.ToBinding`'s `verifyCommandOverride`
+   → `WorkerBindingConfigEntry.VerifyCommandOverride` → `WorkerBinding.Process.VerifyCommandOverride`) —
+   mirrors `--token-budget`'s override plumbing end to end, including through `baton redispatch`.
+2. The workspace's own declaration: a `.baton/verify` file directly under the dispatched workspace
+   directory, whose first non-blank, non-`#`-comment line is the command line to run. The one
+   repo-level declaration mechanism this issue picks (never also a `[tool.baton]` table in
+   `pixi.toml`/`pyproject.toml`) — a plain-text file works for any workspace, pixi-based or not, which
+   is the whole point since a foreign workspace's own task runner is unknown to this engine. Read fresh
+   from disk on every resolve (never cached onto a binding), so a `baton redispatch` against a
+   workspace whose declaration changed since the parent's own dispatch never runs a stale command.
+3. `WorkerRole.VerifyPixiTask` (`implement` → `gates-quiet`; every other shipped role → none) — today's
+   only source, run as `pixi run <task>`, unchanged. Baton's own repo keeps working unchanged under
+   this arm: no `.baton/verify` file here and no `--verify` on baton's own dispatches.
+
+An override/repo-declared command line runs through the platform shell (`cmd.exe /d /c <line>`, this
+project ships Windows-only per #1405) rather than hand-tokenized; the role default stays a direct
+`pixi run <task>` spawn, unchanged from #1623.
+
+**A verify command is now a property of the workspace, not gated on the role declaring one.** Unlike
+pre-#1702, where no `VerifyPixiTask` meant no verify step full stop, `Resolve` can still produce an
+override or repo-declared command for a role that declares none (`review`/`advise`/every other
+non-`implement` shipped role) — a workspace's own `.baton/verify` speaks for that workspace regardless
+of which role is dispatched against it, the same way `--verify` does. This is deliberate, not a gap:
+the whole point of #1702 is that verify answers "does this workspace's own gate suite pass", which a
+role has no authority to opt a workspace out of. A red run through this arm settles `Indeterminate`
+exactly like any other running-and-red verify.
+
+**Before running, the engine checks the resolved command is runnable** (`VerifyCommandResolver.CheckRunnableAsync`) —
+a role-default `pixi` task is checked against that workspace's own `pixi task list` output (the #1702
+measured shape); an override/repo-declared command is checked by whether its own first token resolves
+as an executable (a pure filesystem PATH lookup, no process spawn). If not runnable, the engine appends
+`FlowEvent.VerifyNotRun(ExecutionId, Reason)` — e.g. `"task absent: gates-quiet"` or `"executable not
+found: eslint"` — and stops: **no `VerifyStarted` (never started), no `VerifyFailed`, and no
+`Indeterminate` settle.** The execution's own already-`Succeeded` classification (this branch is only
+reached when it is) decides `StepStatus`/`WorkflowOutcome` unassisted, exactly as if the role declared
+no verify command at all — the same "ENGINE, never the worker" ownership as an ordinary verify run, just
+never fired. `StateProjector` records the reason on `StepState.VerifyNotRunReason` (cleared on the
+step's next `ExecutionRequestAccepted`, same as `IndeterminateReason`); `WorkflowStatusProjector`
+surfaces it as `verify: "not-run"` / `verifyReason` on `WorkflowStatusStepView` (§3 schema above) and
+`fleet_status`'s `FleetStepStatusView` copies it verbatim, so `baton status --json`/Fleet Glass can
+render "unverified" instead of a bare `Succeeded` — Fleet Glass's own `UNVERIFIED` chip. **A verify
+command that actually STARTS and then fails still settles `Indeterminate` exactly as before** — #1702
+only changes the "never ran at all" case; a genuinely broken gate is not softened into a pass. A
+pre-flight probe cancelled by the operator's own cancellation token is never read as "not runnable" —
+it falls through as if runnable, so the real (already-cancelled) attempt below resolves the SAME
+cancellation the ordinary verify-window handling above already covers, rather than a second, divergent
+cancellation path.
+
+**`--output` delivery is unconditional on the worker's own write, never on verify's verdict (#1702).**
+Before this fix, `DispatchCommand.CopyPrimaryOutputToOverride` only copied a produced output when its
+step's terminal `Status` read `Succeeded` — but a verify failure (or, pre-#1702, the not-run case
+misread as a failure) settles the step `Failed`/`Indeterminate` even though the worker already wrote
+its declared output before the engine's own (later) verify step ran at all. The measured cost: a
+foreign-workspace `implement` lane's report sat unseen in the room's artifacts while `--output` was
+never written. The copy is now keyed on the step actually having executed (`LatestExecutionId is not
+null`) and the declared output file existing on disk at that execution's artifact path — the real,
+unconditional gate — regardless of what verify (running-and-green, running-and-red, or #1702's
+not-run) decided.
+
 **The per-execution token budget (#1682: arrests on billed, not context level).** #1623's own review
 recorded the ceiling as "not shown reachable" from `600,000 − 200,000(context) = 400,000 needed from
 Σoutput` — that derivation described a monitor tracking `context_level + Σoutput_tokens`, where the
@@ -1020,7 +1087,9 @@ code is the only signal a lane is even still going, and it is unreliable for tha
       "usage"?: ExecutionUsageView,
       "linkedFromUsage"?: ExecutionUsageView,
       "liveness"?: "alive" | "dead" | "unknown",  // #1375/#1513: present while this step reads "Running", or "Failed" with a RetryNotBefore still pending
-      "exhaustedUntil"?: string  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
+      "exhaustedUntil"?: string,  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
+      "verify"?: "not-run",       // #1702: present iff the latest attempt's resolved verify command failed its pre-flight runnability check -- an ordinarily-Succeeded step, never a gate. See "Verify command resolution" below.
+      "verifyReason"?: string     // #1702: the pre-flight verdict, e.g. "task absent: gates-quiet" or "executable not found: eslint" -- present only alongside "verify"
     }
   ],
   "outputs": [string],                 // resolved output paths

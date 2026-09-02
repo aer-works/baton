@@ -124,6 +124,10 @@ public static class StateProjector
                     state.IndeterminateAwaitingResolutionStepIds.Remove(acceptedStepId);
                     state.IndeterminateReasonByStepId.Remove(acceptedStepId);
                     state.IndeterminateProducerByStepId.Remove(acceptedStepId);
+
+                    // #1702: a fresh dispatch's own verify step (if any) speaks for this attempt, not
+                    // whatever the PRIOR attempt's pre-flight check found.
+                    state.VerifyNotRunReasonByStepId.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -308,6 +312,18 @@ public static class StateProjector
             case FlowEvent.VerifyFailed verifyFailed:
                 state.UnmatchedVerifyExecutionIds.Remove(verifyFailed.ExecutionId);
                 ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed), IndeterminateProducer.VerifyFailed);
+                break;
+
+            case FlowEvent.VerifyNotRun verifyNotRun:
+                // #1702: diagnostic only, same shape as VerifyStarted/VerifyPassed above -- no
+                // ApplyIndeterminate call. The execution's own already-recorded classification (this
+                // event only appends when that classification was Succeeded) decides StepStatus and
+                // WorkflowOutcome unassisted; this only records WHY the step ran unverified.
+                if (state.StepIdByExecutionId.TryGetValue(verifyNotRun.ExecutionId, out var notRunStepId))
+                {
+                    state.VerifyNotRunReasonByStepId[notRunStepId] = verifyNotRun.Reason;
+                }
+
                 break;
 
             case FlowEvent.ExecutionArrested arrested:
@@ -562,7 +578,8 @@ public static class StateProjector
                 state.RetryForeclosedStepIds.Contains(stepDefinition.StepId),
                 state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId),
                 state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.VerifyNotRunReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

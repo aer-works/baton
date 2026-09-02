@@ -1,0 +1,226 @@
+using Baton.Mutation;
+using Baton.Tests.TestSupport;
+using Xunit;
+
+namespace Baton.Tests.Mutation;
+
+/// <summary>
+/// Coverage for <see cref="VerifyCommandResolver"/> (#1702): the resolution order
+/// (<c>--verify</c> override, then a workspace's own <c>.baton/verify</c> declaration, then the
+/// role's <c>verify_pixi_task</c> default) and the pre-flight runnability check that turns "the
+/// resolved command doesn't exist in this workspace" into a distinct not-run outcome. Pure/unit —
+/// no pump, no real dispatch — per the resolution order's own testability design.
+/// </summary>
+public sealed class VerifyCommandResolverTests
+{
+    [Fact]
+    public void Resolve_returns_null_when_nothing_resolves()
+    {
+        var resolved = VerifyCommandResolver.Resolve(workspaceDirectory: null, overrideCommand: null, roleVerifyPixiTask: null);
+
+        Assert.Null(resolved);
+    }
+
+    [Fact]
+    public void Resolve_falls_back_to_the_role_default_when_no_override_or_repo_declaration()
+    {
+        var resolved = VerifyCommandResolver.Resolve(workspaceDirectory: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+        Assert.NotNull(resolved);
+        Assert.Equal(VerifyCommandSource.RoleDefault, resolved!.Source);
+        Assert.Equal("pixi", resolved.Program);
+        Assert.Equal(["run", "gates-quiet"], resolved.Args);
+        Assert.Equal("gates-quiet", resolved.Label);
+    }
+
+    [Fact]
+    public void Resolve_repo_declaration_wins_over_the_role_default()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            WriteRepoDeclaration(workspace, "python -c \"import sys; sys.exit(0)\"");
+
+            var resolved = VerifyCommandResolver.Resolve(workspace, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+            Assert.NotNull(resolved);
+            Assert.Equal(VerifyCommandSource.RepoDeclaration, resolved!.Source);
+            Assert.Equal("python -c \"import sys; sys.exit(0)\"", resolved.Label);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    [Fact]
+    public void Resolve_override_wins_over_both_the_repo_declaration_and_the_role_default()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            WriteRepoDeclaration(workspace, "python -c \"import sys; sys.exit(0)\"");
+
+            var resolved = VerifyCommandResolver.Resolve(
+                workspace, overrideCommand: "python -c \"import sys; sys.exit(1)\"", roleVerifyPixiTask: "gates-quiet");
+
+            Assert.NotNull(resolved);
+            Assert.Equal(VerifyCommandSource.Override, resolved!.Source);
+            Assert.Equal("python -c \"import sys; sys.exit(1)\"", resolved.Label);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    [Fact]
+    public void Resolve_repo_declaration_still_applies_when_the_role_declares_no_default()
+    {
+        // spec/baton.md §3: verify is a property of the WORKSPACE, not gated on the role declaring
+        // one -- a review/advise-shaped role (no VerifyPixiTask) dispatched against a workspace that
+        // declares .baton/verify still gets a verify step.
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            WriteRepoDeclaration(workspace, "python -c \"import sys; sys.exit(0)\"");
+
+            var resolved = VerifyCommandResolver.Resolve(workspace, overrideCommand: null, roleVerifyPixiTask: null);
+
+            Assert.NotNull(resolved);
+            Assert.Equal(VerifyCommandSource.RepoDeclaration, resolved!.Source);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    [Fact]
+    public void Resolve_repo_declaration_skips_blank_lines_and_comments()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            WriteRepoDeclaration(workspace, "\n  \n# a comment\n  python -c \"import sys; sys.exit(0)\"  \n");
+
+            var resolved = VerifyCommandResolver.Resolve(workspace, overrideCommand: null, roleVerifyPixiTask: null);
+
+            Assert.NotNull(resolved);
+            Assert.Equal(VerifyCommandSource.RepoDeclaration, resolved!.Source);
+            Assert.Equal("python -c \"import sys; sys.exit(0)\"", resolved.Label);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_reports_not_runnable_when_the_pixi_task_is_absent()
+    {
+        // #1702's own measured shape: a role's baked-in task name that a foreign (or just
+        // out-of-date) workspace's `pixi task list` does not contain.
+        var resolved = VerifyCommandResolver.Resolve(
+            RepoRoot(), overrideCommand: null, roleVerifyPixiTask: "this-task-definitely-does-not-exist");
+
+        var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(resolved!, RepoRoot(), CancellationToken.None);
+
+        Assert.False(runnable);
+        Assert.Equal("task absent: this-task-definitely-does-not-exist", reason);
+    }
+
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_reports_runnable_when_the_pixi_task_is_present()
+    {
+        var resolved = VerifyCommandResolver.Resolve(RepoRoot(), overrideCommand: null, roleVerifyPixiTask: "build");
+
+        var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(resolved!, RepoRoot(), CancellationToken.None);
+
+        Assert.True(runnable);
+        Assert.Null(reason);
+    }
+
+    [Fact]
+    public async Task CheckRunnableAsync_override_reports_not_runnable_when_the_executable_does_not_resolve()
+    {
+        var resolved = VerifyCommandResolver.Resolve(
+            workspaceDirectory: null, overrideCommand: "totally-not-a-real-binary-12345 --flag", roleVerifyPixiTask: null);
+
+        var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(resolved!, workingDirectory: null, CancellationToken.None);
+
+        Assert.False(runnable);
+        Assert.Equal("executable not found: totally-not-a-real-binary-12345", reason);
+    }
+
+    [Fact]
+    public async Task CheckRunnableAsync_override_reports_runnable_when_the_executable_resolves()
+    {
+        var resolved = VerifyCommandResolver.Resolve(
+            workspaceDirectory: null, overrideCommand: "python -c \"import sys; sys.exit(0)\"", roleVerifyPixiTask: null);
+
+        var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(resolved!, workingDirectory: null, CancellationToken.None);
+
+        Assert.True(runnable);
+        Assert.Null(reason);
+    }
+
+    [Fact]
+    public async Task CheckRunnableAsync_override_reports_runnable_for_a_quoted_or_shell_shaped_line()
+    {
+        // A quoted path or a line built from cmd.exe intrinsics/operators isn't a bare executable name
+        // the filesystem-only PATH lookup can resolve -- must not mislabel a genuinely runnable line
+        // "not runnable" on the wrong reason (second-reader finding). Defers to the real cmd.exe /d /c
+        // spawn, which handles quoting/operators correctly.
+        var resolved = VerifyCommandResolver.Resolve(
+            workspaceDirectory: null, overrideCommand: "echo ok && exit 0", roleVerifyPixiTask: null);
+
+        var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(resolved!, workingDirectory: null, CancellationToken.None);
+
+        Assert.True(runnable);
+        Assert.Null(reason);
+    }
+
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_reports_runnable_when_pixi_itself_cannot_spawn()
+    {
+        // Second-reader finding: "the engine's own tool is broken" is a different fact than "this
+        // workspace's task list omits the task" -- must defer to the real VerifyRunner attempt (which
+        // hits the identical spawn failure and settles Indeterminate) rather than silently soften into
+        // a not-run/Succeeded pass.
+        var resolved = VerifyCommandResolver.Resolve(
+            workspaceDirectory: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+        var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+            resolved!, workingDirectory: null, CancellationToken.None, pixiProgram: "this-is-not-a-real-pixi-binary-12345");
+
+        Assert.True(runnable);
+        Assert.Null(reason);
+    }
+
+    private static string CreateTempWorkspace()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"verify-resolver-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static void WriteRepoDeclaration(string workspace, string content)
+    {
+        var batonDir = Path.Combine(workspace, ".baton");
+        Directory.CreateDirectory(batonDir);
+        File.WriteAllText(Path.Combine(batonDir, "verify"), content);
+    }
+
+    /// <summary>The real baton repo checkout — its own <c>pixi task list</c> is what CheckRunnableAsync's role-default arms probe.</summary>
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "pixi.toml")))
+        {
+            dir = dir.Parent;
+        }
+
+        return dir?.FullName ?? throw new InvalidOperationException("Could not locate repo root (pixi.toml) from test base directory.");
+    }
+}

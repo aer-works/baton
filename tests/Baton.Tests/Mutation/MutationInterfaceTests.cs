@@ -332,9 +332,9 @@ public class MutationInterfaceTests
     [Fact]
     public async Task StartWorkflowAsync_runs_the_engine_verify_step_and_settles_Succeeded_when_it_passes()
     {
-        // #1623: the real end-to-end path through a REAL pixi subprocess -- MutationInterface's own
-        // gating (Verdict == Succeeded && binding.VerifyPixiTask is not null) plus the real
-        // VerifyRunner.RunAsync's "pixi" spawn, not a fake. `buildlock-selftest` is an existing,
+        // #1623/#1702: the real end-to-end path through a REAL pixi subprocess -- MutationInterface's
+        // own gating (Verdict == Succeeded && a resolved verify command) plus the real
+        // VerifyRunner.RunProcessAsync's "pixi" spawn, not a fake. `buildlock-selftest` is an existing,
         // already-fast (a few seconds), already-deterministic pixi task (tools/buildlock.py's own
         // control arm) -- reused as the fixture rather than adding a new pixi.toml entry just for this
         // test. The FAIL half is covered by VerifyRunnerTests against a fake command instead of a real
@@ -383,18 +383,22 @@ public class MutationInterfaceTests
     }
 
     [Fact]
-    public async Task StartWorkflowAsync_settles_Indeterminate_when_VerifyPixiTask_fails()
+    public async Task StartWorkflowAsync_settles_Succeeded_with_VerifyNotRun_when_the_role_task_is_absent()
     {
-        // #1623 / F6: a failing verify task appends VerifyFailed, does NOT append ExecutionSucceeded,
-        // and settles the step Indeterminate.
+        // #1702 (the measured defect this test replaces #1623/F6's own "VerifyPixiTask fails" test
+        // with): a role's baked-in task the workspace's own `pixi task list` does not contain is a
+        // distinct not-run outcome, never a gate failure -- the ExecutionSucceeded classification
+        // decides the room word unassisted, and the report the worker wrote is still delivered
+        // (DispatchCommand.CopyPrimaryOutputToOverride's own #1702 fix covers the CLI-level half of
+        // that; this test covers the engine-level settle).
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
         var logPath = Path.Combine(roomDirectory, "flow.jsonl");
         try
         {
             var snapshot = new WorkflowDefinitionSnapshot(
-                new WorkflowDefinitionSnapshotId("snapshot-verify-fail"),
-                new WorkflowTemplateId("verify-fail"),
+                new WorkflowDefinitionSnapshotId("snapshot-verify-not-run"),
+                new WorkflowTemplateId("verify-not-run"),
                 WorkflowTemplateVersion: 1,
                 Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
 
@@ -412,18 +416,75 @@ public class MutationInterfaceTests
             var dispatcher = new CoreDispatcher(writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
-                new WorkflowId("wf-verify-fail"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+                new WorkflowId("wf-verify-not-run"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Succeeded, architect.Status);
+            Assert.Null(architect.IndeterminateReason);
+            Assert.False(architect.IndeterminateAwaitingResolution);
+            Assert.Equal("task absent: this-task-definitely-does-not-exist", architect.VerifyNotRunReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.VerifyStarted>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyPassed>());
+            var notRun = Assert.Single(events.OfType<FlowEvent.VerifyNotRun>());
+            Assert.Equal("task absent: this-task-definitely-does-not-exist", notRun.Reason);
+            Assert.Single(events.OfType<FlowEvent.ExecutionSucceeded>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_verify_override_wins_over_the_role_default_and_settles_Indeterminate_when_it_runs_red()
+    {
+        // #1702 item 5's discriminating control: verify actually RUNNING and going red must still
+        // settle Indeterminate exactly as before -- #1702 only changes the "never ran at all" case.
+        // The role default here (buildlock-selftest) would pass, proving the override -- not the role
+        // default -- is what actually ran.
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-override-red"),
+                new WorkflowTemplateId("verify-override-red"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    WriteFile("plan", "architect") with { WorkingDirectory = RepoRoot() },
+                    TimeSpan.FromSeconds(30),
+                    VerifyPixiTask: "buildlock-selftest",
+                    VerifyCommandOverride: "python -c \"import sys; sys.exit(1)\""),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-override-red"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
 
             var architect = Assert.Single(finalState.Steps);
             Assert.Equal(StepStatus.Failed, architect.Status);
             Assert.NotNull(architect.IndeterminateReason);
             Assert.True(architect.RetryForeclosed);
+            Assert.Null(architect.VerifyNotRunReason);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             Assert.Single(events.OfType<FlowEvent.VerifyStarted>());
             var verifyFailed = Assert.Single(events.OfType<FlowEvent.VerifyFailed>());
             Assert.Equal(VerifyFailedKind.GatesFailed, verifyFailed.Kind);
             Assert.Empty(events.OfType<FlowEvent.VerifyPassed>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyNotRun>());
             Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
         }
         finally

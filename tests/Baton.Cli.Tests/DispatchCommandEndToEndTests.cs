@@ -813,6 +813,117 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Dispatching_implement_against_a_foreign_workspace_without_gates_quiet_settles_Succeeded_and_still_delivers_output()
+    {
+        // #1702, the measured defect: a foreign (non-baton) workspace's pixi.toml has no gates-quiet
+        // task -- "implement"'s own baked-in verify_pixi_task (WorkerRoles.json). Before this fix, the
+        // engine ran `pixi run gates-quiet` anyway, got "command not found", settled the room
+        // Indeterminate, and --output was never written (CopyPrimaryOutputToOverride's own
+        // Status==Succeeded gate skipped a step whose terminal status the verify failure had flipped
+        // to Failed). This is the CLI-level end-to-end proof both halves are fixed: the room settles
+        // Succeeded, and the worker's declared output lands at --output regardless.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var workspace = Path.Combine(testRoot, "workspace");
+            Directory.CreateDirectory(workspace);
+            await File.WriteAllTextAsync(
+                Path.Combine(workspace, "pixi.toml"),
+                """
+                [workspace]
+                name = "foreign-fixture"
+                version = "0.1.0"
+                channels = []
+                platforms = ["win-64"]
+
+                [tasks]
+                check = { cmd = "cmd /c exit 0" }
+                """,
+                TestContext.Current.CancellationToken);
+
+            var specPath = await WriteSpecAsync(testRoot, "Make the bounded change.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var outputPath = Path.Combine(testRoot, "changes-out.md");
+            var options = new DispatchOptions("implement", specPath, roomDirectory, Adapter: "fake", OutputPath: outputPath);
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new GrantConsumingContractOutputWorkerAdapter(satisfyOutputs: true),
+            };
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken, workspaceDirectory: workspace);
+            Console.SetOut(originalOut);
+
+            var step = Assert.Single(result.State.Steps);
+            Assert.Equal(StepStatus.Succeeded, step.Status);
+            Assert.False(step.IndeterminateAwaitingResolution);
+            Assert.Equal("task absent: gates-quiet", step.VerifyNotRunReason);
+            Assert.True(File.Exists(outputPath), $"expected the declared output copied to '{outputPath}'.");
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_implement_whose_verify_actually_runs_and_goes_red_still_settles_Indeterminate_but_still_delivers_output()
+    {
+        // #1702 item 3's discriminating control: verify RUNNING and going red must still fail the room
+        // exactly as before -- what changed is only the "never ran at all" case above. Before this fix
+        // the same CopyPrimaryOutputToOverride gate (Status == Succeeded) ALSO dropped the output here,
+        // even though the worker wrote it before the (later, engine-run) verify step ever ran.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var originalOut = Console.Out;
+        try
+        {
+            var workspace = Path.Combine(testRoot, "workspace");
+            Directory.CreateDirectory(workspace);
+            await File.WriteAllTextAsync(
+                Path.Combine(workspace, "pixi.toml"),
+                """
+                [workspace]
+                name = "verify-red-fixture"
+                version = "0.1.0"
+                channels = []
+                platforms = ["win-64"]
+
+                [tasks]
+                gates-quiet = { cmd = "cmd /c exit 1" }
+                """,
+                TestContext.Current.CancellationToken);
+
+            var specPath = await WriteSpecAsync(testRoot, "Make the bounded change.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var outputPath = Path.Combine(testRoot, "changes-out.md");
+            var options = new DispatchOptions("implement", specPath, roomDirectory, Adapter: "fake", OutputPath: outputPath);
+            var adapters = new Dictionary<string, IWorkerAdapter>
+            {
+                ["fake"] = new GrantConsumingContractOutputWorkerAdapter(satisfyOutputs: true),
+            };
+
+            using var consoleOutput = new StringWriter();
+            Console.SetOut(consoleOutput);
+            var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken, workspaceDirectory: workspace);
+            Console.SetOut(originalOut);
+
+            var step = Assert.Single(result.State.Steps);
+            Assert.Equal(StepStatus.Failed, step.Status);
+            Assert.True(step.IndeterminateAwaitingResolution);
+            Assert.NotNull(step.IndeterminateReason);
+            Assert.True(File.Exists(outputPath), $"expected the declared output copied to '{outputPath}' even though verify failed.");
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task Output_ending_in_a_directory_separator_is_refused_before_any_fact_is_printed()
     {
         // R6 (#1354/#1380, finding 8) -- see ValidateOutputOverride's own doc for what a trailing

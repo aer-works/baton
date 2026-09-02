@@ -408,4 +408,21 @@ public class DispatchOptionsParserTests
 
         Assert.Contains("--max-tool-steps", ex.Message, StringComparison.Ordinal);
     }
+
+    /// <summary>#1702: --verify mirrors --token-budget's own escape-hatch shape end to end.</summary>
+    [Fact]
+    public void The_verify_option_parses_verbatim()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--verify", "python -m pytest"]);
+
+        Assert.Equal("python -m pytest", options.VerifyCommand);
+    }
+
+    [Fact]
+    public void Omitting_verify_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md"]);
+
+        Assert.Null(options.VerifyCommand);
+    }
 }

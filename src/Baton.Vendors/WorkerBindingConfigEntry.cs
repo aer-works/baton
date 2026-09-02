@@ -53,7 +53,15 @@ namespace Baton.Vendors;
 /// </param>
 /// <param name="VerifyPixiTask">
 /// #1623: <see cref="WorkerRole.VerifyPixiTask"/>, carried onto the resolved
-/// <c>Baton.Mutation.WorkerBinding.Process</c> unchanged — the engine, never the worker, runs it.
+/// <c>Baton.Mutation.WorkerBinding.Process</c> unchanged — the engine, never the worker, runs it. Since
+/// #1702 this is only the lowest-precedence input to <c>Baton.Mutation.VerifyCommandResolver.Resolve</c>,
+/// not the sole source of a verify step.
+/// </param>
+/// <param name="VerifyCommandOverride">
+/// #1702: the <c>--verify</c> escape hatch (<see cref="RoleDispatch.ToBinding"/>'s
+/// <c>verifyCommandOverride</c>), mirroring <paramref name="TokenBudget"/>'s override pattern —
+/// highest precedence in <c>Baton.Mutation.VerifyCommandResolver.Resolve</c>. Null defers to the
+/// workspace's own <c>.baton/verify</c> declaration, then <paramref name="VerifyPixiTask"/>.
 /// </param>
 /// <param name="TokenBudget">
 /// #1623: <see cref="WorkerRole.TokenBudget"/>, or the <c>--token-budget</c> override
@@ -105,6 +113,7 @@ public sealed record WorkerBindingConfigEntry(
     bool IsWorktree = false,
     string? Label = null,
     string? VerifyPixiTask = null,
+    string? VerifyCommandOverride = null,
     long? TokenBudget = null,
     int? MaxToolSteps = null,
     string? Workstream = null,

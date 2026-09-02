@@ -99,6 +99,8 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "timed out", VerifyFailedKind.TimedOut)];
         yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "cancelled", VerifyFailedKind.Cancelled)];
         yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "restart", VerifyFailedKind.EngineRestart)];
+        // #1702
+        yield return [new FlowEvent.VerifyNotRun(ExecutionId, "task absent: gates-quiet")];
         yield return [new FlowEvent.ExecutionArrested(ExecutionId)];
         yield return
         [

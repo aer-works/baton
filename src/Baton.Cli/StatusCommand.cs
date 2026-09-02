@@ -556,7 +556,17 @@ public static class StatusCommand
         // finding). Pending has no execution yet, so no liveness claim applies there either.
         if (step.Status is not StepStatus.Running)
         {
-            return step.Status.ToString();
+            // #1702: a step whose latest attempt's resolved verify command failed its pre-flight
+            // runnability check reads plain "Succeeded" everywhere else in this projection (the
+            // execution's own classification decides it unassisted, WorkflowStatusStepView.Verify's
+            // own remarks) -- this is the one human-prose surface that says so, so `baton status`
+            // does not silently claim a gate ran when it never did. Checked only here, never above
+            // the Running guard: a step still genuinely Running (engine crashed mid-flight between
+            // VerifyNotRun and its terminal event) must still reach the liveness probe below and its
+            // own "engine not alive" report, not a permanently-stuck "Running (unverified)".
+            return step.VerifyNotRunReason is not null
+                ? $"{step.Status} (unverified — {step.VerifyNotRunReason})"
+                : step.Status.ToString();
         }
 
         if (step.LatestExecutionId is null)

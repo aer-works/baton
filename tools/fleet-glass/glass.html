@@ -391,6 +391,15 @@ function failureKindChip(step){
   const cls = step.retryEligible === true ? "c-warn" : step.retryEligible === false ? "c-bad" : "c-idle";
   return [step.failureKind.toUpperCase(), cls];
 }
+// #1702: `step.verify === "not-run"` (WorkflowStatusStepView.Verify) is the pre-flight "not runnable"
+// outcome -- the step still ran and Succeeded, but the engine's own verify step never confirmed it.
+// Presence-gated the same convention as failureKindChip above; chipsHtml's [label,cls] tuple shape
+// has no room for the reason text (`step.verifyReason`), same as every other chip here -- a caller
+// wanting the reason reads fleet_status/status --json directly.
+function unverifiedChip(step){
+  if(!step || step.verify !== "not-run") return null;
+  return ["UNVERIFIED", "c-warn"];
+}
 // -----------------------------------------------------------------------------------------------
 // #1551: `step.exhaustedUntil` is the vendor-quota park's own reset instant (WorkflowStatusStepView,
 // gated to an actual ExhaustedUntil park with a recorded obligation -- absent for an un-obligated
@@ -467,6 +476,8 @@ function chipsHtml(room, running, focusStep){
   if(fc) chips.push(fc);
   const pc = parkChip(focusStep);
   if(pc) chips.push(pc);
+  const uc = unverifiedChip(focusStep);
+  if(uc) chips.push(uc);
   return chips.map(([label,cls]) => `<span class="chip ${cls}">${esc(label)}</span>`).join("");
 }
 
@@ -513,6 +524,8 @@ const EVENT_NAMES = {
   "verifyPassed": "verify passed",
   "flow.verifyFailed": "verify failed",
   "verifyFailed": "verify failed",
+  "flow.verifyNotRun": "verify not run",
+  "verifyNotRun": "verify not run",
   "flow.executionArrested": "execution arrested",
   "executionArrested": "execution arrested",
 
