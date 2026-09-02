@@ -1484,8 +1484,7 @@ public class StateProjectorTests
     [Fact]
     public void VerifyFailed_records_the_failing_members_own_output_as_IndeterminateVerifyTail()
     {
-        // #1701: proves the projection wiring StepState.IndeterminateVerifyTail depends on -- see
-        // that field's own remarks (FlowState.cs) for why it exists at all.
+        // #1701: proves the ApplyIndeterminate->StepState wiring this new field depends on.
         var executionId = new ExecutionId("exec-1");
         var events = new FlowEvent[]
         {
