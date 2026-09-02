@@ -1579,6 +1579,13 @@ diff HEAD` cannot see. A clean tree gaining any file `git status --porcelain` re
 untracked) is still caught, because that flips the dirty bool itself -- a `.gitignore`d file is not
 reported by `--porcelain` either, so it is not caught by that path or any other.
 
+**Measured 2026-09-02 (#1648):** git exports `GIT_DIR`/`GIT_INDEX_FILE`/etc. to every hook, and
+`gates.py`'s own selftest fixture spawned `git init` in a temp dir without scrubbing them, so a
+push under `.githooks/pre-push` re-initialized the pushing repo itself instead of the fixture's
+temp dir -- `.githooks/pre-push` now `unset`s the `GIT_*` keys before invoking anything, and
+`gates.py` scrubs them from its own process environment and passes an explicit scrubbed `env=` to
+every git subprocess its fixtures spawn.
+
 ---
 
 ## Appendix: full subsystem ruling table
