@@ -697,9 +697,9 @@ LIVE_TELEMETRY_HASH_BUCKET_SECONDS = 300  # #1690 item 3: telemetry churn gate -
 def quantize_live_for_hash(room_list: list, now_ts: float, bucket_seconds: float = LIVE_TELEMETRY_HASH_BUCKET_SECONDS) -> list:
     """A copy of `room_list` for HASHING ONLY (never posted -- the real `live` section rides the wire
     every cycle unchanged): every room's `live` section, if present, is collapsed to a single bucket
-    index derived from now_ts. A Running room's live telemetry (toolCalls incrementing, tokens
-    accumulating, lastActivityAt's own 90s bucket advancing) is real per-cycle churn that would
-    otherwise re-trigger the #1457 change-gate every interval_seconds -- collapsing it to a
+    index derived from now_ts. A Running room's `live` fields are genuine per-cycle motion (see
+    `live_telemetry_for_room`'s own doc for what moves and how) that would otherwise re-trigger the
+    #1457 change-gate every interval_seconds -- collapsing it to a
     `bucket_seconds` (default 300s) bucket for hashing purposes means the gate sees CHANGED from
     telemetry alone at most once per bucket. Everything OTHER than `live` is copied through
     untouched, so any non-telemetry difference the change-gate already cared about (spec/baton.md
