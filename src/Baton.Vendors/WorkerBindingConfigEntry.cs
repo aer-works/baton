@@ -60,10 +60,9 @@ namespace Baton.Vendors;
 /// (<see cref="RoleDispatch.ToBinding"/>'s <c>tokenBudgetOverride</c>) when one was supplied.
 /// </param>
 /// <param name="MaxToolSteps">
-/// #1682: <see cref="WorkerRole.MaxToolSteps"/>, carried onto the resolved
-/// <c>Baton.Mutation.WorkerBinding.Process</c> unchanged — no dispatch-time override exists for this
-/// axis (unlike <paramref name="TokenBudget"/>'s <c>--token-budget</c>): a role either declares a cap
-/// or it doesn't.
+/// #1682: <see cref="WorkerRole.MaxToolSteps"/>, or the <c>--max-tool-steps</c> override (#1686 review
+/// F11, <see cref="RoleDispatch.ToBinding"/>'s <c>maxToolStepsOverride</c>) when one was supplied —
+/// same axis shape as <paramref name="TokenBudget"/>'s <c>--token-budget</c>.
 /// </param>
 /// <param name="Workstream">
 /// The operator-supplied <c>--workstream</c> slug (#1619, rung 1 of #1614's ruling) — a grouping key,

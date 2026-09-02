@@ -485,9 +485,11 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
         cache split, the three input-side counts a context figure needs -- the exact key names and
         where they were measured are spec/baton.md §6's `rooms[].live` entry, not restated here; see
         below for how each is used.
-      - agy: `event`-keyed; a `step_update` heartbeat with `state: "DONE"` and `step_type: "tool"`
-        marks one completed tool step -- shape measured live against agy 1.1.11
-        (AgyWorkerAdapter.TryParseProgressEvent's own #1088 doc comment). A `step_update` with
+      - agy: `event`-keyed; a `step_update` heartbeat with `state` in `"DONE"`/`"ERROR"` (its terminal
+        lifecycle states) and `step_type: "tool"` marks one completed real tool step -- #1686 review
+        F3: mirrors the engine's own `ClaudeUsageParser.CountToolSteps` unit (spec/baton.md §3),
+        shape measured live against agy 1.1.11 (AgyWorkerAdapter.TryParseProgressEvent's own #1088
+        doc comment). A `step_update` with
         `state: "DONE"` and `step_type: "agent_response"` carries its own `usage` object
         (`input_tokens`/`output_tokens`) -- measured live against a real #1682 evidence capture
         (`dispatch-implement-38c24d11`).
@@ -552,7 +554,11 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
             # #1686 review F6: a repeated message.id means this usage object was already summed off an
             # earlier chunk of the SAME API response -- skip it rather than double-counting.
             already_counted = isinstance(message_id, str) and message_id and message_id in seen_message_ids
-            if isinstance(message_id, str) and message_id:
+            # #1686 review F13: register the id only once a usage object is actually in hand -- an
+            # `assistant` line carrying an id but no usage must not poison the seen-set for the line
+            # that later carries that same id's real usage (the engine only reaches its own set for a
+            # line that already parsed as usage; this keeps both sides on the same registration point).
+            if isinstance(usage, dict) and isinstance(message_id, str) and message_id:
                 seen_message_ids.add(message_id)
             if isinstance(usage, dict) and not already_counted:
                 out = usage.get("output_tokens")
@@ -572,10 +578,11 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
                     }
         elif evt.get("event") == "step_update":
             step = evt.get("step_update")
-            if isinstance(step, dict) and step.get("state") == "DONE":
-                if step.get("step_type") == "tool":
-                    tool_calls += 1
-                elif step.get("step_type") == "agent_response":
+            if isinstance(step, dict) and step.get("step_type") == "tool" \
+                    and step.get("state") in ("DONE", "ERROR"):
+                tool_calls += 1
+            elif isinstance(step, dict) and step.get("state") == "DONE":
+                if step.get("step_type") == "agent_response":
                     usage = step.get("usage")
                     if isinstance(usage, dict):
                         out = usage.get("output_tokens")
@@ -2314,6 +2321,13 @@ def _selftest() -> int:
     check("extract_live_counts ignores a torn/unparseable last line instead of raising",
           extract_live_counts(['{"type": "assistant", "message": {"content": [{"type": "tool_use"}]}}',
                                 '{"type": "assistant", "message": {"conte']) == {"toolCalls": 1})
+    check("extract_live_counts also counts a tool step at its ERROR terminal state, not DONE only "
+          "(#1686 review F3 -- mirrors the engine's own ClaudeUsageParser/AgyUsageParser.CountToolSteps "
+          "DONE-or-ERROR unit; previously a failed agy tool call incremented the engine's arrest count "
+          "without incrementing the operator's lane-card count)",
+          extract_live_counts([
+              json.dumps({"event": "step_update", "step_update": {"state": "ERROR", "step_type": "tool"}}),
+          ]) == {"toolCalls": 1})
     # -- #1682: billed tokens/turns for BOTH vendors, on the shape a real capture confirmed
     # 2026-09-01/02 (docs/vendor-capabilities.md) -- `message.usage` on every claude `assistant`
     # line and agy's DONE/agent_response `step_update.usage`, not just either vendor's terminal line.

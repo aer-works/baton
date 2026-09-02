@@ -102,7 +102,7 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   workflow nobody has decided.
 - **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
   [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]
-  [--token-budget <n>] [--label <text>] [--workstream <slug>]`**
+  [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]`**
   — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
   template (`src/Baton.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
   directory under `BatonPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
@@ -170,15 +170,15 @@ cancel`, and `baton supply` continue an already-dispatched room; §5 covers `dec
 forward — it settles one execution's `Indeterminate` verdict and stops.
 
 **`baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
-<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label
-<text>] [--workstream <slug>]`** (#1441) reruns
+<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>]
+[--max-tool-steps <n>] [--label <text>] [--workstream <slug>]`** (#1441) reruns
 a single-role `baton dispatch` room into a fresh one, once the operator finds the brief was wrong or
 incomplete — without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch
 `baton dispatch` would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the
 new room's own directory is always freshly generated (`RedispatchOptionsParser.cs`) — a redispatch is
 never a resume, same rule as §2's dispatch entry above. Every flag inherits the parent room's recorded
 `bindings.json` entry as its default — adapter, model, effort, workspace, timeout, token budget (#1623),
-and (#1499) label —
+tool-step cap (#1686 review F2), and (#1499) label —
 and is overridden by whichever flag the operator actually passes (`RedispatchCommand.InheritBinding`);
 `--output` is the one exception, never inherited, because a prior `--output`'s destination copy path is
 not persisted anywhere in the room (only the produced output's customized *name* is, on the bindings
@@ -228,7 +228,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
 | `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
-| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
+| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `resolve` | `baton resolve <room-dir> [--execution <execution-id>] --accept-capture \| --reject --reason <text>` | `ResolveOptionsParser.cs` |
@@ -815,7 +815,15 @@ object — previously the engine read any DONE step_update carrying a `usage` ob
 line ever carried one (measured against the real `38c24d11` capture: it never does, so this closes a
 gap the evidence set has not yet exercised, not one observed firing). A shared-fixture test
 (`AgyEngineAndPusherUsageGateTests`) pins that the two implementations agree on the same real captured
-line. The monitor reads every top-level `"type":"assistant"` line with no discrimination by
+line. **The same DONE-or-ERROR unification applies to the tool-COUNT gate too (#1686 round-two review
+F3), reopened one field over from the usage gate above**: `pusher.py`'s `extract_live_counts` counted a
+`step_type: "tool"` step only at `state == "DONE"`, while the engine's own
+`ClaudeUsageParser.CountToolSteps`/`AgyUsageParser.CountToolSteps` count at either terminal state
+(`DONE` or `ERROR`) — so a failed agy tool call incremented the cap the engine arrests on without
+incrementing the count an operator sees on the lane card. `pusher.py` now counts `state in ("DONE",
+"ERROR")` for the tool branch too, and `AgyEngineAndPusherUsageGateTests` was extended to cover the
+tool-count gate alongside the usage gate it already pinned. The monitor reads every top-level
+`"type":"assistant"` line with no discrimination by
 `parent_tool_use_id` — whole-tree, including subagent turns, the SAME completeness property
 `docs/vendor-doc-audit.md` (#1623 re-review N5) measured missing from the terminal line's own
 cumulative figure (undercounts by ~22% with a single subagent in the tree).
@@ -831,7 +839,7 @@ to dispatch.
 
 **The tool-step cap (#1682, second producer, independent of usage parsing) — unit fixed and
 false-positive floor measured (#1686 review F1/F2).** `WorkerRole` carries `MaxToolSteps`
-(`implement` 322, `review` 100, `advise` unset; every other role none) — a second, independent arrest
+(`implement` 610, `review` 100, `advise` unset; every other role none) — a second, independent arrest
 trigger on the running COUNT of tool-step lines, entirely apart from whether usage ever parses on the
 stream at all (a stream with malformed or absent usage lines still gets the tool-step protection;
 `TokenBudgetMonitorTests.The_tool_step_cap_fires_at_cap_plus_one_with_zero_usage_lines` proves this).
@@ -870,17 +878,31 @@ under a completed `advise` room is a short plain-text echo of the final report, 
 already unset before this change. `implement`'s and `review`'s two named rooms are the SAME ones
 already read for the token budget below; both happen to have run on the `claude` adapter override
 rather than `implement`'s/`review`'s own tier default, which this fixed unit makes safe to compare
-directly against agy-native rooms for the first time. `implement`'s cap is set to `322` (≈2× 161,
-the higher of the two); `review`'s to `100` (≈2× 50) — the reviewer's own room (`9ef0b9c3`, reviewing
-this PR) made 50 real calls and would have been false-arrested under the OLD `40` cap.
+directly against agy-native rooms for the first time. `review`'s cap is set to `100` (≈2× 50) — the
+reviewer's own room (`9ef0b9c3`, reviewing this PR) made 50 real calls and would have been
+false-arrested under the OLD `40` cap.
 
-Additional context, gathered but NOT used to set the cap (out of scope for this measurement, which the
-ruling deliberately limited to the two named rooms per role): a sweep of 26 other `Succeeded`,
-agy-native `implement` rooms under `~/.baton/rooms` found real-tool-call counts ranging 0-482, with 2
-of 26 (`dispatch-implement-e9516da2` at 407, `dispatch-implement-7d25642b` at 482) already above 322.
-`implement`'s real variance is wider than either the two claude-adapter rooms above or the pre-fix
-`review`-from-`implement` scaling ever accounted for; `--max-tool-steps` (below) is the escape hatch for
-an operator whose legitimate lane sits in that tail.
+**`implement`'s cap is set from the 26-room agy-native sweep instead (#1686 review F7), not from the
+two claude-adapter rooms above.** The first round's `322` (≈2× 161, the higher of the two claude-adapter
+rooms) was knowingly below a population this PR itself had already measured: a sweep of 26
+`Succeeded`, agy-native `implement` rooms under `~/.baton/rooms` (real-tool-call counts, this fixed
+unit, recounted directly against each room's own `.stdout.log` with the shipped `CountToolSteps`):
+
+```
+47, 58, 58, 58, 64, 67, 90, 96, 110, 117, 144, 169, 181, 186, 188, 189, 220, 233, 234, 257, 262, 269,
+278, 286, 407, 482
+```
+
+(`dispatch-implement-e9516da2` at 407, `dispatch-implement-7d25642b` at 482 — the same two outliers
+the first round's text named, confirming this is the same 26-room population; the "0" the first round's
+range cited does not reproduce under a direct recount and is dropped here as unverified — see the F7
+recount below for the corrected floor, 47.) `p95` (nearest-rank, n=26) is `407` — the same
+`dispatch-implement-e9516da2` room. Applying the same 2×-style safety multiplier this PR already uses
+elsewhere, at 1.5× rather than 2× (p95 is already a tail figure, not a typical-room figure the way the
+161/50 medians were): `round(407 × 1.5, nearest 10)` = `610`. All 26 measured rooms sit at or under 482,
+comfortably under 610, so the measured false-arrest rate on this population at the shipped cap is `0/26`
+(0%); the residual risk is in the unmeasured tail past the 95th percentile of a 26-room sample, which
+`--max-tool-steps` (below) remains the escape hatch for.
 
 **Honest replay result: under this measured, false-positive-safe cap, neither evidence room is caught
 by the tool-step trigger, and neither is caught by the token trigger at the shipped 1,200,000 budget
@@ -894,16 +916,25 @@ replays the real interleaved stream through the shipped configuration and assert
 arrest, on either trigger, for `38c24d11`. The tool-step cap's real, provable value is bounding a
 DIFFERENT failure shape — a poll loop or a call-count runaway — not this one; §3's prior text claiming
 the cap "is what actually arrests both evidence rooms" no longer holds under the corrected unit and is
-retracted here rather than left standing.
+retracted here rather than left standing. **The uncaught failure shape — burning tokens per real tool
+call rather than making an unusual number of calls — is tracked as #1697** (#1686 review F14): a
+windowed billed-rate trigger, in two phases (stamp arrival time and record a per-execution windowed-rate
+maximum first; set the trigger from a measured distribution second), not implemented here.
 
 **`--max-tool-steps <n>` (#1686 review F11)** is `baton dispatch`'s override for this axis, mirroring
 `--token-budget` end to end — a positive whole number of real tool calls (this fixed unit), or refused
 the same way `--token-budget` refuses a non-positive value; rejected on a workflow template dispatch
 the same way `--timeout`/`--token-budget` are, since a template's phases each carry their own role's
-cap. Given the measured population above, this is not merely symmetry with the token axis — the
-2×-normal cap is demonstrably too low for some real `implement` lanes (two of the 26 swept rooms
-exceed it), so an operator whose legitimate lane sits in that tail now has the same dispatch-time
-escape hatch the token axis already had.
+cap. `baton redispatch` also carries it (#1686 review F2): `RedispatchCommand`'s amended-spec path
+previously dropped `MaxToolSteps` on the floor when rebuilding through `RoleDispatch.Materialize`, so
+an operator who dispatched with `--max-tool-steps` and then redispatched with an amended brief got the
+role's default back with no warning; both redispatch paths now pass
+`options.MaxToolSteps ?? parentEntry.MaxToolSteps` the same way the token-budget axis already did, and
+`RedispatchOptionsParser` gained its own `--max-tool-steps` flag mirroring `--token-budget`'s. Given the
+measured population above, this is not merely symmetry with the token axis: even a cap set from p95×1.5
+covers only the 26-room sample it was measured against, so an operator whose legitimate lane sits past
+that sample's tail still has the same dispatch-time (and now redispatch-time) escape hatch the token
+axis already had.
 
 **Defaults, re-derived (#1682: `implement`'s token budget, in billed tokens).** `implement`'s
 `TokenBudget` moves from 600,000 to 1,200,000, measured from two recent, normally-completed (never
@@ -1906,8 +1937,9 @@ by path: `view_file` is granted whole for this role (`ReadFiles: true`), the hoo
 for the write-family tools, and `HOME`/`USERPROFILE` are not redirected for shell-granted workers, so
 a granted read tool can reach the operator's real home — this is pre-existing and identical on claude
 and `advise`, not something this probe measured or bounded. Unprobed: the subagent/`manage_task`
-tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects
-tracked in #1679 — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
+tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own
+prefix-collision defects — fixed on `main` by #1679 (word-boundary pattern matching), not yet in this
+branch's own tree — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
 restated here. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
 `ShellCommandPatterns` now resolves to `--dangerously-skip-permissions` and lets the hook do the
 narrowing; a grant with shell but no patterns still refuses, because nothing would bound it. A hook

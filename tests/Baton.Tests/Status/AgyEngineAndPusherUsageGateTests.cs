@@ -41,4 +41,33 @@ public sealed class AgyEngineAndPusherUsageGateTests
         Assert.False(parser.TryParseIncrementalUsage(doneToolWithUsage, out var usage));
         Assert.Null(usage);
     }
+
+    // #1686 round-two review F3: the tool-COUNT gate, one field over from the usage gate above --
+    // reopened the same divergence F4 (round one) closed on the usage line. Both engine parsers count a
+    // real tool call at its terminal lifecycle state, DONE OR ERROR, never DONE alone; pusher.py's
+    // `extract_live_counts` selftest (`state == "ERROR"` check next to the DONE ones) now pins the same
+    // polarity on the glass side.
+    [Theory]
+    [InlineData("DONE")]
+    [InlineData("ERROR")]
+    public void Both_sides_count_a_tool_step_at_either_terminal_state_not_DONE_alone(string terminalState)
+    {
+        var line =
+            "{\"event\":\"step_update\",\"step_update\":{\"state\":\"" + terminalState
+            + "\",\"step_type\":\"tool\",\"tool_name\":\"x\"}}";
+
+        Assert.Equal(1, new AgyUsageParser().CountToolSteps(line));
+        // pusher.py: `extract_live_counts([...]) == {"toolCalls": 1}` for the same state, both DONE and ERROR.
+    }
+
+    [Fact]
+    public void Neither_side_counts_an_ACTIVE_tool_step_as_a_real_call()
+    {
+        const string activeTool =
+            """{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"x"}}""";
+
+        Assert.Equal(0, new AgyUsageParser().CountToolSteps(activeTool));
+        // pusher.py: `extract_live_counts([...]) == {"toolCalls": 1}` for the ACTIVE+DONE pair test --
+        // the ACTIVE line alone contributes 0.
+    }
 }

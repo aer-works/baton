@@ -164,6 +164,34 @@ public sealed class TokenBudgetMonitorTests
     }
 
     [Fact]
+    public void The_dedupe_premise_holds_on_a_real_consecutive_pair_from_room_3dc5e21a()
+    {
+        // #1686 review F4: the premise that makes first-sighting dedupe correct -- that a repeated
+        // message.id carries an IDENTICAL usage object across disjoint content-block chunks -- was
+        // asserted, not recorded; every prior fixture used a synthetic msg_1 with identity true by
+        // construction. This is a REAL consecutive pair, lines 5-6 of
+        // `dispatch-implement-3dc5e21a`'s own `.stdout.log`
+        // (`artifacts/execution_b3cdfeb7684f459a9af0baca24c6e1c3/.stdout.log`), trimmed to the `usage`
+        // and `content[].type` fields per the review's own instruction. Measured: `usage` is IDENTICAL
+        // between the two lines (input_tokens 2, cache_creation_input_tokens 39901,
+        // cache_read_input_tokens 0, output_tokens 1 on both), and `content[].type` is DISJOINT ("text"
+        // on the first, "tool_use" on the second) -- exactly the shape the dedupe assumes. This
+        // confirms first-sighting dedupe is correct on the measured shape; it does not generalize past
+        // this fixture (the review's own caveat).
+        var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
+
+        monitor.OnStdoutLine(
+            """{"type":"assistant","message":{"id":"msg_011Cee7wqgwCecnuPg5NCH6y","content":[{"type":"text"}],"usage":{"input_tokens":2,"cache_creation_input_tokens":39901,"cache_read_input_tokens":0,"output_tokens":1}}}""");
+        monitor.OnStdoutLine(
+            """{"type":"assistant","message":{"id":"msg_011Cee7wqgwCecnuPg5NCH6y","content":[{"type":"tool_use"}],"usage":{"input_tokens":2,"cache_creation_input_tokens":39901,"cache_read_input_tokens":0,"output_tokens":1}}}""");
+
+        var usage = monitor.SnapshotUsage();
+        // Summed once, not twice: the second line's identical usage is deduped by shared message.id.
+        Assert.Equal(2 + 1 + 39901, usage.BilledTokens);
+        Assert.Equal(1, usage.TokensOut);
+    }
+
+    [Fact]
     public void A_claude_usage_line_with_no_message_id_always_accumulates()
     {
         // A repeated-but-absent id must never be treated as "already seen" -- only an actual repeated
@@ -253,8 +281,11 @@ public sealed class TokenBudgetMonitorTests
         Assert.Equal(ArrestReason.ToolStepCap, monitor.ArrestReasonValue);
 
         // Further lines, including ones that would cross the budget, never flip the recorded reason.
+        // #1686 review F6: needs "step_type":"agent_response" -- without it, F4's own gate
+        // (StandardWorkerUsageParsers.cs's TryParseIncrementalUsage) rejects the line outright, so
+        // this arm would keep passing even if the already-arrested guard below it were deleted.
         monitor.OnStdoutLine(
-            """{"event":"step_update","step_update":{"state":"DONE","usage":{"input_tokens":1000,"output_tokens":1000}}}""");
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":"agent_response","usage":{"input_tokens":1000,"output_tokens":1000}}}""");
         Assert.Equal(ArrestReason.ToolStepCap, monitor.ArrestReasonValue);
     }
 
@@ -268,7 +299,10 @@ public sealed class TokenBudgetMonitorTests
 
         Assert.False(monitor.Arrested);
         Assert.Null(monitor.SnapshotUsage().TokensIn);
-        Assert.Equal(0, monitor.SnapshotUsage().ContextLevelTokens);
+        // #1686 review F5: a stream with no usage line at all must not report a measured-zero context
+        // level -- ContextLevelTokens now follows the same never-fabricated convention as BilledTokens
+        // and CacheReadTokens below.
+        Assert.Null(monitor.SnapshotUsage().ContextLevelTokens);
         Assert.Null(monitor.SnapshotUsage().BilledTokens);
         // #1686 review F7: a stream with no usage line at all must not report a measured-zero cache
         // read -- CacheReadTokens now follows the same never-fabricated convention as BilledTokens
@@ -306,6 +340,9 @@ public sealed class TokenBudgetMonitorTests
 
         Assert.False(monitor.Arrested);
         Assert.Null(monitor.SnapshotUsage().TokensIn);
-        Assert.Equal(0, monitor.SnapshotUsage().ContextLevelTokens);
+        // #1686 review F5: no incremental usage line ever parsed on this stream, so ContextLevelTokens
+        // stays null rather than a fabricated 0 -- same convention as the never-double-counted assertion
+        // above.
+        Assert.Null(monitor.SnapshotUsage().ContextLevelTokens);
     }
 }

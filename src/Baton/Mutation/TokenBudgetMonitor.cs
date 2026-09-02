@@ -39,12 +39,18 @@ public sealed class TokenBudgetMonitor
     private readonly CancellationTokenSource _arrestSource = new();
     private readonly Lock _lock = new();
     private readonly List<string> _lastToolNames = [];
+    // #1686 review F13: grows once per distinct claude message.id for the life of an execution and is
+    // never trimmed -- bounded in practice by the role timeout (153 ids measured over a 65-minute
+    // room, spec/baton.md §3; tens of KB at the extreme), unlike _lastToolNames above, which is
+    // capped because a conductor reads it live. Not a leak; a deliberate exception to that cap.
     private readonly HashSet<string> _seenMessageIds = new(StringComparer.Ordinal);
-    private long _inputLevel;
+    // #1686 review F5: nullable, never a fabricated 0 -- set only once a usage line actually parses,
+    // same convention as _billedTokens/_cacheReadSum right below.
+    private long? _inputLevel;
     private long? _latestTokensIn;
     private long? _latestCacheRead;
     private long? _latestCacheCreation;
-    private long _tokensOut;
+    private long? _tokensOut;
     private long? _billedTokens;
     private long? _cacheReadSum;
     private int _toolStepCount;
@@ -136,7 +142,7 @@ public sealed class TokenBudgetMonitor
                 var alreadyCounted = usage.MessageId is { Length: > 0 } messageId && !_seenMessageIds.Add(messageId);
                 if (!alreadyCounted)
                 {
-                    _tokensOut += usage.TokensOut ?? 0;
+                    _tokensOut = (_tokensOut ?? 0) + (usage.TokensOut ?? 0);
                     // #1686 review F7: now nullable, following BilledTokens' own convention right below.
                     _cacheReadSum = (_cacheReadSum ?? 0) + (usage.CacheReadTokens ?? 0);
                     // #1682: per-line input + output + cache_creation, summed -- WorkerUsage.BilledTokens

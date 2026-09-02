@@ -68,6 +68,11 @@ public sealed class TokenBudgetReplayTests
     /// for every `"event":"step_update"` line in order and classify each by
     /// `step_update.step_type`/`step_update.state` the same way <see cref="TokenBudgetReplayTests"/>'s
     /// class doc already documents regenerating the usage-only fixture above.
+    /// #1686 review F8: unlike <see cref="Room38c24d11Turns"/>, which is copied verbatim per line, the
+    /// tool lines this method emits (<see cref="AgyToolLine"/>) are RECONSTRUCTED from the counted
+    /// [usage, ACTIVE, DONE] shape above, not copied literal lines -- the room's real tool_name and
+    /// exact JSON are not reproduced, only the state/step_type/count regularity that governs what this
+    /// monitor counts.
     /// </summary>
     /// <param name="monitor">Fed one real interleaved line at a time, in the room's own emitted order.</param>
     /// <returns>The 0-based usage-line index (matching <see cref="Room38c24d11Turns"/>) at which the monitor first arrested, or -1 if it never did.</returns>
@@ -171,6 +176,25 @@ public sealed class TokenBudgetReplayTests
         Assert.False(monitor.Arrested);
         Assert.Equal(794_940, monitor.SnapshotUsage().BilledTokens);
         Assert.True(monitor.SnapshotUsage().BilledTokens < ShippedImplementBudget);
+    }
+
+    [Fact]
+    public void DISCRIMINATING_the_real_monitor_at_the_old_cap_value_does_NOT_arrest_under_the_fixed_unit()
+    {
+        // #1686 review F8: the cheap, genuinely discriminating half the review's own DISCRIMINATING_
+        // test above was missing -- that one reimplements the old unit inline and never touches
+        // AgyUsageParser/TokenBudgetMonitor at all, so it would pass even if both classes were deleted.
+        // This runs the REAL monitor (real AgyUsageParser.CountToolSteps, real TokenBudgetMonitor) over
+        // the real interleaved replay at the OLD cap value (80), isolated from the budget axis. Under
+        // the fixed unit the room made only 69 real calls, so even the pre-F2 cap number does not fire --
+        // proving the unit fix, not the recalibrated cap, is what changed this replay's outcome.
+        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: PreF2ImplementMaxToolSteps, new AgyUsageParser());
+
+        var arrestedAtLine = ReplayRoom38c24d11(monitor);
+
+        Assert.False(monitor.Arrested);
+        Assert.Equal(-1, arrestedAtLine);
+        Assert.Equal(69, monitor.SnapshotToolStepCount());
     }
 
     [Fact]

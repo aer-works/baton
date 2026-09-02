@@ -132,6 +132,21 @@ public class WorkerRoleCatalogTests
         Assert.Equal(TimeSpan.FromMinutes(40), implement.Timeout);
     }
 
+    // #1686 review F12: nothing tested the catalog's MaxToolSteps values before this -- a build that
+    // dropped maxToolStepsOverride in RoleDispatch.ToBinding passed the whole suite, and so did the
+    // `advise: 20` / spec's "advise unset" contradiction F1 named. Pins the shipped values directly.
+    [Fact]
+    public void The_shipped_catalog_s_MaxToolSteps_match_the_measured_caps()
+    {
+        using var env = ShippedDefault();
+
+        Assert.Equal(610, WorkerRoleCatalog.For("implement").MaxToolSteps);
+        Assert.Equal(100, WorkerRoleCatalog.For("review").MaxToolSteps);
+        // #1686 review F1: advise has no measured floor (spec/baton.md §3 has the reason), so it stays
+        // unset rather than a guess -- matching the spec's own claim about it.
+        Assert.Null(WorkerRoleCatalog.For("advise").MaxToolSteps);
+    }
+
     [Fact]
     public void One_tier_edit_reaches_every_role_on_that_tier_with_no_rebuild()
     {

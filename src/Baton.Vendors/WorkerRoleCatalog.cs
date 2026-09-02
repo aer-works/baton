@@ -39,8 +39,9 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// <param name="MaxToolSteps">
 /// #1682 (contract: <c>spec/baton.md</c> §3): the default per-execution tool-step ceiling -- a second
 /// arrest trigger, independent of <see cref="TokenBudget"/>, fired by <c>Mutation.TokenBudgetMonitor</c>
-/// on tool-step LINE COUNT rather than token volume. Null means no cap for a role that declares none.
-/// No dispatch-time override exists for this axis.
+/// on tool-step LINE COUNT rather than token volume. Null means no cap for a role that declares none;
+/// <c>--max-tool-steps</c> overrides this per dispatch (#1686 review F11,
+/// <see cref="RoleDispatch.ToBinding"/>'s own parameter).
 /// </param>
 public sealed record WorkerRole(
     string Id,
