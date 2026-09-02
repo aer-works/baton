@@ -215,6 +215,23 @@ function age(iso){
   if(h < 48) return h + "h";
   return Math.floor(h/24) + "d";
 }
+// #1656: the connector's own error object for a failed tool call (e.g. `code: "upstream_error"`,
+// measured 2026-09-02 against a 160,539-byte deliverables_list body) carries no message beyond a
+// generic "request failed" -- useless for telling "the worker 500'd" apart from "the response was
+// too big for this view to swallow". When the connector DOES attach more (field names are
+// best-effort across connector versions -- `status`/`httpStatus` and `responseSize`/`size`/
+// `bytes`), surface those instead of the generic text; degrade to `e.message`, then the bare code,
+// only when neither is present.
+function upstreamErrorDetail(e){
+  if(e.code !== "upstream_error") return e.message || "";
+  const status = e.status ?? e.httpStatus ?? e.statusCode;
+  const size = e.responseSize ?? e.size ?? e.bytes ?? e.contentLength;
+  const bits = [];
+  if(status != null) bits.push(`HTTP ${status}`);
+  if(size != null) bits.push(`${size} bytes`);
+  if(bits.length) return `upstream returned ${bits.join(", ")}`;
+  return e.message || "upstream request failed (no further detail from the connector)";
+}
 function dur(msVal){
   if(msVal == null) return null;
   const m = Math.round(msVal/60000);
@@ -725,7 +742,16 @@ function laneHtml(room, timelines, dismissable = false, openTimelines = null){
   const tryLine = room.try ? `<div class="ev" title="${esc(room.try)}">↻ suggested: ${esc(room.try.slice(0,110))}</div>` : "";
   const t = newestStepTime(room);
   const a = age(t);
-  const ageLine = a ? `<div class="age">last event ${a} ago${room.state === "Running" && t && (Date.now()-Date.parse(t)) > 15*60000 ? " ⚠" : ""}</div>` : "";
+  // #1656 / #1549: a healthy lane can run 30+ minutes between journal events (a long tool call),
+  // so keying the stale ⚠ on journal-event age alone false-fires on every live lane whose journal
+  // just happens to be quiet. `room.live.lastActivityAt` (pusher.py's own .stdout.log mtime probe,
+  // present whenever a Running room's execution has captured output) is the honest signal when it
+  // exists -- fall back to the journal-event age (`t`) only for a Running room `live` was never
+  // attached to (dispatch just started, or the pusher hasn't been redeployed for #1613 item 1 yet).
+  const liveActivityAt = room.live && room.live.lastActivityAt;
+  const stalenessBasis = liveActivityAt || t;
+  const isStale = room.state === "Running" && stalenessBasis && (Date.now() - Date.parse(stalenessBasis)) > 15 * 60000;
+  const ageLine = a ? `<div class="age">last event ${a} ago${isStale ? " ⚠" : ""}</div>` : "";
   const roomDeliverablesKey = room.path || room.name;
   const deliverables = roomDeliverablesKey
     ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(roomDeliverablesKey)}">deliverables &rarr;</a></div>` : "";
@@ -826,6 +852,18 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   const failed  = rooms.filter(r => r.state === "Failed");
   const done    = rooms.filter(r => r.state === "Succeeded");
   const other   = rooms.filter(r => !r.state);
+  // #1656: fold in whatever terminal-archive pages the operator has already loaded via "load
+  // older" -- deduped against the hot set by path, since fleet_status's `page=0` deliberately
+  // returns the same newest terminal rooms the hot set already carries (split_hot_and_archive's own
+  // doc: the archive is the full population, not just the tail beyond the cap).
+  if(terminalArchiveExtra.length){
+    const seenPaths = new Set(failed.concat(done).map(r => r.path));
+    for(const r of terminalArchiveExtra){
+      if(!r || !r.path || seenPaths.has(r.path)) continue;
+      seenPaths.add(r.path);
+      (r.state === "Failed" ? failed : r.state === "Succeeded" ? done : other).push(r);
+    }
+  }
   const byNewest = (a,b) => (newestStepTime(b)||"").localeCompare(newestStepTime(a)||"");
   running.sort(byNewest); stalled.sort(byNewest); indeterminate.sort(byNewest); failed.sort(byNewest); done.sort(byNewest);
 
@@ -865,14 +903,24 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   let termContent = "";
   if(visibleFailed.length > 0){
     const failedDismissAll = `<a class="dismissall" data-section="failed">dismiss all</a>`;
-    termContent += `<h2><span>Failed · ${visibleFailed.length}</span>${failedDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleFailed.slice(0,12), timelines, true, openTimelinePaths) + `</div>`;
+    // #1656: no more client-side `.slice(0,12)` -- the byte budget that cap used to protect is now
+    // enforced upstream (pusher.py's hot-set cap + fleet_status's page/limit), so every terminal
+    // room actually delivered to this view is worth rendering.
+    termContent += `<h2><span>Failed · ${visibleFailed.length}</span>${failedDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleFailed, timelines, true, openTimelinePaths) + `</div>`;
   }
   if(visibleDone.length > 0){
     const doneDismissAll = `<a class="dismissall" data-section="succeeded">dismiss all</a>`;
-    termContent += `<h2><span>Succeeded · ${visibleDone.length}</span>${doneDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleDone.slice(0,40), timelines, true, openTimelinePaths) + `</div>`;
+    termContent += `<h2><span>Succeeded · ${visibleDone.length}</span>${doneDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleDone, timelines, true, openTimelinePaths) + `</div>`;
   }
   if(!visibleFailed.length && !visibleDone.length){
     termContent += `<div class="lanes"><div class="lane"><div class="ev">none</div></div></div>`;
+  }
+  // #1656: terminalTotal (server's count of ALL terminal rooms) vs. failed.length+done.length
+  // (everything actually loaded so far, hot set + any "load older" pages) -- offer the link only
+  // while there is provably more archive left to fetch.
+  const loadedTerminalCount = failed.length + done.length;
+  if(terminalTotal != null && loadedTerminalCount < terminalTotal && terminalNextPage != null){
+    termContent += `<div class="lanes"><a id="load-more-terminal" class="loadmore">load older (${terminalTotal - loadedTerminalCount} more)</a></div>`;
   }
 
   // Preserve the section's open/closed state across a re-render -- otherwise every dismiss/restore
@@ -904,6 +952,29 @@ function freshLabel(iso, prefix){
   return prefix + (a || new Date(iso).toLocaleTimeString()) + (a && a !== "just now" ? " ago" : "");
 }
 function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${html}</div>` : ""; }
+
+// #1656: on-demand paging over the terminal archive (see terminalArchiveExtra's own comment at its
+// declaration). One-shot fetch on click -- `refetchInterval: 0` means this watchTool call does not
+// join the periodic 30s poll the main fleet_status subscription already runs; it settles once and
+// the callback re-renders from the (module-level) accumulated state.
+function loadMoreTerminal(){
+  if(!window.mcpHandle || terminalNextPage == null) return;
+  window.mcpHandle.watchTool("baton", "fleet_status", { page: terminalNextPage, limit: 50 }, (ev) => {
+    if(ev.type !== "data") return;
+    let payload = ev.result.payload;
+    if(typeof payload === "string"){ try { payload = JSON.parse(payload); } catch { payload = null; } }
+    if(!payload || !Array.isArray(payload.rooms)) return;
+    const known = new Set(terminalArchiveExtra.map(r => r && r.path));
+    for(const r of payload.rooms){
+      if(r && r.path && !known.has(r.path)){ terminalArchiveExtra.push(r); known.add(r.path); }
+    }
+    if(typeof payload.terminal_total === "number") terminalTotal = payload.terminal_total;
+    terminalNextPage = typeof payload.next_page === "number" ? payload.next_page : null;
+    if(lastGood){
+      render(lastGood.rooms, lastGood.pushed_at, lastGood.underhood, lastGood.heartbeat_at, accumulatedTimelines, lastGood.stale_hidden_count, dismissedRooms);
+    }
+  }, { refetchInterval: 0 });
+}
 
 // -----------------------------------------------------------------------------------------------
 // Deliverables inbox (#1413, merged into this artifact as a tab by #1505 item 4). Same data
@@ -1229,8 +1300,24 @@ function applyRoute(){
 let lastGood = null;
 let accumulatedTimelines = loadPersistedTimelines();
 let dismissedRooms = loadPersistedDismissed();
+// #1656: the pushed snapshot's `rooms` only carries non-terminal rooms plus the newest
+// HOT_TERMINAL_CAP (pusher.py) terminal ones -- everything older lives server-side in
+// worker.js's "terminal_archive" key and is fetched a page at a time via fleet_status's own
+// `page`/`limit` arguments (never a second tool -- FleetGlassReadOnlyTests pins the TOOLS array to
+// exactly fleet_status/deliverables_list/deliverable_read). `terminalArchiveExtra` accumulates
+// pages the operator has actually asked for by clicking "load older"; `terminalTotal` is the
+// server's count of ALL terminal rooms, used only to decide whether the link still has more to
+// offer; `terminalNextPage` is `null` once the archive is exhausted.
+let terminalArchiveExtra = [];
+let terminalTotal = null;
+let terminalNextPage = 0;
 
 document.addEventListener("click", (ev) => {
+  const loadMoreBtn = ev.target.closest("#load-more-terminal");
+  if(loadMoreBtn){
+    loadMoreTerminal();
+    return;
+  }
   const dismissBtn = ev.target.closest(".dismissbtn");
   if(dismissBtn){
     const path = dismissBtn.dataset.path;
@@ -1324,6 +1411,12 @@ window.addEventListener("hashchange", applyRoute);
         savePersistedTimelines(accumulatedTimelines);
         dismissedRooms = pruneDismissed(dismissedRooms, snap.rooms);
         savePersistedDismissed(dismissedRooms);
+        // #1656: terminal_total (absent on an unredeployed pusher, same optional-field convention
+        // as every other fleet_status extension) tells the Terminal section's "load older" link
+        // whether the hot set's newest-N terminal rooms are the whole population or not -- never
+        // reset terminalNextPage here, which would throw away pages the operator already loaded on
+        // every 30s poll.
+        if(typeof snap.terminal_total === "number") terminalTotal = snap.terminal_total;
         const hbMs = snap.heartbeat_at ? Date.now() - Date.parse(snap.heartbeat_at) : null;
         const derivedMs = snap.derived_at ? Date.now() - Date.parse(snap.derived_at) : null;
         const pendingPushMs = typeof snap.pending_push_age_s === "number" ? snap.pending_push_age_s * 1000 : null;
@@ -1364,7 +1457,7 @@ window.addEventListener("hashchange", applyRoute);
     } else if(e.code === "tool_error"){
       banner(`<b>fleet_status reported failure:</b> ${esc(e.message || "")}` + (lastGood ? " — showing last good data." : ""));
     } else {
-      if(!lastGood){ banner(`<b>No data yet</b> (${esc(e.code || "unknown")}). ${esc(e.message || "")}`); }
+      if(!lastGood){ banner(`<b>No data yet</b> (${esc(e.code || "unknown")}). ${esc(upstreamErrorDetail(e))}`); }
     }
   }, { refetchInterval: 30000, cache: { staleTime: 25000 } });
 
@@ -1377,7 +1470,7 @@ window.addEventListener("hashchange", applyRoute);
       return;
     }
     const e = ev.error || {};
-    $("inboxbanner").innerHTML = `<div class="banner"><b>Inbox feed unavailable</b> (${esc(e.code || "unknown")}). ${esc(e.message || "")}</div>`;
+    $("inboxbanner").innerHTML = `<div class="banner"><b>Inbox feed unavailable</b> (${esc(e.code || "unknown")}). ${esc(upstreamErrorDetail(e))}</div>`;
   }, { refetchInterval: 30000, cache: { staleTime: 25000 } });
 
   applyRoute();
