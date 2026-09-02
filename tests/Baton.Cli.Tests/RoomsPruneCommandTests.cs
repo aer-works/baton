@@ -112,6 +112,37 @@ public sealed class RoomsPruneCommandTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_Yes_StateIndeterminate_SelectsIndeterminate_ExcludesFailed()
+    {
+        var tempHome = CreateTempHome();
+        using var scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with { HomeOverride = tempHome });
+        try
+        {
+            var indeterminateRoom = await CreateTerminalRoomAsync(tempHome, "indeterminate-room", WorkflowOutcome.Indeterminate, TestContext.Current.CancellationToken);
+            var failedRoom = await CreateTerminalRoomAsync(tempHome, "failed-room", WorkflowOutcome.Failed, TestContext.Current.CancellationToken);
+
+            var registryPath = Path.Combine(tempHome, "room-registry.jsonl");
+            await RoomRegistryStore.AppendAsync(indeterminateRoom, tempHome, registryPath, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+            await RoomRegistryStore.AppendAsync(failedRoom, tempHome, registryPath, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+            var options = new RoomsPruneOptions(Terminal: true, OlderThanDays: null, State: WorkflowOutcome.Indeterminate, DryRun: false, Yes: true);
+            var result = await RoomsPruneCommand.ExecuteAsync(
+                options, TextWriter.Null, registryPath, TestContext.Current.CancellationToken);
+
+            Assert.True(result.Executed);
+            var deleted = Assert.Single(result.Deleted);
+            Assert.Equal(BatonPaths.RecordKey(indeterminateRoom), deleted.RoomDirectoryPath);
+
+            Assert.False(Directory.Exists(indeterminateRoom));
+            Assert.True(Directory.Exists(failedRoom)); // wrong state -> not a candidate
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempHome);
+        }
+    }
+
+    [Fact]
     public async Task ExecuteAsync_Yes_WithOlderThan_ExcludesRecentlyTerminalRooms()
     {
         var tempHome = CreateTempHome();

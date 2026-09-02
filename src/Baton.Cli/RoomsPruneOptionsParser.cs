@@ -4,16 +4,19 @@ namespace Baton.Cli;
 
 /// <summary>
 /// Parses <c>baton rooms prune</c>'s arguments: <c>baton rooms prune --terminal [--older-than &lt;days&gt;]
-/// [--state Succeeded|Failed|Cancelled] [--dry-run] [--yes]</c>. Follows <see cref="RoomDeleteOptionsParser"/>'s
-/// own error-handling contract — see its remarks.
+/// [--state Succeeded|Failed|Cancelled|Indeterminate] [--dry-run] [--yes]</c>. Follows
+/// <see cref="RoomDeleteOptionsParser"/>'s own error-handling contract — see its remarks.
+/// <c>--dry-run</c> and <c>--yes</c> are mutually exclusive — passing both is rejected here rather than
+/// silently letting <c>--yes</c> win, since a caller who typed <c>--dry-run</c> explicitly must not have
+/// it silently discarded.
 /// </summary>
 public static class RoomsPruneOptionsParser
 {
     public const string Usage =
-        "Usage: baton rooms prune --terminal [--older-than <days>] [--state Succeeded|Failed|Cancelled] [--dry-run] [--yes]";
+        "Usage: baton rooms prune --terminal [--older-than <days>] [--state Succeeded|Failed|Cancelled|Indeterminate] [--dry-run] [--yes]";
 
     private static readonly IReadOnlyList<string> AllowedStates =
-        [WorkflowOutcome.Succeeded, WorkflowOutcome.Failed, WorkflowOutcome.Cancelled];
+        [WorkflowOutcome.Succeeded, WorkflowOutcome.Failed, WorkflowOutcome.Cancelled, WorkflowOutcome.Indeterminate];
 
     public static RoomsPruneOptions Parse(IReadOnlyList<string> args)
     {
@@ -57,6 +60,13 @@ public static class RoomsPruneOptionsParser
         if (!terminal)
         {
             throw new CliArgumentException($"Missing required --terminal flag. {Usage}");
+        }
+
+        if (dryRun && yes)
+        {
+            throw new CliArgumentException(
+                $"--dry-run and --yes contradict each other. {Usage}",
+                "pass only one of --dry-run or --yes.");
         }
 
         return new RoomsPruneOptions(terminal, olderThanDays, state, dryRun, yes);

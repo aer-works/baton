@@ -1372,7 +1372,10 @@ a removal, unbuilt as of this paragraph. Both verbs refuse a non-terminal room (
 unless `--force`, since a live engine may still hold the room's files open — the same holder-liveness
 read (`ConcurrencyGuard.ReadHolderInfo` + `EngineLivenessProbe`) `baton cancel` already uses, never a
 second mechanism. `RoomRetentionSweep` (§7) may call the batch form automatically, gated behind
-`DaemonSettings.RoomsRetentionDays` (default `null`, i.e. off — the ruling's "operator opts in").
+`DaemonSettings.RoomsRetentionDays` (default `null`, i.e. off — the ruling's "operator opts in"). A
+retention prune with no `--state` filter deletes `Indeterminate` rooms too — the operator who opts
+into `RoomsRetentionDays` accepts that, and `--state Indeterminate` selects them explicitly (or any
+other `--state` value excludes them) if that default is unwanted.
 
 ---
 

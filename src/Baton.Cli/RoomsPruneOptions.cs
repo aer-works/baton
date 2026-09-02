@@ -24,7 +24,11 @@ namespace Baton.Cli;
 /// <param name="DryRun">
 /// <c>--dry-run</c>: explicit request for the listing-only behaviour that is already the default
 /// when <see cref="Yes"/> is not given — accepted so a caller can say so without also being forced to
-/// omit <c>--yes</c> by omission alone.
+/// omit <c>--yes</c> by omission alone. <see cref="RoomsPruneOptionsParser.Parse"/> is the only place
+/// this property's value matters: it rejects <c>--dry-run --yes</c> together rather than letting
+/// either flag silently win, so by the time a <see cref="RoomsPruneOptions"/> reaches
+/// <see cref="RoomsPruneCommand"/> the two never disagree and <see cref="Yes"/> alone decides the
+/// command's behaviour.
 /// </param>
 /// <param name="Yes">
 /// <c>--yes</c>: without it, this verb only ever lists what it would remove — mutates nothing. Deletion
