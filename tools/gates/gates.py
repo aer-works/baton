@@ -14,8 +14,14 @@ only thing worth reporting is this process's own exit code.
 Run every gate even after one fails -- fail-fast hides the others, and a session that has to
 re-run the whole set to discover the next problem starts filtering output again.
 """
+import hashlib
+import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
 
 # Sequencing (#986): one full run used to build the .NET tree twice -- `lint` forces a full
 # `--no-incremental` build and `test` then built it all again -- and every audit waited for both.
@@ -50,6 +56,11 @@ OVERLAP = [
     "buildlock-selftest",
     # #1601: isolated sabotage suite (tools/gates/sabotage.py) overlapping the build.
     "gate-sabotage",
+    # #1636: this file's own selftest -- a real temp git repo and `sh`, no MSBuild and no built
+    # CLI, same shape as buildlock-selftest above. Was defined as a pixi task but never gated
+    # anywhere; wired in now because it is what proves the gate-receipt logic below still
+    # discriminates, not merely that it ran once at review time.
+    "gates-selftest",
 ]
 
 # The MSBuild owners, strictly sequential: one MSBuild at a time.
@@ -181,6 +192,165 @@ def run_all(after_build, spawner=pixi_spawner, runner=pixi_runner, quiet=False):
     return OVERLAP + BUILD_PHASE + after_build, failed
 
 
+RECEIPT_NAME = "baton-gate-receipt"
+RECEIPT_MAX_AGE_S = 6 * 3600
+RECEIPT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _git_dir(cwd=None):
+    """The current tree's git dir -- a worktree's own, not the main checkout's (#1636)."""
+    out = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=cwd,
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return out if os.path.isabs(out) else os.path.normpath(os.path.join(cwd or os.getcwd(), out))
+
+
+def receipt_path(cwd=None):
+    return os.path.join(_git_dir(cwd), RECEIPT_NAME)
+
+
+def _tree_and_dirty(cwd=None):
+    """The identity a receipt is checked against: the committed tree plus a hash of what is not.
+
+    `git status --porcelain` decides dirty/clean (it sees untracked files; `git diff HEAD` does
+    not). The diff hash is the finer-grained half -- two dirty trees with the same HEAD can still
+    differ, and a receipt for one is not a receipt for the other.
+    """
+    tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=cwd,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=cwd,
+                            capture_output=True, text=True, check=True).stdout
+    dirty = bool(status.strip())
+    diff = subprocess.run(["git", "diff", "HEAD"], cwd=cwd,
+                          capture_output=True, text=True, check=True).stdout
+    diff_hash = hashlib.sha256(diff.encode("utf-8")).hexdigest()
+    return tree, dirty, diff_hash
+
+
+def write_receipt(mode, cwd=None):
+    """Record that `mode` ('full'/'fast') just passed on the current tree. Overwrites any prior.
+
+    Best-effort, like buildlock's holder-info sidecar: a receipt that failed to write just means
+    the next push re-runs gates for real, which is always safe. Letting that failure propagate
+    would flip an already-printed PASS verdict to a nonzero exit -- exactly the failure class this
+    module's own docstring exists to stop.
+    """
+    try:
+        tree, dirty, diff_hash = _tree_and_dirty(cwd)
+        receipt = {
+            "tree": tree,
+            "dirty": dirty,
+            "diff_hash": diff_hash,
+            "mode": mode,
+            "timestamp_utc": datetime.now(timezone.utc).strftime(RECEIPT_TIME_FORMAT),
+        }
+        with open(receipt_path(cwd), "w", encoding="utf-8") as f:
+            json.dump(receipt, f)
+    except (OSError, subprocess.CalledProcessError) as e:
+        print(f"gates: could not write the gate receipt ({e}) -- next push will just re-run gates",
+              flush=True)
+
+
+def delete_receipt(cwd=None):
+    """A receipt for a tree that just failed gates is worse than none -- it would say PASS."""
+    try:
+        os.remove(receipt_path(cwd))
+    except OSError:
+        pass
+
+
+def _format_age(age_s):
+    if age_s < 60:
+        return f"{int(age_s)}s"
+    if age_s < 3600:
+        return f"{int(age_s // 60)}m"
+    return f"{age_s / 3600:.1f}h"
+
+
+def receipt_status(cwd=None, max_age_s=RECEIPT_MAX_AGE_S):
+    """(valid, receipt_dict, age_seconds) for the receipt against the CURRENT tree.
+
+    receipt_dict/age are None if invalid. Every mismatch -- missing file, unparseable JSON,
+    different tree, different dirty-hash, or a timestamp older than max_age_s -- is treated the
+    same way: not valid, fall back to running gates for real. A receipt only ever narrows when
+    gates are skipped, never widens it.
+    """
+    try:
+        with open(receipt_path(cwd), "r", encoding="utf-8") as f:
+            receipt = json.load(f)
+    except (OSError, ValueError):
+        return False, None, None
+
+    tree, dirty, diff_hash = _tree_and_dirty(cwd)
+    if receipt.get("tree") != tree:
+        return False, None, None
+    if receipt.get("dirty") != dirty or receipt.get("diff_hash") != diff_hash:
+        return False, None, None
+
+    try:
+        written = datetime.strptime(receipt["timestamp_utc"], RECEIPT_TIME_FORMAT).replace(
+            tzinfo=timezone.utc)
+    except (KeyError, ValueError, TypeError):
+        return False, None, None
+    age = (datetime.now(timezone.utc) - written).total_seconds()
+    if age < 0 or age > max_age_s:
+        return False, None, None
+    return True, receipt, age
+
+
+def check_receipt():
+    """`--check-receipt` entry point: prints the skip line and exits 0 iff the receipt still holds.
+
+    Exits 1 silently otherwise -- the pre-push hook falls through to a real `gates-fast` run on
+    exit 1, and that run's own output is the message; this command adds nothing to it. Every
+    failure mode (a corrupt receipt, a `git` invocation that errors) is caught rather than left to
+    print a traceback: this command has exactly two honest outputs, the skip line or exit 1.
+    """
+    try:
+        valid, receipt, age = receipt_status()
+        if not valid:
+            return 1
+        print(f"pre-push: gates receipt for tree {receipt['tree'][:7]} "
+              f"({receipt['mode']}, {_format_age(age)} old) -- skipping", flush=True)
+        return 0
+    except (OSError, subprocess.CalledProcessError, KeyError):
+        return 1
+
+
+def _init_temp_repo(path):
+    """A minimal real git repo -- the receipt tests need real `git rev-parse`/`diff` answers."""
+    subprocess.run(["git", "init", "-q", path], check=True)
+    subprocess.run(["git", "-C", path, "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", path, "config", "user.name", "Test"], check=True)
+    with open(os.path.join(path, "file.txt"), "w", encoding="utf-8") as f:
+        f.write("hello\n")
+    subprocess.run(["git", "-C", path, "add", "."], check=True)
+    subprocess.run(["git", "-C", path, "commit", "-q", "-m", "initial"], check=True)
+
+
+def _write_stub_pixi(bin_dir, real_gates_py, call_log, fast_exit=0):
+    """A fake `pixi` on PATH: forwards `run gates-check-receipt` to the REAL gates.py (so the
+    forged-receipt case exercises the real check-receipt logic end to end), and records any
+    `run gates-fast` call to call_log instead of actually running gates -- exiting `fast_exit`,
+    configurable so a test can prove the hook still propagates a REAL gates failure, not just that
+    it attempted one (a hardcoded exit 0 here would pass a hook that swallowed gates-fast's exit).
+    """
+    stub = os.path.join(bin_dir, "pixi")
+    with open(stub, "w", encoding="utf-8", newline="\n") as f:
+        f.write(
+            "#!/bin/sh\n"
+            'if [ "$1" = "run" ] && [ "$2" = "gates-check-receipt" ]; then\n'
+            f'    exec "{sys.executable}" -u "{real_gates_py}" --check-receipt\n'
+            "fi\n"
+            'if [ "$1" = "run" ] && [ "$2" = "gates-fast" ]; then\n'
+            f'    printf \'called\\n\' >> "{call_log}"\n'
+            f'    exit {fast_exit}\n'
+            "fi\n"
+            'exit 1\n'
+        )
+    os.chmod(stub, 0o755)
+    return stub
+
+
 def selftest():
     """The control arm. An aggregator that cannot go red is a green light with extra steps.
 
@@ -264,6 +434,106 @@ def selftest():
         print("  control FAILED: the tail bound did not keep the tail / drop the head")
         ok = False
 
+    # The gate receipt (#1636): a real git repo, not fakes -- the whole point is that tree/dirty
+    # hashes come from real `git rev-parse`/`diff` output.
+    with tempfile.TemporaryDirectory() as td:
+        repo = os.path.join(td, "repo")
+        os.makedirs(repo)
+        _init_temp_repo(repo)
+        receipt_file = receipt_path(repo)
+
+        def _forge(**overrides):
+            with open(receipt_file, encoding="utf-8") as f:
+                data = json.load(f)
+            data.update(overrides)
+            with open(receipt_file, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+
+        # A pass writes a receipt that validates against the tree it was written for.
+        write_receipt("fast", cwd=repo)
+        valid, receipt, age = receipt_status(cwd=repo)
+        if not valid or receipt.get("mode") != "fast" or age is None:
+            print(f"  control FAILED: a fresh receipt did not validate -- {valid=} {receipt=}")
+            ok = False
+
+        # A fail deletes it -- no receipt left to be found valid or invalid.
+        delete_receipt(cwd=repo)
+        if os.path.exists(receipt_file):
+            print("  control FAILED: delete_receipt left the receipt file behind")
+            ok = False
+        valid, _, _ = receipt_status(cwd=repo)
+        if valid:
+            print("  control FAILED: receipt_status validated a deleted receipt")
+            ok = False
+
+        # A receipt for a different tree does not match.
+        write_receipt("full", cwd=repo)
+        _forge(tree="0" * 40)
+        valid, _, _ = receipt_status(cwd=repo)
+        if valid:
+            print("  control FAILED: a receipt for a different tree matched")
+            ok = False
+
+        # A receipt for the same tree but a different dirty-hash does not match.
+        write_receipt("full", cwd=repo)
+        _forge(diff_hash="0" * 64)
+        valid, _, _ = receipt_status(cwd=repo)
+        if valid:
+            print("  control FAILED: a receipt with a mismatched dirty-hash matched")
+            ok = False
+
+        # A receipt older than the age ceiling does not match.
+        write_receipt("full", cwd=repo)
+        stale = datetime.now(timezone.utc) - timedelta(hours=7)
+        _forge(timestamp_utc=stale.strftime(RECEIPT_TIME_FORMAT))
+        valid, _, _ = receipt_status(cwd=repo)
+        if valid:
+            print("  control FAILED: a receipt older than the 6h ceiling matched")
+            ok = False
+
+        # The hook itself (sh): a forged, currently-valid receipt makes it exit 0 with the skip
+        # line and never call `pixi run gates-fast`; no receipt makes it fall through and call it.
+        sh = shutil.which("sh")
+        if sh is None:
+            print("  control FAILED: no `sh` on PATH -- cannot exercise .githooks/pre-push")
+            ok = False
+        else:
+            hook = os.path.abspath(os.path.join(
+                os.path.dirname(__file__), "..", "..", ".githooks", "pre-push"))
+            real_gates_py = os.path.abspath(__file__)
+            bin_dir = os.path.join(td, "bin")
+            os.makedirs(bin_dir)
+            call_log = os.path.join(td, "calls.log")
+            # fast_exit=7, not 0: the miss arm below must prove the hook PROPAGATES a real gates
+            # failure, not merely that it attempted one -- a hook that swallowed gates-fast's exit
+            # (e.g. `pixi run gates-fast || true`) would pass a hardcoded-0 stub undetected.
+            _write_stub_pixi(bin_dir, real_gates_py, call_log, fast_exit=7)
+            env = dict(os.environ)
+            env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+
+            write_receipt("fast", cwd=repo)
+            hit = subprocess.run([sh, hook], cwd=repo, env=env,
+                                 capture_output=True, text=True, check=False)
+            if hit.returncode != 0 or "-- skipping" not in hit.stdout:
+                print(f"  control FAILED: hook did not skip on a valid receipt -- "
+                      f"exit={hit.returncode} stdout={hit.stdout!r} stderr={hit.stderr!r}")
+                ok = False
+            if os.path.exists(call_log):
+                print("  control FAILED: hook called gates-fast despite a valid receipt")
+                ok = False
+
+            delete_receipt(cwd=repo)
+            miss = subprocess.run([sh, hook], cwd=repo, env=env,
+                                  capture_output=True, text=True, check=False)
+            if not os.path.exists(call_log):
+                print(f"  control FAILED: hook did not attempt gates with no receipt -- "
+                      f"exit={miss.returncode} stdout={miss.stdout!r} stderr={miss.stderr!r}")
+                ok = False
+            if miss.returncode != 7:
+                print(f"  control FAILED: hook did not propagate gates-fast's own exit code -- "
+                      f"got {miss.returncode}, gates-fast exited 7")
+                ok = False
+
     print("selftest: pass" if ok else "selftest: FAIL")
     return 0 if ok else 1
 
@@ -271,14 +541,21 @@ def selftest():
 def main():
     if "--selftest" in sys.argv:
         return selftest()
+    if "--check-receipt" in sys.argv:
+        return check_receipt()
 
-    after_build = AFTER_BUILD_FAST if "--fast" in sys.argv else AFTER_BUILD_FULL
+    mode = "fast" if "--fast" in sys.argv else "full"
+    after_build = AFTER_BUILD_FAST if mode == "fast" else AFTER_BUILD_FULL
     quiet = "--quiet" in sys.argv
     names, failed = run_all(after_build,
                             runner=quiet_pixi_runner if quiet else pixi_runner,
                             quiet=quiet)
     print()
     print(summarise(names, failed))
+    if failed:
+        delete_receipt()
+    else:
+        write_receipt(mode)
     return 1 if failed else 0
 
 

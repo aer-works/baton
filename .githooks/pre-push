@@ -8,5 +8,11 @@
 # never restated here, and so does why the line is drawn there. CI still runs everything on its one
 # (Windows) platform; this only stops the failures that were already knowable here.
 #
-# Exit code is the whole contract. Nothing parses the output.
+# Receipt skip (#1636, spec/baton.md C-12 for the why): `gates.py` writes a receipt on every PASS
+# and `--check-receipt` is the only place that decides whether it still holds for the tree being
+# pushed. The exit code remains the whole contract -- a receipt only ever skips a run that would
+# have passed anyway, never suppresses one that would not have.
+if pixi run gates-check-receipt; then
+    exit 0
+fi
 exec pixi run gates-fast

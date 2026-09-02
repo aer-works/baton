@@ -1425,6 +1425,27 @@ corrections travel as briefs through `redispatch --spec`, #1495/#1381) guarantee
 Revisit only if a genuinely interactive surface is ever ruled in — which §10's mid-run-steering
 ruling currently forbids.
 
+### C-12 — Gate receipts: one passing run per tree, CI is the independent one
+
+Measured 2026-09-01: `.githooks/pre-push` ran `gates-fast` under the shared build lock
+(`tools/buildlock.py`) on every push, even seconds after a dispatched lane had already run
+`gates`/`gates-quiet` — a strict superset — on the identical tree. With several lanes queued on the
+lock, a push could sit for tens of minutes redoing work already done, and CI then ran everything a
+third time regardless. `tools/gates/gates.py` now writes a receipt (`<git-dir>/baton-gate-receipt`,
+one per worktree) on every PASS, recording the tree hash, a hash of the uncommitted diff, which mode
+passed, and a timestamp; a FAIL deletes it. The pre-push hook (`pixi run gates-check-receipt`) skips
+its own run only when the receipt's tree hash and dirty-hash still match `HEAD^{tree}` and it is
+under six hours old — any mismatch falls through to a real `gates-fast` run. This narrows what the
+hook re-verifies, not what CI verifies: CI remains the one platform-independent run and is never
+skipped by a local receipt.
+
+**Scope, stated plainly: tracked content only.** The dirty-hash is `git diff HEAD`, which does not
+see untracked files. A tree that was already dirty when its receipt was written, and then gains an
+untracked file before the next push, still matches -- the receipt does not re-verify content `git
+diff HEAD` cannot see. A clean tree gaining any file `git status --porcelain` reports (tracked or
+untracked) is still caught, because that flips the dirty bool itself -- a `.gitignore`d file is not
+reported by `--porcelain` either, so it is not caught by that path or any other.
+
 ---
 
 ## Appendix: full subsystem ruling table
