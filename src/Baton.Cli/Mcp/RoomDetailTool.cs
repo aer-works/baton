@@ -1,10 +1,10 @@
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Baton.Vendors;
 using Baton;
 using Baton.Artifacts;
+using Baton.Cli;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Status;
@@ -29,10 +29,13 @@ namespace Baton.Cli.Mcp;
 public sealed class RoomDetailTool : IMcpTool
 {
     /// <summary>
-    /// Bytes of stdout tailed from the end of the most recently written execution's
-    /// <c>.stdout.log</c>. 64 KiB comfortably holds the last several dozen lines of typical CLI
-    /// output (including a stack trace) while staying well clear of the token budget an MCP client
-    /// spends rendering one tool result inside an already-large lane conversation.
+    /// The cap on <em>rendered</em> text tailed from the end of the most recently written execution's
+    /// <c>.stdout.log</c> -- UTF-16 characters of the prose <see cref="WorkerStreamLineRenderer"/>
+    /// produces, not raw log bytes (#1574): a stream-json log's JSON envelopes are read and rendered
+    /// in full before this cap is applied, so the number itself still names a byte-ish budget (64 KiB
+    /// comfortably holds the last several dozen lines of typical CLI output, including a stack trace,
+    /// while staying well clear of the token budget an MCP client spends rendering one tool result)
+    /// but now measures the shorter, human-readable output rather than the raw stream.
     /// </summary>
     public const int DefaultStdoutTailBytes = 64 * 1024;
 
@@ -208,7 +211,7 @@ public sealed class RoomDetailTool : IMcpTool
     private static async Task<RoomStdoutTailView?> ReadStdoutTailAsync(
         string roomDir, string? executionId, CancellationToken cancellationToken)
     {
-        (string Source, string StdoutPath)? found;
+        (string Source, string StdoutPath, string ExecutionId)? found;
         try
         {
             found = executionId is not null
@@ -232,36 +235,18 @@ public sealed class RoomDetailTool : IMcpTool
             return null;
         }
 
-        var (source, stdoutPath) = found.Value;
+        var (source, stdoutPath, resolvedExecutionId) = found.Value;
 
         byte[] bytes;
+        long totalLength;
         try
         {
             await using var stream = new FileStream(stdoutPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            var totalLength = stream.Length;
-            var startOffset = Math.Max(0, totalLength - DefaultStdoutTailBytes);
-            stream.Seek(startOffset, SeekOrigin.Begin);
+            totalLength = stream.Length;
 
             using var memory = new MemoryStream();
             await stream.CopyToAsync(memory, cancellationToken).ConfigureAwait(false);
             bytes = memory.ToArray();
-
-            var text = Encoding.UTF8.GetString(bytes);
-            if (startOffset > 0)
-            {
-                // Drop a possibly-partial leading line so the tail starts clean, best-effort.
-                var firstNewline = text.IndexOf('\n');
-                if (firstNewline >= 0 && firstNewline + 1 < text.Length)
-                {
-                    text = text[(firstNewline + 1)..];
-                }
-            }
-
-            return new RoomStdoutTailView(
-                Text: text,
-                Truncated: startOffset > 0,
-                TotalBytes: totalLength,
-                Source: source);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -272,6 +257,90 @@ public sealed class RoomDetailTool : IMcpTool
                 Source: source,
                 ReadError: ex.Message);
         }
+
+        // #1574: the cap below applies to RENDERED text, not raw bytes, so a claude/agy stream-json
+        // log's dozens of JSON envelopes still yield the same window of prose an operator would have
+        // gotten of raw JSON before -- reading the whole file (bounded by ExecutionStreamLogger's own
+        // 8 MiB rollover cap) and truncating the rendered output is what makes that true; a byte-tail
+        // read first would cut the raw window well before rendering had a chance to shrink it.
+        var adapter = await ResolveAdapterForExecutionAsync(roomDir, resolvedExecutionId, cancellationToken).ConfigureAwait(false);
+
+        var assembler = new StreamLineAssembler();
+        var lines = assembler.Append(bytes);
+        var rendered = new StringWriter { NewLine = "\n" };
+        foreach (var line in lines)
+        {
+            WorkerStreamLineRenderer.RenderLine(line, adapter, rendered);
+        }
+
+        // A one-shot reader at EOF never sees a "next poll" that would complete a trailing line with
+        // no newline yet (a crashed/killed worker, or simply a still-in-flight write) -- flush it
+        // rather than silently dropping the exact content an operator debugging a crash wants most.
+        if (assembler.Flush() is { Length: > 0 } finalPartialLine)
+        {
+            WorkerStreamLineRenderer.RenderLine(finalPartialLine, adapter, rendered);
+        }
+
+        var renderedText = rendered.ToString();
+        var truncated = renderedText.Length > DefaultStdoutTailBytes;
+        var text = renderedText;
+        if (truncated)
+        {
+            text = renderedText[^DefaultStdoutTailBytes..];
+
+            // A char-count slice of a decoded string can land inside a surrogate pair -- drop a lone
+            // leading low surrogate rather than emit it broken.
+            if (text.Length > 0 && char.IsLowSurrogate(text[0]))
+            {
+                text = text[1..];
+            }
+
+            // Drop a possibly-partial leading line so the tail starts clean, best-effort -- the same
+            // approach the pre-#1574 raw-byte tail used, just applied to the rendered text.
+            var firstNewline = text.IndexOf('\n');
+            if (firstNewline >= 0 && firstNewline + 1 < text.Length)
+            {
+                text = text[(firstNewline + 1)..];
+            }
+        }
+
+        return new RoomStdoutTailView(
+            Text: text,
+            Truncated: truncated,
+            TotalBytes: totalLength,
+            Source: source);
+    }
+
+    /// <summary>
+    /// #1574 architectural constraint 1: resolves the adapter that produced this execution's stdout
+    /// from the room's already-loaded <c>bindings.json</c> plus <c>flow.jsonl</c>'s own record of
+    /// which worker ran it (<see cref="RoomAdapterLookup"/>). A second, independent read of
+    /// <c>flow.jsonl</c> from the one <see cref="ReadTimelineAsync"/> already does -- acceptable here
+    /// since <c>room_detail</c> is an on-demand debug call, not a poll loop, and any failure fails
+    /// open to a null adapter (raw JSON passthrough), never a throw.
+    /// </summary>
+    private static async Task<IWorkerAdapter?> ResolveAdapterForExecutionAsync(
+        string roomDir, string executionId, CancellationToken cancellationToken)
+    {
+        var flowLogPath = Path.Combine(roomDir, BatonPaths.FlowLogFileName);
+        if (!File.Exists(flowLogPath))
+        {
+            return null;
+        }
+
+        IReadOnlyList<FlowEvent> events;
+        try
+        {
+            events = await new FlowEventLogReader(flowLogPath).ReadAllAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is BatonFlowException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        var bindings = await RoomAdapterLookup.TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
+        var adapterNameByExecutionId = RoomAdapterLookup.BuildAdapterNameByExecutionId(events, bindings);
+        return RoomAdapterLookup.ResolveAdapter(executionId, adapterNameByExecutionId, WorkerAdapterRegistry.Default);
     }
 
     /// <summary>
@@ -280,7 +349,7 @@ public sealed class RoomDetailTool : IMcpTool
     /// debugging one room means. Falls back to <c>artifacts/pruned</c> (#973) the same way
     /// <see cref="Baton.Status.ExecutionUsageView"/> does, so a retention-swept room still answers.
     /// </summary>
-    private static (string Source, string StdoutPath)? FindLatestStdoutFile(string roomDir)
+    private static (string Source, string StdoutPath, string ExecutionId)? FindLatestStdoutFile(string roomDir)
     {
         var artifactsRoot = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
         if (!Directory.Exists(artifactsRoot))
@@ -290,6 +359,7 @@ public sealed class RoomDetailTool : IMcpTool
 
         string? bestPath = null;
         var bestSource = string.Empty;
+        var bestExecutionId = string.Empty;
         var bestTime = DateTime.MinValue;
 
         void Consider(string containerDir, bool pruned)
@@ -314,6 +384,9 @@ public sealed class RoomDetailTool : IMcpTool
                     bestPath = stdoutPath;
                     var executionName = Path.GetFileName(Path.TrimEndingDirectorySeparator(executionDir));
                     bestSource = pruned ? $"{executionName} (pruned)" : executionName;
+                    bestExecutionId = executionName.StartsWith("execution_", StringComparison.Ordinal)
+                        ? executionName["execution_".Length..]
+                        : executionName;
                 }
             }
         }
@@ -321,7 +394,7 @@ public sealed class RoomDetailTool : IMcpTool
         Consider(artifactsRoot, pruned: false);
         Consider(Path.Combine(artifactsRoot, ArtifactManager.PrunedDirectoryName), pruned: true);
 
-        return bestPath is null ? null : (bestSource, bestPath);
+        return bestPath is null ? null : (bestSource, bestPath, bestExecutionId);
     }
 
     /// <summary>
@@ -332,7 +405,7 @@ public sealed class RoomDetailTool : IMcpTool
     /// whenever a retried step's later execution has written more recently than the one being
     /// debugged.
     /// </summary>
-    private static (string Source, string StdoutPath)? FindStdoutFileForExecution(string roomDir, string executionId)
+    private static (string Source, string StdoutPath, string ExecutionId)? FindStdoutFileForExecution(string roomDir, string executionId)
     {
         var artifactsRoot = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
         var id = new ExecutionId(executionId);
@@ -341,13 +414,13 @@ public sealed class RoomDetailTool : IMcpTool
         var liveStdout = Path.Combine(liveDir, ExecutionStreamLogger.StdoutLogFileName);
         if (File.Exists(liveStdout))
         {
-            return (Path.GetFileName(Path.TrimEndingDirectorySeparator(liveDir)), liveStdout);
+            return (Path.GetFileName(Path.TrimEndingDirectorySeparator(liveDir)), liveStdout, executionId);
         }
 
         var prunedDir = ArtifactManager.ResolvePrunedOutputDirectory(artifactsRoot, id);
         var prunedStdout = Path.Combine(prunedDir, ExecutionStreamLogger.StdoutLogFileName);
         return File.Exists(prunedStdout)
-            ? ($"{Path.GetFileName(Path.TrimEndingDirectorySeparator(prunedDir))} (pruned)", prunedStdout)
+            ? ($"{Path.GetFileName(Path.TrimEndingDirectorySeparator(prunedDir))} (pruned)", prunedStdout, executionId)
             : null;
     }
 

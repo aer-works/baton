@@ -132,7 +132,17 @@ public static class StatusCommand
             if (options.Follow)
             {
                 var artifactsDir = Path.Combine(options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
-                TailStreams(output, artifactsDir, new Dictionary<string, long>(StringComparer.Ordinal));
+                var initialBindings = await RoomAdapterLookup.TryLoadBindingsAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
+                var initialAdapterNames = RoomAdapterLookup.BuildAdapterNameByExecutionId(events, initialBindings);
+                TailStreams(
+                    output,
+                    artifactsDir,
+                    new Dictionary<string, long>(StringComparer.Ordinal),
+                    new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal),
+                    executionId => RoomAdapterLookup.ResolveAdapter(executionId, initialAdapterNames, WorkerAdapterRegistry.Default),
+                    // Already Terminal means FollowAsync below never runs, so this is the only/last
+                    // tail this room will ever get -- flush its pending partial line now (#1574).
+                    flushPending: state.Status == WorkflowStatus.Terminal);
             }
 
             if (!options.Follow || state.Status == WorkflowStatus.Terminal)
@@ -170,6 +180,11 @@ public static class StatusCommand
         var lastObservedLength = -1L;
         var artifactsDir = Path.Combine(roomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
         var streamOffsets = new Dictionary<string, long>(StringComparer.Ordinal);
+        var lineAssemblers = new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal);
+        var bindings = await RoomAdapterLookup.TryLoadBindingsAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
+        IReadOnlyDictionary<string, string> adapterNameByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
+        IWorkerAdapter? ResolveAdapter(string executionId) =>
+            RoomAdapterLookup.ResolveAdapter(executionId, adapterNameByExecutionId, WorkerAdapterRegistry.Default);
 
         while (true)
         {
@@ -196,12 +211,14 @@ public static class StatusCommand
                 }
 
                 printedEventCount = events.Count;
+                adapterNameByExecutionId = RoomAdapterLookup.BuildAdapterNameByExecutionId(events, bindings);
 
                 var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
                 var state = StateProjector.Project(events, snapshot, checkpoint);
-                TailStreams(output, artifactsDir, streamOffsets);
+                var justWentTerminal = state.Status == WorkflowStatus.Terminal;
+                TailStreams(output, artifactsDir, streamOffsets, lineAssemblers, ResolveAdapter, flushPending: justWentTerminal);
 
-                if (state.Status == WorkflowStatus.Terminal)
+                if (justWentTerminal)
                 {
                     output.WriteLine($"Workflow status: {state.Status}");
 
@@ -220,14 +237,28 @@ public static class StatusCommand
             }
             else
             {
-                TailStreams(output, artifactsDir, streamOffsets);
+                TailStreams(output, artifactsDir, streamOffsets, lineAssemblers, ResolveAdapter);
             }
         }
     }
 
-    // Public as a test seam, matching FormatStepStatus and EscapeNonPrintable: the reader-side
-    // rollover behavior is asserted directly (the workflow review's medium finding).
-    public static void TailStreams(TextWriter output, string artifactsDir, Dictionary<string, long> streamOffsets)
+    /// <summary>
+    /// Tails every running/completed execution's stdout and stderr, rendering each complete line
+    /// through <see cref="WorkerStreamLineRenderer"/> (#1574) -- a claude/agy stream-json envelope
+    /// renders as prose via <paramref name="resolveAdapter"/>'s adapter, everything else keeps
+    /// <see cref="EscapeNonPrintable"/>'s existing safety net. <paramref name="lineAssemblers"/> holds
+    /// one <see cref="StreamLineAssembler"/> per log file, keyed the same way as
+    /// <paramref name="streamOffsets"/>, so a line split across two polls renders exactly once.
+    /// Public as a test seam, matching FormatStepStatus and EscapeNonPrintable: the reader-side
+    /// rollover behavior is asserted directly (the workflow review's medium finding).
+    /// </summary>
+    public static void TailStreams(
+        TextWriter output,
+        string artifactsDir,
+        Dictionary<string, long> streamOffsets,
+        Dictionary<string, StreamLineAssembler> lineAssemblers,
+        Func<string, IWorkerAdapter?> resolveAdapter,
+        bool flushPending = false)
     {
         if (!Directory.Exists(artifactsDir))
         {
@@ -236,21 +267,34 @@ public static class StatusCommand
 
         foreach (var execDir in Directory.GetDirectories(artifactsDir, "execution_*"))
         {
+            var executionDirName = Path.GetFileName(Path.TrimEndingDirectorySeparator(execDir));
+            var executionId = executionDirName.StartsWith("execution_", StringComparison.Ordinal)
+                ? executionDirName["execution_".Length..]
+                : executionDirName;
+            var adapter = resolveAdapter(executionId);
+
             TailStreamFile(
                 output,
                 Path.Combine(execDir, Baton.Dispatch.ExecutionStreamLogger.StdoutLogFileName),
                 Path.Combine(execDir, Baton.Dispatch.ExecutionStreamLogger.StdoutRolloverFileName),
-                streamOffsets);
+                streamOffsets, lineAssemblers, adapter, flushPending);
 
             TailStreamFile(
                 output,
                 Path.Combine(execDir, Baton.Dispatch.ExecutionStreamLogger.StderrLogFileName),
                 Path.Combine(execDir, Baton.Dispatch.ExecutionStreamLogger.StderrRolloverFileName),
-                streamOffsets);
+                streamOffsets, lineAssemblers, adapter, flushPending);
         }
     }
 
-    private static void TailStreamFile(TextWriter output, string logPath, string rolloverPath, Dictionary<string, long> streamOffsets)
+    private static void TailStreamFile(
+        TextWriter output,
+        string logPath,
+        string rolloverPath,
+        Dictionary<string, long> streamOffsets,
+        Dictionary<string, StreamLineAssembler> lineAssemblers,
+        IWorkerAdapter? adapter,
+        bool flushPending)
     {
         if (!File.Exists(logPath))
         {
@@ -258,12 +302,19 @@ public static class StatusCommand
         }
 
         streamOffsets.TryGetValue(logPath, out var offset);
+        if (!lineAssemblers.TryGetValue(logPath, out var assembler))
+        {
+            assembler = new StreamLineAssembler();
+            lineAssemblers[logPath] = assembler;
+        }
 
         // Rollover detection keys on the rollover FILE'S identity (its mtime advances every time
         // the writer rolls), never on a length comparison: a fresh file whose length equals the
         // stored offset made `length < offset` miss the rollover entirely and silently drop the
         // new content -- found by the reader-side test the workflow review demanded. The rollover
-        // path doubles as its own dict key; log and rollover paths are distinct strings.
+        // path doubles as its own dict key; log and rollover paths are distinct strings. The rolled
+        // file and the fresh file are one continuous logical stream, so both reads below share the
+        // SAME assembler (keyed by logPath, never rolloverPath) rather than starting a new one.
         if (File.Exists(rolloverPath))
         {
             streamOffsets.TryGetValue(rolloverPath, out var seenRolloverTicks);
@@ -275,7 +326,7 @@ public static class StatusCommand
                 // fresh file reads from the start.
                 if (rolloverFi.Length > offset)
                 {
-                    ReadAndOutputBytes(output, rolloverPath, offset, rolloverFi.Length - offset);
+                    ReadAndRenderBytes(output, rolloverPath, offset, rolloverFi.Length - offset, assembler, adapter);
                 }
 
                 offset = 0;
@@ -286,14 +337,26 @@ public static class StatusCommand
         var fi = new FileInfo(logPath);
         if (fi.Length > offset)
         {
-            var bytesRead = ReadAndOutputBytes(output, logPath, offset, fi.Length - offset);
+            var bytesRead = ReadAndRenderBytes(output, logPath, offset, fi.Length - offset, assembler, adapter);
             offset += bytesRead;
         }
 
         streamOffsets[logPath] = offset;
+
+        // #1574: once the caller knows no further poll will read this file (the workflow just went
+        // Terminal), flush whatever partial trailing line the assembler is still holding -- otherwise
+        // a worker's final, newline-less write is silently lost with no future poll left to complete
+        // it, unlike the pre-#1574 raw tail which always emitted every byte it read.
+        if (flushPending && assembler.Flush() is { Length: > 0 } finalPartialLine)
+        {
+            var rendered = new StringWriter { NewLine = "\n" };
+            WorkerStreamLineRenderer.RenderLine(finalPartialLine, adapter, rendered);
+            output.Write(rendered.ToString());
+        }
     }
 
-    private static long ReadAndOutputBytes(TextWriter output, string path, long offset, long count)
+    private static long ReadAndRenderBytes(
+        TextWriter output, string path, long offset, long count, StreamLineAssembler assembler, IWorkerAdapter? adapter)
     {
         try
         {
@@ -310,8 +373,17 @@ public static class StatusCommand
 
             if (totalRead > 0)
             {
-                var escaped = EscapeNonPrintable(buffer.AsSpan(0, totalRead));
-                output.Write(escaped);
+                var lines = assembler.Append(buffer.AsSpan(0, totalRead));
+                if (lines.Count > 0)
+                {
+                    var rendered = new StringWriter { NewLine = "\n" };
+                    foreach (var line in lines)
+                    {
+                        WorkerStreamLineRenderer.RenderLine(line, adapter, rendered);
+                    }
+
+                    output.Write(rendered.ToString());
+                }
             }
 
             return totalRead;

@@ -338,6 +338,11 @@ public class CapturedWorkerStreamTests
         // only the writer half was asserted. This drives StatusCommand.TailStreams across a real
         // rollover and requires the tail to keep delivering without dropping the post-rollover
         // content.
+        //
+        // #1574: TailStreams now buffers whole lines (StreamLineAssembler) before rendering, so each
+        // chunk is newline-terminated -- an unterminated chunk would be held as a partial trailing
+        // line rather than rendered on the poll that wrote it, which is the new (and correct)
+        // contract, not what this rollover-continuity test means to exercise.
         var testRoot = Path.Combine(Path.GetTempPath(), $"tail-rollover-{Guid.NewGuid():N}");
         var execDir = Path.Combine(testRoot, "execution_tail");
         Directory.CreateDirectory(execDir);
@@ -346,23 +351,25 @@ public class CapturedWorkerStreamTests
             const long cap = 100;
             var logger = new ExecutionStreamLogger(execDir, maxSizeBytes: cap);
             var offsets = new Dictionary<string, long>(StringComparer.Ordinal);
+            var lineAssemblers = new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal);
+            IWorkerAdapter? NoAdapter(string executionId) => null;
 
-            var chunkA = System.Text.Encoding.UTF8.GetBytes(new string('A', 60));
+            var chunkA = System.Text.Encoding.UTF8.GetBytes(new string('A', 59) + "\n");
             logger.AppendStdout(chunkA);
 
             var firstRead = new StringWriter();
-            StatusCommand.TailStreams(firstRead, testRoot, offsets);
-            Assert.Contains(new string('A', 60), firstRead.ToString());
+            StatusCommand.TailStreams(firstRead, testRoot, offsets, lineAssemblers, NoAdapter);
+            Assert.Contains(new string('A', 59), firstRead.ToString());
 
             // Crossing the cap rolls the file; the next tail must surface the new content.
-            var chunkB = System.Text.Encoding.UTF8.GetBytes(new string('B', 60));
+            var chunkB = System.Text.Encoding.UTF8.GetBytes(new string('B', 59) + "\n");
             logger.AppendStdout(chunkB);
 
             var secondRead = new StringWriter();
-            StatusCommand.TailStreams(secondRead, testRoot, offsets);
+            StatusCommand.TailStreams(secondRead, testRoot, offsets, lineAssemblers, NoAdapter);
             var secondText = secondRead.ToString();
-            Assert.Contains(new string('B', 60), secondText);
-            Assert.DoesNotContain(new string('A', 60), secondText);
+            Assert.Contains(new string('B', 59), secondText);
+            Assert.DoesNotContain(new string('A', 59), secondText);
         }
         finally
         {

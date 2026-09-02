@@ -22,6 +22,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Baton.Cli\Baton.Cli.csproj" />
     <ProjectReference Include="..\..\src\Baton.Vendors\Baton.Vendors.csproj" />
     <ProjectReference Include="..\..\src\Baton\Baton.csproj" />
