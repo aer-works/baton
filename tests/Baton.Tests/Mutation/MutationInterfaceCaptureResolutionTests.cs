@@ -490,6 +490,147 @@ public class MutationInterfaceCaptureResolutionTests
         }
     }
 
+    /// <summary>
+    /// #1593 replay fixture from measured journal: uncaptured exit-0 contract failure settles Indeterminate (spec/baton.md §3).
+    /// </summary>
+    [Fact]
+    public async Task An_exit_0_worker_with_missing_contract_reaches_ExecutionIndeterminate_no_retry_scheduled_and_describes_Indeterminate()
+    {
+        var snapshot = new WorkflowDefinitionSnapshot(
+            new WorkflowDefinitionSnapshotId($"snapshot-{Guid.NewGuid():N}"),
+            new WorkflowTemplateId("replay-1593-test"),
+            WorkflowTemplateVersion: 1,
+            Steps: [new WorkflowStepDefinition(A, "stub-worker", [], [], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var contract = new WorkerContract("stub-worker", [], [new ProducedOutput("advice.md")], []);
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["stub-worker"] = new WorkerBinding.Process(
+                    contract, new CoreDispatchTarget("stub", []), TimeSpan.FromSeconds(30)),
+            };
+
+            var stub = new StubCoreDispatcher();
+            var dispatchResult = stub.EnqueueResult(A);
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var pumpTask = MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            var readTask = stub.DispatchStarted.ReadAsync(TestContext.Current.CancellationToken).AsTask();
+            var completed = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken));
+            Assert.Same(readTask, completed);
+            Assert.Equal(A, await readTask);
+
+            var accepted = Assert.Single(
+                (await reader.ReadAllAsync(TestContext.Current.CancellationToken)).OfType<FlowEvent.ExecutionRequestAccepted>());
+            var executionId = accepted.Request.ExecutionId;
+
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId);
+            Directory.CreateDirectory(outputDirectory);
+
+            // Natural exit 0, but no outputs written
+            dispatchResult.SetResult(new CoreDispatchResult(0, CoreExitReason.Natural));
+
+            var finalState = await pumpTask;
+
+            var step = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Failed, step.Status);
+            Assert.True(step.IndeterminateAwaitingResolution);
+            Assert.Null(step.LatestCapturedResponseFile);
+            Assert.Equal(["advice.md"], step.LatestUnsatisfiedOutputNames);
+            Assert.Equal(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(finalState));
+            Assert.False(Baton.Scheduling.RetryEngine.MayRetry(step, snapshot.Steps[0].RetryPolicy));
+
+            var finalEvents = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(finalEvents.OfType<FlowEvent.ExecutionIndeterminate>());
+            Assert.Empty(finalEvents.OfType<FlowEvent.ExecutionFailed>());
+            Assert.Empty(finalEvents.OfType<FlowEvent.StepRetryScheduled>());
+
+            // Confirm conductor can resolve via rejection to leave it Failed for redispatch
+            var resolvedState = await MutationInterface.RecordCaptureResolutionAsync(
+                roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                accepted: false, reason: "conductors inspection of worktree confirms retry needed",
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            var resolvedStep = Assert.Single(resolvedState.Steps);
+            Assert.Equal(StepStatus.Failed, resolvedStep.Status);
+            Assert.False(resolvedStep.IndeterminateAwaitingResolution);
+            Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(resolvedState));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Polarity partner for #1593: A worker that exits non-zero with contract missing follows the ordinary retry path.
+    /// </summary>
+    [Fact]
+    public async Task Polarity_partner_a_non_zero_exit_with_missing_contract_reaches_ExecutionFailed_and_schedules_retry()
+    {
+        var snapshot = new WorkflowDefinitionSnapshot(
+            new WorkflowDefinitionSnapshotId($"snapshot-{Guid.NewGuid():N}"),
+            new WorkflowTemplateId("polarity-1593-test"),
+            WorkflowTemplateVersion: 1,
+            Steps: [new WorkflowStepDefinition(A, "stub-worker", [], [], DependsOn: [], RetryPolicy: new RetryPolicy(2))]);
+
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var contract = new WorkerContract("stub-worker", [], [new ProducedOutput("advice.md")], []);
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["stub-worker"] = new WorkerBinding.Process(
+                    contract, new CoreDispatchTarget("stub", []), TimeSpan.FromSeconds(30)),
+            };
+
+            var stub = new StubCoreDispatcher();
+            var dispatchResult = stub.EnqueueResult(A);
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var pumpTask = MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            var readTask = stub.DispatchStarted.ReadAsync(TestContext.Current.CancellationToken).AsTask();
+            var completed = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken));
+            Assert.Same(readTask, completed);
+            Assert.Equal(A, await readTask);
+
+            // Non-zero exit code (e.g. 1)
+            dispatchResult.SetResult(new CoreDispatchResult(1, CoreExitReason.Natural));
+
+            // Wait until retry is scheduled
+            var finalEvents = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            while (!finalEvents.OfType<FlowEvent.StepRetryScheduled>().Any())
+            {
+                await Task.Delay(50, TestContext.Current.CancellationToken); // wait-ok: bounded polling interval
+                finalEvents = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            }
+
+            Assert.Single(finalEvents.OfType<FlowEvent.ExecutionFailed>());
+            Assert.Empty(finalEvents.OfType<FlowEvent.ExecutionIndeterminate>());
+            Assert.Single(finalEvents.OfType<FlowEvent.StepRetryScheduled>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     private sealed class FakeResponseParser(string response) : IWorkerResponseParser
     {
         public bool TryParseFinalResponse(string rawLine, out string? parsedResponse)

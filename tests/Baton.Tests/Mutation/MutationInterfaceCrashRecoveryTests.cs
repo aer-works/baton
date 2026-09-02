@@ -342,8 +342,9 @@ public class MutationInterfaceCrashRecoveryTests
 
             Assert.Equal(StepStatus.Failed, state.Steps.Single(s => s.StepId == A).Status);
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
-            Assert.Single(events, e => e is FlowEvent.ExecutionFailed ef && ef.ExecutionId == executionId);
+            Assert.Single(events, e => e is FlowEvent.ExecutionIndeterminate ei && ei.ExecutionId == executionId);
             Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionSucceeded);
+            Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionFailed);
         }
         finally
         {

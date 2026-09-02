@@ -47,7 +47,7 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_returns_Failed_when_exit_code_is_zero_but_a_required_output_is_missing()
+    public void Classify_returns_Indeterminate_when_exit_code_is_zero_but_a_required_output_is_missing()
     {
         var directory = CreateTempDirectory();
         try
@@ -57,7 +57,12 @@ public class OutcomeClassifierTests
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["plan"], classification.UnsatisfiedOutputNames);
+            Assert.Contains("work possibly on disk", classification.Reason);
+            Assert.Contains("awaiting conductor resolution", classification.Reason);
         }
         finally
         {
@@ -103,21 +108,21 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_leaves_a_missing_output_failed_when_there_is_no_stdout_log_at_all()
+    public void Classify_leaves_a_missing_output_indeterminate_when_there_is_no_stdout_log_at_all()
     {
         var directory = CreateTempDirectory();
         try
         {
             var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
 
-            // No .stdout.log at all -- the empty-envelope arm: today's failure stands unchanged.
+            // No .stdout.log at all -- no capture possible, settles Indeterminate (#1593)
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser(response: null));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
-            Assert.Null(classification.UnsatisfiedOutputNames);
+            Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
@@ -128,7 +133,7 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_leaves_a_missing_output_failed_when_the_parser_declines_the_stdout_lines_last_line()
+    public void Classify_leaves_a_missing_output_indeterminate_when_the_parser_declines_the_stdout_lines_last_line()
     {
         // The polarity arm the previous test's "no .stdout.log" case can't reach: a real stream log
         // exists, but the adapter's parser looks at its last line and says "not a usable response"
@@ -144,9 +149,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser(response: null));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
-            Assert.Null(classification.UnsatisfiedOutputNames);
+            Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
@@ -179,9 +184,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("the worker's real answer"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
-            Assert.Null(classification.UnsatisfiedOutputNames);
+            Assert.Equal(["advice.md", "verdict.json"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
             Assert.Equal("not json", File.ReadAllText(Path.Combine(directory, "verdict.json")));
@@ -208,8 +213,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("the worker's real answer"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["verdict.json"], classification.UnsatisfiedOutputNames);
             // Untouched: the real file a worker actually wrote must never be clobbered by the envelope.
             Assert.Equal("not json", File.ReadAllText(Path.Combine(directory, "verdict.json")));
         }
@@ -239,8 +245,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("free-form prose, not a verdict"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["report.md", "verdict.json"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "report.md")));
             Assert.False(File.Exists(Path.Combine(directory, "verdict.json")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
@@ -268,8 +275,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("free-form prose"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["turn-actions.json"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "turn-actions.json")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
@@ -297,8 +305,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("ran the checkers, all green"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["janitor.md", "branch.diff"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "janitor.md")));
             Assert.False(File.Exists(Path.Combine(directory, "branch.diff")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
@@ -352,8 +361,9 @@ public class OutcomeClassifierTests
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
@@ -751,12 +761,12 @@ public class OutcomeClassifierTests
             var classSingle = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contractSingleMissing, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classBoth.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classBoth.Verdict);
             Assert.NotNull(classBoth.Reason);
             Assert.Contains("alpha.txt", classBoth.Reason);
             Assert.Contains("beta.json", classBoth.Reason);
 
-            Assert.Equal(OutcomeVerdict.Failed, classSingle.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classSingle.Verdict);
             Assert.NotNull(classSingle.Reason);
             Assert.Contains("alpha.txt", classSingle.Reason);
             Assert.DoesNotContain("beta.json", classSingle.Reason);
@@ -843,12 +853,11 @@ public class OutcomeClassifierTests
             var classTruncated = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classTruncated.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classTruncated.Verdict);
             Assert.NotNull(classTruncated.Reason);
             Assert.True(classTruncated.Reason.Length <= 500, $"Reason length {classTruncated.Reason.Length} exceeded 500 characters cap.");
-            Assert.True(
-                classTruncated.Reason.EndsWith("...") || classTruncated.Reason.EndsWith("…"),
-                "Reason should end with an ellipsis when truncated.");
+            Assert.Contains("...", classTruncated.Reason);
+            Assert.Contains("awaiting conductor resolution", classTruncated.Reason);
 
             // Polarity arm: non-pathological short reason is not truncated and does not end with ellipsis
             var shortContract = new WorkerContract("worker", [], [new ProducedOutput("short.txt")], []);
@@ -903,8 +912,8 @@ public class OutcomeClassifierTests
             Assert.True(
                 classification.Reason.Length <= 500,
                 $"Reason length {classification.Reason.Length} exceeded the 500-character cap.");
-            Assert.EndsWith("more)", classification.Reason);
             Assert.Contains("(+32 more)", classification.Reason);
+            Assert.Contains("awaiting conductor resolution", classification.Reason);
 
             // Polarity: at or under the listing cap there is no marker to preserve.
             var fewOutputs = Enumerable.Range(1, 3).Select(i => new ProducedOutput($"out{i}.json")).ToList();
@@ -983,7 +992,7 @@ public class OutcomeClassifierTests
                     new CoreDispatchResult(0, CoreExitReason.TimedOut, StderrTail: null), emptyContract, directory).Reason);
 
             Assert.Equal(
-                "Contract not satisfied: 'plan' is missing",
+                "Contract not satisfied: 'plan' is missing — worker exited 0 with work possibly on disk; awaiting conductor resolution.",
                 OutcomeClassifier.Classify(
                     new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null),
                     new WorkerContract("worker", [], [new ProducedOutput("plan")], []),
@@ -1119,9 +1128,9 @@ public class OutcomeClassifierTests
                 new WorkerContract("worker", [], [new ProducedOutput("plan")], []),
                 directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Equal(
-                "Contract not satisfied: 'plan' is missing stderr: warning: no changes were required",
+                "Contract not satisfied: 'plan' is missing — worker exited 0 with work possibly on disk; awaiting conductor resolution. stderr: warning: no changes were required",
                 classification.Reason);
         }
         finally
@@ -1626,6 +1635,91 @@ public class OutcomeClassifierTests
         finally
         {
             DirectoryCleanup.DeleteRecursively(outboxDir);
+        }
+    }
+
+    [Fact]
+    public void Dead_worker_without_terminal_result_on_untouched_workspace_retains_Failed_verdict()
+    {
+        var outboxDir = CreateTempDirectory();
+        var worktreeDir = CreateTempDirectory();
+        try
+        {
+            InitGitRepository(worktreeDir);
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            // Streamed worker, but no terminal success record observed, and workspace is completely clean.
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Contains("Contract not satisfied: 'advice.md' is missing", classification.Reason);
+            Assert.DoesNotContain("work possibly on disk", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(worktreeDir);
+        }
+    }
+
+    [Fact]
+    public void Dead_worker_without_terminal_result_on_mutated_workspace_settles_Indeterminate()
+    {
+        var outboxDir = CreateTempDirectory();
+        var worktreeDir = CreateTempDirectory();
+        try
+        {
+            InitGitRepository(worktreeDir);
+            // Worker modified a file on disk before dying
+            File.WriteAllText(Path.Combine(worktreeDir, "modified.txt"), "stray work");
+
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
+            Assert.Contains("work possibly on disk", classification.Reason);
+            Assert.Contains("awaiting conductor resolution", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(worktreeDir);
+        }
+    }
+
+    [Fact]
+    public void Nonzero_exit_with_missing_contract_retains_Failed_verdict()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.Natural), contract, directory);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Null(classification.UnsatisfiedOutputNames);
+            Assert.Contains("Worker exited with non-zero code 1.", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
         }
     }
 

@@ -230,6 +230,63 @@ public static class WorktreeProvisioner
     }
 
     /// <summary>
+    /// Checks whether <paramref name="worktreePath"/> is untouched (no commits over base, clean tree)
+    /// for #1593/#1622 (spec/baton.md §3 Producers): a dead worker that exited 0 without output may
+    /// keep the retry path only if untouched; otherwise it settles Indeterminate.
+    /// Fails closed (returns false) if <paramref name="worktreePath"/> is null/missing, not a git directory,
+    /// git fails, or changes/commits exist.
+    /// </summary>
+    public static bool IsWorkspaceUntouched(string? worktreePath)
+    {
+        if (string.IsNullOrWhiteSpace(worktreePath) || !Directory.Exists(worktreePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var (statusCode, statusOut, _) = RunGit(worktreePath, "status", "--porcelain");
+            if (statusCode != 0 || !string.IsNullOrWhiteSpace(statusOut))
+            {
+                return false;
+            }
+
+            if (IsWorktree(worktreePath))
+            {
+                // In a worktree: check if any commits were recorded in this worktree's reflog
+                var (refCode, refOut, _) = RunGit(worktreePath, "log", "-g", "-n", "1", "--format=%gs");
+                if (refCode == 0 && !string.IsNullOrWhiteSpace(refOut))
+                {
+                    var trimmed = refOut.Trim();
+                    if (trimmed.StartsWith("commit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+                }
+            }
+            else
+            {
+                // In a main repository: check if upstream exists and if there are commits ahead of upstream
+                var (upCode, upOut, _) = RunGit(worktreePath, "rev-parse", "--abbrev-ref", "@{upstream}");
+                if (upCode == 0 && !string.IsNullOrWhiteSpace(upOut))
+                {
+                    var (countCode, countOut, _) = RunGit(worktreePath, "rev-list", "--count", "@{upstream}..HEAD");
+                    if (countCode != 0 || (int.TryParse(countOut.Trim(), out var count) && count > 0))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is WorktreeProvisioningException or IOException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Tear down provisioned worktrees only once the run is Terminal — a Paused run must keep its
     /// tree for the resume, and this deliberately runs on the success path (not in a finally) so a
     /// crashed or cancelled run leaves the worker's tree intact too. Teardown never throws; a tree

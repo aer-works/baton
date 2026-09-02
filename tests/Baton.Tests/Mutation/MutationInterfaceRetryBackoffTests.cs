@@ -288,7 +288,7 @@ public class MutationInterfaceRetryBackoffTests
             {
                 ["worker-a"] = new WorkerBinding.Process(
                     new WorkerContract("worker-a", [], [new ProducedOutput("out.txt")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30))
             };
 
@@ -361,7 +361,7 @@ public class MutationInterfaceRetryBackoffTests
             {
                 ["worker-a"] = new WorkerBinding.Process(
                     new WorkerContract("worker-a", [], [new ProducedOutput("out.txt")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30))
             };
 
@@ -419,7 +419,7 @@ public class MutationInterfaceRetryBackoffTests
             {
                 ["worker-a"] = new WorkerBinding.Process(
                     new WorkerContract("worker-a", [], [new ProducedOutput("out.txt")], []),
-                    ExitCleanlyWithoutWriting(), // Always fails
+                    ExitWithFailureCode(), // Always fails
                     TimeSpan.FromSeconds(30))
             };
 
@@ -570,7 +570,7 @@ public class MutationInterfaceRetryBackoffTests
             {
                 ["worker-a"] = new WorkerBinding.Process(
                     new WorkerContract("worker-a", [], [new ProducedOutput("out.txt")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30))
             };
 
@@ -635,7 +635,7 @@ public class MutationInterfaceRetryBackoffTests
             {
                 ["worker-a"] = new WorkerBinding.Process(
                     new WorkerContract("worker-a", [], [new ProducedOutput("outA.txt")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30)),
                 ["worker-b"] = new WorkerBinding.Process(
                     new WorkerContract("worker-b", [], [new ProducedOutput("outB.txt")], []),
@@ -698,11 +698,11 @@ public class MutationInterfaceRetryBackoffTests
             {
                 ["worker-a"] = new WorkerBinding.Process(
                     new WorkerContract("worker-a", [], [new ProducedOutput("outA.txt")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30)),
                 ["worker-b"] = new WorkerBinding.Process(
                     new WorkerContract("worker-b", [], [new ProducedOutput("outB.txt")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30))
             };
 
@@ -781,7 +781,7 @@ public class MutationInterfaceRetryBackoffTests
             {
                 ["worker-a"] = new WorkerBinding.Process(
                     new WorkerContract("worker-a", [], [new ProducedOutput("out.txt")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30))
             };
 
@@ -1710,7 +1710,7 @@ public class MutationInterfaceRetryBackoffTests
                 // always answers with the same stale ExhaustedUntil instant.
                 ["worker-a"] = new WorkerBinding.Process(
                     new WorkerContract("worker-a", [], [new ProducedOutput("out.txt")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30),
                     FailureClassifier: new AlwaysStaleQuotaClassifier(staleReset))
             };

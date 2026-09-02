@@ -279,12 +279,10 @@ public class WorkflowEndToEndTests
             Assert.Equal(StepStatus.Failed, GetTerminalStatus(events, executionIds[0]));
             Assert.Equal(StepStatus.Succeeded, GetTerminalStatus(events, executionIds[1]));
 
-            // Exit 0 with an unsatisfied OutputCondition classifies ExecutionFailed with no
-            // self-reported classification — only the condition, not the worker, drove the retry.
             var firstAttemptOutcome = events.OfType<FlowEvent.ExecutionFailed>().Single(e => e.ExecutionId == executionIds[0]);
             Assert.Null(firstAttemptOutcome.FailureClassification);
             Assert.NotNull(firstAttemptOutcome.Reason);
-            Assert.Contains("verdict", firstAttemptOutcome.Reason);
+            Assert.Contains("non-zero code 1", firstAttemptOutcome.Reason);
         }
 
         finally
@@ -351,7 +349,7 @@ public class WorkflowEndToEndTests
             {
                 ["flaky"] = new WorkerBinding.Process(
                     new WorkerContract("flaky", [], [new ProducedOutput("result")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30)),
                 ["downstream"] = new WorkerBinding.Process(
                     new WorkerContract("downstream", ["result"], [new ProducedOutput("final")], []),

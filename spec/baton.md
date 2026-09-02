@@ -501,11 +501,7 @@ fields. `StepStatus` itself stays untouched by this ruling too: a step whose lat
 `Domain.StepState.IndeterminateAwaitingResolution` (`Status.WorkflowOutcome.DescribeTerminal`, checked
 ahead of the ordinary `Failed`/`Rejected` read).
 
-**Producer, since #1608.** `OutcomeClassifier.Classify`'s #1594 captured-response arm is the one live
-producer — every other Failed/Cancelled/Succeeded path is unchanged. `baton settle` (S2, tracked on
-#1586) is expected to be able to settle a room *to* `Indeterminate` for the worktree-fingerprint shape
-above; until it lands, that second source is reachable only by a test fabricating a `terminal.json`/
-status-view shape directly, same as before #1608.
+**Producers, since #1608 and #1593.** `OutcomeClassifier.Classify` settles `OutcomeVerdict.Indeterminate` for any natural exit-0 completion whose output contract is not satisfied — both the #1594 captured-response case and the #1593 uncaptured contract failure case (where declared outputs are simply absent, or failed validation, and the worker may have done unknown work on disk). An exit-0 contract failure is never automatically retried: re-running blind on a potentially mutated workspace is refused (`RetryEngine.MayRetry` returns false via `StepState.IndeterminateAwaitingResolution`). The lane settles `Indeterminate`, leaving the conductor to inspect the workspace and either resolve the step (`baton resolve --reject --reason <text>`) or redispatch (`baton redispatch`). A dead worker (stream-json ending without a `result` record) that exits 0 may keep the ordinary retry path only if its workspace is untouched (no commits over base, clean tree); otherwise it too settles `Indeterminate`. `baton settle` (S2, tracked on #1586) is expected to be able to settle a room *to* `Indeterminate` for the worktree-fingerprint shape above; until it lands, that third source is reachable only by a test fabricating a `terminal.json`/status-view shape directly, same as before #1608.
 
 **Consumer obligations, ratified with the value itself.** `baton redispatch` refuses a bare
 `Indeterminate` parent outright, with a diagnosis naming the resolution verb

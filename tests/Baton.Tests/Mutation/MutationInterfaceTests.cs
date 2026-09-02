@@ -135,7 +135,7 @@ public class MutationInterfaceTests
     }
 
     [Fact]
-    public async Task StartWorkflowAsync_classifies_a_clean_exit_with_no_output_as_ExecutionFailed()
+    public async Task StartWorkflowAsync_classifies_a_clean_exit_with_no_output_as_ExecutionIndeterminate()
     {
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
@@ -166,12 +166,13 @@ public class MutationInterfaceTests
 
             var stepState = Assert.Single(finalState.Steps);
             Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.True(stepState.IndeterminateAwaitingResolution);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
-            var failedEvent = events.OfType<FlowEvent.ExecutionFailed>().Single();
-            Assert.Null(failedEvent.FailureClassification);
-            Assert.NotNull(failedEvent.Reason);
-            Assert.Contains("output.txt", failedEvent.Reason);
+            var indeterminateEvent = events.OfType<FlowEvent.ExecutionIndeterminate>().Single();
+            Assert.NotNull(indeterminateEvent.Reason);
+            Assert.Contains("output.txt", indeterminateEvent.Reason);
+            Assert.Contains("work possibly on disk", indeterminateEvent.Reason);
         }
         finally
         {

@@ -182,7 +182,7 @@ name, and a room fact records which declared names it stands in for — see
 `docs/agents/invoking-baton.md` §3 for what that fact looks like to a harness reading the room. The
 room settles `Indeterminate` (#1608 — the two-predicate model's disagreement case, carrying no
 `FailureClassification` at all, spec/baton.md §3), not `Failed`; `RetryEngine.MayRetry` refuses it
-unconditionally via its own explicit arm, independent of any classification. Only a conductor's own
+unconditionally via its own explicit arm, independent of any classification. An exit-0 worker that fails its output contract (with or without a captured response) settles `Indeterminate` and is never retried — the conductor inspects the workspace and resolves or redispatches (spec/baton.md §3). Only a conductor's own
 recorded resolution — `baton resolve <room-dir> [--execution <id>] --accept-capture | --reject
 --reason <text>` — can turn a capture into a satisfied contract, or explicitly refuse one.
 

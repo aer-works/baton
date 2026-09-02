@@ -26,6 +26,10 @@ internal static class ShellWorkerCommands
         ? new CoreDispatchTarget("cmd", ["/c", "exit 0"])
         : new CoreDispatchTarget("sh", ["-c", "exit 0"]);
 
+    public static CoreDispatchTarget ExitWithFailureCode(int exitCode = 1) => OperatingSystem.IsWindows()
+        ? new CoreDispatchTarget("cmd", ["/c", $"exit {exitCode}"])
+        : new CoreDispatchTarget("sh", ["-c", $"exit {exitCode}"]);
+
     /// <summary>
     /// Sleeps for at least <paramref name="duration"/> before writing <paramref name="outputName"/>
     /// and exiting 0 — M10 Phase 4's real long-running worker, giving a test enough real wall-clock
@@ -104,6 +108,7 @@ internal static class ShellWorkerCommands
               ") else (\n" +
               $"  echo marker>\"{markerFilePath}\"\n" +
               $"  echo {{\"status\":\"needs_revision\"}}>\"{outputPath}\"\n" +
+              "  exit /b 1\n" +
               ")\n"
             : "#!/bin/sh\n" +
               $"if [ -f \"{markerFilePath}\" ]; then\n" +
@@ -111,6 +116,7 @@ internal static class ShellWorkerCommands
               "else\n" +
               $"  touch \"{markerFilePath}\"\n" +
               $"  echo '{{\"status\":\"needs_revision\"}}' > \"{outputPath}\"\n" +
+              "  exit 1\n" +
               "fi\n";
 
         return FromScript(scriptDirectory, body);

@@ -370,7 +370,7 @@ public class ResolveCommandEndToEndTests
         return executionId;
     }
 
-    /// <summary>Runs a single step to an ordinary Failed (declared output never written, exit 0).</summary>
+    /// <summary>Runs a single step to an ordinary Failed (exit 1).</summary>
     private static async Task<ExecutionId> RunOrdinaryFailureAsync(
         string testRoot, string roomDirectory, string outputName = "advice.md")
     {
@@ -405,7 +405,7 @@ public class ResolveCommandEndToEndTests
         {
             ["a"] = new WorkerBindingConfigEntry(
                 "shell", new WorkerContract("a", [], [new ProducedOutput(outputName)], []),
-                PromptTemplate: "exit 0", TimeSpan.FromSeconds(30)),
+                PromptTemplate: "exit 1", TimeSpan.FromSeconds(30)),
         };
 
         var path = Path.Combine(directory, "bindings.json");

@@ -22,6 +22,7 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         {
             ["fake"] = new ContractOutputWorkerAdapter(satisfyOutputs: true),
             ["fake-noop"] = new ContractOutputWorkerAdapter(satisfyOutputs: false),
+            ["fake-fail"] = new ContractOutputWorkerAdapter(satisfyOutputs: false, failureExitCode: 1),
         };
 
     private readonly IsolatedBatonHome _batonHome = new();
@@ -424,9 +425,9 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         var originalError = Console.Error;
         try
         {
-            // fake-noop satisfies no declared output, so advise's step -- and the workflow -- lands
-            // Failed, not Succeeded, once terminal.json is written for it below.
-            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", adapter: "fake-noop");
+            // fake-fail exits 1, so advise's step -- and the workflow -- lands
+            // Failed, not Succeeded or Indeterminate, once terminal.json is written for it below.
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", adapter: "fake-fail");
 
             using var stderr = new StringWriter();
             Console.SetError(stderr);

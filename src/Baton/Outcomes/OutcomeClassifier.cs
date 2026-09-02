@@ -127,7 +127,7 @@ public static class OutcomeClassifier
     /// <summary>
     /// Classifies <paramref name="result"/> per this table:
     /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied</c> → Succeeded;
-    /// <c>NaturalExit + code 0 + an unsatisfied ProducedOutput, captured (#1594/#1608)</c> → Indeterminate;
+    /// <c>NaturalExit + code 0 + an unsatisfied ProducedOutput</c> → Indeterminate (#1593/#1594/#1608, unless a dead worker without result on an untouched workspace);
     /// <c>NaturalExit</c> otherwise, or <c>TimedOut</c> → Failed;
     /// <c>CancelRequested</c> → Cancelled.
     /// </summary>
@@ -232,8 +232,9 @@ public static class OutcomeClassifier
                     // line reached the console.
                 }
 
-                var reason = BuildContractFailureReason(validation.UnsatisfiedOutputs)
-                    + $" Response captured to '{captured.FileName}'; awaiting conductor resolution.";
+                var reason = BuildContractFailureReason(
+                    validation.UnsatisfiedOutputs,
+                    $" Response captured to '{captured.FileName}'; awaiting conductor resolution.");
 
                 return new OutcomeClassification(
                     OutcomeVerdict.Indeterminate,
@@ -280,15 +281,30 @@ public static class OutcomeClassifier
             return new OutcomeClassification(OutcomeVerdict.Succeeded);
         }
 
-        // Stderr is appended here too, not just on the non-zero-exit path. The exit-0-but-no-output
-        // worker is #597's case, and a worker that decided it had nothing to write very often says
-        // why on stderr on its way out — that is precisely the failure with the least other evidence.
-        var (contractClassification, contractRetryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
+        // #1593: Natural exit 0 with unsatisfied contract settles Indeterminate (spec/baton.md §3 Producers).
+        // #1622: A dead streaming worker retains the retryable Failed path when untouched (WorktreeProvisioner.IsWorkspaceUntouched).
+        var isDeadWorkerWithoutResult = responseParser is not null && !result.TerminalSuccessObserved;
+        if (isDeadWorkerWithoutResult && Workspaces.WorktreeProvisioner.IsWorkspaceUntouched(worktreePath))
+        {
+            var (contractClassification, contractRetryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
+            return new OutcomeClassification(
+                OutcomeVerdict.Failed,
+                contractClassification,
+                WithStderr(BuildContractFailureReason(validation.UnsatisfiedOutputs), result.StderrTail),
+                contractRetryNotBefore,
+                SubstantialWorkNoOutputsEvidence: substantialWorkNoOutputsEvidence);
+        }
+
+        var indeterminateReason = BuildContractFailureReason(
+            validation.UnsatisfiedOutputs,
+            " — worker exited 0 with work possibly on disk; awaiting conductor resolution.");
+
         return new OutcomeClassification(
-            OutcomeVerdict.Failed,
-            contractClassification,
-            WithStderr(BuildContractFailureReason(validation.UnsatisfiedOutputs), result.StderrTail),
-            contractRetryNotBefore,
+            OutcomeVerdict.Indeterminate,
+            FailureClassification: null, // Indeterminate carries no FailureClassification — see OutcomeVerdict.Indeterminate's own remarks.
+            WithStderr(indeterminateReason, result.StderrTail),
+            CapturedResponseFile: null,
+            UnsatisfiedOutputNames: validation.UnsatisfiedOutputs.Select(u => u.Name).ToList(),
             SubstantialWorkNoOutputsEvidence: substantialWorkNoOutputsEvidence);
     }
 
@@ -428,13 +444,16 @@ public static class OutcomeClassifier
     /// unsatisfied output, so a reason that promised to name them all named one. With the per-item
     /// bounds in place the final <see cref="Truncate"/> is a backstop that should not normally fire.
     /// </remarks>
-    private static string BuildContractFailureReason(IReadOnlyList<UnsatisfiedOutput> unsatisfiedOutputs)
+    private static string BuildContractFailureReason(
+        IReadOnlyList<UnsatisfiedOutput> unsatisfiedOutputs,
+        string? suffix = null)
     {
         var listed = unsatisfiedOutputs.Count <= MaxListedOutputs
             ? unsatisfiedOutputs
             : unsatisfiedOutputs.Take(MaxListedOutputs).ToList();
 
         var reason = "Contract not satisfied: " + string.Join("; ", listed.Select(DescribeUnsatisfiedOutput));
+        var fullSuffix = suffix ?? string.Empty;
 
         // The suffix's own length is reserved from the budget rather than appended after
         // truncating. Appending it left the marker as the first thing Truncate cut — reinstating,
@@ -443,8 +462,13 @@ public static class OutcomeClassifier
         var overflow = unsatisfiedOutputs.Count - listed.Count;
         if (overflow > 0)
         {
-            var suffix = $" (+{overflow} more)";
-            return Truncate(reason, MaxReasonLength - suffix.Length) + suffix;
+            var overflowSuffix = $" (+{overflow} more)" + fullSuffix;
+            return Truncate(reason, MaxReasonLength - overflowSuffix.Length) + overflowSuffix;
+        }
+
+        if (fullSuffix.Length > 0)
+        {
+            return Truncate(reason, MaxReasonLength - fullSuffix.Length) + fullSuffix;
         }
 
         return Truncate(reason, MaxReasonLength);

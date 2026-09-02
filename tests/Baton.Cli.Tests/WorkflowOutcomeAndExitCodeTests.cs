@@ -174,6 +174,24 @@ public class WorkflowOutcomeAndExitCodeTests
         Assert.Equal(RunExitCode.Failed, RunExitCodeResolver.Resolve(Result(state)));
     }
 
+    // #1593: an uncaptured exit-0 contract failure has LatestCapturedResponseFile null,
+    // IndeterminateAwaitingResolution true, and describes the room as Indeterminate.
+    [Fact]
+    public void An_uncaptured_exit_0_contract_failure_describes_the_room_as_Indeterminate_not_Failed()
+    {
+        var step = new StepState(
+            new StepId("a"), StepStatus.Failed, new ExecutionId("exec-1"), new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: null,
+            LatestFailureReason: "Contract not satisfied: 'advice.md' is missing — worker exited 0 with work possibly on disk; awaiting conductor resolution.",
+            LatestCapturedResponseFile: null,
+            LatestUnsatisfiedOutputNames: ["advice.md"],
+            IndeterminateAwaitingResolution: true);
+        var state = TerminalState([step]);
+
+        Assert.Equal(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+        Assert.Equal(RunExitCode.Failed, RunExitCodeResolver.Resolve(Result(state)));
+    }
+
     // Polarity partner: a resolved (rejected) capture clears the flag but leaves the step Failed --
     // this is the shape 'baton resolve --reject' produces, and it must read as an ordinary Failed room
     // again, not stay stuck reading Indeterminate forever.
