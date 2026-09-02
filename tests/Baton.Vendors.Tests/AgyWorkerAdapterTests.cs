@@ -542,22 +542,25 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
-    public void A_read_only_scoped_shell_grant_is_still_refused_shell_without_network_on_agy()
+    public void A_read_only_scoped_shell_grant_now_resolves_on_agy_by_deferring_to_the_hook()
     {
-        // #1456: review's exact claude-side grant shape (RunShellCommands scoped by read-only
-        // patterns, NetworkAccess false, ShellCommandsAreReadOnly true) has no equivalent here --
-        // agy's --dangerously-skip-permissions is all-or-nothing, and ShellCommandsAreReadOnly is a
-        // PermissionGrant-level coherence exemption (WorkerBindingResolver's #529 check), not a claim
-        // this adapter's own translator understands. It must still refuse, loudly, rather than
-        // silently resolving to an unscoped --dangerously-skip-permissions or a plain --mode.
+        // #1456 shipped review's exact claude-side grant shape (RunShellCommands scoped by read-only
+        // patterns, NetworkAccess false, ShellCommandsAreReadOnly true) and this test used to assert
+        // agy refused it outright, because --dangerously-skip-permissions is all-or-nothing and
+        // ShellCommandsAreReadOnly is a PermissionGrant-level coherence exemption
+        // (WorkerBindingResolver's #529 check), not a claim this adapter's own translator understood.
+        //
+        // The hook route expresses this grant correctly end to end -- measured by #1387's second
+        // probe; see spec/baton.md §9 and docs/vendor-doc-audit.md for the full table, not restated
+        // here. So this shape now resolves rather than refuses.
         var grant = new PermissionGrant(
             ReadFiles: true, WriteFiles: false, RunShellCommands: true,
             ShellCommandPatterns: ["git diff*"], NetworkAccess: false, ShellCommandsAreReadOnly: true);
 
-        var ex = Assert.Throws<PermissionGrantUnsupportedException>(() => new AgyWorkerAdapter().Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract));
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
 
-        Assert.Equal("agy", ex.AdapterName);
+        Assert.Contains("--dangerously-skip-permissions", target.Args);
     }
 
     [Fact]
@@ -571,6 +574,49 @@ public class AgyWorkerAdapterTests
         Assert.False(succeeded);
         Assert.Null(resolved);
         Assert.NotNull(gapReason);
+    }
+
+    /// <summary>
+    /// #1387's polarity pair, arm 1: an UNSCOPED shell grant without network still refuses -- nothing
+    /// would bound <c>--dangerously-skip-permissions</c>' network-side over-grant, so this arm must stay
+    /// exactly as conservative as <see cref="TryTranslatePermissionGrant_refuses_shell_commands_without_throwing"/>
+    /// even when the grant is otherwise identical to arm 2 below.
+    /// </summary>
+    [Fact]
+    public void A_shell_grant_without_network_and_without_patterns_still_refuses()
+    {
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(
+            ReadFiles: true, RunShellCommands: true, NetworkAccess: false, ShellCommandPatterns: null);
+
+        var succeeded = adapter.TryTranslatePermissionGrant(grant, out var resolved, out var gapReason);
+
+        Assert.False(succeeded);
+        Assert.Null(resolved);
+        Assert.NotNull(gapReason);
+    }
+
+    /// <summary>
+    /// #1387's polarity pair, arm 2: a PATTERN-SCOPED shell grant without network now defers to the
+    /// hook instead of refusing -- the full measured table lives in spec/baton.md §9 and
+    /// docs/vendor-doc-audit.md, not restated here. The deny half of that story is
+    /// <c>agy.hook-deny-honoured</c>'s own claim (a <c>PreToolUse</c> deny blocks the call); this test
+    /// only pins the translation this PR changes, not the hook's own enforcement, which that
+    /// sentinel already covers.
+    /// </summary>
+    [Fact]
+    public void A_pattern_scoped_shell_grant_without_network_defers_to_the_hook_instead_of_refusing()
+    {
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(
+            ReadFiles: true, RunShellCommands: true, NetworkAccess: false,
+            ShellCommandPatterns: ["git status*", "git log*"]);
+
+        var succeeded = adapter.TryTranslatePermissionGrant(grant, out var resolved, out var gapReason);
+
+        Assert.True(succeeded);
+        Assert.Equal("--dangerously-skip-permissions", resolved);
+        Assert.Null(gapReason);
     }
 
     [Fact]

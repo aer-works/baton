@@ -297,6 +297,20 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         if (grant.RunShellCommands)
         {
+            // #1387: a pattern-scoped shell grant (RunShellCommands=true, NetworkAccess=false, a
+            // non-empty ShellCommandPatterns) now defers to the hook instead of refusing --
+            // --dangerously-skip-permissions still turns run_command on at all headlessly, and the
+            // hook (AgyHookCheckCommand) does the actual narrowing. Full measurement: spec/baton.md
+            // §9's "agy now expresses this too" paragraph and docs/vendor-doc-audit.md's dated entry
+            // -- not restated here. An unscoped shell grant (no patterns) is unchanged: nothing would
+            // bound an unscoped --dangerously-skip-permissions shell, so it still refuses.
+            if (grant.ShellCommandPatterns is { Count: > 0 })
+            {
+                resolvedValue = "--dangerously-skip-permissions";
+                gapReason = null;
+                return true;
+            }
+
             resolvedValue = null;
             gapReason = "agy only supports auto-approving shell command execution via " +
                 "--dangerously-skip-permissions, which also grants network access. Granting unrequested " +
