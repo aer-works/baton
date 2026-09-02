@@ -1394,10 +1394,9 @@ content):
 - **Snapshot push** — `SNAPSHOT_KV_WRITE_COST` (1). `terminal_archive` now rides inside the SAME
   `"snapshot"` KV value (folded in by item 2 below) instead of a second, unconditional
   `env.FLEET.put` — one write per push, full stop, never two.
-- **Deliver batch** — `DELIVER_BATCH_KV_WRITE_COST` (2), regardless of item count K. `worker.js`'s
-  `handleDeliver` now stores every item in one POST's worth of content in a single
-  `"inbox:batch:<id>"` blob plus the `"inbox:index"` write (item 2 below) — was K+1 (one
-  `"inbox:item:<id>"` put per item).
+- **Deliver batch** — `DELIVER_BATCH_KV_WRITE_COST` (2), flat, no matter how many items a single
+  `/deliver` POST carries — down from a cost that scaled with item count before item 2's fold (see
+  "Item 2" below for exactly what changed on `worker.js`'s side).
 - **Heartbeat or derived-freshness ping** — `HEARTBEAT_KV_WRITE_COST` (1) — unchanged; the two
   cadences already shared one write per POST (#1613 item 2) and stay mutually exclusive per cycle.
 

@@ -384,12 +384,9 @@ export default {
       const payload = Array.isArray(parsed) ? { rooms: parsed } : parsed;
       // #1690 item 2: `terminal_archive` (every terminal room; pusher.py's own hot-set cap keeps
       // `rooms` itself to non-terminal + the newest N terminal only, see pusher.py's
-      // HOT_TERMINAL_CAP) now rides straight into the SAME "snapshot" KV value as everything else --
-      // ONE env.FLEET.put per push, not two (was a second, unconditional put whenever a terminal
-      // room existed, #1690's own measured table). A plain (no `page`) fleet_status call still stays
-      // small: handleMcp's fleet_status branch strips terminal_archive back out on the READ side
-      // now, instead of it never having been written together. Read back a page at a time only when
-      // `page` is passed (see handleMcp's fleet_status branch above).
+      // HOT_TERMINAL_CAP) rides straight into `payload` below, no separate KV key or write of its
+      // own -- this file's own header docstring is the canonical record of who reads it back out
+      // and how (the fleet_status handler, both the plain and the `page` branch).
       const snapshot = JSON.stringify({ pushed_at: new Date().toISOString(), ...payload });
       await env.FLEET.put("snapshot", snapshot);
       return new Response("ok", { status: 200 });

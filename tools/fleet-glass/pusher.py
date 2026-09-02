@@ -122,11 +122,10 @@ with zero declared outputs (typically a Failed room) still gets ONE deliverable,
 only the verdict summary, so a failure with nothing to show is still visible in the inbox.
 
 WRITE BUDGET, KEY MIGRATION, & BATCH CAPPING (#1617, PR #1632; folded to 2 writes/batch by #1690):
-Each /deliver POST of K items costs DELIVER_BATCH_KV_WRITE_COST (2) KV writes regardless of K --
-worker.js's handleDeliver stores every item's content in ONE `inbox:batch:<id>` blob plus the
-`inbox:index` write, not one `inbox:item:<id>` put per item (the pre-#1690 K+1 shape) -- see
-spec/baton.md §6, "Fleet Glass write budget" for the full arithmetic and `deliver_allowed`'s own
-ledger gating. When keys migrated from room_name to room_path, `gather_deliverables` automatically
+Each /deliver POST costs DELIVER_BATCH_KV_WRITE_COST (2) KV writes flat, independent of how many
+items it carries -- worker.js's handleDeliver (see its own storage-key docstring) is what does the
+folding; spec/baton.md §6, "Fleet Glass write budget" has the full arithmetic and `deliver_allowed`'s
+own ledger gating. When keys migrated from room_name to room_path, `gather_deliverables` automatically
 migrates legacy `f"{room_name}::{artifact}"` entries on load under their respective room_path keys
 and drops the old keys, stamping `__format_version__ = 2`. This avoids an all-at-once re-push storm
 of already-delivered history (measured at 210 deliverables / 211 KV writes worst case on this
@@ -702,9 +701,10 @@ def quantize_live_for_hash(room_list: list, now_ts: float, bucket_seconds: float
     accumulating, lastActivityAt's own 90s bucket advancing) is real per-cycle churn that would
     otherwise re-trigger the #1457 change-gate every interval_seconds -- collapsing it to a
     `bucket_seconds` (default 300s) bucket for hashing purposes means the gate sees CHANGED from
-    telemetry alone at most once per bucket. A STRUCTURAL change -- a different room set, a state
-    transition, a new/changed deliverable, error text -- lives in fields this function never
-    touches, so it still changes the hash on the very next cycle, unaffected by this gate."""
+    telemetry alone at most once per bucket. Everything OTHER than `live` is copied through
+    untouched, so any non-telemetry difference the change-gate already cared about (spec/baton.md
+    §6, "Fleet Glass write budget") still flips the hash on the very next cycle, this gate having
+    played no part in it."""
     bucket = int(now_ts // bucket_seconds)
     out = []
     for room in room_list or []:
@@ -1072,9 +1072,10 @@ DELIVER_RESERVE = 100        # writes/day carved out of KV_DAILY_WRITE_TARGET so
 SNAPSHOT_KV_WRITE_COST = 1   # matches worker.js's /push handler post-#1690 item 2: ONE
                               # env.FLEET.put("snapshot", ...) per push (terminal_archive rides
                               # inside that same value, never a separate KV key or write).
-DELIVER_BATCH_KV_WRITE_COST = 2  # matches worker.js's /deliver handler post-#1690 item 2: one
-                              # inbox:batch:<id> put (every item in the POST, however many) plus
-                              # one inbox:index put -- was K+1 (one inbox:item:<id> put per item).
+DELIVER_BATCH_KV_WRITE_COST = 2  # matches worker.js's /deliver handler post-#1690 item 2: a flat
+                              # 2 writes for the whole POST regardless of how many items it carries
+                              # -- the per-item write worker.js used to make is gone (see worker.js's
+                              # own storage-key docstring for the exact shape).
 HEARTBEAT_KV_WRITE_COST = 1  # matches worker.js's /heartbeat handler: one
                               # env.FLEET.put("heartbeat_at", ...) per POST, whichever of the two
                               # cadences (hourly beat, derived-freshness ping) fired it.
