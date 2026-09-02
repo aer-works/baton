@@ -1119,11 +1119,13 @@ reading as the same human-named lane.
 `label` immediately above** — a room-level fact stamped onto every entry at dispatch time, read off
 the first entry whose `Workstream` is non-null on both `ProcessRoomAsync` paths, absent under the same
 conditions `label` is absent under. `redispatch` carries a room's workstream into its child unless
-overridden (§2), so a lineage of redispatches keeps grouping as one workstream. Fleet Glass
-(`tools/fleet-glass/glass.html`, `groupLanesHtml`) groups each state bucket's rendered lanes by this
-field, alphabetically by slug, with a group heading spanning the lane grid; rooms with no workstream
-render as flat, ungrouped lanes exactly as every room did before #1619 — the same fail-open-to-flat
-contract `label`'s own absence already has.
+overridden (§2), so a lineage of redispatches keeps grouping as one workstream. Pre-#1678, Fleet
+Glass (`tools/fleet-glass/glass.html`, `groupLanesHtml`) grouped each state bucket's rendered lanes
+by this field with a group heading spanning the lane grid; the #1678 board redesign (below) replaced
+that section-per-state layout with compact board cards that have no room for a group heading, so a
+card with a workstream instead carries it as a small line under the title (`boardCardHtml`'s own
+`wsLine`) — the field is still surfaced, just not still grouped. Rooms with no workstream render with
+no such line, the same fail-open-to-absent contract `label`'s own absence already has.
 
 **`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510/#1522)** are copied verbatim from
 `WorkflowStatusStepView`, never re-derived here — see that record's own remarks for the gating
@@ -1309,6 +1311,36 @@ definition has no exit event yet and needs every line scanned, not just the last
   derivation-stuck check above, independent of whether any room is Running (a failing push is not
   scoped to active lanes the way the derivation-stuck check is).
 
+**Board + detail-pane IA (#1678, operator ruling 2026-09-02, Combo C+E).** `glass.html`'s Fleet tab
+is a three-column state board — Needs You (the conductor pinned first, then Stalled + Indeterminate
+rooms) / Running / Done (Failed + Succeeded, dismissible) — with a detail pane that opens on
+selecting a card: docked beside the board on desktop, and (≤480px) a slide-in second screen replacing
+the board, reached via carousel pills that pick one column at a time and a Back control that returns
+to it. A card carries only a label, one state chip, and one telemetry line (below) — no path, no
+timeline, no copy verbs; those live in the pane once a card is selected (`roomDetailHtml`), which
+also carries the same state-appropriate copy verbs the pre-#1678 per-lane card used to show directly
+(`copyButtonsHtml`, unchanged — read-only, copies text only, never executes, spec/baton.md §10).
+Superseded the pre-#1678 layout of one `<h2>`-headed, dismissible section per state bucket
+(`groupLanesHtml`/`laneHtml`); everything that layout did that this one does not explicitly replace —
+the freshness/pusher-alive strip, the empty-state, dark/light theming, the deliverables inbox reader,
+the conductor's `deliverables →` link (#1681), the terminal "copy delete"/"copy prune" verbs, and
+"Unreadable entries" as its own collapsible list below the board — is unchanged.
+
+**Telemetry on every card, not just Running (the one deliberate deviation from the reference mock).**
+Pre-#1678 only a Running room showed a telemetry line at all (`rooms[].live`, above). The ruling
+widens that to every card: a Running card still reads `rooms[].live`'s bits (`out`/`ctx`/`N
+calls`/`active … ago`); a terminal or Needs-You card instead reads its last step's own `usage`/
+`linkedFromUsage` (`ExecutionUsageView`, §3 schema — no pusher or engine change needed, since
+`fleet_status` already forwards `steps[].usage` verbatim for every room, not only Running ones) and
+renders `out <tokensOut> · <turns> turns · <wallClockMs as Nm Ss>` (`cardTelemetryText`, using
+`durFine` for the fine-grained wall-clock a card wants — distinct from the coarser `dur()` this page
+already used elsewhere, which rounds to whole minutes). A room with no usage on any step (never
+executed far enough to record one) renders the
+literal `—`, never a fabricated or blank figure — the same never-invent convention every other
+absent-safe field on this page already follows. The detail pane's own Telemetry section
+(`fullTelemetryHtml`) shows every step's usage line, not just the last, for the same terminal/
+Needs-You rooms.
+
 **Paging and the terminal hot-set cap (#1656).** Measured 2026-09-02: `deliverables_list` returned
 292 items / 160,539 bytes in one body, big enough that the operator's MCP connector reported
 "Inbox feed unavailable (upstream_error)"; `fleet_status` was 265,193 bytes / 234 rooms per push.
@@ -1335,11 +1367,11 @@ Both mailbox tools (`tools/fleet-glass/worker.js`'s `handleMcp`) now page:
   and archive from the SAME `newest_timestamp` measure `drop_stale_rooms` already uses, so "newest"
   means the same thing everywhere in this module; `timelines` in the pushed body is filtered to the
   hot set's own paths, never the wider surviving-room set, so an archived-only terminal room's
-  timeline never rides the hot push either. `tools/fleet-glass/glass.html`'s Terminal section
-  fetches additional pages on demand (a "load older" link, wired to a one-shot `fleet_status(page,
-  limit)` call through the same `watchTool` the periodic poll already uses) and merges them into the
-  rendered Failed/Succeeded buckets, deduped by room path against whatever the hot set already
-  showed.
+  timeline never rides the hot push either. `tools/fleet-glass/glass.html`'s Done column (the
+  pre-#1678 Terminal section's successor, below) fetches additional pages on demand (a "load older"
+  link, wired to a one-shot `fleet_status(page, limit)` call through the same `watchTool` the
+  periodic poll already uses) and merges them into the rendered Failed/Succeeded buckets, deduped by
+  room path against whatever the hot set already showed.
 
   The cap bounds only the terminal bucket. `non_terminal` rooms — Running, Stalled, Indeterminate —
   ride the plain (no `page`) `fleet_status` response in full, uncapped; `split_hot_and_archive` never
@@ -2040,6 +2072,20 @@ are best-effort and `None` off Windows (pixi.toml's `linux-64` dev-sandbox leg c
 `GlobalMemoryStatusEx`/`Get-CimInstance`). This is what a future "measured `<N> MB free` → no new
 lane" conductor rule would read instead of the fixed `<2 GB free` guess it replaces -- that rule
 itself is not part of this change.
+
+### C-14 — Fleet Glass board redesign: Combo C+E, telemetry on every card
+
+Operator ruling, 2026-09-02, after reviewing an eight-layout options page (C, D, E, C+A, C+B, C+E
+among them, `docs/agents/...` scratch artifact, not itself a register): **Combo C+E** — a
+three-column state board (Needs You / Running / Done) with compact cards, plus a detail pane that
+opens on selecting a card (docked on desktop, a slide-in second screen on the phone at 390px, reached
+via carousel pills). Copy verbs, the full path, the step timeline, and the full per-step telemetry
+breakdown all moved into the pane; a card itself carries only a label, one state chip, and one
+telemetry line. **One deliberate change from the reference mock:** every card carries that telemetry
+line, not only Running ones — the operator wants burn visible fleet-wide at a glance, not only while
+something is actively running. §6's "Board + detail-pane IA" and "Telemetry on every card" entries
+are this decision's full technical contract (schema, field provenance, the `—` no-fabrication rule);
+this entry records only the decision itself and why it deviates from the mock it was ruled from.
 
 ---
 
