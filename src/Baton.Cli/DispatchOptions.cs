@@ -51,6 +51,12 @@ namespace Baton.Cli;
 /// </param>
 /// <param name="Attachments">The <c>--attach</c> context files copied into the room (#1500).</param>
 /// <param name="ListCapabilities">True when <c>--list-capabilities</c> was passed to print discoverability info (#1500).</param>
+/// <param name="RepoPath">
+/// <c>--repo</c> (#1645): a checkout whose <see cref="InstalledVersionDrift"/> release version this
+/// dispatch's installed <c>baton</c> is compared against, printing a WARN on stderr when behind. Null
+/// falls back to <c>BATON_REPO</c> (<see cref="Baton.Status.BatonEnvironmentSnapshot.RepoOverride"/>);
+/// neither present means no checkout is discoverable and the check is skipped, not refused.
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -65,4 +71,5 @@ public sealed record DispatchOptions(
     string? Label = null,
     string? Workstream = null,
     IReadOnlyList<string>? Attachments = null,
-    bool ListCapabilities = false);
+    bool ListCapabilities = false,
+    string? RepoPath = null);

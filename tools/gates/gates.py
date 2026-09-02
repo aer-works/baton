@@ -54,6 +54,10 @@ OVERLAP = [
     # #1402: pure python against an isolated temp lock file -- starts no MSBuild and never touches
     # the real build lock, so it cannot interfere with the build phase it overlaps.
     "buildlock-selftest",
+    # #1645: pure python against injected fakes and temp dirs -- never spawns a real dotnet/baton/
+    # pixi process and never touches this machine's real ~/.baton or NuGet cache, so it is exactly as
+    # safe to overlap as buildlock-selftest above.
+    "tool-refresh-selftest",
     # #1601: isolated sabotage suite (tools/gates/sabotage.py) overlapping the build.
     "gate-sabotage",
     # #1636: this file's own selftest -- a real temp git repo and `sh`, no MSBuild and no built

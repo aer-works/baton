@@ -60,6 +60,15 @@ public static class StatusCommand
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(output);
 
+        // #1645 item 2: same non-fatal drift WARN DispatchCommand prints, once per invocation (never
+        // repeated inside a --follow loop's poll cycle, which lives further down this method).
+        if (InstalledVersionDrift
+            .Evaluate(options.RepoPath, VersionInfo.GetVersion(System.Reflection.Assembly.GetExecutingAssembly()))
+            .WarnLine() is { } statusDriftWarning)
+        {
+            Console.Error.WriteLine(statusDriftWarning);
+        }
+
         var snapshotPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.SnapshotFileName);
         var logPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.FlowLogFileName);
 

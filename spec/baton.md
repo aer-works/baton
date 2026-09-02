@@ -1505,6 +1505,19 @@ decision's scope) or about a vendor CLI's own OS support (`docs/vendor-doc-audit
 Code cloud session doing *development* work on this repo from a Linux sandbox — not a second support
 target; nothing is built, tested, or packaged for it, and `osx-arm64` is dropped outright.
 
+**Installation and versioning (#1645).** `baton` ships as a self-built, unpublished `dotnet tool` —
+README's *Installing `baton`* section owns the commands. Its release version is one value,
+`Directory.Build.props`'s `<Version>` under `src/Baton.Cli`, read by `VersionInfo` at build time
+(`baton --version`) and by `InstalledVersionDrift` at dispatch time; nothing else in the tree carries a
+second copy of it. Refreshing an installed copy — packing, uninstalling, purging the version's NuGet
+cache entry, reinstalling, verifying the reinstall actually took — is `pixi run tool-refresh`
+(`tools/tool-refresh/refresh.py`, whose own docstring has the exact drain predicate), which refuses to
+start while a room under `~/.baton/rooms` still looks live, rather than risk the access-denied
+uninstall failure a still-running lane causes. Because an
+operator can forget to run it, `baton dispatch`/`baton status` independently WARN on stderr — never
+failing the exit code — when the installed version is behind a discoverable checkout's (`--repo`, or
+`BATON_REPO`); `InstalledVersionDrift` is the one evaluator both read.
+
 ### C-11 — The tailnet drill-down plane (glass v2.5)
 
 Ratified with the operator 2026-08-31, out of the glass v2 design session (#1502). This entry is the

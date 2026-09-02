@@ -348,4 +348,20 @@ public class DispatchOptionsParserTests
         var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", raw]);
         Assert.Equal(raw, options.Workstream);
     }
+
+    [Fact]
+    public void The_repo_option_parses_to_an_absolute_path()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--spec", "t.md", "--repo", "."]);
+
+        Assert.Equal(Path.GetFullPath("."), options.RepoPath);
+    }
+
+    [Fact]
+    public void Omitting_repo_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--spec", "t.md"]);
+
+        Assert.Null(options.RepoPath);
+    }
 }

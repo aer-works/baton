@@ -8,6 +8,11 @@ It is **not** for developing Baton — that is [`CLAUDE.md`](../../CLAUDE.md) �
 reference for `baton dispatch`, which is [`docs/dispatch.md`](../dispatch.md). Where those own a fact,
 this links rather than restates.
 
+This assumes `baton` is already installed on PATH. If `baton dispatch`/`baton status` print a
+`WARN: installed baton ... is behind this checkout's ...` line, the installed tool has drifted from
+the repo it is dispatching against (#1645) — refresh it with `pixi run tool-refresh` (README's
+*Installing `baton`* section) before trusting anything below.
+
 Everything below is the state of the tree on the day it was written. Dispatch ergonomics
 ([#1354](https://github.com/aer-works/baton/issues/1354)), the machine completion contract
 ([#1356](https://github.com/aer-works/baton/issues/1356)), and validation errors carrying a

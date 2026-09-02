@@ -44,6 +44,17 @@ public static class DispatchCommand
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(adapters);
 
+        // #1645 item 2: a loud, non-fatal WARN when the installed `baton` has drifted behind the repo
+        // checkout's current release — see InstalledVersionDrift's own remarks for why this never
+        // touches the exit code, and why it borrows Staleness's verdict shape rather than DriftGrace's
+        // grace-window one.
+        if (InstalledVersionDrift
+            .Evaluate(options.RepoPath, VersionInfo.GetVersion(System.Reflection.Assembly.GetExecutingAssembly()))
+            .WarnLine() is { } dispatchDriftWarning)
+        {
+            Console.Error.WriteLine(dispatchDriftWarning);
+        }
+
         if (options.ListCapabilities)
         {
             PrintCapabilities(Console.Out);
