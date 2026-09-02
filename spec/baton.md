@@ -743,10 +743,15 @@ serialized against other lanes by the build lock each gate member takes for itse
 `DispatchAndRecordOutcomeAsync`, between `OutcomeClassifier.Classify` returning `Succeeded` and the
 outcome event append; deliberately not inside `Classify` itself, which also runs on the crash-recovery
 replay branch against a possibly-defunct workspace). `FlowEvent.VerifyStarted`/`VerifyPassed` are
-diagnostic-only; `FlowEvent.VerifyFailed` (`FailingMembers`/`Tail`, parsed from `tools/gates/gates.py`'s
-own deterministic `summarise()` line) settles the step `Indeterminate` — never a blind retry, the
-ruling's own wording — via the same `StateProjector.ApplyIndeterminate` helper the budget arrest below
-shares. An operator cancel landing inside the verify window is the one exception: `VerifyFailedKind.Cancelled`
+diagnostic-only; `FlowEvent.VerifyFailed` (`FailingMembers`, parsed from `tools/gates/gates.py`'s own
+deterministic `summarise()` line) settles the step `Indeterminate` — never a blind retry, the ruling's
+own wording — via the same `StateProjector.ApplyIndeterminate` helper the budget arrest below shares.
+`Tail` (#1701) is each named failing member's OWN captured output, keyed off `gates.py`'s own
+per-member `"  pass/FAIL  name  (exit code)"` summary lines — never a blind cut of the whole combined
+`gates-quiet` run (`Baton.Mutation.VerifyRunner`'s own remarks are the canonical account of why, and
+of its whole-stream fallback when a `gates.py` shape drift leaves no marker line to key off). This is
+also what `baton status --json` now surfaces per step as `verifyTail`, so a flake is diagnosable from
+the room without reconstructing it by hand. An operator cancel landing inside the verify window is the one exception: `VerifyFailedKind.Cancelled`
 observed together with the caller's own cancellation token already firing means the journal *can*
 decide (it holds the cancel), so `MutationInterface` appends `FlowEvent.ExecutionCancelled` instead —
 room reads `Cancelled`, retry stays open, `VerifyStarted` survives as the diagnostic record of what was

@@ -124,6 +124,7 @@ public static class StateProjector
                     state.IndeterminateAwaitingResolutionStepIds.Remove(acceptedStepId);
                     state.IndeterminateReasonByStepId.Remove(acceptedStepId);
                     state.IndeterminateProducerByStepId.Remove(acceptedStepId);
+                    state.IndeterminateVerifyTailByStepId.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -307,7 +308,7 @@ public static class StateProjector
 
             case FlowEvent.VerifyFailed verifyFailed:
                 state.UnmatchedVerifyExecutionIds.Remove(verifyFailed.ExecutionId);
-                ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed), IndeterminateProducer.VerifyFailed);
+                ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed), IndeterminateProducer.VerifyFailed, verifyFailed.Tail);
                 break;
 
             case FlowEvent.ExecutionArrested arrested:
@@ -358,6 +359,11 @@ public static class StateProjector
                     state.IndeterminateProducerByStepId[indeterminateStepId] = indeterminate.CapturedResponseFile is not null
                         ? IndeterminateProducer.CapturedResponse
                         : IndeterminateProducer.ContractFailure;
+
+                    // Neither arm here is VerifyFailed, so a tail recorded by an earlier VerifyFailed
+                    // producer on this step must not survive being overwritten — same discipline as
+                    // the other clear sites (:127, :378).
+                    state.IndeterminateVerifyTailByStepId.Remove(indeterminateStepId);
                 }
 
                 break;
@@ -374,6 +380,7 @@ public static class StateProjector
                     state.IndeterminateAwaitingResolutionStepIds.Remove(resolvedStepId);
                     state.IndeterminateReasonByStepId.Remove(resolvedStepId);
                     state.IndeterminateProducerByStepId.Remove(resolvedStepId);
+                    state.IndeterminateVerifyTailByStepId.Remove(resolvedStepId);
 
                     if (resolved.Accepted)
                     {
@@ -438,7 +445,8 @@ public static class StateProjector
     /// </para>
     /// </summary>
     private static void ApplyIndeterminate(
-        ProjectionCheckpointState state, ExecutionId executionId, string reason, IndeterminateProducer producer)
+        ProjectionCheckpointState state, ExecutionId executionId, string reason, IndeterminateProducer producer,
+        string? verifyTail = null)
     {
         state.TerminalStatusByExecutionId[executionId] = StepStatus.Failed;
         if (!state.StepIdByExecutionId.TryGetValue(executionId, out var stepId))
@@ -452,6 +460,10 @@ public static class StateProjector
         state.IndeterminateAwaitingResolutionStepIds.Add(stepId);
         state.IndeterminateReasonByStepId[stepId] = reason;
         state.IndeterminateProducerByStepId[stepId] = producer;
+        // #1701: null (never fabricated) for every producer but VerifyFailed -- an arrest's `reason`
+        // above is already the full diagnostic, and the other two producers carry their own account
+        // on LatestCapturedResponseFileByStepId/LatestUnsatisfiedOutputNamesByStepId instead.
+        state.IndeterminateVerifyTailByStepId[stepId] = verifyTail;
         state.RetryForeclosedStepIds.Add(stepId);
         state.RetryNotBeforeByStepId.Remove(stepId);
         state.RetryDelayMsByStepId.Remove(stepId);
@@ -562,7 +574,8 @@ public static class StateProjector
                 state.RetryForeclosedStepIds.Contains(stepDefinition.StepId),
                 state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId),
                 state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.IndeterminateVerifyTailByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

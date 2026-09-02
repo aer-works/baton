@@ -5,6 +5,7 @@ using Baton.Mutation;
 using Baton.Outcomes;
 using Baton.Status;
 using Baton.Store;
+using Baton.Tests.Projection;
 using Baton.Tests.TestSupport;
 
 namespace Baton.Tests.Mutation;
@@ -14,7 +15,16 @@ namespace Baton.Tests.Mutation;
 /// verb's own domain-level mutation surface. <see cref="Baton.Cli.ResolveCommand"/> is the thin CLI
 /// wrapper around this; these tests drive the method directly, the same way
 /// <see cref="MutationInterfaceDecisionTests"/> drives <see cref="MutationInterface.RecordDecisionAsync"/>.
+/// <see cref="A_real_dispatch_with_a_missing_prose_safe_output_reaches_ExecutionIndeterminate_not_ExecutionFailed"/>
+/// drives a real dispatch through a <see cref="FakeResponseParser"/> to
+/// <see cref="Baton.Outcomes.OutputMaterializer.TryCaptureFinalResponse"/>'s success arm, which writes
+/// a real, unguarded <c>Console.Error.WriteLine("CAPTURED (#1594): ...")</c> — the same process-global
+/// stream <see cref="ConsoleErrorCaptureCollection"/> serializes access to (see
+/// <see cref="Baton.Tests.Outcomes.OutcomeClassifierTests"/>, joined for the identical reason in
+/// #1607/a484fad8). This class drove the same write unjoined; #1701 raised the assembly's parallel
+/// test count and made the pre-existing race against <c>RoomTurnThrottleTests</c> land in CI.
 /// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public class MutationInterfaceCaptureResolutionTests
 {
     private static readonly StepId A = new("a");
