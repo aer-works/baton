@@ -243,6 +243,14 @@ Once a room is genuinely done with, `baton room delete <room-dir>` (or its batch
 line(s), and (best-effort) a deliverables tombstone — refusing a non-terminal room unless `--force`;
 `spec/baton.md` §8 has the full contract, including what it cannot reach.
 
+**Delivering orchestrator deliverables (`baton deliver`).** A conductor or orchestrator delivering artifacts (such as its decision queue at the end of an unattended window) delivers them directly to the standing conductor room so they reach the Fleet Glass inbox:
+
+```
+baton deliver <file> [--title <text>] [--room <room-dir>]
+```
+
+This copies the file into `<room>/artifacts/conductor/<basename>` (defaulting to `~/.baton/rooms/conductor/`) and records it in `manifest.jsonl`, which `pusher.py` forwards to the inbox with a `CONDUCTOR` chip. Re-delivering the same source path updates the file and replaces the existing inbox item in place.
+
 ---
 
 ## 4. Adapter notes

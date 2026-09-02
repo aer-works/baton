@@ -292,6 +292,24 @@ public sealed class FleetStatusTool : IMcpTool
         var snapshotPath = Path.Combine(roomDir, BatonPaths.SnapshotFileName);
         if (!File.Exists(snapshotPath))
         {
+            var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
+            var soleBinding = TryResolveSoleBinding(bindings);
+            var (role, adapter, model, effort, timeoutMs) = ProjectBindingFields(soleBinding);
+            if (string.Equals(role, "conductor", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(roomName, "conductor", StringComparison.OrdinalIgnoreCase))
+            {
+                return new FleetRoomStatusView(
+                    Name: roomName,
+                    Path: roomDir,
+                    Role: role ?? "conductor",
+                    Adapter: adapter,
+                    Model: model,
+                    Effort: effort,
+                    TimeoutMs: timeoutMs,
+                    Label: ExtractRoomLabel(bindings),
+                    Workstream: ExtractRoomWorkstream(bindings));
+            }
+
             return new FleetRoomStatusView(
                 Name: roomName,
                 Path: roomDir,
@@ -366,7 +384,7 @@ public sealed class FleetStatusTool : IMcpTool
             // reported symptom -- "the room reads RUNNING forever on the fleet view"): it never
             // touches `outcome`/`state.Status` itself, so RunExitCodeResolver, TerminalSentinelWriter,
             // and every other WorkflowOutcome consumer keep reading exactly what they always did.
-            var displayState = outcome == WorkflowOutcome.Running && IsConfirmedStalled(steps)
+            var displayState = outcome == WorkflowOutcome.Running && IsConfirmedStalled(steps) && !string.Equals(role, "conductor", StringComparison.OrdinalIgnoreCase)
                 ? StalledDisplayState
                 : outcome;
 

@@ -1477,6 +1477,8 @@ retention prune with no `--state` filter deletes `Indeterminate` rooms too — t
 into `RoomsRetentionDays` accepts that, and `--state Indeterminate` selects them explicitly (or any
 other `--state` value excludes them) if that default is unwanted.
 
+**Standing conductor room and `baton deliver` (#1669).** A standing orchestrator room under `{BATON_HOME}/rooms/conductor/` (`role: conductor` in its `bindings.json` stub) holds deliverables authored directly by an orchestrator rather than a worker subprocess. `baton deliver <file> [--title <text>] [--room <room-dir>]` copies the file to `<room>/artifacts/conductor/<basename>` and appends/replaces an entry in `<room>/artifacts/conductor/manifest.jsonl` keyed on the absolute `source_path` (`title`, `source_path`, `delivered_at`, `sha256`). Re-delivery replaces the entry and updates the file in place. The conductor room is never terminal (has no `terminal.json`), is explicitly excluded from `rooms prune --terminal` candidate discovery, and is excluded from the stall detector. `fleet_status` carries the conductor room's `artifacts_path` so it is visible in the Fleet Glass fleet tab with copyable text, and `pusher.py` scans `manifest.jsonl` to push items to `/deliver` with `kind: conductor` and upsert identity on `source_path`, surfacing them in the Glass inbox with a `CONDUCTOR` chip (newest first).
+
 ---
 
 ## §9 Bindings and permissions

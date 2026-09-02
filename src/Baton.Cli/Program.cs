@@ -74,7 +74,7 @@ if (args.Length >= 1 && args[0] == "daemon")
     return 0;
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "templates", "keep", "unkeep", "room", "rooms", "mcp", "daemon" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "deliver", "templates", "keep", "unkeep", "room", "rooms", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -92,6 +92,7 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
         "--bindings <bindings-file> [--workflow-id <id>]");
     Console.Error.WriteLine($"       {ResumeOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {StatusOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {DeliverOptionsParser.Usage[7..]}");
     Console.Error.WriteLine("       baton templates [--json]");
     Console.Error.WriteLine($"       {KeepOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {UnkeepOptionsParser.Usage[7..]}");
@@ -136,6 +137,13 @@ try
     {
         var statusOptions = StatusOptionsParser.Parse(args[1..]);
         await StatusCommand.ExecuteAsync(statusOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
+        return 0;
+    }
+
+    if (args[0] == "deliver")
+    {
+        var deliverOptions = DeliverOptionsParser.Parse(args[1..]);
+        await DeliverCommand.ExecuteAsync(deliverOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
         return 0;
     }
 
