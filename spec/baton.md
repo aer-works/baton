@@ -537,7 +537,10 @@ path for the other two producers: `RecordCaptureResolutionAsync` admits a target
 `LatestCapturedResponseFile is not null` as well as the `IndeterminateAwaitingResolution` flag, so a
 verify-failed or arrested step (which has no captured response to accept or reject) is refused rather
 than admitted, in either direction. Those two reopen only through a fresh dispatch —
-`ExecutionRequestAccepted` clears the flag, per `StateProjector`. It reads the step's
+`ExecutionRequestAccepted` clears the flag, per `StateProjector`. `baton redispatch` against the same
+parent room is not that fresh dispatch: its Indeterminate-parent gate refuses unconditionally and
+nothing ever clears it for these two producers, so redispatch is permanently unavailable here — only
+a brand-new `baton dispatch` room reopens the step. `baton resolve` reads the step's
 `LatestCapturedResponseFile`/`LatestUnsatisfiedOutputNames`
 (already surfaced on `WorkflowStatusView`/`terminal.json`/`status --json`, per the schema below);
 `--accept-capture` writes the captured response (header stripped,
