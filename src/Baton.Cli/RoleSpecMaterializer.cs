@@ -31,7 +31,8 @@ internal static class RoleSpecMaterializer
         TimeSpan? timeoutOverride,
         IReadOnlyList<string>? attachments,
         string roomDirectoryPath,
-        long? tokenBudgetOverride)
+        long? tokenBudgetOverride,
+        int? maxToolStepsOverride)
     {
         ValidateAttachments(attachments);
 
@@ -63,7 +64,7 @@ internal static class RoleSpecMaterializer
             role, spec, adapterOverride, workingDirectory: workingDirectory,
             modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride,
             timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory,
-            tokenBudgetOverride: tokenBudgetOverride);
+            tokenBudgetOverride: tokenBudgetOverride, maxToolStepsOverride: maxToolStepsOverride);
     }
 
     /// <summary>

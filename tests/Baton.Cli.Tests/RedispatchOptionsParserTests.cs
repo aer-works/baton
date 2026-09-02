@@ -56,6 +56,21 @@ public class RedispatchOptionsParserTests
         Assert.Equal(new[] { "context.txt", "notes.md" }, options.Attachments);
     }
 
+    /// <summary>Merge of #1576 (--attach) and #1686 review F2 (--max-tool-steps): both parse together, alongside --spec.</summary>
+    [Fact]
+    public void Parses_spec_attach_and_max_tool_steps_together()
+    {
+        var options = RedispatchOptionsParser.Parse(
+            [
+                "parent-room", "--spec", "amended.md", "--attach", "context.txt",
+                "--max-tool-steps", "200",
+            ]);
+
+        Assert.Equal("amended.md", options.SpecFilePath);
+        Assert.Equal(new[] { "context.txt" }, options.Attachments);
+        Assert.Equal(200, options.MaxToolSteps);
+    }
+
     [Fact]
     public void Attach_without_value_is_a_typed_argument_error()
     {

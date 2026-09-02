@@ -36,6 +36,10 @@
   of pushed_at, and `pending_push_age_s` (2026-09-01 review finding) is the "Push failing" banner's
   own signal -- see the banner code's own comments below for why pushed_at alone false-fired and why
   derived_at alone cannot see a failing push.
+
+  `pusher.writeBudgetExhaustedUntil` (#1690, absent-safe the same way) is the one final snapshot the
+  pusher sends when its daily KV write-budget ledger runs out, and takes priority over every other
+  banner below -- spec/baton.md §6, "Fleet Glass write budget".
 -->
 <title>Fleet Glass</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -443,6 +447,8 @@ function primaryStateChip(room){
     // it without a person, so it gets the "needs you" colour, never the idle grey the generic
     // fallback below would give an unrecognized state.
     : st === "Stalled" ? ["STALLED","c-warn"]
+    // #1698: Cancelled is over and nobody needs to act -- idle grey, never the "needs you" amber.
+    : st === "Cancelled" ? ["CANCELLED","c-idle"]
     // #1586 S1: Indeterminate means journal facts alone could not decide success vs failure -- a
     // conductor has to look, same "needs you" colour as Stalled, distinct label. Producer since
     // #1608 (WorkflowOutcome.Indeterminate's own remarks) -- baton resolve is the way out.
@@ -788,20 +794,22 @@ document.addEventListener("click", async (ev) => {
 
 // -----------------------------------------------------------------------------------------------
 // #1613 item 1: live telemetry for a Running room's currently-executing step -- a tool-call COUNT,
-// claude-only live token counts (2026-09-01 review), and a last-stream-activity age, all read
-// pusher-side straight off the execution's own .stdout.log (no engine change; see pusher.py's own
-// "Seam choice" comment). Absent-safe like role/adapter/model/effort above: `room.live` is simply
-// never present until the pusher that produced this snapshot has been redeployed for #1613, same
-// convention every other optional fleet_status field on this page already follows. The token
-// fields are additionally claude-only (agy's step_update carries no usage to read) and further
-// gated on the per-message capture shape -- see pusher.py's `extract_live_counts` doc for exactly
-// when each is present.
+// billed-token/turn counts for BOTH vendors (#1682 -- widened from claude-only after a live capture
+// found agy's DONE/agent_response step_update also carries usage), claude-only context-level tokens
+// (2026-09-01 review), and a last-stream-activity age, all read pusher-side straight off the
+// execution's own .stdout.log (no engine change; see pusher.py's own "Seam choice" comment).
+// Absent-safe like role/adapter/model/effort above: `room.live` is simply never present until the
+// pusher that produced this snapshot has been redeployed for #1613, same convention every other
+// optional fleet_status field on this page already follows. `contextTokens`/`cacheReadTokens` stay
+// claude-only and are further gated on the per-message capture shape -- see pusher.py's
+// `extract_live_counts` doc for exactly when each is present.
 // -----------------------------------------------------------------------------------------------
 function liveTelemetryBits(live){
   if(!live) return [];
   const bits = [];
-  if(live.outputTokens != null) bits.push(`out ${fmtK(live.outputTokens)}`);
+  if(live.billedTokens != null) bits.push(`billed ${fmtK(live.billedTokens)}`);
   if(live.contextTokens != null) bits.push(`ctx ${fmtK(live.contextTokens)}`);
+  if(live.turns != null) bits.push(`${live.turns} turn${live.turns === 1 ? "" : "s"}`);
   if(live.toolCalls != null) bits.push(`${live.toolCalls} call${live.toolCalls === 1 ? "" : "s"}`);
   const a = age(live.lastActivityAt);
   if(a) bits.push(`active ${a} ago`);
@@ -980,7 +988,7 @@ function roomDetailHtml(room, timelines, openTimelinePaths){
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   const failedStep = (room.steps||[]).find(s => s.state === "Failed");
   const focusStep = running || failedStep || lastStep;
-  const terminal = room.state === "Failed" || room.state === "Succeeded";
+  const terminal = room.state === "Failed" || room.state === "Succeeded" || room.state === "Cancelled";
   const title = room.label ? esc(room.label) : esc(room.name);
   const roomIdLine = room.label ? `<div class="roomid">${esc(room.name)}</div>` : "";
   const isTlOpen = !!(openTimelinePaths && room.path && openTimelinePaths.has(room.path));
@@ -1048,7 +1056,11 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   // matches none of the exact-match buckets below AND isn't `!r.state`, so without its own bucket
   // it would vanish off the page entirely rather than surface anywhere. Producer since #1608.
   const indeterminate = rooms.filter(r => r.state === "Indeterminate");
-  const failed  = rooms.filter(r => r.state === "Failed");
+  // #1698: Cancelled (`baton cancel`'s terminal word) rides the Failed bucket -- over, not
+  // successful, dismissable, deletable. Measured 9/2: 29 of 72 live rooms were Cancelled and none
+  // rendered, the same truthy-unrecognised-state hole Stalled and Indeterminate closed above.
+  const isFailedLike = (r) => r.state === "Failed" || r.state === "Cancelled";
+  const failed  = rooms.filter(isFailedLike);
   const done    = rooms.filter(r => r.state === "Succeeded");
   const other   = rooms.filter(r => !r.state);
   // #1656: fold in whatever terminal-archive pages the operator has already loaded via "load
@@ -1060,7 +1072,7 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
     for(const r of terminalArchiveExtra){
       if(!r || !r.path || seenPaths.has(r.path)) continue;
       seenPaths.add(r.path);
-      (r.state === "Failed" ? failed : r.state === "Succeeded" ? done : other).push(r);
+      (isFailedLike(r) ? failed : r.state === "Succeeded" ? done : other).push(r);
     }
   }
   const byNewest = (a,b) => (newestStepTime(b)||"").localeCompare(newestStepTime(a)||"");
@@ -1750,7 +1762,17 @@ window.addEventListener("hashchange", applyRoute);
         const derivedMs = snap.derived_at ? Date.now() - Date.parse(snap.derived_at) : null;
         const pendingPushMs = typeof snap.pending_push_age_s === "number" ? snap.pending_push_age_s * 1000 : null;
         const running = snap.rooms.some(r => r.state === "Running");
-        if(hbMs == null){
+        // #1690: writeBudgetExhaustedUntil (absent-safe -- an unredeployed pusher never sends a
+        // `pusher` section at all) is the LAST snapshot the pusher intentionally sends before it
+        // stops pushing for the rest of the UTC day, once its daily KV write budget ledger runs out
+        // (spec/baton.md §6, "Fleet Glass write budget"). Checked FIRST: this is an intentional,
+        // self-explained stop, not a failure the other banners below would otherwise misdiagnose as
+        // a dead pusher or a stuck derivation once pushed_at/derived_at start aging past it.
+        const budgetExhaustedUntil = snap.pusher && typeof snap.pusher.writeBudgetExhaustedUntil === "string"
+          ? snap.pusher.writeBudgetExhaustedUntil : null;
+        if(budgetExhaustedUntil){
+          banner(`<b>Write budget exhausted for today.</b> The pusher hit its daily KV write cap and stopped snapshot pushes until ${esc(budgetExhaustedUntil)} — deliverables may still be landing. Data below is from the last push before the stop.`);
+        } else if(hbMs == null){
           banner("<b>No heartbeat recorded yet.</b> heartbeat_at is unset — redeploy worker.js and the pusher for #1486, or the mailbox hasn't received one yet.");
         } else if(!isFinite(hbMs) || hbMs > HEARTBEAT_DEAD_MS){
           banner(`<b>Pusher likely dead.</b> No heartbeat in ${esc(age(snap.heartbeat_at) || "over 2.5h")} — the fleet machine may be off or the pusher process may have stopped. Data below is from the last push.`);

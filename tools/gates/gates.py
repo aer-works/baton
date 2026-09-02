@@ -113,6 +113,35 @@ AFTER_BUILD_FAST = [
 # green. Outside `gates`, use `pixi run test` (which force-rebuilds -- #688).
 AFTER_BUILD_FULL = AFTER_BUILD_FAST + ["test-no-build"]
 
+# #1676: CI runs `--ci`, which excludes every name here from the run and requires each to carry a
+# non-empty reason -- the same shape sabotage.py's ALLOWLIST enforces for its own ratchet, so an
+# entry cannot be added silently. Empty on purpose: every current gates.py member was verified
+# (during #1676) to run on windows-latest with no live vendor CLI and no dependency on the real
+# ~/.baton -- see OVERLAP's own per-entry comments, which is what that verification rests on. Add an
+# entry here only when a future member genuinely cannot run on a hosted runner, with the reason
+# cited the same way.
+CI_SKIP: dict[str, str] = {}
+
+
+def validate_ci_skip():
+    """Ratchet: every CI_SKIP entry names a real gate member and carries a reason (#1676)."""
+    problems = []
+    members = set(_all_members())
+    for name, reason in CI_SKIP.items():
+        if name not in members:
+            problems.append(f"CI_SKIP names {name!r}, which is not a gates.py member")
+        if not reason or not reason.strip():
+            problems.append(f"CI_SKIP[{name!r}] has no reason")
+    return problems
+
+
+def _dedupe(names):
+    seen = []
+    for name in names:
+        if name not in seen:
+            seen.append(name)
+    return seen
+
 PASS_MARK = "GATES: PASS"
 FAIL_MARK = "GATES: FAIL"
 
@@ -246,16 +275,24 @@ def pixi_spawner(name):
     return subprocess.Popen(["pixi", "run", name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
-def run_all(after_build, spawner=pixi_spawner, runner=pixi_runner, quiet=False):
-    """Overlapped audits start first, the build phase runs while they work, then everything joins."""
-    procs = [(name, spawner(name)) for name in OVERLAP]
-    failed = run_gates(BUILD_PHASE, runner)
+def run_all(after_build, spawner=pixi_spawner, runner=pixi_runner, quiet=False, skip=frozenset()):
+    """Overlapped audits start first, the build phase runs while they work, then everything joins.
+
+    `skip` (#1676) drops CI_SKIP-marked names from every phase before anything runs -- `--ci`'s way
+    of excluding them, rather than running and discarding their result.
+    """
+    overlap = [n for n in OVERLAP if n not in skip]
+    build_phase = [n for n in BUILD_PHASE if n not in skip]
+    after_build = [n for n in after_build if n not in skip]
+    procs = [(name, spawner(name)) for name in overlap]
+    failed = run_gates(build_phase, runner)
     failed += join_gates(procs, quiet=quiet)
     failed += run_gates(after_build, runner)
-    return OVERLAP + BUILD_PHASE + after_build, failed
+    return overlap + build_phase + after_build, failed
 
 
-def run_gates_and_shutdown(after_build, runner, quiet, shutdown=shutdown_build_servers, run_all_fn=run_all):
+def run_gates_and_shutdown(after_build, runner, quiet, shutdown=shutdown_build_servers, run_all_fn=run_all,
+                            skip=frozenset()):
     """`run_all`, plus a build-server shutdown that fires even if `run_all_fn` raises (#1671).
 
     `run_gates` above already shuts down after each test* gate; this is the outer net -- e.g. for
@@ -264,7 +301,7 @@ def run_gates_and_shutdown(after_build, runner, quiet, shutdown=shutdown_build_s
     under a real exception without spawning a real `dotnet` process or a real gate run.
     """
     try:
-        return run_all_fn(after_build, runner=runner, quiet=quiet)
+        return run_all_fn(after_build, runner=runner, quiet=quiet, skip=skip)
     finally:
         shutdown()
 
@@ -609,7 +646,7 @@ def selftest():
     # no test* gate at all, or a crash before one is reached.
     shutdown_calls_outer = []
 
-    def _raising_run_all(after_build, runner, quiet):
+    def _raising_run_all(after_build, runner, quiet, skip=frozenset()):
         raise RuntimeError("boom")
 
     try:
@@ -908,6 +945,62 @@ def selftest():
             print("  control FAILED: --bogus modified the gate receipt")
             ok = False
 
+    # The CI_SKIP ratchet (#1676): an orphan name (not a real member) and a blank reason must both
+    # trip validate_ci_skip; a real member with a real reason must not.
+    real_member = _all_members()[0]
+    orig_ci_skip = dict(CI_SKIP)
+    try:
+        CI_SKIP.clear()
+        CI_SKIP["does-not-exist-as-a-gate-member"] = "orphan name"
+        problems = validate_ci_skip()
+        if not any("not a gates.py member" in p for p in problems):
+            print(f"  control FAILED: an orphan CI_SKIP name did not trip the ratchet -- {problems}")
+            ok = False
+
+        CI_SKIP.clear()
+        CI_SKIP[real_member] = "   "
+        problems = validate_ci_skip()
+        if not any("has no reason" in p for p in problems):
+            print(f"  control FAILED: a blank CI_SKIP reason did not trip the ratchet -- {problems}")
+            ok = False
+
+        CI_SKIP.clear()
+        CI_SKIP[real_member] = "a real reason"
+        problems = validate_ci_skip()
+        if problems:
+            print(f"  control FAILED: a valid CI_SKIP entry tripped the ratchet -- {problems}")
+            ok = False
+    finally:
+        CI_SKIP.clear()
+        CI_SKIP.update(orig_ci_skip)
+
+    # `skip=` (#1676) must drop a name from every phase before spawning/running it -- proven by a
+    # fake spawner/runner that would raise if ever called for the skipped name, so a filter that
+    # ran-and-discarded it (rather than never starting it) still fails this arm.
+    orig_overlap, orig_build_phase = list(OVERLAP), list(BUILD_PHASE)
+
+    def _refusing_spawner(name):
+        if name == "overlap-x":
+            raise AssertionError("skip= did not exclude an OVERLAP member from spawning")
+        return fake_spawner(0)
+
+    def _refusing_runner(name):
+        if name in ("build-x", "after-x"):
+            raise AssertionError(f"skip= did not exclude {name!r} from running")
+        return 0
+
+    try:
+        OVERLAP[:] = ["overlap-x"]
+        BUILD_PHASE[:] = ["build-x"]
+        names, failed = run_all(["after-x"], spawner=_refusing_spawner, runner=_refusing_runner,
+                                 skip=frozenset({"overlap-x", "build-x", "after-x"}))
+    finally:
+        OVERLAP[:] = orig_overlap
+        BUILD_PHASE[:] = orig_build_phase
+    if names or failed:
+        print(f"  control FAILED: run_all's skip= did not exclude every member -- names={names} failed={failed}")
+        ok = False
+
     print("selftest: pass" if ok else "selftest: FAIL")
     return 0 if ok else 1
 
@@ -941,6 +1034,9 @@ def build_parser():
                         help="run this file's own control-arm suite instead of any gate")
     parser.add_argument("--check-receipt", action="store_true",
                         help="exit 0 and print the skip line iff a still-valid gate receipt exists")
+    parser.add_argument("--ci", action="store_true",
+                        help="exclude CI_SKIP members, validate the ratchet, and assert the run "
+                             "matches the tracked member list (#1676; what CI's own job passes)")
     return parser
 
 
@@ -960,16 +1056,40 @@ def main():
     if args.check_receipt:
         return check_receipt()
 
+    if args.ci:
+        problems = validate_ci_skip()
+        if problems:
+            print("gates: CI_SKIP ratchet failed:")
+            for p in problems:
+                print(f"  - {p}")
+            return 2
+
     mode = "fast" if args.fast else "full"
     after_build = AFTER_BUILD_FAST if mode == "fast" else AFTER_BUILD_FULL
     quiet = args.quiet
+    skip = frozenset(CI_SKIP) if args.ci else frozenset()
 
     start_snapshot = telemetry_snapshot()
-    names, failed = run_gates_and_shutdown(after_build, quiet_pixi_runner if quiet else pixi_runner, quiet)
+    names, failed = run_gates_and_shutdown(
+        after_build, quiet_pixi_runner if quiet else pixi_runner, quiet, skip=skip)
     end_snapshot = telemetry_snapshot()
     write_telemetry(mode, start_snapshot, end_snapshot)
 
     print()
+    print(f"gates: ran {len(names)} member(s): {', '.join(names)}")
+
+    # #1676: the assertion that CI cannot silently drift from the tracked member list. Under --ci
+    # this must equal every gates.py member (build order) minus CI_SKIP -- any other result means
+    # run_all's own filtering diverged from _all_members(), not that a member merely failed.
+    if args.ci:
+        expected = [n for n in _dedupe(OVERLAP + BUILD_PHASE + after_build) if n not in CI_SKIP]
+        if names != expected:
+            print("gates: CI member list does not match the tracked list -- ")
+            print(f"  ran:      {names}")
+            print(f"  expected: {expected}")
+            delete_receipt()
+            return 1
+
     print(summarise(names, failed))
     if failed:
         delete_receipt()

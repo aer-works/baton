@@ -14,7 +14,7 @@ public static class RedispatchOptionsParser
     public const string Usage =
         "Usage: baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>] [--adapter <name>] "
         + "[--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] "
-        + "[--token-budget <n>] [--label <text>] [--workstream <slug>]";
+        + "[--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]";
 
     public static RedispatchOptions Parse(IReadOnlyList<string> args)
     {
@@ -27,6 +27,7 @@ public static class RedispatchOptionsParser
         string? outputPath = null;
         TimeSpan? timeout = null;
         long? tokenBudget = null;
+        int? maxToolSteps = null;
         string? label = null;
         var labelSpecified = false;
         string? workstream = null;
@@ -65,6 +66,9 @@ public static class RedispatchOptionsParser
                     break;
                 case "--token-budget":
                     tokenBudget = ParseTokenBudget(RequireValue(args, ref i, arg));
+                    break;
+                case "--max-tool-steps":
+                    maxToolSteps = ParseMaxToolSteps(RequireValue(args, ref i, arg));
                     break;
                 case "--label":
                     label = DispatchOptionsParser.SanitizeLabel(RequireValue(args, ref i, arg));
@@ -112,7 +116,7 @@ public static class RedispatchOptionsParser
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             outputPath is null ? null : Path.GetFullPath(outputPath),
             timeout, label, labelSpecified, tokenBudget, workstream, workstreamSpecified,
-            attachments.Count > 0 ? attachments : null);
+            attachments.Count > 0 ? attachments : null, maxToolSteps);
     }
 
     /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--token-budget</c> (#1623).</summary>
@@ -126,6 +130,19 @@ public static class RedispatchOptionsParser
         }
 
         return tokens;
+    }
+
+    /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--max-tool-steps</c> (#1686 review F2).</summary>
+    private static int ParseMaxToolSteps(string rawValue)
+    {
+        if (!int.TryParse(rawValue, out var steps) || steps <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--max-tool-steps {rawValue}' is not a positive whole number of tool calls. {Usage}",
+                "pass a positive integer, e.g. --max-tool-steps 100.");
+        }
+
+        return steps;
     }
 
     /// <summary>Same ceiling/warn thresholds and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--timeout</c> (#1442).</summary>

@@ -379,4 +379,33 @@ public class DispatchOptionsParserTests
 
         Assert.Contains("--repo", ex.Message, StringComparison.Ordinal);
     }
+
+    /// <summary>#1686 review F11: --max-tool-steps mirrors --token-budget end to end.</summary>
+    [Fact]
+    public void The_max_tool_steps_option_parses_to_a_positive_int()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--max-tool-steps", "100"]);
+
+        Assert.Equal(100, options.MaxToolSteps);
+    }
+
+    [Fact]
+    public void Omitting_max_tool_steps_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md"]);
+
+        Assert.Null(options.MaxToolSteps);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("not-a-number")]
+    public void A_non_positive_or_non_numeric_max_tool_steps_throws(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--max-tool-steps", rawValue]));
+
+        Assert.Contains("--max-tool-steps", ex.Message, StringComparison.Ordinal);
+    }
 }

@@ -23,6 +23,7 @@ namespace Baton.Cli;
 /// into the child room. Only meaningful alongside <see cref="SpecFilePath"/>; <see cref="RedispatchCommand"/>
 /// refuses the combination outright when null — see its own refusal for the reason, not restated here.
 /// </param>
+/// <param name="MaxToolSteps">The <c>--max-tool-steps</c> override (#1686 review F2). Null keeps the parent's.</param>
 public sealed record RedispatchOptions(
     string ParentRoomDirectoryPath,
     string RoomDirectoryPath,
@@ -38,4 +39,5 @@ public sealed record RedispatchOptions(
     long? TokenBudget = null,
     string? Workstream = null,
     bool WorkstreamSpecified = false,
-    IReadOnlyList<string>? Attachments = null);
+    IReadOnlyList<string>? Attachments = null,
+    int? MaxToolSteps = null);

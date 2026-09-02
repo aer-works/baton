@@ -285,6 +285,7 @@ public static class RedispatchCommand
             Worktree = worktree,
             Timeout = options.Timeout ?? parentEntry.Timeout,
             TokenBudget = options.TokenBudget ?? parentEntry.TokenBudget,
+            MaxToolSteps = options.MaxToolSteps ?? parentEntry.MaxToolSteps,
             Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label, // #1499, spec/baton.md §2
             Workstream = (options.WorkstreamSpecified || options.Workstream is not null) ? options.Workstream : parentEntry.Workstream, // #1619, spec/baton.md §2
             ToolSha = BatonPaths.TryResolveCurrentToolSha() ?? parentEntry.ToolSha, // #1668
@@ -326,7 +327,8 @@ public static class RedispatchCommand
                 timeoutOverride: options.Timeout ?? parentEntry.Timeout,
                 attachments: options.Attachments,
                 roomDirectoryPath: options.RoomDirectoryPath,
-                tokenBudgetOverride: options.TokenBudget ?? parentEntry.TokenBudget);
+                tokenBudgetOverride: options.TokenBudget ?? parentEntry.TokenBudget,
+                maxToolStepsOverride: options.MaxToolSteps ?? parentEntry.MaxToolSteps);
 
             return (definition, bindings[role.Id]);
         }

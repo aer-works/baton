@@ -93,6 +93,19 @@ public class RoleDispatchTests
         Assert.NotEqual(Review.Timeout, overridden);
     }
 
+    /// <summary>
+    /// #1686 review F12: nothing in the tree asserted a parsed --max-tool-steps value actually reaches
+    /// a WorkerBindingConfigEntry -- a build that dropped maxToolStepsOverride in RoleDispatch.ToBinding
+    /// (below) would have passed the whole suite before this.
+    /// </summary>
+    [Fact]
+    public void A_max_tool_steps_override_wins_over_the_roles_own_catalog_cap()
+    {
+        Assert.Equal(Review.MaxToolSteps, RoleDispatch.ToBinding(Review, "spec").MaxToolSteps);
+        Assert.Equal(500, RoleDispatch.ToBinding(Review, "spec", maxToolStepsOverride: 500).MaxToolSteps);
+        Assert.NotEqual(Review.MaxToolSteps, 500);
+    }
+
     [Fact]
     public void The_adapter_defaults_to_the_roles_tier_but_an_override_wins()
     {
