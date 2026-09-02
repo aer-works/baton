@@ -24,7 +24,7 @@ public static class CancelRequestFile
 {
     public const string FileName = "cancel.request";
 
-    /// <summary>The literal <see cref="Content.Target"/> meaning "whichever single execution is Running right now" — resolved at poll time by <see cref="RunningExecutionResolver"/>, not at write time.</summary>
+    /// <summary>The literal <see cref="Content.Target"/> meaning "whichever single execution is the room's target lane right now" (Running, or #1607's quota-parked candidate) — resolved at poll time by <see cref="RunningExecutionResolver"/>, not at write time.</summary>
     public const string LatestTarget = "latest";
 
     private static readonly JsonSerializerOptions JsonOptions = new();

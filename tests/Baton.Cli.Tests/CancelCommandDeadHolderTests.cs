@@ -4,6 +4,7 @@ using Baton.Cli.Tests.TestSupport;
 using Baton.Concurrency;
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Outcomes;
 using Baton.Vendors;
 using static Baton.Cli.Tests.TestSupport.ParkedStepFixture;
 using static Baton.Cli.Tests.TestSupport.ProcessIdentityFixture;
@@ -126,6 +127,45 @@ public class CancelCommandDeadHolderTests
             // never admitted, so the pre-existing refusal for that fires, not the dead-holder one.
             await Assert.ThrowsAsync<UnknownExecutionIdException>(
                 () => CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1607 second-reader finding: proves the gate's widening from Dead-only to "anything but
+    /// confirmed <see cref="EngineLivenessStatus.Alive"/>" at <see cref="CancelCommand"/>'s own
+    /// dead-holder-check call site -- see that comment for why <see cref="EngineLivenessStatus.Unknown"/>
+    /// had to join <see cref="EngineLivenessStatus.Dead"/> here, not repeated in this file.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_a_room_with_no_holder_sidecar_at_all_and_a_future_deferral_fails_fast_1607()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            await WriteParkedStepFixtureAsync(testRoot, roomDirectory);
+            var bindingsFilePath = await WriteImplementBindingsFileAsync(testRoot);
+
+            // Deliberately no holder sidecar file at all -- ReadHolderInfo returns null pid/start-time,
+            // so Probe(null, null) reads Unknown, never Dead.
+            var holderPath = Path.Combine(roomDirectory, ConcurrencyGuard.FlowHolderFileName);
+            Assert.False(File.Exists(holderPath), "this fixture's own point is that no sidecar exists");
+
+            var cancelOptions = new CancelOptions(roomDirectory, ExecutionId: null, bindingsFilePath);
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("no live pump", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.NotNull(ex.TryInvocation);
+            Assert.Contains("baton run", ex.TryInvocation, StringComparison.Ordinal);
+
+            // Never journalled the too-late cancellation the pre-widened gate would have let through.
+            var journalText = await File.ReadAllTextAsync(Path.Combine(roomDirectory, "flow.jsonl"), TestContext.Current.CancellationToken);
+            Assert.DoesNotContain("cancellationRequested", journalText, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {

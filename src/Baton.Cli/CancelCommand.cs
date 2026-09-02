@@ -20,7 +20,7 @@ namespace Baton.Cli;
 /// every mutation entry point, is itself a pump: recording the cancellation intent resumes driving
 /// the rest of the workflow to its next fixed point.
 /// #1495 adds two things this room-idle description does not cover: room-level targeting (no
-/// <c>--execution</c> resolves "the running lane" via <see cref="RunningExecutionResolver"/>, fail
+/// <c>--execution</c> resolves "the target lane" via <see cref="RunningExecutionResolver"/>, fail
 /// closed on zero or more than one candidate) and a live-pump fall-through — catching
 /// <see cref="WorkflowLockedException"/> from the guarded call above and writing
 /// <see cref="CancelRequestFile"/> instead (writing <c>latest</c> to re-resolve the target at poll
@@ -35,8 +35,11 @@ namespace Baton.Cli;
 /// now that PR #1605 gave a parked mark a real delivery point
 /// (<c>InFlightExecutionRegistry.MarkParkedCancelIntent</c>). A parked candidate resolved here still
 /// only reaches the pump through the SAME two paths this method already had: the direct call below
-/// (only ever reachable against an already-*overdue* park, since a genuinely still-future one is
-/// refused by the dead-holder check above before the resolver ever runs), or the
+/// (only ever reachable against an already-*overdue* park when a live pump is confirmed, since a
+/// genuinely still-future one is refused by the dead-holder check above before the resolver ever
+/// runs — that check was widened in this same change from Dead-only to "anything but confirmed
+/// Alive", specifically because the resolver widening above would otherwise let a room with no
+/// holder record at all reach a still-future park directly, which nothing would ever drain), or the
 /// <see cref="WorkflowLockedException"/> fall-through, which re-resolves <c>latest</c> at poll time via
 /// the identical widened resolver.
 /// </para>
@@ -127,12 +130,25 @@ public static class CancelCommand
         // the same way it always was for every other contended acquire: this command's own Acquire
         // call below loses the race, and WorkflowLockedException falls through unchanged to the
         // handling below.
-        var (_, holderPid, _, holderProcessStartTimeUtc) = ConcurrencyGuard.ReadHolderInfo(options.RoomDirectoryPath);
+        var (recordedHolderDescription, holderPid, _, holderProcessStartTimeUtc) = ConcurrencyGuard.ReadHolderInfo(options.RoomDirectoryPath);
         var holderProcessStartTime = holderProcessStartTimeUtc is { } startTimeUtc
             ? new DateTimeOffset(DateTime.SpecifyKind(startTimeUtc, DateTimeKind.Utc))
             : (DateTimeOffset?)null;
         var liveness = EngineLivenessProbe.Probe(holderPid, holderProcessStartTime);
-        if (liveness.Status == EngineLivenessStatus.Dead)
+        // #1607 (second-reader finding): widened from Dead-only to "anything but confirmed Alive".
+        // Before #1607, a room whose only step was quota-parked could never reach this far via
+        // room-level (--execution-omitted) targeting at all -- RunningExecutionResolver saw no
+        // Running step and refused first, so an Unknown-liveness room got an accidental second line
+        // of defense against exactly the hang this gate exists to prevent. Widening the resolver to
+        // resolve a parked candidate removed that accidental defense: a room with no holder sidecar
+        // at all (EngineLivenessProbe.Probe's Unknown, e.g. ConcurrencyGuard.Dispose() deleting it on
+        // a clean unwind, a best-effort sidecar write that never landed, or a pre-#1604 sidecar with
+        // no ProcessStartTimeUtc) now resolves a still-future park and would otherwise fall straight
+        // into MutationInterface's own pump, which nothing ever drains. Fail closed rather than risk
+        // that: Unknown is treated the same as Dead here. The cost is a possible false refusal when a
+        // pump is genuinely alive but its sidecar write happened to fail -- recoverable by the operator
+        // (retry, or check `baton status`); the hang this avoids is not.
+        if (liveness.Status != EngineLivenessStatus.Alive)
         {
             var preCheckEvents = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
             var preCheckState = StateProjector.Project(preCheckEvents, snapshot);
@@ -140,14 +156,18 @@ public static class CancelCommand
             var hasFutureDeferral = preCheckState.Steps.Any(s => s.RetryNotBefore is { } retryNotBefore && retryNotBefore > now);
             if (hasFutureDeferral)
             {
+                var holderClause = liveness.Status == EngineLivenessStatus.Dead
+                    ? $"the last recorded holder (pid {holderPid}) is no longer running"
+                    : "its holder record cannot confirm one exists"
+                        + (recordedHolderDescription is not null ? $" (last recorded: '{recordedHolderDescription}')" : " (no holder record at all)");
                 throw new CliArgumentException(
-                    $"Room '{options.RoomDirectoryPath}' has no live pump — the last recorded holder " +
-                    $"(pid {holderPid}) is no longer running, and this room still has a step waiting on " +
-                    "a future retry. Acquiring the lock here would journal a cancellation nothing will " +
-                    "ever act on, then hang waiting for that retry the dead engine can never deliver — " +
-                    "and would overwrite the holder record, destroying the record of which engine died. " +
-                    "Left untouched. No verb terminates a dead-parked room today — that is #1586's " +
-                    "tracked 'baton settle' design — so the pointer below resumes it rather than " +
+                    $"Room '{options.RoomDirectoryPath}' has no live pump — {holderClause}, and " +
+                    "this room still has a step waiting on a future retry. Acquiring the lock here would " +
+                    "journal a cancellation nothing will ever act on, then hang waiting for that retry with " +
+                    "nothing confirmed alive to deliver it — and, if a dead engine's holder record is still " +
+                    "present, would overwrite it, destroying the record of which engine died. Left " +
+                    "untouched. No verb terminates a parked room with no confirmed live pump today — that " +
+                    "is #1586's tracked 'baton settle' design — so the pointer below resumes it rather than " +
                     "stopping it, deliberately.",
                     $"{RecoveryGuidance.RunRoomDirInstruction} (see spec/baton.md §3).");
             }
@@ -159,7 +179,7 @@ public static class CancelCommand
 
         var workflowId = new WorkflowId(options.WorkflowId ?? snapshot.WorkflowTemplateId.Value);
 
-        // #1495: room-level targeting when --execution is omitted — resolve "the running lane" from
+        // #1495: room-level targeting when --execution is omitted — resolve "the target lane" from
         // the room's own projected state rather than a caller-named id. A plain read, safe regardless
         // of whether a pump is live (FlowEventLogReader always opens FileShare.ReadWrite) or idle.
         var targetExecutionId = options.ExecutionId is { } explicitExecutionId

@@ -1375,13 +1375,18 @@ public static class MutationInterface
                 // redispatch minting a new ExecutionId — dropping the stale id silently here instead
                 // of settling it. Known, not fixed here. It is NOT silently lost end to end: the
                 // poller never consumed the request file for a parked mark (its own isParked branch
-                // just re-marks, never consumes), and the request's Target is always the ORIGINAL
-                // literal execution id in this scenario ('latest' can never resolve to a parked step
-                // in the first place — RunningExecutionResolver only sees Running steps, F2's own
-                // point). So the poller's next tick re-checks that same stale id, finds it no longer
-                // matches any step's LatestExecutionId, and reports the ordinary "too late (it already
-                // settled)" verdict — an honest, if imprecise, outcome (the intent was not wrong, just
-                // reported as arriving after the fact), not a request that vanishes with no trace.
+                // just re-marks, never consumes), so the poller's next tick re-resolves the request
+                // and reacts to whatever it now finds. For a request naming a literal execution id,
+                // that id no longer matches any step's LatestExecutionId, so it reports the ordinary
+                // "too late (it already settled)" verdict — an honest, if imprecise, outcome (the
+                // intent was not wrong, just reported as arriving after the fact). #1607 widened
+                // RunningExecutionResolver so a 'latest' request CAN now have resolved to a parked
+                // step in the first place (pre-#1607, F2's point, it never could) — for that case the
+                // next tick's re-resolution instead finds the step's fresh, just-redispatched
+                // execution as the new Running candidate and arrests that one, rather than reporting
+                // "too late". Different outcome than the literal-id case, not a worse one: the operator
+                // asked to stop whatever this room is doing, and it does, just against the attempt
+                // that actually exists by the time the poller looks again.
                 continue;
             }
 

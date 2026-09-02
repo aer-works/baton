@@ -1,23 +1,20 @@
+using Baton.Status;
+
 namespace Baton.Cli;
 
 /// <summary>
 /// Parses <c>baton cancel</c>'s arguments: <c>baton cancel &lt;room-dir&gt; [--execution &lt;execution-id&gt;]
 /// [--bindings &lt;bindings-file&gt;] [--workflow-id &lt;id&gt;]</c>. <c>--execution</c> is optional (#1495):
 /// omitted, <see cref="CancelCommand"/> targets "the target lane" itself rather than a caller-named id.
-/// <c>--bindings</c> is also optional (#1607 friction fix): a room a cancel targets was necessarily
-/// dispatched with its own <c>bindings.json</c> already sitting in it (<c>DispatchCommand</c>/
-/// <c>RedispatchCommand</c> both write one there), so omitting the flag defaults to
-/// <c>&lt;room-dir&gt;/bindings.json</c> rather than making the operator retype a path the room already
-/// knows — a nonexistent default surfaces as the same "file not found" <c>WorkerBindingConfigParser</c>
-/// already raises for an explicit bad path, not a new failure mode. Never throws a bare
+/// <c>--bindings</c> is also optional (#1607 friction fix): omitted, it defaults to
+/// <c>&lt;room-dir&gt;/bindings.json</c> — see spec/baton.md §2 ("cancel's --bindings is now optional
+/// too") for which rooms actually have one and what a missing default surfaces as. Never throws a bare
 /// <see cref="InvalidOperationException"/> for a malformed invocation — every failure here is a
 /// <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules), mirroring
 /// <see cref="RunOptionsParser"/>.
 /// </summary>
 public static class CancelOptionsParser
 {
-    private const string BindingsFileName = "bindings.json";
-
     private const string Usage =
         "Usage: baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]";
 
@@ -66,7 +63,7 @@ public static class CancelOptionsParser
         }
 
         var resolvedRoomDirectoryPath = RoomDirectoryPath.Resolve(roomDirectoryPath);
-        bindingsFilePath ??= Path.Combine(resolvedRoomDirectoryPath, BindingsFileName);
+        bindingsFilePath ??= BatonPaths.RoomBindingsFile(resolvedRoomDirectoryPath);
 
         return new CancelOptions(resolvedRoomDirectoryPath, executionId, bindingsFilePath, workflowId);
     }

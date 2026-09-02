@@ -204,7 +204,14 @@ candidate is not delivered the same way a running one is: it is settled through 
 #1605 built (`InFlightExecutionRegistry.MarkParkedCancelIntent` /
 `MutationInterface.SettleParkedCancelIntentsAsync`), never through `CoreEventAggregation` or
 `NonProcessCancellationDetector`'s own Running-only filters, which stay unmodified and unconsulted
-for a parked target. Against a room whose `baton run` pump is still live, the direct
+for a parked target. **Behaviour change from the widening, not just an addition:** a room with one
+`Running` step and a sibling sitting in ordinary retry backoff — previously an unambiguous single
+`Running` candidate — is now ambiguous and refuses/rejects, since the sibling's `RetryNotBefore` makes
+it a second candidate. Deliberately pinned
+(`RunningExecutionResolverTests.A_Running_step_and_a_quota_parked_step_together_are_ambiguous`): the
+resolver cannot tell "the operator means the one that's actually running" from "the operator means
+the one closest to being retried" without guessing, and guessing is exactly what this resolver exists
+to refuse to do. Against a room whose `baton run` pump is still live, the direct
 mutation call cannot win `flow.lock` — `cancel` catches that specific `WorkflowLockedException` and
 writes a room-scoped `cancel.request` file instead (`CancelRequestFile.cs`), which the pump itself
 polls at a modest cadence without ever contending the lock (`CancelRequestPoller.cs`) and delivers
@@ -218,18 +225,25 @@ running worker to redirect it — it only makes the existing stop-then-`redispat
 from outside the lane's own process.
 
 A parked candidate reached through the **direct** path (no live pump contending the lock) is
-reachable only when its `RetryNotBefore` has already elapsed — a genuinely still-future park is
-refused outright by the dead-holder check below before the resolver ever runs, since that check scans
-every step for a future deferral, not just the one being targeted. An already-overdue park raced this
-way loses to `MutationInterface`'s own retry-obligation check, which redispatches it before a
-poller-less pump's parked-cancel-intent wait is ever reached — the same outcome explicit
-`--execution` targeting an overdue park already had; #1607 did not introduce it and does not close it.
+reachable only when its `RetryNotBefore` has already elapsed AND a live pump is confirmed — a
+genuinely still-future park is refused outright by the dead-holder check below before the resolver
+ever runs, since that check scans every step for a future deferral, not just the one being targeted.
+That check itself was widened in the same change (#1607) from firing only on a confirmed-`Dead`
+holder to firing on anything but a confirmed-`Alive` one — see `CancelCommand.cs`'s own dead-holder
+gate comment for which `EngineLivenessProbe.Unknown` cases motivate this and why leaving it at
+`Dead`-only would have reopened #1586's hang from a new entry point. An already-overdue park
+raced against a confirmed-live pump loses to `MutationInterface`'s own retry-obligation check, which
+redispatches it before a poller-less pump's parked-cancel-intent wait is ever reached — the same
+outcome explicit `--execution` targeting an overdue park already had (tracked separately, #1634);
+#1607 did not introduce it and does not close it.
 
 **`cancel`'s `--bindings` is now optional too** (#1607 friction fix): omitted, it defaults to
-`<room-dir>/bindings.json` — the file every room already holds, since `dispatch`/`redispatch` both
-write one there before the room can be targeted at all (`CancelOptionsParser.cs`). A nonexistent
-default surfaces through the same "file not found" `WorkerBindingConfigParser` already raises for a
-bad explicit path — no new failure mode, just one fewer argument to retype for the common case.
+`<room-dir>/bindings.json` — the file a room dispatched via `dispatch`/`redispatch` already holds,
+since both write one there (`CancelOptionsParser.cs`). A room started via bare `baton run --bindings
+<elsewhere>` never gets one copied in, so the default there simply won't exist; a nonexistent default
+surfaces through the same "file not found" `WorkerBindingConfigException` `WorkerBindingConfigParser`
+already raises for a bad explicit path — no new failure mode, and the operator falls back to passing
+`--bindings` explicitly as before. One fewer argument to retype for the common (dispatched-room) case.
 
 ---
 
