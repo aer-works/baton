@@ -785,9 +785,10 @@ glass chip (`tools/fleet-glass/glass.html`) is what renders that honestly (a rel
 ago — no scheduler" rather than a live countdown), never this field. A far-future or already-past
 reset instant (#1183, fixed) never reaches this field wholesale: `MutationInterface.GetRetryObligations`
 caps an instant more than `MaxExhaustionParkHorizon` (14 days) out to that horizon, and paces an
-instant at or before now to a `PastResetInstantRetryFloor` (1 second), before the obligation is ever
-recorded as a `RetryNotBefore` — the crash-on-dispatch bug this closes was `Task.Delay` throwing past
-its ~49.7-day ceiling on the raw instant. `exhaustedUntil` is still copied verbatim from
+instant less than `PastResetInstantRetryFloor` (1 second) away — already past, or legitimately
+future but imminent — up to that floor, before the obligation is ever recorded as a `RetryNotBefore`
+— the crash-on-dispatch bug this closes was `Task.Delay` throwing past its ~49.7-day ceiling on the
+raw instant. `exhaustedUntil` is still copied verbatim from
 `RetryNotBefore` per the paragraph above, but for a degenerate vendor instant `RetryNotBefore` itself
 is now this engine-computed cap or floor, not the raw value the vendor reported — "copied verbatim,
 never re-derived" describes this projection step, not a guarantee that `RetryNotBefore` always equals

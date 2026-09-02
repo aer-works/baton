@@ -1527,8 +1527,11 @@ public static class MutationInterface
                     : resetMoment;
                 var rawDelay = cappedResetMoment - utcNow;
 
-                // #1183: an instant at or before now (including one repeating unchanged) is paced to
-                // a floor instead of collapsing to a zero-delay retry -- see PastResetInstantRetryFloor.
+                // #1183: an instant less than PastResetInstantRetryFloor away -- already at or before
+                // now (including one repeating unchanged), or legitimately future but imminent -- is
+                // paced up to the floor instead of collapsing to a near-zero-delay retry. This branch
+                // does not and need not distinguish "already past" from "about to hit": both would
+                // otherwise machine-gun the pump the same way.
                 if (rawDelay < PastResetInstantRetryFloor)
                 {
                     notBefore = utcNow + PastResetInstantRetryFloor;
