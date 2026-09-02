@@ -30,7 +30,8 @@ public class WorkerBindingConfigWriterTests
             TimeSpan.FromMinutes(5),
             Model: "claude-opus-4",
             PermissionScope: "write-only",
-            WorkingDirectory: "/home/user/my-project"),
+            WorkingDirectory: "/home/user/my-project",
+            ToolSha: "deadbeef"),
         ["critic"] = new WorkerBindingConfigEntry(
             "gemini",
             new WorkerContract(
@@ -72,6 +73,7 @@ public class WorkerBindingConfigWriterTests
                 Assert.Equal(entry.Contract.RequiredInputs, parsedEntry.Contract.RequiredInputs);
                 Assert.Equal(entry.Contract.OptionalMetadata, parsedEntry.Contract.OptionalMetadata);
                 Assert.Equal(entry.Contract.ProducedOutputs.Count, parsedEntry.Contract.ProducedOutputs.Count);
+                Assert.Equal(entry.ToolSha, parsedEntry.ToolSha);
                 for (var i = 0; i < entry.Contract.ProducedOutputs.Count; i++)
                 {
                     Assert.Equal(entry.Contract.ProducedOutputs[i].Name, parsedEntry.Contract.ProducedOutputs[i].Name);

@@ -1836,32 +1836,35 @@ decision's scope) or about a vendor CLI's own OS support (`docs/vendor-doc-audit
 Code cloud session doing *development* work on this repo from a Linux sandbox — not a second support
 target; nothing is built, tested, or packaged for it, and `osx-arm64` is dropped outright.
 
-**Installation and versioning (#1645).** `baton` ships as a self-built, unpublished `dotnet tool` —
-README's *Installing `baton`* section owns the commands. Its release version is one value,
-`Directory.Build.props`'s `<Version>` under `src/Baton.Cli`, read by `VersionInfo` at build time
-(`baton --version`) and by `InstalledVersionDrift` at dispatch time; nothing else in the tree carries a
-second copy of it. Refreshing an installed copy — packing, uninstalling, purging the version's NuGet
-cache entry, reinstalling, verifying the reinstall actually took — is `pixi run tool-refresh`
-(`tools/tool-refresh/refresh.py`, whose own docstring has the exact drain predicate), which refuses to
-start while a room under `~/.baton/rooms` still looks live, rather than risk the access-denied
-uninstall failure a still-running lane causes.
+**Installation and versioning (#1645, side-by-side per-commit installs #1668).** `baton` ships as a self-built,
+unpublished `dotnet tool` — README's *Installing `baton`* section owns the user-facing command index. Its release
+version is one value, `Directory.Build.props`'s `<Version>` under `src/Baton.Cli`, read by `VersionInfo` at build time
+(`baton --version`) and by `InstalledVersionDrift` at dispatch time; nothing else in the tree carries a second copy of it.
 
-Draining is **two halves** (operator ruling, 2026-09-02), because waiting alone leaves a gap between
-"no room is live" and the uninstall actually running. (1) Before its first liveness read the refresh
-writes a drain marker at `{BATON_HOME}/draining.json`, and removes it on every exit path — success, a
-failed step, an exception, Ctrl-C. **The refusing population is exactly `baton dispatch`, `baton
-redispatch` and `baton resume`** — the verbs that start a lane — and this sentence is the register of
-it; `src/Baton/Status/DrainMarker.cs` implements it and records why each exclusion is what it is
-(`baton status` in particular must never refuse: the drain predicate shells out to it). A refusal exits
-`ValidationRefused` (2), names the marker path, and reads the marker fail-closed — one that exists but
-cannot be parsed still refuses. For `dispatch`/`redispatch` the refusal leaves the room directory
-holding a `terminal.json` refusal record, which the drain predicate skips as terminal; `resume` writes
-nothing. (2) `--wait` then blocks until the live count reaches zero, reprinting the remaining rooms and
-their liveness every 30 s. A marker whose writer was killed outright is cleared with `pixi run
-tool-refresh --abort`, which every refusal names. Because an
-operator can forget to run it, `baton dispatch`/`baton status` independently WARN on stderr — never
-failing the exit code — when the installed version is behind a discoverable checkout's (`--repo`, or
-`BATON_REPO`); `InstalledVersionDrift` is the one evaluator both read.
+**Layout and launcher (#1668).** Installs sit side-by-side under `{BATON_HOME}/tools/<sha>` (one directory per commit SHA,
+installed via `dotnet tool install baton --tool-path {BATON_HOME}/tools/<sha> --add-source bin/pack`), so refreshing the
+tool never touches a directory a running lane loaded from. The currently active version is named by `{BATON_HOME}/tools/current`
+(a one-line pointer file holding the commit SHA, written atomically via temporary file and replace). `baton` on PATH is a thin
+launcher shim pair in `~/.dotnet/tools` (`baton.cmd` + `baton.ps1`, alongside a POSIX `baton` wrapper) that resolves `current` at
+process start and executes that directory's `baton.exe` with the original arguments and exit code. A missing, empty, or garbled
+pointer fails closed with exit code 1, printing an error naming `pixi run tool-refresh`.
+
+**Pruning (#1668).** After a successful pointer flip, `tool-refresh` prunes `{BATON_HOME}/tools/<sha>` directories beyond the
+newest 3 that no live room references. A room is live when it has no `terminal.json`; dispatch records `ToolSha` in each room's
+`bindings.json` so the pruner preserves any directory a running lane was dispatched from even if it falls outside the top 3. A
+live room with no recorded `ToolSha` protects nothing under this check — for such a room the newest-3 cushion is the only guard
+against pruning the directory it actually runs from.
+
+**Tool refresh.** Refreshing is `pixi run tool-refresh` (`tools/tool-refresh/refresh.py`): packs the checkout, installs into the
+new `{BATON_HOME}/tools/<sha>`, verifies `--version` and `templates --json` directly from that directory's binary, flips `current`
+atomically, installs/updates the launcher (uninstalling any legacy global tool in `~/.dotnet/tools` to prevent executable
+collision), rebuilds `src/Baton.Cli` Debug for the Fleet Glass pusher, restarts the `fleet-glass-pusher` scheduled task, and prunes
+old unreferenced tool directories. It requires no drain wait and writes no drain marker.
+
+**Manual drain marker.** Draining is retained solely as an operator-invoked stop: an explicit `{BATON_HOME}/draining.json`
+marker causes `baton dispatch`, `baton redispatch`, and `baton resume` to refuse with `ValidationRefused` (2) fail-closed;
+`pixi run tool-refresh --abort` clears it. `InstalledVersionDrift` continues to warn on stderr when the installed version is behind
+a discoverable checkout.
 
 ### C-11 — The tailnet drill-down plane (glass v2.5)
 
