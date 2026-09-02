@@ -15,16 +15,17 @@ public sealed class TokenBudgetMonitorTests
     [Fact]
     public void ArrestRequested_fires_once_the_running_SUM_of_billed_tokens_crosses_the_budget()
     {
-        // #1682: billed is additive across turns (input + output per line), NOT a level -- unlike the
-        // pre-#1682 arithmetic this replaces. Turn 1 billed 400+100=500; turn 2 billed 500+600=1100;
-        // running sum 500+1100=1600 >= 1000 crosses on turn 2.
+        // #1682: billed is additive across turns, NOT a level -- unlike the pre-#1682 arithmetic this
+        // replaces. #1706: on claude the only measurable billed component is cache_creation (the
+        // input/output figures on this line are placeholders and are no longer read), so the two turns
+        // bill 500 and 1100; running sum 1600 >= 1000 crosses on turn 2.
         var monitor = new TokenBudgetMonitor(budget: 1000, maxToolSteps: null, new ClaudeUsageParser());
 
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":400,"output_tokens":100}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":500,"cache_read_input_tokens":0,"output_tokens":3}}}""");
         Assert.False(monitor.Arrested);
         Assert.False(monitor.ArrestRequested.IsCancellationRequested);
 
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":500,"output_tokens":600}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":1100,"cache_read_input_tokens":0,"output_tokens":3}}}""");
 
         Assert.True(monitor.Arrested);
         Assert.True(monitor.ArrestRequested.IsCancellationRequested);
@@ -37,7 +38,7 @@ public sealed class TokenBudgetMonitorTests
     {
         var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
 
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":400,"output_tokens":100}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":500,"cache_read_input_tokens":0,"output_tokens":3}}}""");
 
         Assert.False(monitor.Arrested);
         Assert.False(monitor.ArrestRequested.IsCancellationRequested);
@@ -46,32 +47,39 @@ public sealed class TokenBudgetMonitorTests
     [Fact]
     public void SnapshotUsage_reports_the_context_level_display_field_unchanged_and_sums_billed_separately()
     {
-        // Pins the two fields' distinct meaning: ContextLevelTokens is unchanged, BilledTokens is new.
+        // Pins the two fields' distinct meaning: ContextLevelTokens is a LEVEL (replaced each line),
+        // BilledTokens is a Σ. #1706: on claude the level is now cache_read + cache_creation, the
+        // placeholder input_tokens having been dropped from the reading entirely -- and TokensIn/
+        // TokensOut are null on the snapshot for the same reason.
         var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
 
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":10}}}""");
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":200,"output_tokens":20}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":100,"output_tokens":3}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":20,"cache_read_input_tokens":200,"output_tokens":3}}}""");
 
         var usage = monitor.SnapshotUsage();
 
-        Assert.Equal(200, usage.TokensIn);
-        Assert.Equal(200, usage.ContextLevelTokens);
-        Assert.Equal(30, usage.TokensOut);
-        Assert.Equal(330, usage.BilledTokens);
+        Assert.Null(usage.TokensIn);
+        Assert.Equal(220, usage.ContextLevelTokens);
+        Assert.Null(usage.TokensOut);
+        Assert.Equal(30, usage.BilledTokens);
+        Assert.Equal(300, usage.CacheReadTokens);
+        Assert.True(usage.BilledIsFloor);
     }
 
     [Fact]
     public void Billed_tokens_include_cache_creation_but_never_thinking()
     {
         // Pins the exclusion StandardWorkerUsageParsersTests' real-line test proves against actual
-        // vendor data (spec/baton.md §3) -- cache_creation counts here, thinking never does.
+        // vendor data (spec/baton.md §3) -- cache_creation counts here, thinking never does. #1706:
+        // the line's own input_tokens (2) and output_tokens (4) no longer contribute either, being
+        // placeholders, so the whole billed figure on this vendor is the cache-creation column.
         var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
 
         monitor.OnStdoutLine(
             """{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":12066,"cache_read_input_tokens":15092,"output_tokens":4}}}""");
 
         var usage = monitor.SnapshotUsage();
-        Assert.Equal(2 + 4 + 12066, usage.BilledTokens);
+        Assert.Equal(12066, usage.BilledTokens);
         Assert.Equal(15092, usage.CacheReadTokens);
     }
 
@@ -81,8 +89,8 @@ public sealed class TokenBudgetMonitorTests
         // #1682: display-only Σ across every incremental line, unlike ContextLevelTokens which stays a level.
         var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
 
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":100}}}""");
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":50}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"output_tokens":3,"cache_read_input_tokens":100}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"output_tokens":3,"cache_read_input_tokens":50}}}""");
 
         Assert.Equal(150, monitor.SnapshotUsage().CacheReadTokens);
     }
@@ -150,17 +158,18 @@ public sealed class TokenBudgetMonitorTests
         var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
 
         monitor.OnStdoutLine(
-            """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":100,"output_tokens":10}}}""");
+            """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":2,"cache_creation_input_tokens":110,"cache_read_input_tokens":0,"output_tokens":3}}}""");
         monitor.OnStdoutLine(
-            """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":100,"output_tokens":10}}}""");
+            """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":2,"cache_creation_input_tokens":110,"cache_read_input_tokens":0,"output_tokens":3}}}""");
         monitor.OnStdoutLine(
-            """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":100,"output_tokens":10}}}""");
+            """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":2,"cache_creation_input_tokens":110,"cache_read_input_tokens":0,"output_tokens":3}}}""");
         monitor.OnStdoutLine(
-            """{"type":"assistant","message":{"id":"msg_2","usage":{"input_tokens":50,"output_tokens":5}}}""");
+            """{"type":"assistant","message":{"id":"msg_2","usage":{"input_tokens":2,"cache_creation_input_tokens":55,"cache_read_input_tokens":0,"output_tokens":3}}}""");
 
         var usage = monitor.SnapshotUsage();
-        Assert.Equal((100 + 10) + (50 + 5), usage.BilledTokens);
-        Assert.Equal(15, usage.TokensOut);
+        Assert.Equal(110 + 55, usage.BilledTokens);
+        // #1706: the placeholder output column is not read at all, so there is no Σ of it to report.
+        Assert.Null(usage.TokensOut);
     }
 
     [Fact]
@@ -187,8 +196,11 @@ public sealed class TokenBudgetMonitorTests
 
         var usage = monitor.SnapshotUsage();
         // Summed once, not twice: the second line's identical usage is deduped by shared message.id.
-        Assert.Equal(2 + 1 + 39901, usage.BilledTokens);
-        Assert.Equal(1, usage.TokensOut);
+        // #1706: 39,901 rather than 2 + 1 + 39,901 -- the input_tokens 2 and output_tokens 1 visible in
+        // both real lines above are the placeholders this issue measured, no longer read.
+        Assert.Equal(39901, usage.BilledTokens);
+        Assert.Null(usage.TokensOut);
+        Assert.True(usage.BilledIsFloor);
     }
 
     [Fact]
@@ -198,10 +210,28 @@ public sealed class TokenBudgetMonitorTests
         // string dedupes.
         var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
 
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":1}}}""");
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":1}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":0,"output_tokens":3}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":0,"output_tokens":3}}}""");
 
-        Assert.Equal(22, monitor.SnapshotUsage().BilledTokens);
+        Assert.Equal(20, monitor.SnapshotUsage().BilledTokens);
+    }
+
+    [Fact]
+    public void A_claude_usage_object_carrying_only_the_placeholder_columns_yields_no_reading_at_all()
+    {
+        // #1706, the deliberate consequence stated in ClaudeUsageParser.TryParseIncrementalUsage's own
+        // doc: with input_tokens/output_tokens no longer read, a usage object carrying nothing else has
+        // no figure left to report, and reporting a WorkerUsage of all nulls would put a fabricated 0
+        // into the running Σ. That doc also records why this shape is unreachable on measured traffic;
+        // this is pinned so the choice stays a decision rather than an accident.
+        var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
+
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"output_tokens":3}}}""");
+
+        var usage = monitor.SnapshotUsage();
+        Assert.Null(usage.BilledTokens);
+        Assert.Null(usage.ContextLevelTokens);
+        Assert.False(usage.BilledIsFloor);
     }
 
     [Fact]

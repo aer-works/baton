@@ -812,7 +812,12 @@ document.addEventListener("click", async (ev) => {
 function liveTelemetryBits(live){
   if(!live) return [];
   const bits = [];
-  if(live.billedTokens != null) bits.push(`billed ${fmtK(live.billedTokens)}`);
+  // #1706: on claude the billed figure is a LOWER BOUND -- the vendor's mid-stream usage carries no
+  // real input or output count anywhere, so what is shown is cache-creation alone and the real spend
+  // is at least this, by a room-dependent factor with no constant to scale by (spec/baton.md §3 has
+  // the swept range), which is why this marks the figure instead of correcting it. The "+" is the
+  // whole marker on a compact card; pusher.py's `billedIsFloor` is where it comes from.
+  if(live.billedTokens != null) bits.push(`billed ${fmtK(live.billedTokens)}${live.billedIsFloor ? "+" : ""}`);
   if(live.contextTokens != null) bits.push(`ctx ${fmtK(live.contextTokens)}`);
   if(live.turns != null) bits.push(`${live.turns} turn${live.turns === 1 ? "" : "s"}`);
   if(live.toolCalls != null) bits.push(`${live.toolCalls} call${live.toolCalls === 1 ? "" : "s"}`);

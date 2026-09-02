@@ -506,10 +506,10 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
       - claude: `type`-keyed; a completed `assistant` message's `message.content` array carries a
         `{"type": "tool_use", ...}` block per tool call -- shape measured against real #1559
         capture fixtures (tests/Baton.Cli.Tests/RunCommandEchoTests.cs). The SAME `assistant`
-        message's `message.usage` object carries an output count plus, when the CLI reports the
-        cache split, the three input-side counts a context figure needs -- the exact key names and
-        where they were measured are spec/baton.md §6's `rooms[].live` entry, not restated here; see
-        below for how each is used.
+        message's `message.usage` object carries the cache split a context figure needs -- the exact
+        key names and where they were measured are spec/baton.md §6's `rooms[].live` entry, not
+        restated here; see below for how each is used. #1706: its `input_tokens`/`output_tokens` are
+        PLACEHOLDERS, not this message's real figures, and are read by nothing here.
       - agy: `event`-keyed; a `step_update` heartbeat with `state` in `"DONE"`/`"ERROR"` (its terminal
         lifecycle states) and `step_type: "tool"` marks one completed real tool step -- #1686 review
         F3: mirrors the engine's own `ClaudeUsageParser.CountToolSteps` unit (spec/baton.md §3),
@@ -524,12 +524,19 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
     Returns `{"toolCalls": int}` always, plus:
       - `"billedTokens"`: present only if at least one usage-bearing line in THIS batch reported
         one -- the SUM over the batch (additive: the caller accumulates this across every batch it
-        has ever read for the execution, spec/baton.md §6), same `input + output [+ cache_creation]`
-        formula the engine's own `TokenBudgetMonitor` arrests on (#1682) -- NOT `thinking_tokens`,
-        which is a breakdown already counted inside `output_tokens` (measured against real #1682
-        evidence: Σinput + Σoutput reproduces the vendor's own Σ`total_tokens` exactly). Whole-tree
-        on claude, including subagent `assistant` events (they carry `parent_tool_use_id` but are
-        not filtered out).
+        has ever read for the execution, spec/baton.md §6), the same quantity the engine's own
+        `TokenBudgetMonitor` arrests on (#1682) and read by the same per-vendor rule: on agy
+        `input + output`, on claude `cache_creation` alone (#1706 -- the other two columns are
+        placeholders). NOT `thinking_tokens` on either vendor, which is a breakdown already counted
+        inside `output_tokens` (measured against real #1682 evidence: Σinput + Σoutput reproduces
+        agy's own Σ`total_tokens` exactly). Whole-tree on claude, including subagent `assistant`
+        events (they carry `parent_tool_use_id` but are not filtered out).
+      - `"billedIsFloor"`: `True`, and omitted entirely otherwise, when at least one line in this
+        batch contributed a claude cache-creation figure -- #1706: `billedTokens` is then a LOWER
+        BOUND on the execution's real spend, not a measurement of it, and the glass says so rather
+        than printing a number that reads as complete. The caller ORs this across batches, the same
+        stickiness the engine's own `TokenBudgetMonitor._billedIsFloor` has, because one incomplete
+        batch makes the accumulated total incomplete.
       - `"turns"`: present alongside `billedTokens` -- the COUNT of usage-bearing lines in this batch
         (additive, same convention).
       - `"context"`: `{"contextTokens": int, "cacheReadTokens": int}` from the LATEST claude
@@ -555,6 +562,7 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
     billed_tokens = 0
     turns = 0
     usage_seen = False
+    billed_is_floor = False
     context = None
     if seen_message_ids is None:
         seen_message_ids = set()
@@ -586,17 +594,27 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
             if isinstance(usage, dict) and isinstance(message_id, str) and message_id:
                 seen_message_ids.add(message_id)
             if isinstance(usage, dict) and not already_counted:
-                out = usage.get("output_tokens")
                 in_tok = usage.get("input_tokens")
                 cache_creation = usage.get("cache_creation_input_tokens")
                 cache_read = usage.get("cache_read_input_tokens")
                 numeric = lambda v: isinstance(v, int) and not isinstance(v, bool)
-                if numeric(out) or numeric(in_tok) or numeric(cache_creation):
-                    billed_tokens += (out if numeric(out) else 0) + (in_tok if numeric(in_tok) else 0) \
-                        + (cache_creation if numeric(cache_creation) else 0)
+                # #1706: `output_tokens` and `input_tokens` on this line are PLACEHOLDERS -- the same
+                # engine-side measurement `ClaudeUsageParser.TryParseIncrementalUsage` documents, and
+                # the reason this file's own `billedTokens` SAW only 28-91% of the real figure across
+                # the 126-room sweep in spec/baton.md §3 (i.e. under-read by 9-72%; the fraction seen
+                # and the fraction missed are easy to state backwards, so both are spelled out here).
+                # Only `cache_creation_input_tokens` is a real billed figure, so only it accumulates.
+                # The floor mark keys on EITHER cache column, not on cache_creation alone, so that this
+                # and the engine's `TryParseIncrementalUsage` -- which accepts a reading on either --
+                # agree about which lines are claude usage lines at all.
+                if numeric(cache_creation) or numeric(cache_read):
+                    billed_tokens += cache_creation if numeric(cache_creation) else 0
                     turns += 1
                     usage_seen = True
+                    billed_is_floor = True
                 if numeric(in_tok) and numeric(cache_read) and numeric(cache_creation):
+                    # The context LEVEL is unaffected: it is what the vendor loaded for this request,
+                    # and the placeholder `input_tokens` contributes 2 tokens to a six-figure sum.
                     context = {
                         "contextTokens": in_tok + cache_read + cache_creation,
                         "cacheReadTokens": cache_read,
@@ -622,6 +640,8 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
     if usage_seen:
         result["billedTokens"] = billed_tokens
         result["turns"] = turns
+    if billed_is_floor:
+        result["billedIsFloor"] = True
     if context is not None:
         result["context"] = context
     return result
@@ -631,13 +651,17 @@ def _apply_live_delta(state: dict, delta: dict) -> None:
     """Merge one parsed batch (a rollover file or newly-appended live-file bytes) into a
     per-execution running state: `toolCalls`/`billedTokens`/`turns` ACCUMULATE (#1613 review findings
     3/4, extended to the #1682 fields the same way -- every batch this process has ever read for the
-    execution), `context` is the latest LEVEL seen -- only overwritten when the batch actually reports
-    one, so an empty or tool-only batch never blanks out a level that was already known."""
+    execution), `billedIsFloor` is STICKY (#1706: once any batch's contribution was a lower bound, the
+    accumulated total is one, and no later complete batch can make it whole again), `context` is the
+    latest LEVEL seen -- only overwritten when the batch actually reports one, so an empty or tool-only
+    batch never blanks out a level that was already known."""
     counts = state["counts"]
     counts["toolCalls"] = counts.get("toolCalls", 0) + delta.get("toolCalls", 0)
     if "billedTokens" in delta:
         counts["billedTokens"] = counts.get("billedTokens", 0) + delta["billedTokens"]
         counts["turns"] = counts.get("turns", 0) + delta["turns"]
+    if delta.get("billedIsFloor"):
+        counts["billedIsFloor"] = True
     if "context" in delta:
         state["context"] = delta["context"]
 
@@ -2990,9 +3014,11 @@ def _selftest() -> int:
         },
     })
     real_counts = extract_live_counts([real_assistant_usage_line])
-    check("billedTokens is input + output + cache_creation off the real captured claude envelope shape "
-          "(NOT thinking, and NOT cache_read, which is display-only)",
-          real_counts.get("billedTokens") == 2 + 4 + 12066)
+    check("billedTokens is cache_creation ALONE off the real captured claude envelope shape (#1706 -- "
+          "NOT input/output, which are message_start placeholders on this line; NOT thinking; and NOT "
+          "cache_read, which is display-only)",
+          real_counts.get("billedTokens") == 12066)
+    check("a claude batch marks billedTokens as a floor (#1706)", real_counts.get("billedIsFloor") is True)
     check("turns is 1 for a single usage-bearing line", real_counts.get("turns") == 1)
     check("contextTokens sums the message's three input-side usage counts (fresh input plus both "
           "cache counters)",
@@ -3000,16 +3026,48 @@ def _selftest() -> int:
     check("cacheReadTokens is cache_read_input_tokens alone",
           real_counts.get("context", {}).get("cacheReadTokens") == 15092)
 
+    additive_claude_lines = [
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "input_tokens": 2, "output_tokens": 3, "cache_creation_input_tokens": 100,
+            "cache_read_input_tokens": 0}}}),
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "input_tokens": 2, "output_tokens": 3, "cache_creation_input_tokens": 60,
+            "cache_read_input_tokens": 0}}}),
+    ]
     check("billedTokens/turns are ADDITIVE across multiple assistant messages in one batch "
           "(whole-tree, including subagent assistant lines, which are never filtered out)",
-          extract_live_counts([
-              json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 10, "output_tokens": 100}}}),
-              json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 20, "output_tokens": 30}}}),
-          ]).get("billedTokens") == 160
-          and extract_live_counts([
-              json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 10, "output_tokens": 100}}}),
-              json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 20, "output_tokens": 30}}}),
-          ]).get("turns") == 2)
+          extract_live_counts(additive_claude_lines).get("billedTokens") == 160
+          and extract_live_counts(additive_claude_lines).get("turns") == 2)
+
+    # -- #1706: the twin of the engine's own measurement, on a REAL consecutive line pair from room
+    # dispatch-implement-3dc5e21a's `.stdout.log` (the same pair
+    # TokenBudgetMonitorTests.The_dedupe_premise_holds_on_a_real_consecutive_pair_from_room_3dc5e21a
+    # uses -- one home for the fixture's provenance, two languages reading it). Its `input_tokens` of
+    # 2 and `output_tokens` of 1 are the placeholders; only the 39,901 cache-creation figure is real.
+    real_pair_1706 = [
+        json.dumps({"type": "assistant", "message": {
+            "id": "msg_011Cee7wqgwCecnuPg5NCH6y", "content": [{"type": "text"}],
+            "usage": {"input_tokens": 2, "cache_creation_input_tokens": 39901,
+                      "cache_read_input_tokens": 0, "output_tokens": 1}}}),
+        json.dumps({"type": "assistant", "message": {
+            "id": "msg_011Cee7wqgwCecnuPg5NCH6y", "content": [{"type": "tool_use"}],
+            "usage": {"input_tokens": 2, "cache_creation_input_tokens": 39901,
+                      "cache_read_input_tokens": 0, "output_tokens": 1}}}),
+    ]
+    real_pair_counts = extract_live_counts(real_pair_1706)
+    check("#1706: the real captured pair bills 39,901 -- cache_creation once, deduped, with neither "
+          "placeholder column added (pre-#1706 this read 2 + 1 + 39,901)",
+          real_pair_counts.get("billedTokens") == 39901)
+    check("#1706: that real pair is marked a floor", real_pair_counts.get("billedIsFloor") is True)
+    check("#1706: billedIsFloor is STICKY across batches -- a later batch with no claude usage at all "
+          "never clears a floor an earlier batch established",
+          (lambda state: (_apply_live_delta(state, extract_live_counts(real_pair_1706)),
+                          _apply_live_delta(state, extract_live_counts(
+                              [json.dumps({"event": "step_update", "step_update": {
+                                  "state": "DONE", "step_type": "agent_response",
+                                  "usage": {"input_tokens": 5, "output_tokens": 5}}})])),
+                          state["counts"].get("billedIsFloor"))[-1])(
+              {"counts": {"toolCalls": 0}, "context": None}) is True)
     check("context is the LATEST message's level within a batch, never summed across messages",
           extract_live_counts([
               json.dumps({"type": "assistant", "message": {"usage": {
@@ -3046,6 +3104,10 @@ def _selftest() -> int:
     check("billedTokens reads agy's DONE/agent_response step_update.usage (input + output, NOT thinking)",
           real_agy_counts.get("billedTokens") == 14205 + 443)
     check("turns is 1 for a single agy usage-bearing line", real_agy_counts.get("turns") == 1)
+    check("#1706 POLARITY: agy's step_update usage carries its REAL input/output, so its billed figure "
+          "is a measurement and billedIsFloor is absent -- without this arm a rule that marked every "
+          "batch a floor would pass every claude check above",
+          "billedIsFloor" not in real_agy_counts)
     check("agy step_update contributes no `context` -- claude-only (no cache_creation figure to build a trio from)",
           "context" not in real_agy_counts)
     check("a terminal `result` line's usage never leaks into live counts -- only type==assistant/step_update are read",
@@ -3055,22 +3117,21 @@ def _selftest() -> int:
 
     # #1686 review F6 -- extract_live_counts's own docstring above has the measured shape this
     # reproduces; dedupe by message.id closes it.
-    dup_message_lines = [
-        json.dumps({"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 10}}}),
-        json.dumps({"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 10}}}),
-        json.dumps({"type": "assistant", "message": {"id": "msg_2", "usage": {"input_tokens": 50, "output_tokens": 5}}}),
-    ]
+    def _dup_line(message_id: str, cache_creation: int) -> str:
+        return json.dumps({"type": "assistant", "message": {"id": message_id, "usage": {
+            "input_tokens": 2, "output_tokens": 3, "cache_creation_input_tokens": cache_creation,
+            "cache_read_input_tokens": 0}}})
+
+    dup_message_lines = [_dup_line("msg_1", 110), _dup_line("msg_1", 110), _dup_line("msg_2", 55)]
     dup_seen_ids: set = set()
     dup_counts = extract_live_counts(dup_message_lines, dup_seen_ids)
     check("billedTokens dedupes a repeated message.id instead of summing it twice",
-          dup_counts.get("billedTokens") == (100 + 10) + (50 + 5))
+          dup_counts.get("billedTokens") == 110 + 55)
     check("turns dedupes the same way", dup_counts.get("turns") == 2)
 
     # A repeat that arrives in a LATER batch (a later poll cycle) must still dedupe against the SAME
     # persistent seen_message_ids the caller threads through live_cache's per-execution state.
-    later_batch_counts = extract_live_counts(
-        [json.dumps({"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 10}}})],
-        dup_seen_ids)
+    later_batch_counts = extract_live_counts([_dup_line("msg_1", 110)], dup_seen_ids)
     check("a repeated message.id in a LATER batch (persistent seen-set) still dedupes",
           "billedTokens" not in later_batch_counts)
 

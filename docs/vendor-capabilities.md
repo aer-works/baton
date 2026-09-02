@@ -559,6 +559,48 @@ makes a live, not-yet-terminal usage figure possible at all (`tools/fleet-glass/
 `vendor-doc-audit.md` missed. Both registers were quiet on the per-message shape specifically, and
 that quiet got mistaken for a finished investigation instead of an open one.
 
+**But only two of those four keys are that message's real figures (#1706, measured 2026-09-02).** The
+paragraph above is true as a *shape* claim and was read as a *value* claim, which is the defect this
+correction exists to close rather than leave to inference — the keys are present; two of them are
+placeholders:
+
+| Key on a mid-stream `assistant` line | Real? | Measured over two whole rooms |
+|---|---|---|
+| `input_tokens` | **no** | the literal constant `2` on all 153 and all 94 distinct `message.id`s |
+| `output_tokens` | **no** | a 1–21 stub; Σ = 1,362 and 691 against real totals of 113,293 and 66,924 |
+| `cache_creation_input_tokens` | yes | Σ over deduped ids reproduces the terminal whole-tree figure to 98.0% / 100.0% |
+| `cache_read_input_tokens` | yes | same, 97.5% / 100.0% |
+
+These are the values emitted when a message begins, never revised: across 93 and 82 repeat lines,
+**zero** carry a `usage` object differing from that id's first sighting, so no "read the last one"
+strategy recovers anything. Nor is there a streaming-protocol event to read them from instead —
+**the shipped `stream-json --verbose` mode emits no `message_start`, `message_delta` or
+`message_stop` event at all.** Its full event-type set, enumerated over both captures, is `assistant`,
+`user`, `system` (subtypes `init`, `thinking_tokens`, `task_started`, `task_progress`,
+`task_notification`, `task_updated`, `hook_started`, `hook_response`, `code_change_published`,
+`vcs_state_changed`), `tool_progress`, `rate_limit_event`, and one terminal `result`.
+
+**Scoped: what was NOT searched.** The statement above is about the MAIN THREAD's own per-message
+figures. Other live lines in the same captures do carry real token counts, they were found but not
+pursued, and naming them is cheaper than letting a later reader conclude from this section's silence
+that the search was exhaustive:
+
+| Line | Field | Seen |
+|---|---|---|
+| `system`/`task_progress` | `usage.total_tokens` (plus `tool_uses`, `duration_ms`) | cumulative per subagent task |
+| `system`/`task_notification` | `usage.total_tokens` | 133,082 on one task |
+| `user` | `tool_use_result.usage` | a FULL real usage object for a completed Task, including `output_tokens` and `output_tokens_details.thinking_tokens`, plus a `usage.iterations[]` array |
+| terminal `result` | `usage.iterations[]`, `subagent_stats` | both unread by any parser here |
+
+None of these is the main thread's own per-message output, so the engineering conclusion
+(spec/baton.md §3: bill cache-creation, label the figure a floor) stands. But `tool_use_result.usage`
+and `usage.iterations[]` are where an attempt to narrow the gap should start, and `subagent_stats` is
+what a claim about subagent fan-out has to be checked against — §3 records a claim of exactly that
+kind being falsified by it.
+
+*Evidence: `dispatch-implement-3dc5e21a` and `dispatch-implement-5d9686dd`'s real `.stdout.log`
+captures, claude 2.1.257 era, enumerated event-by-event rather than sampled.*
+
 ### `agy` — works headlessly too, as of a CLI update
 
 **Superseded 2026-08-28.** The prior measurement on this row — `agy -p "/usage"` **not a built-in
