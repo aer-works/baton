@@ -85,3 +85,39 @@ export function maxIsoOrNull(a, b) {
   if (bOk) return b;
   return null;
 }
+
+// #1690 item 2: the pure core of handleDeliver's batching -- given the existing inbox index and the
+// items in one /deliver POST, returns the updated index (each stored item stamped with the batch id
+// it lives in), the single content blob to write under `inbox:batch:<batchId>`, and any INBOX_CAP
+// eviction overflow. worker.js does only the actual `env.FLEET.put`/`delete` calls around this, so
+// worker.selftest.mjs can exercise the real batching logic with plain node -- no live KV needed.
+// This is the fold that turns a K-item POST from K+1 KV writes (one inbox:item:<id> put per item,
+// pre-#1690) into 2 (one inbox:batch:<id> put for the whole batch, plus the index put).
+export function computeDeliverBatch(existingIndex, items, batchId, inboxCap) {
+  let index = existingIndex.slice();
+  const batchContent = {};
+  let stored = 0;
+  for (const item of items) {
+    if (!item || typeof item.id !== "string" || !item.id) continue;
+    if (typeof item.room !== "string" || !item.room) continue;
+    batchContent[item.id] = String(item.content ?? "");
+    const { content: _content, ...meta } = item;
+    index = index.filter((m) => m.id !== item.id);
+    index.unshift({ ...meta, pushed_at: item.pushed_at || new Date().toISOString(), batch_id: batchId });
+    stored += 1;
+  }
+  let evicted = [];
+  if (index.length > inboxCap) {
+    evicted = index.slice(inboxCap);
+    index = index.slice(0, inboxCap);
+  }
+  return { index, batchContent, stored, evicted };
+}
+
+// #1690 item 2, read side: which `inbox:batch:<id>` key (if any) currently holds `itemId`'s content,
+// per the index's own `batch_id` stamp -- null means "not found, or delivered before this change",
+// which worker.js's deliverable_read treats as "fall back to the legacy inbox:item:<id> key".
+export function deliverableBatchKeyFor(index, itemId) {
+  const meta = index.find((m) => m && m.id === itemId);
+  return meta && typeof meta.batch_id === "string" && meta.batch_id ? `inbox:batch:${meta.batch_id}` : null;
+}

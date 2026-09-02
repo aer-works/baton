@@ -1328,10 +1328,13 @@ Both mailbox tools (`tools/fleet-glass/worker.js`'s `handleMcp`) now page:
   grows a `page`/`limit` argument pair. With neither argument, `rooms` carries every non-terminal
   room plus only the newest `HOT_TERMINAL_CAP` (40, `tools/fleet-glass/pusher.py`) terminal ones,
   and the response gains `terminal_total` (the full terminal count). Passing `page` (0-based) pages
-  over the REST of the terminal population instead — worker.js's `/push` handler splits a
-  `terminal_archive` field out of the push body into its own KV key (`"terminal_archive"`, never
-  folded into `"snapshot"`) so a plain `fleet_status` call's response size no longer grows with the
-  fleet's all-time terminal-room count. `pusher.py`'s `split_hot_and_archive` computes the hot set
+  over the REST of the terminal population instead. `terminal_archive` rides inside the SAME
+  `"snapshot"` KV value as everything else (folded in by #1690 item 2 — previously its own KV key,
+  written by a second `env.FLEET.put` on every push that had one; see "Fleet Glass write budget"
+  below for why that second write mattered); a plain `fleet_status` call's response size still stays
+  independent of the fleet's all-time terminal-room count because `handleMcp`'s `fleet_status`
+  branch strips `terminal_archive` back out on the READ side instead of it never having been
+  written together. `pusher.py`'s `split_hot_and_archive` computes the hot set
   and archive from the SAME `newest_timestamp` measure `drop_stale_rooms` already uses, so "newest"
   means the same thing everywhere in this module; `timelines` in the pushed body is filtered to the
   hot set's own paths, never the wider surviving-room set, so an archived-only terminal room's
@@ -1372,6 +1375,83 @@ measurement: 6 false STALL-shaped flags out of 6 live rooms), so every long-runn
 as stale. `ageLine` now keys the ⚠ on `room.live.lastActivityAt` (the `rooms[].live` field above,
 itself a real `.stdout.log` mtime) when the room carries a `live` section at all, and falls back to
 the journal-event age only for a Running room `live` was never attached to.
+
+**Fleet Glass write budget (#1690).** Cloudflare's free-tier KV namespace caps at 1,000 writes/day;
+the mailbox blew it TWICE (2026-09-02) because the pre-#1690 design budgeted one write per snapshot
+push and sized its coalescing floor to ~960/day — i.e. it sat AT the cap before deliveries and
+heartbeats were even added, and did not know `worker.js`'s `/push` handler wrote `terminal_archive`
+as a SECOND, unconditional `env.FLEET.put` alongside `"snapshot"` whenever a terminal room existed.
+Measured that day (`pusher.log`, 00:00–16:50 UTC): 783–1,252 writes from snapshot pushes (469, each
+1–2 writes), deliver batches (120 batches, K+1 writes each), and heartbeats (17) combined. This is
+the canonical record for the fix that replaced that arithmetic; `tools/fleet-glass/pusher.py`'s own
+module docstring and section comments cite this entry rather than restating it.
+
+The fix is a hard, pusher-owned daily write-budget LEDGER, not a smaller fixed interval: a
+per-UTC-day counter of KV writes by producer, persisted in `push_state_file`
+(`pusher.py`'s `BUDGET_STATE_KEY`), with a real cost per producer that matches what `worker.js` now
+actually writes (the folding below is what makes these costs small and flat, not scaling with
+content):
+- **Snapshot push** — `SNAPSHOT_KV_WRITE_COST` (1). `terminal_archive` now rides inside the SAME
+  `"snapshot"` KV value (folded in by item 2 below) instead of a second, unconditional
+  `env.FLEET.put` — one write per push, full stop, never two.
+- **Deliver batch** — `DELIVER_BATCH_KV_WRITE_COST` (2), regardless of item count K. `worker.js`'s
+  `handleDeliver` now stores every item in one POST's worth of content in a single
+  `"inbox:batch:<id>"` blob plus the `"inbox:index"` write (item 2 below) — was K+1 (one
+  `"inbox:item:<id>"` put per item).
+- **Heartbeat or derived-freshness ping** — `HEARTBEAT_KV_WRITE_COST` (1) — unchanged; the two
+  cadences already shared one write per POST (#1613 item 2) and stay mutually exclusive per cycle.
+
+`KV_DAILY_WRITE_TARGET` (700) is the hard daily target — comfortably under the 1,000 free-tier cap,
+with `DELIVER_RESERVE` (100) carved out so deliverables and heartbeats/pings still land once the
+snapshot half stops spending. `snapshot_pushes_allowed`/`deliver_allowed`/`heartbeat_allowed` each
+gate their own producer against `budget_left(ledger)`, checked immediately before the write so the
+ledger can never overshoot the target — every gate uses a `>=`/`>` comparison against its own exact
+cost, so the write that would cross the line is simply never attempted.
+
+**Adaptive snapshot cadence.** Rather than a fixed coalescing floor, the snapshot half's own
+interval widens as the day's remaining spendable budget (budget left, minus `DELIVER_RESERVE`)
+shrinks relative to the time left in the UTC day:
+`interval = max(min_push_interval_s, seconds_left_in_day / max(1, budget_left − DELIVER_RESERVE))`
+(`pusher.py`'s `adaptive_snapshot_interval_s`) — never faster than the configured
+`min_push_interval_s` floor (#1538, unchanged), and slower still once the budget itself is the
+binding constraint, so a change-heavy fleet tapers off smoothly across the day instead of running
+the budget out early and hard-stopping. Once `snapshot_pushes_allowed` goes false (the snapshot half
+has spent down to the reserve), the pusher sends exactly ONE more snapshot — carrying a `pusher`
+block, `{"writeBudgetExhaustedUntil": <ISO of the next 00:00 UTC>}` — and then stops snapshot pushes
+for the rest of the day; deliverables and heartbeats/pings keep landing out of the reserve until
+their own gate also goes false. `writeBudgetExhaustedUntil` is absent on every ordinary push, same
+optional-field convention as `conductor`; `glass.html`'s freshness strip reads it absent-safe and
+shows it ahead of every other staleness banner, since it explains — rather than merely flags — why
+`pushed_at` will keep aging until that instant. Never a silent stop: `pusher.log` gets one line per
+hour naming the ledger regardless of which producers are still spending (`format_budget_log_line`):
+`budget: used N/700 (snap a, deliver b, beat c), interval now Xs`.
+
+**The arithmetic is now a gate, not a claim.** `pusher.py --selftest` computes the worst-case daily
+write total with every producer at its own maximum cadence, driven through the SAME
+`snapshot_pushes_allowed`/`deliver_allowed`/`heartbeat_allowed`/`adaptive_snapshot_interval_s`
+functions `main()` itself uses (`simulate_worst_case_daily_writes`), and fails the selftest if that
+total exceeds `KV_DAILY_WRITE_TARGET` — the check the 2026-09-02 postmortem states "was never
+asserted anywhere" until this entry. Run against the shipped constants the worst case lands at
+exactly the target (700); run against the pre-#1690 constants (no ledger, 1 or 2 writes per
+snapshot push, K+1 per deliver batch) the same style of worst-case arithmetic clears 1,000 easily —
+see the #1690 PR body for the paired before/after numbers this selftest arm produced.
+
+**Item 2, the worker-side fold, in one place:** `worker.js`'s storage-key docstring (this file's own
+header) is the canonical record of exactly which KV keys exist post-fold
+(`"snapshot"`/`"inbox:batch:<id>"`/legacy `"inbox:item:<id>"`) and the read-side fallback for
+deliverables delivered before this change; not restated a third time here.
+
+**Item 3, the telemetry churn gate.** A Running room's `live` section (item 1 above) changes almost
+every cycle by construction — `toolCalls` incrementing, tokens accumulating, `lastActivityAt`'s own
+90s bucket advancing — which would otherwise re-trigger the #1457 change-gate every
+`interval_seconds` regardless of the write-budget ledger's own throttling. `pusher.py`'s
+`quantize_live_for_hash` computes the change-gate's hash from a copy of the room list where every
+room's `live` section is collapsed to a single bucket index (`LIVE_TELEMETRY_HASH_BUCKET_SECONDS`,
+300s) — the value actually POSTED is never touched, only the hash's sensitivity to telemetry-only
+churn, so telemetry-only deltas count as CHANGED at most once per 300s. A structural change (a
+different room set, a state transition, a new or changed deliverable, error text) lives in fields
+this quantization never touches, so it still changes the hash — and triggers a push, budget
+permitting — on the very next cycle.
 
 ---
 

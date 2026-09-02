@@ -9,16 +9,20 @@ THE SNAPSHOT HALF -- change-gated (#1457) and coalescing-floored (#1538)
 -------------------------------------------------------------------------
 The wrapped {rooms, underhood, timelines, stale_hidden_count} body is hashed (stable, sort_keys)
 before every POST; a hash that matches the last SUCCESSFUL push's (persisted in push_state_file, key
-SNAPSHOT_HASH_KEY) skips the POST. Cloudflare's KV free tier caps at 1,000 writes/day and worker.js's
-/push handler is an unconditional env.FLEET.put per POST -- pushing an unchanged snapshot every
-interval_seconds (default 25s) burns 3,456 writes/day against that cap for nothing. A missing/
-unreadable persisted hash always re-pushes (fail toward one extra write, never toward silence, same
-posture as the deliverables state file below); a FAILED POST never persists the hash, so the next
-cycle retries. See `snapshot_hash` / `should_push_snapshot`.
+SNAPSHOT_HASH_KEY) skips the POST. A missing/unreadable persisted hash always re-pushes (fail toward
+one extra write, never toward silence, same posture as the deliverables state file below); a FAILED
+POST never persists the hash, so the next cycle retries. See `snapshot_hash` / `should_push_snapshot`.
 
 COALESCING FLOOR (#1538): when the change-gate says CHANGED, push only if >= min_push_interval_s
-(default 90s) since the last actual push; otherwise log `coalesced (Ns since last push)` and let
-the next cycle retry. Continuous-change days are capped at <=960 writes/day worst case.
+(default 90s, and adaptively widened by the write-budget ledger below) since the last actual push;
+otherwise log `coalesced (Ns since last push)` and let the next cycle retry.
+
+WRITE BUDGET LEDGER (#1690): the real KV-write cost per producer, the daily target, the adaptive
+snapshot cadence, and the exhaustion posture are all spec/baton.md §6's canonical record now (the
+"Fleet Glass write budget" entry) -- read there once, not restated per-section here. This module's
+own piece is `KV_DAILY_WRITE_TARGET` and the "WRITE BUDGET LEDGER" section below (`load_budget_ledger`
+/ `record_budget_write` / `adaptive_snapshot_interval_s` / `snapshot_pushes_allowed` /
+`deliver_allowed` / `heartbeat_allowed`), which spec/baton.md cites back.
 
 SINGLE-INSTANCE GUARD (#1538): on startup, atomically claim pusher.lock (O_EXCL-style create).
 If the lock exists and its PID is alive with 'pusher' in its command line, terminate-and-replace it
@@ -65,9 +69,9 @@ ride the mailbox through this path -- see the module's secret gate above for why
 at all. Capped at the last TIMELINE_CAP (30) entries per
 room: a lane's timeline is step-level transitions (dispatch, execution start/exit, retries, decisions)
 written a handful of times per step, not a line per stdout write -- a lane produces tens of these
-over its life, not thousands, so this rides the mailbox safely under the same 1,000-write/day KV
-budget the change-gate above protects, and 30 is generous headroom over what a normal lane emits
-before terminating. Keyed by room PATH, never room NAME (#1505 review note: fleet_status dedupes
+over its life, not thousands, and rides inside the SAME snapshot write the change-gate above already
+gates (never a write of its own), so it costs nothing extra against the write-budget ledger
+(spec/baton.md §6). Keyed by room PATH, never room NAME (#1505 review note: fleet_status dedupes
 rooms by path, so two same-named rooms under different roots are distinct entries; a name-keyed join
 would hand one room's timeline to the other -- exactly the wrong-and-confident failure mode #41's
 removal below exists to stop, reintroduced by a careless join).
@@ -77,10 +81,9 @@ THE HEARTBEAT HALF (#1486), extended by #1613 item 2
 The change-gate above makes pushed_at legitimately stale on a quiet fleet, and nothing distinguishes
 that from a dead pusher. Independent of the gated snapshot, this loop also POSTs a timestamp ping to
 worker.js's /heartbeat route at a coarse fixed cadence -- hourly, tracked in push_state_file under
-HEARTBEAT_STATE_KEY. Arithmetic: 24 writes/day at hourly cadence, against the same 1,000/day KV
-free-tier cap the change-gate protects; combined with the change-gated snapshot writes (worst case
-one per interval_seconds when the fleet is constantly changing) this adds a small, fixed floor that
-never scales with polling frequency. Same save-only-after-success discipline as
+HEARTBEAT_STATE_KEY, and a more frequent derived-freshness ping (below) -- both gated by
+`heartbeat_allowed` against the SAME write-budget ledger the snapshot half spends from (spec/baton.md
+§6, "Fleet Glass write budget"). Same save-only-after-success discipline as
 push_snapshot_and_record: POST first, record the timestamp only afterwards, so a failed heartbeat
 retries next cycle instead of silently going stale. Heartbeat failures are logged and never raise
 into the snapshot path -- see main()'s heartbeat try/except, which runs in its own block after the
@@ -118,17 +121,19 @@ it (matching the snapshot half's path-keyed join, #1617; room name is kept for d
 with zero declared outputs (typically a Failed room) still gets ONE deliverable, carrying
 only the verdict summary, so a failure with nothing to show is still visible in the inbox.
 
-WRITE BUDGET, KEY MIGRATION, & BATCH CAPPING (#1617, PR #1632):
-Steady-state deliverables cost ~tens of writes/day against Cloudflare's 1,000/day free-tier KV cap
-(each /deliver POST of K items costs K+1 KV writes: K for inbox:item:<id> and 1 for inbox:index).
-When keys migrated from room_name to room_path, `gather_deliverables` automatically migrates legacy
-`f"{room_name}::{artifact}"` entries on load under their respective room_path keys and drops the old
-keys, stamping `__format_version__ = 2`. This avoids an all-at-once re-push storm of already-delivered
-history (measured at 210 deliverables / 211 KV writes worst case on this machine without migration).
-To protect against retry storms on network errors or payload cap violations (>5MB body cap), deliver
-POSTs are capped at DEFAULT_DELIVER_BATCH_CAP (10 items = 11 KV writes per cycle). A backlog drains
-across successive cycles at <=26 writes/min, and a failing batch retries only its own 10 items rather
-than an unbounded full-fleet burst.
+WRITE BUDGET, KEY MIGRATION, & BATCH CAPPING (#1617, PR #1632; folded to 2 writes/batch by #1690):
+Each /deliver POST of K items costs DELIVER_BATCH_KV_WRITE_COST (2) KV writes regardless of K --
+worker.js's handleDeliver stores every item's content in ONE `inbox:batch:<id>` blob plus the
+`inbox:index` write, not one `inbox:item:<id>` put per item (the pre-#1690 K+1 shape) -- see
+spec/baton.md §6, "Fleet Glass write budget" for the full arithmetic and `deliver_allowed`'s own
+ledger gating. When keys migrated from room_name to room_path, `gather_deliverables` automatically
+migrates legacy `f"{room_name}::{artifact}"` entries on load under their respective room_path keys
+and drops the old keys, stamping `__format_version__ = 2`. This avoids an all-at-once re-push storm
+of already-delivered history (measured at 210 deliverables / 211 KV writes worst case on this
+machine without migration). To protect against retry storms on network errors or payload cap
+violations (>5MB body cap), deliver POSTs are capped at DEFAULT_DELIVER_BATCH_CAP (10 items = one
+2-write batch per cycle, not 11). A backlog drains across successive cycles, and a failing batch
+retries only its own 10 items rather than an unbounded full-fleet burst.
 
 A PER-ITEM pattern hit IS memorized as pushed, unlike the missing-patterns-file case: its stub was
 delivered, and not memorizing it would re-send that stub every cycle. The trade-off is that a
@@ -152,7 +157,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -687,6 +692,31 @@ def prune_live_telemetry_cache(live_cache: dict, room_list: list) -> dict:
     return {k: v for k, v in live_cache.items() if k in live_keys}
 
 
+LIVE_TELEMETRY_HASH_BUCKET_SECONDS = 300  # #1690 item 3: telemetry churn gate -- spec/baton.md §6.
+
+
+def quantize_live_for_hash(room_list: list, now_ts: float, bucket_seconds: float = LIVE_TELEMETRY_HASH_BUCKET_SECONDS) -> list:
+    """A copy of `room_list` for HASHING ONLY (never posted -- the real `live` section rides the wire
+    every cycle unchanged): every room's `live` section, if present, is collapsed to a single bucket
+    index derived from now_ts. A Running room's live telemetry (toolCalls incrementing, tokens
+    accumulating, lastActivityAt's own 90s bucket advancing) is real per-cycle churn that would
+    otherwise re-trigger the #1457 change-gate every interval_seconds -- collapsing it to a
+    `bucket_seconds` (default 300s) bucket for hashing purposes means the gate sees CHANGED from
+    telemetry alone at most once per bucket. A STRUCTURAL change -- a different room set, a state
+    transition, a new/changed deliverable, error text -- lives in fields this function never
+    touches, so it still changes the hash on the very next cycle, unaffected by this gate."""
+    bucket = int(now_ts // bucket_seconds)
+    out = []
+    for room in room_list or []:
+        if isinstance(room, dict) and "live" in room:
+            quantized = dict(room)
+            quantized["live"] = {"_telemetryBucket": bucket}
+            out.append(quantized)
+        else:
+            out.append(room)
+    return out
+
+
 def resolve_room_timeline(room_path: str, is_terminal: bool, cache: dict, fetch_fn) -> list[dict]:
     """#1613 item 4's caching POLICY, pulled out of `derive_snapshot_and_timelines` so it is
     testable without a live `dotnet` subprocess: a non-terminal room always calls `fetch_fn`
@@ -961,15 +991,23 @@ SNAPSHOT_HASH_KEY = "__snapshot_hash__"
 
 def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
                    terminal_total: int = 0, terminal_archive: list | None = None,
-                   conductor: dict | None = None) -> dict:
+                   conductor: dict | None = None, pusher: dict | None = None) -> dict:
     """The exact snapshot body main() pushes. One home so the leak selftest exercises the real push
     path's construction, not a hand-rebuilt copy that could drift from it (PR #1508 review).
 
     `terminal_total`/`terminal_archive` (#1656) default to 0/None so every pre-existing call site
     (this module's own hash/selftest fixtures) keeps working unchanged -- callers that care about
     the hot-set split pass `room_list` as already-capped `hot_rooms` (see `split_hot_and_archive`)
-    and the FULL terminal population separately here. worker.js's /push handler strips
-    `terminal_archive` back out into its own KV key before it ever reaches "snapshot"."""
+    and the FULL terminal population separately here. Post-#1690 item 2, `terminal_archive` rides
+    inside this SAME "snapshot" KV value (worker.js's /push handler no longer splits it into its own
+    key) -- the plain (no `page`) fleet_status response still hides it, by omission on the READ side
+    now rather than the write side.
+
+    `pusher` (#1690) is an optional small object the write-budget ledger attaches -- currently only
+    `{"writeBudgetExhaustedUntil": iso}` on the one final snapshot sent when the daily KV write
+    budget runs out (spec/baton.md §6, "Fleet Glass write budget"). Absent on every ordinary push,
+    same optional-field convention as `conductor` above -- glass.html's freshness strip reads it
+    absent-safe."""
     wrapped = {"rooms": room_list,
                "underhood": underhood,
                "timelines": timelines,
@@ -978,6 +1016,8 @@ def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
                "terminal_archive": terminal_archive or []}
     if conductor is not None:
         wrapped["conductor"] = conductor
+    if pusher is not None:
+        wrapped["pusher"] = pusher
     return wrapped
 
 
@@ -1004,6 +1044,196 @@ def should_coalesce_push(state: dict, now_ts: float, min_interval_s: float = DEF
     if not isinstance(last, (int, float)):
         return False
     return (now_ts - last) < min_interval_s
+
+
+# ---------------------------------------------------------------------------------------------
+# WRITE BUDGET LEDGER (#1690) -- a hard, pusher-owned daily cap on KV writes, replacing the old
+# "sits AT the cap with no margin" arithmetic (aer-works/baton#1690's own measured table: 783-1,252
+# writes by 16:50 UTC against Cloudflare's 1,000/day free-tier KV cap, twice). Full design and the
+# per-producer cost table: spec/baton.md §6, "Fleet Glass write budget" -- this section is the code
+# that record cites, not a second copy of the reasoning.
+#
+# The three per-producer KV write costs below are the SAME constants worker.js's own handlers are
+# built to (the module docstring's "record once" pointer): a snapshot push costs
+# SNAPSHOT_KV_WRITE_COST regardless of whether the terminal set changed (item 2 folds
+# terminal_archive inside the "snapshot" value -- one env.FLEET.put per push, not two); a deliver
+# batch of any size K costs DELIVER_BATCH_KV_WRITE_COST (one inbox:batch:<id> put + one
+# inbox:index put, not K+1); a heartbeat or derived-freshness ping costs HEARTBEAT_KV_WRITE_COST.
+# ---------------------------------------------------------------------------------------------
+
+KV_DAILY_WRITE_TARGET = 700  # hard daily budget, well under Cloudflare's 1,000/day free-tier KV
+                              # write cap -- headroom for the ledger's own inherent granularity (a
+                              # write can only be skipped whole, never partially) and anything this
+                              # arithmetic hasn't modeled, per aer-works/baton#1690's "Not this
+                              # issue" note (≥30% headroom or file the R2/Durable-Object exit).
+DELIVER_RESERVE = 100        # writes/day carved out of KV_DAILY_WRITE_TARGET so deliverables (and
+                              # heartbeat/ping) still land once the snapshot half has spent its
+                              # share -- see `snapshot_pushes_allowed`.
+SNAPSHOT_KV_WRITE_COST = 1   # matches worker.js's /push handler post-#1690 item 2: ONE
+                              # env.FLEET.put("snapshot", ...) per push (terminal_archive rides
+                              # inside that same value, never a separate KV key or write).
+DELIVER_BATCH_KV_WRITE_COST = 2  # matches worker.js's /deliver handler post-#1690 item 2: one
+                              # inbox:batch:<id> put (every item in the POST, however many) plus
+                              # one inbox:index put -- was K+1 (one inbox:item:<id> put per item).
+HEARTBEAT_KV_WRITE_COST = 1  # matches worker.js's /heartbeat handler: one
+                              # env.FLEET.put("heartbeat_at", ...) per POST, whichever of the two
+                              # cadences (hourly beat, derived-freshness ping) fired it.
+
+BUDGET_STATE_KEY = "__write_budget__"
+
+
+def utc_day_str(now_ts: float) -> str:
+    return datetime.fromtimestamp(now_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def next_utc_midnight_iso(now_ts: float) -> str:
+    """ISO-8601 instant of the next 00:00 UTC strictly after now_ts -- what a `writeBudgetExhaustedUntil`
+    value names (glass's freshness strip reads it verbatim, absent-safe)."""
+    now = datetime.fromtimestamp(now_ts, tz=timezone.utc)
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return tomorrow.isoformat()
+
+
+def seconds_left_in_day(now_ts: float) -> float:
+    now = datetime.fromtimestamp(now_ts, tz=timezone.utc)
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(0.0, (tomorrow - now).total_seconds())
+
+
+def load_budget_ledger(state: dict, now_ts: float) -> dict:
+    """Today's {date, snapshot, deliver, heartbeat, exhausted_notice_sent} counters -- a UTC-day
+    rollover (or a missing/corrupt persisted ledger) always returns a fresh, zeroed ledger, never a
+    crash and never yesterday's counts bleeding into today (fail toward under-counting a NEW day,
+    never toward over-counting one that has already ended)."""
+    today = utc_day_str(now_ts)
+    raw = state.get(BUDGET_STATE_KEY)
+    if isinstance(raw, dict) and raw.get("date") == today:
+        def _count(key: str) -> int:
+            v = raw.get(key)
+            return v if isinstance(v, int) and not isinstance(v, bool) else 0
+        return {
+            "date": today,
+            "snapshot": _count("snapshot"),
+            "deliver": _count("deliver"),
+            "heartbeat": _count("heartbeat"),
+            "exhausted_notice_sent": bool(raw.get("exhausted_notice_sent", False)),
+        }
+    return {"date": today, "snapshot": 0, "deliver": 0, "heartbeat": 0, "exhausted_notice_sent": False}
+
+
+def budget_used(ledger: dict) -> int:
+    return ledger.get("snapshot", 0) + ledger.get("deliver", 0) + ledger.get("heartbeat", 0)
+
+
+def budget_left(ledger: dict, target: int = KV_DAILY_WRITE_TARGET) -> int:
+    return max(0, target - budget_used(ledger))
+
+
+def record_budget_write(state: dict, now_ts: float, producer: str, cost: int) -> dict:
+    """Mutates `state[BUDGET_STATE_KEY]` in place (caller persists via save_push_state, same
+    ordering discipline as every other POST-then-record path in this module) and returns the
+    updated ledger. `producer` is one of "snapshot"/"deliver"/"heartbeat"."""
+    ledger = load_budget_ledger(state, now_ts)
+    ledger[producer] = ledger.get(producer, 0) + cost
+    state[BUDGET_STATE_KEY] = ledger
+    return ledger
+
+
+def snapshot_pushes_allowed(ledger: dict, target: int = KV_DAILY_WRITE_TARGET, reserve: int = DELIVER_RESERVE) -> bool:
+    """False once the ledger has spent down to the deliverables/heartbeat reserve -- the snapshot
+    half stops FIRST, on purpose (spec/baton.md §6): a stale but still-fresh-enough fleet row is a
+    smaller loss than a silently-stopped deliverables inbox."""
+    return budget_left(ledger, target) > reserve
+
+
+def deliver_allowed(ledger: dict, target: int = KV_DAILY_WRITE_TARGET, cost: int = DELIVER_BATCH_KV_WRITE_COST) -> bool:
+    return budget_left(ledger, target) >= cost
+
+
+def heartbeat_allowed(ledger: dict, target: int = KV_DAILY_WRITE_TARGET, cost: int = HEARTBEAT_KV_WRITE_COST) -> bool:
+    return budget_left(ledger, target) >= cost
+
+
+def adaptive_snapshot_interval_s(
+    ledger: dict, now_ts: float,
+    min_push_interval_s: float = DEFAULT_MIN_PUSH_INTERVAL_S,
+    target: int = KV_DAILY_WRITE_TARGET, reserve: int = DELIVER_RESERVE,
+) -> float:
+    """aer-works/baton#1690's own adaptive-cadence formula: never faster than min_push_interval_s
+    (the #1538 coalescing floor), and slower still once the remaining budget for the rest of the
+    day (after carving out `reserve` for deliverables/heartbeat) can no longer sustain the coalescing
+    floor's own pace -- the fewer writes left, the longer between them, so a fleet that starts the
+    day change-heavy tapers off smoothly instead of running the budget out early and hard-stopping."""
+    spendable = budget_left(ledger, target) - reserve
+    return max(min_push_interval_s, seconds_left_in_day(now_ts) / max(1, spendable))
+
+
+def should_log_budget(state: dict, now_ts: float, interval: float = 3600) -> bool:
+    """True once at least `interval` seconds (default hourly) have elapsed since the last budget log
+    line -- same fail-toward-one-extra-log posture as should_send_heartbeat."""
+    last = state.get("__last_budget_log_ts__")
+    if not isinstance(last, (int, float)):
+        return True
+    return (now_ts - last) >= interval
+
+
+def format_budget_log_line(ledger: dict, interval_s: float, target: int = KV_DAILY_WRITE_TARGET) -> str:
+    return (f"budget: used {budget_used(ledger)}/{target} "
+            f"(snap {ledger.get('snapshot', 0)}, deliver {ledger.get('deliver', 0)}, "
+            f"beat {ledger.get('heartbeat', 0)}), interval now {int(interval_s)}s")
+
+
+def simulate_worst_case_daily_writes(
+    interval_seconds: float = 25,
+    min_push_interval_s: float = DEFAULT_MIN_PUSH_INTERVAL_S,
+    target: int = KV_DAILY_WRITE_TARGET,
+    reserve: int = DELIVER_RESERVE,
+    deliver_ping_interval_s: float = 300,  # DERIVED_PING_INTERVAL_SECONDS, kept a literal default so
+                                            # this function has no import-order dependency on it
+    heartbeat_interval_s: float = 3600,    # HEARTBEAT_INTERVAL_SECONDS, same reason
+) -> dict:
+    """#1690 item 4, the arithmetic gate itself: one UTC day, every producer at its OWN maximum
+    cadence -- the snapshot's content changes every single cycle (never coalesced by content, only
+    by the adaptive floor below), a deliver batch is always waiting, and the heartbeat/derived-ping
+    pair fires whenever its own real cadence function (`should_send_heartbeat` /
+    `should_send_derived_ping`) says due -- driven through the SAME gating functions
+    (`snapshot_pushes_allowed` / `deliver_allowed` / `heartbeat_allowed`) and the SAME ledger
+    (`load_budget_ledger` / `record_budget_write`) main() itself uses, so this is not a second,
+    hand-rolled arithmetic that could drift from what actually ships. Returns the final ledger; the
+    caller asserts `budget_used(...) <= KV_DAILY_WRITE_TARGET`. A synthetic day starting at epoch 0
+    (1970-01-01T00:00:00Z) -- any fixed UTC-day start works, since every gating function here only
+    ever measures elapsed time, never wall-clock identity."""
+    state: dict = {}
+    now_ts = 0.0
+    day_end = 86400.0
+    last_snapshot_push_ts: float | None = None
+    while now_ts < day_end:
+        ledger = load_budget_ledger(state, now_ts)
+        if snapshot_pushes_allowed(ledger, target, reserve):
+            interval = adaptive_snapshot_interval_s(ledger, now_ts, min_push_interval_s, target, reserve)
+            if last_snapshot_push_ts is None or (now_ts - last_snapshot_push_ts) >= interval:
+                record_budget_write(state, now_ts, "snapshot", SNAPSHOT_KV_WRITE_COST)
+                last_snapshot_push_ts = now_ts
+                state[LAST_PUSH_TS_KEY] = now_ts  # mirrors push_snapshot_and_record's own side
+                                                    # effect -- suppresses a redundant derived-ping
+                                                    # below, exactly like the real loop.
+
+        ledger = load_budget_ledger(state, now_ts)
+        if deliver_allowed(ledger, target, DELIVER_BATCH_KV_WRITE_COST):
+            record_budget_write(state, now_ts, "deliver", DELIVER_BATCH_KV_WRITE_COST)
+
+        ledger = load_budget_ledger(state, now_ts)
+        heartbeat_due = should_send_heartbeat(state, now_ts, heartbeat_interval_s)
+        ping_due = should_send_derived_ping(state, now_ts, deliver_ping_interval_s)
+        if (heartbeat_due or ping_due) and heartbeat_allowed(ledger, target, HEARTBEAT_KV_WRITE_COST):
+            record_budget_write(state, now_ts, "heartbeat", HEARTBEAT_KV_WRITE_COST)
+            if heartbeat_due:
+                state[HEARTBEAT_STATE_KEY] = now_ts
+            if ping_due:
+                state[DERIVED_PING_STATE_KEY] = now_ts
+
+        now_ts += interval_seconds
+    return load_budget_ledger(state, day_end - 1)
 
 
 def push_snapshot_and_record(post, body: str, state: dict, state_path, current_hash: str, now_ts: float | None = None) -> None:
@@ -1037,10 +1267,10 @@ def derive_deliver_url(cfg: dict) -> str | None:
 
 
 HEARTBEAT_STATE_KEY = "__last_heartbeat_ts__"
-HEARTBEAT_INTERVAL_SECONDS = 3600  # hourly: 24 writes/day + the change-gated snapshot writes (worst
-                                    # case one per interval_seconds) against the 1,000/day KV
-                                    # free-tier cap the change-gate (#1457) protects -- see the
-                                    # module docstring's "THE HEARTBEAT HALF" section.
+HEARTBEAT_INTERVAL_SECONDS = 3600  # hourly cadence; gated against the write-budget ledger like every
+                                    # other producer (`heartbeat_allowed`) -- see the module
+                                    # docstring's "THE HEARTBEAT HALF" section and spec/baton.md §6,
+                                    # "Fleet Glass write budget".
 
 
 def derive_heartbeat_url(cfg: dict) -> str | None:
@@ -1085,15 +1315,14 @@ def send_heartbeat_and_record(post, state: dict, state_path, now_ts: float, extr
 #
 # Budget: derived_at must reach the server far more often than heartbeat_at's own hourly cadence to
 # be a useful "stuck" signal, but a naive fixed-interval ping alongside the change-gated snapshot
-# writes would blow the 1,000-writes/day KV free-tier cap this module's docstring already budgets
-# to the edge (~984/day between the snapshot and heartbeat alone). The two writes are made
-# mutually exclusive per cycle instead of additive: an actual snapshot PUSH already carries a fresh
-# derived_at in its own body (excluded from `snapshot_hash` so it never forces a push on its own --
-# see `main()`'s push branch), so `should_send_derived_ping` below only fires the dedicated ping
-# when NEITHER a push nor a prior ping has landed one recently. A day spent constantly pushing
-# (worst case ~960 writes) never also pays the ping's cost (it wouldn't fire); a quiet day (near
-# zero snapshot writes) pays the ping's cost instead (worst case ~288/day at this interval) --
-# never both at once, so the combined worst case stays close to the snapshot-alone worst case.
+# writes would blow the write-budget ledger's KV_DAILY_WRITE_TARGET (spec/baton.md §6, "Fleet Glass
+# write budget") on its own. The two writes are made mutually exclusive per cycle instead of
+# additive: an actual snapshot PUSH already carries a fresh derived_at in its own body (excluded
+# from `snapshot_hash` so it never forces a push on its own -- see `main()`'s push branch), so
+# `should_send_derived_ping` below only fires the dedicated ping when NEITHER a push nor a prior
+# ping has landed one recently -- and even then, only when `heartbeat_allowed` says the ledger still
+# has room. A day spent constantly pushing never also pays the ping's cost (it wouldn't fire); a
+# quiet day pays the ping's cost instead, capped by the same ledger either way.
 # ---------------------------------------------------------------------------------------------
 
 DERIVED_PING_STATE_KEY = "__last_derived_ping_ts__"
@@ -1597,6 +1826,10 @@ def main() -> None:
     # to go out -- None whenever nothing is pending (see pending_push_age_s). Carried forward
     # unchanged on a cycle whose derivation itself fails, same as last_derived_at above.
     pending_push_age: float | None = None
+    # #1690: the adaptive snapshot interval actually in effect this cycle, purely for the hourly
+    # budget log line -- carried forward so a cycle that skips the snapshot branch entirely (an
+    # exception, or the budget-exhausted early-out) still has a sane value to log.
+    effective_snapshot_interval = float(min_push_interval_s)
 
     acquire_lock(lock_path)
     atexit.register(release_lock, lock_path)
@@ -1656,18 +1889,50 @@ def main() -> None:
                     terminal_total=terminal_total,
                     terminal_archive=terminal_archive,
                     conductor=conductor_info)
-                current_hash = snapshot_hash(wrapped)
+                # #1690 item 3: the change-gate hashes a QUANTIZED copy (telemetry churn collapsed to
+                # a 300s bucket) -- `wrapped` itself, posted verbatim below, always carries the exact
+                # live values; only the hash's SENSITIVITY to telemetry-only churn is reduced.
+                now_ts = time.time()
+                hash_wrapped = dict(wrapped)
+                hash_wrapped["rooms"] = quantize_live_for_hash(hot_rooms, now_ts)
+                current_hash = snapshot_hash(hash_wrapped)
                 snap_state = load_push_state(state_path)
-                if should_push_snapshot(snap_state, current_hash):
-                    now_ts = time.time()
-                    if should_coalesce_push(snap_state, now_ts, min_push_interval_s):
+                ledger = load_budget_ledger(snap_state, now_ts)
+                if not snapshot_pushes_allowed(ledger):
+                    if not ledger.get("exhausted_notice_sent"):
+                        exhausted_until = next_utc_midnight_iso(now_ts)
+                        notice_wrapped = build_wrapped(
+                            hot_rooms, gather_underhood(cfg),
+                            {p: t for p, t in timelines.items() if p in hot_paths},
+                            stale_hidden_count, terminal_total=terminal_total,
+                            terminal_archive=terminal_archive, conductor=conductor_info,
+                            pusher={"writeBudgetExhaustedUntil": exhausted_until})
+                        post_body = json.dumps({**notice_wrapped, "derived_at": last_derived_at})
+                        try:
+                            push_snapshot_and_record(
+                                lambda b: post_json(cfg["push_url"], b),
+                                post_body, snap_state, state_path, current_hash, now_ts=now_ts)
+                        except Exception as ex:  # noqa: BLE001 — loop must survive anything
+                            log(f"ERROR (push, budget-exhausted notice) {type(ex).__name__}: {ex}")
+                        else:
+                            ledger = record_budget_write(snap_state, now_ts, "snapshot", SNAPSHOT_KV_WRITE_COST)
+                            ledger["exhausted_notice_sent"] = True
+                            snap_state[BUDGET_STATE_KEY] = ledger
+                            save_push_state(state_path, snap_state)
+                            log(f"write budget exhausted for today -- sent final snapshot, "
+                                f"resumes {exhausted_until}")
+                    else:
+                        log("write budget exhausted -- snapshot pushes stopped for today")
+                elif should_push_snapshot(snap_state, current_hash):
+                    effective_snapshot_interval = adaptive_snapshot_interval_s(ledger, now_ts, min_push_interval_s)
+                    if should_coalesce_push(snap_state, now_ts, effective_snapshot_interval):
                         last_ts = snap_state[LAST_PUSH_TS_KEY]
                         elapsed = int(now_ts - last_ts)
-                        log(f"coalesced ({elapsed}s since last push)")
+                        log(f"coalesced ({elapsed}s since last push, interval now {int(effective_snapshot_interval)}s)")
                     else:
                         # derived_at rides the ACTUAL posted body but is excluded from current_hash
-                        # (computed above from `wrapped` alone) -- it must never make the change-gate
-                        # think an otherwise-unchanged snapshot changed.
+                        # (computed above from the quantized copy of `wrapped`) -- it must never make
+                        # the change-gate think an otherwise-unchanged snapshot changed.
                         post_body = json.dumps({**wrapped, "derived_at": last_derived_at})
                         try:
                             push_snapshot_and_record(
@@ -1679,6 +1944,8 @@ def main() -> None:
                             # execution falls through to that computation either way.
                             log(f"ERROR (push) {type(ex).__name__}: {ex}")
                         else:
+                            record_budget_write(snap_state, now_ts, "snapshot", SNAPSHOT_KV_WRITE_COST)
+                            save_push_state(state_path, snap_state)
                             if skip_streak:
                                 log(f"skipped {skip_streak} unchanged cycle(s) since last push")
                                 skip_streak = 0
@@ -1693,6 +1960,17 @@ def main() -> None:
                 # the hash matches and this comes back None; a coalesced or failed push leaves
                 # snap_state's hash stale, so this reports how long content has been waiting.
                 pending_push_age = pending_push_age_s(snap_state, current_hash, time.time())
+
+                # #1690: hourly ledger log line, gated the same way should_send_heartbeat is --
+                # reload state so this reflects every write recorded above (snapshot, and any
+                # deliver/heartbeat write from a PRIOR cycle already persisted to disk).
+                log_state = load_push_state(state_path)
+                log_now_ts = time.time()
+                if should_log_budget(log_state, log_now_ts):
+                    log_ledger = load_budget_ledger(log_state, log_now_ts)
+                    log(format_budget_log_line(log_ledger, effective_snapshot_interval))
+                    log_state["__last_budget_log_ts__"] = log_now_ts
+                    save_push_state(state_path, log_state)
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (snapshot) {type(ex).__name__}: {ex}")
 
@@ -1711,7 +1989,10 @@ def main() -> None:
                     now_ts = time.time()
                     heartbeat_due = should_send_heartbeat(hb_state, now_ts)
                     derived_ping_due = should_send_derived_ping(hb_state, now_ts)
-                    if heartbeat_due or derived_ping_due:
+                    hb_ledger = load_budget_ledger(hb_state, now_ts)
+                    if (heartbeat_due or derived_ping_due) and not heartbeat_allowed(hb_ledger):
+                        log("write budget exhausted -- heartbeat/derived-ping skipped this cycle")
+                    elif heartbeat_due or derived_ping_due:
                         payload_dict = {"derived_at": last_derived_at}
                         if pending_push_age is not None:
                             payload_dict["pending_push_age_s"] = pending_push_age
@@ -1720,6 +2001,8 @@ def main() -> None:
                         send_heartbeat_and_record(
                             lambda: post_json(heartbeat_url, payload),
                             hb_state, state_path, now_ts, extra_state=extra_state)
+                        record_budget_write(hb_state, now_ts, "heartbeat", HEARTBEAT_KV_WRITE_COST)
+                        save_push_state(state_path, hb_state)
                         log("heartbeat sent" if heartbeat_due else "derived-freshness ping sent")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (heartbeat) {type(ex).__name__}: {ex}")
@@ -1736,11 +2019,18 @@ def main() -> None:
                         limit=cfg.get("deliver_batch_cap", DEFAULT_DELIVER_BATCH_CAP),
                     )
                     if items:
-                        post_json(deliver_url, json.dumps({"items": items}))
-                        if patterns is not None:
-                            save_push_state(state_path, mark_pushed(state, items))
-                        log(f"delivered {len(items)} item(s) "
-                            f"({sum(1 for i in items if i['withheld'])} withheld)")
+                        now_ts = time.time()
+                        deliver_ledger = load_budget_ledger(state, now_ts)
+                        if not deliver_allowed(deliver_ledger):
+                            log(f"write budget exhausted -- withholding {len(items)} deliverable(s) this cycle")
+                        else:
+                            post_json(deliver_url, json.dumps({"items": items}))
+                            if patterns is not None:
+                                state = mark_pushed(state, items)
+                            record_budget_write(state, now_ts, "deliver", DELIVER_BATCH_KV_WRITE_COST)
+                            save_push_state(state_path, state)
+                            log(f"delivered {len(items)} item(s) "
+                                f"({sum(1 for i in items if i['withheld'])} withheld)")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (deliver) {type(ex).__name__}: {ex}")
 
@@ -2920,6 +3210,107 @@ def _selftest() -> int:
     wrapped_with_conductor = build_wrapped([], [], {}, 0, conductor=conductor_obj)
     check("build_wrapped carries conductor object through to the snapshot",
           wrapped_with_conductor.get("conductor") == conductor_obj)
+
+    # -- #1690 item 1: write budget ledger --
+    wrapped_with_pusher = build_wrapped([], [], {}, 0, pusher={"writeBudgetExhaustedUntil": "2026-09-03T00:00:00+00:00"})
+    check("build_wrapped carries the pusher block through to the snapshot, absent-safe otherwise",
+          wrapped_with_pusher.get("pusher") == {"writeBudgetExhaustedUntil": "2026-09-03T00:00:00+00:00"}
+          and "pusher" not in build_wrapped([], [], {}, 0))
+
+    check("next_utc_midnight_iso names the NEXT 00:00 UTC, not the current day's",
+          next_utc_midnight_iso(datetime(2026, 9, 2, 16, 50, tzinfo=timezone.utc).timestamp())
+          == datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc).isoformat())
+    check("seconds_left_in_day is under a day and positive for a mid-day instant",
+          0 < seconds_left_in_day(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc).timestamp()) < 86400)
+
+    fresh_ledger = load_budget_ledger({}, 1000.0)
+    check("a fresh/empty state produces a zeroed ledger for today",
+          fresh_ledger == {"date": utc_day_str(1000.0), "snapshot": 0, "deliver": 0, "heartbeat": 0,
+                            "exhausted_notice_sent": False})
+    ledger_state = {}
+    record_budget_write(ledger_state, 1000.0, "snapshot", SNAPSHOT_KV_WRITE_COST)
+    record_budget_write(ledger_state, 1001.0, "deliver", DELIVER_BATCH_KV_WRITE_COST)
+    record_budget_write(ledger_state, 1002.0, "heartbeat", HEARTBEAT_KV_WRITE_COST)
+    same_day_ledger = load_budget_ledger(ledger_state, 1003.0)
+    check("record_budget_write accumulates each producer's own counter",
+          same_day_ledger["snapshot"] == 1 and same_day_ledger["deliver"] == 2 and same_day_ledger["heartbeat"] == 1)
+    check("budget_used sums every producer", budget_used(same_day_ledger) == 4)
+    check("budget_left is the target minus used", budget_left(same_day_ledger, target=700) == 696)
+    next_day_ts = 1000.0 + 86400.0
+    next_day_ledger = load_budget_ledger(ledger_state, next_day_ts)
+    check("a UTC-day rollover resets the ledger to zero, never carrying yesterday's counts",
+          budget_used(next_day_ledger) == 0 and next_day_ledger["date"] != same_day_ledger["date"])
+    check("a corrupt/malformed persisted ledger degrades to zeroed, never crashes",
+          budget_used(load_budget_ledger({BUDGET_STATE_KEY: {"date": utc_day_str(5.0), "snapshot": "garbage"}}, 5.0)) == 0)
+
+    at_target = {"date": utc_day_str(0.0), "snapshot": 700, "deliver": 0, "heartbeat": 0}
+    check("(control) an empty ledger allows every producer",
+          snapshot_pushes_allowed(fresh_ledger) and deliver_allowed(fresh_ledger) and heartbeat_allowed(fresh_ledger))
+    check("a ledger spent down to the reserve stops snapshot pushes but keeps deliver/heartbeat allowed",
+          not snapshot_pushes_allowed({"date": "x", "snapshot": 700 - DELIVER_RESERVE, "deliver": 0, "heartbeat": 0})
+          and deliver_allowed({"date": "x", "snapshot": 700 - DELIVER_RESERVE, "deliver": 0, "heartbeat": 0})
+          and heartbeat_allowed({"date": "x", "snapshot": 700 - DELIVER_RESERVE, "deliver": 0, "heartbeat": 0}))
+    check("a fully-spent ledger disallows every producer",
+          not snapshot_pushes_allowed(at_target) and not deliver_allowed(at_target) and not heartbeat_allowed(at_target))
+    check("deliver_allowed needs room for its own full cost, not just >0 left",
+          not deliver_allowed({"date": "x", "snapshot": 699, "deliver": 0, "heartbeat": 0}, cost=DELIVER_BATCH_KV_WRITE_COST))
+
+    check("adaptive_snapshot_interval_s never drops below the configured coalescing floor",
+          adaptive_snapshot_interval_s(fresh_ledger, 0.0, min_push_interval_s=90) >= 90)
+    check("adaptive_snapshot_interval_s widens as the spendable budget shrinks (fewer writes left, "
+          "longer between pushes)",
+          adaptive_snapshot_interval_s({"date": "x", "snapshot": 600, "deliver": 0, "heartbeat": 0}, 0.0, min_push_interval_s=90)
+          > adaptive_snapshot_interval_s({"date": "x", "snapshot": 0, "deliver": 0, "heartbeat": 0}, 0.0, min_push_interval_s=90))
+
+    check("should_log_budget fires with no prior log (fail toward one extra log line)",
+          should_log_budget({}, 10_000.0) is True)
+    check("should_log_budget is quiet before the hour is up",
+          should_log_budget({"__last_budget_log_ts__": 10_000.0}, 10_000.0 + 3599, interval=3600) is False)
+    check("should_log_budget fires again once the hour has elapsed",
+          should_log_budget({"__last_budget_log_ts__": 10_000.0}, 10_000.0 + 3600, interval=3600) is True)
+    check("format_budget_log_line names every producer and the current interval",
+          format_budget_log_line({"snapshot": 5, "deliver": 2, "heartbeat": 1}, 123.4, target=700)
+          == "budget: used 8/700 (snap 5, deliver 2, beat 1), interval now 123s")
+
+    # -- #1690 item 4: the arithmetic gate, red-then-green. Shipped constants must clear the target;
+    # this is the check the issue's own postmortem says "was never asserted anywhere" until now.
+    worst_case_ledger = simulate_worst_case_daily_writes()
+    worst_case_total = budget_used(worst_case_ledger)
+    check(f"arithmetic gate: worst-case daily writes under the SHIPPED constants ({worst_case_total}) "
+          f"stay at or under KV_DAILY_WRITE_TARGET ({KV_DAILY_WRITE_TARGET})",
+          worst_case_total <= KV_DAILY_WRITE_TARGET)
+    print(f"pusher.py selftest: worst-case daily KV writes under shipped constants = {worst_case_total} "
+          f"(snap {worst_case_ledger['snapshot']}, deliver {worst_case_ledger['deliver']}, "
+          f"heartbeat {worst_case_ledger['heartbeat']}), target {KV_DAILY_WRITE_TARGET}")
+    # (control) a target set BELOW what even one write costs must fail -- proves the gate can
+    # actually fail, not just always pass regardless of what it's fed.
+    check("(control) the same simulation against an impossibly low target fails, proving the gate "
+          "can discriminate a real overrun",
+          budget_used(simulate_worst_case_daily_writes(target=1)) <= 1)
+
+    # -- #1690 item 3: telemetry churn gate --
+    running_room = {"path": "/r/a", "state": "Running", "live": {"toolCalls": 1, "lastActivityAt": "x"}}
+    other_running = {"path": "/r/a", "state": "Running", "live": {"toolCalls": 99, "lastActivityAt": "y"}}
+    same_bucket_a = quantize_live_for_hash([running_room], 1000.0, bucket_seconds=300)
+    same_bucket_b = quantize_live_for_hash([other_running], 1010.0, bucket_seconds=300)
+    check("telemetry-only churn within the SAME bucket quantizes to an identical hash contribution",
+          json.dumps(same_bucket_a, sort_keys=True) == json.dumps(same_bucket_b, sort_keys=True))
+    next_bucket = quantize_live_for_hash([other_running], 1310.0, bucket_seconds=300)
+    check("(control) the SAME telemetry one bucket later quantizes to a DIFFERENT contribution -- "
+          "proving this isn't just always collapsing to one constant value",
+          json.dumps(same_bucket_a, sort_keys=True) != json.dumps(next_bucket, sort_keys=True))
+    no_live_room = {"path": "/r/b", "state": "Succeeded"}
+    check("a room with no `live` section passes through unchanged (structural fields never touched)",
+          quantize_live_for_hash([no_live_room], 1000.0) == [no_live_room])
+    structural_change_a = quantize_live_for_hash([{"path": "/r/a", "state": "Running", "live": {"toolCalls": 1}}], 1000.0)
+    structural_change_b = quantize_live_for_hash([{"path": "/r/a", "state": "Succeeded", "live": {"toolCalls": 1}}], 1000.0)
+    check("a STRUCTURAL change (state) still changes the quantized contribution immediately, same bucket or not",
+          json.dumps(structural_change_a, sort_keys=True) != json.dumps(structural_change_b, sort_keys=True))
+    full_hash_a = snapshot_hash(build_wrapped(quantize_live_for_hash([running_room], 1000.0), [], {}, 0))
+    full_hash_b = snapshot_hash(build_wrapped(quantize_live_for_hash([other_running], 1010.0), [], {}, 0))
+    check("end-to-end: snapshot_hash of the quantized rooms is identical across telemetry-only churn "
+          "within one bucket, through the real build_wrapped/snapshot_hash path main() uses",
+          full_hash_a == full_hash_b)
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)

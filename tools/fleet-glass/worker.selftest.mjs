@@ -10,6 +10,8 @@ import {
   decodeDeliverablesCursor,
   computeDeliverablesPage,
   computeFleetStatusPage,
+  computeDeliverBatch,
+  deliverableBatchKeyFor,
   isValidFleetStatusPage,
   maxIsoOrNull,
 } from "./worker.core.mjs";
@@ -150,6 +152,63 @@ check("no heartbeat recorded yet, but a push has landed: the push time is still 
       maxIsoOrNull(null, "2026-09-02T07:34:00Z") === "2026-09-02T07:34:00Z");
 check("neither heartbeat nor push recorded yet: stays absent, never fabricated",
       maxIsoOrNull(null, null) === null);
+
+// -- #1690 item 2: deliver batching folds K items into ONE inbox:batch:<id> blob + the index --
+{
+  const items = [
+    { id: "d1", room: "/r/a", content: "content one" },
+    { id: "d2", room: "/r/a", content: "content two" },
+  ];
+  const { index, batchContent, stored, evicted } = computeDeliverBatch([], items, "batch-1", 500);
+  check("computeDeliverBatch stores every item's content under one batch object", stored === 2);
+  check("the batch content carries both items keyed by id",
+        batchContent.d1 === "content one" && batchContent.d2 === "content two");
+  check("the index stamps each entry with the batch id it lives in",
+        index.every((m) => m.batch_id === "batch-1"));
+  check("the index carries no raw content (metadata only)",
+        index.every((m) => !("content" in m)));
+  check("nothing evicted under the cap", evicted.length === 0);
+}
+{
+  // A malformed item (no id, or no room) is skipped, same posture worker.js's old inline loop had.
+  const items = [
+    { id: "ok", room: "/r/a", content: "x" },
+    { room: "/r/a", content: "no id" },
+    { id: "no-room", content: "x" },
+  ];
+  const { batchContent, stored } = computeDeliverBatch([], items, "batch-2", 500);
+  check("a malformed item (missing id or room) is skipped, not stored", stored === 1 && Object.keys(batchContent).length === 1);
+}
+{
+  // A second /deliver POST for an id already in the index replaces it (same dedupe-by-id semantics
+  // the pre-#1690 inline loop had via index.filter(...).unshift(...)).
+  const existing = [{ id: "d1", room: "/r/a", batch_id: "old-batch", pushed_at: "2026-09-01T00:00:00Z" }];
+  const { index } = computeDeliverBatch(existing, [{ id: "d1", room: "/r/a", content: "v2" }], "new-batch", 500);
+  check("re-delivering an existing id replaces its index entry (new batch_id, not duplicated)",
+        index.length === 1 && index[0].batch_id === "new-batch");
+}
+{
+  // INBOX_CAP eviction still fires the same way, just over batch-stamped entries.
+  const existing = Array.from({ length: 5 }, (_, i) => ({ id: `old-${i}`, room: "/r/a", batch_id: `b-${i}`, pushed_at: `t${i}` }));
+  const { index, evicted } = computeDeliverBatch(existing, [{ id: "new-1", room: "/r/a", content: "x" }], "b-new", 3);
+  check("INBOX_CAP eviction trims the index to the cap", index.length === 3);
+  check("eviction returns exactly the overflowed entries for the caller to clean up",
+        evicted.length === 3 && evicted.every((m) => m.id.startsWith("old-")));
+}
+
+// -- #1690 item 2: deliverable_read's id -> batch resolution --
+{
+  const index = [
+    { id: "batched-1", batch_id: "batch-a" },
+    { id: "legacy-1" }, // no batch_id -- delivered before #1690
+  ];
+  check("an item with a batch_id resolves to its inbox:batch:<id> key",
+        deliverableBatchKeyFor(index, "batched-1") === "inbox:batch:batch-a");
+  check("an item with no batch_id (legacy, pre-#1690) resolves to null -- caller falls back to inbox:item:<id>",
+        deliverableBatchKeyFor(index, "legacy-1") === null);
+  check("an id absent from the index entirely also resolves to null, never throws",
+        deliverableBatchKeyFor(index, "nonexistent") === null);
+}
 
 if (failures.length) {
   console.error(`worker.selftest.mjs: FAIL -- ${failures.length} check(s):`);
