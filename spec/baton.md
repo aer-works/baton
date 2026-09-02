@@ -1746,14 +1746,26 @@ reach coexist with `NetworkAccess: false` in the coherence check — see the fie
 `NetworkAccess` outright, reasoning that agy has no scoped-shell-without-network flag. That reasoning
 still holds for the *vendor flag* — `--dangerously-skip-permissions` is still all-or-nothing — but
 #1387's second probe measured that AER's own `PreToolUse` hook (`AgyHookCheckCommand`, the same one
-that already enforces the pattern allow/deny lists on the wire) narrows it correctly end to end:
-launched under `--dangerously-skip-permissions` with `BATON_HOOK_SHELL_PATTERNS`/
-`BATON_HOOK_DENIED_SHELL_PATTERNS` set to `review`'s own allow/deny lists, a write was denied, a push
-was denied (the DenyAlways channel), `curl` was denied, a non-git/gh read was denied, `git status`/
-`git log` were allowed, and a hook deny did not cancel the run. So a grant with `RunShellCommands`,
-`NetworkAccess: false`, and a non-empty `ShellCommandPatterns` now resolves to
-`--dangerously-skip-permissions` and lets the hook do the narrowing; a grant with shell but no
-patterns still refuses, because nothing would bound it. `review`'s tier still defaults to `claude`
+that already enforces the pattern allow/deny lists on the wire) narrows the `run_command` channel
+correctly on six probed commands: launched under `--dangerously-skip-permissions` with
+`BATON_HOOK_SHELL_PATTERNS`/`BATON_HOOK_DENIED_SHELL_PATTERNS` set to `review`'s own allow/deny
+lists, a write was denied, a push was denied (the DenyAlways channel), `curl` was denied, a
+non-git/gh read was denied by the same allowlist-shape mechanism as the write and the push above —
+`docs/vendor-doc-audit.md`'s dated entry states the precise reason and the qualifier it carries, not
+restated here — `git status`/
+`git log` were allowed, and a hook deny did not cancel the run. Reads are bounded by tool grant, not
+by path: `view_file` is granted whole for this role (`ReadFiles: true`), the hook only bounds a path
+for the write-family tools, and `HOME`/`USERPROFILE` are not redirected for shell-granted workers, so
+a granted read tool can reach the operator's real home — this is pre-existing and identical on claude
+and `advise`, not something this probe measured or bounded. Unprobed: the subagent/`manage_task`
+tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects
+tracked in #1679 — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
+restated here. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
+`ShellCommandPatterns` now resolves to `--dangerously-skip-permissions` and lets the hook do the
+narrowing; a grant with shell but no patterns still refuses, because nothing would bound it. A hook
+that cannot start reads as an allow on this vendor, so for `review` specifically a broken hook widens
+the role to an unscoped shell rather than merely losing narrowing — guards for that are tracked in
+#1680, not built here. `review`'s tier still defaults to `claude`
 (`WorkerTiers.json`'s `frontier` entry), so a default dispatch is unaffected; an operator who
 overrides `--adapter agy` on `review` now starts rather than hitting
 `PermissionGrantUnsupportedException` at bind time. This is the same #529 coherence rule §9 already

@@ -870,6 +870,41 @@ public class AgyWorkerAdapterTests
     }
 
     /// <summary>
+    /// #1387 review, F1: before this pass, <c>define_subagent</c>/<c>invoke_subagent</c>/
+    /// <c>manage_subagents</c>/<c>manage_task</c> were withheld only under <c>!RunShellCommands</c>,
+    /// so a write-withheld, shell-granted grant (the real <c>review</c> role's shape) left the
+    /// subagent trio reachable and unnarrowed -- a subagent could be defined with write tools enabled
+    /// and invoked, defeating the write withholding none of the hook's other branches inspects. This
+    /// pins the fix directly against the two real shipped roles the finding named: <c>review</c> now
+    /// denies all four, <c>implement</c> (writes granted) denies none of them.
+    /// </summary>
+    [Fact]
+    public void The_real_review_role_denies_the_subagent_trio_and_manage_task()
+    {
+        var review = WorkerRoleCatalog.For("review");
+
+        var denied = AgyWorkerAdapter.BuildDeniedTools(review.Grant).Split(',');
+
+        Assert.Contains("define_subagent", denied);
+        Assert.Contains("invoke_subagent", denied);
+        Assert.Contains("manage_subagents", denied);
+        Assert.Contains("manage_task", denied);
+    }
+
+    [Fact]
+    public void The_real_implement_role_does_not_deny_the_subagent_trio_or_manage_task()
+    {
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var denied = AgyWorkerAdapter.BuildDeniedTools(implement.Grant).Split(',');
+
+        Assert.DoesNotContain("define_subagent", denied);
+        Assert.DoesNotContain("invoke_subagent", denied);
+        Assert.DoesNotContain("manage_subagents", denied);
+        Assert.DoesNotContain("manage_task", denied);
+    }
+
+    /// <summary>
     /// The fourth category, which had no arm at all until #596 — reads, writes and the shell each had
     /// one, and <c>search_web</c> appeared in this file exactly once, as a polarity assertion inside
     /// another test. Deleting the <c>NetworkAccess</c> branch from <c>BuildDeniedTools</c> failed
@@ -1621,5 +1656,75 @@ public class AgyWorkerAdapterTests
 
         Assert.True(WorkerAdapterRegistry.Default.TryGetValue("agy", out var agyAdapter));
         Assert.IsType<AgyWorkerAdapter>(agyAdapter);
+    }
+
+    // ---- #1387 review F7: the composition, not just the translation ----
+    //
+    // Every test above pins BuildShellPatterns/BuildDeniedShellPatterns's OUTPUT, or the adapter's
+    // own translation. Neither runs that output through AgyHookCheckCommand.Execute, so nothing
+    // exercises "adapter emits review's patterns -> hook denies curl / allows git status" -- the
+    // composition #1387 actually depends on. agy.hook-deny-honoured (tools/vendor-verify/verify.py)
+    // only proves a deny blocks a call under a hook that always denies; it says nothing about
+    // review's real allow/deny lists producing the right verdict. This group closes that gap by
+    // feeding the REAL review role (loaded from WorkerRoles.json, not a hand-written fixture)
+    // straight into the hook.
+    //
+    // git merge-base is deliberately not asserted here: it is shadowed by the git merge* deny entry
+    // (#1679) and would fail this test for a reason unrelated to the composition being proven.
+
+    private static string HookPayload(string commandLine) => $$"""
+        {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+         "toolCall":{"args":{"CommandLine":"{{commandLine}}","Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                     "name":"run_command"},
+         "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+        """;
+
+    private static string DecideForReviewRole(string commandLine)
+    {
+        var review = WorkerRoleCatalog.For("review");
+        var deniedTools = $"{AgyWorkerAdapter.DeniedToolsVendorTag}:{AgyWorkerAdapter.BuildDeniedTools(review.Grant)}";
+        var shellPatterns = $"{AgyWorkerAdapter.ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildShellPatterns(review.Grant)}";
+        var deniedShellPatterns = $"{AgyWorkerAdapter.ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellPatterns(review.Grant)}";
+
+        using var stdin = new StringReader(HookPayload(commandLine));
+        using var stdout = new StringWriter();
+
+        Baton.Cli.AgyHookCheckCommand.Execute(
+            stdin, stdout, deniedTools, shellPatternsRaw: shellPatterns,
+            deniedShellPatternsRaw: deniedShellPatterns);
+
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        return doc.RootElement.GetProperty("decision").GetString()!;
+    }
+
+    [Theory]
+    [InlineData("git status", "allow")]
+    [InlineData("git log -1", "allow")]
+    [InlineData("curl https://example.com", "deny")]
+    [InlineData("git push --dry-run origin HEAD", "deny")]
+    public void The_real_review_role_s_shell_patterns_compose_correctly_through_the_hook(
+        string commandLine, string expectedDecision)
+    {
+        Assert.Equal(expectedDecision, DecideForReviewRole(commandLine));
+    }
+
+    // ---- #1387 review F8: the write-granted scoped-shell variant is also intentionally in scope ----
+
+    [Fact]
+    public void A_write_granted_pattern_scoped_shell_grant_without_network_also_defers_to_the_hook()
+    {
+        // No shipped role has this shape (advise has writes without shell; implement/janitor have
+        // both plus network) -- see TryTranslatePermissionGrant's own remark on this branch for what
+        // it resolves to and why that's intentional (#1387 review, F8).
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: true, RunShellCommands: true,
+            ShellCommandPatterns: ["git status*"], NetworkAccess: false);
+
+        var succeeded = adapter.TryTranslatePermissionGrant(grant, out var resolved, out var gapReason);
+
+        Assert.True(succeeded);
+        Assert.Equal("--dangerously-skip-permissions", resolved);
+        Assert.Null(gapReason);
     }
 }

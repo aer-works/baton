@@ -1907,15 +1907,25 @@ outside the workspace); `git status` and `git log -1` both allowed, output retur
 a final `status: SUCCESS` result — the opposite of the vendor-native refusals the first probe found,
 which hard-stopped on the first denial.
 
-So the gap the first probe left open is closed: `agy` can express `review`'s grant end to end through
-the hook route, even though it still cannot express it through any vendor-native flag combination.
+So the gap the first probe left open is closed on the channel this probe measured: `agy` can express
+`review`'s grant through the hook route on the `run_command` channel, even though it still cannot
+express it through any vendor-native flag combination. That is narrower than "end to end" —
+five of the six probes are `run_command` calls, so the measurement is overwhelmingly about one
+channel. Not probed here: the subagent trio and `manage_task` (`invoke_subagent`, `define_subagent`,
+`manage_subagents` — denied outright by name rather than narrowed by pattern, since none of the four
+is bounded by `AgyHookCheckCommand`'s pattern channel; #1387 review F1), the read tools' absent path
+bound (`view_file`/`grep_search` are granted whole, not path-checked; F2), any agy tool outside the
+four `BuildDeniedTools` categories (#623), and the allow/deny lists' own prefix-collision defects —
+`git diff*`/`git grep*` over-admit, `git merge*` shadows the allowed `git merge-base*` — which six
+probed commands could not have surfaced either way (#1679).
 `AgyWorkerAdapter.TryTranslatePermissionGrant` now defers a grant with `RunShellCommands=true,
 NetworkAccess=false` and a non-empty `ShellCommandPatterns` to `--dangerously-skip-permissions` plus
 the hook, rather than refusing outright; an unscoped shell grant (no patterns) still refuses, since
 nothing would bound it. `spec/baton.md` §9 and `WorkerRoles.json`'s `review` entry are updated to
-match; the probe run above (reproducible via the same reflected-hook-config approach) is that
-narrowing's acceptance test. Scratch directory deleted after the run; nothing persists outside the
-`#1387` issue comment recording the same table.
+match, both scoped to what this probe actually measured; the probe run above (reproducible via the
+same reflected-hook-config approach) is that narrowing's acceptance test for the `run_command`
+channel, not for the tool surface as a whole. Scratch directory deleted after the run; nothing
+persists outside the `#1387` issue comment recording the same table.
 
 ### Still not settled — recorded as untested, not refuted
 
