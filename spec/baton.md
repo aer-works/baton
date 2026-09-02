@@ -652,18 +652,23 @@ path to an unresolved `Indeterminate` step assumes the step is not also a pause 
 `Scheduling.PauseEngine.GetPauseObligations` reaches a `Failed` step with `RetryEngine.MayRetry` false
 through the same round-settled check regardless of *why* retry is refused, so a step that both declares
 `PausePoint` and settles `ExecutionIndeterminate` becomes `StepStatus.Paused` with
-`IndeterminateAwaitingResolution` still set — and `ExternalDecisionValidator` admits any `Paused` step
-to `baton decide`, unresolved capture or not. Two consequences: the room reads `Paused`, not
-`Indeterminate`, while it waits (`WorkflowOutcome.Describe` checks `Status` before `DescribeTerminal`
-is ever reached — expected, since `Paused` is not itself a terminal word); and a `baton decide` against
-that pause leaves `IndeterminateAwaitingResolution` set with no `CaptureResolved` ever appended, so a
-later Terminal read of that room still reports `Indeterminate` even though a conductor already decided
-its fate through `baton decide` rather than `baton resolve`. Both are pre-existing shapes of the pause
-path (the same step read `Failed(Permanent)` with `MayRetry` false before #1608, with an identical
-`PauseEngine` interaction) — #1608 changed what the eventual terminal word *is*, not whether a pause
-point can intercept it first. Whether `ExternalDecisionValidator` should refuse an unresolved capture
-outright, or `DescribeTerminal` should let a recorded decision outrank the flag, is an open owner call,
-not settled by this slice (#1655).
+`IndeterminateAwaitingResolution` still set. Both are pre-existing shapes of the pause path (the same
+step read `Failed(Permanent)` with `MayRetry` false before #1608, with an identical `PauseEngine`
+interaction) — #1608 changed what the eventual terminal word *is*, not whether a pause point can
+intercept it first.
+
+**Ruled (#1655, owner, 2026-09-02): option 1.** `ExternalDecisionValidator` refuses a `baton decide`
+against a `Paused` step whose `IndeterminateAwaitingResolution` is still set — "resolve first, then
+decide". The refusal names the room, the step, and the recovery verb (`baton resolve <room>
+[--execution <id>] --accept-capture | --reject --reason <text>`); only `FlowEvent.CaptureResolved`
+ever clears the flag, matching every other producer's own rule above. A recorded external decision
+never outranks the flag: admitting one anyway would leave `IndeterminateAwaitingResolution` set with no
+`CaptureResolved` appended, so a later Terminal read of the room would still report `Indeterminate`
+even though a conductor already decided its fate — exactly the silent default #1608 exists to forbid,
+reached through `baton decide` instead of `baton resolve`. The room still reads `Paused`, not
+`Indeterminate`, while it waits (`WorkflowOutcome.Describe` checks `Status` before `DescribeTerminal` is
+ever reached — expected, since `Paused` is not itself a terminal word); the operator resolves the
+capture via `baton resolve` first, which then makes the ordinary `baton decide` admissible again.
 
 **`FlowEvent.StepRetryForeclosed`** (`src/Baton/Domain/FlowEvent.cs`) is the missing primitive the
 quota-park symptom this section opened with rests on: before this slice, three events could clear a
@@ -2175,10 +2180,11 @@ by path: `view_file` is granted whole for this role (`ReadFiles: true`), the hoo
 for the write-family tools, and `HOME`/`USERPROFILE` are not redirected for shell-granted workers, so
 a granted read tool can reach the operator's real home — this is pre-existing and identical on claude
 and `advise`, not something this probe measured or bounded. Unprobed: the subagent/`manage_task`
-tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects, since
-fixed by #1679. `docs/vendor-doc-audit.md`'s dated entry names the full
-unprobed population, not
-restated here. Note that the six probed commands were run against the lists **as they stood then**,
+tools (denied outright rather than narrowed, #1387 review F1). The allow/deny lists' own prefix-collision
+defects #1679 found (`git diff*` admitting `difftool --extcmd`, `git merge*` shadowing the allowed
+`git merge-base*`) are fixed, not merely tracked — word-boundary matching landed in #1683
+(`ShellCommandPatternMatcher.cs`); `docs/vendor-doc-audit.md`'s dated entry names the population that
+predated the fix, not restated here. Note that the six probed commands were run against the lists **as they stood then**,
 so #1679 and #1683 changed the lists under that measurement: the mechanism it measured is unaffected
 (nothing about how the hook narrows changed), but no probe covers the current `git grep`-free
 allowlist or the `denied_shell_option_tokens` rung, which reaches agy only through this same hook. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
