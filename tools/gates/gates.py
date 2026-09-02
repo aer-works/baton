@@ -173,9 +173,8 @@ def shutdown_build_servers(run=subprocess.run):
 def run_gates(names, runner, shutdown=shutdown_build_servers):
     """Run each gate, print a per-gate line, return the names that failed.
 
-    #1671: shuts down the MSBuild build servers after every gate whose name starts with "test" --
-    that is where the test-host process fan-out this exists to bound actually accumulates -- pass
-    or fail, so a failing test leg still frees the nodes for the next lane queued on buildlock.
+    #1671: also shuts down the MSBuild build servers after every gate whose name starts with
+    "test", pass or fail. Why that scope: spec/baton.md §11 C-13.
     """
     failed = []
     for name in names:
