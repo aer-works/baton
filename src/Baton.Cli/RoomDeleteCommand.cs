@@ -6,11 +6,11 @@ using Baton.Vendors;
 namespace Baton.Cli;
 
 /// <summary>
-/// <c>baton room delete</c> (#1659): the operator ruling this ships against — "we definitely need a
-/// way to actually delete stuff, not just hide it from the glass" — Fleet Glass's "dismiss" only ever
-/// hid a room from one browser's own localStorage; the room directory, its <c>room-registry.jsonl</c>
-/// lines and its pushed deliverables all persisted regardless. This verb removes what it can reach
-/// locally and records what it cannot (see <see cref="DeletedRoomsTombstoneStore"/>).
+/// <c>baton room delete</c> — the 2026-09-02 operator ruling spec/baton.md §8 records in full: Fleet
+/// Glass's "dismiss" only ever hid a room from one browser's own localStorage, while the room
+/// directory, its <c>room-registry.jsonl</c> lines, and its pushed deliverables all persisted
+/// regardless. This verb removes what it can reach locally and records what it cannot (see
+/// <see cref="DeletedRoomsTombstoneStore"/>).
 /// </summary>
 /// <remarks>
 /// Not a <see cref="CommandResult"/>/<see cref="FlowStateReporter"/> command — deletion produces no
@@ -30,8 +30,8 @@ public static class RoomDeleteCommand
 
     /// <exception cref="CliArgumentException">
     /// The room has not reached a terminal state (no <c>terminal.json</c>) and <c>--force</c> was not
-    /// given — a live engine may still hold the room's files open, so deleting out from under it would
-    /// corrupt a run rather than clean up a finished one.
+    /// given — spec/baton.md §8 states why that refusal exists (an engine that has not settled the
+    /// room yet can still be writing into it).
     /// </exception>
     public static async Task<Result> ExecuteAsync(
         RoomDeleteOptions options, TextWriter output, CancellationToken cancellationToken = default)

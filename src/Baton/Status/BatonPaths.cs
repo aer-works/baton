@@ -178,11 +178,9 @@ public static class BatonPaths
     public const string RoomRegistryFileName = "room-registry.jsonl";
 
     /// <summary>
-    /// <c>{Root}/deleted-rooms.jsonl</c> — see <see cref="DeletedRoomsTombstoneStore"/> (#1659). The
-    /// CLI has no reach into the Cloudflare Worker's KV deliverables index (<c>tools/fleet-glass</c>),
-    /// so <c>baton room delete</c>/<c>baton rooms prune</c> cannot remove a deleted room's deliverables
-    /// there directly — this tombstone is the local record of "this room's deliverables should be
-    /// forwarded to KV as a removal", left for the pusher to read and act on.
+    /// <c>{Root}/deleted-rooms.jsonl</c> — the local record <c>baton room delete</c>/<c>baton rooms
+    /// prune</c> leave behind so a deleted room's pushed deliverables can eventually be caught up on
+    /// elsewhere. See <see cref="DeletedRoomsTombstoneStore"/> (#1659) for what writes it and why.
     /// </summary>
     public static string DeletedRoomsFile => Path.Combine(Root, DeletedRoomsFileName);
 

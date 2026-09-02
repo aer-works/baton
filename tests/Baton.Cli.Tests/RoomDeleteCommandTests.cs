@@ -4,11 +4,9 @@ using Baton.Vendors;
 namespace Baton.Cli.Tests;
 
 /// <summary>
-/// <c>baton room delete</c> (#1659): the operator ruling — "we definitely need a way to actually
-/// delete stuff, not just hide it from the glass" — this verb removes the room directory, its
-/// <c>room-registry.jsonl</c> lines, and records a deliverables tombstone (see
-/// <see cref="RoomDeleteCommand"/>'s own remarks for what it cannot reach: the Cloudflare Worker's KV
-/// deliverables index).
+/// <c>baton room delete</c> (#1659, ruling in full at spec/baton.md §8): removes the room directory,
+/// its <c>room-registry.jsonl</c> lines, and records a deliverables tombstone — see
+/// <see cref="RoomDeleteCommand"/>'s own remarks for what it cannot reach.
 /// </summary>
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class RoomDeleteCommandTests
@@ -143,8 +141,8 @@ public sealed class RoomDeleteCommandTests
             await RoomRegistryStore.AppendAsync(
                 roomDir, tempHome, BatonPaths.RoomRegistryFile, explicitRegister: true,
                 cancellationToken: TestContext.Current.CancellationToken);
-            // Directory never created -> RefuseUnlessTerminalOrForced treats an absent directory as
-            // having nothing left for a live engine to hold, so this must not refuse.
+            // Directory never created -> RefuseUnlessTerminalOrForced's absent-directory carve-out
+            // (see its own remarks) applies, so this must not refuse.
 
             var options = new RoomDeleteOptions(roomDir, KeepDeliverables: false, Force: false);
             var result = await RoomDeleteCommand.ExecuteAsync(options, TextWriter.Null, TestContext.Current.CancellationToken);

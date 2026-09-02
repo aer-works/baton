@@ -4,9 +4,8 @@ namespace Baton.Cli;
 
 /// <summary>
 /// Parses <c>baton rooms prune</c>'s arguments: <c>baton rooms prune --terminal [--older-than &lt;days&gt;]
-/// [--state Succeeded|Failed|Cancelled] [--dry-run] [--yes]</c>. Every failure is a
-/// <see cref="CliArgumentException"/>, never a bare framework exception (CLAUDE.md's error-handling
-/// rules), mirroring every other <c>*OptionsParser</c> in this namespace.
+/// [--state Succeeded|Failed|Cancelled] [--dry-run] [--yes]</c>. Follows <see cref="RoomDeleteOptionsParser"/>'s
+/// own error-handling contract — see its remarks.
 /// </summary>
 public static class RoomsPruneOptionsParser
 {
