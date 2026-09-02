@@ -1081,14 +1081,18 @@ public class MutationInterfaceRetryBackoffTests
     // #1094: shared seeding for the two polarity tests below — a fabricated parked history (the #815
     // test's pattern) whose classification the caller picks. fakeTime starts before the reset so the
     // step is not yet ready; each test then chooses how to release the pump deterministically.
+    // #1183: resetOffset defaults to the original 2-hour gap; RetryDelayMs is always derived from it
+    // (never a fixed 2-hour literal) so a caller-supplied longer offset stays consistent with
+    // DependencyResolver's #712 clamp instead of tripping it.
     private static async Task<(string Room, string Artifacts, string Log, WorkflowDefinitionSnapshot Snapshot,
         Dictionary<string, WorkerBinding> Bindings, FakeTimeProvider FakeTime, DateTimeOffset Reset)>
-        SeedParkedStepAsync(FailureClassification classification)
+        SeedParkedStepAsync(FailureClassification classification, TimeSpan? resetOffset = null)
     {
         var room = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var log = Path.Combine(room, "flow.jsonl");
         var now = new DateTimeOffset(2026, 7, 31, 12, 0, 0, TimeSpan.Zero);
-        var reset = now.AddHours(2);
+        var offset = resetOffset ?? TimeSpan.FromHours(2);
+        var reset = now + offset;
         Directory.CreateDirectory(room);
 
         var snapshot = new WorkflowDefinitionSnapshot(
@@ -1110,7 +1114,7 @@ public class MutationInterfaceRetryBackoffTests
             firstAttempt, new WorkflowId("wf-1094"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
         await seed.AppendAsync(new FlowEvent.ExecutionFailed(firstAttempt, classification, "seeded park", reset), ct);
         await seed.AppendAsync(new FlowEvent.StepRetryScheduled(
-            StepA, firstAttempt, reset, RetryDelayMs: (int)TimeSpan.FromHours(2).TotalMilliseconds), ct);
+            StepA, firstAttempt, reset, RetryDelayMs: (int)offset.TotalMilliseconds), ct);
 
         return (room, Path.Combine(room, "artifacts"), log, snapshot, bindings, new FakeTimeProvider(now), reset);
     }
@@ -1169,6 +1173,248 @@ public class MutationInterfaceRetryBackoffTests
             await AdvanceUntilPumpCompletesAsync(s.FakeTime, pump, TimeSpan.FromMinutes(30));
 
             Assert.Null(captured);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(s.Room);
+        }
+    }
+
+    // #1183: red-proven against the pre-fix code -- with GetRetryObligations trusting an absurd
+    // reset instant wholesale, DependencyResolver's #712 backwards-clock-jump clamp (`remaining >
+    // maxDelay`) misfires on the saturated RetryDelayMs and marks the step ready, so this same round
+    // redispatches it. The busy-wait section reached immediately afterwards still reads the PRE-
+    // reprojection `state.Steps` snapshot -- which still carries the far-future RetryNotBefore for the
+    // step just redispatched -- into `pendingRetryDeadlines`, and calls
+    // `Task.Delay(wakeDelay, timeProvider, ioCancellationToken)` directly on a ~2-year `wakeDelay`,
+    // which throws `ArgumentOutOfRangeException` synchronously (confirmed empirically against .NET
+    // 10's TimeProvider overload, which enforces the same ~49.7-day ceiling as the plain TimeSpan
+    // overload). Fixed: GetRetryObligations caps the obligation to MaxExhaustionParkHorizon, keeping
+    // RetryNotBefore/RetryDelayMs consistent so the clamp never misfires, and both Task.Delay sites
+    // additionally clamp to MaxParkWaitChunk regardless.
+    [Fact]
+    public async Task Test1183_Far_future_ExhaustedUntil_reset_instant_does_not_crash_the_pump()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 8, 13, 15, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var farFutureResetMoment = now.AddYears(2);
+        using var cts = new CancellationTokenSource();
+
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-1183-far"),
+                new WorkflowTemplateId("template-1183-far"),
+                WorkflowTemplateVersion: 1,
+                Steps:
+                [
+                    new WorkflowStepDefinition(StepA, "worker-a", [], [], DependsOn: [], RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))
+                ]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["worker-a"] = new WorkerBinding.Process(
+                    new WorkerContract("worker-a", [], [], []), ExitCleanlyWithoutWriting(), TimeSpan.FromSeconds(30))
+            };
+
+            var firstAttempt = new ExecutionId("a-1");
+            await using (var writerInit = new FlowEventLogWriter(logPath))
+            {
+                var ct = TestContext.Current.CancellationToken;
+                await writerInit.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                    new ExecutionRequest(firstAttempt, new WorkflowId("wf-1183-far"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionFailed(
+                    firstAttempt, FailureClassification.ExhaustedUntil, "quota exhausted", farFutureResetMoment), ct);
+                // No StepRetryScheduled seeded: the live pump schedules its own obligation on the
+                // first round, exercising GetRetryObligations against the far-future instant for real.
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var pumpTask = MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-1183-far"),
+                roomDirectory,
+                snapshot,
+                bindings,
+                artifactsRoot,
+                reader,
+                writer,
+                dispatcher,
+                timeProvider: fakeTime,
+                jitterSource: () => 0.0,
+                cancellationToken: cts.Token);
+
+            // fakeTime never advances. Give the pump a real-time window to run every synchronous
+            // round it can reach on its own (scheduling the obligation, resolving readiness, entering
+            // whichever wait branch) -- pre-fix this window is enough for the crash above to surface
+            // as a faulted task; post-fix the pump is legitimately still parked, waiting.
+            var settleDeadline = DateTimeOffset.UtcNow.AddSeconds(2);
+            while (!pumpTask.IsCompleted && DateTimeOffset.UtcNow < settleDeadline)
+            {
+                await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: poll interval inside a bounded settle loop, not an expected-duration wait
+            }
+
+            Assert.False(pumpTask.IsFaulted, pumpTask.IsFaulted ? pumpTask.Exception!.ToString() : "");
+            Assert.False(pumpTask.IsCompleted);
+
+            // Host stop releases the still-parked pump cleanly, proving it never threw internally
+            // and stayed a well-behaved wait the whole time.
+            await cts.CancelAsync();
+            var finalState = await pumpTask.WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
+            Assert.NotNull(finalState);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // #1183: GetRetryObligations must not trust a vendor-reported reset instant more than
+    // MaxExhaustionParkHorizon out -- polarity control is the pre-existing
+    // ExhaustedUntil_failure_RetryNotBefore_equals_reset_moment... test above, which asserts an
+    // ordinary 45-minute-out reset is carried through UNCHANGED (left unmodified by this issue).
+    [Fact]
+    public async Task Test1183_Far_future_reset_instant_is_capped_to_the_horizon_not_trusted_wholesale()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 8, 13, 15, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var farFutureResetMoment = now.AddYears(2);
+
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var execId = new ExecutionId("exec-far-future");
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                new ExecutionRequest(execId, new WorkflowId("wf-cap"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", farFutureResetMoment), TestContext.Current.CancellationToken);
+
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snap-cap"),
+                new WorkflowTemplateId("tpl-cap"),
+                1,
+                [new WorkflowStepDefinition(StepA, "worker-a", [], [], [], RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))]);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var state = StateProjector.Project(events, snapshot);
+
+            var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligation = obligations.Single();
+
+            var notBefore = (DateTimeOffset)obligation.GetType().GetProperty("RetryNotBefore")!.GetValue(obligation)!;
+            var delayMs = (int)obligation.GetType().GetProperty("RetryDelayMs")!.GetValue(obligation)!;
+
+            // Capped to the sane horizon, not the raw 2-year vendor value.
+            Assert.Equal(now.Add(TimeSpan.FromDays(14)), notBefore);
+            Assert.True(delayMs is > 0 and < int.MaxValue, $"Expected a sane positive delayMs, got {delayMs}");
+            // notBefore and delayMs stay mutually consistent -- DependencyResolver's #712 clamp
+            // (`remaining > maxDelay`) must not be fooled into marking this step ready early.
+            Assert.Equal(delayMs, (int)Math.Round((notBefore - now).TotalMilliseconds));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // #1183: an ExhaustedUntil reset instant already at or before now must not collapse to a
+    // zero-delay retry -- ConsecutiveFailureCount stays frozen at 0 for quota hits (0026), so an
+    // immediate retry against a vendor that keeps reporting the same stale instant is a tight
+    // spend-nothing-but-CPU machine-gun. Polarity: the future-but-imminent case below the floor
+    // still needs pacing too (this branch does not distinguish "already past" from "about to hit").
+    [Fact]
+    public async Task Test1183_Past_reset_instant_is_paced_to_a_floor_not_an_immediate_retry()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 8, 13, 15, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var staleResetMoment = now.AddMinutes(-5);
+
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var execId = new ExecutionId("exec-stale");
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                new ExecutionRequest(execId, new WorkflowId("wf-stale"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", staleResetMoment), TestContext.Current.CancellationToken);
+
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snap-stale"),
+                new WorkflowTemplateId("tpl-stale"),
+                1,
+                [new WorkflowStepDefinition(StepA, "worker-a", [], [], [], RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))]);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var state = StateProjector.Project(events, snapshot);
+
+            var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligation = obligations.Single();
+
+            var notBefore = (DateTimeOffset)obligation.GetType().GetProperty("RetryNotBefore")!.GetValue(obligation)!;
+            var delayMs = (int)obligation.GetType().GetProperty("RetryDelayMs")!.GetValue(obligation)!;
+
+            Assert.True(notBefore > now, $"Expected a floor-paced notBefore strictly after now, got {notBefore} (now={now})");
+            Assert.True(delayMs >= 1000, $"Expected a floor of at least 1000ms, got {delayMs}");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // #1183 / #1094: the park notice must still fire exactly once per distinct (capped) instant even
+    // though the wait to reach it is now chunked into several Task.Delay calls -- a chunk boundary
+    // completing is not a new park and must not read as one.
+    [Fact]
+    public async Task Test1183_Vendor_quota_park_notifies_once_across_multiple_chunked_wait_boundaries()
+    {
+        var s = await SeedParkedStepAsync(FailureClassification.ExhaustedUntil, resetOffset: TimeSpan.FromDays(3));
+        try
+        {
+            await using var writer = new FlowEventLogWriter(s.Log);
+            var ct = TestContext.Current.CancellationToken;
+            var notifications = new List<DateTimeOffset>();
+            var firstNoticed = new TaskCompletionSource();
+            using var cts = new CancellationTokenSource();
+
+            var pump = MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-1094"), s.Room, s.Snapshot, s.Bindings, s.Artifacts,
+                new FlowEventLogReader(s.Log), writer, new CoreDispatcher(writer),
+                timeProvider: s.FakeTime, jitterSource: () => 0.0, cancellationToken: cts.Token,
+                onVendorQuotaPark: instant =>
+                {
+                    notifications.Add(instant);
+                    firstNoticed.TrySetResult();
+                });
+
+            await firstNoticed.Task.WaitAsync(PumpCompletionTimeout, ct);
+
+            // MaxParkWaitChunk is 1 day; the 3-day reset needs multiple internal Task.Delay chunks to
+            // reach. Advance across two chunk boundaries while still short of the reset itself, so any
+            // chunk-boundary wakeup that wrongly re-notified would already have shown up here.
+            s.FakeTime.Advance(TimeSpan.FromDays(1));
+            await Task.Delay(50, ct); // wait-ok: settle time for an in-process async continuation, not an external wait
+            s.FakeTime.Advance(TimeSpan.FromDays(1));
+            await Task.Delay(50, ct); // wait-ok: settle time for an in-process async continuation, not an external wait
+
+            Assert.Single(notifications);
+            Assert.Equal(s.Reset, notifications[0]);
+
+            await cts.CancelAsync();
+            await pump.WaitAsync(PumpCompletionTimeout, ct);
         }
         finally
         {

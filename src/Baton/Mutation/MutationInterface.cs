@@ -20,6 +20,14 @@ namespace Baton.Mutation;
 /// </summary>
 public static class MutationInterface
 {
+    // #1183: the longest single Task.Delay the deferral waits below will ever issue, however far out
+    // the deadline they are waiting on actually is -- distinct from MaxExhaustionParkHorizon (the
+    // longest reset instant GetRetryObligations will trust), since a change to one must not silently
+    // move the other. Task.Delay's TimeSpan overload throws past ~49.7 days; the loop's `continue`
+    // after each wait re-checks readiness and re-issues the remainder, so any value safely under that
+    // ceiling works here.
+    private static readonly TimeSpan MaxParkWaitChunk = TimeSpan.FromDays(1);
+
     /// <summary>
     /// Acquires the room's concurrency guard, then repeatedly projects <see cref="FlowState"/>,
     /// resolves every ready step (retry-aware), and dispatches all of them to Core
@@ -939,7 +947,13 @@ public static class MutationInterface
                                 onVendorQuotaPark(minNotBefore);
                             }
 
-                            var delayTask = Task.Delay(delay, timeProvider, ioCancellationToken);
+                            // #1183: Task.Delay's TimeSpan overload throws past ~49.7 days -- clamp
+                            // to a chunk and let the loop's `continue` below re-check readiness and
+                            // re-issue the remainder, rather than trust `delay` to already be sane.
+                            // GetRetryObligations caps every obligation it schedules, so this is
+                            // belt-and-suspenders for the wait itself, not the only guard.
+                            var chunkedDelay = delay > MaxParkWaitChunk ? MaxParkWaitChunk : delay;
+                            var delayTask = Task.Delay(chunkedDelay, timeProvider, ioCancellationToken);
                             var deferralHostStopWatcher = cancellationToken.CanBeCanceled
                                 ? Task.Delay(Timeout.Infinite, cancellationToken)
                                 : null;
@@ -1076,7 +1090,11 @@ public static class MutationInterface
                         var wakeDelay = pendingRetryDeadlines.Min() - timeProvider.GetUtcNow();
                         if (wakeDelay > TimeSpan.Zero)
                         {
-                            deferralWakeup = Task.Delay(wakeDelay, timeProvider, ioCancellationToken);
+                            // #1183: same clamp as the idle branch's delayTask above -- an early
+                            // wakeup here is harmless, `completed == deferralWakeup` below already
+                            // just `continue`s to re-check readiness against the real deadline.
+                            var chunkedWakeDelay = wakeDelay > MaxParkWaitChunk ? MaxParkWaitChunk : wakeDelay;
+                            deferralWakeup = Task.Delay(chunkedWakeDelay, timeProvider, ioCancellationToken);
                             waitCandidates.Add(deferralWakeup);
                         }
                     }
@@ -1413,6 +1431,19 @@ public static class MutationInterface
         DateTimeOffset RetryNotBefore,
         int RetryDelayMs);
 
+    // #1183: a vendor never legitimately reports a quota reset this far out (the instant comes from
+    // PARSING vendor prose/fields, and a parse bug or garbage value must not become a pump crash) --
+    // an ExhaustedUntil reset instant beyond this horizon is treated as bogus and capped rather than
+    // trusted wholesale. Chosen comfortably under both the ~24.8-day int-ms cast range this obligation's
+    // own RetryDelayMs is computed into, and the ~49.7-day range Task.Delay's TimeSpan overload accepts.
+    private static readonly TimeSpan MaxExhaustionParkHorizon = TimeSpan.FromDays(14);
+
+    // #1183: an ExhaustedUntil reset instant already at or in the past collapsed to a zero-delay
+    // retry -- with ConsecutiveFailureCount frozen at 0 for quota hits, a vendor that keeps reporting
+    // the same stale instant machine-guns the pump in a tight spend-nothing-but-CPU loop. A floor
+    // makes the retry rate bounded instead, whether or not the instant is genuinely repeating.
+    private static readonly TimeSpan PastResetInstantRetryFloor = TimeSpan.FromSeconds(1);
+
     private static List<RetryObligation> GetRetryObligations(
         FlowState state,
         WorkflowDefinitionSnapshot snapshot,
@@ -1475,8 +1506,30 @@ public static class MutationInterface
             if (stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil &&
                 stepState.LatestExecutionFailedRetryNotBefore is { } resetMoment)
             {
-                notBefore = resetMoment;
-                delayMs = (int)Math.Max(0, Math.Round((notBefore - timeProvider.GetUtcNow()).TotalMilliseconds));
+                var utcNow = timeProvider.GetUtcNow();
+
+                // #1183: cap an absurd (parse-bug/garbage) far-future instant to the sane horizon
+                // rather than trust it wholesale -- keeps RetryNotBefore and RetryDelayMs mutually
+                // consistent for DependencyResolver's #712 backwards-clock-jump clamp below, and keeps
+                // every downstream wait on this obligation's RetryNotBefore inside a range Task.Delay
+                // actually accepts.
+                var cappedResetMoment = resetMoment - utcNow > MaxExhaustionParkHorizon
+                    ? utcNow + MaxExhaustionParkHorizon
+                    : resetMoment;
+                var rawDelay = cappedResetMoment - utcNow;
+
+                // #1183: an instant at or before now (including one repeating unchanged) is paced to
+                // a floor instead of collapsing to a zero-delay retry -- see PastResetInstantRetryFloor.
+                if (rawDelay < PastResetInstantRetryFloor)
+                {
+                    notBefore = utcNow + PastResetInstantRetryFloor;
+                    delayMs = (int)PastResetInstantRetryFloor.TotalMilliseconds;
+                }
+                else
+                {
+                    notBefore = cappedResetMoment;
+                    delayMs = (int)Math.Round(rawDelay.TotalMilliseconds);
+                }
             }
             else
             {
