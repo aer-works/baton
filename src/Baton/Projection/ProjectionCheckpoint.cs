@@ -59,7 +59,8 @@ public sealed record ProjectionCheckpointState(
     Dictionary<StepId, string?>? IndeterminateReasonByStepId = null,
     HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null,
     Dictionary<StepId, IndeterminateProducer?>? IndeterminateProducerByStepId = null,
-    Dictionary<StepId, string?>? IndeterminateVerifyTailByStepId = null)
+    Dictionary<StepId, string?>? IndeterminateVerifyTailByStepId = null,
+    HashSet<StepId>? ResolvedByConductorStepIds = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -127,6 +128,20 @@ public sealed record ProjectionCheckpointState(
     /// </summary>
     public Dictionary<StepId, string?> IndeterminateVerifyTailByStepId { get; init; } = IndeterminateVerifyTailByStepId ?? new();
 
+    /// <summary>
+    /// #1622 (c)/(d): which steps' latest terminal state was set by an explicit, non-accepting
+    /// <c>baton resolve</c> ruling (<c>--reject</c> or <c>--close</c>) — the discriminant
+    /// <c>status --json</c>'s <c>rejected</c>/<c>resolvedBy</c> fields read (spec/baton.md §3). Absent
+    /// from an older checkpoint's serialized JSON coalesces to empty here — a room whose only resolve
+    /// happened before this field existed simply does not carry the new fields until it is resolved
+    /// again, the same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/>
+    /// above; no <see cref="ProjectionCheckpoint.Version"/> bump needed. Same <see cref="DeepCopy"/>
+    /// load-bearing note applies. Cleared on a fresh dispatch (<see cref="FlowEvent.ExecutionRequestAccepted"/>),
+    /// the same "the pump is dispatching it, so whatever blocked it is moot" reasoning the sibling sets
+    /// already rest on.
+    /// </summary>
+    public HashSet<StepId> ResolvedByConductorStepIds { get; init; } = ResolvedByConductorStepIds ?? new();
+
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
         new Dictionary<StepId, Dictionary<StepId, ExecutionId>>(),
@@ -189,5 +204,6 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<StepId, string?>(IndeterminateReasonByStepId),
         new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds),
         new Dictionary<StepId, IndeterminateProducer?>(IndeterminateProducerByStepId),
-        new Dictionary<StepId, string?>(IndeterminateVerifyTailByStepId));
+        new Dictionary<StepId, string?>(IndeterminateVerifyTailByStepId),
+        new HashSet<StepId>(ResolvedByConductorStepIds));
 }

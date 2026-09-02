@@ -125,6 +125,10 @@ public static class StateProjector
                     state.IndeterminateReasonByStepId.Remove(acceptedStepId);
                     state.IndeterminateProducerByStepId.Remove(acceptedStepId);
                     state.IndeterminateVerifyTailByStepId.Remove(acceptedStepId);
+
+                    // #1622 (c)/(d): a fresh dispatch is a new attempt, not a continuation of a
+                    // previously conductor-resolved one -- same reasoning as the clears above.
+                    state.ResolvedByConductorStepIds.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -410,6 +414,23 @@ public static class StateProjector
                         state.RetryForeclosedStepIds.Add(resolvedStepId);
                     }
 
+                    if (!resolved.Accepted)
+                    {
+                        // #1622 (c)/(d): a rejected/closed step must stop reading "awaiting conductor
+                        // resolution" -- the room fact this event itself IS the resolution, so the
+                        // stale pre-resolution reason text (still sitting in
+                        // LatestFailureReasonByStepId from the ExecutionIndeterminate/VerifyFailed/
+                        // ExecutionArrested arm that raised it) is replaced with a sentence naming the
+                        // conductor and carrying the reason. Applies to every producer uniformly
+                        // (CapturedResponse/ContractFailure via --reject, VerifyFailed/Arrested/null via
+                        // --close) -- ResolveCommand/MutationInterface's own admission checks are what
+                        // keep --reject off the latter and --close off the former, not this projection.
+                        var priorReason = state.LatestFailureReasonByStepId.GetValueOrDefault(resolvedStepId);
+                        state.LatestFailureReasonByStepId[resolvedStepId] =
+                            BuildConductorResolvedReason(priorReason, resolved.Reason);
+                        state.ResolvedByConductorStepIds.Add(resolvedStepId);
+                    }
+
                     // Rejected: Status stays Failed, LatestCapturedResponseFile/UnsatisfiedOutputNames
                     // stay recorded (the audit trail of what was captured and refused) — only
                     // IndeterminateAwaitingResolutionStepIds above changes, which is what lets
@@ -468,6 +489,37 @@ public static class StateProjector
         state.RetryNotBeforeByStepId.Remove(stepId);
         state.RetryDelayMsByStepId.Remove(stepId);
         state.RetryScheduledForExecutionIdByStepId.Remove(stepId);
+    }
+
+    /// <summary>
+    /// #1622 (c)/(d): the replacement reason text for a rejected/closed <c>baton resolve</c> — strips
+    /// the trailing "awaiting conductor resolution." clause every Indeterminate-producing reason above
+    /// ends with (<see cref="ApplyIndeterminate"/>'s <paramref name="priorReason"/> arm above, and the
+    /// #1608 captured-response arm in <c>Outcomes.OutcomeClassifier</c>) and replaces it with a
+    /// sentence naming the conductor and carrying <paramref name="conductorReason"/> — the literal
+    /// asks of #1622 (c): "the error text must say the room was resolved by the conductor (and carry
+    /// the reason)". A prior reason that does not end with the marker (an older ledger line, or a
+    /// future producer that phrases it differently) still gets the resolution clause appended, never
+    /// silently dropped.
+    /// </summary>
+    private static string BuildConductorResolvedReason(string? priorReason, string? conductorReason)
+    {
+        const string awaitingMarker = "awaiting conductor resolution.";
+        var resolutionClause = string.IsNullOrWhiteSpace(conductorReason)
+            ? "Resolved by the conductor."
+            : $"Resolved by the conductor: {conductorReason}";
+
+        if (string.IsNullOrWhiteSpace(priorReason))
+        {
+            return resolutionClause;
+        }
+
+        var trimmed = priorReason.TrimEnd();
+        var withoutMarker = trimmed.EndsWith(awaitingMarker, StringComparison.OrdinalIgnoreCase)
+            ? trimmed[..^awaitingMarker.Length].TrimEnd()
+            : trimmed;
+
+        return $"{withoutMarker} {resolutionClause}";
     }
 
     private static string DescribeVerifyFailure(FlowEvent.VerifyFailed verifyFailed)
@@ -597,7 +649,8 @@ public static class StateProjector
                 state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId),
                 state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.IndeterminateVerifyTailByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.IndeterminateVerifyTailByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.ResolvedByConductorStepIds.Contains(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

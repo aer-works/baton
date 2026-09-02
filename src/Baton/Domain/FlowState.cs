@@ -263,7 +263,13 @@ public sealed record StepState(
     bool IndeterminateAwaitingResolution = false,
     string? IndeterminateReason = null,
     IndeterminateProducer? IndeterminateProducer = null,
-    string? IndeterminateVerifyTail = null);
+    string? IndeterminateVerifyTail = null,
+    // #1622 (c)/(d): true iff this step's latest terminal state was set by an explicit, non-accepting
+    // `baton resolve` ruling (--reject or --close) — the discriminant `status --json`'s
+    // `rejected`/`resolvedBy` fields read. Never true while IndeterminateAwaitingResolution is true
+    // (resolving is what clears that flag); cleared on a fresh dispatch, the same lifetime as
+    // RetryForeclosed/IndeterminateAwaitingResolution above.
+    bool ResolvedByConductor = false);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

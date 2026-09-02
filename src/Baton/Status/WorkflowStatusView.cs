@@ -120,7 +120,15 @@ public sealed record WorkflowStatusStepView(
     // carries whatever StepState.IndeterminateVerifyTail records.
     [property: JsonPropertyName("verifyTail")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? VerifyTail = null);
+    string? VerifyTail = null,
+    // #1622 (c)/(d): StepState.ResolvedByConductor verbatim -- true iff this step's terminal state was
+    // set by an explicit, non-accepting `baton resolve` ruling (--reject or --close). Room-level
+    // WorkflowStatusView.Rejected/ResolvedBy (below) are derived from this across every step; present
+    // per-step too so a multi-step room's caller can tell WHICH step was resolved, the same reasoning
+    // WorkflowStatusStepView.State already gives a per-step reader over the room-level `state` alone.
+    [property: JsonPropertyName("resolvedByConductor")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    bool ResolvedByConductor = false);
 
 /// <summary>
 /// The one JSON object <c>baton status --json</c> writes to stdout (#1356's machine completion
@@ -148,14 +156,29 @@ public sealed record WorkflowStatusView(
     [property: JsonPropertyName("outputs")] IReadOnlyList<string> Outputs,
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("try")] string? Try = null,
-    // #1377: true when at least one step settled via `DecisionType.Reject` -- the one structural
-    // fact this contract can honestly assert about a rejection. There is no recorded-reason text to
-    // surface alongside it: `FlowEvent.ExternalDecisionRecorded` carries no operator-supplied reason
-    // field today, so a `reason` field here would always read `null` and this deliberately does not
-    // invent one. Lets a caller reading `state: "Failed"`/`error: null` tell "a person said no" apart
+    // #1377, widened by #1622 (c)/(d): true when at least one step settled via `DecisionType.Reject`
+    // (a PausePoint's `baton decide --reject`) OR via a non-accepting `baton resolve` ruling
+    // (--reject/--close, WorkflowStatusStepView.ResolvedByConductor). Two different verbs settling
+    // the same boolean is deliberate: both are "a person looked at this step and said no", and #1700
+    // measured a conductor resolve --reject leaving this false, reading as though nobody had ruled on
+    // it. There is no recorded-reason text to surface alongside it for the DecisionType.Reject half:
+    // `FlowEvent.ExternalDecisionRecorded` carries no operator-supplied reason field today, so a
+    // `reason` field here would always read `null` for that producer and this deliberately does not
+    // invent one -- the `baton resolve` half's reason is instead folded into `Error` (see
+    // Projection.StateProjector.BuildConductorResolvedReason) and named by `ResolvedBy` below.
+    // Lets a caller reading `state: "Failed"`/`error: null` tell "a person said no" apart
     // from "the worker crashed and nobody recorded why" without parsing prose; the branching recipe
     // and the which-step pointer live in spec/baton.md §3.
-    [property: JsonPropertyName("rejected")] bool Rejected = false);
+    [property: JsonPropertyName("rejected")] bool Rejected = false,
+    // #1622 (c)/(d): "conductor" when at least one step's terminal state was set by an explicit,
+    // non-accepting `baton resolve` ruling (--reject or --close) -- the same steps that flip
+    // Rejected above true, but stated as an attribution string rather than folded silently into that
+    // boolean, per #1700's own ask ("records resolvedBy: conductor ... on terminal.json /
+    // status --json"). Null whenever Rejected is false; the two always change together because both
+    // are derived from the identical StepState.ResolvedByConductor set.
+    [property: JsonPropertyName("resolvedBy")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ResolvedBy = null);
 
 /// <summary>
 /// Builds <see cref="WorkflowStatusView"/> from the same <see cref="FlowState"/>
@@ -223,6 +246,7 @@ public static class WorkflowStatusProjector
         var outputs = new List<string>();
         string? firstFailureReason = null;
         var anyRejected = false;
+        string? resolvedBy = null;
 
         foreach (var step in state.Steps)
         {
@@ -302,7 +326,8 @@ public static class WorkflowStatusProjector
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
                 usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible,
-                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind, verifyTail));
+                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind, verifyTail,
+                step.ResolvedByConductor));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))
@@ -310,9 +335,14 @@ public static class WorkflowStatusProjector
                 firstFailureReason = step.LatestFailureReason;
             }
 
-            if (step.Status == StepStatus.Rejected)
+            if (step.Status == StepStatus.Rejected || step.ResolvedByConductor)
             {
                 anyRejected = true;
+            }
+
+            if (step.ResolvedByConductor)
+            {
+                resolvedBy = "conductor";
             }
 
             // #740's rule via StepOutputResolver, the one place it is implemented (#1374 F5) — this
@@ -323,7 +353,8 @@ public static class WorkflowStatusProjector
             }
         }
 
-        return new WorkflowStatusView(WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected);
+        return new WorkflowStatusView(
+            WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected, ResolvedBy: resolvedBy);
     }
 
     /// <summary>

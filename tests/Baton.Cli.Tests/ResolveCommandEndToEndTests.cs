@@ -437,6 +437,89 @@ public class ResolveCommandEndToEndTests
     }
 
     /// <summary>
+    /// #1622 (d)/#1700: fabricates a room settled Indeterminate by the #1623 verify producer — same
+    /// <see cref="FlowEvent.VerifyFailed"/> shape <see cref="Baton.Tests.Mutation.MutationInterfaceCaptureResolutionTests"/>'s
+    /// own <c>SeedVerifyFailedRoomAsync</c> uses, at this end-to-end layer.
+    /// </summary>
+    private static async Task<ExecutionId> SeedVerifyFailedRoomAsync(
+        string testRoot, string roomDirectory, string outputName)
+    {
+        var executionId = await RunOrdinaryFailureAsync(testRoot, roomDirectory, outputName);
+
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        await using (var writer = new FlowEventLogWriter(logPath))
+        {
+            await writer.AppendAsync(
+                new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+                TestContext.Current.CancellationToken);
+        }
+
+        return executionId;
+    }
+
+    /// <summary>
+    /// #1622 (d)/#1700: end-to-end through the real CLI parser and command, the same round trip every
+    /// other fixture in this file proves — `--close --reason <text>` on a VerifyFailed-producer room
+    /// settles Failed, clears the "awaiting conductor resolution" text, and marks `rejected`/`resolvedBy`.
+    /// </summary>
+    [Fact]
+    public async Task Closing_a_verify_failed_room_through_the_real_CLI_parser_settles_Failed_and_reports_resolved_by_conductor()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var executionId = await SeedVerifyFailedRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            var options = ResolveOptionsParser.Parse(
+                [roomDirectory, "--execution", executionId.Value, "--close", "--reason", "overlap flake, work already landed"]);
+            var result = await ResolveCommand.ExecuteAsync(options, TestContext.Current.CancellationToken);
+
+            var step = Assert.Single(result.State.Steps);
+            Assert.Equal(StepStatus.Failed, step.Status);
+            Assert.False(step.IndeterminateAwaitingResolution);
+            Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(result.State));
+
+            var view = WorkflowStatusProjector.Project(result.State, result.Snapshot, roomDirectory);
+            Assert.DoesNotContain("awaiting conductor resolution", view.Error, StringComparison.Ordinal);
+            Assert.Contains("Resolved by the conductor", view.Error, StringComparison.Ordinal);
+            Assert.True(view.Rejected);
+            Assert.Equal("conductor", view.ResolvedBy);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// The discriminating control: <c>--reject</c> (not <c>--close</c>) against the identical
+    /// VerifyFailed-producer room still gets #1700's own refusal shape, now pointing at <c>--close</c>
+    /// as the remedy instead of a dead end.
+    /// </summary>
+    [Fact]
+    public async Task Rejecting_a_verify_failed_room_still_refuses_but_now_names_close_as_the_remedy()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var executionId = await SeedVerifyFailedRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => ResolveCommand.ExecuteAsync(
+                new ResolveOptions(roomDirectory, executionId.Value, Accept: false, Reason: "not my problem"),
+                TestContext.Current.CancellationToken));
+
+            Assert.Contains("nothing for '--accept-capture'/'--reject' to accept or reject", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("--close", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
     /// The durable shape a crash between "fact" and "files" leaves behind — an accepted
     /// <see cref="FlowEvent.CaptureResolved"/> whose declared output is not on disk — constructed
     /// directly, since what these fixtures test is the CLI's admission of that shape as a repair

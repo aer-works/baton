@@ -739,6 +739,159 @@ public class MutationInterfaceCaptureResolutionTests
     }
 
     /// <summary>
+    /// #1622 (c): a rejected ContractFailure-producer capture must stop reading "awaiting conductor
+    /// resolution" — the room fact this reject event itself IS the resolution — and must carry the
+    /// conductor's own reason instead. Measured 9/2 on room dispatch-implement-f7f9b614: post-reject,
+    /// `status --json` still read `error` ending "awaiting conductor resolution" and `rejected: false`.
+    /// </summary>
+    [Fact]
+    public async Task Rejecting_a_ContractFailure_capture_clears_the_awaiting_text_and_marks_resolved_by_conductor()
+    {
+        var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) =
+            await SeedContractFailureRoomAsync(outputName: "changes.md");
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var state = await MutationInterface.RecordCaptureResolutionAsync(
+                roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                accepted: false, reason: "workspace inspected -- staged but never committed",
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            var step = state.Steps.Single();
+            Assert.Equal(StepStatus.Failed, step.Status);
+            Assert.False(step.IndeterminateAwaitingResolution);
+            Assert.DoesNotContain("awaiting conductor resolution", step.LatestFailureReason, StringComparison.Ordinal);
+            Assert.Contains("Resolved by the conductor", step.LatestFailureReason, StringComparison.Ordinal);
+            Assert.Contains("workspace inspected -- staged but never committed", step.LatestFailureReason, StringComparison.Ordinal);
+
+            var view = WorkflowStatusProjector.Project(state, snapshot, roomDirectory);
+            Assert.True(view.Rejected);
+            Assert.Equal("conductor", view.ResolvedBy);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1622 (d)/#1700: a VerifyFailed/Arrested/no-producer Indeterminate has no captured response to
+    /// accept or reject (<see cref="A_verify_failed_Indeterminate_step_is_refused_by_baton_resolve"/>
+    /// above pins that refusal, unchanged by this fix) — `--close` is the ruling that settles it
+    /// anyway. Measured 9/2 on room dispatch-implement-d898ff0f: `baton resolve --reject` answered
+    /// "nothing for 'baton resolve' to accept or reject", and the only way to stop the room reading
+    /// "awaiting conductor resolution" was `baton room delete`.
+    /// </summary>
+    [Fact]
+    public async Task Closing_a_verify_failed_Indeterminate_step_settles_Failed_and_clears_the_awaiting_text()
+    {
+        var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) =
+            await SeedVerifyFailedRoomAsync();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var state = await MutationInterface.RecordCaptureResolutionAsync(
+                roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                accepted: false, reason: "the failing member passes on re-run -- an overlap flake",
+                close: true,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            var step = state.Steps.Single();
+            Assert.Equal(StepStatus.Failed, step.Status);
+            Assert.False(step.IndeterminateAwaitingResolution);
+            Assert.DoesNotContain("awaiting conductor resolution", step.LatestFailureReason, StringComparison.Ordinal);
+            Assert.Contains("Resolved by the conductor", step.LatestFailureReason, StringComparison.Ordinal);
+            Assert.Contains("overlap flake", step.LatestFailureReason, StringComparison.Ordinal);
+
+            var view = WorkflowStatusProjector.Project(state, snapshot, roomDirectory);
+            Assert.True(view.Rejected);
+            Assert.Equal("conductor", view.ResolvedBy);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// The discriminating control for the arm above: without <c>close: true</c>, the identical call
+    /// shape against the identical VerifyFailed-producer room is still refused
+    /// (<see cref="A_verify_failed_Indeterminate_step_is_refused_by_baton_resolve"/> already pins the
+    /// message; this pins that <c>--close</c> is what changes admission, not some other side effect of
+    /// this fix loosening the guard generally).
+    /// </summary>
+    [Fact]
+    public async Task Closing_admission_does_not_widen_to_a_ContractFailure_producer()
+    {
+        var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) =
+            await SeedContractFailureRoomAsync(outputName: "changes.md");
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var ex = await Assert.ThrowsAsync<InvalidCaptureResolutionException>(() =>
+                MutationInterface.RecordCaptureResolutionAsync(
+                    roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                    accepted: false, reason: "trying to close a ContractFailure step",
+                    close: true,
+                    cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Contains("no unresolved indeterminate capture", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Fabricates a room settled Indeterminate by the #1593 ContractFailure producer: same
+    /// <see cref="FlowEvent.ExecutionIndeterminate"/> shape <see cref="SeedIndeterminateRoomAsync"/>
+    /// uses, deliberately with a null <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/>
+    /// so the projector's <see cref="Domain.IndeterminateProducer.ContractFailure"/> discriminant fires
+    /// instead of <see cref="Domain.IndeterminateProducer.CapturedResponse"/> -- mirrors
+    /// <c>Baton.Cli.Tests.ResolveCommandEndToEndTests.SeedContractFailureRoomAsync</c> at this layer.
+    /// </summary>
+    private static async Task<(string RoomDirectory, string ArtifactsRoot, string LogPath, ExecutionId ExecutionId, WorkflowDefinitionSnapshot Snapshot)>
+        SeedContractFailureRoomAsync(string outputName)
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var executionId = new ExecutionId($"exec-{Guid.NewGuid():N}");
+
+        var snapshot = new WorkflowDefinitionSnapshot(
+            new WorkflowDefinitionSnapshotId($"snapshot-{Guid.NewGuid():N}"),
+            new WorkflowTemplateId("resolve-test"),
+            WorkflowTemplateVersion: 1,
+            Steps: [new WorkflowStepDefinition(A, "stub-worker", [], [], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+        Directory.CreateDirectory(roomDirectory);
+
+        await using (var writer = new FlowEventLogWriter(logPath))
+        {
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
+                    executionId, new WorkflowId("wf"), A, "stub-worker", [], [], TimeSpan.FromSeconds(30), [],
+                    new Dictionary<StepId, ExecutionId>())),
+                TestContext.Current.CancellationToken);
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionIndeterminate(
+                    executionId,
+                    "Contract not satisfied -- worker exited 0 with work possibly on disk; awaiting conductor resolution.",
+                    CapturedResponseFile: null, UnsatisfiedOutputNames: [outputName]),
+                TestContext.Current.CancellationToken);
+        }
+
+        ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
+        return (roomDirectory, artifactsRoot, logPath, executionId, snapshot);
+    }
+
+    /// <summary>
     /// Fabricates a room settled Indeterminate by the #1623 verify producer rather than the #1608
     /// capture one: same <see cref="StepState.IndeterminateAwaitingResolution"/> flag, deliberately no
     /// captured response anywhere.

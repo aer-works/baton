@@ -226,6 +226,7 @@ public static class MutationInterface
         ExecutionId executionId,
         bool accepted,
         string? reason,
+        bool close = false,
         CancellationToken cancellationToken = default,
         string? holderDescription = null)
     {
@@ -238,8 +239,11 @@ public static class MutationInterface
         if (!accepted && string.IsNullOrWhiteSpace(reason))
         {
             throw new InvalidCaptureResolutionException(
-                "Rejecting a captured response requires --reason: the conductor's justification is " +
-                "itself the room fact this verb exists to record.");
+                close
+                    ? "Closing an Indeterminate settle requires --reason: the conductor's justification " +
+                      "is itself the room fact this verb exists to record."
+                    : "Rejecting a captured response requires --reason: the conductor's justification is " +
+                      "itself the room fact this verb exists to record.");
         }
 
         using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, holderDescription);
@@ -267,9 +271,13 @@ public static class MutationInterface
         // checkpoint.
         var effectiveProducer = target?.IndeterminateProducer
             ?? (target?.LatestCapturedResponseFile is not null ? IndeterminateProducer.CapturedResponse : (IndeterminateProducer?)null);
+        // #1622 (d)/#1700: --close admits exactly the producers --accept-capture/--reject never did —
+        // VerifyFailed/Arrested/null — mirroring ResolveCommand's own widened admission one layer up.
         var admitsThisVerb = target is { IndeterminateAwaitingResolution: true }
-            && (effectiveProducer == IndeterminateProducer.CapturedResponse
-                || (accepted == false && effectiveProducer == IndeterminateProducer.ContractFailure));
+            && (close
+                ? effectiveProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null
+                : effectiveProducer == IndeterminateProducer.CapturedResponse
+                    || (accepted == false && effectiveProducer == IndeterminateProducer.ContractFailure));
         if (!admitsThisVerb)
         {
             // #1608 review finding 5: an explicit --execution naming a step whose latest attempt

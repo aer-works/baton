@@ -58,9 +58,9 @@ public static class ResolveCommand
 
         var targetExecutionId = options.ExecutionId is { } explicitExecutionId
             ? await ResolveExplicitExecutionAsync(
-                    reader, snapshot, explicitExecutionId, options.RoomDirectoryPath, options.Accept, cancellationToken)
+                    reader, snapshot, explicitExecutionId, options.RoomDirectoryPath, options.Accept, options.Close, cancellationToken)
                 .ConfigureAwait(false)
-            : await ResolveSingleCandidateAsync(reader, snapshot, options.RoomDirectoryPath, options.Accept, cancellationToken)
+            : await ResolveSingleCandidateAsync(reader, snapshot, options.RoomDirectoryPath, options.Accept, options.Close, cancellationToken)
                 .ConfigureAwait(false);
 
         await using var writer = new FlowEventLogWriter(logPath);
@@ -74,6 +74,7 @@ public static class ResolveCommand
                 targetExecutionId,
                 options.Accept,
                 options.Reason,
+                options.Close,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -86,6 +87,7 @@ public static class ResolveCommand
         string explicitExecutionId,
         string roomDirectoryPath,
         bool accepted,
+        bool close,
         CancellationToken cancellationToken)
     {
         var executionId = new ExecutionId(explicitExecutionId);
@@ -94,16 +96,20 @@ public static class ResolveCommand
 
         var namedStep = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
 
-        // F1 (#1593 review): admission is per-verb, keyed on IndeterminateProducer rather than a bare
-        // LatestCapturedResponseFile null/not-null read — see spec/baton.md §3's producer table for
-        // which verb admits which. Mirrors MutationInterface.RecordCaptureResolutionAsync's own guard
-        // so the refusal lands here, with a message naming the right remedy, rather than deeper in as
-        // a bare "no unresolved indeterminate capture".
+        // F1 (#1593 review), widened by #1622 (d)/#1700: admission is per-verb, keyed on
+        // IndeterminateProducer rather than a bare LatestCapturedResponseFile null/not-null read — see
+        // spec/baton.md §3's producer table for which verb admits which. Mirrors
+        // MutationInterface.RecordCaptureResolutionAsync's own guard so the refusal lands here, with a
+        // message naming the right remedy, rather than deeper in as a bare "no unresolved indeterminate
+        // capture". --close admits exactly the three producers --reject does NOT: VerifyFailed,
+        // Arrested, and null (a step Indeterminate for no producer at all, the legacy pre-#1593 shape).
         var admitsAccept = namedStep is { IndeterminateAwaitingResolution: true }
             && namedStep.IndeterminateProducer == IndeterminateProducer.CapturedResponse;
         var admitsReject = namedStep is { IndeterminateAwaitingResolution: true }
             && namedStep.IndeterminateProducer is IndeterminateProducer.CapturedResponse or IndeterminateProducer.ContractFailure;
-        var isAwaitingResolution = accepted ? admitsAccept : admitsReject;
+        var admitsClose = namedStep is { IndeterminateAwaitingResolution: true }
+            && namedStep.IndeterminateProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null;
+        var isAwaitingResolution = accepted ? admitsAccept : close ? admitsClose : admitsReject;
         var isNonCaptureIndeterminate = namedStep is { IndeterminateAwaitingResolution: true } && !isAwaitingResolution;
 
         // #1608 review finding 5: also admit a step already ACCEPTED for this exact execution, but
@@ -125,7 +131,7 @@ public static class ResolveCommand
             // shapes reach here — see ThrowDiscriminatedRefusal for which message each gets.
             if (isNonCaptureIndeterminate)
             {
-                ThrowDiscriminatedRefusal(namedStep!.IndeterminateProducer, explicitExecutionId, roomDirectoryPath, accepted);
+                ThrowDiscriminatedRefusal(namedStep!.IndeterminateProducer, explicitExecutionId, roomDirectoryPath, accepted, close);
             }
 
             // #1608 review finding 7: a resolved-but-Failed step and an unresolved one both read
@@ -161,6 +167,7 @@ public static class ResolveCommand
         WorkflowDefinitionSnapshot snapshot,
         string roomDirectoryPath,
         bool accepted,
+        bool close,
         CancellationToken cancellationToken)
     {
         var events = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
@@ -174,12 +181,14 @@ public static class ResolveCommand
             var candidate = candidates[0];
             var admitsVerb = accepted
                 ? candidate.IndeterminateProducer == IndeterminateProducer.CapturedResponse
-                : candidate.IndeterminateProducer is IndeterminateProducer.CapturedResponse or IndeterminateProducer.ContractFailure;
+                : close
+                    ? candidate.IndeterminateProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null
+                    : candidate.IndeterminateProducer is IndeterminateProducer.CapturedResponse or IndeterminateProducer.ContractFailure;
 
             if (!admitsVerb)
             {
                 ThrowDiscriminatedRefusal(
-                    candidate.IndeterminateProducer, candidate.LatestExecutionId!.Value.Value, roomDirectoryPath, accepted);
+                    candidate.IndeterminateProducer, candidate.LatestExecutionId!.Value.Value, roomDirectoryPath, accepted, close);
             }
 
             return candidate.LatestExecutionId!.Value;
@@ -201,47 +210,69 @@ public static class ResolveCommand
     }
 
     /// <summary>
-    /// F1 (#1593 review): the shared refusal text for a step that settled Indeterminate through a
-    /// producer <paramref name="accepted"/>'s verb does not admit — shared between
-    /// <see cref="ResolveExplicitExecutionAsync"/> and <see cref="ResolveSingleCandidateAsync"/> so the
-    /// two callers cannot drift on what each producer's remedy actually is.
+    /// F1 (#1593 review), widened by #1622 (d)/#1700: the shared refusal text for a step that settled
+    /// Indeterminate through a producer the caller's verb (<paramref name="accepted"/>/
+    /// <paramref name="close"/>) does not admit — shared between <see cref="ResolveExplicitExecutionAsync"/>
+    /// and <see cref="ResolveSingleCandidateAsync"/> so the two callers cannot drift on what each
+    /// producer's remedy actually is. #1700's own defect — <c>--reject</c> refusing a
+    /// VerifyFailed/Arrested/null-producer step with no way to close it — is what <c>--close</c> exists
+    /// to answer; this method's job is naming it as the remedy wherever the wrong verb was tried.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.DoesNotReturn]
     private static void ThrowDiscriminatedRefusal(
-        IndeterminateProducer? producer, string executionId, string roomDirectoryPath, bool accepted)
+        IndeterminateProducer? producer, string executionId, string roomDirectoryPath, bool accepted, bool close)
     {
-        if (producer == IndeterminateProducer.ContractFailure && accepted)
+        if (producer is IndeterminateProducer.CapturedResponse or IndeterminateProducer.ContractFailure)
         {
-            throw new CliArgumentException(
-                $"Execution '{executionId}' in room '{roomDirectoryPath}' settled Indeterminate "
-                + "with no captured response to accept — an exit-0 contract failure (or a dead worker on "
-                + "a mutated workspace), not an unwritten-but-recoverable output. "
-                + "'baton resolve --reject --reason <text>' still resolves it.",
-                "pass --reject --reason, naming the conductor's own judgement after inspecting the "
-                + "workspace. See spec/baton.md §3.");
+            // A captured-response-shaped step (CapturedResponse or ContractFailure) was targeted with
+            // --close, which is scoped to the producers that never had a capture to begin with.
+            if (close)
+            {
+                throw new CliArgumentException(
+                    $"Execution '{executionId}' in room '{roomDirectoryPath}' settled Indeterminate "
+                    + "with a captured response or contract failure to rule on — '--close' is scoped to a "
+                    + "verify failure, an arrest, or no producer at all, none of which apply here.",
+                    producer == IndeterminateProducer.CapturedResponse
+                        ? "pass --accept-capture (the capture honestly satisfies the declared output(s)) "
+                          + "or --reject --reason <text>. See spec/baton.md §3."
+                        : "pass --reject --reason, naming the conductor's own judgement after inspecting "
+                          + "the workspace. See spec/baton.md §3.");
+            }
+
+            if (producer == IndeterminateProducer.ContractFailure && accepted)
+            {
+                throw new CliArgumentException(
+                    $"Execution '{executionId}' in room '{roomDirectoryPath}' settled Indeterminate "
+                    + "with no captured response to accept — an exit-0 contract failure (or a dead worker on "
+                    + "a mutated workspace), not an unwritten-but-recoverable output. "
+                    + "'baton resolve --reject --reason <text>' still resolves it.",
+                    "pass --reject --reason, naming the conductor's own judgement after inspecting the "
+                    + "workspace. See spec/baton.md §3.");
+            }
         }
 
         // F1 nit (#1664 re-review): explicit, not a catch-all else — VerifyFailed/Arrested/null are the
-        // only producers this "nothing to accept or reject" text actually describes. Both callers only
-        // reach this helper for a producer accepted's verb does not admit, so a ContractFailure step
-        // with accepted: false is unreachable today (admitted upstream at both call sites) — but the
-        // `_ => throw` below is what keeps that a measured fact rather than a silent assumption the
-        // shared else arm could someday violate.
+        // only producers this "nothing to accept or reject" text describes, and both callers only reach
+        // this helper for a producer the caller's verb does not admit, so this arm only fires for
+        // --accept-capture/--reject against one of these three (--close admits all three, so it never
+        // reaches here for them).
         if (producer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null)
         {
             throw new CliArgumentException(
                 $"Execution '{executionId}' in room '{roomDirectoryPath}' settled Indeterminate "
                 + "without a captured response — a verify failure or a token-budget arrest, not an "
-                + "unwritten output. There is nothing for 'baton resolve' to accept or reject.",
-                $"read the step's failure reason (`baton status {roomDirectoryPath} --json`) to see "
-                + "which, fix the underlying cause, then re-dispatch — a fresh execution reopens the "
-                + "step. See spec/baton.md §3.");
+                + "unwritten output. There is nothing for '--accept-capture'/'--reject' to accept or reject.",
+                $"pass 'baton resolve {roomDirectoryPath} --execution {executionId} --close --reason <text>' "
+                + "to close it without redoing the work (the work already landed), or read the step's "
+                + $"failure reason (`baton status {roomDirectoryPath} --json`), fix the underlying cause, "
+                + "and re-dispatch — a fresh execution reopens the step. See spec/baton.md §3.");
         }
 
         throw new InvalidOperationException(
             $"ThrowDiscriminatedRefusal reached for execution '{executionId}' in room '{roomDirectoryPath}' "
-            + $"with producer '{producer}' and accepted={accepted} — every combination that value admits "
-            + "is handled above, so this indicates a new producer or a new admission rule reached this "
-            + "helper without a matching arm, not a step that genuinely has nothing to accept or reject.");
+            + $"with producer '{producer}', accepted={accepted}, close={close} — every combination that "
+            + "value admits is handled above, so this indicates a new producer or a new admission rule "
+            + "reached this helper without a matching arm, not a step that genuinely has nothing to "
+            + "accept or reject.");
     }
 }
