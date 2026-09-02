@@ -67,9 +67,9 @@ public static class RetryEngine
         }
 
         // #1608 / #1623: retry-ineligible by an explicit arm, not merely a side effect of
-        // RetryForeclosed above (the ruling's own wording). ONE arm for all three producers — a
-        // captured-response settle, a verify failure, or a token-budget arrest — because they raise
-        // one flag rather than each carrying its own field to check here.
+        // RetryForeclosed above (the ruling's own wording). ONE arm for every producer in
+        // spec/baton.md §3's producer table, because they raise one flag rather than each carrying
+        // its own field to check here.
         if (stepState.IndeterminateAwaitingResolution)
         {
             return false;

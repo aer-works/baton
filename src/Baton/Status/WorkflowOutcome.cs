@@ -29,20 +29,11 @@ public static class WorkflowOutcome
     /// <para>
     /// <b>Three producers, one reading.</b> <see cref="DescribeTerminal"/> returns this whenever any
     /// step reads <see cref="StepState.IndeterminateAwaitingResolution"/> true — a single predicate,
-    /// deliberately not one check per producer. What raises it:
-    /// <list type="bullet">
-    /// <item><see cref="Domain.FlowEvent.ExecutionIndeterminate"/> (#1608), which
-    /// <see cref="Outcomes.OutcomeClassifier.Classify"/>'s captured-response arm emits instead of
-    /// <c>Failed(Permanent)</c> — spec/baton.md §3's "one live exception" is closed.</item>
-    /// <item><see cref="Domain.FlowEvent.VerifyFailed"/> (#1623): the role's verify command exited
-    /// non-zero after the worker itself exited 0 with a satisfied output contract.</item>
-    /// <item><see cref="Domain.FlowEvent.ExecutionArrested"/> (#1623): a live execution crossed its
-    /// role's token budget and was arrested.</item>
-    /// </list>
-    /// The last two carry their diagnostic on <see cref="StepState.IndeterminateReason"/>, which is
-    /// text for a human and never a second gate. The remaining, still-unimplemented producer (a
-    /// worktree fingerprint failing to reconcile at settle time) is spec/baton.md §3's problem, not
-    /// this class's — see "Producer, since #1608" there.
+    /// deliberately not one check per producer. Which events raise that flag, and the one still
+    /// unimplemented, are enumerated once in <c>spec/baton.md</c> §3's producer table ("Three
+    /// producers, since #1608 and #1623"); not restated here. What belongs to this class: the flag
+    /// alone decides the room-level word, and <see cref="StepState.IndeterminateReason"/> — text two
+    /// of those producers carry for a human — is deliberately not read here.
     /// </para>
     /// <para>
     /// <b>Consumer obligations (ruling item 2)</b> — spelled out in full in <c>spec/baton.md</c> §3,
@@ -93,11 +84,11 @@ public static class WorkflowOutcome
         }
 
         // #1608 / #1623: checked ahead of the ordinary Failed/Rejected read below — an unresolved
-        // indeterminate step IS Status.Failed, whether a captured-response settle, a verify failure or
-        // a token-budget arrest put it there (the single-added-enum-value ruling keeps StepStatus
-        // itself untouched), so this must win the room-level word or every such room would misreport
-        // Failed again, exactly the collapse #1608 exists to undo. One predicate for all three
-        // producers: they unify at StateProjector, not here.
+        // indeterminate step IS Status.Failed whichever producer put it there (the
+        // single-added-enum-value ruling keeps StepStatus itself untouched), so this must win the
+        // room-level word or every such room would misreport Failed again, exactly the collapse
+        // #1608 exists to undo. One predicate, never one check per producer: they unify upstream, in
+        // StateProjector, not here.
         if (steps.Any(step => step.IndeterminateAwaitingResolution))
         {
             return Indeterminate;
