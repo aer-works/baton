@@ -148,6 +148,17 @@ public static class RedispatchCommand
                 + $"(state: {parentTerminal.State}) — redispatching it anyway.");
         }
 
+        if (options.SpecFilePath is null && options.Attachments is { Count: > 0 })
+        {
+            // #1576: mirrors DispatchCommand's own "--attach does not apply" refusals (a template's
+            // phases, or a role with no --spec). spec/baton.md §2 states the underlying reason a
+            // --spec-omitted redispatch cannot take an attachment; record-once, not restated here.
+            throw new CliArgumentException(
+                "'baton redispatch' without --spec reuses the parent room's already-built prompt "
+                + "verbatim, so --attach has no prompt to attach into. Pass --attach only together with --spec.",
+                "pass --spec <amended-brief> --attach <file>, or drop --attach to reuse the parent's prompt as-is.");
+        }
+
         WorkflowDefinition definition;
         WorkerBindingConfigEntry entry;
         if (options.SpecFilePath is null)
@@ -193,6 +204,10 @@ public static class RedispatchCommand
         // InheritBinding just resolved onto `entry` (inherited from the parent, cleared, or overridden),
         // not the raw `options.Workstream` a bare `baton redispatch` never passes at all.
         WorkstreamJunctionLinker.CreateIfRequested(entry.Workstream, options.RoomDirectoryPath);
+
+        // #1576: the same copy DispatchCommand's own --attach path runs -- reached only via the
+        // --spec + --attach combination refused above, so this is unreachable on the bare-redispatch path.
+        RoleSpecMaterializer.CopyAttachmentsIntoRoom(options.Attachments, options.RoomDirectoryPath);
 
         Console.Out.WriteLine($"Room directory: {options.RoomDirectoryPath}");
         Console.Out.WriteLine($"Redispatched from: {options.ParentRoomDirectoryPath}");
@@ -300,7 +315,10 @@ public static class RedispatchCommand
             var spec = await File.ReadAllTextAsync(options.SpecFilePath!, cancellationToken).ConfigureAwait(false);
             var workspace = options.WorkspaceDirectory ?? parentEntry.WorkingDirectory ?? parentEntry.Worktree?.Repository;
 
-            var (definition, bindings) = RoleDispatch.Materialize(
+            // #1576: the same seam DispatchCommand's role path uses -- --attach validation and the
+            // spec/grant lint (#1500) now apply here too, rather than the amended-spec path skipping
+            // both by calling RoleDispatch.Materialize directly.
+            var (definition, bindings) = RoleSpecMaterializer.Materialize(
                 role, spec,
                 adapterOverride: options.Adapter ?? parentEntry.Adapter,
                 workingDirectory: workspace,
@@ -308,6 +326,8 @@ public static class RedispatchCommand
                 effortOverride: options.Effort ?? parentEntry.Effort,
                 outputOverride: options.OutputPath,
                 timeoutOverride: options.Timeout ?? parentEntry.Timeout,
+                attachments: options.Attachments,
+                roomDirectoryPath: options.RoomDirectoryPath,
                 tokenBudgetOverride: options.TokenBudget ?? parentEntry.TokenBudget,
                 maxToolStepsOverride: options.MaxToolSteps ?? parentEntry.MaxToolSteps,
                 verifyCommandOverride: options.VerifyCommand ?? parentEntry.VerifyCommandOverride);

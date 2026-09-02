@@ -679,6 +679,192 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// #1576: before this fix, <c>RedispatchCommand</c>'s amended-spec path called
+    /// <c>RoleDispatch.Materialize</c> directly, skipping the spec/grant lint (#1500) entirely — an
+    /// amended brief that instructs something the role's grant withholds got no warning at all, unlike
+    /// the identical brief passed to a fresh <c>baton dispatch</c>. Mirrors
+    /// <see cref="DispatchCommandEndToEndTests.Spec_grant_mismatch_prints_warning_and_proceeds"/>
+    /// exactly, but through <c>redispatch --spec</c>'s rebuild path: <c>advise</c> declares no shell/
+    /// network grant, so a `gh issue view` line in the amended brief must warn the same way.
+    /// </summary>
+    [Fact]
+    public async Task Redispatching_with_an_amended_spec_that_needs_a_withheld_grant_prints_the_linters_warning()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        var priorError = Console.Error;
+        using var capturedError = new StringWriter();
+        Console.SetError(capturedError);
+
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(
+                amendedSpecPath, "Please gh issue view 1500\nProvide advice.", TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(parentRoom, childRoom, SpecFilePath: amendedSpecPath, Adapter: "fake");
+
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var errorOutput = capturedError.ToString();
+            Assert.Contains("Warning: Spec line 1", errorOutput);
+            Assert.Contains("shell", errorOutput);
+            Assert.Contains("network", errorOutput);
+            Assert.Contains("advise", errorOutput);
+        }
+        finally
+        {
+            Console.SetError(priorError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1576: before this fix, <c>RedispatchOptions</c> had no <c>Attachments</c> field at all --
+    /// <c>--attach</c> did not exist on <c>redispatch</c>. Mirrors
+    /// <see cref="DispatchCommandEndToEndTests.Dispatching_with_attachments_copies_files_and_lists_them_in_prompt"/>
+    /// through the amended-spec redispatch path instead.
+    /// </summary>
+    [Fact]
+    public async Task Redispatching_with_attach_copies_the_file_into_the_room_and_lists_it_in_the_prompt()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(amendedSpecPath, "Weigh the options for Y instead.", TestContext.Current.CancellationToken);
+
+            var contextFile = Path.Combine(testRoot, "context.txt");
+            await File.WriteAllTextAsync(contextFile, "Extra context", TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(
+                parentRoom, childRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Attachments: [contextFile]);
+
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var attachmentsDir = Path.Combine(childRoom, "artifacts", "attachments");
+            Assert.True(File.Exists(Path.Combine(attachmentsDir, "context.txt")));
+            Assert.Equal("Extra context", await File.ReadAllTextAsync(Path.Combine(attachmentsDir, "context.txt"), TestContext.Current.CancellationToken));
+
+            var childBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Contains($"Attached files (in {attachmentsDir}): context.txt", childBindings["advise"].PromptTemplate);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1576: pins <c>RedispatchCommand</c>'s own <c>--attach</c>-without-<c>--spec</c> refusal, added
+    /// just above the amended-spec branch -- see that refusal's comment for why the combination makes
+    /// no sense, not restated here.
+    /// </summary>
+    [Fact]
+    public async Task Attach_without_spec_is_refused()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+            var contextFile = Path.Combine(testRoot, "context.txt");
+            await File.WriteAllTextAsync(contextFile, "Extra context", TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(parentRoom, childRoom, Attachments: [contextFile]);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("--attach", ex.Message);
+            Assert.False(Directory.Exists(childRoom));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1576 second-reader: the shared <c>RoleSpecMaterializer</c> validation is exercised by
+    /// <see cref="DispatchCommandEndToEndTests.Dispatching_with_missing_attachment_file_throws_typed_argument_error"/>
+    /// through <c>dispatch</c>, but nothing pinned the identical call path reached through
+    /// <c>redispatch --spec --attach</c> until now.
+    /// </summary>
+    [Fact]
+    public async Task Redispatching_with_a_missing_attachment_file_throws_typed_argument_error()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(amendedSpecPath, "Weigh the options for Y instead.", TestContext.Current.CancellationToken);
+            var missingFile = Path.Combine(testRoot, "nonexistent.txt");
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(
+                parentRoom, childRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Attachments: [missingFile]);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("Attached file", ex.Message);
+            Assert.Contains("nonexistent.txt", ex.Message);
+            Assert.False(Directory.Exists(childRoom));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>Polarity partner of the missing-file test above: two <c>--attach</c> files colliding on the same destination name.</summary>
+    [Fact]
+    public async Task Redispatching_with_two_attachments_sharing_a_file_name_throws_typed_argument_error()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(amendedSpecPath, "Weigh the options for Y instead.", TestContext.Current.CancellationToken);
+
+            var subDir = Path.Combine(testRoot, "sub");
+            Directory.CreateDirectory(subDir);
+            var file1 = Path.Combine(testRoot, "doc.txt");
+            var file2 = Path.Combine(subDir, "doc.txt");
+            await File.WriteAllTextAsync(file1, "Top-level doc", TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(file2, "Sub-directory doc", TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(
+                parentRoom, childRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Attachments: [file1, file2]);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("doc.txt", ex.Message);
+            Assert.Contains("same file name", ex.Message);
+            Assert.False(Directory.Exists(childRoom));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static async Task<string> DispatchTerminalParentAsync(
         string testRoot, string spec, string adapter = "fake", TimeSpan? timeout = null, string? label = null,
         string? workstream = null)
