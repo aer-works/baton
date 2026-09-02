@@ -744,12 +744,11 @@ diagnostic-only; `FlowEvent.VerifyFailed` (`FailingMembers`, parsed from `tools/
 deterministic `summarise()` line) settles the step `Indeterminate` — never a blind retry, the ruling's
 own wording — via the same `StateProjector.ApplyIndeterminate` helper the budget arrest below shares.
 `Tail` (#1701) is each named failing member's OWN captured output, keyed off `gates.py`'s own
-per-member `"  pass/FAIL  name  (exit code)"` summary lines rather than a blind tail of the whole
-combined `gates-quiet` run — the earlier shape could cut a failing member's diagnostic text once
-other members' one-line pass markers followed it, which is what left a real flake undiagnosable from
-the room. Still bounded overall, never a full log dump: if no per-member marker line is recognized at
-all (a `gates.py` shape drift), `Tail` degrades to the pre-#1701 whole-stream tail rather than
-fabricating a per-member split that isn't there. An operator cancel landing inside the verify window is the one exception: `VerifyFailedKind.Cancelled`
+per-member `"  pass/FAIL  name  (exit code)"` summary lines — never a blind cut of the whole combined
+`gates-quiet` run (`Baton.Mutation.VerifyRunner`'s own remarks are the canonical account of why, and
+of its whole-stream fallback when a `gates.py` shape drift leaves no marker line to key off). This is
+also what `baton status --json` now surfaces per step as `verifyTail`, so a flake is diagnosable from
+the room without reconstructing it by hand. An operator cancel landing inside the verify window is the one exception: `VerifyFailedKind.Cancelled`
 observed together with the caller's own cancellation token already firing means the journal *can*
 decide (it holds the cancel), so `MutationInterface` appends `FlowEvent.ExecutionCancelled` instead —
 room reads `Cancelled`, retry stays open, `VerifyStarted` survives as the diagnostic record of what was

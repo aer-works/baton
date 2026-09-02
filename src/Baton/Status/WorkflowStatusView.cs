@@ -112,14 +112,12 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("indeterminateProducer")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? IndeterminateProducerKind = null,
-    // #1701: StepState.IndeterminateVerifyTail -- the failing gate member(s)' own captured output,
-    // gated the same way IndeterminateProducerKind is above (present only for a currently-Failed
-    // step). Before this, a verify flake's own output lived only in flow.jsonl's raw event, never in
-    // `baton status --json`; this is the field a conductor reads instead of reconstructing the room
-    // by hand. In practice only non-null when IndeterminateProducerKind is VerifyFailed --
-    // ApplyIndeterminate (StateProjector.cs) writes null for every other producer, since an Arrested
-    // step's Error string is already the full diagnostic -- but that is enforced there, not by this
-    // gate; this field carries whatever StepState.IndeterminateVerifyTail records.
+    // #1701: StepState.IndeterminateVerifyTail verbatim -- see that field's own remarks (FlowState.cs)
+    // for why it exists and what it carries. Gated the same way IndeterminateProducerKind is above
+    // (present only for a currently-Failed step). In practice only non-null when
+    // IndeterminateProducerKind is VerifyFailed -- ApplyIndeterminate (StateProjector.cs) writes null
+    // for every other producer -- but that invariant is enforced there, not by this gate; this field
+    // carries whatever StepState.IndeterminateVerifyTail records.
     [property: JsonPropertyName("verifyTail")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? VerifyTail = null);

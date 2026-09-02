@@ -1484,8 +1484,8 @@ public class StateProjectorTests
     [Fact]
     public void VerifyFailed_records_the_failing_members_own_output_as_IndeterminateVerifyTail()
     {
-        // #1701: baton status --json must be able to surface the failing member's own captured
-        // output, not only the one-line member-name summary IndeterminateReason already carries.
+        // #1701: proves the projection wiring StepState.IndeterminateVerifyTail depends on -- see
+        // that field's own remarks (FlowState.cs) for why it exists at all.
         var executionId = new ExecutionId("exec-1");
         var events = new FlowEvent[]
         {
