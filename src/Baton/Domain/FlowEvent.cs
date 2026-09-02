@@ -45,13 +45,13 @@ public abstract record FlowEvent
 
     /// <summary>Flow has classified a completed execution as successful.</summary>
     /// <param name="WorkspaceChanged">
-    /// #1622/#1390: <see cref="Outcomes.OutcomeClassification.WorkspaceChanged"/>, carried the same hop
-    /// — non-null only for a tree-changing role. Nullable because history predates the field: an older
-    /// <c>flow.jsonl</c> line written before it existed still replays, with this null, the same
-    /// "history predates the field" shape <see cref="ExecutionFailed.Reason"/> already documents.
+    /// #1622/#1390: carried into <see cref="Projection.ProjectionCheckpointState.WorkspaceChangedByStepId"/>.
+    /// Nullable because history predates the field: an older <c>flow.jsonl</c> line written before it
+    /// existed still replays, with this null, the same "history predates the field" shape <see
+    /// cref="ExecutionFailed.Reason"/> already documents.
     /// </param>
-    /// <param name="Hollow"><see cref="Outcomes.OutcomeClassification.Hollow"/>, carried the same hop.</param>
-    /// <param name="HollowReason"><see cref="Outcomes.OutcomeClassification.HollowReason"/>, carried the same hop.</param>
+    /// <param name="Hollow">Companion to <paramref name="WorkspaceChanged"/>; see its own remarks.</param>
+    /// <param name="HollowReason">Non-null only when <paramref name="Hollow"/> is true.</param>
     public sealed record ExecutionSucceeded(
         ExecutionId ExecutionId,
         bool? WorkspaceChanged = null,

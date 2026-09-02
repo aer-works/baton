@@ -121,29 +121,18 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("verifyTail")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? VerifyTail = null,
-    // #1622 (c)/(d): StepState.ResolvedByConductor verbatim -- true iff this step's terminal state was
-    // set by an explicit, non-accepting `baton resolve` ruling (--reject or --close). Room-level
-    // WorkflowStatusView.Rejected/ResolvedBy (below) are derived from this across every step; present
-    // per-step too so a multi-step room's caller can tell WHICH step was resolved, the same reasoning
-    // WorkflowStatusStepView.State already gives a per-step reader over the room-level `state` alone.
+    // #1622 (c)/(d): mirrors StepState.ResolvedByConductor. Present per-step (as well as the
+    // room-level WorkflowStatusView.Rejected/ResolvedBy below) so a multi-step room's caller can tell
+    // WHICH step was resolved.
     [property: JsonPropertyName("resolvedByConductor")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     bool ResolvedByConductor = false,
-    // #1622/#1390: StepState.WorkspaceChanged verbatim -- present ONLY for a tree-changing role
-    // (implement/janitor, per RoleDispatch.ToBinding's grant-derived predicate) whose latest execution
-    // settled Succeeded; absent for every other role and every other step status, which is the "a
-    // review role -> field absent" contract spec/baton.md §3 states. `true`: the worktree carries
-    // commits over base or uncommitted changes (Workspaces.WorktreeProvisioner.IsWorkspaceUntouched's
-    // negation). `false`: neither -- the strong hollow-success signal #1390 exists to surface.
+    // #1622/#1390: mirrors StepState.WorkspaceChanged.
     [property: JsonPropertyName("workspaceChanged")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     bool? WorkspaceChanged = null,
-    // #1622/#1390: StepState.Hollow verbatim -- present under the identical gate as WorkspaceChanged
-    // above (never present without it), true only when WorkspaceChanged reads false AND the contract
-    // declared zero outputs (OutcomeClassifier.BuildSucceededClassification's own remarks explain the
-    // scope of that second condition). Does NOT reclassify the room's own `state`/`error` -- it stays
-    // "Succeeded" (spec/baton.md §3: reclassifying hollow success as Failed is the operator's design
-    // call #1390 leaves open, not this fix's to make).
+    // #1622/#1390: mirrors StepState.Hollow. Present under the identical gate as WorkspaceChanged
+    // above, never without it.
     [property: JsonPropertyName("hollow")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     bool? Hollow = null,
@@ -178,26 +167,12 @@ public sealed record WorkflowStatusView(
     [property: JsonPropertyName("outputs")] IReadOnlyList<string> Outputs,
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("try")] string? Try = null,
-    // #1377, widened by #1622 (c)/(d): true when at least one step settled via `DecisionType.Reject`
-    // (a PausePoint's `baton decide --reject`) OR via a non-accepting `baton resolve` ruling
-    // (--reject/--close, WorkflowStatusStepView.ResolvedByConductor). Two different verbs settling
-    // the same boolean is deliberate: both are "a person looked at this step and said no", and #1700
-    // measured a conductor resolve --reject leaving this false, reading as though nobody had ruled on
-    // it. There is no recorded-reason text to surface alongside it for the DecisionType.Reject half:
-    // `FlowEvent.ExternalDecisionRecorded` carries no operator-supplied reason field today, so a
-    // `reason` field here would always read `null` for that producer and this deliberately does not
-    // invent one -- the `baton resolve` half's reason is instead folded into `Error` (see
-    // Projection.StateProjector.BuildConductorResolvedReason) and named by `ResolvedBy` below.
-    // Lets a caller reading `state: "Failed"`/`error: null` tell "a person said no" apart
-    // from "the worker crashed and nobody recorded why" without parsing prose; the branching recipe
-    // and the which-step pointer live in spec/baton.md §3.
+    // #1377, widened by #1622 (c)/(d): see spec/baton.md §3's `rejected` entry for the full branching
+    // recipe (which two verbs settle it, and why no `reason` field is invented for the
+    // DecisionType.Reject half). The `baton resolve` half's reason is instead folded into `Error`
+    // (see Projection.StateProjector.BuildConductorResolvedReason) and named by `ResolvedBy` below.
     [property: JsonPropertyName("rejected")] bool Rejected = false,
-    // #1622 (c)/(d): "conductor" when at least one step's terminal state was set by an explicit,
-    // non-accepting `baton resolve` ruling (--reject or --close) -- the same steps that flip
-    // Rejected above true, but stated as an attribution string rather than folded silently into that
-    // boolean, per #1700's own ask ("records resolvedBy: conductor ... on terminal.json /
-    // status --json"). Null whenever Rejected is false; the two always change together because both
-    // are derived from the identical StepState.ResolvedByConductor set.
+    // #1622 (c)/(d): see spec/baton.md §3's `resolvedBy` entry. Null whenever Rejected is false.
     [property: JsonPropertyName("resolvedBy")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ResolvedBy = null);

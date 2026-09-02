@@ -132,41 +132,30 @@ public sealed record ProjectionCheckpointState(
     public Dictionary<StepId, string?> IndeterminateVerifyTailByStepId { get; init; } = IndeterminateVerifyTailByStepId ?? new();
 
     /// <summary>
-    /// #1622 (c)/(d): which steps' latest terminal state was set by an explicit, non-accepting
-    /// <c>baton resolve</c> ruling (<c>--reject</c> or <c>--close</c>) — the discriminant
-    /// <c>status --json</c>'s <c>rejected</c>/<c>resolvedBy</c> fields read (spec/baton.md §3). Absent
-    /// from an older checkpoint's serialized JSON coalesces to empty here — a room whose only resolve
-    /// happened before this field existed simply does not carry the new fields until it is resolved
-    /// again, the same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/>
-    /// above; no <see cref="ProjectionCheckpoint.Version"/> bump needed. Same <see cref="DeepCopy"/>
-    /// load-bearing note applies. Cleared on a fresh dispatch (<see cref="FlowEvent.ExecutionRequestAccepted"/>),
-    /// the same "the pump is dispatching it, so whatever blocked it is moot" reasoning the sibling sets
-    /// already rest on.
+    /// #1622 (c)/(d): backs `resolvedByConductor` in the status/terminal-sentinel projection —
+    /// see `Domain.FlowState.StepState.ResolvedByConductor`'s remarks for what it means.
+    /// Same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above; no
+    /// <see cref="ProjectionCheckpoint.Version"/> bump needed. Same <see cref="DeepCopy"/>
+    /// load-bearing note applies.
     /// </summary>
     public HashSet<StepId> ResolvedByConductorStepIds { get; init; } = ResolvedByConductorStepIds ?? new();
 
     /// <summary>
-    /// #1622/#1390: <see cref="Domain.FlowEvent.ExecutionSucceeded.WorkspaceChanged"/>, carried the
-    /// same hop — non-null only for a tree-changing role's Succeeded settle. Same trailing-optional
-    /// replay-safety shape as <see cref="RetryForeclosedStepIds"/> above (an older checkpoint simply
-    /// has no entry, which <c>Dictionary.GetValueOrDefault</c> reads as null — "not computed", the
-    /// same reading a fresh room with no Succeeded step yet already has), and the same
+    /// #1622/#1390: see spec/baton.md §3's `workspaceChanged` entry. Same trailing-optional
+    /// replay-safety shape as <see cref="RetryForeclosedStepIds"/> above, and the same
     /// <see cref="DeepCopy"/> load-bearing note applies.
     /// </summary>
     public Dictionary<StepId, bool?> WorkspaceChangedByStepId { get; init; } = WorkspaceChangedByStepId ?? new();
 
     /// <summary>
-    /// #1622/#1390: <see cref="Domain.FlowEvent.ExecutionSucceeded.Hollow"/>, a companion to
-    /// <see cref="WorkspaceChangedByStepId"/> above, never a second flag scheme. Same replay-safety
-    /// shape and <see cref="DeepCopy"/> load-bearing note.
+    /// #1622/#1390: see spec/baton.md §3's `hollow` entry. Same replay-safety shape and
+    /// <see cref="DeepCopy"/> load-bearing note as <see cref="WorkspaceChangedByStepId"/> above.
     /// </summary>
     public Dictionary<StepId, bool?> HollowByStepId { get; init; } = HollowByStepId ?? new();
 
     /// <summary>
-    /// #1622/#1390: <see cref="Domain.FlowEvent.ExecutionSucceeded.HollowReason"/>, carried alongside
-    /// <see cref="HollowByStepId"/> the same way <see cref="IndeterminateReasonByStepId"/> pairs with
-    /// <see cref="IndeterminateAwaitingResolutionStepIds"/>. Same replay-safety shape and
-    /// <see cref="DeepCopy"/> load-bearing note.
+    /// #1622/#1390: see spec/baton.md §3's `hollowReason` entry. Same replay-safety shape and
+    /// <see cref="DeepCopy"/> load-bearing note as <see cref="WorkspaceChangedByStepId"/> above.
     /// </summary>
     public Dictionary<StepId, string?> HollowReasonByStepId { get; init; } = HollowReasonByStepId ?? new();
 

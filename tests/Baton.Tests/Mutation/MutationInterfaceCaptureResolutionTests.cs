@@ -780,9 +780,7 @@ public class MutationInterfaceCaptureResolutionTests
     /// #1622 (d)/#1700: a VerifyFailed/Arrested/no-producer Indeterminate has no captured response to
     /// accept or reject (<see cref="A_verify_failed_Indeterminate_step_is_refused_by_baton_resolve"/>
     /// above pins that refusal, unchanged by this fix) — `--close` is the ruling that settles it
-    /// anyway. Measured 9/2 on room dispatch-implement-d898ff0f: `baton resolve --reject` answered
-    /// "nothing for 'baton resolve' to accept or reject", and the only way to stop the room reading
-    /// "awaiting conductor resolution" was `baton room delete`.
+    /// anyway. See spec/baton.md §3 for the measured incident this closes.
     /// </summary>
     [Fact]
     public async Task Closing_a_verify_failed_Indeterminate_step_settles_Failed_and_clears_the_awaiting_text()

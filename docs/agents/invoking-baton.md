@@ -232,8 +232,8 @@ restating it below: `CapturedResponse` admits either `--accept-capture` or `--re
 `--accept-capture` writes the capture's body under each declared name it stands in for, settling the
 step `Succeeded`; `ContractFailure` admits only `--reject --reason <text>`, recording a rejection and
 leaving the step resolved-but-`Failed`; `VerifyFailed`/`ExecutionArrested` admit only
-`--close --reason <text>` (neither ever carried a captured response for `--accept-capture`/`--reject` to
-act on), settling the step resolved-but-`Failed` through the identical room fact `--reject` uses. Of
+`--close --reason <text>` (see spec/baton.md §3 for why those two never admit the other verbs),
+settling the step resolved-but-`Failed` through the identical room fact `--reject` uses. Of
 those two, `VerifyFailed` carries the failing member(s)' own
 output on `steps[].verifyTail`, bounded — `spec/baton.md` §3 is the canonical account of the field
 and its whole-stream fallback. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
