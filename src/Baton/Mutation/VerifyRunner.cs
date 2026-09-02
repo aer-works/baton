@@ -1,4 +1,5 @@
 using Baton.Core;
+using Baton.Domain;
 
 namespace Baton.Mutation;
 
@@ -6,8 +7,13 @@ namespace Baton.Mutation;
 /// The result of one <see cref="VerifyRunner.RunAsync"/> call (#1623). <see cref="Passed"/> mirrors the
 /// verify command's own exit code; <see cref="FailingMembers"/>/<see cref="Tail"/> are populated only
 /// when it fails, and only when the summary line's shape is recognized — never fabricated.
+/// <see cref="Kind"/> distinguishes gate breakage from timeouts, cancellations, or engine restarts (F3).
 /// </summary>
-public sealed record VerifyOutcome(bool Passed, IReadOnlyList<string>? FailingMembers = null, string? Tail = null)
+public sealed record VerifyOutcome(
+    bool Passed,
+    IReadOnlyList<string>? FailingMembers = null,
+    string? Tail = null,
+    VerifyFailedKind? Kind = null)
 {
     public static readonly VerifyOutcome Pass = new(true);
 }
@@ -42,15 +48,6 @@ public static class VerifyRunner
     /// </summary>
     private const int MaxTailChars = 4000;
 
-    /// <summary>
-    /// A fixed ceiling rather than a per-role configurable (out of this issue's scope, per the ruling's
-    /// own wording: <c>--token-budget</c> is the one operator-facing override this work adds).
-    /// <c>gates-quiet</c> runs the full test suite; generous headroom over an uncontended run matters
-    /// more here than a tight bound, since a slow verify still settles Indeterminate rather than
-    /// silently retrying.
-    /// </summary>
-    private static readonly TimeSpan VerifyTimeout = TimeSpan.FromMinutes(30);
-
     public static Task<VerifyOutcome> RunAsync(
         string pixiTask, string? workingDirectory, CancellationToken cancellationToken)
     {
@@ -73,8 +70,9 @@ public static class VerifyRunner
         // trusted tool (`pixi`, which itself needs its host toolchain's PATH/CONDA_PREFIX/etc. to
         // resolve) rather than an adapter-sandboxed process, so it inherits the ambient environment the
         // same way a human running `pixi run gates-quiet` by hand would.
+        // Process-level timeout is omitted (F3): buildlock's own loud timeout bounds each lock-competing
+        // step instead of an arbitrary overall wall-clock ceiling causing spurious Indeterminate settlements.
         using var task = new BatonTask(program, [.. args])
-            .WithTimeout(VerifyTimeout)
             .WithCaptureOutput(true);
 
         if (workingDirectory is not null)
@@ -100,13 +98,31 @@ public static class VerifyRunner
         {
             await task.RunAsync(cancellationToken).ConfigureAwait(false);
         }
+        catch (BatonCancelException ex)
+        {
+            return new VerifyOutcome(false, FailingMembers: null, Tail: $"Verify command cancelled: {ex.Message}", Kind: VerifyFailedKind.Cancelled);
+        }
+        catch (BatonTimeoutException ex)
+        {
+            return new VerifyOutcome(false, FailingMembers: null, Tail: $"Verify command timed out: {ex.Message}", Kind: VerifyFailedKind.TimedOut);
+        }
+        catch (OperationCanceledException)
+        {
+            return new VerifyOutcome(false, FailingMembers: null, Tail: "Verify command was cancelled.", Kind: VerifyFailedKind.Cancelled);
+        }
+        catch (BatonException ex) when (ex.ErrorCode == BatonErrorCode.Cancelled || cancellationToken.IsCancellationRequested)
+        {
+            return new VerifyOutcome(false, FailingMembers: null, Tail: $"Verify command cancelled: {ex.Message}", Kind: VerifyFailedKind.Cancelled);
+        }
+        catch (BatonException ex) when (ex.ErrorCode == BatonErrorCode.TimedOut)
+        {
+            return new VerifyOutcome(false, FailingMembers: null, Tail: $"Verify command timed out: {ex.Message}", Kind: VerifyFailedKind.TimedOut);
+        }
         catch (BatonException ex)
         {
-            // A timeout, a cancellation, or the OS refusing to spawn `pixi` at all -- none of these
-            // are the worker's fault, but the honest outcome is still "verify did not confirm this
-            // execution", never a silent pass. Settles Indeterminate the same as an ordinary failure;
-            // the conductor sees why in the tail.
-            return new VerifyOutcome(false, FailingMembers: null, Tail: $"Verify command failed to complete: {ex.Message}");
+            // The OS refusing to spawn `pixi` at all -- not the worker's fault, but the honest outcome
+            // is still "verify did not confirm this execution", never a silent pass. Settles Indeterminate.
+            return new VerifyOutcome(false, FailingMembers: null, Tail: $"Verify command failed to complete: {ex.Message}", Kind: VerifyFailedKind.GatesFailed);
         }
 
         if (exitCode == 0)
@@ -117,7 +133,7 @@ public static class VerifyRunner
         var text = output.ToString();
         var failingMembers = ParseFailingMembers(text);
         var tail = text.Length > MaxTailChars ? text[^MaxTailChars..] : text;
-        return new VerifyOutcome(false, failingMembers, tail);
+        return new VerifyOutcome(false, failingMembers, tail, Kind: VerifyFailedKind.GatesFailed);
     }
 
     private static IReadOnlyList<string>? ParseFailingMembers(string output)

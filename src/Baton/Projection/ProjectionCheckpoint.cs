@@ -47,7 +47,8 @@ public sealed record ProjectionCheckpointState(
     Dictionary<StepId, string?>? LatestCapturedResponseFileByStepId = null,
     Dictionary<StepId, List<string>?>? LatestUnsatisfiedOutputNamesByStepId = null,
     HashSet<StepId>? RetryForeclosedStepIds = null,
-    Dictionary<StepId, string?>? IndeterminateReasonByStepId = null)
+    Dictionary<StepId, string?>? IndeterminateReasonByStepId = null,
+    HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -76,6 +77,12 @@ public sealed record ProjectionCheckpointState(
     /// the same <see cref="DeepCopy"/> load-bearing note applies.
     /// </summary>
     public Dictionary<StepId, string?> IndeterminateReasonByStepId { get; init; } = IndeterminateReasonByStepId ?? new();
+
+    /// <summary>
+    /// #1623 / F2: executions carrying an unmatched <see cref="FlowEvent.VerifyStarted"/> not since
+    /// resolved by verify outcome or terminal Flow event — same trailing-optional replay-safety shape.
+    /// </summary>
+    public HashSet<ExecutionId> UnmatchedVerifyExecutionIds { get; init; } = UnmatchedVerifyExecutionIds ?? new();
 
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
@@ -135,5 +142,6 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<StepId, string?>(LatestCapturedResponseFileByStepId),
         LatestUnsatisfiedOutputNamesByStepId.ToDictionary(kvp => kvp.Key, kvp => kvp.Value is null ? null : new List<string>(kvp.Value)),
         new HashSet<StepId>(RetryForeclosedStepIds),
-        new Dictionary<StepId, string?>(IndeterminateReasonByStepId));
+        new Dictionary<StepId, string?>(IndeterminateReasonByStepId),
+        new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds));
 }

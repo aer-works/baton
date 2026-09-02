@@ -639,9 +639,10 @@ instead."*). Concretely: a harness runs `baton dispatch` without `--wait`, the l
 pauses — the process exits **1**. Reading that as "a step failed" and abandoning a healthy, paused
 room is the single most consequential misreading this table can produce, because §5's entire gate
 contract depends on that paused room still being there to `baton decide` against. `Indeterminate`
-(#1586 S1, above) also folds into exit code 1 today — genuinely unreachable in this slice (no
-producer), but named rather than left to an unlabelled wildcard, the same discipline the rest of this
-switch already follows. **The rule: exit code
+(#1586 S1, above) also folds into exit code 1 today — with §3's producers (`VerifyFailed`,
+`ExecutionArrested`), this arm is live and tested (`WorkflowOutcomeAndExitCodeTests`); a caller's
+`$?`/`%ERRORLEVEL%` branch sees `Failed` while `status --json`'s `state` field reports `Indeterminate` for
+a conductor to resolve. **The rule: exit code
 1 alone never tells you whether the room is done. Read `state` from `terminal.json` or `baton status
 --json` to distinguish `Failed` from `Running`/`Paused`.** `--wait` makes `run`/`dispatch` block until
 the room reaches Terminal or the wait is itself cancelled; `run`'s own `--wait-timeout` (#1378) bounds

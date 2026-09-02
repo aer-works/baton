@@ -34,7 +34,10 @@ public sealed class TokenBudgetMonitor
     private readonly CancellationTokenSource _arrestSource = new();
     private readonly Lock _lock = new();
     private readonly List<string> _lastToolNames = [];
-    private long _tokensIn;
+    private long _inputLevel;
+    private long? _latestTokensIn;
+    private long? _latestCacheRead;
+    private long? _latestCacheCreation;
     private long _tokensOut;
     private bool _arrested;
 
@@ -82,9 +85,16 @@ public sealed class TokenBudgetMonitor
         bool crossed;
         lock (_lock)
         {
-            _tokensIn += usage.TokensIn ?? 0;
+            if (usage.TokensIn.HasValue || usage.CacheReadTokens.HasValue || usage.CacheCreationTokens.HasValue)
+            {
+                _latestTokensIn = usage.TokensIn;
+                _latestCacheRead = usage.CacheReadTokens;
+                _latestCacheCreation = usage.CacheCreationTokens;
+                _inputLevel = (usage.TokensIn ?? 0) + (usage.CacheReadTokens ?? 0) + (usage.CacheCreationTokens ?? 0);
+            }
+
             _tokensOut += usage.TokensOut ?? 0;
-            crossed = !_arrested && _tokensIn + _tokensOut >= _budget;
+            crossed = !_arrested && (_inputLevel + _tokensOut >= _budget);
             _arrested = _arrested || crossed;
         }
 
@@ -99,7 +109,11 @@ public sealed class TokenBudgetMonitor
     {
         lock (_lock)
         {
-            return new WorkerUsage(TokensIn: _tokensIn, TokensOut: _tokensOut);
+            return new WorkerUsage(
+                TokensIn: _inputLevel,
+                TokensOut: _tokensOut,
+                CacheReadTokens: _latestCacheRead,
+                CacheCreationTokens: _latestCacheCreation);
         }
     }
 

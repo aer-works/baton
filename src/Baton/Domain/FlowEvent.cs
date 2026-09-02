@@ -200,10 +200,12 @@ public abstract record FlowEvent
     /// command reports no per-member breakdown.</param>
     /// <param name="Tail">A bounded tail of the verify command's own output, for a human to read
     /// without re-running it.</param>
+    /// <param name="Kind">#1623 / F3: whether the failure was broken gates, a timeout, a cancellation, or an engine restart.</param>
     public sealed record VerifyFailed(
         ExecutionId ExecutionId,
         IReadOnlyList<string>? FailingMembers = null,
-        string? Tail = null) : FlowEvent;
+        string? Tail = null,
+        VerifyFailedKind Kind = VerifyFailedKind.GatesFailed) : FlowEvent;
 
     /// <summary>
     /// #1623 (contract: <c>spec/baton.md</c> §3; the addendum's own words are quoted on

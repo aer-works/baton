@@ -20,7 +20,8 @@ public sealed class TokenBudgetMonitorTests
         Assert.False(monitor.Arrested);
         Assert.False(monitor.ArrestRequested.IsCancellationRequested);
 
-        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":400,"output_tokens":200}}}""");
+        // Turn 2: input level 500, output 600 -> total = 500 + (100 + 600) = 1200 >= 1000
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":500,"output_tokens":600}}}""");
 
         Assert.True(monitor.Arrested);
         Assert.True(monitor.ArrestRequested.IsCancellationRequested);
@@ -38,8 +39,10 @@ public sealed class TokenBudgetMonitorTests
     }
 
     [Fact]
-    public void SnapshotUsage_sums_across_every_observed_line_not_just_the_latest()
+    public void SnapshotUsage_replaces_input_level_and_sums_output_tokens()
     {
+        // #1623 / F1: input side is a LEVEL (the caller replaces, never sums, its running value),
+        // matching tools/fleet-glass/pusher.py rule; output_tokens is summed.
         var monitor = new TokenBudgetMonitor(budget: 1_000_000, new ClaudeUsageParser());
 
         monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":10}}}""");
@@ -47,8 +50,63 @@ public sealed class TokenBudgetMonitorTests
 
         var usage = monitor.SnapshotUsage();
 
-        Assert.Equal(300, usage.TokensIn);
+        Assert.Equal(200, usage.TokensIn);
         Assert.Equal(30, usage.TokensOut);
+    }
+
+    [Fact]
+    public void Pusher_fixture_turn_scores_context_level_plus_output_tokens_not_six()
+    {
+        // #1623 / F1: tools/fleet-glass/pusher.py selftest fixture (input 2 / cache_creation 12066 / cache_read 15092 / output 4)
+        // scores ~27k (27160 level + 4 output), not 6 tokens.
+        var monitor = new TokenBudgetMonitor(budget: 30_000, new ClaudeUsageParser());
+
+        const string pusherLine = """
+            {"type":"assistant","message":{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":2,"cache_creation_input_tokens":12066,"cache_read_input_tokens":15092,"output_tokens":4,"service_tier":"standard"}}}
+            """;
+
+        monitor.OnStdoutLine(pusherLine);
+
+        var usage = monitor.SnapshotUsage();
+        Assert.Equal(27160, usage.TokensIn);
+        Assert.Equal(4, usage.TokensOut);
+        Assert.Equal(15092, usage.CacheReadTokens);
+        Assert.Equal(12066, usage.CacheCreationTokens);
+        Assert.False(monitor.Arrested);
+
+        // A second turn with same cache state and 4000 output tokens crosses 30k budget
+        const string secondLine = """
+            {"type":"assistant","message":{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":27158,"output_tokens":4000,"service_tier":"standard"}}}
+            """;
+        monitor.OnStdoutLine(secondLine);
+        Assert.True(monitor.Arrested);
+    }
+
+    [Fact]
+    public void Same_turn_sequence_on_claude_and_agy_crosses_at_comparable_real_consumption()
+    {
+        // #1623 / F1: both vendors evaluate against the same quantity: context level + summed output.
+        // A 3-turn sequence on ~25k context with 500 output tokens/turn reaches ~26.5k total on both.
+        var claudeMonitor = new TokenBudgetMonitor(budget: 26_000, new ClaudeUsageParser());
+        var agyMonitor = new TokenBudgetMonitor(budget: 26_000, new AgyUsageParser());
+
+        // Turn 1: ~25k prompt, 500 output
+        claudeMonitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":25000,"output_tokens":500,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}""");
+        agyMonitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"DONE","usage":{"input_tokens":25000,"output_tokens":500,"cache_read_tokens":0}}}""");
+
+        Assert.False(claudeMonitor.Arrested);
+        Assert.False(agyMonitor.Arrested);
+
+        // Turn 2: context grows slightly to 25100, 400 output -> total 25100 + 900 = 26000 >= 26000 -> both arrest!
+        claudeMonitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":400,"cache_creation_input_tokens":0,"cache_read_input_tokens":25000}}}""");
+        agyMonitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"DONE","usage":{"input_tokens":25100,"output_tokens":400,"cache_read_tokens":0}}}""");
+
+        Assert.True(claudeMonitor.Arrested);
+        Assert.True(agyMonitor.Arrested);
+        Assert.Equal(25100, claudeMonitor.SnapshotUsage().TokensIn);
+        Assert.Equal(900, claudeMonitor.SnapshotUsage().TokensOut);
+        Assert.Equal(25100, agyMonitor.SnapshotUsage().TokensIn);
+        Assert.Equal(900, agyMonitor.SnapshotUsage().TokensOut);
     }
 
     [Fact]

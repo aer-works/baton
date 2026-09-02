@@ -672,6 +672,22 @@ public static class MutationInterface
                 {
                     foreach (var (executionId, exit) in crashRecovery.ToClassify)
                     {
+                        // #1623 / F2: an execution carrying an unmatched VerifyStarted must NOT settle by
+                        // classification (which would see exit 0 with contract satisfied and append
+                        // ExecutionSucceeded, failing open). Replaying a verify subprocess across an engine
+                        // restart belongs only to live dispatch; here we settle Indeterminate via VerifyFailed.
+                        if (state.UnmatchedVerifyExecutionIds.Contains(executionId))
+                        {
+                            await eventLogWriter.AppendAsync(
+                                new FlowEvent.VerifyFailed(
+                                    executionId,
+                                    FailingMembers: null,
+                                    Tail: "verify did not complete across an engine restart",
+                                    Kind: VerifyFailedKind.EngineRestart),
+                                ioCancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
                         var request = acceptedRequestByExecutionId[executionId];
                         var contract = GetContractForClassification(request, workerBindings);
                         var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, executionId);
@@ -1350,7 +1366,7 @@ public static class MutationInterface
             {
                 await eventLogWriter.AppendAsync(new FlowEvent.VerifyStarted(prepared.Request.ExecutionId), CancellationToken.None)
                     .ConfigureAwait(false);
-                var verifyOutcome = await VerifyRunner.RunAsync(verifyTask, binding.Target.WorkingDirectory, CancellationToken.None)
+                var verifyOutcome = await VerifyRunner.RunAsync(verifyTask, binding.Target.WorkingDirectory, dispatchCancellationToken)
                     .ConfigureAwait(false);
                 if (verifyOutcome.Passed)
                 {
@@ -1363,7 +1379,11 @@ public static class MutationInterface
                     // execution -- no FlowEvent.ExecutionSucceeded, no ZeroOutputsTripwire check, the
                     // step settles Indeterminate via StateProjector.ApplyIndeterminate instead.
                     await eventLogWriter.AppendAsync(
-                        new FlowEvent.VerifyFailed(prepared.Request.ExecutionId, verifyOutcome.FailingMembers, verifyOutcome.Tail),
+                        new FlowEvent.VerifyFailed(
+                            prepared.Request.ExecutionId,
+                            verifyOutcome.FailingMembers,
+                            verifyOutcome.Tail,
+                            verifyOutcome.Kind ?? VerifyFailedKind.GatesFailed),
                         CancellationToken.None).ConfigureAwait(false);
                     return;
                 }

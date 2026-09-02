@@ -105,11 +105,12 @@ public static class StateProjector
                     state.RetryDelayMsByStepId.Remove(acceptedStepId);
                     state.RetryScheduledForExecutionIdByStepId.Remove(acceptedStepId);
 
-                    // #1586 S1: a fresh dispatch reopens a foreclosed step — a foreclosure blocks
-                    // MayRetry, not admission, and this is the same "the pump is dispatching it, so
-                    // whatever blocked it is moot" reasoning the three clears above already rest on.
-                    // Never permanent, per the state-truth design's own ruling on #1586.
+                    // #1586 S1 / #1623 F5: a fresh dispatch reopens a foreclosed or indeterminate step —
+                    // a foreclosure/indeterminate state blocks MayRetry, not admission, and this is the
+                    // same "the pump is dispatching it, so whatever blocked it is moot" reasoning the
+                    // clears above already rest on.
                     state.RetryForeclosedStepIds.Remove(acceptedStepId);
+                    state.IndeterminateReasonByStepId.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -119,6 +120,7 @@ public static class StateProjector
                 break;
 
             case FlowEvent.ExecutionSucceeded succeeded:
+                state.UnmatchedVerifyExecutionIds.Remove(succeeded.ExecutionId);
                 state.SucceededExecutionIds.Add(succeeded.ExecutionId);
                 state.TerminalStatusByExecutionId[succeeded.ExecutionId] = StepStatus.Succeeded;
                 if (state.StepIdByExecutionId.TryGetValue(succeeded.ExecutionId, out var succeededStepId))
@@ -134,6 +136,7 @@ public static class StateProjector
                 break;
 
             case FlowEvent.ExecutionFailed failed:
+                state.UnmatchedVerifyExecutionIds.Remove(failed.ExecutionId);
                 state.TerminalStatusByExecutionId[failed.ExecutionId] = StepStatus.Failed;
                 if (state.StepIdByExecutionId.TryGetValue(failed.ExecutionId, out var failedStepId))
                 {
@@ -154,6 +157,7 @@ public static class StateProjector
                 break;
 
             case FlowEvent.ExecutionCancelled cancelled:
+                state.UnmatchedVerifyExecutionIds.Remove(cancelled.ExecutionId);
                 state.TerminalStatusByExecutionId[cancelled.ExecutionId] = StepStatus.Cancelled;
 
                 // #1563: a park-abort settles a Failed, quota-parked execution as Cancelled (the
@@ -280,11 +284,21 @@ public static class StateProjector
 
                 break;
 
+            case FlowEvent.VerifyStarted verifyStarted:
+                state.UnmatchedVerifyExecutionIds.Add(verifyStarted.ExecutionId);
+                break;
+
+            case FlowEvent.VerifyPassed verifyPassed:
+                state.UnmatchedVerifyExecutionIds.Remove(verifyPassed.ExecutionId);
+                break;
+
             case FlowEvent.VerifyFailed verifyFailed:
+                state.UnmatchedVerifyExecutionIds.Remove(verifyFailed.ExecutionId);
                 ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed));
                 break;
 
             case FlowEvent.ExecutionArrested arrested:
+                state.UnmatchedVerifyExecutionIds.Remove(arrested.ExecutionId);
                 ApplyIndeterminate(state, arrested.ExecutionId, DescribeArrest(arrested));
                 break;
 
@@ -304,8 +318,6 @@ public static class StateProjector
 
             case FlowEvent.ExecutionRequestRejected:
             case FlowEvent.ZeroOutputsDespiteSubstantialWork:
-            case FlowEvent.VerifyStarted:
-            case FlowEvent.VerifyPassed:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
                 break;
         }
@@ -341,10 +353,15 @@ public static class StateProjector
 
     private static string DescribeVerifyFailure(FlowEvent.VerifyFailed verifyFailed)
     {
-        var members = verifyFailed.FailingMembers is { Count: > 0 }
-            ? $" ({string.Join(", ", verifyFailed.FailingMembers)})"
-            : string.Empty;
-        return $"Verify failed{members} — awaiting conductor resolution.";
+        return verifyFailed.Kind switch
+        {
+            VerifyFailedKind.EngineRestart => "Verify did not complete across an engine restart — awaiting conductor resolution.",
+            VerifyFailedKind.TimedOut => "Verify timed out — awaiting conductor resolution.",
+            VerifyFailedKind.Cancelled => "Verify cancelled — awaiting conductor resolution.",
+            _ => verifyFailed.FailingMembers is { Count: > 0 }
+                ? $"Verify failed ({string.Join(", ", verifyFailed.FailingMembers)}) — awaiting conductor resolution."
+                : "Verify failed — awaiting conductor resolution.",
+        };
     }
 
     private static string DescribeArrest(FlowEvent.ExecutionArrested arrested)
@@ -424,12 +441,17 @@ public static class StateProjector
             .Where(executionId => !state.TerminalStatusByExecutionId.ContainsKey(executionId))
             .ToList();
 
+        var unmatchedVerifyExecutionIds = state.UnmatchedVerifyExecutionIds
+            .Where(executionId => !state.TerminalStatusByExecutionId.ContainsKey(executionId))
+            .ToList();
+
         return new FlowState(
             snapshot.WorkflowDefinitionSnapshotId,
             steps,
             workflowStatus,
             pendingStepLessExecutions,
-            unfulfilledCancellationRequestExecutionIds);
+            unfulfilledCancellationRequestExecutionIds,
+            unmatchedVerifyExecutionIds);
     }
 
     private static WorkflowStatus DeriveWorkflowStatus(

@@ -327,6 +327,9 @@ public static class WorkflowStatusProjector
                         FlowEvent.ExecutionRequestAccepted accepted => accepted.Request.ExecutionId.Value,
                         FlowEvent.ExecutionSucceeded succeeded => succeeded.ExecutionId.Value,
                         FlowEvent.ExecutionFailed failed => failed.ExecutionId.Value,
+                        FlowEvent.ExecutionCancelled cancelled => cancelled.ExecutionId.Value,
+                        FlowEvent.ExecutionArrested arrested => arrested.ExecutionId.Value,
+                        FlowEvent.VerifyFailed verifyFailed => verifyFailed.ExecutionId.Value,
                         _ => null,
                     };
                     break;

@@ -79,6 +79,11 @@ public class ProjectionCheckpointTests
         {
             Assert.Equal(expected.CancellationRequestedExecutionIds[i], actual.CancellationRequestedExecutionIds[i]);
         }
+        Assert.Equal(expected.UnmatchedVerifyExecutionIds.Count, actual.UnmatchedVerifyExecutionIds.Count);
+        for (int i = 0; i < expected.UnmatchedVerifyExecutionIds.Count; i++)
+        {
+            Assert.Equal(expected.UnmatchedVerifyExecutionIds[i], actual.UnmatchedVerifyExecutionIds[i]);
+        }
     }
 
     private static void AssertStepStateEqual(StepState expected, StepState actual)
@@ -102,6 +107,7 @@ public class ProjectionCheckpointTests
         Assert.Equal(expected.LatestCapturedResponseFile, actual.LatestCapturedResponseFile);
         Assert.Equal(expected.LatestUnsatisfiedOutputNames, actual.LatestUnsatisfiedOutputNames);
         Assert.Equal(expected.RetryForeclosed, actual.RetryForeclosed);
+        Assert.Equal(expected.IndeterminateReason, actual.IndeterminateReason);
         Assert.Equal(expected.UpstreamExecutionIds.Count, actual.UpstreamExecutionIds.Count);
         foreach (var (k, v) in expected.UpstreamExecutionIds)
         {

@@ -83,8 +83,7 @@ an ambiguous captured-response outcome does (spec/baton.md §3).
 
 ### The per-execution token budget (#1623)
 
-Every dispatch is watched against a token budget (per-role defaults in `spec/baton.md` §3),
-`--token-budget` overrides per dispatch, and every other role runs unwatched.
+`implement`/`review`/`advise` carry default budgets; every other role runs unwatched unless `--token-budget` is passed.
 Usage is read incrementally from the vendor's own `stream-json` output as it arrives, not just the
 terminal line, so a poll loop or a runaway tool-call sequence is caught mid-flight rather than after
 the fact. Crossing the budget arrests the execution (cancels it, never lets it keep running) and

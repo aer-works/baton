@@ -26,6 +26,7 @@ public sealed class VerifyRunnerTests
             "cmd", ["/c", "echo something went wrong & exit 1"], workingDirectory: null, CancellationToken.None);
 
         Assert.False(outcome.Passed);
+        Assert.Equal(Baton.Domain.VerifyFailedKind.GatesFailed, outcome.Kind);
         Assert.NotNull(outcome.Tail);
         Assert.Contains("something went wrong", outcome.Tail);
     }
@@ -38,6 +39,7 @@ public sealed class VerifyRunnerTests
             "cmd", ["/c", "echo GATES: FAIL 2 of 25 -- fmt-check, lint & exit 1"], workingDirectory: null, CancellationToken.None);
 
         Assert.False(outcome.Passed);
+        Assert.Equal(Baton.Domain.VerifyFailedKind.GatesFailed, outcome.Kind);
         Assert.NotNull(outcome.FailingMembers);
         Assert.Equal(["fmt-check", "lint"], outcome.FailingMembers);
     }
@@ -49,6 +51,7 @@ public sealed class VerifyRunnerTests
             "cmd", ["/c", "echo unstructured failure output & exit 1"], workingDirectory: null, CancellationToken.None);
 
         Assert.False(outcome.Passed);
+        Assert.Equal(Baton.Domain.VerifyFailedKind.GatesFailed, outcome.Kind);
         Assert.Null(outcome.FailingMembers);
     }
 
@@ -63,6 +66,7 @@ public sealed class VerifyRunnerTests
         var outcome = await VerifyRunner.RunProcessAsync("cmd", ["/c", command], workingDirectory: null, CancellationToken.None);
 
         Assert.False(outcome.Passed);
+        Assert.Equal(Baton.Domain.VerifyFailedKind.GatesFailed, outcome.Kind);
         Assert.NotNull(outcome.Tail);
         Assert.True(outcome.Tail!.Length <= 4000);
     }
@@ -75,5 +79,18 @@ public sealed class VerifyRunnerTests
 
         Assert.False(outcome.Passed);
         Assert.NotNull(outcome.Tail);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_verify_reports_Cancelled_kind()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var outcome = await VerifyRunner.RunProcessAsync(
+            "cmd", ["/c", "exit 0"], workingDirectory: null, cts.Token);
+
+        Assert.False(outcome.Passed);
+        Assert.Equal(Baton.Domain.VerifyFailedKind.Cancelled, outcome.Kind);
     }
 }

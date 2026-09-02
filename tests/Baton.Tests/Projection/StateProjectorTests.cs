@@ -670,6 +670,26 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void A_fresh_ExecutionRequestAccepted_clears_IndeterminateReason_on_an_indeterminate_step()
+    {
+        // #1623 / F5: a fresh dispatch clears IndeterminateReason alongside RetryForeclosedStepIds
+        var executionId = new ExecutionId("exec-1");
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Null(architect.IndeterminateReason);
+        Assert.False(architect.RetryForeclosed);
+    }
+
+    [Fact]
     public void RetryWithRevision_reopens_a_foreclosed_step()
     {
         var executionId = new ExecutionId("exec-1");
@@ -1295,6 +1315,27 @@ public class StateProjectorTests
         var architect = StepFor(state, Architect);
 
         Assert.False(Baton.Scheduling.RetryEngine.MayRetry(architect, new RetryPolicy(MaxAttempts: 5)));
+    }
+
+    [Theory]
+    [InlineData(VerifyFailedKind.EngineRestart, "Verify did not complete across an engine restart — awaiting conductor resolution.")]
+    [InlineData(VerifyFailedKind.TimedOut, "Verify timed out — awaiting conductor resolution.")]
+    [InlineData(VerifyFailedKind.Cancelled, "Verify cancelled — awaiting conductor resolution.")]
+    public void VerifyFailed_with_non_gate_kind_records_corresponding_IndeterminateReason(
+        VerifyFailedKind kind, string expectedReason)
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, null, "tail", kind),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.Equal(expectedReason, architect.IndeterminateReason);
     }
 
     [Fact]

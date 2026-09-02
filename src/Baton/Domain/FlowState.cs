@@ -33,7 +33,8 @@ public sealed record FlowState(
     IReadOnlyList<StepState> Steps,
     WorkflowStatus Status = WorkflowStatus.Running,
     IReadOnlyList<StepLessExecutionState>? StepLessExecutions = null,
-    IReadOnlyList<ExecutionId>? CancellationRequestedExecutionIds = null)
+    IReadOnlyList<ExecutionId>? CancellationRequestedExecutionIds = null,
+    IReadOnlyList<ExecutionId>? UnmatchedVerifyExecutionIds = null)
 {
     /// <summary>Defaults to empty rather than <c>null</c> for call sites that omit the constructor argument.</summary>
     public IReadOnlyList<StepLessExecutionState> StepLessExecutions { get; init; } = StepLessExecutions ?? [];
@@ -41,6 +42,10 @@ public sealed record FlowState(
     /// <summary>Defaults to empty rather than <c>null</c> for call sites that omit the constructor argument.</summary>
     public IReadOnlyList<ExecutionId> CancellationRequestedExecutionIds { get; init; } =
         CancellationRequestedExecutionIds ?? [];
+
+    /// <summary>#1623 / F2: executions with an unmatched VerifyStarted, for crash recovery reconciliation.</summary>
+    public IReadOnlyList<ExecutionId> UnmatchedVerifyExecutionIds { get; init; } =
+        UnmatchedVerifyExecutionIds ?? [];
 }
 
 /// <summary>

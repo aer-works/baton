@@ -380,6 +380,198 @@ public class MutationInterfaceTests
         }
     }
 
+    [Fact]
+    public async Task StartWorkflowAsync_settles_Indeterminate_when_VerifyPixiTask_fails()
+    {
+        // #1623 / F6: a failing verify task appends VerifyFailed, does NOT append ExecutionSucceeded,
+        // and settles the step Indeterminate.
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-fail"),
+                new WorkflowTemplateId("verify-fail"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    WriteFile("plan", "architect") with { WorkingDirectory = RepoRoot() },
+                    TimeSpan.FromSeconds(30),
+                    VerifyPixiTask: "this-task-definitely-does-not-exist"),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-fail"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Failed, architect.Status);
+            Assert.NotNull(architect.IndeterminateReason);
+            Assert.True(architect.RetryForeclosed);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events.OfType<FlowEvent.VerifyStarted>());
+            var verifyFailed = Assert.Single(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Equal(VerifyFailedKind.GatesFailed, verifyFailed.Kind);
+            Assert.Empty(events.OfType<FlowEvent.VerifyPassed>());
+            Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_skips_verify_when_execution_classification_is_failed()
+    {
+        // #1623 / F6: a failed worker never triggers verify
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-skip"),
+                new WorkflowTemplateId("verify-skip"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    ExitCleanlyWithoutWriting() with { WorkingDirectory = RepoRoot() },
+                    TimeSpan.FromSeconds(30),
+                    VerifyPixiTask: "buildlock-selftest"),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-skip"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Failed, architect.Status);
+            Assert.Null(architect.IndeterminateReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.VerifyStarted>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyPassed>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Single(events.OfType<FlowEvent.ExecutionFailed>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_does_not_spawn_verify_when_role_has_no_VerifyPixiTask()
+    {
+        // #1623 / F6: a role without VerifyPixiTask does not spawn verify
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-none"),
+                new WorkflowTemplateId("verify-none"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    WriteFile("plan", "architect"),
+                    TimeSpan.FromSeconds(30),
+                    VerifyPixiTask: null),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-none"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Succeeded, architect.Status);
+            Assert.Null(architect.IndeterminateReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.VerifyStarted>());
+            Assert.Single(events.OfType<FlowEvent.ExecutionSucceeded>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_cancelling_during_verify_settles_Indeterminate_with_Cancelled_kind()
+    {
+        // #1623 / F4: cancelling while verify is running settles Indeterminate with Kind == Cancelled
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-cancel"),
+                new WorkflowTemplateId("verify-cancel"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    WriteFile("plan", "architect") with { WorkingDirectory = RepoRoot() },
+                    TimeSpan.FromSeconds(30),
+                    VerifyPixiTask: "buildlock-selftest"),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            using var cts = new CancellationTokenSource();
+            var dispatcher = new CancellingAtCompletionDispatcher(writer, cts);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-cancel"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: cts.Token);
+
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Failed, architect.Status);
+            Assert.NotNull(architect.IndeterminateReason);
+            Assert.Contains("cancelled", architect.IndeterminateReason, StringComparison.OrdinalIgnoreCase);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events.OfType<FlowEvent.VerifyStarted>());
+            var verifyFailed = Assert.Single(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Equal(VerifyFailedKind.Cancelled, verifyFailed.Kind);
+            Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
@@ -486,6 +678,18 @@ public class MutationInterfaceTests
             // The binding's own exception type, the shape a missing binary or a bad working
             // directory actually surfaces as (#747's review, finding 3).
             throw new Baton.Core.BatonException(Baton.Core.BatonErrorCode.SpawnFailed);
+        }
+    }
+
+    private sealed class CancellingAtCompletionDispatcher(FlowEventLogWriter writer, CancellationTokenSource cts) : ICoreDispatcher
+    {
+        private readonly CoreDispatcher _inner = new(writer);
+
+        public async Task<CoreDispatchResult> DispatchAsync(ExecutionRequest request, CoreDispatchTarget target, CancellationToken cancellationToken = default)
+        {
+            var result = await _inner.DispatchAsync(request, target, cancellationToken).ConfigureAwait(false);
+            cts.Cancel();
+            return result;
         }
     }
 }
