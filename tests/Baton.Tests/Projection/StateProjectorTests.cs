@@ -1482,6 +1482,81 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void VerifyFailed_records_the_failing_members_own_output_as_IndeterminateVerifyTail()
+    {
+        // #1701: baton status --json must be able to surface the failing member's own captured
+        // output, not only the one-line member-name summary IndeterminateReason already carries.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["tool-refresh-selftest"], "FAILED: could not write current pointer"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal("FAILED: could not write current pointer", architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void ExecutionArrested_leaves_IndeterminateVerifyTail_null_never_fabricated()
+    {
+        // #1701: an arrest's IndeterminateReason is already the full diagnostic (DescribeArrest) --
+        // nothing truncated to recover, so this must stay null rather than echoing the reason text.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000), ["manage_task", "manage_task"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.NotNull(architect.IndeterminateReason);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void A_fresh_ExecutionRequestAccepted_clears_IndeterminateVerifyTail_alongside_IndeterminateReason()
+    {
+        // The reopen path (a future producer minting a fresh execution for a still-Indeterminate
+        // step) -- CaptureResolved and the Arrested-stays-null path each have their own test; this is
+        // the third clearing site (StateProjector.cs, ExecutionRequestAccepted's reopen arm).
+        var executionId = new ExecutionId("exec-1");
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void CaptureResolved_clears_IndeterminateVerifyTail_alongside_IndeterminateReason()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.CaptureResolved(Architect, executionId, Accepted: false),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
     public void ExecutionArrested_settles_the_step_Failed_and_records_an_IndeterminateReason()
     {
         var executionId = new ExecutionId("exec-1");
@@ -1681,9 +1756,13 @@ public class StateProjectorTests
 
         var (freshState, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot());
         Assert.NotNull(StepFor(freshState, Architect).IndeterminateReason);
+        // #1701: IndeterminateVerifyTailByStepId is a third trailing dictionary added the same way --
+        // same DeepCopy landmine, so it gets the same fresh/resumed round-trip proof.
+        Assert.Equal("tail", StepFor(freshState, Architect).IndeterminateVerifyTail);
 
         var resumedState = StateProjector.Project(events, TwoStepSnapshot(), checkpoint);
         Assert.NotNull(StepFor(resumedState, Architect).IndeterminateReason);
+        Assert.Equal("tail", StepFor(resumedState, Architect).IndeterminateVerifyTail);
     }
 
     [Fact]

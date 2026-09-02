@@ -58,7 +58,8 @@ public sealed record ProjectionCheckpointState(
     HashSet<StepId>? IndeterminateAwaitingResolutionStepIds = null,
     Dictionary<StepId, string?>? IndeterminateReasonByStepId = null,
     HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null,
-    Dictionary<StepId, IndeterminateProducer?>? IndeterminateProducerByStepId = null)
+    Dictionary<StepId, IndeterminateProducer?>? IndeterminateProducerByStepId = null,
+    Dictionary<StepId, string?>? IndeterminateVerifyTailByStepId = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -115,6 +116,16 @@ public sealed record ProjectionCheckpointState(
     /// applies.
     /// </summary>
     public Dictionary<StepId, IndeterminateProducer?> IndeterminateProducerByStepId { get; init; } = IndeterminateProducerByStepId ?? new();
+
+    /// <summary>
+    /// #1701: a companion to <see cref="IndeterminateReasonByStepId"/> for the
+    /// <see cref="Domain.IndeterminateProducer.VerifyFailed"/> producer specifically — the failing
+    /// member(s)' own captured output (<see cref="FlowEvent.VerifyFailed.Tail"/>), not the one-line
+    /// member-name summary <see cref="IndeterminateReasonByStepId"/> already carries. Same
+    /// trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above, and the
+    /// same <see cref="DeepCopy"/> load-bearing note applies.
+    /// </summary>
+    public Dictionary<StepId, string?> IndeterminateVerifyTailByStepId { get; init; } = IndeterminateVerifyTailByStepId ?? new();
 
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
@@ -177,5 +188,6 @@ public sealed record ProjectionCheckpointState(
         new HashSet<StepId>(IndeterminateAwaitingResolutionStepIds),
         new Dictionary<StepId, string?>(IndeterminateReasonByStepId),
         new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds),
-        new Dictionary<StepId, IndeterminateProducer?>(IndeterminateProducerByStepId));
+        new Dictionary<StepId, IndeterminateProducer?>(IndeterminateProducerByStepId),
+        new Dictionary<StepId, string?>(IndeterminateVerifyTailByStepId));
 }

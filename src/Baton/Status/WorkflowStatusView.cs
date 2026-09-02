@@ -111,7 +111,18 @@ public sealed record WorkflowStatusStepView(
     // which both VerifyFailed/Arrested AND a not-yet-indeterminate step share as null.
     [property: JsonPropertyName("indeterminateProducer")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? IndeterminateProducerKind = null);
+    string? IndeterminateProducerKind = null,
+    // #1701: StepState.IndeterminateVerifyTail -- the failing gate member(s)' own captured output,
+    // gated the same way IndeterminateProducerKind is above (present only for a currently-Failed
+    // step). Before this, a verify flake's own output lived only in flow.jsonl's raw event, never in
+    // `baton status --json`; this is the field a conductor reads instead of reconstructing the room
+    // by hand. In practice only non-null when IndeterminateProducerKind is VerifyFailed --
+    // ApplyIndeterminate (StateProjector.cs) writes null for every other producer, since an Arrested
+    // step's Error string is already the full diagnostic -- but that is enforced there, not by this
+    // gate; this field carries whatever StepState.IndeterminateVerifyTail records.
+    [property: JsonPropertyName("verifyTail")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? VerifyTail = null);
 
 /// <summary>
 /// The one JSON object <c>baton status --json</c> writes to stdout (#1356's machine completion
@@ -288,11 +299,12 @@ public static class WorkflowStatusProjector
             string? capturedResponseFile = step.Status == StepStatus.Failed ? step.LatestCapturedResponseFile : null;
             IReadOnlyList<string>? unsatisfiedOutputs = step.Status == StepStatus.Failed ? step.LatestUnsatisfiedOutputNames : null;
             string? indeterminateProducerKind = step.Status == StepStatus.Failed ? step.IndeterminateProducer?.ToString() : null;
+            string? verifyTail = step.Status == StepStatus.Failed ? step.IndeterminateVerifyTail : null;
 
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
                 usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible,
-                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind));
+                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind, verifyTail));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))

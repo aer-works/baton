@@ -1,5 +1,7 @@
+using System.Text.RegularExpressions;
 using Baton.Core;
 using Baton.Domain;
+using System.Linq;
 
 namespace Baton.Mutation;
 
@@ -7,6 +9,8 @@ namespace Baton.Mutation;
 /// The result of one <see cref="VerifyRunner.RunAsync"/> call (#1623). <see cref="Passed"/> mirrors the
 /// verify command's own exit code; <see cref="FailingMembers"/>/<see cref="Tail"/> are populated only
 /// when it fails, and only when the summary line's shape is recognized — never fabricated.
+/// <see cref="Tail"/> is each failing member's OWN output (#1701), not a blind tail of the whole
+/// combined stream — see <see cref="VerifyRunner.BuildTail"/>.
 /// <see cref="Kind"/> distinguishes gate breakage from timeouts, cancellations, or engine restarts (F3).
 /// </summary>
 public sealed record VerifyOutcome(
@@ -41,12 +45,36 @@ public static class VerifyRunner
     private const string FailingMembersSeparator = " -- ";
 
     /// <summary>
-    /// How much of the verify command's combined stdout+stderr a failure keeps, tail-first — the same
-    /// "bounded tail, never a full log dump" shape <c>OutcomeClassifier.MaxStderrTailInReason</c>
-    /// already applies to a worker's own stderr, scaled up because a gate run's own output is
-    /// naturally longer than one process's stderr.
+    /// The TOTAL bound on <see cref="VerifyOutcome.Tail"/> — the same "bounded tail, never a full log
+    /// dump" shape <c>OutcomeClassifier.MaxStderrTailInReason</c> already applies to a worker's own
+    /// stderr, scaled up because a gate run's own output is naturally longer than one process's
+    /// stderr. #1701 changed WHICH bytes count toward it (each failing member's own block, keyed off
+    /// its marker line, rather than a blind cut of the whole combined stream that could drop a failing
+    /// member's diagnostic text once other members' one-line pass markers followed it) but not the
+    /// total: <see cref="BuildTail"/> splits this budget evenly across however many members failed and
+    /// clamps the joined result, so N failing members never yield N times this many characters.
     /// </summary>
     private const int MaxTailChars = 4000;
+
+    /// <summary>
+    /// The per-member summary line <c>tools/gates/gates.py</c>'s <c>run_gates</c>/<c>join_gates</c>
+    /// print after EVERY member, pass or fail: <c>"  pass  name  (exit 0)"</c> / <c>"  FAIL  name
+    /// (exit 1)"</c>. Both status words are exactly 4 characters, so the <c>{status,&gt;4}</c>
+    /// right-alignment in gates.py never adds padding — the shape is fixed two-space-delimited
+    /// fields. This is what lets #1701 key a failing member's own block out of the combined stream
+    /// instead of guessing from position.
+    /// Known narrow gap (#1701 review): <c>gates-selftest</c> is itself an OVERLAP member whose own
+    /// selftest fabricates lines in exactly this shape (<c>tools/gates/gates.py</c>'s own
+    /// <c>run_gates</c>/<c>join_gates</c> control-arm fixtures) to prove <c>join_gates</c> discriminates
+    /// a failing gate. If <c>gates-selftest</c> itself fails under <c>gates-quiet</c>, those fabricated
+    /// lines segment inside its own block, so this member's tail can start after its last fabricated
+    /// marker rather than at the top of its real output. Affects only that one member's own diagnostic
+    /// completeness, never <see cref="ParseFailingMembers"/>'s verdict; no clean fix without changing
+    /// gates.py's fixture shape, so left as a known gap rather than a redesign.
+    /// </summary>
+    private static readonly Regex MemberMarkerLine = new(
+        @"^  (?<status>pass|FAIL)  (?<name>\S+)  \(exit (?<code>-?\d+)\) *\r?$",
+        RegexOptions.Multiline | RegexOptions.Compiled);
 
     public static Task<VerifyOutcome> RunAsync(
         string pixiTask, string? workingDirectory, CancellationToken cancellationToken)
@@ -132,9 +160,64 @@ public static class VerifyRunner
 
         var text = output.ToString();
         var failingMembers = ParseFailingMembers(text);
-        var tail = text.Length > MaxTailChars ? text[^MaxTailChars..] : text;
+        var tail = BuildTail(text, failingMembers);
         return new VerifyOutcome(false, failingMembers, tail, Kind: VerifyFailedKind.GatesFailed);
     }
+
+    /// <summary>
+    /// The failing member(s)' own output, not a blind tail of the whole combined stream (#1701).
+    /// Segments <paramref name="output"/> on <see cref="MemberMarkerLine"/> — each segment is one
+    /// member's own captured output followed by its summary line — and returns the segment(s) for
+    /// members named in <paramref name="failingMembers"/> with a FAIL marker. The JOINED result stays
+    /// bounded to <see cref="MaxTailChars"/> overall (never one-member-worth-of-bound times N members)
+    /// by splitting that budget evenly across however many members failed, each kept tail-first.
+    /// Falls back to a whole-stream tail (the pre-#1701 behavior) when no marker line is recognized at
+    /// all, matching <see cref="ParseFailingMembers"/>'s own shape-drift fallback: degrade detail,
+    /// never fabricate structure that is not there.
+    /// </summary>
+    private static string BuildTail(string output, IReadOnlyList<string>? failingMembers)
+    {
+        if (failingMembers is not { Count: > 0 })
+        {
+            return WholeStreamTail(output);
+        }
+
+        var matches = MemberMarkerLine.Matches(output);
+        if (matches.Count == 0)
+        {
+            return WholeStreamTail(output);
+        }
+
+        var wanted = new HashSet<string>(failingMembers, StringComparer.Ordinal);
+        var blocks = new List<string>();
+        var blockStart = 0;
+        foreach (Match match in matches)
+        {
+            var blockEnd = match.Index + match.Length;
+            if (match.Groups["status"].Value == "FAIL" && wanted.Contains(match.Groups["name"].Value))
+            {
+                blocks.Add(output[blockStart..blockEnd]);
+            }
+
+            blockStart = blockEnd;
+        }
+
+        if (blocks.Count == 0)
+        {
+            return WholeStreamTail(output);
+        }
+
+        var perMemberBudget = Math.Max(1, MaxTailChars / blocks.Count);
+        var sections = blocks.Select(block => block.Length > perMemberBudget ? block[^perMemberBudget..] : block);
+        var joined = string.Join("\n", sections);
+        // Rounding (MaxTailChars / blocks.Count truncates) plus the join separators themselves can
+        // still push the total slightly over budget -- one final whole-result clamp closes that gap
+        // rather than leaving the per-section cap as an approximation of the real bound.
+        return joined.Length > MaxTailChars ? joined[^MaxTailChars..] : joined;
+    }
+
+    private static string WholeStreamTail(string output) =>
+        output.Length > MaxTailChars ? output[^MaxTailChars..] : output;
 
     private static IReadOnlyList<string>? ParseFailingMembers(string output)
     {

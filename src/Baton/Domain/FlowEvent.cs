@@ -200,8 +200,10 @@ public abstract record FlowEvent
     /// </summary>
     /// <param name="FailingMembers">Which gate members failed, by name — empty/null if the verify
     /// command reports no per-member breakdown.</param>
-    /// <param name="Tail">A bounded tail of the verify command's own output, for a human to read
-    /// without re-running it.</param>
+    /// <param name="Tail">Each failing member's OWN output, bounded per-member (#1701) — not a
+    /// blind tail of the whole combined run, which could cut a failing member's diagnostic text
+    /// once other members' pass markers follow it. Falls back to a whole-stream tail only when no
+    /// per-member summary line is recognized at all.</param>
     /// <param name="Kind">#1623 / F3: whether the failure was broken gates, a timeout, a cancellation, or an engine restart.</param>
     public sealed record VerifyFailed(
         ExecutionId ExecutionId,
