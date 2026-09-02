@@ -786,10 +786,22 @@ ago — no scheduler" rather than a live countdown), never this field. A far-fut
 not fixed here) is rendered, not fixed, by the same chip — the park's own crash-on-dispatch bug is
 tracked separately. In practice only one vendor path ever records an obligation to gate on: the agy
 duration-parse path (`Resets in …` → `AgyWorkerAdapter`) is what sets `RetryNotBefore` on an
-`ExhaustedUntil` park today; claude's `credits_required` park records none, because #1115 forbids
-fabricating a reset instant the vendor never actually reported. A claude park therefore still
-surfaces the `"ExhaustedUntil"` `failureKind`, just with `exhaustedUntil` absent and the chip showing
-no time.
+`ExhaustedUntil` park today; claude's `credits_required` park records none. **Corrected (#1609):**
+that is not "the vendor never reports a reset instant" — `claude -p "/usage"`/`/cost` reliably
+report real, headless reset instants for the session and weekly windows (decision 0026,
+`docs/vendor-capabilities.md`), so the claim as stated in the prior revision of this paragraph
+overreached. What is actually true is narrower: `ClaudeWorkerAdapter.TryClassifyQuotaExhaustion`
+recognizes only the typed `errorCode == "credits_required"` shape (#1115), and neither that shape
+nor the CLI's own interactive 5-hour-window limit message has ever been captured, live, carrying a
+reset field — every `credits_required` fixture this adapter is tested against is synthetic
+(`ClaudeWorkerAdapterTests.cs`), and #1115's own record calls a real cap hit "unprovokable without a
+real cap". Provoking one deliberately would mean burning most of a subscription window to capture an
+error string, which is an operator spend decision (`CLAUDE.md` "Cost and reversibility are the
+operator's call"), not a default action. So today's null `retryNotBefore` on a claude park is a
+parser-scope and measurement gap, not a vendor limitation — #1115 still forbids fabricating an
+instant nobody has actually observed. A claude park therefore still surfaces the
+`"ExhaustedUntil"` `failureKind`, just with `exhaustedUntil` absent and the chip showing no time,
+until a real capture exists to build a parser against.
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan
