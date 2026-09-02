@@ -136,6 +136,9 @@ public class ExternalDecisionValidatorTests
         Assert.Contains(RoomDirectoryPath, exception.Message, StringComparison.Ordinal);
         Assert.Contains(Critic.Value, exception.Message, StringComparison.Ordinal);
         Assert.Contains("baton resolve", exception.Message, StringComparison.Ordinal);
+        // Review of #1705: the room can hold more than one unresolved capture, and ResolveCommand
+        // refuses a room-level resolve then -- the message must name the execution it already knows.
+        Assert.Contains($"--execution {CriticExecutionId}", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

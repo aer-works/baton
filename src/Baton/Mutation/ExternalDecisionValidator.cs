@@ -62,7 +62,8 @@ public static class ExternalDecisionValidator
             throw new InvalidExternalDecisionException(
                 $"Room '{roomDirectoryPath}', step '{referencedStep.StepId}' is paused with an unresolved " +
                 "indeterminate capture — 'baton decide' refuses until it is resolved. Run 'baton resolve " +
-                $"{roomDirectoryPath} --accept-capture | --reject --reason <text>' first, then 'baton decide'.");
+                $"{roomDirectoryPath} --execution {referencedExecutionId} --accept-capture | --reject --reason <text>' " +
+                "first, then 'baton decide'.");
         }
 
         // Every Paused step was paused by the Pause Engine only for a step declaring PausePoint —
