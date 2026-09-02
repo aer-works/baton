@@ -674,7 +674,8 @@ public class MutationInterfaceTests
                 WorkflowTemplateVersion: 1,
                 Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(3))]);
 
-            const string toolStepLine = """{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"run_command"}}""";
+            // #1686 review F2: DONE, not ACTIVE -- AgyUsageParser.CountToolSteps's own doc has the fixed unit.
+            const string toolStepLine = """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"run_command"}}""";
             var bindings = new Dictionary<string, WorkerBinding>
             {
                 ["architect"] = new WorkerBinding.Process(

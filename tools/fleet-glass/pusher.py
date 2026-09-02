@@ -473,7 +473,7 @@ def _read_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
     return complete.split("\n"), offset + consumed
 
 
-def extract_live_counts(lines: list[str]) -> dict:
+def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -> dict:
     """A tool-call COUNT, plus live token/turn fields for BOTH vendors (#1682 -- agy's `step_update`
     usage was found live during that issue's own evidence gathering; the prior "agy has no usage to
     read" claim recorded here was wrong and is corrected in this same change), tolerant of a torn
@@ -513,12 +513,24 @@ def extract_live_counts(lines: list[str]) -> dict:
         Absent when no line in the batch reports the full trio: never a partial or fabricated
         figure, and never built from `input_tokens` alone (summing that across turns would
         re-count each turn's whole repeated context -- the trap this field exists to avoid).
+
+    `seen_message_ids` (#1686 review F6): claude can split one API response's usage across several
+    consecutive `assistant` events sharing the SAME `message.id` and an IDENTICAL `message.usage`
+    object -- measured against real `.stdout.log` captures (spec/baton.md §3: up to ~60% of
+    usage-bearing lines on a real room are such repeats). Passing the SAME set across every batch this
+    process has ever read for an execution (the caller-owned `live_cache` state,
+    `live_telemetry_for_room` below) dedupes a repeat rather than summing it again; a line with no
+    `message.id` (agy; claude's own terminal line is never read here) always accumulates. `None`
+    (the default) dedupes only within this one call, for a caller with no cross-batch state to thread
+    (a one-shot read, or a test).
     """
     tool_calls = 0
     billed_tokens = 0
     turns = 0
     usage_seen = False
     context = None
+    if seen_message_ids is None:
+        seen_message_ids = set()
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
@@ -536,7 +548,13 @@ def extract_live_counts(lines: list[str]) -> dict:
             if isinstance(content, list):
                 tool_calls += sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
             usage = message.get("usage") if isinstance(message, dict) else None
-            if isinstance(usage, dict):
+            message_id = message.get("id") if isinstance(message, dict) else None
+            # #1686 review F6: a repeated message.id means this usage object was already summed off an
+            # earlier chunk of the SAME API response -- skip it rather than double-counting.
+            already_counted = isinstance(message_id, str) and message_id and message_id in seen_message_ids
+            if isinstance(message_id, str) and message_id:
+                seen_message_ids.add(message_id)
+            if isinstance(usage, dict) and not already_counted:
                 out = usage.get("output_tokens")
                 in_tok = usage.get("input_tokens")
                 cache_creation = usage.get("cache_creation_input_tokens")
@@ -641,6 +659,9 @@ def live_telemetry_for_room(room: dict, live_cache: dict | None = None) -> dict 
     key = f"{room_path}::{execution_id}"
     state = live_cache.setdefault(key, {
         "stdout_offset": 0, "rollover_offset": 0, "counts": {"toolCalls": 0}, "context": None,
+        # #1686 review F6: persists across every batch read for this execution -- a message.id read in
+        # an earlier cycle's batch must still dedupe a repeat that shows up in a LATER cycle's batch.
+        "seen_message_ids": set(),
     })
 
     # #1613 review finding 3: `.stdout.log` rolls over to `.stdout.log.1` at 8 MiB and resets to
@@ -663,11 +684,11 @@ def live_telemetry_for_room(room: dict, live_cache: dict | None = None) -> dict 
             state["rollover_offset"] = 0
         rollover_lines, state["rollover_offset"] = _read_new_lines(rollover_path, state["rollover_offset"])
         if rollover_lines:
-            _apply_live_delta(state, extract_live_counts(rollover_lines))
+            _apply_live_delta(state, extract_live_counts(rollover_lines, state["seen_message_ids"]))
 
     new_lines, state["stdout_offset"] = _read_new_lines(stdout_path, state["stdout_offset"])
     if new_lines:
-        _apply_live_delta(state, extract_live_counts(new_lines))
+        _apply_live_delta(state, extract_live_counts(new_lines, state["seen_message_ids"]))
 
     result = dict(state["counts"])
     if state["context"] is not None:
@@ -2370,6 +2391,27 @@ def _selftest() -> int:
           extract_live_counts([
               json.dumps({"type": "result", "usage": {"output_tokens": 999, "input_tokens": 999}})
           ]) == {"toolCalls": 0})
+
+    # #1686 review F6 -- extract_live_counts's own docstring above has the measured shape this
+    # reproduces; dedupe by message.id closes it.
+    dup_message_lines = [
+        json.dumps({"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 10}}}),
+        json.dumps({"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 10}}}),
+        json.dumps({"type": "assistant", "message": {"id": "msg_2", "usage": {"input_tokens": 50, "output_tokens": 5}}}),
+    ]
+    dup_seen_ids: set = set()
+    dup_counts = extract_live_counts(dup_message_lines, dup_seen_ids)
+    check("billedTokens dedupes a repeated message.id instead of summing it twice",
+          dup_counts.get("billedTokens") == (100 + 10) + (50 + 5))
+    check("turns dedupes the same way", dup_counts.get("turns") == 2)
+
+    # A repeat that arrives in a LATER batch (a later poll cycle) must still dedupe against the SAME
+    # persistent seen_message_ids the caller threads through live_cache's per-execution state.
+    later_batch_counts = extract_live_counts(
+        [json.dumps({"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 10}}})],
+        dup_seen_ids)
+    check("a repeated message.id in a LATER batch (persistent seen-set) still dedupes",
+          "billedTokens" not in later_batch_counts)
 
     check("live_telemetry_for_room is None with no Running step",
           live_telemetry_for_room({"path": "/rooms/x", "steps": [{"id": "s1", "state": "Succeeded"}]}) is None)

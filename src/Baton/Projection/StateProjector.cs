@@ -494,8 +494,13 @@ public static class StateProjector
         // ContextLevelTokens + TokensOut reading for that legacy case only.
         var billed = arrested.Usage?.BilledTokens
             ?? (arrested.Usage?.ContextLevelTokens ?? arrested.Usage?.TokensIn ?? 0) + (arrested.Usage?.TokensOut ?? 0);
+        // #1686 review F8: a null Reason is a pre-#1682 ledger line, which never computed BilledTokens
+        // at all -- the figure above is the OLD level-based reading, not billed tokens, so the legacy
+        // arm must not claim it is. A real TokenBudget arrest (post-#1682) always has BilledTokens set
+        // and keeps the accurate wording.
+        var figureLabel = arrested.Reason is null ? "tokens" : "billed tokens";
         return billed > 0
-            ? $"Execution arrested: token budget exceeded ({billed} billed tokens measured) — awaiting conductor resolution."
+            ? $"Execution arrested: token budget exceeded ({billed} {figureLabel} measured) — awaiting conductor resolution."
             : "Execution arrested: token budget exceeded — awaiting conductor resolution.";
     }
 

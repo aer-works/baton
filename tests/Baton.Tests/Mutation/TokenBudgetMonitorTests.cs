@@ -91,24 +91,89 @@ public sealed class TokenBudgetMonitorTests
     public void A_room_that_never_crosses_the_billed_budget_can_still_be_caught_by_the_tool_step_cap()
     {
         // The other #1682 evidence room never crosses a plausible budget at all (spec/baton.md §3) --
-        // this pins that the cap alone still catches that shape.
+        // this pins that the cap alone still catches that shape. #1686 review F2: agy's cap counts a
+        // REAL tool call only at its terminal (DONE/ERROR) line, not its ACTIVE heartbeat -- each call
+        // here fires both, only the DONE line increments the count.
         var monitor = new TokenBudgetMonitor(budget: 600_000, maxToolSteps: 80, new AgyUsageParser());
 
         for (var i = 0; i < 80; i++)
         {
             monitor.OnStdoutLine(
                 """{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"run_command"}}""");
+            monitor.OnStdoutLine(
+                """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"run_command"}}""");
         }
 
         Assert.False(monitor.Arrested);
 
         monitor.OnStdoutLine(
             """{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"run_command"}}""");
+        monitor.OnStdoutLine(
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"run_command"}}""");
 
         Assert.True(monitor.Arrested);
         Assert.Equal(ArrestReason.ToolStepCap, monitor.ArrestReasonValue);
         Assert.Equal(81, monitor.SnapshotToolStepCount());
         Assert.Null(monitor.SnapshotUsage().BilledTokens);
+    }
+
+    [Fact]
+    public void Agy_tool_step_cap_counts_the_terminal_line_only_not_the_ACTIVE_heartbeat()
+    {
+        // #1686 review F2: the pre-fix unit double-counted (ACTIVE + terminal) each real call. This
+        // pins the fixed unit directly -- 3 ACTIVE-only heartbeats for calls that never reach a
+        // terminal state must not arm a cap of 2.
+        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: 2, new AgyUsageParser());
+
+        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"a"}}""");
+        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"b"}}""");
+        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"c"}}""");
+
+        Assert.False(monitor.Arrested);
+        Assert.Equal(0, monitor.SnapshotToolStepCount());
+
+        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"a"}}""");
+        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"b"}}""");
+        Assert.False(monitor.Arrested);
+        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"ERROR","step_type":"tool","tool_name":"c"}}""");
+
+        Assert.True(monitor.Arrested);
+        Assert.Equal(ArrestReason.ToolStepCap, monitor.ArrestReasonValue);
+        Assert.Equal(3, monitor.SnapshotToolStepCount());
+    }
+
+    [Fact]
+    public void Claude_billed_tokens_dedupe_a_repeated_message_id_instead_of_summing_it_twice()
+    {
+        // #1686 review F6 -- ClaudeUsageParser.TryParseIncrementalUsage's own doc has the measured
+        // shape this reproduces; summing every line without deduping over-counts.
+        var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
+
+        monitor.OnStdoutLine(
+            """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":100,"output_tokens":10}}}""");
+        monitor.OnStdoutLine(
+            """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":100,"output_tokens":10}}}""");
+        monitor.OnStdoutLine(
+            """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":100,"output_tokens":10}}}""");
+        monitor.OnStdoutLine(
+            """{"type":"assistant","message":{"id":"msg_2","usage":{"input_tokens":50,"output_tokens":5}}}""");
+
+        var usage = monitor.SnapshotUsage();
+        Assert.Equal((100 + 10) + (50 + 5), usage.BilledTokens);
+        Assert.Equal(15, usage.TokensOut);
+    }
+
+    [Fact]
+    public void A_claude_usage_line_with_no_message_id_always_accumulates()
+    {
+        // A repeated-but-absent id must never be treated as "already seen" -- only an actual repeated
+        // string dedupes.
+        var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, new ClaudeUsageParser());
+
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":1}}}""");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":1}}}""");
+
+        Assert.Equal(22, monitor.SnapshotUsage().BilledTokens);
     }
 
     [Fact]
@@ -147,13 +212,14 @@ public sealed class TokenBudgetMonitorTests
     [Fact]
     public void A_monitor_with_only_a_tool_step_cap_and_no_budget_still_watches()
     {
-        // #1682: before this issue a monitor required a budget to be constructed at all.
+        // #1682: before this issue a monitor required a budget to be constructed at all. Terminal-state
+        // lines per #1686 review F2's fixed unit.
         var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: 2, new AgyUsageParser());
 
-        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"a"}}""");
-        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"b"}}""");
+        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"a"}}""");
+        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"b"}}""");
         Assert.False(monitor.Arrested);
-        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"c"}}""");
+        monitor.OnStdoutLine("""{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"c"}}""");
         Assert.True(monitor.Arrested);
     }
 
@@ -179,9 +245,9 @@ public sealed class TokenBudgetMonitorTests
         var monitor = new TokenBudgetMonitor(budget: 100, maxToolSteps: 1, new AgyUsageParser());
 
         monitor.OnStdoutLine(
-            """{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"a"}}""");
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"a"}}""");
         monitor.OnStdoutLine(
-            """{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"b"}}""");
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"b"}}""");
 
         Assert.True(monitor.Arrested);
         Assert.Equal(ArrestReason.ToolStepCap, monitor.ArrestReasonValue);
@@ -204,6 +270,10 @@ public sealed class TokenBudgetMonitorTests
         Assert.Null(monitor.SnapshotUsage().TokensIn);
         Assert.Equal(0, monitor.SnapshotUsage().ContextLevelTokens);
         Assert.Null(monitor.SnapshotUsage().BilledTokens);
+        // #1686 review F7: a stream with no usage line at all must not report a measured-zero cache
+        // read -- CacheReadTokens now follows the same never-fabricated convention as BilledTokens
+        // above (TokenBudgetMonitor's own OnStdoutLine comment has the rule).
+        Assert.Null(monitor.SnapshotUsage().CacheReadTokens);
     }
 
     [Fact]

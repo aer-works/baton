@@ -32,17 +32,85 @@ public sealed class TokenBudgetReplayTests
         (4252, 562), (4920, 235), (5613, 872), (2648, 278), (3239, 1455), (4863, 100), (5164, 754),
     ];
 
-    private const long OldAndNewDefaultBudget = 600_000; // the pre-#1682, still-in-force `implement` default the issue's own test asks for
+    // #1686 review F3: this was named `OldAndNewDefaultBudget` and its comment claimed 600,000 was
+    // "still-in-force" -- both false as of this diff. `implement`'s SHIPPED budget is 1,200,000
+    // (`ShippedImplementBudget` below); 600,000 is the SUPERSEDED figure the original #1682 acceptance
+    // criterion asked a replay to arrest under, kept only so that criterion still has a runnable test.
+    private const long SupersededPre1682AcceptanceBudget = 600_000;
+
+    // #1686 review F3: the configuration this PR actually ships for `implement`
+    // (`src/Baton.Vendors/WorkerRoles.json`) -- what the "honest replay result" tests below exercise.
+    private const long ShippedImplementBudget = 1_200_000;
+    private const int ShippedImplementMaxToolSteps = 322;
+
+    // #1686 review F1: the OLD (pre-#1682, i.e. pre-THIS-PR) `implement` tool-step cap, in the OLD
+    // double-counted unit (ACTIVE + terminal lifecycle line per real call) -- kept only for the
+    // discriminating control below, which proves the F2 unit fix is what changed the replay's outcome,
+    // not an unrelated change.
+    private const int PreF2ImplementMaxToolSteps = 80;
 
     private static string AgyDoneLine(long inputTokens, long outputTokens) =>
         "{\"event\":\"step_update\",\"step_update\":{\"state\":\"DONE\",\"step_type\":\"agent_response\",\"usage\":{"
         + "\"input_tokens\":" + inputTokens + ",\"output_tokens\":" + outputTokens
         + ",\"total_tokens\":" + (inputTokens + outputTokens) + "}}}";
 
+    private static string AgyToolLine(string state) =>
+        "{\"event\":\"step_update\",\"step_update\":{\"state\":\"" + state + "\",\"step_type\":\"tool\",\"tool_name\":\"run_command\"}}";
+
+    /// <summary>
+    /// #1686 review F3: the REAL interleaved tool-step lines from room `38c24d11`'s own
+    /// `.stdout.log`, positioned relative to the 70 usage lines above -- extracted by filtering the
+    /// same capture for every `step_update` line (usage OR tool) in emitted order and reading off the
+    /// shape: this room's stream is maximally regular -- each of the 70 turns is exactly
+    /// [usage DONE/agent_response line, ACTIVE tool line, terminal (DONE) tool line], back to back,
+    /// with NO trailing tool pair after the 70th (final) usage line, because the room was cancelled
+    /// before that turn's own tool call reached ACTIVE. Regenerating: filter the room's `.stdout.log`
+    /// for every `"event":"step_update"` line in order and classify each by
+    /// `step_update.step_type`/`step_update.state` the same way <see cref="TokenBudgetReplayTests"/>'s
+    /// class doc already documents regenerating the usage-only fixture above.
+    /// </summary>
+    /// <param name="monitor">Fed one real interleaved line at a time, in the room's own emitted order.</param>
+    /// <returns>The 0-based usage-line index (matching <see cref="Room38c24d11Turns"/>) at which the monitor first arrested, or -1 if it never did.</returns>
+    private static int ReplayRoom38c24d11(TokenBudgetMonitor monitor)
+    {
+        var arrestedAtLine = -1;
+        for (var i = 0; i < Room38c24d11Turns.Length; i++)
+        {
+            var (inTokens, outTokens) = Room38c24d11Turns[i];
+            monitor.OnStdoutLine(AgyDoneLine(inTokens, outTokens));
+            if (monitor.Arrested && arrestedAtLine == -1)
+            {
+                arrestedAtLine = i;
+            }
+
+            if (i == Room38c24d11Turns.Length - 1)
+            {
+                // The room's capture ends right here -- no tool pair follows the final usage line.
+                break;
+            }
+
+            monitor.OnStdoutLine(AgyToolLine("ACTIVE"));
+            if (monitor.Arrested && arrestedAtLine == -1)
+            {
+                arrestedAtLine = i;
+            }
+
+            monitor.OnStdoutLine(AgyToolLine("DONE"));
+            if (monitor.Arrested && arrestedAtLine == -1)
+            {
+                arrestedAtLine = i;
+            }
+        }
+
+        return arrestedAtLine;
+    }
+
     [Fact]
     public void GREEN_the_room_38c24d11_shaped_replay_arrests_before_600k_billed_under_the_new_reading()
     {
-        var monitor = new TokenBudgetMonitor(budget: OldAndNewDefaultBudget, maxToolSteps: null, new AgyUsageParser());
+        // The original #1682 acceptance criterion, still runnable against the superseded budget --
+        // NOT the shipped configuration (see the honest-replay tests below for that).
+        var monitor = new TokenBudgetMonitor(budget: SupersededPre1682AcceptanceBudget, maxToolSteps: null, new AgyUsageParser());
 
         var arrestedAtLine = -1;
         for (var i = 0; i < Room38c24d11Turns.Length; i++)
@@ -60,7 +128,91 @@ public sealed class TokenBudgetReplayTests
         // Measured: billed crosses 600,000 on usage line 56 (0-indexed 55) of this room's real stream --
         // long before the room's own eventual total of 794,940.
         Assert.Equal(55, arrestedAtLine);
-        Assert.True(monitor.SnapshotUsage().BilledTokens >= OldAndNewDefaultBudget);
+        Assert.True(monitor.SnapshotUsage().BilledTokens >= SupersededPre1682AcceptanceBudget);
+    }
+
+    [Fact]
+    public void HONEST_the_shipped_implement_configuration_does_NOT_arrest_the_real_room_38c24d11_replay()
+    {
+        // #1686 review F3 / "Replay verdict": the review's own bar is that the SHIPPED configuration
+        // must be proven to arrest the real runaway room. Measured here rather than assumed: it does
+        // NOT. Room 38c24d11's real capture makes only 69 real tool calls in its entire 70-turn, 794,940
+        // -billed-token stream -- far under a tool-step cap wide enough to avoid false-arresting normal
+        // `implement` traffic (322, and even that is exceeded by 2 of 26 real normal rooms measured for
+        // this PR -- spec/baton.md §3). And 794,940 sits under the recalibrated 1,200,000 token budget
+        // by the SAME sound "2x normal" method. Neither trigger fires. This is not a bug in this
+        // replay -- it is the honest result of fixing F1/F2 correctly, and it is recorded here as a
+        // durable fact rather than left to only exist in a PR body that will drift out of sync with the
+        // code the moment either constant changes again.
+        var monitor = new TokenBudgetMonitor(budget: ShippedImplementBudget, maxToolSteps: ShippedImplementMaxToolSteps, new AgyUsageParser());
+
+        var arrestedAtLine = ReplayRoom38c24d11(monitor);
+
+        Assert.False(monitor.Arrested);
+        Assert.Equal(-1, arrestedAtLine);
+        Assert.Null(monitor.ArrestReasonValue);
+        Assert.Equal(794_940, monitor.SnapshotUsage().BilledTokens);
+        Assert.Equal(69, monitor.SnapshotToolStepCount());
+    }
+
+    [Fact]
+    public void HONEST_the_token_trigger_alone_does_NOT_fire_on_room_38c24d11_at_the_shipped_1_2M_budget()
+    {
+        // #1686 review F3's second, independently satisfiable assertion: isolated from the tool-step
+        // axis entirely (maxToolSteps: null), the token trigger alone never crosses 1,200,000 on this
+        // room's real 794,940-token total.
+        var monitor = new TokenBudgetMonitor(budget: ShippedImplementBudget, maxToolSteps: null, new AgyUsageParser());
+
+        foreach (var (inTokens, outTokens) in Room38c24d11Turns)
+        {
+            monitor.OnStdoutLine(AgyDoneLine(inTokens, outTokens));
+        }
+
+        Assert.False(monitor.Arrested);
+        Assert.Equal(794_940, monitor.SnapshotUsage().BilledTokens);
+        Assert.True(monitor.SnapshotUsage().BilledTokens < ShippedImplementBudget);
+    }
+
+    [Fact]
+    public void DISCRIMINATING_the_pre_F2_double_counted_unit_WOULD_have_arrested_this_replay_the_fixed_unit_does_not()
+    {
+        // #1686 review F1/F2/F3, a control so the F2 tradeoff is checkable in the suite rather than only
+        // in prose: same real interleaved replay, but counting BOTH the ACTIVE and terminal lifecycle
+        // line per real tool call (the OLD unit AgyUsageParser.CountToolSteps used before this PR)
+        // against the OLD cap of 80 in that unit. This DOES arrest -- the old cap's catch on this room
+        // was genuine, but only because of the double count, not because the underlying real-call rate
+        // was actually high (spec/baton.md §3 has the retraction this proves).
+        var oldUnitToolStepCount = 0;
+        var arrestedAtLine = -1;
+        var billedTokens = 0L;
+        var billedAtArrest = -1L;
+        var arrestedOnToolCap = false;
+
+        for (var i = 0; i < Room38c24d11Turns.Length; i++)
+        {
+            var (inTokens, outTokens) = Room38c24d11Turns[i];
+            billedTokens += inTokens + outTokens;
+
+            if (!arrestedOnToolCap && i == Room38c24d11Turns.Length - 1)
+            {
+                break;
+            }
+
+            oldUnitToolStepCount += 2; // ACTIVE + terminal, the pre-#1686-F2 unit.
+            if (!arrestedOnToolCap && oldUnitToolStepCount > PreF2ImplementMaxToolSteps)
+            {
+                arrestedOnToolCap = true;
+                arrestedAtLine = i;
+                billedAtArrest = billedTokens;
+            }
+        }
+
+        Assert.True(arrestedOnToolCap);
+        Assert.Equal(40, arrestedAtLine); // cumulative old-unit count crosses 81 mid-turn 41 (0-indexed 40).
+        // spec/baton.md §3's own prior calibration figure, corroborated independently by the #1686
+        // review's own arithmetic: cumulative billed at usage line 41 (index 40) is 439,385 -- well
+        // under the room's own eventual 794,940, and under even the OLD 600,000 ceiling.
+        Assert.Equal(439_385, billedAtArrest);
     }
 
     [Fact]
@@ -82,7 +234,7 @@ public sealed class TokenBudgetReplayTests
             var trackedThisTurn = level + sumOutput;
             maxTrackedAtAnyTurn = Math.Max(maxTrackedAtAnyTurn, trackedThisTurn);
 
-            Assert.True(trackedThisTurn < OldAndNewDefaultBudget,
+            Assert.True(trackedThisTurn < SupersededPre1682AcceptanceBudget,
                 $"pre-#1682 formula crossed the budget mid-replay at tracked={trackedThisTurn} -- the bug this fixture exists to demonstrate did not reproduce.");
         }
 

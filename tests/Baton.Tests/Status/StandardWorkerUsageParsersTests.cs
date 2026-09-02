@@ -209,12 +209,13 @@ public sealed class StandardWorkerUsageParsersTests
     }
 
     [Fact]
-    public void Agy_CountToolSteps_counts_a_tool_step_update_carrying_a_tool_name_at_any_state()
+    public void Agy_CountToolSteps_counts_a_tool_step_update_ONLY_at_its_terminal_state()
     {
-        // Captured verbatim (2026-09-02) from a real agy lane's .stdout.log -- both ACTIVE and DONE
-        // step_updates for the same tool call carry tool_name, and the #1682 evidence table's own
-        // "138 tool steps" for this room counts both (69 distinct calls x 2 lifecycle lines each), not
-        // distinct calls -- see AgyUsageParser.CountToolSteps's own doc for why that is the right count.
+        // #1686 review F2, fixed unit: both ACTIVE and DONE step_updates for the SAME tool call carry
+        // tool_name (captured verbatim 2026-09-02 from a real agy lane's .stdout.log), but only the
+        // terminal (DONE/ERROR) line is a REAL tool call in the fixed unit -- counting ACTIVE too
+        // double-counted the #1682 evidence table's own "138 tool steps" for this room (69 distinct
+        // calls x 2 lifecycle lines each). See AgyUsageParser.CountToolSteps's own doc.
         var parser = new AgyUsageParser();
         const string activeLine = """
             {"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"view_file"}}
@@ -222,13 +223,31 @@ public sealed class StandardWorkerUsageParsersTests
         const string doneLine = """
             {"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"tool","tool_name":"view_file"}}
             """;
+        const string errorLine = """
+            {"event":"step_update","step_update":{"step_index":3,"state":"ERROR","step_type":"tool","tool_name":"run_command"}}
+            """;
         const string agentResponseLine = """
             {"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response"}}
             """;
 
-        Assert.Equal(1, parser.CountToolSteps(activeLine));
+        Assert.Equal(0, parser.CountToolSteps(activeLine));
         Assert.Equal(1, parser.CountToolSteps(doneLine));
+        Assert.Equal(1, parser.CountToolSteps(errorLine));
         Assert.Equal(0, parser.CountToolSteps(agentResponseLine));
+    }
+
+    [Fact]
+    public void Agy_parser_TryParseIncrementalUsage_ReturnsFalse_for_a_DONE_tool_step_even_if_it_carried_usage()
+    {
+        // #1686 review F4 (AgyUsageParser.TryParseIncrementalUsage's own doc has the full predicate
+        // case): a DONE/tool step is never a usage source, even in the unobserved case it carried one.
+        var parser = new AgyUsageParser();
+        const string line = """
+            {"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"x","usage":{"input_tokens":1,"output_tokens":1}}}
+            """;
+
+        Assert.False(parser.TryParseIncrementalUsage(line, out var usage));
+        Assert.Null(usage);
     }
 
     [Fact]
@@ -245,5 +264,27 @@ public sealed class StandardWorkerUsageParsersTests
 
         // Distinct from TryParseToolName, which deliberately reports only the FIRST block's name.
         Assert.Equal("Bash", parser.TryParseToolName(multiToolLine));
+    }
+
+    [Fact]
+    public void Claude_parser_TryParseIncrementalUsage_reads_message_id_onto_the_usage_record()
+    {
+        // #1686 review F6: the caller (TokenBudgetMonitor) needs this to dedupe a repeated message.id
+        // rather than summing the same message's usage twice.
+        var parser = new ClaudeUsageParser();
+        const string line = """{"type":"assistant","message":{"id":"msg_abc123","usage":{"input_tokens":2,"output_tokens":3}}}""";
+
+        Assert.True(parser.TryParseIncrementalUsage(line, out var usage));
+        Assert.Equal("msg_abc123", usage!.MessageId);
+    }
+
+    [Fact]
+    public void Claude_parser_TryParseIncrementalUsage_leaves_message_id_null_when_absent()
+    {
+        var parser = new ClaudeUsageParser();
+        const string line = """{"type":"assistant","message":{"usage":{"input_tokens":2,"output_tokens":3}}}""";
+
+        Assert.True(parser.TryParseIncrementalUsage(line, out var usage));
+        Assert.Null(usage!.MessageId);
     }
 }

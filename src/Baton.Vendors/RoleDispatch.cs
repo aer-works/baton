@@ -76,13 +76,17 @@ public static class RoleDispatch
     /// The <c>--token-budget</c> escape hatch (#1623), independent of the role like <paramref
     /// name="timeoutOverride"/>. Null keeps <see cref="WorkerRole.TokenBudget"/>.
     /// </param>
+    /// <param name="maxToolStepsOverride">
+    /// The <c>--max-tool-steps</c> escape hatch (#1686 review F11), mirroring <paramref
+    /// name="tokenBudgetOverride"/> end to end. Null keeps <see cref="WorkerRole.MaxToolSteps"/>.
+    /// </param>
     public static WorkerBindingConfigEntry ToBinding(
         WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null,
         string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null,
         IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null,
         bool autoProvisionWorktree = true, TimeSpan? timeoutOverride = null,
         IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null,
-        long? tokenBudgetOverride = null)
+        long? tokenBudgetOverride = null, int? maxToolStepsOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -172,8 +176,8 @@ public static class RoleDispatch
             // declares one or it doesn't. The token budget follows timeoutOverride's own pattern.
             VerifyPixiTask: role.VerifyPixiTask,
             TokenBudget: tokenBudgetOverride ?? role.TokenBudget,
-            // #1682: no dispatch-time override axis exists for this one -- see WorkerBindingConfigEntry.MaxToolSteps's own doc.
-            MaxToolSteps: role.MaxToolSteps);
+            // #1686 review F11: the --max-tool-steps escape hatch, mirroring --token-budget.
+            MaxToolSteps: maxToolStepsOverride ?? role.MaxToolSteps);
     }
 
     /// <summary>
@@ -195,7 +199,7 @@ public static class RoleDispatch
         WorkerRole role, string spec, string? adapterOverride = null, string? workingDirectory = null,
         string? modelOverride = null, string? effortOverride = null, string? outputOverride = null,
         TimeSpan? timeoutOverride = null, IReadOnlyList<string>? attachments = null,
-        string? attachmentsDirectory = null, long? tokenBudgetOverride = null)
+        string? attachmentsDirectory = null, long? tokenBudgetOverride = null, int? maxToolStepsOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
@@ -203,7 +207,7 @@ public static class RoleDispatch
             role, spec, adapterOverride, workingDirectory: workingDirectory,
             modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride,
             timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory,
-            tokenBudgetOverride: tokenBudgetOverride);
+            tokenBudgetOverride: tokenBudgetOverride, maxToolStepsOverride: maxToolStepsOverride);
 
         var stepOutputs = binding.Contract.ProducedOutputs.Select(o => o.Name).ToList();
 

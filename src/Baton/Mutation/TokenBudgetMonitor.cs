@@ -39,13 +39,14 @@ public sealed class TokenBudgetMonitor
     private readonly CancellationTokenSource _arrestSource = new();
     private readonly Lock _lock = new();
     private readonly List<string> _lastToolNames = [];
+    private readonly HashSet<string> _seenMessageIds = new(StringComparer.Ordinal);
     private long _inputLevel;
     private long? _latestTokensIn;
     private long? _latestCacheRead;
     private long? _latestCacheCreation;
     private long _tokensOut;
     private long? _billedTokens;
-    private long _cacheReadSum;
+    private long? _cacheReadSum;
     private int _toolStepCount;
     private bool _arrested;
     private ArrestReason? _arrestReason;
@@ -127,12 +128,22 @@ public sealed class TokenBudgetMonitor
                     _inputLevel = (usage.TokensIn ?? 0) + (usage.CacheReadTokens ?? 0) + (usage.CacheCreationTokens ?? 0);
                 }
 
-                _tokensOut += usage.TokensOut ?? 0;
-                _cacheReadSum += usage.CacheReadTokens ?? 0;
-                // #1682: per-line input + output + cache_creation, summed -- WorkerUsage.BilledTokens
-                // has the full arithmetic case for the shape and the thinking-tokens exclusion. Stays
-                // null (never a fabricated 0) until a usage line actually parses.
-                _billedTokens = (_billedTokens ?? 0) + (usage.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
+                // #1686 review F6: claude can split one API response's usage across several
+                // consecutive "type":"assistant" lines sharing the same message.id, each carrying an
+                // identical message-level usage object -- summing every line double- (or N-times-)
+                // counts that response. A line with no MessageId (agy; claude's terminal line is never
+                // read here) always accumulates; a repeated MessageId accumulates only its first sighting.
+                var alreadyCounted = usage.MessageId is { Length: > 0 } messageId && !_seenMessageIds.Add(messageId);
+                if (!alreadyCounted)
+                {
+                    _tokensOut += usage.TokensOut ?? 0;
+                    // #1686 review F7: now nullable, following BilledTokens' own convention right below.
+                    _cacheReadSum = (_cacheReadSum ?? 0) + (usage.CacheReadTokens ?? 0);
+                    // #1682: per-line input + output + cache_creation, summed -- WorkerUsage.BilledTokens
+                    // has the full arithmetic case for the shape and the thinking-tokens exclusion. Stays
+                    // null (never a fabricated 0) until a usage line actually parses.
+                    _billedTokens = (_billedTokens ?? 0) + (usage.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
+                }
             }
 
             if (!_arrested && _budget is { } budget && _billedTokens is { } billedSoFar && billedSoFar >= budget)

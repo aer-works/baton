@@ -14,7 +14,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -64,6 +64,7 @@ public static class DispatchOptionsParser
         string? outputPath = null;
         TimeSpan? timeout = null;
         long? tokenBudget = null;
+        int? maxToolSteps = null;
         string? label = null;
         string? workstream = null;
         string? repoPath = null;
@@ -108,6 +109,9 @@ public static class DispatchOptionsParser
                     break;
                 case "--token-budget":
                     tokenBudget = ParseTokenBudget(RequireValue(args, ref i, arg));
+                    break;
+                case "--max-tool-steps":
+                    maxToolSteps = ParseMaxToolSteps(RequireValue(args, ref i, arg));
                     break;
                 case "--label":
                     label = SanitizeLabel(RequireValue(args, ref i, arg));
@@ -185,7 +189,8 @@ public static class DispatchOptionsParser
             attachments.Count > 0 ? attachments : null,
             listCapabilities,
             tokenBudget,
-            repoPath is null ? null : Path.GetFullPath(repoPath));
+            repoPath is null ? null : Path.GetFullPath(repoPath),
+            maxToolSteps);
     }
 
     /// <summary>
@@ -204,6 +209,23 @@ public static class DispatchOptionsParser
         }
 
         return tokens;
+    }
+
+    /// <summary>
+    /// Parses <c>--max-tool-steps</c>'s value (#1686 review F11): a positive whole number of real tool
+    /// calls (the fixed cross-vendor unit, spec/baton.md §3), same shape and no-ceiling rationale as
+    /// <see cref="ParseTokenBudget"/>.
+    /// </summary>
+    private static int ParseMaxToolSteps(string rawValue)
+    {
+        if (!int.TryParse(rawValue, out var steps) || steps <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--max-tool-steps {rawValue}' is not a positive whole number of tool calls. {Usage}",
+                "pass a positive integer, e.g. --max-tool-steps 100.");
+        }
+
+        return steps;
     }
 
     /// <summary>

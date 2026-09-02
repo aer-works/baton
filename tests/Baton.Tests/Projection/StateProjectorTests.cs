@@ -1561,8 +1561,11 @@ public class StateProjectorTests
         var state = StateProjector.Project(events, TwoStepSnapshot());
 
         var architect = StepFor(state, Architect);
+        // #1686 review F8: this figure is the OLD level-based (ContextLevelTokens/TokensIn + TokensOut)
+        // reading, computed because a pre-#1682 line never set BilledTokens at all -- it must not claim
+        // to be "billed tokens", the quantity this PR exists to stop treating as authoritative.
         Assert.Equal(
-            "Execution arrested: token budget exceeded (620000 billed tokens measured) — awaiting conductor resolution.",
+            "Execution arrested: token budget exceeded (620000 tokens measured) — awaiting conductor resolution.",
             architect.IndeterminateReason);
     }
 

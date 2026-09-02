@@ -31,6 +31,15 @@ namespace Baton.Domain;
 /// every incremental line (#1682) — display-only, never itself compared to a budget — the same
 /// per-context duality <paramref name="ContextLevelTokens"/> documents for the input side.
 /// </param>
+/// <param name="MessageId">
+/// #1686 (review F6): claude's <c>message.id</c> off an incremental <c>"type":"assistant"</c> line —
+/// measured against real captures to repeat across several consecutive lines with the SAME
+/// <c>message.usage</c> object (a single API response split across content-block chunks), which would
+/// double-count <paramref name="BilledTokens"/> if summed per line rather than per message. Null on
+/// every reading agy produces (that vendor's shape has no analogous id) and on the terminal-line
+/// reading, which is never summed. <see cref="Mutation.TokenBudgetMonitor"/> is the sole consumer —
+/// it dedupes its own running Σ by this field rather than exposing it as a general-purpose identity.
+/// </param>
 public sealed record WorkerUsage(
     long? TokensIn = null,
     long? TokensOut = null,
@@ -39,4 +48,5 @@ public sealed record WorkerUsage(
     long? CacheCreationTokens = null,
     long? ThinkingTokens = null,
     long? ContextLevelTokens = null,
-    long? BilledTokens = null);
+    long? BilledTokens = null,
+    string? MessageId = null);
