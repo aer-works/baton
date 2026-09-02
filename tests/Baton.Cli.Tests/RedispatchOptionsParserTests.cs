@@ -42,6 +42,42 @@ public class RedispatchOptionsParserTests
         Assert.Null(options.Timeout);
         Assert.Null(options.Label);
         Assert.False(options.LabelSpecified);
+        Assert.Null(options.Attachments);
+    }
+
+    /// <summary>#1576: mirrors <c>DispatchOptionsParserTests.Parses_repeatable_attach_flags_in_order</c>.</summary>
+    [Fact]
+    public void Parses_repeatable_attach_flags_in_order()
+    {
+        var options = RedispatchOptionsParser.Parse(
+            ["parent-room", "--spec", "amended.md", "--attach", "context.txt", "--attach", "notes.md"]);
+
+        Assert.NotNull(options.Attachments);
+        Assert.Equal(new[] { "context.txt", "notes.md" }, options.Attachments);
+    }
+
+    /// <summary>Merge of #1576 (--attach) and #1686 review F2 (--max-tool-steps): both parse together, alongside --spec.</summary>
+    [Fact]
+    public void Parses_spec_attach_and_max_tool_steps_together()
+    {
+        var options = RedispatchOptionsParser.Parse(
+            [
+                "parent-room", "--spec", "amended.md", "--attach", "context.txt",
+                "--max-tool-steps", "200",
+            ]);
+
+        Assert.Equal("amended.md", options.SpecFilePath);
+        Assert.Equal(new[] { "context.txt" }, options.Attachments);
+        Assert.Equal(200, options.MaxToolSteps);
+    }
+
+    [Fact]
+    public void Attach_without_value_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => RedispatchOptionsParser.Parse(["parent-room", "--spec", "amended.md", "--attach"]));
+
+        Assert.Contains("--attach", ex.TryInvocation);
     }
 
     [Fact]
