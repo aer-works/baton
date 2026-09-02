@@ -1254,6 +1254,7 @@ code is the only signal a lane is even still going, and it is unreliable for tha
       "linkedFromUsage"?: ExecutionUsageView,
       "liveness"?: "alive" | "dead" | "unknown",  // #1375/#1513: present while this step reads "Running", or "Failed" with a RetryNotBefore still pending
       "exhaustedUntil"?: string,  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
+      "verifyTail"?: string,      // #1701: the failing gate member(s)' OWN captured output for a VerifyFailed Indeterminate -- see "Engine-run verify" below. Distinct from "verify"/"verifyReason": that pair says verify never ran, this says it ran and went red.
       "verify"?: "not-run",       // #1702: present iff the latest attempt's resolved verify command failed its pre-flight runnability check -- an ordinarily-Succeeded step, never a gate. See "Verify command resolution" below.
       "verifyReason"?: string     // #1702: the pre-flight verdict -- "task absent: <task>", the only shape #1708 leaves reachable -- present only alongside "verify"
     }
