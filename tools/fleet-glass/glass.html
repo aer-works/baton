@@ -96,12 +96,12 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:0; background:var(--card); min-width:0;}
 .lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem; min-width:0;}
 .lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;}
-.lane .roomid, .lane .project{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.lane .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end; flex-shrink:0; max-width:100%;}
-.lane .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.lane .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
-.lane .deliverables{font-size:.74rem; margin-top:.3rem; user-select:none; -webkit-user-select:none;}
-.lane .deliverables a{color:var(--accent); text-decoration:none; cursor:pointer;}
+.lane .roomid, .lane .project, .board-detail-side .roomid, .board-detail-side .project{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .chips, .board-detail-side .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end; flex-shrink:0; max-width:100%;}
+.lane .ev, .board-detail-side .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .age, .board-detail-side .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
+.lane .deliverables, .board-detail-side .deliverables{font-size:.74rem; margin-top:.3rem; user-select:none; -webkit-user-select:none;}
+.lane .deliverables a, .board-detail-side .deliverables a{color:var(--accent); text-decoration:none; cursor:pointer;}
 .lane details{margin:.4rem 0 0; font-size:.74rem;}
 .lane details summary{font:600 .72rem 'Public Sans'; color:var(--ink-soft);}
 .tl-entry{display:flex; justify-content:space-between; gap:.5rem; padding:.15rem 0; border-top:1px solid var(--line); font-size:.7rem;}
@@ -989,6 +989,7 @@ function roomDetailHtml(room, timelines, openTimelinePaths){
     ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(roomDeliverablesKey)}">deliverables &rarr;</a></div>` : "";
   return `<div class="detail-top"><span class="detail-title">${title}</span><span class="chips">${chipsHtml(room, running, focusStep)}</span></div>
     ${roomIdLine}
+    ${projectLineHtml(room)}
     ${pathHtml}
     ${bindingLineHtml(room)}
     ${err}${tryLine}
@@ -1095,7 +1096,7 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   }
 
   const needsYouCards = (hasConductor ? conductorCardHtml(conductor, selectedCardKey) : "")
-    + needsYouRooms.map(r => roomCardHtml(r, selectedCardKey, true)).join("");
+    + needsYouRooms.map(r => roomCardHtml(r, selectedCardKey, r.state !== "Indeterminate")).join("");
   const runningCards = running.map(r => roomCardHtml(r, selectedCardKey, false)).join("");
   let doneCards = doneRooms.map(r => roomCardHtml(r, selectedCardKey, true)).join("");
   // #1656: terminalTotal (server's count of ALL terminal rooms) vs. failed.length+done.length
