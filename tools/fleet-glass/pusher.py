@@ -1160,11 +1160,11 @@ def adaptive_snapshot_interval_s(
     min_push_interval_s: float = DEFAULT_MIN_PUSH_INTERVAL_S,
     target: int = KV_DAILY_WRITE_TARGET, reserve: int = DELIVER_RESERVE,
 ) -> float:
-    """aer-works/baton#1690's own adaptive-cadence formula: never faster than min_push_interval_s
-    (the #1538 coalescing floor), and slower still once the remaining budget for the rest of the
-    day (after carving out `reserve` for deliverables/heartbeat) can no longer sustain the coalescing
-    floor's own pace -- the fewer writes left, the longer between them, so a fleet that starts the
-    day change-heavy tapers off smoothly instead of running the budget out early and hard-stopping."""
+    """aer-works/baton#1690's own adaptive-cadence formula (spec/baton.md §6, "Fleet Glass write
+    budget" has the taper-vs-hard-stop rationale): never faster than min_push_interval_s (the #1538
+    coalescing floor), and slower still once the remaining budget for the rest of the day (after
+    carving out `reserve` for deliverables/heartbeat) can no longer sustain the coalescing floor's
+    own pace -- the fewer writes left, the longer between them."""
     spendable = budget_left(ledger, target) - reserve
     return max(min_push_interval_s, seconds_left_in_day(now_ts) / max(1, spendable))
 
