@@ -698,6 +698,47 @@ public class MutationInterfaceCrashRecoveryTests
         }
     }
 
+    [Fact]
+    public async Task StartWorkflowAsync_settles_unmatched_VerifyStarted_Indeterminate_across_engine_restart()
+    {
+        // #1623 F2 crash recovery arm: see MutationInterface.cs ToClassify reconciliation.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings();
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A);
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.VerifyStarted(executionId), TestContext.Current.CancellationToken);
+
+            var stub = new StubCoreDispatcher();
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+
+            var stepState = Assert.Single(state.Steps);
+            Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.NotNull(stepState.IndeterminateReason);
+            Assert.Contains("engine restart", stepState.IndeterminateReason);
+            Assert.True(stepState.RetryForeclosed);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
+            var verifyFailed = Assert.Single(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Equal(VerifyFailedKind.EngineRestart, verifyFailed.Kind);
+            Assert.Equal("verify did not complete across an engine restart", verifyFailed.Tail);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     private static async Task<ExecutionId> AcceptRequestAsync(
         FlowEventLogWriter writer,
         WorkflowId workflowId,

@@ -209,6 +209,57 @@ public class WorkflowOutcomeAndExitCodeTests
         Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(state));
     }
 
+    // #1623 (contract: spec/baton.md §3), merged onto #1608's flag. VerifyFailed and ExecutionArrested
+    // describe identically here -- StateProjectorTests pins the two events separately, so this file
+    // only needs the shared StepState shape both leave behind. Note what is asserted and what is not:
+    // IndeterminateAwaitingResolution is the flag DescribeTerminal reads for ALL THREE producers, and
+    // IndeterminateReason is diagnostic text carried alongside it, never a second gate -- the
+    // polarity partner directly below is what discriminates those two claims.
+    [Fact]
+    public void A_verify_failed_step_resolves_to_Indeterminate_not_Failed()
+    {
+        var step = new StepState(
+            new StepId("a"), StepStatus.Failed, new ExecutionId("exec-1"), new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.Permanent,
+            LatestFailureReason: "Verify failed (fmt-check) — awaiting conductor resolution.",
+            IndeterminateAwaitingResolution: true,
+            IndeterminateReason: "Verify failed (fmt-check) — awaiting conductor resolution.");
+        var state = TerminalState([step]);
+
+        Assert.Equal(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+        Assert.Equal(RunExitCode.Failed, RunExitCodeResolver.Resolve(Result(state)));
+    }
+
+    // The discriminating control for the test above: the same reason text with the flag down reads
+    // Failed. Without this arm that test would pass equally against a DescribeTerminal reading
+    // IndeterminateReason -- exactly the second, parallel mechanism the #1644 merge removed.
+    [Fact]
+    public void An_IndeterminateReason_without_the_flag_describes_as_Failed_not_Indeterminate()
+    {
+        var step = new StepState(
+            new StepId("a"), StepStatus.Failed, new ExecutionId("exec-1"), new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.Permanent,
+            IndeterminateAwaitingResolution: false,
+            IndeterminateReason: "Verify failed (fmt-check) — awaiting conductor resolution.");
+        var state = TerminalState([step]);
+
+        Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(state));
+    }
+
+    [Fact]
+    public void An_Indeterminate_step_alongside_an_ordinary_success_still_resolves_to_Indeterminate()
+    {
+        var state = TerminalState([
+            Step("a", StepStatus.Succeeded),
+            new StepState(
+                new StepId("b"), StepStatus.Failed, new ExecutionId("exec-2"), new Dictionary<StepId, ExecutionId>(),
+                IndeterminateAwaitingResolution: true,
+                IndeterminateReason: "Execution arrested: token budget exceeded — awaiting conductor resolution."),
+        ]);
+
+        Assert.Equal(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+    }
+
     // #1586 S1 review F1: the operator's amendment 1 called this a "tripwire pattern" that sweeps
     // every predicate that must learn a new WorkflowOutcome member -- a mechanism the repo did not
     // actually have (no reflection over the constant set anywhere, no vocabulary checker under

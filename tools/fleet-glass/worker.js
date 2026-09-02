@@ -48,7 +48,19 @@
  *                          INBOX_CAP entries -- what deliverables_list returns.
  *  - "inbox:item:<id>"   : one deliverable's full content (or a withheld stub), keyed by the id the
  *                          pusher assigned it -- what deliverable_read returns.
+ *  - "terminal_archive"  : JSON array of EVERY terminal room (#1656), split out of the /push body's
+ *                          `terminal_archive` field so it never inflates the plain `snapshot` value
+ *                          -- fleet_status's `rooms` only ever carries non-terminal rooms plus the
+ *                          newest N terminal ones (pusher.py's HOT_TERMINAL_CAP); the rest is read
+ *                          back a page at a time via fleet_status's own `page`/`limit` arguments.
  */
+
+import {
+  computeDeliverablesPage,
+  computeFleetStatusPage,
+  isValidFleetStatusPage,
+  maxIsoOrNull,
+} from "./worker.core.mjs";
 
 const INBOX_CAP = 500;
 
@@ -56,17 +68,28 @@ const TOOLS = [
   {
     name: "fleet_status",
     description:
-      "Read-only snapshot of room statuses across the operator's baton fleet, as last pushed by the fleet machine. Includes pushed_at for snapshot staleness, heartbeat_at for pusher liveness, derived_at for snapshot-derivation health, and pending_push_age_s for push-delivery health -- these are independent (#1486, #1613 item 2, 2026-09-01 review): a quiet fleet lets pushed_at go stale on purpose (heartbeat_at tells that apart from a dead pusher), a fleet whose derivation keeps failing lets derived_at go stale even while heartbeat_at stays fresh, and a fleet whose PUSHES keep failing (derivation healthy) grows pending_push_age_s even while derived_at stays fresh.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      "Read-only snapshot of room statuses across the operator's baton fleet, as last pushed by the fleet machine. Includes pushed_at for snapshot staleness, heartbeat_at for pusher liveness, derived_at for snapshot-derivation health, and pending_push_age_s for push-delivery health -- these are independent (#1486, #1613 item 2, 2026-09-01 review): a quiet fleet lets pushed_at go stale on purpose (heartbeat_at tells that apart from a dead pusher), a fleet whose derivation keeps failing lets derived_at go stale even while heartbeat_at stays fresh, and a fleet whose PUSHES keep failing (derivation healthy) grows pending_push_age_s even while derived_at stays fresh. With no arguments, `rooms` carries every non-terminal room plus only the newest N terminal ones (terminal_total names the full terminal count) -- pass `page` (0-based) and optionally `limit` (default 50, max 200) to page through the REST of the terminal archive instead; a paged call's response carries rooms/page/limit/terminal_total/next_page (null once exhausted) and omits every other top-level field.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        page: { type: "number" },
+        limit: { type: "number" },
+      },
+      additionalProperties: false,
+    },
     annotations: { readOnlyHint: true },
   },
   {
     name: "deliverables_list",
     description:
-      "Newest-first index of lane deliverables pushed across rooms (title, room, artifact, pushed_at, content_hash, withheld). Optionally filtered to one room. Never carries content -- call deliverable_read for that.",
+      "Newest-first index of lane deliverables pushed across rooms (title, room, artifact, pushed_at, content_hash, withheld). Optionally filtered to one room. Never carries content -- call deliverable_read for that. Paged: limit (default 50, max 200) and an opaque cursor from a prior call's next_cursor; response carries items, count (the total after any room filter), and next_cursor (null once exhausted).",
     inputSchema: {
       type: "object",
-      properties: { room: { type: "string" } },
+      properties: {
+        room: { type: "string" },
+        limit: { type: "number" },
+        cursor: { type: "string" },
+      },
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true },
@@ -133,19 +156,6 @@ async function readHeartbeat(env) {
   const raw = await env.FLEET.get("heartbeat_at");
   const { at, derivedAt, pendingPushAgeS } = readStoredHeartbeat(raw);
   return { heartbeatAt: at, derivedAt, pendingPushAgeS };
-}
-
-// Both isoStrings this ever compares come from the same producer's datetime.isoformat() call
-// (pusher.py), so a plain string comparison over two well-formed ISO-8601 UTC instants sorts the
-// same as comparing the instants themselves -- no Date parsing, and no timezone-offset pitfall to
-// get wrong. Either argument being absent/non-string degrades to "the other one, or null".
-function maxIsoOrNull(a, b) {
-  const aOk = typeof a === "string" && a.length > 0;
-  const bOk = typeof b === "string" && b.length > 0;
-  if (aOk && bOk) return a > b ? a : b;
-  if (aOk) return a;
-  if (bOk) return b;
-  return null;
 }
 
 async function readInboxIndex(env) {
@@ -230,6 +240,25 @@ async function handleMcp(request, env) {
   if (method === "tools/call") {
     const name = params?.name;
     if (name === "fleet_status") {
+      const args = params?.arguments || {};
+      // #1656: `page` pages over the FULL terminal-room archive -- a plain 0-based page index
+      // rather than an opaque cursor (unlike deliverables_list below), since the archive is a
+      // single append-mostly array with no independent per-item identity worth round-tripping. On
+      // the SAME tool rather than a new one so worker.js's TOOLS array stays exactly the three
+      // read-only names FleetGlassReadOnlyTests pins.
+      if (isValidFleetStatusPage(args.page)) {
+        const raw = await env.FLEET.get("terminal_archive");
+        let archive = [];
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            archive = Array.isArray(parsed) ? parsed : [];
+          } catch {
+            archive = [];
+          }
+        }
+        return json(rpcResult(id, toolText(JSON.stringify(computeFleetStatusPage(archive, args.page, args.limit)))));
+      }
       const stored = await env.FLEET.get("snapshot");
       const { heartbeatAt, derivedAt: derivedAtFromHeartbeat, pendingPushAgeS } = await readHeartbeat(env);
       const storedSnapshot = stored === null ? null : JSON.parse(stored);
@@ -241,20 +270,29 @@ async function handleMcp(request, env) {
       // pending_push_age_s (2026-09-01 review finding) has only ONE route -- the heartbeat ping,
       // never the snapshot body itself (a snapshot that successfully pushed has nothing pending by
       // definition) -- so there is no second value to max against here.
+      // #1656: fold pushed_at into the DISPLAYED heartbeat_at (same maxIsoOrNull merge derived_at
+      // already uses) -- rationale and the bug this fixes: spec/baton.md §6.
+      const heartbeatDisplayAt = maxIsoOrNull(heartbeatAt, storedSnapshot?.pushed_at);
       if (stored === null) {
         return json(rpcResult(id, toolText(JSON.stringify({ pushed_at: null, rooms: null, heartbeat_at: heartbeatAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS, note: "no snapshot pushed yet" }))));
       }
       // heartbeat_at/derived_at/pending_push_age_s are merged in at read time, never written into
       // the "snapshot" value itself -- that keeps them out of pusher.py's change-gate hash (see
       // this file's header).
-      const snapshot = { ...storedSnapshot, heartbeat_at: heartbeatAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS };
+      const snapshot = { ...storedSnapshot, heartbeat_at: heartbeatDisplayAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS };
       return json(rpcResult(id, toolText(JSON.stringify(snapshot))));
     }
     if (name === "deliverables_list") {
       const index = await readInboxIndex(env);
       const room = params?.arguments?.room;
-      const items = room ? index.filter((m) => m.room === room) : index;
-      return json(rpcResult(id, toolText(JSON.stringify({ items, count: items.length }))));
+      const filtered = room ? index.filter((m) => m.room === room) : index;
+      // #1656: paged the same way as fleet_status's terminal archive, but with an OPAQUE cursor
+      // (base64 of {pushedAt, id}) rather than a page index -- the inbox index is mutated by every
+      // /deliver POST (dedupe-by-id unshift, INBOX_CAP eviction), so a page-index cursor could skip
+      // or repeat items across two calls; a cursor anchored to a specific item's own identity
+      // degrades gracefully (falls back to the start) instead of returning a silently wrong slice.
+      const page = computeDeliverablesPage(filtered, params?.arguments?.limit, params?.arguments?.cursor);
+      return json(rpcResult(id, toolText(JSON.stringify(page))));
     }
     if (name === "deliverable_read") {
       const itemId = params?.arguments?.id;
@@ -304,7 +342,17 @@ export default {
       // Legacy body is a bare rooms array; newer pushers send {rooms, underhood, ...} --
       // spread object bodies so extra sections ride along, keep wrapping bare arrays.
       const payload = Array.isArray(parsed) ? { rooms: parsed } : parsed;
-      const snapshot = JSON.stringify({ pushed_at: new Date().toISOString(), ...payload });
+      // #1656: `terminal_archive` (every terminal room; pusher.py's own hot-set cap keeps `rooms`
+      // itself to non-terminal + the newest N terminal only, see pusher.py's HOT_TERMINAL_CAP)
+      // rides the SAME push body but is stored under its OWN key, never folded into "snapshot" --
+      // the whole point of the split is that a plain (no `page`) fleet_status call stays small
+      // regardless of how many terminal rooms the fleet has ever accumulated. Read back a page at a
+      // time only when `page` is passed (see handleMcp's fleet_status branch above).
+      const { terminal_archive: terminalArchive, ...hotPayload } = payload;
+      if (Array.isArray(terminalArchive)) {
+        await env.FLEET.put("terminal_archive", JSON.stringify(terminalArchive));
+      }
+      const snapshot = JSON.stringify({ pushed_at: new Date().toISOString(), ...hotPayload });
       await env.FLEET.put("snapshot", snapshot);
       return new Response("ok", { status: 200 });
     }

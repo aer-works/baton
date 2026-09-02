@@ -327,13 +327,18 @@ public static class WorkflowStatusProjector
                         FlowEvent.ExecutionRequestAccepted accepted => accepted.Request.ExecutionId.Value,
                         FlowEvent.ExecutionSucceeded succeeded => succeeded.ExecutionId.Value,
                         FlowEvent.ExecutionFailed failed => failed.ExecutionId.Value,
-                        // #1608 review finding 8: same terminal-event timestamp as ExecutionFailed above
-                        // — without this arm an indeterminate execution fell back to CoreEvent.ExecutionExited
-                        // (a few ms earlier), not a staleness bug but an unnecessary inconsistency with
-                        // ExecutionSucceeded/ExecutionFailed above. The switch is not exhaustive over
-                        // every terminal FlowEvent even with this arm added — ExecutionCancelled and
-                        // CaptureResolved both still fall to `_ => null` below (#1608 review finding 7).
+                        FlowEvent.ExecutionCancelled cancelled => cancelled.ExecutionId.Value,
+                        // #1608 review finding 8 / #1623: same terminal-event timestamp as
+                        // ExecutionFailed above — without these arms a settle that ended in an
+                        // Indeterminate (whichever of its three producers) fell back to
+                        // CoreEvent.ExecutionExited (a few ms earlier), not a staleness bug but an
+                        // unnecessary inconsistency with ExecutionSucceeded/ExecutionFailed above. The
+                        // switch is still not exhaustive over every FlowEvent even with these arms:
+                        // CaptureResolved (#1608 review finding 7) and #1623's own diagnostic-only
+                        // VerifyStarted/VerifyPassed all still fall to `_ => null` below.
                         FlowEvent.ExecutionIndeterminate indeterminate => indeterminate.ExecutionId.Value,
+                        FlowEvent.ExecutionArrested arrested => arrested.ExecutionId.Value,
+                        FlowEvent.VerifyFailed verifyFailed => verifyFailed.ExecutionId.Value,
                         _ => null,
                     };
                     break;

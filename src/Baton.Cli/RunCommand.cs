@@ -86,15 +86,37 @@ public static class RunCommand
     /// double-echoing there is narrower: no daemon/UI path constructs <see cref="RunOptions"/> with
     /// <c>EchoWorker</c> set, and an explicit callback always wins over the flag below.
     /// </param>
-    public static async Task<CommandResult> ExecuteAsync(
+    public static Task<CommandResult> ExecuteAsync(
         RunOptions options,
         IReadOnlyDictionary<string, IWorkerAdapter> adapters,
         InFlightExecutionRegistry? inFlightExecutions = null,
         CancellationToken cancellationToken = default,
         Action<string, string>? onWorkerStdoutLine = null)
+        => ExecuteAsync(options, adapters, inFlightExecutions, cancellationToken, onWorkerStdoutLine, testOnlyAfterProvisionBeforeStaleSweepAsync: null);
+
+    /// <param name="testOnlyAfterProvisionBeforeStaleSweepAsync">
+    /// #1649: test-only seam, always <c>null</c> in production. Runs after
+    /// <see cref="WorktreeWorkspaces.Provision"/> and strictly before
+    /// <see cref="CancelRequestFile.DeleteStalePendingRequestAsync"/> — the exact window a concurrent
+    /// <c>baton cancel</c> can land a live <c>cancel.request</c> write in — so a test can deterministically
+    /// write into that window instead of racing real process timing to hit it.
+    /// </param>
+    internal static async Task<CommandResult> ExecuteAsync(
+        RunOptions options,
+        IReadOnlyDictionary<string, IWorkerAdapter> adapters,
+        InFlightExecutionRegistry? inFlightExecutions,
+        CancellationToken cancellationToken,
+        Action<string, string>? onWorkerStdoutLine,
+        Func<Task>? testOnlyAfterProvisionBeforeStaleSweepAsync)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(adapters);
+
+        // #1649: captured before WorktreeWorkspaces.Provision below runs (and therefore before the
+        // sweep further down) — CancelRequestFile.DeleteStalePendingRequestAsync uses this to tell a
+        // request written no earlier than THIS invocation started (a concurrent writer racing that
+        // window) apart from one left behind by a prior, crashed pump.
+        var invocationStartUtc = DateTimeOffset.UtcNow;
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
         await RegisterRoomAsync(options, cancellationToken).ConfigureAwait(false);
@@ -156,9 +178,18 @@ public static class RunCommand
             TerminalSentinelWriter.DeleteStaleSentinel(options.RoomDirectoryPath);
         }
 
+        // #1649: test-only hook firing exactly here, before the sweep below.
+        if (testOnlyAfterProvisionBeforeStaleSweepAsync is not null)
+        {
+            await testOnlyAfterProvisionBeforeStaleSweepAsync().ConfigureAwait(false);
+        }
+
         // #1495 review finding 5: clear any unconsumed pending cancel.request from a crashed prior
-        // pump before this attempt's poller starts — see CancelRequestFile.DeleteStalePendingRequest.
-        CancelRequestFile.DeleteStalePendingRequest(options.RoomDirectoryPath);
+        // pump before this attempt's poller starts — see CancelRequestFile.DeleteStalePendingRequestAsync,
+        // which (#1649) discriminates that from a request a concurrent baton cancel wrote into the
+        // window between WorktreeWorkspaces.Provision above and this call.
+        await CancelRequestFile.DeleteStalePendingRequestAsync(options.RoomDirectoryPath, invocationStartUtc, cancellationToken)
+            .ConfigureAwait(false);
 
         // #1495: retained regardless of whether the caller supplied one, so THIS call can poll
         // cancel.request against it below — a caller-supplied instance is still honoured (forwarded
@@ -452,7 +483,8 @@ public static class RunCommand
         try
         {
             await RoomRegistryStore.AppendAsync(
-                options.RoomDirectoryPath, projectRoot, BatonPaths.RoomRegistryFile, cancellationToken)
+                options.RoomDirectoryPath, projectRoot, BatonPaths.RoomRegistryFile,
+                explicitRegister: options.Register, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)

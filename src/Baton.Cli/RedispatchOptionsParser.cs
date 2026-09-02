@@ -13,8 +13,8 @@ public static class RedispatchOptionsParser
     /// <summary><c>baton redispatch</c>'s usage string, same role as <see cref="DispatchOptionsParser"/>'s own.</summary>
     public const string Usage =
         "Usage: baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] "
-        + "[--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>] "
-        + "[--workstream <slug>]";
+        + "[--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] "
+        + "[--token-budget <n>] [--label <text>] [--workstream <slug>]";
 
     public static RedispatchOptions Parse(IReadOnlyList<string> args)
     {
@@ -26,6 +26,7 @@ public static class RedispatchOptionsParser
         string? workspaceDirectory = null;
         string? outputPath = null;
         TimeSpan? timeout = null;
+        long? tokenBudget = null;
         string? label = null;
         var labelSpecified = false;
         string? workstream = null;
@@ -57,6 +58,9 @@ public static class RedispatchOptionsParser
                     break;
                 case "--timeout":
                     timeout = ParseTimeout(RequireValue(args, ref i, arg));
+                    break;
+                case "--token-budget":
+                    tokenBudget = ParseTokenBudget(RequireValue(args, ref i, arg));
                     break;
                 case "--label":
                     label = DispatchOptionsParser.SanitizeLabel(RequireValue(args, ref i, arg));
@@ -103,7 +107,20 @@ public static class RedispatchOptionsParser
             adapter, model, effort,
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout, label, labelSpecified, workstream, workstreamSpecified);
+            timeout, label, labelSpecified, tokenBudget, workstream, workstreamSpecified);
+    }
+
+    /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--token-budget</c> (#1623).</summary>
+    private static long ParseTokenBudget(string rawValue)
+    {
+        if (!long.TryParse(rawValue, out var tokens) || tokens <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--token-budget {rawValue}' is not a positive whole number of tokens. {Usage}",
+                "pass a positive integer, e.g. --token-budget 600000.");
+        }
+
+        return tokens;
     }
 
     /// <summary>Same ceiling/warn thresholds and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--timeout</c> (#1442).</summary>

@@ -670,6 +670,31 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void A_fresh_ExecutionRequestAccepted_reopens_an_indeterminate_step()
+    {
+        // #1623 / F5: a fresh dispatch clears the Indeterminate flag and its reason text alongside
+        // RetryForeclosedStepIds. Both halves asserted, not just the text: the flag is what would
+        // otherwise leave WorkflowOutcome pinned to Indeterminate and MayRetry permanently false
+        // underneath a legitimate new attempt -- which is the whole failure this clear exists to
+        // prevent, and it is invisible to an assertion that only reads the diagnostic string.
+        var executionId = new ExecutionId("exec-1");
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.False(architect.IndeterminateAwaitingResolution);
+        Assert.Null(architect.IndeterminateReason);
+        Assert.False(architect.RetryForeclosed);
+    }
+
+    [Fact]
     public void RetryWithRevision_reopens_a_foreclosed_step()
     {
         var executionId = new ExecutionId("exec-1");
@@ -1427,6 +1452,131 @@ public class StateProjectorTests
         }
     }
 
+    // #1623 (contract: spec/baton.md §3). Both of that issue's
+    // producers settle a step Indeterminate via the same ApplyIndeterminate helper -- these fixtures
+    // pin that shape, mirroring StepRetryForeclosed's own test block above.
+
+    [Fact]
+    public void VerifyFailed_settles_the_step_Failed_and_records_an_IndeterminateReason()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check", "lint"], "GATES: FAIL 2 of 25 -- fmt-check, lint"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        // #1623/#1644 merge: the FLAG is what WorkflowOutcome and RetryEngine read for all three
+        // Indeterminate producers -- asserting only the reason text would leave the one line that
+        // unifies this producer with #1608's (ApplyIndeterminate's Add to
+        // IndeterminateAwaitingResolutionStepIds) deletable with every test still green.
+        Assert.True(architect.IndeterminateAwaitingResolution);
+        Assert.NotNull(architect.IndeterminateReason);
+        Assert.Contains("fmt-check", architect.IndeterminateReason);
+        Assert.True(architect.RetryForeclosed);
+        Assert.Equal(FailureClassification.Permanent, architect.LatestFailureClassification);
+    }
+
+    [Fact]
+    public void ExecutionArrested_settles_the_step_Failed_and_records_an_IndeterminateReason()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000), ["manage_task", "manage_task"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
+        Assert.NotNull(architect.IndeterminateReason);
+        Assert.Contains("620000", architect.IndeterminateReason);
+        Assert.True(architect.RetryForeclosed);
+    }
+
+    [Fact]
+    public void VerifyFailed_is_never_retried_even_within_MaxAttempts()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.False(Baton.Scheduling.RetryEngine.MayRetry(architect, new RetryPolicy(MaxAttempts: 5)));
+    }
+
+    [Theory]
+    [InlineData(VerifyFailedKind.EngineRestart, "Verify did not complete across an engine restart — awaiting conductor resolution.")]
+    [InlineData(VerifyFailedKind.TimedOut, "Verify timed out — awaiting conductor resolution.")]
+    [InlineData(VerifyFailedKind.Cancelled, "Verify cancelled — awaiting conductor resolution.")]
+    public void VerifyFailed_with_non_gate_kind_records_corresponding_IndeterminateReason(
+        VerifyFailedKind kind, string expectedReason)
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, null, "tail", kind),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.Equal(expectedReason, architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void VerifyPassed_and_VerifyStarted_are_diagnostic_only()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyStarted(executionId),
+            new FlowEvent.ExecutionSucceeded(executionId),
+            new FlowEvent.VerifyPassed(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.Null(architect.IndeterminateReason);
+    }
+
+    // Polarity partner for both producers above: identical log minus the one event stays an ordinary
+    // Succeeded/Terminal room, not Indeterminate.
+
+    [Fact]
+    public void The_same_execution_without_VerifyFailed_settles_Succeeded_not_Indeterminate()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Null(architect.IndeterminateReason);
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+    }
+
     [Fact]
     public void StepRebound_is_projected_without_perturbing_step_state()
     {
@@ -1446,6 +1596,43 @@ public class StateProjectorTests
         Assert.Equal(StepStatus.Succeeded, architect.Status);
         Assert.Equal(executionId, architect.LatestExecutionId);
         Assert.Equal(0, architect.ConsecutiveFailureCount);
+    }
+
+    [Fact]
+    public void An_Indeterminate_step_survives_an_incremental_checkpoint_resume()
+    {
+        // The same #1606 DeepCopy landmine StepRetryForeclosed_survives_an_incremental_checkpoint_resume
+        // pins for RetryForeclosedStepIds -- IndeterminateReasonByStepId is a second trailing dictionary
+        // relying on its own `?? new()` init default, and DeepCopy constructs positionally.
+        var executionId = new ExecutionId("exec-1");
+        var events = new List<FlowEvent>
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["lint"], "tail"),
+        };
+
+        var (freshState, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot());
+        Assert.NotNull(StepFor(freshState, Architect).IndeterminateReason);
+
+        var resumedState = StateProjector.Project(events, TwoStepSnapshot(), checkpoint);
+        Assert.NotNull(StepFor(resumedState, Architect).IndeterminateReason);
+    }
+
+    [Fact]
+    public void An_Indeterminate_step_reaches_workflow_Terminal()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("exec-2"), Critic)),
+            new FlowEvent.ExecutionSucceeded(new ExecutionId("exec-2")),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.Equal(WorkflowStatus.Terminal, state.Status);
     }
 
     [Fact]

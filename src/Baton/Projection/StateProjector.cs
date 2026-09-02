@@ -105,21 +105,24 @@ public static class StateProjector
                     state.RetryDelayMsByStepId.Remove(acceptedStepId);
                     state.RetryScheduledForExecutionIdByStepId.Remove(acceptedStepId);
 
-                    // #1586 S1: a fresh dispatch reopens a foreclosed step — a foreclosure blocks
-                    // MayRetry, not admission, and this is the same "the pump is dispatching it, so
-                    // whatever blocked it is moot" reasoning the three clears above already rest on.
-                    // Never permanent, per the state-truth design's own ruling on #1586.
+                    // #1586 S1 / #1623 F5: a fresh dispatch reopens a foreclosed or indeterminate step —
+                    // a foreclosure/indeterminate state blocks MayRetry, not admission, and this is the
+                    // same "the pump is dispatching it, so whatever blocked it is moot" reasoning the
+                    // clears above already rest on.
                     state.RetryForeclosedStepIds.Remove(acceptedStepId);
 
                     // #1608 review: the same "the pump is dispatching it, so whatever blocked it is
-                    // moot" reasoning applies to an unresolved indeterminate capture. Today nothing
-                    // ever reaches this while true (MayRetry refuses the step unconditionally and
+                    // moot" reasoning applies to an unresolved Indeterminate, whichever of its three
+                    // producers set it. For the captured-response producer nothing ever reaches this
+                    // while true (MayRetry refuses the step unconditionally and
                     // ExternalDecisionValidator refuses a decide against it, so only CaptureResolved
                     // clears the flag before any fresh dispatch can be admitted) — cleared here anyway,
                     // defensively, so a future producer (S2's baton settle, or a new DecisionType) that
                     // ever mints a fresh execution for this step cannot leave WorkflowOutcome pinned to
                     // Indeterminate and MayRetry permanently false underneath a legitimate new attempt.
+                    // The reason text is cleared in the same breath as the flag, never separately.
                     state.IndeterminateAwaitingResolutionStepIds.Remove(acceptedStepId);
+                    state.IndeterminateReasonByStepId.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -129,6 +132,7 @@ public static class StateProjector
                 break;
 
             case FlowEvent.ExecutionSucceeded succeeded:
+                state.UnmatchedVerifyExecutionIds.Remove(succeeded.ExecutionId);
                 state.SucceededExecutionIds.Add(succeeded.ExecutionId);
                 state.TerminalStatusByExecutionId[succeeded.ExecutionId] = StepStatus.Succeeded;
                 if (state.StepIdByExecutionId.TryGetValue(succeeded.ExecutionId, out var succeededStepId))
@@ -144,6 +148,7 @@ public static class StateProjector
                 break;
 
             case FlowEvent.ExecutionFailed failed:
+                state.UnmatchedVerifyExecutionIds.Remove(failed.ExecutionId);
                 state.TerminalStatusByExecutionId[failed.ExecutionId] = StepStatus.Failed;
                 if (state.StepIdByExecutionId.TryGetValue(failed.ExecutionId, out var failedStepId))
                 {
@@ -164,6 +169,7 @@ public static class StateProjector
                 break;
 
             case FlowEvent.ExecutionCancelled cancelled:
+                state.UnmatchedVerifyExecutionIds.Remove(cancelled.ExecutionId);
                 state.TerminalStatusByExecutionId[cancelled.ExecutionId] = StepStatus.Cancelled;
 
                 // #1563: a park-abort settles a Failed, quota-parked execution as Cancelled (the
@@ -290,6 +296,24 @@ public static class StateProjector
 
                 break;
 
+            case FlowEvent.VerifyStarted verifyStarted:
+                state.UnmatchedVerifyExecutionIds.Add(verifyStarted.ExecutionId);
+                break;
+
+            case FlowEvent.VerifyPassed verifyPassed:
+                state.UnmatchedVerifyExecutionIds.Remove(verifyPassed.ExecutionId);
+                break;
+
+            case FlowEvent.VerifyFailed verifyFailed:
+                state.UnmatchedVerifyExecutionIds.Remove(verifyFailed.ExecutionId);
+                ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed));
+                break;
+
+            case FlowEvent.ExecutionArrested arrested:
+                state.UnmatchedVerifyExecutionIds.Remove(arrested.ExecutionId);
+                ApplyIndeterminate(state, arrested.ExecutionId, DescribeArrest(arrested));
+                break;
+
             case FlowEvent.StepRebound rebound:
                 // Overrides the frozen Adapter/Model on the accepted request so the rebind survives
                 // replay (spec/baton.md §3, #802 section 3.3's own stated reason for freezing the value
@@ -339,6 +363,7 @@ public static class StateProjector
                     && resolvedStepId == resolved.StepId)
                 {
                     state.IndeterminateAwaitingResolutionStepIds.Remove(resolvedStepId);
+                    state.IndeterminateReasonByStepId.Remove(resolvedStepId);
 
                     if (resolved.Accepted)
                     {
@@ -367,6 +392,71 @@ public static class StateProjector
 
                 break;
         }
+    }
+
+    /// <summary>
+    /// #1623: shared apply for the two verify-side Indeterminate producers
+    /// (<see cref="FlowEvent.VerifyFailed"/>, <see cref="FlowEvent.ExecutionArrested"/>) — settles the
+    /// execution's terminal status as <see cref="StepStatus.Failed"/> (so
+    /// <see cref="DeriveWorkflowStatus"/>'s existing deliverability predicate reaches Terminal the same
+    /// way any other failure does), raises the one Indeterminate flag
+    /// (<see cref="ProjectionCheckpointState.IndeterminateAwaitingResolutionStepIds"/> — the same flag
+    /// #1608's <see cref="FlowEvent.ExecutionIndeterminate"/> arm raises, so all three producers reach
+    /// <see cref="Status.WorkflowOutcome.DescribeTerminal"/> and
+    /// <see cref="Scheduling.RetryEngine.MayRetry"/> through one predicate rather than two parallel
+    /// ones), records <paramref name="reason"/> alongside it as diagnostic text, and forecloses retry.
+    /// <see cref="Scheduling.RetryEngine.MayRetry"/> refuses on the flag directly, not merely on the
+    /// foreclosure side effect, per the ruling's "retry-ineligible by an explicit arm, not an accident
+    /// of a default."
+    /// <para>
+    /// Deliberately leaves <see cref="ProjectionCheckpointState.LatestCapturedResponseFileByStepId"/>
+    /// untouched: <c>baton resolve</c> discriminates its capture-resolution targets on that file, not
+    /// on the Indeterminate flag, so a verify-failed step is Indeterminate without becoming a
+    /// capture-resolution target (<c>Mutation.MutationInterface.RecordCaptureResolutionAsync</c>).
+    /// </para>
+    /// </summary>
+    private static void ApplyIndeterminate(ProjectionCheckpointState state, ExecutionId executionId, string reason)
+    {
+        state.TerminalStatusByExecutionId[executionId] = StepStatus.Failed;
+        if (!state.StepIdByExecutionId.TryGetValue(executionId, out var stepId))
+        {
+            return;
+        }
+
+        state.ConsecutiveFailureCountByStepId[stepId] = state.ConsecutiveFailureCountByStepId.GetValueOrDefault(stepId) + 1;
+        state.LatestFailureClassificationByStepId[stepId] = FailureClassification.Permanent;
+        state.LatestFailureReasonByStepId[stepId] = reason;
+        state.IndeterminateAwaitingResolutionStepIds.Add(stepId);
+        state.IndeterminateReasonByStepId[stepId] = reason;
+        state.RetryForeclosedStepIds.Add(stepId);
+        state.RetryNotBeforeByStepId.Remove(stepId);
+        state.RetryDelayMsByStepId.Remove(stepId);
+        state.RetryScheduledForExecutionIdByStepId.Remove(stepId);
+    }
+
+    private static string DescribeVerifyFailure(FlowEvent.VerifyFailed verifyFailed)
+    {
+        return verifyFailed.Kind switch
+        {
+            VerifyFailedKind.EngineRestart => "Verify did not complete across an engine restart — awaiting conductor resolution.",
+            VerifyFailedKind.TimedOut => "Verify timed out — awaiting conductor resolution.",
+            VerifyFailedKind.Cancelled => "Verify cancelled — awaiting conductor resolution.",
+            _ => verifyFailed.FailingMembers is { Count: > 0 }
+                ? $"Verify failed ({string.Join(", ", verifyFailed.FailingMembers)}) — awaiting conductor resolution."
+                : "Verify failed — awaiting conductor resolution.",
+        };
+    }
+
+    private static string DescribeArrest(FlowEvent.ExecutionArrested arrested)
+    {
+        // #1623 re-review N6: ContextLevelTokens (already TokensIn + cache-read + cache-creation) is
+        // the aggregate this arrest was measured against; fall back to raw TokensIn for a WorkerUsage
+        // that never set it (e.g. a synthetic/legacy value with no level tracking).
+        var contextTokens = arrested.Usage?.ContextLevelTokens ?? arrested.Usage?.TokensIn ?? 0;
+        var tokens = contextTokens + (arrested.Usage?.TokensOut ?? 0);
+        return tokens > 0
+            ? $"Execution arrested: token budget exceeded ({tokens} tokens measured) — awaiting conductor resolution."
+            : "Execution arrested: token budget exceeded — awaiting conductor resolution.";
     }
 
     private static FlowState DeriveFlowState(
@@ -425,7 +515,8 @@ public static class StateProjector
                 state.LatestCapturedResponseFileByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.LatestUnsatisfiedOutputNamesByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.RetryForeclosedStepIds.Contains(stepDefinition.StepId),
-                state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId)));
+                state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId),
+                state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);
@@ -438,12 +529,17 @@ public static class StateProjector
             .Where(executionId => !state.TerminalStatusByExecutionId.ContainsKey(executionId))
             .ToList();
 
+        var unmatchedVerifyExecutionIds = state.UnmatchedVerifyExecutionIds
+            .Where(executionId => !state.TerminalStatusByExecutionId.ContainsKey(executionId))
+            .ToList();
+
         return new FlowState(
             snapshot.WorkflowDefinitionSnapshotId,
             steps,
             workflowStatus,
             pendingStepLessExecutions,
-            unfulfilledCancellationRequestExecutionIds);
+            unfulfilledCancellationRequestExecutionIds,
+            unmatchedVerifyExecutionIds);
     }
 
     private static WorkflowStatus DeriveWorkflowStatus(

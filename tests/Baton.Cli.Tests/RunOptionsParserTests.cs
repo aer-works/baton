@@ -102,6 +102,22 @@ public class RunOptionsParserTests
     }
 
     [Fact]
+    public void Register_flag_defaults_to_false()
+    {
+        var options = RunOptionsParser.Parse(["workflow.json", "--bindings", "bindings.json"]);
+
+        Assert.False(options.Register);
+    }
+
+    [Fact]
+    public void Register_flag_parses_when_specified()
+    {
+        var options = RunOptionsParser.Parse(["workflow.json", "--bindings", "bindings.json", "--register"]);
+
+        Assert.True(options.Register);
+    }
+
+    [Fact]
     public void Wait_flag_defaults_to_false()
     {
         var options = RunOptionsParser.Parse(["workflow.json", "--bindings", "bindings.json"]);

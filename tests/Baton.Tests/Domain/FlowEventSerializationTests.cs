@@ -90,6 +90,24 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park")];
         yield return [new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park", ForeclosedBy: "settle")];
         yield return [new FlowEvent.ZeroOutputsDespiteSubstantialWork(ExecutionId, "4 turns, 500 output tokens")];
+
+        // #1623
+        yield return [new FlowEvent.VerifyStarted(ExecutionId)];
+        yield return [new FlowEvent.VerifyPassed(ExecutionId)];
+        yield return [new FlowEvent.VerifyFailed(ExecutionId)];
+        yield return [new FlowEvent.VerifyFailed(ExecutionId, ["fmt-check", "lint"], "GATES: FAIL 2 of 25 -- fmt-check, lint")];
+        yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "timed out", VerifyFailedKind.TimedOut)];
+        yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "cancelled", VerifyFailedKind.Cancelled)];
+        yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "restart", VerifyFailedKind.EngineRestart)];
+        yield return [new FlowEvent.ExecutionArrested(ExecutionId)];
+        yield return
+        [
+            new FlowEvent.ExecutionArrested(
+                ExecutionId,
+                new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000),
+                LastToolNames: ["manage_task", "manage_task", "run_command"])
+        ];
+
         // #1583
         yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover")];
         yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", null, "claude", null)];

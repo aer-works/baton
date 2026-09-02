@@ -413,6 +413,28 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
     private static async Task<string> InitGitWorkspaceAsync(string directory)
     {
         Directory.CreateDirectory(directory);
+
+        // #1623: the shipped catalog's `implement` role now carries a VerifyPixiTask —
+        // MutationInterface spawns a REAL `pixi` process against this
+        // workspace once the fake worker "succeeds", regardless of which adapter dispatched it (the
+        // engine has no notion of a test-only adapter). Without a real, fast, passing `gates-quiet`
+        // task here, that spawn fails immediately (no `pixi.toml` found), turning `implement` from
+        // Succeeded into Indeterminate and breaking every test built on this fixture. A minimal,
+        // dependency-free manifest keeps the spawn real (proving the wiring, not stubbing around it)
+        // while staying fast (~0.2s, no environment solve — empty `channels`).
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "pixi.toml"),
+            """
+            [workspace]
+            name = "verify-fixture"
+            version = "0.1.0"
+            channels = []
+            platforms = ["win-64"]
+
+            [tasks]
+            gates-quiet = { cmd = "cmd /c exit 0" }
+            """);
+
         await RunGitAsync(directory, "init", "-q");
         // -c identity keeps the commit independent of any (absent) global git config on the runner.
         await RunGitAsync(

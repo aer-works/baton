@@ -8,6 +8,7 @@
     "network_access": false,
     "timeout_minutes": 25,
     "verdict_schema": false,
+    "token_budget": 150000,
     "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. #1355 tried making this read-shaped (write_files: false, the review/fact-check/patch shape) but reverted it: advise's tier defaults to agy, which is not outbox-write-capable, and tools/baton-agy-loop/dispatch.py's grant_refusal() refuses a withheld-write role on a non-outbox-capable adapter outright by design (satisfiability there is unmeasured, #638) rather than auto-granting the audited write the C# engine's RoleDispatch now does. Narrowing this needs either a tier change (a separate decision) or teaching dispatch.py the engine's audited-grant translation -- see #1386 for the follow-up.",
     "outputs": [
       {
@@ -26,6 +27,8 @@
     "network_access": true,
     "timeout_minutes": 40,
     "verdict_schema": false,
+    "verify_pixi_task": "gates-quiet",
+    "token_budget": 600000,
     "purpose": "A bounded change with the approach already decided. Exercises the write path and agy's skip-permissions translation, which is the half of AER that review-only dispatches never touch. Its 40 minutes is NOT the #588 path -- every template's timeout exercises that equally -- so do not reach for the skip-permissions grant expecting it to buy that. #1355 kept network_access true here: PermissionGrant.CategoriesDefeatedByTheShell/WorkerBindingResolver refuse RunShellCommands without NetworkAccess outright for EVERY grant-consuming adapter, claude included, not agy alone (--adapter claude is not an escape hatch) -- and agy's own AgyWorkerAdapter.TryTranslatePermissionGrant refuses the same combination a second time at the vendor-translation layer, since --dangerously-skip-permissions grants both or neither. Defaulting network off here would make every unmodified dispatch of this role throw. See #1387 for the follow-up this leaves open.",
     "outputs": [
       {
@@ -58,6 +61,7 @@
     "shell_commands_are_read_only": true,
     "timeout_minutes": 25,
     "verdict_schema": true,
+    "token_budget": 250000,
     "purpose": "Adversarial review of CLAIMS -- a decision record, a measured finding, anything whose rationale asserts something. The default for any PR touching src/ or making a claim in docs/. #1456 (spec/baton.md SS9) grants read-only git/gh so scope no longer has to be reconstructed from grep and .git ref reads: the allowlist above is claude's real, measured ceiling (docs/vendor-capabilities.md's 'canonical ceiling' -- --allowedTools patterns plus a --disallowedTools deny-subset, both enforced with precedence, not mere pre-approval) rather than a wider categorical run_shell_commands. gh api is deliberately excluded -- its method is a runtime flag/field this glob matcher cannot bind to GET-only, so admitting it would be an unenforced hole, not a scoped one. This reverses #1355's flat shell refusal for review specifically because that decision's own reasoning was agy's incoherence (no scoped-shell-without-network grant exists there); #1456 accepts that agy therefore refuses this role's grant outright (PermissionGrantUnsupportedException) rather than silently degrading it -- claude stays the tier's only adapter for review.",
     "outputs": [
       {

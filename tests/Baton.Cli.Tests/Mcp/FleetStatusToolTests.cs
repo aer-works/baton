@@ -1508,7 +1508,8 @@ public sealed class FleetStatusToolTests : IDisposable
             await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
 
             await RoomRegistryStore.AppendAsync(
-                room, unlistedProjectDir, BatonPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
+                room, unlistedProjectDir, BatonPaths.RoomRegistryFile,
+                explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
 
             var tool = new FleetStatusTool();
             // Deliberately no "roots" entry for unlistedProjectDir -- the whole point of the test.
@@ -1539,7 +1540,8 @@ public sealed class FleetStatusToolTests : IDisposable
         {
             Directory.CreateDirectory(deletedRoom);
             await RoomRegistryStore.AppendAsync(
-                deletedRoom, deletedRoomProjectDir, BatonPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
+                deletedRoom, deletedRoomProjectDir, BatonPaths.RoomRegistryFile,
+                explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
             DirectoryCleanup.DeleteRecursively(deletedRoom);
 
             var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
