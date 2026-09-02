@@ -75,9 +75,12 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("retryEligible")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     bool? RetryEligible = null,
-    // #1551: StepState.RetryNotBefore verbatim (ISO-8601, UTC), the vendor-reported instant an
-    // ExhaustedUntil park auto-resumes -- the same value FormatVendorQuotaParkNotice/
-    // StatusCommand.FormatParkedStatus already render as "resumes at HH:mm". Gated on
+    // #1551: StepState.RetryNotBefore verbatim (ISO-8601, UTC) -- the instant an ExhaustedUntil park
+    // auto-resumes, same value FormatVendorQuotaParkNotice/StatusCommand.FormatParkedStatus already
+    // render as "resumes at HH:mm". Usually the vendor-reported reset instant, but not always: #1183
+    // caps a far-future instant to MaxExhaustionParkHorizon and paces an already-past one to
+    // PastResetInstantRetryFloor before GetRetryObligations ever records it here, so a degenerate
+    // vendor value shows the engine's capped/floored instant, not the raw one. Gated on
     // FailureKind == "ExhaustedUntil" specifically (not any Failed step with a pending retry): an
     // ordinary Retryable backoff has a RetryNotBefore too, but this field answers "when does the
     // vendor-quota park lift", not "when is the next attempt". Present only when the engine

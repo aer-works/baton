@@ -794,9 +794,17 @@ one, and an ordinary `Retryable` backoff never emits this field despite scheduli
 `RetryNotBefore` of its own. Nothing re-derives or clears the value once (#1513) liveness confirms
 the scheduling engine dead — a Stalled room keeps reporting the exact same, now-past instant; the
 glass chip (`tools/fleet-glass/glass.html`) is what renders that honestly (a relative "was due 3d
-ago — no scheduler" rather than a live countdown), never this field. A far-future instant (#1183,
-not fixed here) is rendered, not fixed, by the same chip — the park's own crash-on-dispatch bug is
-tracked separately. In practice only one vendor path ever records an obligation to gate on: the agy
+ago — no scheduler" rather than a live countdown), never this field. A far-future or already-past
+reset instant (#1183, fixed) never reaches this field wholesale: `MutationInterface.GetRetryObligations`
+caps an instant more than `MaxExhaustionParkHorizon` (14 days) out to that horizon, and paces an
+instant less than `PastResetInstantRetryFloor` (1 second) away — already past, or legitimately
+future but imminent — up to that floor, before the obligation is ever recorded as a `RetryNotBefore`
+— the crash-on-dispatch bug this closes was `Task.Delay` throwing past its ~49.7-day ceiling on the
+raw instant. `exhaustedUntil` is still copied verbatim from
+`RetryNotBefore` per the paragraph above, but for a degenerate vendor instant `RetryNotBefore` itself
+is now this engine-computed cap or floor, not the raw value the vendor reported — "copied verbatim,
+never re-derived" describes this projection step, not a guarantee that `RetryNotBefore` always equals
+the vendor's own instant. In practice only one vendor path ever records an obligation to gate on: the agy
 duration-parse path (`Resets in …` → `AgyWorkerAdapter`) is what sets `RetryNotBefore` on an
 `ExhaustedUntil` park today; claude's `credits_required` park records none. **Corrected (#1609):**
 that is not "the vendor never reports a reset instant" — `claude -p "/usage"`/`/cost` reliably
