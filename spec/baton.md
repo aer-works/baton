@@ -1387,70 +1387,192 @@ the canonical record for the fix that replaced that arithmetic; `tools/fleet-gla
 module docstring and section comments cite this entry rather than restating it.
 
 The fix is a hard, pusher-owned daily write-budget LEDGER, not a smaller fixed interval: a
-per-UTC-day counter of KV writes by producer, persisted in `push_state_file`
-(`pusher.py`'s `BUDGET_STATE_KEY`), with a real cost per producer that matches what `worker.js` now
-actually writes (the folding below is what makes these costs small and flat, not scaling with
-content):
+per-UTC-day counter of KV writes by producer, persisted in its own file
+(`DEFAULT_BUDGET_STATE_FILE`, `write-budget.local.json`, F4 below), with a real cost per producer
+that matches what `worker.js` now actually writes (the folding below is what makes these costs
+small and flat, not scaling with content):
 - **Snapshot push** — `SNAPSHOT_KV_WRITE_COST` (1). `terminal_archive` now rides inside the SAME
   `"snapshot"` KV value (folded in by item 2 below) instead of a second, unconditional
   `env.FLEET.put` — one write per push, full stop, never two.
-- **Deliver batch** — `DELIVER_BATCH_KV_WRITE_COST` (2), flat, no matter how many items a single
+- **Deliver batch** — `DELIVER_BATCH_KV_WRITE_COST` (3), flat, no matter how many items a single
   `/deliver` POST carries — down from a cost that scaled with item count before item 2's fold (see
-  "Item 2" below for exactly what changed on `worker.js`'s side).
+  "Item 2" below for exactly what changed on `worker.js`'s side). The 3rd write is a conservative
+  charge for the delete path (F3(a)/F5 below), not a third `put`.
 - **Heartbeat or derived-freshness ping** — `HEARTBEAT_KV_WRITE_COST` (1) — unchanged; the two
   cadences already shared one write per POST (#1613 item 2) and stay mutually exclusive per cycle.
 
-`KV_DAILY_WRITE_TARGET` (700) is the hard daily target — comfortably under the 1,000 free-tier cap,
-with `DELIVER_RESERVE` (100) carved out so deliverables and heartbeats/pings still land once the
-snapshot half stops spending. `snapshot_pushes_allowed`/`deliver_allowed`/`heartbeat_allowed` each
-gate their own producer against `budget_left(ledger)`, checked immediately before the write so the
-ledger can never overshoot the target — every gate uses a `>=`/`>` comparison against its own exact
-cost, so the write that would cross the line is simply never attempted.
+**Per-producer sub-budgets and pacing, not a shared pool (F1, 2026-09-02 review).** The FIRST shipped
+version of this ledger (`KV_DAILY_WRITE_TARGET` 700 with a single `DELIVER_RESERVE` of 100 carved
+out for deliverables/heartbeats) passed its own arithmetic gate and was still a worse operator
+experience than the incident it replaced: because only the snapshot half had adaptive pacing, deliver
+(by far the fastest producer) could spend the ENTIRE shared pool before the reserve even mattered —
+23 snapshots crammed into the first two hours of the day, then 21h45m of total silence (zero
+snapshots, zero deliverables, zero heartbeats) until UTC midnight. A reserve sized as a flat write
+count, not a share of the day, is not a reserve against a faster producer at all. The fix: each
+producer gets its OWN daily sub-budget, gated independently —
+- `SNAPSHOT_DAILY_WRITES` (300), `DELIVER_DAILY_WRITES` (320), `HEARTBEAT_DAILY_WRITES` (60) — sum
+  680, under `KV_DAILY_WRITE_TARGET` (700), which stays as the overall sanity ceiling the arithmetic
+  gate checks the ledger's grand total against; it no longer gates any individual write.
+- `snapshot_pushes_allowed`/`deliver_allowed`/`heartbeat_allowed` each check ONLY their own
+  producer's counter against its own sub-budget (`pusher.py`), never `budget_left` of the combined
+  total — the write that would cross a producer's own line is simply never attempted for THAT
+  producer, with no effect on the other two.
+- **AND its own adaptive pacing**, not just a sub-budget: `adaptive_producer_interval_s` (one shared
+  formula, `adaptive_snapshot_interval_s`/`adaptive_deliver_interval_s`/
+  `adaptive_heartbeat_interval_s` as its three per-producer names) widens each producer's own
+  interval as ITS OWN remaining sub-budget for the rest of the day shrinks:
+  `interval = max(producer_min_interval_s, seconds_left_in_day / max(1, producer_writes_left /
+  producer_cost))`. A bare sub-budget without this would still let deliver (or the
+  derived-freshness ping, once snapshot's own throttling stopped suppressing it via
+  `LAST_PUSH_TS_KEY`) burn its whole share in the first couple of hours and go dark for the rest of
+  the day — the same failure shape at a smaller scale. Deliver's own last-sent timestamp
+  (`LAST_DELIVER_TS_KEY`) and `should_coalesce_producer` give it the same coalescing-floor mechanism
+  snapshot already had (`should_coalesce_push`, #1538).
 
-**Adaptive snapshot cadence.** Rather than a fixed coalescing floor, the snapshot half's own
-interval widens as the day's remaining spendable budget (budget left, minus `DELIVER_RESERVE`)
-shrinks relative to the time left in the UTC day:
-`interval = max(min_push_interval_s, seconds_left_in_day / max(1, budget_left − DELIVER_RESERVE))`
-(`pusher.py`'s `adaptive_snapshot_interval_s`) — never faster than the configured
-`min_push_interval_s` floor (#1538, unchanged), and slower still once the budget itself is the
-binding constraint, so a change-heavy fleet tapers off smoothly across the day instead of running
-the budget out early and hard-stopping. Once `snapshot_pushes_allowed` goes false (the snapshot half
-has spent down to the reserve), the pusher sends exactly ONE more snapshot — carrying a `pusher`
-block, `{"writeBudgetExhaustedUntil": <ISO of the next 00:00 UTC>}` — and then stops snapshot pushes
-for the rest of the day; deliverables and heartbeats/pings keep landing out of the reserve until
-their own gate also goes false. `writeBudgetExhaustedUntil` is absent on every ordinary push, same
-optional-field convention as `conductor`; `glass.html`'s freshness strip reads it absent-safe and
-shows it ahead of every other staleness banner, since it explains — rather than merely flags — why
-`pushed_at` will keep aging until that instant. Never a silent stop: `pusher.log` gets one line per
-hour naming the ledger regardless of which producers are still spending (`format_budget_log_line`):
-`budget: used N/700 (snap a, deliver b, beat c), interval now Xs`.
+**The gate asserts DISTRIBUTION, not just a total (F1/F2).** A total-only check can only ever report
+`<= budget` — any arithmetic that routes every write through its own enforcement functions can never
+report otherwise — which says nothing about WHEN in the day those writes land, and is exactly what
+let the shared-pool design pass its own gate while still going dark for 21h45m.
+`simulate_worst_case_daily_writes` now returns per-producer write TIMESTAMP lists (not just the final
+ledger), and the selftest asserts, for the snapshot producer at max cadence: the largest gap between
+consecutive writes never exceeds 1800s (never a half-hour blind spot), and the day's last write lands
+within 1800s of midnight (the day ends still serving). Both assertions are proven to discriminate: a
+frozen, hardcoded reproduction of the shared-pool design this PR replaces (`pusher.py`'s
+`_legacy_shared_pool_worst_case` selftest helper) passes the old total-only check (700 used == 700
+target) but FAILS both distribution assertions (max snapshot gap ≈79,000s; last write ≈8,300s) — the
+red half of red-then-green, committed rather than thrown away (the #1690 postmortem's own complaint
+about the PRIOR gate's control arm, per F2 below). Against the shipped per-producer design both
+assertions pass (max gap 300s; last write within the final 300s of the day).
 
-**The arithmetic is now a gate, not a claim.** `pusher.py --selftest` computes the worst-case daily
-write total with every producer at its own maximum cadence, driven through the SAME
-`snapshot_pushes_allowed`/`deliver_allowed`/`heartbeat_allowed`/`adaptive_snapshot_interval_s`
-functions `main()` itself uses (`simulate_worst_case_daily_writes`), and fails the selftest if that
-total exceeds `KV_DAILY_WRITE_TARGET` — the check the 2026-09-02 postmortem states "was never
-asserted anywhere" until this entry. Run against the shipped constants the worst case lands at
-exactly the target (700); run against the pre-#1690 constants (no ledger, 1 or 2 writes per
-snapshot push, K+1 per deliver batch) the same style of worst-case arithmetic clears 1,000 easily —
-see the #1690 PR body for the paired before/after numbers this selftest arm produced.
+**F2: a control that actually discriminates.** The first version's "(control) an impossibly low
+target fails" assertion was `<= 1` — it PASSED, for the same reason the real arm passed (the ledger
+clamps), exercising no path a genuine overrun would take. `simulate_worst_case_daily_writes` now
+takes a `ledger_enabled=False` parameter that bypasses every gating check, plus a configurable
+`snapshot_cost`/`deliver_cost` (the latter accepting a callable for a per-item shape) — feeding it
+the pre-#1690 shape (`ledger_enabled=False, snapshot_cost=2, deliver_cost=lambda k: k + 1`) produces
+39,768 writes/day, comfortably over 1,000, proving the gate can fail when fed a genuine overrun.
+
+**F7: the gate now runs the config the fleet actually runs.** The prior selftest only ever drove
+`simulate_worst_case_daily_writes` at its default `min_push_interval_s` (90), while the deployed
+pusher runs 300 (the operator's own #1690 mitigation) — the printed "23 snapshots" described a
+config nothing was running. The selftest now runs both 90 and 300 and prints each; the deployed
+number is 300.
+
+**Adaptive snapshot cadence** is `adaptive_snapshot_interval_s` (`pusher.py`'s own docstring says why
+it keeps its own name rather than being called generically). Once `snapshot_pushes_allowed` goes
+false (snapshot's own sub-budget is spent), the pusher sends exactly ONE more snapshot — carrying a
+`pusher` block,
+`{"writeBudgetExhaustedUntil": <ISO of the next 00:00 UTC>}` — and then stops snapshot pushes for the
+rest of the day; deliverables and heartbeats/pings are unaffected, since each spends from its own
+sub-budget. `writeBudgetExhaustedUntil` is absent on every ordinary push, same optional-field
+convention as `conductor`; `glass.html`'s freshness strip reads it absent-safe and shows it ahead of
+every other staleness banner. **F11 (2026-09-02 review):** the exhaustion-notice push clears
+`SNAPSHOT_HASH_KEY` rather than persisting the notice body's own hash under it — the notice's content
+(`notice_wrapped`, carrying the `pusher` block) differs from the ordinary snapshot hash
+(`current_hash`, computed from `wrapped`), so persisting `current_hash` there left a stale
+`writeBudgetExhaustedUntil` banner able to survive past the instant it named on an all-terminal, quiet
+fleet at the next UTC-day rollover, suppressing every real banner beneath it. Clearing it means the
+first cycle of the new day always re-pushes, regardless of content match. Never a silent stop:
+`pusher.log` gets one line per hour naming the ledger regardless of which producers are still
+spending (`format_budget_log_line`): `budget: used N/700 (snap a, deliver b, beat c), interval now
+Xs`.
+
+**F3(b): the ledger is charged BEFORE the POST, in all three producers.** `worker.js` returns 200
+only after its `env.FLEET.put` has already committed, so a client-side timeout or a dropped
+connection after that commit is a real KV write the ledger would otherwise never see if it only
+counted on success — the exact silent-overshoot mode this ledger exists to close, on a flaky link
+that repeats every cycle. A client cannot distinguish "the worker never wrote" from "the worker wrote
+and the response was lost", so for a hard external cap the only safe posture is to charge first: this
+does over-charge a genuine failure where nothing happened (DNS failure, connection refused, a 413),
+and that cost is real, but under-charging costs the cap itself. This is deliberately the OPPOSITE
+ordering from the hash/dedupe persistence discipline (`push_snapshot_and_record`,
+`send_heartbeat_and_record`, deliver's own `mark_pushed`/`LAST_DELIVER_TS_KEY`) — those still persist
+only after a successful POST, since the hash governs correctness of CONTENT while the ledger governs
+a hard external LIMIT; they are different things sharing what used to be one branch.
+
+**F4: the ledger lives in its own file, written atomically.** `write-budget.local.json`
+(`DEFAULT_BUDGET_STATE_FILE`), separate from `push-state.local.json` — so a lost or reset
+deliverables-dedupe state file does not also zero the day's spent budget, and vice versa. Both files
+are now written via a sibling temp file plus `os.replace` (`save_push_state`) rather than
+`write_text`'s truncate-then-write, since a process killed mid-write (the deploy path's
+terminate-and-replace SIGTERMs the incumbent pusher on every deploy, and this file is rewritten
+several times per cycle) could otherwise leave a truncated file `load_push_state` cannot distinguish
+from "no file" — silently resetting the ledger to zero and re-arming the exhaustion notice.
+`os.replace` is atomic on both Windows and POSIX.
+
+**F10: a monotonic rollover guard.** `load_budget_ledger` previously keyed purely on
+`utc_day_str(now_ts)`, so an NTP correction moving the clock backward across midnight (or a repeated
+forward/back correction) handed the same real day a second full budget the moment the stored date no
+longer matched. It now refuses to roll back: a stored date strictly LATER than what `now_ts` claims,
+with real usage already recorded, is served as-is; a backward jump against an all-zero stored ledger
+is harmless and re-keys onto the earlier day (nothing to double-count yet).
+
+**The arithmetic is now a gate, not a claim, scoped honestly (F9).** `pusher.py --selftest` computes
+the worst-case daily write distribution with every producer at its own maximum cadence, driven
+through the SAME `snapshot_pushes_allowed`/`deliver_allowed`/`heartbeat_allowed`/
+`adaptive_producer_interval_s` functions `main()` itself uses (`simulate_worst_case_daily_writes`),
+and fails the selftest if the total exceeds `KV_DAILY_WRITE_TARGET` or either distribution assertion
+above fails. This property holds for the three GATED producers (snapshot, deliver, heartbeat/ping)
+and the costs named above — it does NOT hold for two paths outside the ledger entirely: (a)
+`env.FLEET.delete` on legacy per-item eviction (`worker.js`, uncounted before F3(a); now covered by
+`DELIVER_BATCH_KV_WRITE_COST`'s conservative +1, but the physical delete itself is still ungated by
+any pusher-side check — it happens on the WORKER side, driven by the index's own size, not by
+anything the ledger throttles), and (b) F5's refcounted orphaned-batch reclaim (same file, same
+conservative +1, same caveat). Whether Cloudflare's KV free tier counts a delete against this same
+1,000/day write limit, or a separate delete limit, is unverified from here (no network access to the
+current limits page) — treated as a write, the conservative reading.
 
 **Item 2, the worker-side fold, in one place:** `worker.js`'s storage-key docstring (this file's own
 header) is the canonical record of exactly which KV keys exist post-fold
 (`"snapshot"`/`"inbox:batch:<id>"`/legacy `"inbox:item:<id>"`) and the read-side fallback for
 deliverables delivered before this change; not restated a third time here.
 
-**Item 3, the telemetry churn gate.** A Running room's `live` section (item 1 above) changes almost
-every cycle by construction — `toolCalls` incrementing, tokens accumulating, `lastActivityAt`'s own
-90s bucket advancing — which would otherwise re-trigger the #1457 change-gate every
-`interval_seconds` regardless of the write-budget ledger's own throttling. `pusher.py`'s
-`quantize_live_for_hash` computes the change-gate's hash from a copy of the room list where every
-room's `live` section is collapsed to a single bucket index (`LIVE_TELEMETRY_HASH_BUCKET_SECONDS`,
-300s) — the value actually POSTED is never touched, only the hash's sensitivity to telemetry-only
-churn, so telemetry-only deltas count as CHANGED at most once per 300s. A structural change (a
-different room set, a state transition, a new or changed deliverable, error text) lives in fields
-this quantization never touches, so it still changes the hash — and triggers a push, budget
-permitting — on the very next cycle.
+**F5: refcounted batch blobs.** Pre-fix, a batched entry's `inbox:batch:<id>` blob was deliberately
+left orphaned once its last index reference was gone (eviction, or a re-delivery re-stamping the
+same id under a new batch id) — unbounded KV storage growth with no reaper, no metric, no alarm,
+whose eventual failure mode (the namespace filling, `env.FLEET.put` starting to fail) looks like
+nothing in this PR months later. `worker.core.mjs`'s `computeDeliverBatch` now also returns
+`orphanedBatchIds` — batch ids no remaining index entry references after this POST's eviction or
+re-delivery — and `worker.js`'s `handleDeliver` deletes those blobs. Amortised to roughly one delete
+per batch in steady state, which is what `DELIVER_BATCH_KV_WRITE_COST`'s conservative +1 budgets for.
+
+**F8: `deliverable_read` distinguishes "known but not replicated" from "no such id".** Post-item-2,
+resolving an id spans two reads (`inbox:index`, then `inbox:batch:<id>`) instead of one — KV is
+eventually consistent across colos, so there is a real window where the index has propagated (how an
+operator sees an id in `deliverables_list` at all) while its batch blob has not. `worker.core.mjs`'s
+`deliverableReadOutcome` (pure, selftest-covered) tells that apart from a genuinely nonexistent id:
+when the index itself names a `batch_id` for the id but neither the blob nor the legacy key resolves,
+`deliverable_read` returns a distinct "known but not yet replicated — retry in a minute" message
+instead of asserting non-existence for something the same request's own index says exists.
+
+**F13: the deliver batch cap is BYTES, not item count.** Post-item-2, a `/deliver` POST costs the
+SAME flat `DELIVER_BATCH_KV_WRITE_COST` regardless of item count K, so the old fixed
+`DEFAULT_DELIVER_BATCH_CAP` (10 items, sized when cost scaled with K) bought nothing once the fold
+landed and cost a lot: a 210-item backlog that could ship as 1 batch instead cost 21
+write-amplifying ones. `gather_deliverables`/`gather_conductor_deliverables` now cap by cumulative
+content bytes (`DEFAULT_DELIVER_BATCH_BYTES`, ~4MB, safely under `worker.js`'s 5,000,000-char
+`/deliver` body cap) with a generous item-count ceiling (`DEFAULT_DELIVER_BATCH_COUNT_CEILING`, 2000)
+as a backstop only — at least one item is always admitted even if it alone exceeds the byte budget
+(fail toward one oversized batch, never toward silently dropping the only thing to show).
+
+**Item 3, the telemetry churn gate, quantizing VALUES not the clock (F6, 2026-09-02 review).** A
+Running room's `live` section (item 1 above) changes almost every cycle by construction —
+`toolCalls` incrementing, tokens accumulating, `lastActivityAt`'s own 90s bucket advancing — which
+would otherwise re-trigger the #1457 change-gate every `interval_seconds` regardless of the
+write-budget ledger's own throttling. The FIRST shipped version of `quantize_live_for_hash` bucketed
+`now_ts` (the wall clock at evaluation time) into a `LIVE_TELEMETRY_HASH_BUCKET_SECONDS` (300s)
+index — which meant ANY Running room with a `live` section forced the hash to flip every 300s
+regardless of whether the room's own telemetry had moved at all, guaranteeing the snapshot half
+always drew its full ~288/day on any active fleet. This is what made F1 unavoidable rather than
+load-dependent: the snapshot half never had a quiet-fleet case that gave the budget back. The fix
+quantizes the telemetry VALUES themselves: `lastActivityAt`'s own parsed instant is bucketed to the
+same 300s grain, and `toolCalls`/`outputTokens` are coarsened to their own grain
+(`LIVE_TELEMETRY_TOOLCALLS_GRAIN` 5, `LIVE_TELEMETRY_TOKENS_GRAIN` 10,000) — an unchanged lane now
+hashes unchanged forever, since the function takes no wall-clock argument at all; an advancing one
+flips at most once per bucket/grain of REAL progress. A structural change (a different room set, a
+state transition, a new or changed deliverable, error text) lives in fields this quantization never
+touches, so it still changes the hash — and triggers a push, budget permitting — on the very next
+cycle.
 
 ---
 
@@ -1837,9 +1959,9 @@ by path: `view_file` is granted whole for this role (`ReadFiles: true`), the hoo
 for the write-family tools, and `HOME`/`USERPROFILE` are not redirected for shell-granted workers, so
 a granted read tool can reach the operator's real home — this is pre-existing and identical on claude
 and `advise`, not something this probe measured or bounded. Unprobed: the subagent/`manage_task`
-tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects
-tracked in #1679 — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
-restated here. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
+tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own
+prefix-collision defects fixed by #1679 (closed) — `docs/vendor-doc-audit.md`'s dated entry names the
+full unprobed population, not restated here. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
 `ShellCommandPatterns` now resolves to `--dangerously-skip-permissions` and lets the hook do the
 narrowing; a grant with shell but no patterns still refuses, because nothing would bound it. A hook
 that cannot start reads as an allow on this vendor, so for `review` specifically a broken hook widens

@@ -93,25 +93,61 @@ export function maxIsoOrNull(a, b) {
 // worker.selftest.mjs can exercise the real batching logic with plain node -- no live KV needed.
 // This is the fold that turns a K-item POST from K+1 KV writes (one inbox:item:<id> put per item,
 // pre-#1690) into 2 (one inbox:batch:<id> put for the whole batch, plus the index put).
+// F8 (2026-09-02 review): the pure decision for deliverable_read's outcome, pulled out of
+// handleMcp's tools/call branch (see worker.js) so it can be exercised without live KV -- same
+// "worker.js does only the actual env.FLEET calls around this" split every other function in this
+// file follows. `content` is whatever the batch-blob/legacy-key reads resolved to (null if neither
+// hit); `batchKey` non-null means the INDEX itself claims this id exists (deliverableBatchKeyFor
+// found a batch_id for it), which is what lets this tell "genuinely no such id" apart from "known,
+// but KV's eventual consistency across colos hasn't propagated its blob yet" -- the index and the
+// blob are two separate reads that can observably disagree for a short window.
+export function deliverableReadOutcome(content, batchKey) {
+  if (content !== null) return { found: true, content };
+  if (batchKey) return { found: false, pending: true };
+  return { found: false, pending: false };
+}
+
+// F5 (2026-09-02 review): refcount `inbox:batch:<id>` blobs so worker.js can reclaim ones no index
+// entry references any more, instead of leaving them orphaned forever (unbounded KV storage growth
+// -- storage has its own free-tier ceiling even though it isn't write-budgeted). A batch id can lose
+// its last reference two ways: (1) eviction, when the index exceeds `inboxCap`, and (2) re-delivery
+// of the SAME id under a new batch id, which re-stamps its index entry and would otherwise abandon
+// the old batch it used to point at. `staleBatchIds` tracks both; `orphanedBatchIds` (returned
+// alongside `evicted`) is the subset with no remaining reference anywhere in the FINAL index, for
+// worker.js to `env.FLEET.delete`. Batches evict roughly contiguously, so the amortised cost is ~1
+// delete per batch (DELIVER_BATCH_KV_WRITE_COST in pusher.py budgets a flat +1 for this).
 export function computeDeliverBatch(existingIndex, items, batchId, inboxCap) {
   let index = existingIndex.slice();
   const batchContent = {};
-  let stored = 0;
+  const staleBatchIds = new Set();
   for (const item of items) {
     if (!item || typeof item.id !== "string" || !item.id) continue;
     if (typeof item.room !== "string" || !item.room) continue;
     batchContent[item.id] = String(item.content ?? "");
     const { content: _content, ...meta } = item;
+    const prior = index.find((m) => m.id === item.id);
+    if (prior && typeof prior.batch_id === "string" && prior.batch_id && prior.batch_id !== batchId) {
+      staleBatchIds.add(prior.batch_id);
+    }
     index = index.filter((m) => m.id !== item.id);
     index.unshift({ ...meta, pushed_at: item.pushed_at || new Date().toISOString(), batch_id: batchId });
-    stored += 1;
   }
+  // F12 (2026-09-02 review): count DISTINCT ids actually stored -- two items sharing an id within
+  // one POST filter-then-unshift down to a single index entry above, so counting `items.length`
+  // (or incrementing per loop iteration) double-counted the duplicate; `stored` is what the
+  // /deliver response reports back to the caller.
+  const stored = Object.keys(batchContent).length;
   let evicted = [];
   if (index.length > inboxCap) {
     evicted = index.slice(inboxCap);
     index = index.slice(0, inboxCap);
   }
-  return { index, batchContent, stored, evicted };
+  for (const m of evicted) {
+    if (typeof m.batch_id === "string" && m.batch_id) staleBatchIds.add(m.batch_id);
+  }
+  const referenced = new Set(index.filter((m) => typeof m.batch_id === "string").map((m) => m.batch_id));
+  const orphanedBatchIds = [...staleBatchIds].filter((id) => !referenced.has(id) && id !== batchId);
+  return { index, batchContent, stored, evicted, orphanedBatchIds };
 }
 
 // #1690 item 2, read side: which `inbox:batch:<id>` key (if any) currently holds `itemId`'s content,
