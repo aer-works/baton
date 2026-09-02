@@ -41,6 +41,10 @@ public static class DaemonHost
 
         var builder = Host.CreateApplicationBuilder(args);
 
+        // #1659: DI-injected into RoomRetentionSweep below so it can read RoomsRetentionDays without a
+        // second settings load — the same daemonSettings already loaded for the concurrency caps above.
+        builder.Services.AddSingleton(daemonSettings);
+
         // #1025: room retention sweep (journal compaction)
         builder.Services.AddHostedService<RoomRetentionSweep>();
 

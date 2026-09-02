@@ -297,4 +297,121 @@ public class RoomRegistryStoreTests
             FileCleanup.Delete(path);
         }
     }
+
+    // #1659: RemoveByRoomPathAsync backs `baton room delete`'s registry-line removal.
+    [Fact]
+    public async Task RemoveByRoomPathAsync_RemovesEveryLineForThatRoom_AndReturnsTheCount()
+    {
+        var path = TempRegistryPath();
+        try
+        {
+            var roomDir = Path.Combine(Path.GetTempPath(), $"room-{Guid.NewGuid():N}");
+            var otherRoomDir = Path.Combine(Path.GetTempPath(), $"room-{Guid.NewGuid():N}");
+            var projectDir = Path.Combine(Path.GetTempPath(), $"project-{Guid.NewGuid():N}");
+
+            // Two lines for roomDir (a project-root change re-appends, #1657) plus one unrelated room.
+            await RoomRegistryStore.AppendAsync(roomDir, projectDir, path, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+            await RoomRegistryStore.AppendAsync(roomDir, projectDir + "2", path, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+            await RoomRegistryStore.AppendAsync(otherRoomDir, projectDir, path, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+            var removedCount = await RoomRegistryStore.RemoveByRoomPathAsync(path, roomDir, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, removedCount);
+            var remaining = await RoomRegistryStore.ReadDistinctByRoomAsync(path, TestContext.Current.CancellationToken);
+            var survivor = Assert.Single(remaining);
+            Assert.Equal(BatonPaths.RecordKey(otherRoomDir), survivor.RoomPath);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task RemoveByRoomPathAsync_NoMatchingLine_ReturnsZero_AndLeavesTheFileUntouched()
+    {
+        var path = TempRegistryPath();
+        try
+        {
+            var roomDir = Path.Combine(Path.GetTempPath(), $"room-{Guid.NewGuid():N}");
+            await RoomRegistryStore.AppendAsync(roomDir, "C:/project", path, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+            var removedCount = await RoomRegistryStore.RemoveByRoomPathAsync(
+                path, Path.Combine(Path.GetTempPath(), "no-such-room"), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, removedCount);
+            Assert.Single(await RoomRegistryStore.ReadDistinctByRoomAsync(path, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task RemoveByRoomPathAsync_MissingFile_ReturnsZero_NeverThrows()
+    {
+        var path = TempRegistryPath();
+        var removedCount = await RoomRegistryStore.RemoveByRoomPathAsync(path, "C:/no-such-room", TestContext.Current.CancellationToken);
+        Assert.Equal(0, removedCount);
+    }
+
+    // #1659: CompactAsync backs `baton rooms prune`'s unconditional registry-hygiene pass —
+    // spec/baton.md §8's "left undone" compaction.
+    [Fact]
+    public async Task CompactAsync_DedupesAndDropsMissingDirectories_AndRewritesTheFile()
+    {
+        var path = TempRegistryPath();
+        var keptRoomDir = Path.Combine(Path.GetTempPath(), $"baton-registry-kept-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(keptRoomDir);
+        try
+        {
+            var missingRoomDir = Path.Combine(Path.GetTempPath(), $"baton-registry-missing-{Guid.NewGuid():N}");
+            // Two raw lines for keptRoomDir (a duplicate registration, #1657's "does not dedupe" gap)
+            // plus one line for a directory that was never created — CompactAsync must fold the first
+            // pair to one survivor and drop the second entirely.
+            await RoomRegistryStore.AppendAsync(keptRoomDir, "C:/project", path, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+            await RoomRegistryStore.AppendAsync(keptRoomDir, "C:/project2", path, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+            await RoomRegistryStore.AppendAsync(missingRoomDir, "C:/project", path, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+            var (dedupedCount, missingDirectoryCount) = await RoomRegistryStore.CompactAsync(path, TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, dedupedCount);
+            Assert.Equal(1, missingDirectoryCount);
+            var remaining = await RoomRegistryStore.ReadDistinctByRoomAsync(path, TestContext.Current.CancellationToken);
+            var survivor = Assert.Single(remaining);
+            Assert.Equal(BatonPaths.RecordKey(keptRoomDir), survivor.RoomPath);
+            var lineCount = (await File.ReadAllLinesAsync(path, TestContext.Current.CancellationToken)).Count(line => !string.IsNullOrWhiteSpace(line));
+            Assert.Equal(1, lineCount);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+            DirectoryCleanup.DeleteRecursively(keptRoomDir);
+        }
+    }
+
+    [Fact]
+    public async Task PreviewCompactionAsync_ReportsTheSameCounts_ButNeverWritesTheFile()
+    {
+        var path = TempRegistryPath();
+        try
+        {
+            var missingRoomDir = Path.Combine(Path.GetTempPath(), $"baton-registry-missing-{Guid.NewGuid():N}");
+            await RoomRegistryStore.AppendAsync(missingRoomDir, "C:/project", path, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+            await RoomRegistryStore.AppendAsync(missingRoomDir, "C:/project2", path, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+            var beforeText = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
+            var (dedupedCount, missingDirectoryCount) = await RoomRegistryStore.PreviewCompactionAsync(path, TestContext.Current.CancellationToken);
+            var afterText = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, dedupedCount);
+            Assert.Equal(1, missingDirectoryCount);
+            Assert.Equal(beforeText, afterText);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
 }

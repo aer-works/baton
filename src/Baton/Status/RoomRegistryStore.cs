@@ -303,6 +303,183 @@ public static class RoomRegistryStore
     }
 
     /// <summary>
+    /// #1659: removes every line whose <see cref="RoomRegistryEntry.RoomPath"/> matches
+    /// <paramref name="roomPath"/> (compared through <see cref="BatonPaths.RecordKey"/>, the same
+    /// normalization every other registry comparison uses) and rewrites the file under the same
+    /// <see cref="Mutex"/> every other access takes — a delete is a writer like any other, and must
+    /// serialize against a concurrent <see cref="AppendAsync"/> the same way. Returns the number of
+    /// lines removed (0 for a missing file or a room path with no matching line — never throws for
+    /// either, matching this type's fail-open contract on read).
+    /// </summary>
+    public static Task<int> RemoveByRoomPathAsync(
+        string registryFilePath, string roomPath, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(registryFilePath);
+        ArgumentException.ThrowIfNullOrEmpty(roomPath);
+
+        if (!File.Exists(registryFilePath))
+        {
+            return Task.FromResult(0);
+        }
+
+        var recordedRoomPath = BatonPaths.RecordKey(roomPath);
+
+        return Task.Run(
+            () => RunUnderLock(registryFilePath, () =>
+            {
+                var (survivors, removedCount) = ReadAndFilter(
+                    registryFilePath, entry => !string.Equals(entry.RoomPath, recordedRoomPath, StringComparison.OrdinalIgnoreCase));
+                if (removedCount > 0)
+                {
+                    WriteAllLines(registryFilePath, survivors);
+                }
+
+                return removedCount;
+            }),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// #1659: the compaction spec/baton.md §8 names as "left undone" — fold every entry down to
+    /// last-writer-wins per <see cref="RoomRegistryEntry.RoomPath"/> (the same rule
+    /// <see cref="ReadDistinctByRoomAsync"/> already applies at read time) and drop any entry whose
+    /// room directory no longer exists on disk, then rewrite the file under the same <see cref="Mutex"/>
+    /// every other access takes. <c>baton rooms prune</c> runs this on every invocation, gated by
+    /// nothing — dedupe/missing-dir cleanup is registry hygiene, independent of the <c>--terminal</c>
+    /// batch-delete filter. Returns (entries removed by dedupe, entries dropped for a missing
+    /// directory); both are 0 for a missing or already-compact file.
+    /// </summary>
+    public static Task<(int DedupedCount, int MissingDirectoryCount)> CompactAsync(
+        string registryFilePath, CancellationToken cancellationToken = default) =>
+        CompactAsync(registryFilePath, write: true, cancellationToken);
+
+    /// <summary>
+    /// #1659: read-only counterpart of <see cref="CompactAsync(string,CancellationToken)"/> — computes
+    /// the exact same (deduped, missing-directory) counts without rewriting the file. What
+    /// <c>baton rooms prune</c>'s dry-run listing (the default, no <c>--yes</c>) calls, so the counts it
+    /// prints match what <c>--yes</c> would actually do without mutating the registry to find out.
+    /// </summary>
+    public static Task<(int DedupedCount, int MissingDirectoryCount)> PreviewCompactionAsync(
+        string registryFilePath, CancellationToken cancellationToken = default) =>
+        CompactAsync(registryFilePath, write: false, cancellationToken);
+
+    private static Task<(int DedupedCount, int MissingDirectoryCount)> CompactAsync(
+        string registryFilePath, bool write, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(registryFilePath);
+
+        if (!File.Exists(registryFilePath))
+        {
+            return Task.FromResult((0, 0));
+        }
+
+        return Task.Run(
+            () => RunUnderLock(registryFilePath, () =>
+            {
+                var text = File.ReadAllText(registryFilePath, Encoding.UTF8);
+                var originalCount = 0;
+                var byRoom = new Dictionary<string, RoomRegistryEntry>(BatonPaths.RecordKeyComparer);
+                foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    RoomRegistryEntry? entry;
+                    try
+                    {
+                        entry = JsonSerializer.Deserialize<RoomRegistryEntry>(line, SerializerOptions);
+                    }
+                    catch (JsonException)
+                    {
+                        continue;
+                    }
+
+                    if (entry is null || string.IsNullOrWhiteSpace(entry.RoomPath) || string.IsNullOrWhiteSpace(entry.ProjectRoot))
+                    {
+                        continue;
+                    }
+
+                    originalCount++;
+                    byRoom[entry.RoomPath] = entry;
+                }
+
+                var dedupedCount = originalCount - byRoom.Count;
+                var survivors = byRoom.Values.Where(entry => Directory.Exists(entry.RoomPath)).ToList();
+                var missingDirectoryCount = byRoom.Count - survivors.Count;
+
+                if (write && (dedupedCount > 0 || missingDirectoryCount > 0))
+                {
+                    WriteAllLines(registryFilePath, survivors);
+                }
+
+                return (dedupedCount, missingDirectoryCount);
+            }),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads every parseable, well-formed line in <paramref name="registryFilePath"/> (already known to
+    /// exist, and already inside the caller's <see cref="RunUnderLock{T}(string,Func{T})"/> section),
+    /// returning the ones <paramref name="keep"/> selects alongside how many did not survive — a
+    /// malformed line is silently dropped from both counts, matching this type's read tolerance
+    /// elsewhere. Shared by <see cref="RemoveByRoomPathAsync"/>; <see cref="CompactAsync"/> has its own
+    /// dedupe-then-filter pass instead, since it needs the pre-dedupe count too.
+    /// </summary>
+    private static (List<RoomRegistryEntry> Survivors, int RemovedCount) ReadAndFilter(
+        string registryFilePath, Func<RoomRegistryEntry, bool> keep)
+    {
+        var text = File.ReadAllText(registryFilePath, Encoding.UTF8);
+        var survivors = new List<RoomRegistryEntry>();
+        var removedCount = 0;
+
+        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            RoomRegistryEntry? entry;
+            try
+            {
+                entry = JsonSerializer.Deserialize<RoomRegistryEntry>(line, SerializerOptions);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (entry is null || string.IsNullOrWhiteSpace(entry.RoomPath) || string.IsNullOrWhiteSpace(entry.ProjectRoot))
+            {
+                continue;
+            }
+
+            if (keep(entry))
+            {
+                survivors.Add(entry);
+            }
+            else
+            {
+                removedCount++;
+            }
+        }
+
+        return (survivors, removedCount);
+    }
+
+    /// <summary>
+    /// Replaces <paramref name="registryFilePath"/>'s entire contents with one JSON line per
+    /// <paramref name="entries"/>, via a temp-file-then-move so a concurrent reader under the same
+    /// <see cref="Mutex"/> never observes a truncated file — the same atomic-replace discipline
+    /// <see cref="Baton.Status.TerminalSentinelWriter"/> uses for the same reason. Callers already hold
+    /// the registry <see cref="Mutex"/>.
+    /// </summary>
+    private static void WriteAllLines(string registryFilePath, IReadOnlyList<RoomRegistryEntry> entries)
+    {
+        var tempPath = $"{registryFilePath}.{Guid.NewGuid():N}.tmp";
+        var builder = new StringBuilder();
+        foreach (var entry in entries)
+        {
+            builder.Append(JsonSerializer.Serialize(entry, SerializerOptions)).Append('\n');
+        }
+
+        File.WriteAllText(tempPath, builder.ToString(), Encoding.UTF8);
+        File.Move(tempPath, registryFilePath, overwrite: true);
+    }
+
+    /// <summary>
     /// Runs <paramref name="action"/> holding a named <see cref="Mutex"/> keyed on
     /// <paramref name="registryFilePath"/>, so every process touching the same registry file — reader
     /// or writer — serializes against every other one. Acquire, <paramref name="action"/>, and release

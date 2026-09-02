@@ -1495,14 +1495,31 @@ created-at.
   skipped without failing the read or hiding the well-formed lines around it — the registry degrades
   to exactly what the directory scan alone would have returned, never fewer.
 
-**Left undone, reported rather than silently dropped:** stale entries (a registered room directory
-later deleted) are skipped on every read but not physically pruned from the file. The `Mutex` above
-would make a compaction rewrite safe against a concurrent appender; writing that rewrite (fold to one
-line per room, drop entries whose directory no longer exists, replace the file under the same lock)
-was judged out of scope for this build regardless. The registry file grows without bound as rooms are
-created and later cleaned up by `RoomRetentionSweep` (§7); a follow-up should add that compaction
-(e.g. gated the same way `RoomRetentionSweep` already is) or confirm the growth rate is immaterial in
-practice.
+**Compaction shipped (#1659), closing the paragraph above.** `RoomRegistryStore.CompactAsync` runs the
+exact rewrite this paragraph used to describe as undone — fold to one line per room, drop entries
+whose directory no longer exists, replace the file under the same `Mutex` every other access takes —
+and `baton rooms prune` (below) calls it unconditionally, on every invocation, independent of its own
+`--terminal` batch-delete filter. `PreviewCompactionAsync` is the read-only counterpart `--dry-run`
+(the default, without `--yes`) calls instead, so the listing's reported counts never come from a write
+the dry-run promised not to make.
+
+**Deletion is the only path that removes a room (#1659).** Operator ruling, 2026-09-02: "we definitely
+need a way to actually delete stuff, not just hide it from the glass." Fleet Glass's dismiss (§6) is a
+per-browser `localStorage` hide — the room directory, its registry lines here, and its pushed
+deliverables all persist regardless, reappearing in any other browser and in every `fleet_status`
+payload. `baton room delete <room-dir>` and its batch form `baton rooms prune --terminal` are the only
+verbs that actually remove a room: the directory, every matching registry line (`RemoveByRoomPathAsync`),
+and — best-effort, since the CLI has no reach into the Cloudflare Worker's KV deliverables index
+(`tools/fleet-glass/worker.js`'s `/deliver` route accepts no removal verb today) — a
+`deleted-rooms.jsonl` tombstone (`DeletedRoomsTombstoneStore`) for the pusher to eventually forward as
+a removal, unbuilt as of this paragraph. Both verbs refuse a non-terminal room (no `terminal.json`)
+unless `--force`, since a live engine may still hold the room's files open — the same holder-liveness
+read (`ConcurrencyGuard.ReadHolderInfo` + `EngineLivenessProbe`) `baton cancel` already uses, never a
+second mechanism. `RoomRetentionSweep` (§7) may call the batch form automatically, gated behind
+`DaemonSettings.RoomsRetentionDays` (default `null`, i.e. off — the ruling's "operator opts in"). A
+retention prune with no `--state` filter deletes `Indeterminate` rooms too — the operator who opts
+into `RoomsRetentionDays` accepts that, and `--state Indeterminate` selects them explicitly (or any
+other `--state` value excludes them) if that default is unwanted.
 
 ---
 

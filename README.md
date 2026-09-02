@@ -20,6 +20,22 @@ narrowed daemon, and bindings/permissions. If this README and the spec disagree,
   ask, every claim observed rather than assumed.
 - [Runbooks](docs/runbooks/) - Manual, key-gated operational procedures not covered by CI.
 
+## Verbs
+
+| Verb | What it does |
+|---|---|
+| `baton run` / `baton dispatch` / `baton redispatch` | Start a workflow room, or rerun a terminal one with an amended brief. |
+| `baton cancel` / `baton decide` / `baton resolve` / `baton resume` / `baton supply` | Mutate an already-started room — cancel a lane, record a pause decision, resolve a captured response, resume a stalled pump, supply a supplementary output. |
+| `baton status` | Read-only projection of a room's current state. |
+| `baton keep` / `baton unkeep` | Mark/unmark a room exempt from `RoomRetentionSweep`'s artifact pruning. |
+| `baton room delete <room-dir> [--keep-deliverables] [--force]` | Remove one room for good: its directory, its `room-registry.jsonl` lines, and (best-effort) a deliverables tombstone. Refuses a non-terminal room unless `--force` — see `spec/baton.md` §8. |
+| `baton rooms prune --terminal [--older-than <days>] [--state <state>] [--dry-run] [--yes]` | Batch form of `room delete`, plus unconditional registry hygiene (dedupe, drop lines whose directory is gone). Lists candidates by default; `--yes` actually deletes. |
+| `baton templates` | List the built-in workflow template catalog. |
+| `baton mcp` / `baton daemon` | The stdio MCP server workers connect to, and the narrowed background daemon (`spec/baton.md` §7). |
+
+`spec/baton.md` is the authority on every verb's exact contract — this table is an index, not a
+restatement.
+
 ## Vendor authentication
 
 Baton does not authenticate to any model provider. It spawns the vendor's own first-party CLI
