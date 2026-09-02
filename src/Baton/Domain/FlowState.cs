@@ -178,6 +178,7 @@ public enum StepStatus
 /// <see cref="RetryForeclosed"/>. An accepted resolution flips <see cref="Status"/> to
 /// <see cref="Succeeded"/> in the same projected step that clears this — but this can also read
 /// <c>true</c> while <see cref="Status"/> is <see cref="Paused"/>, not only <see cref="Failed"/>:
+/// record-once-ok: #1608 spec/baton.md
 /// <see cref="Scheduling.PauseEngine.GetPauseObligations"/> treats a <see cref="Failed"/> step with
 /// <see cref="Scheduling.RetryEngine.MayRetry"/> false as a settled round owing a
 /// <see cref="FlowEvent.WorkflowPaused"/> regardless of why retry is refused, so a step declaring a

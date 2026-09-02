@@ -502,6 +502,7 @@ public class TerminalSentinelEndToEndTests
                 File.Exists(sentinelPath),
                 $"'baton resolve --reject' with retry budget remaining must invalidate the now-stale sentinel. stderr: {stderr}");
 
+            // record-once-ok: #1608 src/Baton.Cli/Program.cs
             // #1608 review finding 4: `resolve` never re-drives the DAG itself, so a room it leaves
             // non-Terminal must name the follow-up invocation rather than reading as though nothing is
             // needed.

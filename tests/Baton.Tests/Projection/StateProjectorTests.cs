@@ -882,6 +882,7 @@ public class StateProjectorTests
     [Fact]
     public void A_step_declaring_PausePoint_that_settles_Indeterminate_projects_Paused_with_the_flag_still_set()
     {
+        // record-once-ok: #1608 spec/baton.md
         // #1608 review finding 3: FlowState.cs's IndeterminateAwaitingResolution doc previously
         // claimed "never true and Status not Failed together" -- falsified by the pause path.
         // PauseEngine.GetPauseObligations treats a Failed step with RetryEngine.MayRetry false as a

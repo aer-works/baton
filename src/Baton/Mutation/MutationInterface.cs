@@ -340,6 +340,7 @@ public static class MutationInterface
                 }
             }
 
+            // record-once-ok: #1608 spec/baton.md
             // #1608 review finding 5: journaled BEFORE the writes below, not after — "fact then
             // files", not "files then fact". Writing first (the original order) meant a crash between
             // the write and the append left a declared output honestly on disk with the room still
