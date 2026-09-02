@@ -426,6 +426,18 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             args.Add("--effort");
             args.Add(resolvedEffort);
         }
+        else if (RequiresAgyEffort(invocation.Model))
+        {
+            // #1596: a suffix-less gemini model (e.g. `gemini-3.7-flash`) reaches agy itself and is
+            // refused there -- paying for a full spawn first. Refuse up-front instead, naming the
+            // model exactly as agy's own refusal does. The available set printed here is the global
+            // one (AgyEffortValues), not enumerated per model: docs/vendor-capabilities.md's "agy
+            // models" section already records that the grid has holes (`gemini-3.1-pro` has no
+            // `medium`), so this message can overstate a narrower model's real set -- see the PR body.
+            throw new IncoherentVendorEffortException(
+                "agy",
+                $"--model {invocation.Model} requires --effort (available: low, medium, high).");
+        }
 
         if (invocation.Timeout is { } timeout)
         {
@@ -854,6 +866,8 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// (sentinel <c>effort.agy-value-set</c> — that check is the tripwire if agy ever changes the set).
     /// Both are otherwise refused by agy at bind time, after the operator has waited; this refuses them
     /// up-front at resolution, naming the real cause. See <see cref="IncoherentVendorEffortException"/>.
+    /// #1596's sibling check, <see cref="RequiresAgyEffort"/>, covers the third case this method
+    /// cannot: an <see cref="WorkerInvocation.Effort"/> of <c>null</c>, when the model requires one.
     /// </summary>
     private static void ReconcileAgyEffort(string? model, string effort)
     {
@@ -898,6 +912,39 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         return null;
     }
+
+    /// <summary>
+    /// The bare (no <c>-low|-medium|-high</c> suffix) gemini model names <c>agy models</c> catalogues
+    /// as having suffixed variants (docs/vendor-capabilities.md's "<c>agy models</c>" fence) -- i.e.
+    /// the families the model-name/effort split actually applies to. Deliberately not "any
+    /// <c>gemini-</c>-prefixed name": <c>gemini-3-pro</c> is NOT one of these families -- it is a
+    /// separate, uncatalogued name that agy refuses for being unrecognized
+    /// (<c>effort.agy-rejection-is-per-model</c>, same doc), not for a missing effort, and treating it
+    /// as if it were regressed <c>AgyWorkerAdapterTests.A_model_is_passed_through_when_set</c> (found
+    /// while fixing #1596, corrected here rather than filed separately per "found-while-fixing").
+    /// </summary>
+    private static readonly HashSet<string> AgyModelsRequiringEffortSuffix =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro",
+        };
+
+    /// <summary>
+    /// True for a catalogued gemini model agy will refuse to spawn without an explicit
+    /// <c>--effort</c> -- i.e. a bare <see cref="AgyModelsRequiringEffortSuffix"/> entry with no
+    /// suffix already applied via <see cref="GeminiEffortSuffix"/>. #1596's own scope note says
+    /// "whether every gemini model without an effort suffix requires --effort, or only some, is
+    /// unmeasured" -- so this stays scoped to the exact families the catalogue shows carrying
+    /// suffixed variants, rather than every <c>gemini-</c>-prefixed name (see
+    /// <see cref="AgyModelsRequiringEffortSuffix"/>'s own remarks for why that would be too wide).
+    /// A non-gemini model (claude, gpt-oss) or an uncatalogued one falls outside it and keeps today's
+    /// behaviour -- no up-front check -- because whether it requires <c>--effort</c> is simply
+    /// unmeasured, not measured-negative.
+    /// </summary>
+    private static bool RequiresAgyEffort(string? model) =>
+        model is not null
+        && GeminiEffortSuffix(model) is null
+        && AgyModelsRequiringEffortSuffix.Contains(model);
 
     private string ResolvePermissionScope(WorkerInvocation invocation)
     {
