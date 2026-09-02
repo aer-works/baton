@@ -28,6 +28,7 @@ narrowed daemon, and bindings/permissions. If this README and the spec disagree,
 | `baton cancel` / `baton decide` / `baton resolve` / `baton resume` / `baton supply` | Mutate an already-started room — cancel a lane, record a pause decision, resolve a captured response, resume a stalled pump, supply a supplementary output. |
 | `baton status` | Read-only projection of a room's current state. |
 | `baton keep` / `baton unkeep` | Mark/unmark a room exempt from `RoomRetentionSweep`'s artifact pruning. |
+| `baton deliver <file> [--title <text>] [--room <room-dir>]` (`--room-dir` also accepted) | Deliver an orchestrator artifact into a room (defaults to standing conductor room) so it reaches the Fleet Glass inbox. |
 | `baton room delete <room-dir> [--keep-deliverables] [--force]` | Remove one room for good: its directory, its `room-registry.jsonl` lines, and (best-effort) a deliverables tombstone. Refuses a non-terminal room unless `--force` — see `spec/baton.md` §8. |
 | `baton rooms prune --terminal [--older-than <days>] [--state <state>] [--dry-run] [--yes]` | Batch form of `room delete`, plus unconditional registry hygiene (dedupe, drop lines whose directory is gone). Lists candidates by default; `--yes` actually deletes. |
 | `baton templates` | List the built-in workflow template catalog. |
@@ -74,20 +75,11 @@ pixi run fmt
 `baton` is distributed as a self-built, unpublished `dotnet tool` — there is no public NuGet feed;
 a single-developer project doesn't need one.
 
-**First install, or refreshing an already-installed tool: `pixi run tool-refresh`.** It drains — a
-marker file that the lane-starting verbs refuse under, plus a refusal (or `--wait`) while any room
-under `~/.baton/rooms` still looks live; `spec/baton.md`'s C-10 *Installation and versioning* paragraph
-states that contract in full, including which verbs refuse, and `pixi run tool-refresh --abort` clears
-a marker a killed refresh left behind — then packs, uninstalls, purges the NuGet cache for that version (mandatory — NuGet
-otherwise silently keeps serving the stale same-version package), installs from `bin/pack`, and
-verifies the reinstall actually took (`baton --version` matches, `baton templates --json` runs)
-before printing a resume hint. `--dry-run` prints every command it would run without executing any
-of them. See `tools/tool-refresh/refresh.py` for the drain predicate and `spec/baton.md`'s C-10 for
-what the front-door drift WARN (`baton dispatch`/`baton status` warning when the installed tool is
-behind this checkout) covers.
+**First install, or refreshing an already-installed tool: `pixi run tool-refresh`.** Installs side-by-side
+per-commit versions under `~/.baton/tools/<sha>` with a lightweight PATH launcher in `~/.dotnet/tools`
+resolving `current` at process start — see [`spec/baton.md`](spec/baton.md) §8 (*Installation and versioning*)
+for the authoritative directory structure, launcher details, and automatic pruning policy.
 
 `pixi run verify-pack` runs the underlying install → run → uninstall round trip end to end against a
-trivial fixture (no live vendor call) — it's the same check CI runs unattended on every push. The
-individual commands `tool-refresh` wraps (`pixi run pack`, `dotnet tool install --global --add-source
-bin/pack baton`, `dotnet tool uninstall --global baton`) still work by hand if you need one step in
-isolation.
+trivial fixture (no live vendor call) — it's the same check CI runs unattended on every push.
+

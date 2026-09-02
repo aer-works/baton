@@ -24,3 +24,7 @@ pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff
 # by `audit-completeness` in CI (windows-latest, #1405) -- pin LF so the file does not churn from
 # Windows `core.autocrlf` on a tracked generated file.
 .vendor-survey/ledger.tsv text eol=lf
+
+# Test fixtures must preserve LF line endings across platforms (#1673)
+tests/fixtures/* text eol=lf
+

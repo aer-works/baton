@@ -170,12 +170,13 @@ public static class RedispatchCommand
         {
             (definition, entry) = await RebuildFromAmendedSpecAsync(workerName, parentEntry, options, cancellationToken)
                 .ConfigureAwait(false);
-            // #1499/#1619: RoleDispatch.Materialize knows nothing of labels or workstreams -- apply
+            // #1499/#1619/#1668: RoleDispatch.Materialize knows nothing of labels, workstreams, or tool shas -- apply
             // InheritBinding's own rule for both here too.
             entry = entry with
             {
                 Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label,
                 Workstream = (options.WorkstreamSpecified || options.Workstream is not null) ? options.Workstream : parentEntry.Workstream,
+                ToolSha = BatonPaths.TryResolveCurrentToolSha() ?? parentEntry.ToolSha,
             };
         }
 
@@ -271,6 +272,7 @@ public static class RedispatchCommand
             TokenBudget = options.TokenBudget ?? parentEntry.TokenBudget,
             Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label, // #1499, spec/baton.md §2
             Workstream = (options.WorkstreamSpecified || options.Workstream is not null) ? options.Workstream : parentEntry.Workstream, // #1619, spec/baton.md §2
+            ToolSha = BatonPaths.TryResolveCurrentToolSha() ?? parentEntry.ToolSha, // #1668
             // Adapter-derived, not role-derived, so it CAN be recomputed here — carrying the parent's
             // value across a vendor swap would stream-json a claude/agy worker (or text-mode a non-streaming one).
             // Grant/GrantAuditMode/worktree intent stay inherited: spec/baton.md §2 states why.

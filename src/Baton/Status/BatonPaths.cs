@@ -198,6 +198,48 @@ public static class BatonPaths
     public const string DrainMarkerFileName = "draining.json";
 
     /// <summary>
+    /// <c>{Root}/tools</c> — directory holding side-by-side per-commit tool installations (#1668).
+    /// </summary>
+    public static string Tools => Path.Combine(Root, ToolsDirectoryName);
+
+    /// <summary>Directory name of <see cref="Tools"/> relative to a root.</summary>
+    public const string ToolsDirectoryName = "tools";
+
+    /// <summary>
+    /// <c>{Root}/tools/current</c> — atomic pointer file holding the currently active tool commit SHA (#1668).
+    /// </summary>
+    public static string CurrentToolPointerFile => Path.Combine(Tools, CurrentToolPointerFileName);
+
+    /// <summary>Filename of <see cref="CurrentToolPointerFile"/> relative to <see cref="Tools"/>.</summary>
+    public const string CurrentToolPointerFileName = "current";
+
+    /// <summary>
+    /// Attempts to resolve the active tool commit SHA (#1668). Checks <see cref="CurrentToolPointerFile"/>,
+    /// degrading gracefully to null if missing or unreadable.
+    /// </summary>
+    public static string? TryResolveCurrentToolSha()
+    {
+        try
+        {
+            var pointerFile = CurrentToolPointerFile;
+            if (File.Exists(pointerFile))
+            {
+                var sha = File.ReadAllText(pointerFile).Trim();
+                if (!string.IsNullOrEmpty(sha))
+                {
+                    return sha;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Degrade gracefully
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// The canonical key for a record directory: absolute, with any trailing separator removed, so
     /// <c>C:\x\run</c>, <c>C:\x\run\</c> and <c>C:\x\..\x\run</c> all resolve to one entry.
     /// </summary>

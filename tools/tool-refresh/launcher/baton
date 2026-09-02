@@ -1,0 +1,30 @@
+#!/usr/bin/env sh
+set -e
+
+BATON_HOME="${BATON_HOME:-$HOME/.baton}"
+TOOLS_DIR="$BATON_HOME/tools"
+CURRENT_FILE="$TOOLS_DIR/current"
+
+if [ ! -f "$CURRENT_FILE" ]; then
+    echo "baton: no current tool pointer found at '$CURRENT_FILE'. Run 'pixi run tool-refresh' to install." >&2
+    exit 1
+fi
+
+TOOL_SHA=$(tr -d ' \r\n\t' < "$CURRENT_FILE" 2>/dev/null || true)
+
+if [ -z "$TOOL_SHA" ]; then
+    echo "baton: invalid tool pointer in '$CURRENT_FILE'. Run 'pixi run tool-refresh' to install." >&2
+    exit 1
+fi
+
+EXE_PATH="$TOOLS_DIR/$TOOL_SHA/baton.exe"
+if [ ! -f "$EXE_PATH" ]; then
+    if [ -f "$TOOLS_DIR/$TOOL_SHA/baton" ]; then
+        EXE_PATH="$TOOLS_DIR/$TOOL_SHA/baton"
+    else
+        echo "baton: tool binary not found at '$EXE_PATH'. Run 'pixi run tool-refresh' to install." >&2
+        exit 1
+    fi
+fi
+
+exec "$EXE_PATH" "$@"

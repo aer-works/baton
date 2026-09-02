@@ -13,17 +13,12 @@ This assumes `baton` is already installed on PATH. If `baton dispatch`/`baton st
 the repo it is dispatching against (#1645) — refresh it with `pixi run tool-refresh` (README's
 *Installing `baton`* section) before trusting anything below.
 
-If instead a dispatch, redispatch or resume **refuses to start** saying a tool-refresh drain is in
-progress, that is the operator refreshing the installed tool right now — nothing is wrong with your
-invocation. The exit code is `2` (`ValidationRefused`), the same one a malformed invocation gets, so
-branch on the message rather than the code alone. No work was started: for `dispatch`/`redispatch` the
-room directory does get created, but only to hold a `terminal.json` recording the refusal (the same
-validation-refusal record any pre-run refusal leaves), and `resume` leaves the room untouched. Wait and
-re-run — a refresh is seconds to a couple of minutes. If it keeps refusing long past that, the refresh
-died without clearing its marker; say so to the operator and name the marker path the refusal printed,
-rather than running `pixi run tool-refresh --abort` yourself (clearing it while a refresh is genuinely
-mid-flight is what puts a lane back onto a half-installed binary). The register for all of this is the
-C-10 entry in [`spec/baton.md`](../../spec/baton.md).
+If instead a dispatch, redispatch or resume **refuses to start** citing an operator drain marker,
+that indicates an operator-invoked stop. The exit code is `2` (`ValidationRefused`), the same one a
+malformed invocation gets, so branch on the message rather than the code alone. For `dispatch`/`redispatch`
+the room directory is created to hold a `terminal.json` recording the refusal, while `resume` leaves the
+room untouched. An operator can clear a manual marker with `pixi run tool-refresh --abort`. The full
+specification for tool installation, launcher resolution, and drain markers is in [`spec/baton.md`](../../spec/baton.md) §8.
 
 Everything below is the state of the tree on the day it was written. Dispatch ergonomics
 ([#1354](https://github.com/aer-works/baton/issues/1354)), the machine completion contract
@@ -247,6 +242,14 @@ Once a room is genuinely done with, `baton room delete <room-dir>` (or its batch
 `baton rooms prune --terminal --yes`) actually removes it — the directory, its `room-registry.jsonl`
 line(s), and (best-effort) a deliverables tombstone — refusing a non-terminal room unless `--force`;
 `spec/baton.md` §8 has the full contract, including what it cannot reach.
+
+**Delivering orchestrator deliverables (`baton deliver`).** A conductor or orchestrator delivering artifacts (such as its decision queue at the end of an unattended window) delivers them directly to the standing conductor room so they reach the Fleet Glass inbox:
+
+```
+baton deliver <file> [--title <text>] [--room <room-dir>]
+```
+
+`--room-dir` is also accepted as an alias for `--room`. This copies the file into `<room>/artifacts/conductor/` under a filename unique to the source path (recorded as `artifact_file` in the manifest, defaulting the room to `~/.baton/rooms/conductor/`) and records it in `manifest.jsonl`, which `pusher.py` forwards to the inbox with a `CONDUCTOR` chip. Re-delivering the same source path updates the file and replaces the existing inbox item in place.
 
 ---
 

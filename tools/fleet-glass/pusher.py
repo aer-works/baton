@@ -960,7 +960,8 @@ SNAPSHOT_HASH_KEY = "__snapshot_hash__"
 
 
 def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
-                   terminal_total: int = 0, terminal_archive: list | None = None) -> dict:
+                   terminal_total: int = 0, terminal_archive: list | None = None,
+                   conductor: dict | None = None) -> dict:
     """The exact snapshot body main() pushes. One home so the leak selftest exercises the real push
     path's construction, not a hand-rebuilt copy that could drift from it (PR #1508 review).
 
@@ -969,12 +970,15 @@ def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
     the hot-set split pass `room_list` as already-capped `hot_rooms` (see `split_hot_and_archive`)
     and the FULL terminal population separately here. worker.js's /push handler strips
     `terminal_archive` back out into its own KV key before it ever reaches "snapshot"."""
-    return {"rooms": room_list,
-            "underhood": underhood,
-            "timelines": timelines,
-            "stale_hidden_count": stale_hidden_count,
-            "terminal_total": terminal_total,
-            "terminal_archive": terminal_archive or []}
+    wrapped = {"rooms": room_list,
+               "underhood": underhood,
+               "timelines": timelines,
+               "stale_hidden_count": stale_hidden_count,
+               "terminal_total": terminal_total,
+               "terminal_archive": terminal_archive or []}
+    if conductor is not None:
+        wrapped["conductor"] = conductor
+    return wrapped
 
 
 def snapshot_hash(wrapped: dict) -> str:
@@ -1388,6 +1392,118 @@ def build_verdict_only_item(room_path: str, verdict: dict, room_dir: Path | None
     return item
 
 
+def gather_conductor_deliverables(
+    rooms_root: Path,
+    state: dict,
+    patterns: list[re.Pattern] | None,
+    limit: int | None = DEFAULT_DELIVER_BATCH_CAP,
+) -> list[dict]:
+    """Scans manifest.jsonl from the standing conductor room (or any conductor room under rooms_root)
+    and gathers deliverable items with kind='conductor' and id derived from source_path (#1669)."""
+    items = []
+    conductor_dirs = []
+    conductor_default = rooms_root / "conductor"
+    if conductor_default.is_dir():
+        conductor_dirs.append(conductor_default)
+
+    if rooms_root.is_dir():
+        try:
+            for child in rooms_root.iterdir():
+                if child.is_dir() and child != conductor_default:
+                    if (child / "artifacts" / "conductor" / "manifest.jsonl").is_file():
+                        conductor_dirs.append(child)
+        except OSError:
+            pass
+
+    for conductor_dir in conductor_dirs:
+        manifest_path = conductor_dir / "artifacts" / "conductor" / "manifest.jsonl"
+        if not manifest_path.is_file():
+            continue
+
+        conductor_room_path = str(conductor_dir)
+        conductor_artifacts_dir = conductor_dir / "artifacts" / "conductor"
+
+        try:
+            lines = manifest_path.read_text(encoding="utf-8-sig").splitlines()
+        except Exception as ex:  # noqa: BLE001
+            log(f"conductor manifest read error for {conductor_dir}: {type(ex).__name__}: {ex}")
+            continue
+
+        for line_num, line in enumerate(lines, start=1):
+            if limit is not None and len(items) >= limit:
+                break
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as ex:
+                log(f"conductor manifest JSONDecodeError in {conductor_dir} line {line_num}: {ex}")
+                continue
+            except Exception:
+                continue
+            if not isinstance(entry, dict):
+                continue
+
+            source_path = entry.get("source_path")
+            if not isinstance(source_path, str) or not source_path:
+                continue
+
+            # F1 (2026-09-02 review): artifact_file is read from the manifest line, never
+            # re-derived from the basename — DeliverCommand.cs keys the on-disk filename off a hash
+            # of source_path precisely so two sources sharing a basename land on two distinct files;
+            # re-deriving here would silently collapse them back onto one.
+            artifact_file_name = entry.get("artifact_file")
+            if not isinstance(artifact_file_name, str) or not artifact_file_name:
+                continue
+
+            basename = Path(source_path).name
+            artifact_file = conductor_artifacts_dir / artifact_file_name
+            if not artifact_file.is_file():
+                continue
+
+            try:
+                raw = artifact_file.read_bytes()
+            except Exception:
+                continue
+
+            content_hash = sha256_hex(raw)
+            key = f"{conductor_room_path}::artifacts/conductor/{artifact_file_name}"
+            if state.get(key) == content_hash:
+                continue
+
+            content, withheld, stub_reason, pattern_index = _apply_secret_gate(
+                raw, str(artifact_file), patterns)
+
+            title = entry.get("title") or basename
+            delivered_at = entry.get("delivered_at")
+            if not delivered_at:
+                try:
+                    st = artifact_file.stat()
+                    delivered_at = datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()
+                except (OSError, ValueError):
+                    delivered_at = datetime.now(timezone.utc).isoformat()
+
+            item = {
+                "id": f"{conductor_room_path}::conductor::{source_path}",
+                "kind": "conductor",
+                "room": conductor_room_path,
+                "room_name": "conductor",
+                "artifact": f"artifacts/conductor/{artifact_file_name}",
+                "source_path": source_path,
+                "title": title,
+                "content_hash": content_hash,
+                "withheld": withheld,
+                "verdict": {"state": "Succeeded"},
+                "content": content,
+                "created_at": delivered_at,
+            }
+            if stub_reason:
+                item["stub_reason"] = stub_reason
+            items.append(item)
+
+    return items
+
+
 def gather_deliverables(
     rooms_root: Path,
     state: dict,
@@ -1395,7 +1511,7 @@ def gather_deliverables(
     state_path: Path | None = None,
     limit: int | None = DEFAULT_DELIVER_BATCH_CAP,
 ) -> list[dict]:
-    """Every not-yet-pushed deliverable across all terminal rooms under rooms_root, capped at `limit`.
+    """Every not-yet-pushed deliverable across all terminal rooms and conductor rooms under rooms_root, capped at `limit`.
 
     Migrates legacy room_name-keyed state entries to room_path keys before lookup (#1617 / PR #1632).
     "not yet pushed" is decided per (room_path, artifact) against `state[key] == content_hash` -- an
@@ -1407,10 +1523,13 @@ def gather_deliverables(
     if patterns is None:
         log("secret-gate: secret_patterns_file missing/unreadable — WITHHOLDING EVERYTHING this run (fail closed)")
 
+    items = []
+    conductor_items = gather_conductor_deliverables(rooms_root, state, patterns, limit=limit)
+    items.extend(conductor_items)
+
     terminal_rooms = find_terminal_rooms(rooms_root)
     migrate_push_state(state, terminal_rooms, state_path=state_path)
 
-    items = []
     for room_path, room_name, room_dir in terminal_rooms:
         if limit is not None and len(items) >= limit:
             break
@@ -1490,7 +1609,25 @@ def main() -> None:
                 last_derived_at = datetime.now(timezone.utc).isoformat()
                 body, stale_hidden_count = drop_stale_rooms(body, cfg.get("max_age_days", 3))
                 rooms = json.loads(body)
-                room_list = rooms if isinstance(rooms, list) else rooms.get("rooms")
+                raw_room_list = rooms if isinstance(rooms, list) else rooms.get("rooms")
+                conductor_info = None
+                filtered_room_list = []
+                for r in (raw_room_list or []):
+                    if isinstance(r, dict) and (r.get("role") == "conductor" or r.get("name") == "conductor"):
+                        c_path = r.get("path") or str(rooms_root / "conductor")
+                        conductor_info = {
+                            "path": c_path,
+                            "artifacts_path": str(Path(c_path) / "artifacts" / "conductor"),
+                        }
+                    else:
+                        filtered_room_list.append(r)
+                room_list = filtered_room_list
+                if conductor_info is None and (rooms_root / "conductor").is_dir():
+                    c_path = str(rooms_root / "conductor")
+                    conductor_info = {
+                        "path": c_path,
+                        "artifacts_path": str(Path(c_path) / "artifacts" / "conductor"),
+                    }
                 # #1613 item 1: live telemetry for Running rooms, computed AFTER stale-filtering
                 # (never touches drop_stale_rooms' own newest_timestamp scan above) so it plays no
                 # part in the staleness decision at all.
@@ -1517,7 +1654,8 @@ def main() -> None:
                     {p: t for p, t in timelines.items() if p in hot_paths},
                     stale_hidden_count,
                     terminal_total=terminal_total,
-                    terminal_archive=terminal_archive)
+                    terminal_archive=terminal_archive,
+                    conductor=conductor_info)
                 current_hash = snapshot_hash(wrapped)
                 snap_state = load_push_state(state_path)
                 if should_push_snapshot(snap_state, current_hash):
@@ -2584,11 +2722,204 @@ def _selftest() -> int:
     # / `pixi run fleet-glass-worker-selftest`), which discriminates against the actual worker.core.mjs
     # code path instead of a copy that could drift from it silently.
 
-    # -- F3 (2026-09-02 review): non-terminal hot-set warn, a signal not a cap --
+    # -- #1669: Conductor room deliverables and upsert identity --
+    with tempfile.TemporaryDirectory() as td:
+        c_root = Path(td)
+        c_room = c_root / "conductor"
+        c_art = c_room / "artifacts" / "conductor"
+        c_art.mkdir(parents=True)
+        c_src = Path(td) / "original-notes.md"
+        c_src.write_bytes(b"# Plan Title\nSome content here")
+
+        dest_file = c_art / "original-notes.md"
+        dest_file.write_bytes(b"# Plan Title\nSome content here")
+
+        manifest_file = c_art / "manifest.jsonl"
+        manifest_entry = {
+            "title": "Plan Title",
+            "source_path": str(c_src),
+            "delivered_at": "2026-09-02T12:00:00Z",
+            "sha256": sha256_hex(b"# Plan Title\nSome content here"),
+            "artifact_file": "original-notes.md",
+        }
+        manifest_file.write_text(json.dumps(manifest_entry) + "\n", encoding="utf-8")
+
+        # 1. Gather fresh conductor deliverable
+        c_items = gather_deliverables(c_root, {}, [])
+        check("gather_deliverables gathers conductor deliverable from manifest", len(c_items) == 1)
+        if c_items:
+            c_item = c_items[0]
+            check("conductor deliverable has kind='conductor'", c_item.get("kind") == "conductor")
+            check("conductor deliverable id is derived from source_path",
+                  c_item.get("id") == f"{str(c_room)}::conductor::{str(c_src)}")
+            check("conductor deliverable carries title", c_item.get("title") == "Plan Title")
+            check("conductor deliverable carries content", c_item.get("content") == "# Plan Title\nSome content here")
+            check("conductor deliverable is not withheld without secret match", c_item.get("withheld") is False)
+
+        # 2. Dedupe against push state
+        c_state = mark_pushed({}, c_items)
+        c_items_deduped = gather_deliverables(c_root, c_state, [])
+        check("gather_deliverables skips already-pushed conductor deliverable with unchanged content",
+              len(c_items_deduped) == 0)
+
+        # 3. Re-delivery with updated content (upsert)
+        dest_file.write_bytes(b"# Plan Title\nUpdated content")
+        manifest_entry2 = {
+            "title": "Plan Title v2",
+            "source_path": str(c_src),
+            "delivered_at": "2026-09-02T12:30:00Z",
+            "sha256": sha256_hex(b"# Plan Title\nUpdated content"),
+            "artifact_file": "original-notes.md",
+        }
+        manifest_file.write_text(json.dumps(manifest_entry2) + "\n", encoding="utf-8")
+
+        c_items_updated = gather_deliverables(c_root, c_state, [])
+        check("gather_deliverables picks up updated conductor deliverable", len(c_items_updated) == 1)
+        if c_items_updated:
+            c_up = c_items_updated[0]
+            check("re-delivered item has identical id for upsert",
+                  c_up.get("id") == f"{str(c_room)}::conductor::{str(c_src)}")
+            check("re-delivered item has updated content hash",
+                  c_up.get("content_hash") == sha256_hex(b"# Plan Title\nUpdated content"))
+
+        # 4. Secret gate withholding on conductor deliverable
+        secret_pats = [re.compile(r"sk-[A-Za-z0-9]{10,}")]
+        dest_file.write_text("# Leaked\nsk-secretkey123456789", encoding="utf-8")
+        c_items_leaked = gather_deliverables(c_root, {}, secret_pats)
+        check("conductor deliverable with secret is withheld",
+              len(c_items_leaked) == 1 and c_items_leaked[0].get("withheld") is True)
+
+    # F1 (2026-09-02 review): two sources sharing a basename must not collide on one on-disk file --
+    # artifact_file is read from the manifest line, never re-derived from the basename, so two
+    # distinct hashed filenames stay two distinct files with two distinct byte payloads.
+    with tempfile.TemporaryDirectory() as td:
+        c_root = Path(td)
+        c_room = c_root / "conductor"
+        c_art = c_room / "artifacts" / "conductor"
+        c_art.mkdir(parents=True)
+
+        src_a = Path(td) / "projA" / "notes.md"
+        src_a.parent.mkdir(parents=True)
+        src_a.write_bytes(b"# A\nProject A content")
+
+        src_b = Path(td) / "projB" / "notes.md"
+        src_b.parent.mkdir(parents=True)
+        src_b.write_bytes(b"# B\nProject B content")
+
+        dest_a = c_art / "aaaaaaaa-notes.md"
+        dest_a.write_bytes(b"# A\nProject A content")
+        dest_b = c_art / "bbbbbbbb-notes.md"
+        dest_b.write_bytes(b"# B\nProject B content")
+
+        manifest_file = c_art / "manifest.jsonl"
+        entries = [
+            {
+                "title": "A",
+                "source_path": str(src_a),
+                "delivered_at": "2026-09-02T12:00:00Z",
+                "sha256": sha256_hex(b"# A\nProject A content"),
+                "artifact_file": "aaaaaaaa-notes.md",
+            },
+            {
+                "title": "B",
+                "source_path": str(src_b),
+                "delivered_at": "2026-09-02T12:00:01Z",
+                "sha256": sha256_hex(b"# B\nProject B content"),
+                "artifact_file": "bbbbbbbb-notes.md",
+            },
+        ]
+        manifest_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+        same_basename_items = gather_deliverables(c_root, {}, [])
+        check("same-basename sources produce two distinct conductor deliverables",
+              len(same_basename_items) == 2)
+        by_source = {i.get("source_path"): i for i in same_basename_items}
+        check("same-basename source A keeps its own bytes",
+              by_source.get(str(src_a), {}).get("content") == "# A\nProject A content")
+        check("same-basename source B keeps its own bytes",
+              by_source.get(str(src_b), {}).get("content") == "# B\nProject B content")
+        check("same-basename sources use distinct artifact paths",
+              by_source.get(str(src_a), {}).get("artifact") != by_source.get(str(src_b), {}).get("artifact"))
+
+    # -- #1673: Conductor manifest UTF-8 BOM tolerance, corrupt-line logging, and cross-language fixture --
+    with tempfile.TemporaryDirectory() as td:
+        c_root = Path(td)
+        c_room = c_root / "conductor"
+        c_art = c_room / "artifacts" / "conductor"
+        c_art.mkdir(parents=True)
+
+        c_src_bom = Path(td) / "bom-notes.md"
+        c_src_bom.write_bytes(b"# BOM Title\nContent with BOM")
+        dest_bom = c_art / "11111111-bom-notes.md"
+        dest_bom.write_bytes(b"# BOM Title\nContent with BOM")
+
+        manifest_file = c_art / "manifest.jsonl"
+        manifest_entry_bom = {
+            "title": "BOM Title",
+            "source_path": str(c_src_bom),
+            "delivered_at": "2026-09-02T12:00:00Z",
+            "sha256": sha256_hex(b"# BOM Title\nContent with BOM"),
+            "artifact_file": "11111111-bom-notes.md",
+        }
+        # (a) A manifest whose first line carries a UTF-8 BOM parses and yields the item
+        bom_bytes = b"\xef\xbb\xbf" + json.dumps(manifest_entry_bom).encode("utf-8") + b"\n"
+        manifest_file.write_bytes(bom_bytes)
+
+        bom_items = gather_deliverables(c_root, {}, [])
+        check("conductor manifest carrying UTF-8 BOM parses and yields deliverable (#1673 arm a)",
+              len(bom_items) == 1 and bom_items[0].get("title") == "BOM Title")
+
+        # (b) A garbage line is logged and skipped while good lines still yield
+        c_src_good = Path(td) / "good-notes.md"
+        c_src_good.write_bytes(b"# Good Title\nGood content")
+        dest_good = c_art / "22222222-good-notes.md"
+        dest_good.write_bytes(b"# Good Title\nGood content")
+
+        manifest_entry_good = {
+            "title": "Good Title",
+            "source_path": str(c_src_good),
+            "delivered_at": "2026-09-02T12:01:00Z",
+            "sha256": sha256_hex(b"# Good Title\nGood content"),
+            "artifact_file": "22222222-good-notes.md",
+        }
+        garbage_manifest = (
+            "corrupt garbage line that is not json\n"
+            + json.dumps(manifest_entry_bom) + "\n"
+            + "another { malformed json line\n"
+            + json.dumps(manifest_entry_good) + "\n"
+        )
+        manifest_file.write_text(garbage_manifest, encoding="utf-8")
+        garbage_items = gather_deliverables(c_root, {}, [])
+        check("garbage manifest line is skipped while good lines yield deliverables (#1673 arm b)",
+              len(garbage_items) == 2 and {i.get("title") for i in garbage_items} == {"BOM Title", "Good Title"})
+
+        # (3) Cross-language pin: parse checked-in fixture tests/fixtures/conductor-manifest.jsonl produced by C# path
+        fixture_path = HERE.parent.parent / "tests" / "fixtures" / "conductor-manifest.jsonl"
+        check("cross-language conductor manifest fixture file exists (#1673)", fixture_path.is_file())
+        fixture_raw = fixture_path.read_bytes()
+        check("cross-language fixture has no UTF-8 BOM and starts with '{'",
+              len(fixture_raw) > 0 and fixture_raw[0] == 0x7B and not fixture_raw.startswith(b"\xef\xbb\xbf"))
+
+        manifest_file.write_bytes(fixture_raw)
+        fixture_artifact = c_art / "c44a8b84-fixture-plan.md"
+        fixture_artifact.write_bytes(b"# Fixture Plan\nFixture content")
+
+        fixture_items = gather_deliverables(c_root, {}, [])
+        check("pusher selftest parses cross-language conductor manifest fixture (#1673)",
+              len(fixture_items) == 1 and fixture_items[0].get("title") == "Fixture Plan"
+              and fixture_items[0].get("kind") == "conductor")
+
+    # -- #1656 F3 (2026-09-02 review): nonterminal_warn_line threshold behavior, restored alongside
+    # the #1669 conductor block above rather than being displaced by it (F2, 2026-09-02 review) --
     check("non_terminal_count at the threshold does not warn", nonterminal_warn_line(HOT_NONTERMINAL_WARN) is None)
     check("non_terminal_count one over the threshold warns, naming the threshold",
           nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1) is not None
           and "HOT_NONTERMINAL_WARN" in nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1))
+
+    conductor_obj = {"path": "/r/conductor", "artifacts_path": "/r/conductor/artifacts/conductor"}
+    wrapped_with_conductor = build_wrapped([], [], {}, 0, conductor=conductor_obj)
+    check("build_wrapped carries conductor object through to the snapshot",
+          wrapped_with_conductor.get("conductor") == conductor_obj)
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)

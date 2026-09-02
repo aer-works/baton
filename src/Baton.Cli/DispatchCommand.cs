@@ -95,6 +95,13 @@ public static class DispatchCommand
                 pair => pair.Key, pair => pair.Value with { Workstream = options.Workstream }, StringComparer.Ordinal);
         }
 
+        // #1668: record the active tool commit SHA on each binding for room version tracking.
+        if (BatonPaths.TryResolveCurrentToolSha() is { } toolSha)
+        {
+            bindings = bindings.ToDictionary(
+                pair => pair.Key, pair => pair.Value with { ToolSha = toolSha }, StringComparer.Ordinal);
+        }
+
         // R1 (#1354/#1380): disclose the consequence up front, before the run starts, whenever
         // RoleDispatch.ToBinding declared a fresh worktree for an audited role — the worker then never
         // sees uncommitted or staged changes in `workspace`, only what HEAD already had (finding 5).
