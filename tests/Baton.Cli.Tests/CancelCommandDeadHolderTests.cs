@@ -68,6 +68,10 @@ public class CancelCommandDeadHolderTests
 
             Assert.Contains("no live pump", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(deadPid.ToString(), ex.Message, StringComparison.Ordinal);
+            // F4 (#1607 review): pins the Dead-specific holderClause wording -- collapsing the
+            // ternary at CancelCommand.cs's dead-holder throw back to always using this phrasing
+            // must still pass this test; the Unknown-specific phrasing is pinned separately below.
+            Assert.Contains("is no longer running", ex.Message, StringComparison.Ordinal);
             Assert.NotNull(ex.TryInvocation);
             Assert.Contains("baton run", ex.TryInvocation, StringComparison.Ordinal);
             Assert.Contains("--room-dir", ex.TryInvocation, StringComparison.Ordinal);
@@ -160,12 +164,103 @@ public class CancelCommandDeadHolderTests
                 () => CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken));
 
             Assert.Contains("no live pump", ex.Message, StringComparison.OrdinalIgnoreCase);
+            // F4 (#1607 review): pins the Unknown-specific holderClause wording -- collapsing the
+            // ternary at CancelCommand.cs's dead-holder throw back to the Dead-only phrasing would
+            // still pass the pre-existing "no live pump" assertion above, defeating the point of this
+            // test, unless this line also fails.
+            Assert.Contains("cannot confirm one exists", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("no holder record at all", ex.Message, StringComparison.Ordinal);
             Assert.NotNull(ex.TryInvocation);
-            Assert.Contains("baton run", ex.TryInvocation, StringComparison.Ordinal);
+            // F2 (#1607 review): Unknown does not mean confirmed-dead, so the hint must not
+            // unconditionally send the operator to re-run against a room a live pump might still hold
+            // -- it names the condition under which that instruction applies, and gives the genuinely-
+            // alive case something to try instead of a circular "check baton status" (which reads the
+            // identical liveness probe and would report the same Unknown).
+            Assert.Contains("confirm", ex.TryInvocation, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("retry this command", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("baton status", ex.TryInvocation, StringComparison.Ordinal);
 
             // Never journalled the too-late cancellation the pre-widened gate would have let through.
             var journalText = await File.ReadAllTextAsync(Path.Combine(roomDirectory, "flow.jsonl"), TestContext.Current.CancellationToken);
             Assert.DoesNotContain("cancellationRequested", journalText, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1607 review finding F1: the dead-holder gate runs before <c>--execution</c> is even
+    /// inspected, so it refuses an EXPLICIT target identically to the room-level (bare) form proven
+    /// above -- same fixture, same Unknown-no-sidecar shape, only <see cref="CancelOptions.ExecutionId"/>
+    /// differs. Before #1607, an explicit target against Unknown liveness (as opposed to confirmed
+    /// Dead) could still win the lock race and fall through to <see cref="Baton.Concurrency.WorkflowLockedException"/>
+    /// handling; #1607's widening closes that path too, deliberately (spec/baton.md §2) -- this test
+    /// is what proves the deliberate choice actually landed in code, not just in the comment/spec.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_a_room_with_no_holder_sidecar_at_all_refuses_an_explicit_execution_target_too_1607()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var (_, _, parkedExecutionId, _) = await WriteParkedStepFixtureAsync(testRoot, roomDirectory);
+            var bindingsFilePath = await WriteImplementBindingsFileAsync(testRoot);
+
+            var holderPath = Path.Combine(roomDirectory, ConcurrencyGuard.FlowHolderFileName);
+            Assert.False(File.Exists(holderPath), "this fixture's own point is that no sidecar exists");
+
+            var cancelOptions = new CancelOptions(roomDirectory, parkedExecutionId.Value, bindingsFilePath);
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("no live pump", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("cannot confirm one exists", ex.Message, StringComparison.Ordinal);
+
+            var journalText = await File.ReadAllTextAsync(Path.Combine(roomDirectory, "flow.jsonl"), TestContext.Current.CancellationToken);
+            Assert.DoesNotContain("cancellationRequested", journalText, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// Matrix completion (#1607 review, F1): the pre-existing Dead-holder refusal above was only ever
+    /// proven against an explicit target; this proves the identical gate fires for room-level (bare)
+    /// targeting too, same as it always has for the resolver-widening reason documented at
+    /// <see cref="CancelCommand"/>'s dead-holder gate comment.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_a_room_with_a_dead_lock_holder_refuses_room_level_targeting_too()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            await WriteParkedStepFixtureAsync(testRoot, roomDirectory);
+            var bindingsFilePath = await WriteImplementBindingsFileAsync(testRoot);
+
+            var (deadPid, deadStartTime) = DeadProcessIdentity();
+            var holderPath = Path.Combine(roomDirectory, ConcurrencyGuard.FlowHolderFileName);
+            var originalHolderJson = JsonSerializer.Serialize(new
+            {
+                HolderDescription = $"baton run pump (pid {deadPid})",
+                Pid = deadPid,
+                AcquiredAtUtc = deadStartTime.UtcDateTime.AddMinutes(10),
+                ProcessStartTimeUtc = deadStartTime.UtcDateTime,
+            });
+            await File.WriteAllTextAsync(holderPath, originalHolderJson, TestContext.Current.CancellationToken);
+
+            var cancelOptions = new CancelOptions(roomDirectory, ExecutionId: null, bindingsFilePath);
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => CancelCommand.ExecuteAsync(cancelOptions, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("no live pump", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("is no longer running", ex.Message, StringComparison.Ordinal);
         }
         finally
         {

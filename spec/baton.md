@@ -237,6 +237,25 @@ redispatches it before a poller-less pump's parked-cancel-intent wait is ever re
 outcome explicit `--execution` targeting an overdue park already had (tracked separately, #1634);
 #1607 did not introduce it and does not close it.
 
+**The dead-holder gate applies to both targeting modes, deliberately, with a real cost on the
+explicit one.** The gate runs before `--execution` is even inspected, so `cancel <room> --execution
+<id>` against a still-future park is refused on Unknown liveness exactly like the bare `cancel
+<room>` form — not because the two paths share reasoning about *which* candidate to pick (they
+don't), but because the hang the gate prevents follows from the room holding any pending future
+`RetryNotBefore` once `flow.lock` is won, regardless of which execution the caller named. Scoping the
+refusal to room-level targeting only would leave the explicit path free to reopen #1586's hang from
+the one entry point #1607 widened this gate to close, which would defeat the point of widening it at
+all. The accepted cost: before #1607, `Dead` was the only liveness value this gate refused on, so a
+genuinely-alive pump with a failed or missing sidecar write (`Unknown`, not `Dead`) still had a
+working path — `--execution <id>` would proceed, lose the lock race to the real pump, and fall
+through to the `WorkflowLockedException` handling that writes `cancel.request`. Since #1607 widened
+`Dead`-only to "anything but confirmed `Alive`," that fall-through is no longer reachable either: an
+`Unknown` verdict now refuses both paths up front, even when the pump is genuinely alive. There is
+currently no verb that reaches a still-alive pump whose holder record can't be confirmed — the
+refusal's own hint (`CancelCommand.cs`) says so rather than pointing at a recovery that does not
+exist; `baton status` is not offered as one, since it consults the identical `EngineLivenessProbe`
+and would report the same `Unknown`.
+
 **`cancel`'s `--bindings` is now optional too** (#1607 friction fix): omitted, it defaults to
 `<room-dir>/bindings.json` — the file a room dispatched via `dispatch`/`redispatch` already holds,
 since both write one there (`CancelOptionsParser.cs`). A room started via bare `baton run --bindings
@@ -244,6 +263,10 @@ since both write one there (`CancelOptionsParser.cs`). A room started via bare `
 surfaces through the same "file not found" `WorkerBindingConfigException` `WorkerBindingConfigParser`
 already raises for a bad explicit path — no new failure mode, and the operator falls back to passing
 `--bindings` explicitly as before. One fewer argument to retype for the common (dispatched-room) case.
+`CancelCommand` augments that exception's message for exactly this default-path case (never for
+run/decide/supply, whose `--bindings` is required rather than defaulted) — naming the defaulted path
+as a default rather than a mistyped explicit argument, and saying `--bindings` is still available for
+a room whose bindings file lives elsewhere.
 
 ---
 
