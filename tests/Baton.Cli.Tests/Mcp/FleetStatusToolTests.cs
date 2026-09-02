@@ -1993,5 +1993,48 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(singleRoom.Adapter);
     }
 
+    /// <summary>
+    /// #1708 L1: <see cref="FleetStatusTool"/> hand-copies <see cref="WorkflowStatusStepView"/> into
+    /// <see cref="FleetStepStatusView"/> at two separate sites, and nothing until now noticed when the
+    /// two field sets drifted — the next field added would silently reach <c>status --json</c> and not
+    /// <c>fleet_status</c>. Same guard shape as
+    /// <c>FlowEventLogJsonTests.Every_FlowEvent_variant_is_covered_by_these_tests</c>: a new property on
+    /// the source view fails here until it is either mirrored or listed below as a deliberate omission.
+    /// <para>
+    /// This checks the two records' VOCABULARY, not that either copy site assigns correctly — the copy
+    /// sites are private, and their values are asserted by the field-level tests above. The measured
+    /// failure was a missing field, not a mis-assigned one.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Every_step_view_property_is_either_mirrored_onto_the_fleet_view_or_deliberately_omitted()
+    {
+        // Deliberate omissions, each with its reason. fleet_status is a fleet-wide glance, not a
+        // resolution surface: the first three exist to drive `baton resolve`'s admission test against
+        // ONE room, which a caller reads from `baton status --json` on that room (spec/baton.md §3).
+        // VerifyTail (#1701) is omitted for the same reason plus a size one: it is a failing gate
+        // member's own captured output, bounded at VerifyRunner.MaxTailChars (4000 chars) PER STEP, so
+        // mirroring it would put a multi-kilobyte diagnostic blob into every room's entry of a
+        // fleet-wide listing. The short verify/verifyReason tokens are mirrored; the blob is read from
+        // `baton status --json` on the one room being diagnosed.
+        var deliberatelyOmitted = new HashSet<string>(StringComparer.Ordinal)
+        {
+            nameof(WorkflowStatusStepView.CapturedResponseFile),
+            nameof(WorkflowStatusStepView.UnsatisfiedOutputs),
+            nameof(WorkflowStatusStepView.IndeterminateProducerKind),
+            nameof(WorkflowStatusStepView.VerifyTail),
+        };
+
+        var source = typeof(WorkflowStatusStepView).GetProperties().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+        var mirrored = typeof(FleetStepStatusView).GetProperties().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+
+        var unmirrored = source.Except(mirrored).Except(deliberatelyOmitted).OrderBy(n => n, StringComparer.Ordinal);
+        Assert.Empty(unmirrored);
+
+        // And the omission list itself cannot go stale: a name removed from (or renamed on) the source
+        // view has to leave this list too, rather than sit here excusing a field that no longer exists.
+        Assert.Empty(deliberatelyOmitted.Except(source).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
 }

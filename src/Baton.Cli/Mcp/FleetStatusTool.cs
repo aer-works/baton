@@ -254,7 +254,9 @@ public sealed class FleetStatusTool : IMcpTool
                 MaxAttempts: s.MaxAttempts,
                 FailureKind: s.FailureKind,
                 RetryEligible: s.RetryEligible,
-                ExhaustedUntil: s.ExhaustedUntil
+                ExhaustedUntil: s.ExhaustedUntil,
+                Verify: s.Verify,
+                VerifyReason: s.VerifyReason
             )).ToList();
 
             // #1613 item 3: terminal.json (the sentinel) is a frozen WorkflowStatusView -- it never
@@ -371,7 +373,9 @@ public sealed class FleetStatusTool : IMcpTool
                     stepView.MaxAttempts,
                     stepView.FailureKind,
                     stepView.RetryEligible,
-                    stepView.ExhaustedUntil));
+                    stepView.ExhaustedUntil,
+                    stepView.Verify,
+                    stepView.VerifyReason));
             }
 
             var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
@@ -670,4 +674,13 @@ public sealed record FleetStepStatusView(
     // renders that honestly, this field never re-derives or clears it.
     [property: JsonPropertyName("exhaustedUntil")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ExhaustedUntil = null);
+    string? ExhaustedUntil = null,
+    // #1702: copied verbatim from WorkflowStatusStepView.Verify/.VerifyReason -- "not-run" plus the
+    // pre-flight reason, so a fleet_status caller (and Fleet Glass) can render "unverified" for a step
+    // that ran but was never checked, distinct from an ordinary Succeeded step.
+    [property: JsonPropertyName("verify")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Verify = null,
+    [property: JsonPropertyName("verifyReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? VerifyReason = null);

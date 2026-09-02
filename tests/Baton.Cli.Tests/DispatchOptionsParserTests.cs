@@ -409,6 +409,23 @@ public class DispatchOptionsParserTests
         Assert.Contains("--max-tool-steps", ex.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>#1702: --verify mirrors --token-budget's own escape-hatch shape end to end.</summary>
+    [Fact]
+    public void The_verify_option_parses_verbatim()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--verify", "python -m pytest"]);
+
+        Assert.Equal("python -m pytest", options.VerifyCommand);
+    }
+
+    [Fact]
+    public void Omitting_verify_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md"]);
+
+        Assert.Null(options.VerifyCommand);
+    }
+
     /// <summary>#1691: --billed-rate-limit mirrors --token-budget end to end.</summary>
     [Fact]
     public void The_billed_rate_limit_option_parses_to_a_positive_long()
@@ -447,5 +464,16 @@ public class DispatchOptionsParserTests
     public void The_usage_line_advertises_billed_rate_limit()
     {
         Assert.Contains("--billed-rate-limit <n>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1702: the usage line advertises --verify for the same reason the billed-rate-limit arm above
+    /// asserts its own — one flag added without the other's usage entry is the discoverability defect,
+    /// not a cosmetic omission.
+    /// </summary>
+    [Fact]
+    public void The_usage_line_advertises_verify()
+    {
+        Assert.Contains("--verify <cmd>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
     }
 }

@@ -76,6 +76,12 @@ namespace Baton.Cli;
 /// (<c>Baton.Vendors.WorkerRole.BilledRateLimit</c>) — which no role sets, so null means no rate
 /// trigger at all.
 /// </param>
+/// <param name="VerifyCommand">
+/// The <c>--verify</c> escape hatch (#1702) — the highest-precedence input to the engine's verify-command
+/// resolution (spec/baton.md §3), ahead of the workspace's own <c>.baton/verify</c> declaration and the
+/// role's <c>verify_pixi_task</c> default. Role dispatch only, rejected for a workflow template the same
+/// way <paramref name="TokenBudget"/> is. Null defers to the workspace/role resolution.
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -94,4 +100,5 @@ public sealed record DispatchOptions(
     long? TokenBudget = null,
     string? RepoPath = null,
     int? MaxToolSteps = null,
-    long? BilledRateLimit = null);
+    long? BilledRateLimit = null,
+    string? VerifyCommand = null);

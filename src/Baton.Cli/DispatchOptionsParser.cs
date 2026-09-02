@@ -14,7 +14,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -66,6 +66,7 @@ public static class DispatchOptionsParser
         long? tokenBudget = null;
         int? maxToolSteps = null;
         long? billedRateLimit = null;
+        string? verifyCommand = null;
         string? label = null;
         string? workstream = null;
         string? repoPath = null;
@@ -116,6 +117,9 @@ public static class DispatchOptionsParser
                     break;
                 case "--billed-rate-limit":
                     billedRateLimit = ParseBilledRateLimit(RequireValue(args, ref i, arg));
+                    break;
+                case "--verify":
+                    verifyCommand = RequireValue(args, ref i, arg);
                     break;
                 case "--label":
                     label = SanitizeLabel(RequireValue(args, ref i, arg));
@@ -195,7 +199,8 @@ public static class DispatchOptionsParser
             tokenBudget,
             repoPath is null ? null : Path.GetFullPath(repoPath),
             maxToolSteps,
-            billedRateLimit);
+            billedRateLimit,
+            verifyCommand);
     }
 
     /// <summary>

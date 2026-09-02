@@ -125,6 +125,10 @@ public static class StateProjector
                     state.IndeterminateReasonByStepId.Remove(acceptedStepId);
                     state.IndeterminateProducerByStepId.Remove(acceptedStepId);
                     state.IndeterminateVerifyTailByStepId.Remove(acceptedStepId);
+
+                    // #1702: a fresh dispatch's own verify step (if any) speaks for this attempt, not
+                    // whatever the PRIOR attempt's pre-flight check found.
+                    state.VerifyNotRunReasonByStepId.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -311,6 +315,18 @@ public static class StateProjector
                 ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed), IndeterminateProducer.VerifyFailed, verifyFailed.Tail);
                 break;
 
+            case FlowEvent.VerifyNotRun verifyNotRun:
+                // #1702: diagnostic only, same shape as VerifyStarted/VerifyPassed above -- no
+                // ApplyIndeterminate call. The execution's own already-recorded classification (this
+                // event only appends when that classification was Succeeded) decides StepStatus and
+                // WorkflowOutcome unassisted; this only records WHY the step ran unverified.
+                if (state.StepIdByExecutionId.TryGetValue(verifyNotRun.ExecutionId, out var notRunStepId))
+                {
+                    state.VerifyNotRunReasonByStepId[notRunStepId] = verifyNotRun.Reason;
+                }
+
+                break;
+
             case FlowEvent.ExecutionArrested arrested:
                 state.UnmatchedVerifyExecutionIds.Remove(arrested.ExecutionId);
                 ApplyIndeterminate(state, arrested.ExecutionId, DescribeArrest(arrested), IndeterminateProducer.Arrested);
@@ -332,7 +348,11 @@ public static class StateProjector
 
             case FlowEvent.ExecutionRequestRejected:
             case FlowEvent.ZeroOutputsDespiteSubstantialWork:
+            case FlowEvent.VerifyDeclarationIgnored:
+            case FlowEvent.VerifyDeclarationUnreviewed:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
+                // The two VerifyDeclaration* events are listed here on purpose rather than by falling off
+                // the end of this switch -- see their own docs for why they stay reader-less (#1708 H1/M1).
                 break;
 
             case FlowEvent.ExecutionIndeterminate indeterminate:
@@ -362,7 +382,7 @@ public static class StateProjector
 
                     // Neither arm here is VerifyFailed, so a tail recorded by an earlier VerifyFailed
                     // producer on this step must not survive being overwritten — same discipline as
-                    // the other clear sites (:127, :378).
+                    // the other clear sites (the ExecutionRequestAccepted and CaptureResolved arms).
                     state.IndeterminateVerifyTailByStepId.Remove(indeterminateStepId);
                 }
 
@@ -597,7 +617,8 @@ public static class StateProjector
                 state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId),
                 state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.IndeterminateVerifyTailByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.IndeterminateVerifyTailByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.VerifyNotRunReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);
