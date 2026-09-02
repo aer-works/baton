@@ -1515,7 +1515,9 @@ Output: a JSON array of
   "effort"?: string,      // that role's WorkerBindingConfigEntry.Effort
   "timeoutMs"?: number,   // that role's WorkerBindingConfigEntry.Timeout, in milliseconds
   "label"?: string,       // #1499: the room's --label, WorkerBindingConfigEntry.Label
-  "workstream"?: string   // #1619: the room's --workstream, WorkerBindingConfigEntry.Workstream
+  "workstream"?: string,  // #1619: the room's --workstream, WorkerBindingConfigEntry.Workstream
+  "parentRoomPath"?: string,   // #1441/#1620: redispatch lineage -- the parent room this one was redispatched from
+  "parentExecutionId"?: string // #1441/#1620: the parent room's own execution id at redispatch time
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
@@ -1589,6 +1591,24 @@ that section-per-state layout with compact board cards that have no room for a g
 card with a workstream instead carries it as a small line under the title (`boardCardHtml`'s own
 `wsLine`) — the field is still surfaced, just not still grouped. Rooms with no workstream render with
 no such line, the same fail-open-to-absent contract `label`'s own absence already has.
+
+**`parentRoomPath`/`parentExecutionId` (#1441/#1620)** are read back off `.baton/room.json`'s
+`ParentRoomDirectoryPath`/`ParentExecutionId` fields — the redispatch lineage `RedispatchCommand.cs`
+already writes at redispatch time (`InteractiveSessionMaterializer.WriteWorkflowRoomMarkerAsync`) and,
+until #1620, nothing read back. `InteractiveSessionMaterializer.ReadLineageAsync` is the read side and
+the canonical account of its own file-open strategy (own doc comment) and fail-open rules; `FleetStatusTool`'s
+`TryReadLineageAsync` wraps it with one more fail-open layer for an I/O fault at that call site, the
+same posture `TryLoadBindingsAsync` already applies to `bindings.json` — one unreadable or corrupt
+marker degrades this room's lineage fields, never the whole `fleet_status` call. Both absent together
+for an ordinary `baton dispatch` room, which writes no lineage marker at all. Read on **both**
+`ProcessRoomAsync` paths, the same reasoning that puts `label` on both paths above (own remarks).
+Fleet Glass renders these as a "supersedes"/"superseded by" chain on the room's detail
+pane (`tools/fleet-glass/glass.html`, `roomDetailHtml`/`lineageLineHtml`) — the #1678 board redesign
+replaced the old per-state lane grid this feature originally targeted, so the chain reads off
+`detailPaneHtml`'s own `roomsByPath` map (a straight lookup for "supersedes", a reverse scan for
+"superseded by") rather than the state-bucket grouping `workstream` above used to have. Independent
+of `workstream`'s own grouping — a chain renders on any room's detail pane whether or not that room
+carries a workstream.
 
 **`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510/#1522)** are copied verbatim from
 `WorkflowStatusStepView`, never re-derived here — see that record's own remarks for the gating

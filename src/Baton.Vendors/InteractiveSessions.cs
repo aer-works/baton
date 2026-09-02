@@ -136,6 +136,66 @@ public static class InteractiveSessionMaterializer
     }
 
     /// <summary>
+    /// Redispatch lineage (#1441) read back off the same marker <see cref="ReadRoomKindAsync"/>
+    /// reads its kind from -- <c>null</c>/<c>null</c> for an ordinary <c>baton dispatch</c> room,
+    /// which has no parent.
+    /// </summary>
+    public sealed record RoomLineage(string? ParentRoomDirectoryPath = null, string? ParentExecutionId = null)
+    {
+        public static readonly RoomLineage None = new();
+    }
+
+    /// <summary>
+    /// Reads a room's redispatch lineage (#1441, issue #1620) off its <c>.baton/room.json</c> marker --
+    /// the same file and read strategy <see cref="ReadRoomKindAsync"/> uses, opened with
+    /// <c>FileShare.ReadWrite | FileShare.Delete</c> so a concurrent writer is never denied. Display
+    /// metadata for <c>fleet_status</c> (spec/baton.md §6 schema), so this fails open all the way:
+    /// an absent marker, a marker with no lineage fields (an ordinary dispatch room), or one that
+    /// will not parse after <see cref="RetryOnSharingViolationAsync"/> rides out the torn-read
+    /// window all read as <see cref="RoomLineage.None"/> rather than throwing.
+    /// </summary>
+    public static async Task<RoomLineage> ReadLineageAsync(string roomDirectoryPath, CancellationToken cancellationToken = default)
+    {
+        var markerPath = Path.Combine(roomDirectoryPath, ".baton", BatonPaths.RoomMetadataFileName);
+        if (!File.Exists(markerPath)) return RoomLineage.None;
+
+        var lineage = RoomLineage.None;
+        try
+        {
+            await RetryOnSharingViolationAsync(
+                async () =>
+                {
+                    using var stream = new FileStream(
+                        markerPath, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete, bufferSize: 4096, useAsync: true);
+                    using var reader = new StreamReader(stream);
+                    lineage = ParseLineage(await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false));
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            lineage = RoomLineage.None;
+        }
+
+        return lineage;
+    }
+
+    private static RoomLineage ParseLineage(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var parentRoomDirectoryPath = doc.RootElement.TryGetProperty("ParentRoomDirectoryPath", out var parentPathEl)
+                                       && parentPathEl.ValueKind == JsonValueKind.String
+            ? parentPathEl.GetString()
+            : null;
+        var parentExecutionId = doc.RootElement.TryGetProperty("ParentExecutionId", out var parentExecEl)
+                                 && parentExecEl.ValueKind == JsonValueKind.String
+            ? parentExecEl.GetString()
+            : null;
+        return new RoomLineage(parentRoomDirectoryPath, parentExecutionId);
+    }
+
+    /// <summary>
     /// Synchronous <see cref="ReadRoomKindAsync"/>, for the one caller that decides a kind while
     /// building a process's environment (the agy HOME redirect) and is not on an async path.
     /// </summary>
