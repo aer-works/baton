@@ -64,7 +64,7 @@
 }
 body{background:var(--paper); color:var(--ink); font:15px/1.55 'Public Sans',system-ui,sans-serif; margin:0; padding:20px 16px 60px;}
 main{max-width:62rem; margin:0 auto;}
-h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline;}
+h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:.2rem .5rem;}
 h1 .fresh{font:400 .72rem var(--mono); color:var(--ink-soft);}
 h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.08em; display:flex; justify-content:space-between; align-items:baseline;}
 .dismissall{text-transform:none; font-family:'Public Sans',sans-serif; font-size:.72rem; font-weight:500; letter-spacing:normal; color:var(--accent); cursor:pointer; text-decoration:none;}
@@ -97,11 +97,11 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .dismissnote a{color:var(--accent); text-decoration:none; cursor:pointer;}
 .dismissbtn{background:transparent; border:none; color:var(--ink-soft); font:600 .85rem/1 var(--mono); cursor:pointer; padding:.1em .35em; border-radius:4px; line-height:1;}
 .dismissbtn:hover{background:var(--chip-idle); color:var(--ink);}
-.lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:0; background:var(--card);}
-.lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
-.lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:0; background:var(--card); min-width:0;}
+.lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem; min-width:0;}
+.lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;}
 .lane .roomid, .lane .project{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.lane .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end;}
+.lane .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end; flex-shrink:0; max-width:100%;}
 .lane .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
 .lane .deliverables{font-size:.74rem; margin-top:.3rem; user-select:none; -webkit-user-select:none;}
@@ -114,8 +114,8 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .verbs{margin-top:.35rem; display:flex; gap:.4rem; flex-wrap:wrap; align-items:center;}
 .copybtn{font:500 .68rem 'Public Sans'; padding:.25em .65em; border-radius:8px; border:1px solid var(--line); background:var(--paper); color:var(--ink-soft); cursor:pointer;}
 .copybtn:active{background:var(--chip-idle);}
-.revealbox{font:400 .68rem var(--mono); padding:.22em .4em; border-radius:6px; border:1px solid var(--line); background:var(--paper); color:var(--ink); width:12rem;}
-.chip{font:600 .62rem/1 'Public Sans'; letter-spacing:.05em; padding:.28em .6em; border-radius:999px; white-space:nowrap;}
+.revealbox{font:400 .68rem var(--mono); padding:.22em .4em; border-radius:6px; border:1px solid var(--line); background:var(--paper); color:var(--ink); width:12rem; max-width:100%;}
+.chip{font:600 .62rem/1 'Public Sans'; letter-spacing:.05em; padding:.28em .6em; border-radius:999px; white-space:nowrap; flex-shrink:0;}
 .c-run{background:var(--chip-run); color:var(--run);}
 .c-ok{background:var(--chip-ok); color:var(--ok);}
 .c-warn{background:var(--chip-warn); color:var(--warn);}
@@ -128,10 +128,10 @@ summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .mono{font-family:var(--mono); font-size:.9em;}
 .filter{font-size:.8rem; color:var(--ink-soft); margin:.4rem 0 1rem; user-select:none; -webkit-user-select:none;}
 .filter a{color:var(--accent); text-decoration:none; cursor:pointer;}
-.item{border:1px solid var(--line); border-radius:12px; padding:.6rem .8rem; margin:.45rem 0; background:var(--card); cursor:pointer;}
-.item .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
-.item .title{font:500 .88rem 'Public Sans'; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.item .meta{font:400 .72rem var(--mono); color:var(--ink-soft); margin-top:.25rem;}
+.item{border:1px solid var(--line); border-radius:12px; padding:.6rem .8rem; margin:.45rem 0; background:var(--card); cursor:pointer; min-width:0;}
+.item .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem; min-width:0;}
+.item .title{font:500 .88rem 'Public Sans'; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;}
+.item .meta{font:400 .72rem var(--mono); color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .back{display:inline-block; margin-bottom:.8rem; font:500 .8rem 'Public Sans'; color:var(--accent); text-decoration:none; cursor:pointer;}
 .doc{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1rem 1.2rem;}
 .doc h1,.doc h2,.doc h3{font-family:'Sora',sans-serif; line-height:1.25;}
@@ -841,13 +841,21 @@ function underhoodHtml(list){
   }).join("");
   return `<h2>Under the hood · ${list.length}</h2><div class="lanes">` + rows + `</div>`;
 }
-function conductorHtml(conductor){
+function conductorHtml(conductor, inbox = inboxIndex){
   if(!conductor || !conductor.artifacts_path) return "";
+  const conductorRoomPath = conductor.path || conductor.artifacts_path.replace(/[\\/]artifacts[\\/]conductor[\\/]?$/, "");
   const copyBtn = copyButtonHtml(conductor.artifacts_path, "copy path");
+  const items = Array.isArray(inbox) ? inbox.filter(m => m && (m.kind === "conductor" || (conductorRoomPath && m.room === conductorRoomPath))) : null;
+  const countLine = items !== null ? `<div class="ev">${items.length} deliverable${items.length === 1 ? "" : "s"}</div>` : "";
+  const deliverables = conductorRoomPath
+    ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(conductorRoomPath)}">deliverables &rarr;</a></div>`
+    : "";
   return `<h2>Conductor</h2><div class="lanes"><div class="lane">
     <div class="top"><span class="name">conductor</span><span class="chips"><span class="chip c-ok">STANDBY</span></span></div>
     <div class="ev mono" title="${esc(conductor.artifacts_path)}">${esc(conductor.artifacts_path)}</div>
+    ${countLine}
     <div class="verbs">${copyBtn}</div>
+    ${deliverables}
   </div></div>`;
 }
 function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCount){
@@ -1574,6 +1582,9 @@ window.addEventListener("hashchange", applyRoute);
       if(typeof payload === "string"){ try { payload = JSON.parse(payload); } catch { payload = null; } }
       inboxIndex = (payload && Array.isArray(payload.items)) ? payload.items : [];
       if(!location.hash.startsWith("#inbox:")) applyRoute();
+      if(lastGood && Array.isArray(lastGood.rooms)){
+        render(lastGood.rooms, lastGood.pushed_at, lastGood.underhood, lastGood.heartbeat_at, accumulatedTimelines, lastGood.stale_hidden_count, dismissedRooms, lastGood.conductor);
+      }
       return;
     }
     const e = ev.error || {};
