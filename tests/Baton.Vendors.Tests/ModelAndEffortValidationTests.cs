@@ -88,6 +88,49 @@ public class ModelAndEffortValidationTests
     }
 
     [Fact]
+    public void Agy_refuses_a_suffix_less_gemini_model_with_no_effort_up_front()
+    {
+        // #1596: measured against agy 1.1.24 -- `agy --model gemini-3.7-flash -p ...` (no --effort)
+        // spawns and only then refuses with "--model gemini-3.7-flash requires --effort (available:
+        // low, medium, high)". This must fire at Resolve, before any process is spawned.
+        var ex = Assert.Throws<IncoherentVendorEffortException>(
+            () => Resolve(new AgyWorkerAdapter(), model: "gemini-3.7-flash"));
+        Assert.Contains("gemini-3.7-flash", ex.Message);
+        Assert.Contains("requires --effort", ex.Message);
+    }
+
+    [Fact]
+    public void Agy_resolves_a_suffix_less_gemini_model_when_effort_is_given()
+    {
+        // Same model as the refusal test above, but with --effort supplied: the up-front check must
+        // only fire on a missing effort, not on the model name itself.
+        var target = Resolve(new AgyWorkerAdapter(), model: "gemini-3.7-flash", effort: "high");
+        Assert.Contains(target.Args.Zip(target.Args.Skip(1)), p => p.First == "--model" && p.Second == "gemini-3.7-flash");
+        Assert.Contains(target.Args.Zip(target.Args.Skip(1)), p => p.First == "--effort" && p.Second == "high");
+    }
+
+    [Fact]
+    public void Agy_leaves_a_non_gemini_model_with_no_effort_alone()
+    {
+        // #1596's own scope note covers only the gemini family ("whether every gemini model ...
+        // is unmeasured"); whether a non-gemini model requires --effort is simply unmeasured, not
+        // measured-negative, so the check stays scoped to `gemini-` and must not fire here --
+        // today's behaviour (no check) is preserved rather than guessed at.
+        var target = Resolve(new AgyWorkerAdapter(), model: "claude-sonnet-4-6");
+        Assert.Contains(target.Args.Zip(target.Args.Skip(1)), p => p.First == "--model" && p.Second == "claude-sonnet-4-6");
+        Assert.DoesNotContain("--effort", target.Args);
+    }
+
+    [Fact]
+    public void Agy_leaves_a_dispatch_with_no_model_at_all_alone()
+    {
+        // No model means agy's own default is used; the up-front check must not fire on a null model.
+        var target = Resolve(new AgyWorkerAdapter());
+        Assert.DoesNotContain("--model", target.Args);
+        Assert.DoesNotContain("--effort", target.Args);
+    }
+
+    [Fact]
     public void The_shipped_catalog_satisfies_the_agy_reconciliation_invariant()
     {
         // Guards a future WorkerTiers.json edit that pins a suffix-model with a disagreeing effort:

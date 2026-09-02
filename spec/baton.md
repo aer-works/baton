@@ -578,8 +578,10 @@ arrived at all (a dead worker) AND when one arrived reporting `is_error`/`FAILUR
 finished and self-reported non-success — a contract failure, not a death, by #1622's own vocabulary).
 
 **The claude adapter wires no terminal-result detector (N6, #1664 review) — a live asymmetry, not a
-gap in this fix.** `DetectsTerminalResult`/`DetectsTerminalSuccess` are agy-only
-(`git grep DetectsTerminalSuccess -- src/Baton.Vendors` returns `AgyWorkerAdapter.cs` alone); a
+gap in this fix.** `DetectsTerminalResult`/`DetectsTerminalSuccess` are agy-only (a `Grep` for
+`DetectsTerminalSuccess` scoped to `src/Baton.Vendors` returns `AgyWorkerAdapter.cs` alone — `git
+grep` is outside the `review` role's ceiling as of #1683, so this is the harness Grep-tool
+equivalent of the same search rather than a runnable shell command); a
 claude-adapter worker's `CoreDispatchResult.TerminalResultObserved` is therefore always `false`, so
 `isDeadWorkerWithoutResult` is unconditionally `true` for that vendor and the untouched-workspace read
 (`Workspaces.WorktreeProvisioner.IsWorkspaceUntouched`) alone decides whether a claude worker's dead
@@ -917,7 +919,7 @@ arrest, on either trigger, for `38c24d11`. The tool-step cap's real, provable va
 DIFFERENT failure shape — a poll loop or a call-count runaway — not this one; §3's prior text claiming
 the cap "is what actually arrests both evidence rooms" no longer holds under the corrected unit and is
 retracted here rather than left standing. **The uncaught failure shape — burning tokens per real tool
-call rather than making an unusual number of calls — is tracked as #1697** (#1686 review F14): a
+call rather than making an unusual number of calls — is tracked as #1691** (#1686 review F14): a
 windowed billed-rate trigger, in two phases (stamp arrival time and record a per-execution windowed-rate
 maximum first; set the trigger from a measured distribution second), not implemented here.
 
@@ -1292,11 +1294,13 @@ reading as the same human-named lane.
 `label` immediately above** — a room-level fact stamped onto every entry at dispatch time, read off
 the first entry whose `Workstream` is non-null on both `ProcessRoomAsync` paths, absent under the same
 conditions `label` is absent under. `redispatch` carries a room's workstream into its child unless
-overridden (§2), so a lineage of redispatches keeps grouping as one workstream. Fleet Glass
-(`tools/fleet-glass/glass.html`, `groupLanesHtml`) groups each state bucket's rendered lanes by this
-field, alphabetically by slug, with a group heading spanning the lane grid; rooms with no workstream
-render as flat, ungrouped lanes exactly as every room did before #1619 — the same fail-open-to-flat
-contract `label`'s own absence already has.
+overridden (§2), so a lineage of redispatches keeps grouping as one workstream. Pre-#1678, Fleet
+Glass (`tools/fleet-glass/glass.html`, `groupLanesHtml`) grouped each state bucket's rendered lanes
+by this field with a group heading spanning the lane grid; the #1678 board redesign (below) replaced
+that section-per-state layout with compact board cards that have no room for a group heading, so a
+card with a workstream instead carries it as a small line under the title (`boardCardHtml`'s own
+`wsLine`) — the field is still surfaced, just not still grouped. Rooms with no workstream render with
+no such line, the same fail-open-to-absent contract `label`'s own absence already has.
 
 **`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510/#1522)** are copied verbatim from
 `WorkflowStatusStepView`, never re-derived here — see that record's own remarks for the gating
@@ -1488,6 +1492,36 @@ definition has no exit event yet and needs every line scanned, not just the last
   derivation-stuck check above, independent of whether any room is Running (a failing push is not
   scoped to active lanes the way the derivation-stuck check is).
 
+**Board + detail-pane IA (#1678, operator ruling 2026-09-02, Combo C+E).** `glass.html`'s Fleet tab
+is a three-column state board — Needs You (the conductor pinned first, then Stalled + Indeterminate
+rooms) / Running / Done (Failed + Succeeded, dismissible) — with a detail pane that opens on
+selecting a card: docked beside the board on desktop, and (≤480px) a slide-in second screen replacing
+the board, reached via carousel pills that pick one column at a time and a Back control that returns
+to it. A card carries only a label, one state chip, and one telemetry line (below) — no path, no
+timeline, no copy verbs; those live in the pane once a card is selected (`roomDetailHtml`), which
+also carries the same state-appropriate copy verbs the pre-#1678 per-lane card used to show directly
+(`copyButtonsHtml`, unchanged — read-only, copies text only, never executes, spec/baton.md §10).
+Superseded the pre-#1678 layout of one `<h2>`-headed, dismissible section per state bucket
+(`groupLanesHtml`/`laneHtml`); everything that layout did that this one does not explicitly replace —
+the freshness/pusher-alive strip, the empty-state, dark/light theming, the deliverables inbox reader,
+the conductor's `deliverables →` link (#1681), the terminal "copy delete"/"copy prune" verbs, and
+"Unreadable entries" as its own collapsible list below the board — is unchanged.
+
+**Telemetry on every card, not just Running (the one deliberate deviation from the reference mock).**
+Pre-#1678 only a Running room showed a telemetry line at all (`rooms[].live`, above). The ruling
+widens that to every card: a Running card still reads `rooms[].live`'s bits (`out`/`ctx`/`N
+calls`/`active … ago`); a terminal or Needs-You card instead reads its last step's own `usage`/
+`linkedFromUsage` (`ExecutionUsageView`, §3 schema — no pusher or engine change needed, since
+`fleet_status` already forwards `steps[].usage` verbatim for every room, not only Running ones) and
+renders `out <tokensOut> · <turns> turns · <wallClockMs as Nm Ss>` (`cardTelemetryText`, using
+`durFine` for the fine-grained wall-clock a card wants — distinct from the coarser `dur()` this page
+already used elsewhere, which rounds to whole minutes). A room with no usage on any step (never
+executed far enough to record one) renders the
+literal `—`, never a fabricated or blank figure — the same never-invent convention every other
+absent-safe field on this page already follows. The detail pane's own Telemetry section
+(`fullTelemetryHtml`) shows every step's usage line, not just the last, for the same terminal/
+Needs-You rooms.
+
 **Paging and the terminal hot-set cap (#1656).** Measured 2026-09-02: `deliverables_list` returned
 292 items / 160,539 bytes in one body, big enough that the operator's MCP connector reported
 "Inbox feed unavailable (upstream_error)"; `fleet_status` was 265,193 bytes / 234 rooms per push.
@@ -1514,11 +1548,11 @@ Both mailbox tools (`tools/fleet-glass/worker.js`'s `handleMcp`) now page:
   and archive from the SAME `newest_timestamp` measure `drop_stale_rooms` already uses, so "newest"
   means the same thing everywhere in this module; `timelines` in the pushed body is filtered to the
   hot set's own paths, never the wider surviving-room set, so an archived-only terminal room's
-  timeline never rides the hot push either. `tools/fleet-glass/glass.html`'s Terminal section
-  fetches additional pages on demand (a "load older" link, wired to a one-shot `fleet_status(page,
-  limit)` call through the same `watchTool` the periodic poll already uses) and merges them into the
-  rendered Failed/Succeeded buckets, deduped by room path against whatever the hot set already
-  showed.
+  timeline never rides the hot push either. `tools/fleet-glass/glass.html`'s Done column (the
+  pre-#1678 Terminal section's successor, below) fetches additional pages on demand (a "load older"
+  link, wired to a one-shot `fleet_status(page, limit)` call through the same `watchTool` the
+  periodic poll already uses) and merges them into the rendered Failed/Succeeded buckets, deduped by
+  room path against whatever the hot set already showed.
 
   The cap bounds only the terminal bucket. `non_terminal` rooms — Running, Stalled, Indeterminate —
   ride the plain (no `page`) `fleet_status` response in full, uncapped; `split_hot_and_archive` never
@@ -1798,14 +1832,17 @@ and permission grant, resolvable at both dispatch time (writes the room's copy) 
 rule as `decide`: the bindings passed continue the room's own standing permissions — the
 composition never widens mid-room through any verb.
 
+<!-- record-once-ok: #1679 src/Baton.Vendors/ShellCommandPatternMatcher.cs -->
 **The `review` role's ceiling: read-only `git`/`gh`, enforced, not a flat shell refusal (#1456,
 operator-approved reversal of #1355).** `WorkerRoles.json`'s `review` entry now carries
 `run_shell_commands: true` scoped by `shell_command_patterns` to exactly: `git diff`, `log`, `show`,
-`blame`, `status`, `grep`, `rev-parse`, `merge-base`, `ls-files`, and `git branch --list`; and `gh pr
+`blame`, `status`, `rev-parse`, `merge-base`, `ls-files`, and `git branch --list`; and `gh pr
 view`/`diff`/`checks`, `gh issue view`. `denied_shell_command_patterns` closes the named mutating
-families (`commit`, `push`, `merge`, `checkout`, `switch`, `reset`, `clean`, `gh pr
-comment`/`edit`/`merge`, `gh issue comment`/`edit`, `gh label`) as a standing, subtractive "never"
-(0022's DenyAlways) on top of the allowlist. `gh api` is deliberately **not** granted: its HTTP
+families (`commit`, `push`, `merge `, `checkout`, `switch`, `reset`, `clean`, `gh pr
+comment`/`edit`/`merge`, `gh issue comment`/`edit`, `gh label`, `gh extension`) as a standing, subtractive "never"
+(0022's DenyAlways) on top of the allowlist. Trailing-`*` shell patterns are matched on word boundaries. **The full accepting set is two branches on whether `P` itself ends in whitespace, five conditions total, not one** (#1683 F1 second round — the prior "three cases" wording silently assumed `P` never ends in whitespace, so it mis-described the branch that `git merge *` and `git -c *` actually take, the same class of defect F4 raised, restated in the correction). `ShellCommandPatternMatcher`'s own class comment is canonical for this rule, states the two branches and five conditions in full, and is what a change to it edits first — not restated here. So `git diff*` matches `git diff --stat` and `git diff`, never `git difftool` or `git diff-index`; `git merge *` matches bare `git merge` and `git merge origin/main` but never `git merge-base`; `git merge*` (no space), unlike `git merge *`, never matches `git merge origin/main` either; and `git log*` does **not** match `git log=x`, the ungated `=` widening #1683 F6 closed.
+
+**A deny pattern can bound a command family; it cannot bound an *option* — #1683 F1/F2, and the reason is `ShellCommandPatternMatcher`'s own, canonical there rather than restated here.** Two things changed in this ceiling as a result. `git grep` **left the allowlist**, taking with it the two deny entries #1679 had added for `-O`/`--open-files-in-pager` (a reviewing harness has its own Grep tool, and three spellings were measured spawning a pager past those entries). And a third deny rung was added alongside the two lists above: **`denied_shell_option_tokens`**, whose matching rule and deliberate over-match are stated on `ShellCommandPatternMatcher.IsDeniedByOptionToken`. `review` carries `--output`, because `git log`/`show`/`diff` all accept `--output=<file>` with `--format=format:<bytes>` — an arbitrary file write, invisible to #659's metacharacter scan because no redirection is involved, under this role's own `shell_commands_are_read_only: true` assertion. That assertion is the author's claim rather than a derived fact (`PermissionGrant.ShellCommandsAreReadOnly` says so), and this is what it took to make it true. **The rung is enforced by the two `PreToolUse` hooks and by nothing else, on either vendor** — see `ClaudeWorkerAdapter.StandingShellDenials` for why no vendor flag carries it, including what stays unmeasured. `gh api` is deliberately **not** granted: its HTTP
 method is a runtime flag/field (`-X`, `-f`), not something `ShellCommandPatternMatcher`'s glob
 prefix-match can bind to GET-only, so admitting it would be an unenforced hole wearing a scoped
 label rather than an actually-scoped grant.
@@ -1937,10 +1974,12 @@ by path: `view_file` is granted whole for this role (`ReadFiles: true`), the hoo
 for the write-family tools, and `HOME`/`USERPROFILE` are not redirected for shell-granted workers, so
 a granted read tool can reach the operator's real home — this is pre-existing and identical on claude
 and `advise`, not something this probe measured or bounded. Unprobed: the subagent/`manage_task`
-tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own
-prefix-collision defects — fixed on `main` by #1679 (word-boundary pattern matching), not yet in this
-branch's own tree — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
-restated here. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
+tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects
+tracked in #1679 — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
+restated here. Note that the six probed commands were run against the lists **as they stood then**,
+so #1679 and #1683 changed the lists under that measurement: the mechanism it measured is unaffected
+(nothing about how the hook narrows changed), but no probe covers the current `git grep`-free
+allowlist or the `denied_shell_option_tokens` rung, which reaches agy only through this same hook. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
 `ShellCommandPatterns` now resolves to `--dangerously-skip-permissions` and lets the hook do the
 narrowing; a grant with shell but no patterns still refuses, because nothing would bound it. A hook
 that cannot start reads as an allow on this vendor, so for `review` specifically a broken hook widens
@@ -2136,6 +2175,14 @@ under six hours old — any mismatch falls through to a real `gates-fast` run. T
 hook re-verifies, not what CI verifies: CI remains the one platform-independent run and is never
 skipped by a local receipt.
 
+**The pre-push hook is a fast local mirror; CI is the authority (#1676).** `.github/workflows/ci.yml`
+runs `pixi run gates-ci-quiet` (`gates.py --ci`) as its own required job — the same tracked member
+list the hook and a dispatched lane run, never a hand-picked subset of individual `pixi run <member>`
+steps that could drift from it. `--ci` excludes any `CI_SKIP`-marked member (each entry needs a
+reason, ratcheted the way `sabotage.py`'s `ALLOWLIST` is) and asserts the executed member list
+matches the tracked one, so a member silently dropped from either side fails loudly instead of
+passing quiet.
+
 **Scope, stated plainly: tracked content only.** The dirty-hash is `git diff HEAD`, which does not
 see untracked files. A tree that was already dirty when its receipt was written, and then gains an
 untracked file before the next push, still matches -- the receipt does not re-verify content `git
@@ -2149,6 +2196,91 @@ push under `.githooks/pre-push` re-initialized the pushing repo itself instead o
 temp dir -- `.githooks/pre-push` now `unset`s the `GIT_*` keys before invoking anything, and
 `gates.py` scrubs them from its own process environment and passes an explicit scrubbed `env=` to
 every git subprocess its fixtures spawn.
+
+### C-13 — Build fan-out is bounded; gates records what it costs (#1671)
+
+Measured 2026-09-01/02 on the 15.7 GB fleet box: lane concurrency is memory-bound, not CPU-bound.
+Each worker (`claude`/`agy`) costs ~300 MB irreducibly, but every concurrent `gates`/`gates-fast`/
+`dotnet test` run added a persistent `VBCSCompiler.exe` (~400 MB) plus MSBuild worker nodes kept
+alive by node reuse, and `dotnet test` at solution scope ran up to 3 `testhost.dll` processes
+concurrently (5 xUnit test projects; MEASURED via `Get-CimInstance Win32_Process` mid-run, command
+lines naming three distinct test projects at once). Two workers died mid-tool-call at 6 lanes / 2.2 GB
+free (#1622); three lanes now hit a ~1.4 GB floor with the build fan-out accounting for the
+difference between that and physical pressure. Four changes narrow the fan-out this repo controls:
+
+**No MSBuild node reuse, no shared Roslyn compiler server, for every pixi-run build.**
+`pixi.toml`'s `[activation.env]` already set `MSBUILDDISABLENODEREUSE=1` (#909, concurrent-worktree
+node-pool collisions); `UseSharedCompilation=false` joins it there for the same reason and the same
+scope -- an ordinary MSBuild property, overridden by an environment variable exactly like
+`MSBUILDDISABLENODEREUSE` (`Microsoft.Managed.Core.targets` only defaults it to `true` when unset).
+Chosen over a `Directory.Build.props` env-gated condition: a second mechanism for the same class of
+setting is a second place to look, and `MSBUILDDISABLENODEREUSE` already established this repo's
+answer. Scope, stated once: every `pixi run` build -- lane and gates alike -- inherits both settings;
+a `dotnet build` run directly, outside pixi's activation, does not, which is what "the interactive
+developer build is unchanged" means here.
+
+**`gates.py` shuts down the MSBuild build servers pass or fail.** `dotnet build-server shutdown`
+runs after every gate whose name starts with `test` (where the testhost fan-out actually
+accumulates) and again in an outer `finally` around the whole run (`run_gates_and_shutdown`), so a
+`--fast` run with no test leg, or a crash before one is reached, still frees the nodes for the next
+lane queued on `tools/buildlock.py`. Proven red-first: `gates.py --selftest` injects a counting fake
+in place of the real shutdown and asserts it fires on a FAILING test-shaped gate and when the inner
+run raises, not only on a passing run. Trade-off, stated once: `dotnet build-server shutdown` (no
+target argument) is scoped to the current user session, not to the invoking repo or lane, so a gates
+run also kills any build server a concurrent *non*-pixi build on this box is using -- an interactive
+IDE/hand `dotnet build`, which deliberately keeps node reuse and the shared compiler on (the "the
+interactive developer build is unchanged" scope stated above). Accepted rather than narrowed: every
+tool path this repo tells its own tooling to use goes through pixi (CLAUDE.md, "never invoke `dotnet`
+directly"), where both are already off, so a concurrent lane's own in-flight `pixi run` build has no
+server process to lose to another lane's shutdown call; `--vbcscompiler`/`--msbuild` targets narrow
+*which* servers die, not the session-wide scope, so there is no narrower target that fixes this.
+
+**`dotnet test` serializes across the five xUnit projects, in-assembly parallelism untouched.**
+`test-no-build` (the leg `gates` runs) now passes `-m:1`, MSBuild's own max-node-count. MEASURED
+which of the two candidate knobs actually owns this: a VSTest runsettings
+`RunConfiguration.MaxCpuCount=1` left 3 concurrent `testhost.dll` processes running (that knob
+governs parallelism inside a single `vstest.console` invocation given an explicit assembly list,
+which a solution-scope `dotnet test` does not go through); `-m:1` left exactly one `testhost.dll`
+process running at a time, and the run's own "Test run for X" headers -- which VSTest prints only
+once a project's host has actually started -- appeared one project at a time rather than all five up
+front. Neither knob touches xunit's own in-assembly test-collection parallelism. Cost: the five
+projects' durations now sum rather than overlap (measured this box: ~2m parallel baseline vs ~3m17s
+serialized for the test leg alone) -- accepted, since the acceptance bound is on the whole `gates`
+run's wall time, most of which is `fmt-check`/`lint`, not this leg.
+
+**`buildlock` already covered `dotnet test`/`test-no-build`.** `tools/buildlock.py` (#1402) wraps
+every MSBuild-owning pixi task; `test`, `test-no-build`, `test-flow`, and `test-other` were all
+already invoked through it before this issue, so at most one MSBuild tree exists machine-wide
+regardless of how many lanes are running `gates` concurrently. Confirmed, not changed.
+
+**Telemetry: `gates.py` records what a run cost, in a sidecar the receipt never reads.** Free
+physical MB (`GlobalMemoryStatusEx`) and the system-wide MSBuild/VBCSCompiler/testhost process count,
+sampled once at the start and once at the end of every run, land in
+`<git-dir>/baton-gate-receipt.telemetry` -- a file separate from `baton-gate-receipt` itself, the
+same shape as `buildlock`'s own `.info` sidecar, so it can never become part of what
+`--check-receipt` matches (tree/dirty/diff_hash/timestamp). The process count reads `Get-CimInstance
+Win32_Process` (name + command line), not `tasklist`: VSTest's per-project hosts run as `dotnet.exe
+exec ...testhost.dll`, never as a process literally named `testhost.exe` (measured, report-1671.md --
+`Get-Process -Name testhost` read 0 throughout both a baseline and a `-m:1` run), so a testhost is
+only visible by matching `dotnet.exe`'s command line, which `tasklist` does not expose. Both readers
+are best-effort and `None` off Windows (pixi.toml's `linux-64` dev-sandbox leg carries no
+`GlobalMemoryStatusEx`/`Get-CimInstance`). This is what a future "measured `<N> MB free` → no new
+lane" conductor rule would read instead of the fixed `<2 GB free` guess it replaces -- that rule
+itself is not part of this change.
+
+### C-14 — Fleet Glass board redesign: Combo C+E, telemetry on every card
+
+Operator ruling, 2026-09-02, after reviewing an eight-layout options page (C, D, E, C+A, C+B, C+E
+among them, `docs/agents/...` scratch artifact, not itself a register): **Combo C+E** — a
+three-column state board (Needs You / Running / Done) with compact cards, plus a detail pane that
+opens on selecting a card (docked on desktop, a slide-in second screen on the phone at 390px, reached
+via carousel pills). Copy verbs, the full path, the step timeline, and the full per-step telemetry
+breakdown all moved into the pane; a card itself carries only a label, one state chip, and one
+telemetry line. **One deliberate change from the reference mock:** every card carries that telemetry
+line, not only Running ones — the operator wants burn visible fleet-wide at a glance, not only while
+something is actively running. §6's "Board + detail-pane IA" and "Telemetry on every card" entries
+are this decision's full technical contract (schema, field provenance, the `—` no-fabrication rule);
+this entry records only the decision itself and why it deviates from the mock it was ruled from.
 
 ---
 

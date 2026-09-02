@@ -739,8 +739,12 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             // negated-arms baseline this test used to assert no longer describes it -- DescribeGrant
             // spells out the scope rather than printing a bare "shell" that would understate it.
             Assert.Contains(
+                // #1683 F1 dropped `git grep*` from this list; see spec/baton.md §9 for why. What this
+                // arm is for: the line reports the ALLOW patterns only, as it always has -- neither
+                // `denied_shell_command_patterns` nor #1683's `denied_shell_option_tokens` appears here,
+                // so it is a ceiling, not the full grant.
                 "Grant: read, no-write, shell (scoped: git diff*, git log*, git show*, git blame*, "
-                + "git status*, git grep*, git rev-parse*, git merge-base*, git ls-files*, "
+                + "git status*, git rev-parse*, git merge-base*, git ls-files*, "
                 + "git branch --list*, gh pr view*, gh pr diff*, gh pr checks*, gh issue view*), no-network",
                 consoleOutput.ToString());
         }
