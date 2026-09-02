@@ -346,6 +346,33 @@ public class ClaudeWorkerAdapterTests
     }
 
     [Fact]
+    public void Denied_option_tokens_ride_the_hook_channel_and_deliberately_reach_no_vendor_flag()
+    {
+        // #1683 F2, both halves of the decision this PR is required to state, pinned rather than left
+        // in prose. The rung is real -- the env channel carries it to the hook -- and it is hook-only:
+        // --disallowedTools matches the whole command line anchored, so a token deny is not expressible
+        // there as an enforceable entry, and emitting `Bash(--output)` would be a positional pattern
+        // wearing a token's name. If someone later wires it onto the flag, this fails and they have to
+        // justify it against a measurement.
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: false, RunShellCommands: true,
+            ShellCommandPatterns: ["git log*"], NetworkAccess: false,
+            DeniedShellCommandPatterns: ["git push*"], ShellCommandsAreReadOnly: true,
+            DeniedShellOptionTokens: ["--output"]);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+
+        Assert.Contains(
+            target.Environment!,
+            env => env.Name == ClaudeWorkerAdapter.DeniedShellOptionTokensVariable
+                && env.Value == "claude:--output");
+
+        var denied = ArgValue(target, "--disallowedTools")!;
+        Assert.Contains("Bash(git push*)", denied);
+        Assert.DoesNotContain("--output", denied, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_raw_permission_scope_with_no_structured_grant_emits_no_disallowed_list()
     {
         // The Advanced escape hatch carries no categories to deny — a hand-typed scope is taken as-is.

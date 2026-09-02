@@ -108,6 +108,26 @@ public class FlowEventSerializationTests
                 LastToolNames: ["manage_task", "manage_task", "run_command"])
         ];
 
+        // #1682: the two new fields -- both reasons, so a shape drift on either is caught here too.
+        yield return
+        [
+            new FlowEvent.ExecutionArrested(
+                ExecutionId,
+                new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000, BilledTokens: 620_000),
+                LastToolNames: ["run_command"],
+                Reason: ArrestReason.TokenBudget,
+                ToolStepCount: 55)
+        ];
+        yield return
+        [
+            new FlowEvent.ExecutionArrested(
+                ExecutionId,
+                Usage: null,
+                LastToolNames: ["run_command", "run_command"],
+                Reason: ArrestReason.ToolStepCap,
+                ToolStepCount: 81)
+        ];
+
         // #1583
         yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover")];
         yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", null, "claude", null)];

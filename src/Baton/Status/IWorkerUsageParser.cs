@@ -44,4 +44,18 @@ public interface IWorkerUsageParser
     /// Default null.
     /// </summary>
     string? TryParseToolName(string rawLine) => null;
+
+    /// <summary>
+    /// #1682: how many tool-step events <paramref name="rawLine"/> itself reports — the quantity
+    /// <c>Mutation.TokenBudgetMonitor</c>'s tool-step cap accumulates, independently of whether
+    /// <see cref="TryParseIncrementalUsage"/> matches anything on the same line (the cap must still
+    /// fire on a stream with malformed or entirely absent usage lines). Deliberately NOT
+    /// <see cref="TryParseToolName"/> reused as a 0/1 count: that method exists to report ONE display
+    /// name per line and, for claude, returns only the first <c>tool_use</c> block of a multi-tool
+    /// turn — undercounting exactly the shape this cap exists to catch. A caller sums this across every
+    /// line of the stream; each vendor's own doc comment on its implementation states what one line
+    /// counts as. Default 0: a parser that reports no tool-step signal (a test double, a future vendor)
+    /// opts out cleanly rather than being forced to implement this.
+    /// </summary>
+    int CountToolSteps(string rawLine) => 0;
 }

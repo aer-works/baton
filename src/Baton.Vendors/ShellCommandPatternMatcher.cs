@@ -6,7 +6,52 @@ namespace Baton.Vendors;
 
 /// <summary>
 /// Evaluates a shell command line against a pattern allowlist using claude-compatible
-/// <c>Bash(pattern)</c> glob semantics, enforcing strict shell metacharacter rejection (#659).
+/// <c>Bash(pattern)</c> glob semantics, enforcing strict shell metacharacter rejection (#659)
+/// and word-boundary matching for trailing-wildcard patterns (#1679).
+/// <para>
+/// <b>A trailing-<c>*</c> pattern <c>P*</c> is matched by two branches on whether <c>P</c> itself ends
+/// in whitespace, five conditions total</b> — the full accepting set, stated the way the code branches
+/// rather than as a summary of it. #1683's second round found the first correction still false in both
+/// copies of this rule (here and spec/baton.md §9): its three cases silently assumed <c>P</c> never
+/// ends in whitespace, so it mis-described the one branch (<c>:204</c>) that exists precisely because
+/// some patterns do — including <c>git merge *</c> and <c>git -c *</c>, the two live deny patterns that
+/// take it. No condition below spans both branches; that is how the wording drifted twice.
+/// <list type="number">
+/// <item><b><c>P</c> ends in whitespace</b> (e.g. <c>"git merge *"</c>):
+/// <list type="bullet">
+/// <item>the trimmed line <b>equals</b> <c>P</c> with its own trailing whitespace trimmed — bare
+/// <c>git merge</c>;</item>
+/// <item>the trimmed line <b>starts with <c>P</c></b> — the word boundary is already inside <c>P</c>,
+/// so the next character may be anything — <c>git merge origin/main</c>. This is <em>not</em> "starts
+/// with <c>P</c> followed by whitespace": a second space is not required.</item>
+/// </list>
+/// </item>
+/// <item><b><c>P</c> does not end in whitespace</b> (e.g. <c>"git diff*"</c>):
+/// <list type="bullet">
+/// <item>the trimmed line <b>equals</b> <c>P</c> — <c>git log</c>;</item>
+/// <item>the line starts with <c>P</c> and the next character is <b>whitespace</b> — the word boundary
+/// (<c>git diff*</c> matches <c>git diff --stat</c>, never <c>git difftool</c> or <c>git diff-index</c>;
+/// <c>git merge*</c>, unlike <c>git merge *</c> above, never matches <c>git merge-base</c>) —
+/// <c>git log --oneline</c>;</item>
+/// <item>the line starts with <c>P</c>, <c>P</c>'s last space-delimited token is <b>flag-shaped</b>
+/// (starts with <c>-</c>), and the next character is anything at all — the attached-argument branch
+/// (<c>git grep -O*</c> matches <c>git grep -Ocalc</c>, <c>git grep --open-files-in-pager*</c> matches
+/// <c>…-pager=calc</c>).</item>
+/// </list>
+/// </item>
+/// </list>
+/// The last condition is what makes <c>=</c> accept. Before #1683 the <c>=</c> accept sat <em>above</em>
+/// the flag-shape test and applied to every non-whitespace-terminated prefix, so <c>git log*</c> matched
+/// <c>git log=x</c> — a widening nothing documented and nothing gated. It is now inside that condition.
+/// </para>
+/// <para>
+/// <b>Prefix matching is anchored at the start of the line, so it cannot bound an option that can
+/// move.</b> A deny pattern only ever catches the spelling and position it was written in, and
+/// <c>git</c> accepts neither constraint (short-flag clustering <c>-nOcalc</c>, reordering, unambiguous
+/// long-option abbreviation on any <c>parse-options</c> subcommand, doubled spaces). Bounding an
+/// <em>option</em> therefore needs <see cref="IsDeniedByOptionToken"/>, not a deny pattern — see that
+/// method (#1683 F1/F2).
+/// </para>
 /// </summary>
 public static class ShellCommandPatternMatcher
 {
@@ -171,9 +216,51 @@ public static class ShellCommandPatternMatcher
             if (pattern.EndsWith('*'))
             {
                 string prefix = pattern[..^1];
-                if (trimmed.StartsWith(prefix, StringComparison.Ordinal))
+                if (prefix.Length > 0 && char.IsWhiteSpace(prefix[^1]))
                 {
-                    return true;
+                    if (trimmed.Equals(prefix.TrimEnd(), StringComparison.Ordinal) ||
+                        trimmed.StartsWith(prefix, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+                else
+                {
+                    if (trimmed.Equals(prefix, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+
+                    if (trimmed.StartsWith(prefix, StringComparison.Ordinal))
+                    {
+                        if (trimmed.Length > prefix.Length)
+                        {
+                            char next = trimmed[prefix.Length];
+                            if (char.IsWhiteSpace(next))
+                            {
+                                return true;
+                            }
+
+                            // Flag-driven prefixes (e.g. "git grep -O*" or "git grep --open-files-in-pager*")
+                            // where the last whitespace-delimited token in the prefix starts with '-'
+                            // match option arguments attached directly without whitespace -- both the
+                            // bare-attached form (-Ocalc) and the '=' form (--open-files-in-pager=calc).
+                            //
+                            // #1683 F6: '=' used to accept ABOVE this test, ungated by flag shape, so
+                            // every trailing-'*' pattern whose prefix did not end in whitespace also
+                            // matched an '='-suffixed continuation -- `git log*` matched `git log=x`.
+                            // Nothing in the current lists is exploitable through that, but it was an
+                            // unstated widening on the branch a future allow pattern would trip over, so
+                            // the accept now sits under the same flag-shape gate as the branch it
+                            // belongs to. A non-flag prefix accepts on the word boundary alone.
+                            var lastSpace = prefix.LastIndexOf(' ');
+                            var lastToken = lastSpace >= 0 ? prefix[(lastSpace + 1)..] : prefix;
+                            if (lastToken.StartsWith('-'))
+                            {
+                                return true;
+                            }
+                        }
+                    }
                 }
             }
             else
@@ -202,6 +289,87 @@ public static class ShellCommandPatternMatcher
     /// </summary>
     public static bool IsDenied(string? commandLine, IReadOnlyList<string>? deniedPatterns) =>
         IsAllowed(commandLine, deniedPatterns);
+
+    /// <summary>
+    /// The <b>position-independent</b> half of the deny side (#1683 F2): returns <see langword="true"/>
+    /// iff any whitespace-separated token of <paramref name="commandLine"/> starts with any entry in
+    /// <paramref name="deniedOptionTokens"/> (<see cref="PermissionGrant.DeniedShellOptionTokens"/>).
+    /// Entries are literal token <em>prefixes</em>, so <c>"--output"</c> catches <c>--output=C:/x</c>,
+    /// the separated <c>--output C:/x</c>, and <c>--output-indicator-new=x</c> alike.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why a deny pattern cannot do this job.</b> <see cref="IsDenied"/> prefix-matches the line
+    /// anchored at its start, so a deny entry binds one option in one position and one spelling.
+    /// <c>git log --output=&lt;file&gt; --format=format:&lt;bytes&gt;</c> is an arbitrary file write
+    /// admitted by the <c>review</c> role's own <c>git log*</c> allow pattern — no metacharacter, no
+    /// redirection, so #659's scan never sees it — and adding <c>git log --output*</c> to the deny list
+    /// would be walked past by reordering the option, doubling a space, or (on any <c>parse-options</c>
+    /// subcommand) abbreviating it. Matching every token instead binds the option wherever it sits.
+    /// </para>
+    /// <para>
+    /// <b>It over-matches, deliberately, in the fail-closed direction.</b> A denied prefix appearing as
+    /// a token of a quoted argument (<c>git log --format="x --output=y"</c> splits to a token starting
+    /// <c>--output</c>) denies, and so does a read-only sibling option sharing the prefix
+    /// (<c>--output-indicator-new</c>). Both cost a reviewer a formatting flag; the alternative — a full
+    /// argv parse per vendor subcommand — is the sort of thing that is wrong quietly.
+    /// </para>
+    /// <para>
+    /// <b>Every quote character is removed from a token before the prefix test, not just a leading
+    /// one.</b> A shell splits words BEFORE removing quotes, so a quote can sit anywhere inside an
+    /// option name and the command still arrives at <c>git</c> as one unquoted word:
+    /// <c>git log --outpu"t"=C:/x</c> and <c>git log -"-"output=C:/x</c> both reach it as
+    /// <c>--output=C:/x</c>. Stripping only the leading quote left both matching nothing — the same
+    /// "walked past by another spelling" defect this method exists to fix, inside the fix (found by
+    /// this PR's second reader). Removing them all is safe for exactly the reason the caller contract
+    /// below states: the metacharacter scan has already run, so no substitution can be hiding in the
+    /// quotes, and dropping them is precisely what the shell itself does. It does not widen the deny
+    /// to a quoted VALUE — <c>git log --grep="--output"</c> normalizes to <c>--grep=--output</c>, which
+    /// does not START with the entry and stays allowed.
+    /// </para>
+    /// <para>
+    /// <b>Not expressible on <c>--disallowedTools</c> — this channel is hook-only, on both vendors.</b>
+    /// claude's <c>Bash(pattern)</c> matching is against the whole command line and anchored
+    /// (<c>docs/vendor-capabilities.md</c>'s #1461 subsection measured <c>Bash(git log*)</c> denying
+    /// <c>git log</c>, and measured nothing about a mid-line token), so what could be written there is
+    /// another positional pattern — the defect F1/F2 document, not the fix. Whether that flag can
+    /// express a mid-line token deny at all is <b>unmeasured</b>, and this states the gap rather than
+    /// asserting claude cannot. <c>ClaudeWorkerAdapter.BuildDisallowedTools</c> therefore emits nothing
+    /// from this field, and both hooks enforce it themselves.
+    /// </para>
+    /// <para>
+    /// Caller contract: run this <b>after</b> the deny/allow pattern pass, which is what has already
+    /// applied <see cref="IsAllowed"/>'s metacharacter scan to the line. Deny wins over any allow.
+    /// </para>
+    /// </remarks>
+    public static bool IsDeniedByOptionToken(string? commandLine, IReadOnlyList<string>? deniedOptionTokens)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine) || deniedOptionTokens is null ||
+            deniedOptionTokens.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var rawToken in commandLine.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var token = rawToken.Replace("\"", string.Empty, StringComparison.Ordinal)
+                .Replace("'", string.Empty, StringComparison.Ordinal);
+            foreach (var deniedToken in deniedOptionTokens)
+            {
+                if (string.IsNullOrWhiteSpace(deniedToken))
+                {
+                    continue;
+                }
+
+                if (token.StartsWith(deniedToken, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Derives a command's family (its first whitespace-delimited token, e.g. <c>"rm"</c> out of

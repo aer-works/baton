@@ -15,7 +15,9 @@ Run every gate even after one fails -- fail-fast hides the others, and a session
 re-run the whole set to discover the next problem starts filtering output again.
 """
 import argparse
+import csv
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -111,6 +113,35 @@ AFTER_BUILD_FAST = [
 # green. Outside `gates`, use `pixi run test` (which force-rebuilds -- #688).
 AFTER_BUILD_FULL = AFTER_BUILD_FAST + ["test-no-build"]
 
+# #1676: CI runs `--ci`, which excludes every name here from the run and requires each to carry a
+# non-empty reason -- the same shape sabotage.py's ALLOWLIST enforces for its own ratchet, so an
+# entry cannot be added silently. Empty on purpose: every current gates.py member was verified
+# (during #1676) to run on windows-latest with no live vendor CLI and no dependency on the real
+# ~/.baton -- see OVERLAP's own per-entry comments, which is what that verification rests on. Add an
+# entry here only when a future member genuinely cannot run on a hosted runner, with the reason
+# cited the same way.
+CI_SKIP: dict[str, str] = {}
+
+
+def validate_ci_skip():
+    """Ratchet: every CI_SKIP entry names a real gate member and carries a reason (#1676)."""
+    problems = []
+    members = set(_all_members())
+    for name, reason in CI_SKIP.items():
+        if name not in members:
+            problems.append(f"CI_SKIP names {name!r}, which is not a gates.py member")
+        if not reason or not reason.strip():
+            problems.append(f"CI_SKIP[{name!r}] has no reason")
+    return problems
+
+
+def _dedupe(names):
+    seen = []
+    for name in names:
+        if name not in seen:
+            seen.append(name)
+    return seen
+
 PASS_MARK = "GATES: PASS"
 FAIL_MARK = "GATES: FAIL"
 
@@ -157,14 +188,35 @@ def emit_failure_output(name, data, tail_lines=QUIET_FAIL_TAIL_LINES):
     sys.stdout.buffer.flush()
 
 
-def run_gates(names, runner):
-    """Run each gate, print a per-gate line, return the names that failed."""
+def shutdown_build_servers(run=subprocess.run):
+    """Best-effort `dotnet build-server shutdown` (#1671): frees MSBuild/VBCSCompiler worker nodes.
+
+    Never raises -- this is cleanup, not a gate outcome, so a shutdown that itself fails to run
+    must not turn an otherwise-passing gates run red. `run` is injectable so the selftest below can
+    prove the CALL SITES (after a test* gate, and in main()'s finally on a raise) without spawning a
+    real `dotnet` process.
+    """
+    try:
+        run(["dotnet", "build-server", "shutdown"], check=False,
+            capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def run_gates(names, runner, shutdown=shutdown_build_servers):
+    """Run each gate, print a per-gate line, return the names that failed.
+
+    #1671: also shuts down the MSBuild build servers after every gate whose name starts with
+    "test", pass or fail. Why that scope: spec/baton.md §11 C-13.
+    """
     failed = []
     for name in names:
         code = runner(name)
         print(f"  {'pass' if code == 0 else 'FAIL':>4}  {name}  (exit {code})", flush=True)
         if code != 0:
             failed.append(name)
+        if name.startswith("test"):
+            shutdown()
     return failed
 
 
@@ -223,13 +275,35 @@ def pixi_spawner(name):
     return subprocess.Popen(["pixi", "run", name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
-def run_all(after_build, spawner=pixi_spawner, runner=pixi_runner, quiet=False):
-    """Overlapped audits start first, the build phase runs while they work, then everything joins."""
-    procs = [(name, spawner(name)) for name in OVERLAP]
-    failed = run_gates(BUILD_PHASE, runner)
+def run_all(after_build, spawner=pixi_spawner, runner=pixi_runner, quiet=False, skip=frozenset()):
+    """Overlapped audits start first, the build phase runs while they work, then everything joins.
+
+    `skip` (#1676) drops CI_SKIP-marked names from every phase before anything runs -- `--ci`'s way
+    of excluding them, rather than running and discarding their result.
+    """
+    overlap = [n for n in OVERLAP if n not in skip]
+    build_phase = [n for n in BUILD_PHASE if n not in skip]
+    after_build = [n for n in after_build if n not in skip]
+    procs = [(name, spawner(name)) for name in overlap]
+    failed = run_gates(build_phase, runner)
     failed += join_gates(procs, quiet=quiet)
     failed += run_gates(after_build, runner)
-    return OVERLAP + BUILD_PHASE + after_build, failed
+    return overlap + build_phase + after_build, failed
+
+
+def run_gates_and_shutdown(after_build, runner, quiet, shutdown=shutdown_build_servers, run_all_fn=run_all,
+                            skip=frozenset()):
+    """`run_all`, plus a build-server shutdown that fires even if `run_all_fn` raises (#1671).
+
+    `run_gates` above already shuts down after each test* gate; this is the outer net -- e.g. for
+    `--fast` runs, which carry no test* gate at all, or a `run_all_fn` that dies before reaching
+    one. `run_all_fn`/`shutdown` are injectable so the selftest below can prove the finally fires
+    under a real exception without spawning a real `dotnet` process or a real gate run.
+    """
+    try:
+        return run_all_fn(after_build, runner=runner, quiet=quiet, skip=skip)
+    finally:
+        shutdown()
 
 
 RECEIPT_NAME = "baton-gate-receipt"
@@ -296,6 +370,110 @@ def delete_receipt(cwd=None):
         os.remove(receipt_path(cwd))
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------------------------
+# Telemetry (#1671). What is recorded, when, and why a separate sidecar: spec/baton.md §11 C-13.
+# Every function here is best-effort: a telemetry read that fails must never turn a gates run red.
+# ---------------------------------------------------------------------------------------------
+
+TELEMETRY_NAME = "baton-gate-receipt.telemetry"
+BUILD_PROCESS_NAMES = ("MSBuild.exe", "VBCSCompiler.exe")
+
+
+def telemetry_path(cwd=None):
+    return os.path.join(_git_dir(cwd), TELEMETRY_NAME)
+
+
+def _free_physical_mb():
+    """Free physical RAM in MB via the Win32 API -- `None` off Windows (pixi.toml's linux-64 leg)."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    class _MemoryStatusEx(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    try:
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+            return None
+        return status.ullAvailPhys // (1024 * 1024)
+    except OSError:
+        return None
+
+
+def _is_build_process(name, commandline):
+    """Pure filter: MSBuild.exe/VBCSCompiler.exe by name, a test host by command line.
+
+    Why a test host needs the command-line half: spec/baton.md §11 C-13. Kept pure and
+    fixture-tested (selftest below) so the WMI call in `_build_process_count` stays a thin,
+    untested-by-necessity adapter.
+    """
+    if name in BUILD_PROCESS_NAMES:
+        return True
+    return name == "dotnet.exe" and bool(commandline) and "testhost" in commandline
+
+
+def _build_process_count():
+    """System-wide MSBuild/VBCSCompiler/testhost process count -- `None` off Windows.
+
+    `Get-CimInstance Win32_Process`, not `tasklist`: a testhost only discriminates from any other
+    `dotnet.exe` process by its command line, which `tasklist` does not expose. One PowerShell
+    call, no new dependency (no `psutil` in this repo's Python env).
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        out = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-Command",
+                "Get-CimInstance Win32_Process | Select-Object Name,CommandLine "
+                "| ConvertTo-Csv -NoTypeInformation",
+            ],
+            capture_output=True, text=True, check=False, timeout=15,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    try:
+        rows = list(csv.reader(io.StringIO(out)))
+    except csv.Error:
+        return None
+    return sum(1 for row in rows[1:] if len(row) >= 2 and _is_build_process(row[0], row[1]))
+
+
+def telemetry_snapshot():
+    return {"free_physical_mb": _free_physical_mb(), "build_process_count": _build_process_count()}
+
+
+def write_telemetry(mode, start, end, cwd=None):
+    """Record a start/end telemetry pair for the run that just finished. Overwrites any prior.
+
+    Best-effort like `write_receipt`: a write failure here must not flip an already-decided PASS
+    to a nonzero exit, and is never consulted by `--check-receipt`.
+    """
+    try:
+        telemetry = {
+            "mode": mode,
+            "start": start,
+            "end": end,
+            "timestamp_utc": datetime.now(timezone.utc).strftime(RECEIPT_TIME_FORMAT),
+        }
+        with open(telemetry_path(cwd), "w", encoding="utf-8") as f:
+            json.dump(telemetry, f)
+    except OSError as e:
+        print(f"gates: could not write the telemetry sidecar ({e})", flush=True)
 
 
 def _format_age(age_s):
@@ -444,6 +622,45 @@ def selftest():
         print(f"  control FAILED: the overlapped path did not report the failing gate -- {failed}")
         ok = False
 
+    # #1671: build-server shutdown must be reached on a FAILING test* gate, not only a passing run
+    # -- proven with an injected counting fake, red-first (this arm would have caught the shutdown
+    # call being placed only after a success check, or only inside a passing branch).
+    shutdown_calls = []
+    failed = run_gates(["test-x"], lambda name: 1, shutdown=lambda: shutdown_calls.append(1))
+    if failed != ["test-x"] or not shutdown_calls:
+        print(
+            f"  control FAILED: build-server shutdown was not reached after a failing test* "
+            f"gate -- failed={failed} shutdown_calls={len(shutdown_calls)}"
+        )
+        ok = False
+
+    # A non-test* gate must NOT trigger a shutdown -- it belongs to the build phase, which is
+    # covered by run_gates_and_shutdown's outer finally below, not per-gate.
+    shutdown_calls_nontest = []
+    run_gates(["lint"], lambda name: 1, shutdown=lambda: shutdown_calls_nontest.append(1))
+    if shutdown_calls_nontest:
+        print("  control FAILED: a non-test* gate name triggered a build-server shutdown")
+        ok = False
+
+    # #1671: the outer net must fire even when run_all itself raises -- e.g. a `--fast` run with
+    # no test* gate at all, or a crash before one is reached.
+    shutdown_calls_outer = []
+
+    def _raising_run_all(after_build, runner, quiet, skip=frozenset()):
+        raise RuntimeError("boom")
+
+    try:
+        run_gates_and_shutdown(
+            [], None, False,
+            shutdown=lambda: shutdown_calls_outer.append(1),
+            run_all_fn=_raising_run_all,
+        )
+    except RuntimeError:
+        pass
+    if not shutdown_calls_outer:
+        print("  control FAILED: build-server shutdown was not reached when run_all raised")
+        ok = False
+
     # The quiet path (#1560), both directions: a failing overlapped gate must still be REPORTED
     # (named in the failed list -- quiet must never eat a red), and a passing gate's output must
     # actually be dropped. Both arms discriminate: without the quiet branch the second arm sees
@@ -453,7 +670,6 @@ def selftest():
         print(f"  control FAILED: the quiet overlapped path did not report the failing gate -- {failed}")
         ok = False
 
-    import io
     captured = io.BytesIO()
 
     class _Buf:
@@ -542,6 +758,42 @@ def selftest():
         valid, _, _ = receipt_status(cwd=repo)
         if valid:
             print("  control FAILED: a receipt older than the 6h ceiling matched")
+            ok = False
+
+        # #1671: telemetry lives in its own sidecar and never perturbs --check-receipt. A valid
+        # receipt (the "full" one written just above, still forged-stale) stays INVALID after
+        # write_telemetry runs -- the discriminating half: if telemetry ever wrote into
+        # baton-gate-receipt itself instead of its own file, this control would flip to valid the
+        # moment write_telemetry's own timestamp/mode fields overwrote the forged stale one.
+        write_telemetry("full", {"free_physical_mb": 123, "build_process_count": 4}, {"free_physical_mb": 99}, cwd=repo)
+        if not os.path.exists(telemetry_path(repo)):
+            print("  control FAILED: write_telemetry did not create the sidecar file")
+            ok = False
+        valid, _, _ = receipt_status(cwd=repo)
+        if valid:
+            print("  control FAILED: writing telemetry resurrected an invalid (stale) receipt")
+            ok = False
+        with open(telemetry_path(repo), encoding="utf-8") as f:
+            telemetry = json.load(f)
+        if telemetry.get("start", {}).get("build_process_count") != 4:
+            print(f"  control FAILED: telemetry sidecar did not round-trip its snapshot -- {telemetry!r}")
+            ok = False
+
+        # #1671 follow-up: a testhost only discriminates by command line -- a `dotnet.exe` whose
+        # command line names `testhost` must count, and an unrelated `dotnet.exe` (no testhost in
+        # its command line) must not. Red-first: a plain `name == "testhost.exe"` filter fails the
+        # first fixture (VSTest never runs as that literal process name) and the old `tasklist`
+        # substring approach would fail the second by over-matching any "dotnet.exe" line.
+        fixture = [
+            ("MSBuild.exe", "MSBuild.exe /nologo project.sln"),
+            ("VBCSCompiler.exe", "VBCSCompiler.exe -pipename:foo"),
+            ("dotnet.exe", r"C:\Program Files\dotnet\dotnet.exe exec ...\testhost.dll --port 123"),
+            ("dotnet.exe", "dotnet.exe build project.csproj"),
+            ("explorer.exe", None),
+        ]
+        counted = sum(1 for name, cmd in fixture if _is_build_process(name, cmd))
+        if counted != 3:
+            print(f"  control FAILED: _is_build_process miscounted the fixture -- got {counted}, want 3")
             ok = False
 
         # The hook itself (sh): a forged, currently-valid receipt makes it exit 0 with the skip
@@ -693,6 +945,62 @@ def selftest():
             print("  control FAILED: --bogus modified the gate receipt")
             ok = False
 
+    # The CI_SKIP ratchet (#1676): an orphan name (not a real member) and a blank reason must both
+    # trip validate_ci_skip; a real member with a real reason must not.
+    real_member = _all_members()[0]
+    orig_ci_skip = dict(CI_SKIP)
+    try:
+        CI_SKIP.clear()
+        CI_SKIP["does-not-exist-as-a-gate-member"] = "orphan name"
+        problems = validate_ci_skip()
+        if not any("not a gates.py member" in p for p in problems):
+            print(f"  control FAILED: an orphan CI_SKIP name did not trip the ratchet -- {problems}")
+            ok = False
+
+        CI_SKIP.clear()
+        CI_SKIP[real_member] = "   "
+        problems = validate_ci_skip()
+        if not any("has no reason" in p for p in problems):
+            print(f"  control FAILED: a blank CI_SKIP reason did not trip the ratchet -- {problems}")
+            ok = False
+
+        CI_SKIP.clear()
+        CI_SKIP[real_member] = "a real reason"
+        problems = validate_ci_skip()
+        if problems:
+            print(f"  control FAILED: a valid CI_SKIP entry tripped the ratchet -- {problems}")
+            ok = False
+    finally:
+        CI_SKIP.clear()
+        CI_SKIP.update(orig_ci_skip)
+
+    # `skip=` (#1676) must drop a name from every phase before spawning/running it -- proven by a
+    # fake spawner/runner that would raise if ever called for the skipped name, so a filter that
+    # ran-and-discarded it (rather than never starting it) still fails this arm.
+    orig_overlap, orig_build_phase = list(OVERLAP), list(BUILD_PHASE)
+
+    def _refusing_spawner(name):
+        if name == "overlap-x":
+            raise AssertionError("skip= did not exclude an OVERLAP member from spawning")
+        return fake_spawner(0)
+
+    def _refusing_runner(name):
+        if name in ("build-x", "after-x"):
+            raise AssertionError(f"skip= did not exclude {name!r} from running")
+        return 0
+
+    try:
+        OVERLAP[:] = ["overlap-x"]
+        BUILD_PHASE[:] = ["build-x"]
+        names, failed = run_all(["after-x"], spawner=_refusing_spawner, runner=_refusing_runner,
+                                 skip=frozenset({"overlap-x", "build-x", "after-x"}))
+    finally:
+        OVERLAP[:] = orig_overlap
+        BUILD_PHASE[:] = orig_build_phase
+    if names or failed:
+        print(f"  control FAILED: run_all's skip= did not exclude every member -- names={names} failed={failed}")
+        ok = False
+
     print("selftest: pass" if ok else "selftest: FAIL")
     return 0 if ok else 1
 
@@ -726,6 +1034,9 @@ def build_parser():
                         help="run this file's own control-arm suite instead of any gate")
     parser.add_argument("--check-receipt", action="store_true",
                         help="exit 0 and print the skip line iff a still-valid gate receipt exists")
+    parser.add_argument("--ci", action="store_true",
+                        help="exclude CI_SKIP members, validate the ratchet, and assert the run "
+                             "matches the tracked member list (#1676; what CI's own job passes)")
     return parser
 
 
@@ -745,13 +1056,40 @@ def main():
     if args.check_receipt:
         return check_receipt()
 
+    if args.ci:
+        problems = validate_ci_skip()
+        if problems:
+            print("gates: CI_SKIP ratchet failed:")
+            for p in problems:
+                print(f"  - {p}")
+            return 2
+
     mode = "fast" if args.fast else "full"
     after_build = AFTER_BUILD_FAST if mode == "fast" else AFTER_BUILD_FULL
     quiet = args.quiet
-    names, failed = run_all(after_build,
-                            runner=quiet_pixi_runner if quiet else pixi_runner,
-                            quiet=quiet)
+    skip = frozenset(CI_SKIP) if args.ci else frozenset()
+
+    start_snapshot = telemetry_snapshot()
+    names, failed = run_gates_and_shutdown(
+        after_build, quiet_pixi_runner if quiet else pixi_runner, quiet, skip=skip)
+    end_snapshot = telemetry_snapshot()
+    write_telemetry(mode, start_snapshot, end_snapshot)
+
     print()
+    print(f"gates: ran {len(names)} member(s): {', '.join(names)}")
+
+    # #1676: the assertion that CI cannot silently drift from the tracked member list. Under --ci
+    # this must equal every gates.py member (build order) minus CI_SKIP -- any other result means
+    # run_all's own filtering diverged from _all_members(), not that a member merely failed.
+    if args.ci:
+        expected = [n for n in _dedupe(OVERLAP + BUILD_PHASE + after_build) if n not in CI_SKIP]
+        if names != expected:
+            print("gates: CI member list does not match the tracked list -- ")
+            print(f"  ran:      {names}")
+            print(f"  expected: {expected}")
+            delete_receipt()
+            return 1
+
     print(summarise(names, failed))
     if failed:
         delete_receipt()

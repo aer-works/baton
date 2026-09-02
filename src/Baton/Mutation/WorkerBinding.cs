@@ -32,6 +32,11 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// #1623: the per-execution token ceiling — see <c>Baton.Vendors.WorkerRole.TokenBudget</c>'s
     /// remarks. Null enforces no budget.
     /// </param>
+    /// <param name="MaxToolSteps">
+    /// #1682: the per-execution tool-step ceiling — see <c>Baton.Vendors.WorkerRole.MaxToolSteps</c>'s
+    /// remarks. Null enforces no cap. Independent of <paramref name="TokenBudget"/>: a monitor is
+    /// constructed whenever either is set (<c>MutationInterface.DispatchAndRecordOutcomeAsync</c>).
+    /// </param>
     /// <param name="IsWorktree">
     /// F4 (#1593 review): whether <see cref="Target"/>'s <c>WorkingDirectory</c> is an ACTUALLY
     /// provisioned worktree (<see cref="Baton.Vendors.WorkerBindingConfigEntry.IsWorktree"/>'s own
@@ -61,6 +66,7 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         Outcomes.IWorkerResponseParser? ResponseParser = null,
         string? VerifyPixiTask = null,
         long? TokenBudget = null,
+        int? MaxToolSteps = null,
         bool IsWorktree = false,
         string? WorktreeBaseSha = null)
         : WorkerBinding(Contract, GrantAuditMode);

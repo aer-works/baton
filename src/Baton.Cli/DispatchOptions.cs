@@ -62,6 +62,12 @@ namespace Baton.Cli;
 /// falls back to <c>BATON_REPO</c> (<see cref="Baton.Status.BatonEnvironmentSnapshot.RepoOverride"/>);
 /// neither present means no checkout is discoverable and the check is skipped, not refused.
 /// </param>
+/// <param name="MaxToolSteps">
+/// The <c>--max-tool-steps</c> escape hatch (#1686 review F11) — per-execution real-tool-call ceiling,
+/// mirroring <paramref name="TokenBudget"/> end to end. Role dispatch only, rejected for a workflow
+/// template the same way <paramref name="TokenBudget"/> is. Null keeps the role's own default
+/// (<c>Baton.Vendors.WorkerRole.MaxToolSteps</c>).
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -78,4 +84,5 @@ public sealed record DispatchOptions(
     IReadOnlyList<string>? Attachments = null,
     bool ListCapabilities = false,
     long? TokenBudget = null,
-    string? RepoPath = null);
+    string? RepoPath = null,
+    int? MaxToolSteps = null);

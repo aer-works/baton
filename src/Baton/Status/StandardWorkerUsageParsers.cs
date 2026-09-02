@@ -130,6 +130,11 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
     /// re-check them), so this deliberately leaves <see cref="WorkerUsage.Turns"/>/
     /// <see cref="WorkerUsage.ThinkingTokens"/> null here rather than reusing the terminal-line reader.
     /// The per-line/per-turn summing contract is <see cref="IWorkerUsageParser.TryParseIncrementalUsage"/>'s.
+    /// <c>message.id</c> is also read onto <see cref="WorkerUsage.MessageId"/> (#1686 review F6):
+    /// measured against real `.stdout.log` captures, several consecutive <c>"type":"assistant"</c>
+    /// lines can carry the SAME <c>message.id</c> and an identical <c>usage</c> object (one API
+    /// response split across content-block chunks) — a caller summing every line's usage without
+    /// deduping by this field over-counts by however many chunks that message split into.
     /// </summary>
     public bool TryParseIncrementalUsage(string rawLine, out WorkerUsage? usage)
     {
@@ -158,13 +163,14 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
             long? tokensOut = usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens) ? outTokens : null;
             long? cacheReadTokens = usageProp.TryGetProperty("cache_read_input_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue) ? cacheReadValue : null;
             long? cacheCreationTokens = usageProp.TryGetProperty("cache_creation_input_tokens", out var cacheCreationProp) && cacheCreationProp.TryGetInt64(out var cacheCreationValue) ? cacheCreationValue : null;
+            string? messageId = message.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String ? idProp.GetString() : null;
 
             if (tokensIn is null && tokensOut is null && cacheReadTokens is null && cacheCreationTokens is null)
             {
                 return false;
             }
 
-            usage = new WorkerUsage(tokensIn, tokensOut, CacheReadTokens: cacheReadTokens, CacheCreationTokens: cacheCreationTokens);
+            usage = new WorkerUsage(tokensIn, tokensOut, CacheReadTokens: cacheReadTokens, CacheCreationTokens: cacheCreationTokens, MessageId: messageId);
             return true;
         }
         catch (JsonException)
@@ -215,6 +221,52 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// #1682, unit fixed by #1686 review F2: the number of REAL tool calls a <c>"type":"assistant"</c>
+    /// message reports — one per <c>tool_use</c> content block, every block, not just the first
+    /// (unlike <see cref="TryParseToolName"/>, whose single display name would undercount a multi-tool
+    /// turn). This is the SAME unit <see cref="AgyUsageParser.CountToolSteps"/> now counts (one per
+    /// real tool call, at that call's terminal lifecycle line) — <c>MaxToolSteps</c> is comparable
+    /// across vendors as of this fix; spec/baton.md §3 states the unit once. Same top-level shape
+    /// <see cref="TryParseToolName"/> reads, deliberately not delegating to it.
+    /// </summary>
+    public int CountToolSteps(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return 0;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "assistant"
+                || !root.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object
+                || !message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+            {
+                return 0;
+            }
+
+            var count = 0;
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.ValueKind == JsonValueKind.Object
+                    && block.TryGetProperty("type", out var blockType) && blockType.GetString() == "tool_use")
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+        catch (JsonException)
+        {
+            return 0;
         }
     }
 }
@@ -311,6 +363,11 @@ public sealed class AgyUsageParser : IWorkerUsageParser
     /// terminal <c>result</c> event's <c>usage</c> object -- same field names, different envelope. One
     /// line = one step's own usage; see <see cref="IWorkerUsageParser.TryParseIncrementalUsage"/> for
     /// the output-additive/input-level split a caller applies to it.
+    /// #1686 review F4: gates on <c>step_type == "agent_response"</c> too, not just DONE state — the
+    /// glass-side gate this now matches is spec/baton.md §3's own case, not restated here. Measured
+    /// against the real `dispatch-implement-38c24d11` capture: no DONE/<c>step_type=="tool"</c> line in
+    /// that stream carries a <c>usage</c> object, so this filter changes nothing observed there — it
+    /// closes the gap for a shape that has not yet been seen rather than one that has.
     /// </summary>
     public bool TryParseIncrementalUsage(string rawLine, out WorkerUsage? usage)
     {
@@ -328,6 +385,7 @@ public sealed class AgyUsageParser : IWorkerUsageParser
                 || !root.TryGetProperty("event", out var eventProp) || eventProp.GetString() != "step_update"
                 || !root.TryGetProperty("step_update", out var stepUpdate) || stepUpdate.ValueKind != JsonValueKind.Object
                 || !stepUpdate.TryGetProperty("state", out var stateProp) || stateProp.GetString() != "DONE"
+                || !stepUpdate.TryGetProperty("step_type", out var stepTypeProp) || stepTypeProp.GetString() != "agent_response"
                 || !stepUpdate.TryGetProperty("usage", out var usageProp) || usageProp.ValueKind != JsonValueKind.Object)
             {
                 return false;
@@ -381,6 +439,48 @@ public sealed class AgyUsageParser : IWorkerUsageParser
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// #1682, unit fixed by #1686 review F2: 1 for a <c>"step_type":"tool"</c> step_update carrying a
+    /// <c>tool_name</c> AT ITS TERMINAL LIFECYCLE STATE (<c>DONE</c> or <c>ERROR</c>) — one per REAL
+    /// tool call, the same unit <see cref="ClaudeUsageParser.CountToolSteps"/> counts. Originally this
+    /// counted the SAME gate <see cref="TryParseToolName"/> uses with no <c>state</c> filter at all, so
+    /// agy's <c>ACTIVE</c> heartbeat and its terminal line for the SAME call were both counted — the
+    /// two vendors' unit was not comparable under one `MaxToolSteps` scalar (spec/baton.md §3 has the
+    /// F2 case). Measured against real captures (`dispatch-implement-38c24d11`, `dispatch-implement-f7b24a80`) —
+    /// the per-room counts and the one-line gap on the cancelled room are spec/baton.md §3's own
+    /// measurement, not restated here — so counting terminal-only halves the prior scalar without
+    /// losing or double-counting a real call.
+    /// </summary>
+    public int CountToolSteps(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return 0;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("event", out var eventProp) || eventProp.GetString() != "step_update"
+                || !root.TryGetProperty("step_update", out var stepUpdate) || stepUpdate.ValueKind != JsonValueKind.Object
+                || !stepUpdate.TryGetProperty("step_type", out var stepTypeProp) || stepTypeProp.GetString() != "tool"
+                || !stepUpdate.TryGetProperty("tool_name", out var toolNameProp) || toolNameProp.GetString() is not { Length: > 0 }
+                || !stepUpdate.TryGetProperty("state", out var stateProp))
+            {
+                return 0;
+            }
+
+            var state = stateProp.GetString();
+            return state is "DONE" or "ERROR" ? 1 : 0;
+        }
+        catch (JsonException)
+        {
+            return 0;
         }
     }
 }

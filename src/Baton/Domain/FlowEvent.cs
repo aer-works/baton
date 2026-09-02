@@ -212,7 +212,8 @@ public abstract record FlowEvent
     /// <summary>
     /// #1623 (contract: <c>spec/baton.md</c> §3; the addendum's own words are quoted on
     /// <see cref="Mutation.TokenBudgetMonitor"/>): a live execution's measured usage crossed its role's
-    /// token budget. The engine cancels the execution (arrest, not park) rather than let it keep running.
+    /// token budget, OR (#1682) its tool-step count crossed its role's tool-step cap. The engine cancels
+    /// the execution (arrest, not park) rather than let it keep running.
     /// <paramref name="Usage"/> is the measured usage at arrest time; <paramref name="LastToolNames"/>
     /// the last few tool calls observed, which is what a conductor reads to tell a runaway loop from a
     /// merely long task. Settles the step <see cref="Status.WorkflowOutcome.Indeterminate"/>, same as
@@ -220,10 +221,19 @@ public abstract record FlowEvent
     /// <see cref="FlowEvent.CancellationRequested"/>: that event is operator intent, and this is a
     /// distinct, engine-initiated fact.
     /// </summary>
+    /// <param name="Reason">
+    /// #1682: which producer armed this arrest — see <see cref="ArrestReason"/>. Null on a
+    /// pre-#1682 ledger line; <c>StateProjector.DescribeArrest</c> is where that reads as.
+    /// </param>
+    /// <param name="ToolStepCount">
+    /// #1682: the tool-step count at arrest time, set independently of <paramref name="Usage"/> (spec/baton.md §3).
+    /// </param>
     public sealed record ExecutionArrested(
         ExecutionId ExecutionId,
         WorkerUsage? Usage = null,
-        IReadOnlyList<string>? LastToolNames = null) : FlowEvent;
+        IReadOnlyList<string>? LastToolNames = null,
+        ArrestReason? Reason = null,
+        int? ToolStepCount = null) : FlowEvent;
 
     /// <summary>
     /// S6 (spec/baton.md §3, #802 section 3.3, pulled forward by #1583): records that a step's execution was rebound to a different

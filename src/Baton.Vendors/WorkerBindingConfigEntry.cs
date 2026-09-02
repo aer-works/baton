@@ -59,6 +59,11 @@ namespace Baton.Vendors;
 /// #1623: <see cref="WorkerRole.TokenBudget"/>, or the <c>--token-budget</c> override
 /// (<see cref="RoleDispatch.ToBinding"/>'s <c>tokenBudgetOverride</c>) when one was supplied.
 /// </param>
+/// <param name="MaxToolSteps">
+/// #1682: <see cref="WorkerRole.MaxToolSteps"/>, or the <c>--max-tool-steps</c> override (#1686 review
+/// F11, <see cref="RoleDispatch.ToBinding"/>'s <c>maxToolStepsOverride</c>) when one was supplied —
+/// same axis shape as <paramref name="TokenBudget"/>'s <c>--token-budget</c>.
+/// </param>
 /// <param name="Workstream">
 /// The operator-supplied <c>--workstream</c> slug (#1619, rung 1 of #1614's ruling) — a grouping key,
 /// not a title: unlike <paramref name="Label"/> it IS path-written, as the directory name of a
@@ -101,6 +106,7 @@ public sealed record WorkerBindingConfigEntry(
     string? Label = null,
     string? VerifyPixiTask = null,
     long? TokenBudget = null,
+    int? MaxToolSteps = null,
     string? Workstream = null,
     string? WorktreeBaseSha = null,
     string? ToolSha = null);
