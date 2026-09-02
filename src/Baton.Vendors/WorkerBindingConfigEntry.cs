@@ -59,6 +59,14 @@ namespace Baton.Vendors;
 /// #1623: <see cref="WorkerRole.TokenBudget"/>, or the <c>--token-budget</c> override
 /// (<see cref="RoleDispatch.ToBinding"/>'s <c>tokenBudgetOverride</c>) when one was supplied.
 /// </param>
+/// <param name="Workstream">
+/// The operator-supplied <c>--workstream</c> slug (#1619, rung 1 of #1614's ruling) — a grouping key,
+/// not a title: unlike <paramref name="Label"/> it IS path-written, as the directory name of a
+/// <c>~/.baton/by-workstream/&lt;slug&gt;/</c> junction the CLI creates at dispatch time
+/// (<c>Baton.Cli.WorkstreamJunctionLinker</c>) — see spec/baton.md §2/§6. Sanitized and slug-validated
+/// once at parse time (<c>Baton.Cli.DispatchOptionsParser.SanitizeWorkstream</c>). Null when never
+/// supplied.
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -78,7 +86,8 @@ public sealed record WorkerBindingConfigEntry(
     bool IsWorktree = false,
     string? Label = null,
     string? VerifyPixiTask = null,
-    long? TokenBudget = null);
+    long? TokenBudget = null,
+    string? Workstream = null);
 
 
 /// <summary>

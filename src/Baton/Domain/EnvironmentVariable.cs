@@ -9,9 +9,7 @@ namespace Baton.Domain;
 /// invoking environment) are recorded by name only, never by value — their values are resolved and
 /// injected at dispatch time, immediately before submission to Core, and never touch the Event Store.
 /// </summary>
-[JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
-[JsonDerivedType(typeof(BatonComputed), "batonComputed")]
-[JsonDerivedType(typeof(PassThrough), "passThrough")]
+[JsonConverter(typeof(EnvironmentVariableJsonConverter))]
 public abstract record EnvironmentVariable(string Name)
 {
     public sealed record BatonComputed(string Name, string Value) : EnvironmentVariable(Name);

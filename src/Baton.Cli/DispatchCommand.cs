@@ -63,6 +63,13 @@ public static class DispatchCommand
                 pair => pair.Key, pair => pair.Value with { Label = options.Label }, StringComparer.Ordinal);
         }
 
+        // #1619: same stamp-onto-every-entry rule as Label immediately above.
+        if (options.Workstream is not null)
+        {
+            bindings = bindings.ToDictionary(
+                pair => pair.Key, pair => pair.Value with { Workstream = options.Workstream }, StringComparer.Ordinal);
+        }
+
         // R1 (#1354/#1380): disclose the consequence up front, before the run starts, whenever
         // RoleDispatch.ToBinding declared a fresh worktree for an audited role — the worker then never
         // sees uncommitted or staged changes in `workspace`, only what HEAD already had (finding 5).
@@ -83,6 +90,9 @@ public static class DispatchCommand
         }
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
+
+        // #1619: the navigational half of the ruling -- a no-op when --workstream was never passed.
+        WorkstreamJunctionLinker.CreateIfRequested(options.Workstream, options.RoomDirectoryPath);
 
         // #1500: Copy attached context files into the room before the worker starts.
         // Attachment content is operator-supplied and inbound: it is never scanned and never published,

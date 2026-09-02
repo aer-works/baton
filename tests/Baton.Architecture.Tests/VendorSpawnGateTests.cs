@@ -45,6 +45,7 @@ public class VendorSpawnGateTests
         ["src/Baton.Cli/WorkspaceHead.cs"] = "Read-only 'git rev-parse HEAD' to capture a capture step's base ref — git, not a vendor CLI; no -p, no tool execution.",
         ["src/Baton/Workspaces/WorktreeProvisioner.cs"] = "'git worktree add/remove' plus 'git status' to provision and tear down a worker's workspace (#669) — git, not a vendor CLI; spawns no vendor process.",
         ["src/Baton/Mutation/VerifyRunner.cs"] = "#1623: the engine-run verify step. Spawns 'pixi run <task>' (e.g. gates-quiet) after a worker's own execution already exited 0 with a satisfied contract — never a vendor CLI, and never invoked from inside a worker's own turn.",
+        ["src/Baton.Cli/WorkstreamJunctionLinker.cs"] = "'cmd.exe /c mklink /J' to create a --workstream navigation link (#1619) — a Windows shell built-in, not a vendor CLI; no -p, no tool execution, spawns no vendor process.",
     };
 
     private static readonly string[] SpawnMarkers = ["new ProcessStartInfo", "Process.Start", "new BatonTask"];

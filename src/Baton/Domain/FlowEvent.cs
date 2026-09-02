@@ -21,6 +21,7 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(StepRetryScheduled), "stepRetryScheduled")]
 [JsonDerivedType(typeof(StepRetryForeclosed), "stepRetryForeclosed")]
 [JsonDerivedType(typeof(ZeroOutputsDespiteSubstantialWork), "zeroOutputsDespiteSubstantialWork")]
+[JsonDerivedType(typeof(StepRebound), "stepRebound")]
 [JsonDerivedType(typeof(VerifyStarted), "verifyStarted")]
 [JsonDerivedType(typeof(VerifyPassed), "verifyPassed")]
 [JsonDerivedType(typeof(VerifyFailed), "verifyFailed")]
@@ -219,4 +220,28 @@ public abstract record FlowEvent
         ExecutionId ExecutionId,
         WorkerUsage? Usage = null,
         IReadOnlyList<string>? LastToolNames = null) : FlowEvent;
+
+    /// <summary>
+    /// S6 (spec/baton.md §3, #802 section 3.3, pulled forward by #1583): records that a step's execution was rebound to a different
+    /// adapter/model binding. When crash-recovery resubmission encounters a divergent binding
+    /// (the current <c>bindings.json</c> differs from the accepted request's recorded <see cref="ExecutionRequest.Adapter"/>
+    /// and/or <see cref="ExecutionRequest.Model"/>), Flow journals this event before dispatching so that
+    /// usage attribution (<see cref="Status.ExecutionUsageProjector"/>) re-attributes this execution to the
+    /// new binding rather than trusting the pre-crash frozen request.
+    /// </summary>
+    /// <param name="StepId">Which step was rebound.</param>
+    /// <param name="ForExecutionId">The execution whose binding diverged.</param>
+    /// <param name="PreviousAdapter">The adapter originally recorded on the accepted request.</param>
+    /// <param name="PreviousModel">The model originally recorded on the accepted request.</param>
+    /// <param name="NewAdapter">The new adapter resolved from the current worker bindings.</param>
+    /// <param name="NewModel">The new model resolved from the current worker bindings.</param>
+    /// <param name="Reason">Why the step was rebound (diagnostic).</param>
+    public sealed record StepRebound(
+        StepId StepId,
+        ExecutionId ForExecutionId,
+        string? PreviousAdapter = null,
+        string? PreviousModel = null,
+        string? NewAdapter = null,
+        string? NewModel = null,
+        string? Reason = null) : FlowEvent;
 }

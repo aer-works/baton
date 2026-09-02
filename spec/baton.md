@@ -102,7 +102,7 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   workflow nobody has decided.
 - **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
   [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]
-  [--token-budget <n>] [--label <text>]`**
+  [--token-budget <n>] [--label <text>] [--workstream <slug>]`**
   — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
   template (`src/Baton.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
   directory under `BatonPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
@@ -128,7 +128,40 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   already exists for every room regardless of terminal state — see §6 schema for how `fleet_status`
   reads it back. `--token-budget` (#1623) overrides the dispatched role's own default per-execution
   token ceiling — §3's "Engine-run verify and the token budget" subsection is the full contract; this
-  entry only names the flag.
+  entry only names the flag. `--workstream` (#1619, rung 1 of #1614's ruling) is a **grouping key, not a title** —
+  a room keeps its generated hex identity on disk; the slug only makes several rooms (e.g. an
+  implement lane and its review redispatch) read as one workstream in Fleet Glass. Do not conflate it
+  with `--label`: a label is 60-char free display text never written into a path
+  (`DispatchOptionsParser.SanitizeLabel`); a workstream slug IS later used as a Windows directory name
+  (below), so it is validated rather than truncated —
+  `DispatchOptionsParser.SanitizeWorkstream` trims it, then refuses (never truncates) anything
+  over `MaxWorkstreamLength` (60) chars or outside the grammar `^[A-Za-z0-9][A-Za-z0-9._-]*$` — a
+  blank result after trimming is treated as omitted, the same as `--label`. A value that passes the
+  grammar check is then folded to lowercase, per the #1614 design record's own slug wording
+  ("path-safe, lowercase, short"): NTFS resolves `BatonPaths.ByWorkstream` directory names
+  case-insensitively while Fleet Glass's grouping (below) keys on the exact string in a
+  case-sensitive JS `Map`, so `--workstream W1619` and `--workstream w1619` fold to the same slug
+  rather than sharing one junction directory while rendering as two glass groups. Persisted the same
+  way as `--label`, onto every entry of the room's own `bindings.json`
+  (`WorkerBindingConfigEntry.Workstream`) — see §6 schema for how `fleet_status` reads it back, and
+  the paragraph immediately below for the navigation half.
+
+  **The by-workstream junction directory.** When `--workstream` is passed, `DispatchCommand` also
+  creates a Windows directory junction (`mklink /J` via `WorkstreamJunctionLinker`, no elevation
+  required) at `BatonPaths.ByWorkstream/<slug>/<room-name>-<hash>` pointing at the room's real
+  directory under `BatonPaths.Rooms` — so `cd ~/.baton/by-workstream/<slug>` lists every room in
+  that workstream without moving a single file on disk. The `<hash>` suffix (`WorkstreamJunctionLinker.ResolveLinkPath`,
+  eight hex characters of the room's own full path) exists because `<room-name>` alone is not unique:
+  an explicit `--room-dir` — the pattern every invoking harness uses — is passed through verbatim
+  rather than minted fresh, so two rooms with different parents can share a leaf. `BatonPaths.ByWorkstream`
+  is **deliberately a sibling of `BatonPaths.Rooms`, never a child**: `FleetStatusTool`, `RoomRetentionSweep`,
+  and the fleet-glass pusher (`pusher.py`) all walk `rooms/` exactly one level deep, and a workstream
+  directory nested under it would be picked up by every one of those scans and reported as a phantom
+  room with no bound snapshot — the same reason `fleet_status`'s caller-supplied `roots` refuses to
+  walk `BatonPaths.ByWorkstream` itself (it would double-count a room already found by its real path).
+  A failed junction (a machine policy refusing `mklink`, an occupied name that resolves to a
+  different room) degrades to a stderr warning naming the existing target — it never fails the
+  dispatch, since the room itself is already fully functional without the shortcut.
 
 A room's model is always pinned in `bindings.json` at dispatch time — there is no runtime model
 choice a harness makes mid-lane; §9 covers the bindings contract. `baton resume`, `baton decide`, `baton
@@ -136,7 +169,7 @@ cancel`, and `baton supply` continue an already-dispatched room; §5 covers `dec
 
 **`baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
 <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label
-<text>]`** (#1441) reruns
+<text>] [--workstream <slug>]`** (#1441) reruns
 a single-role `baton dispatch` room into a fresh one, once the operator finds the brief was wrong or
 incomplete — without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch
 `baton dispatch` would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the
@@ -151,7 +184,16 @@ entry's contract) — a redispatch's own `--output`, when given, works exactly l
 `--label` inherits unlike `--output` does: the parent's label IS a persisted, durable room-level fact
 (`WorkerBindingConfigEntry.Label`), not a process-local copy target, so a redispatched lane keeps
 reading as the same human-named thing — absent inherits the parent's label, specified-and-blank
-(`--label ""`) clears it, and specified-and-nonblank overrides it (`RedispatchCommand.InheritBinding`). `--spec`
+(`--label ""`) clears it, and specified-and-nonblank overrides it (`RedispatchCommand.InheritBinding`).
+`--workstream` (#1619) inherits the identical way, via its own `WorkstreamSpecified` mirror of
+`LabelSpecified` (`RedispatchOptionsParser.cs`, `RedispatchOptions.WorkstreamSpecified`) — absent
+inherits the parent's workstream, specified-and-blank clears it, specified-and-nonblank overrides it
+— so a redispatch chain keeps grouping as one workstream in Fleet Glass without the operator
+re-passing the slug on every hop, and can still deliberately break a lane out of its workstream by
+passing `--workstream ""`. `RedispatchCommand` also (re-)creates that redispatched room's
+by-workstream junction against whichever slug `InheritBinding` just resolved — inherited, cleared, or
+overridden — never the raw `--workstream` flag alone, since a bare `baton redispatch` with no
+`--workstream` flag at all must still link into the parent's workstream directory. `--spec`
 omitted reuses the parent's already-built prompt verbatim; given, the amended brief is rebuilt through
 the same `RoleDispatch.Materialize` a fresh dispatch uses, with the parent's recorded axes as defaults
 — including the inherited-unless-overridden label, applied after that rebuild since
@@ -183,12 +225,12 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>]` | `DispatchOptionsParser.cs` |
-| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>]` | `RedispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
+| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
-| `cancel` | `baton cancel <room-dir> [--execution <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `Program.cs` |
+| `cancel` | `baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]` | `Program.cs` |
 | `status` | `baton status <room-dir> [--follow] [--json]` | `StatusOptionsParser.cs` |
 | `templates` | `baton templates [--json]` | `Program.cs` |
 | `keep` | `baton keep <room-dir>` | `KeepOptionsParser.cs` |
@@ -199,20 +241,78 @@ there is no authoring UI to browse a saved-template library visually against (Ap
 old numbering — dropped here, since there is no longer a separate register to number rulings
 against).
 
-**`cancel`'s `--execution` is now optional** (#1495): omitted, it targets "the running lane" —
-exactly one `Running` step's latest execution, refused (naming every candidate) on zero or more than
-one (`RunningExecutionResolver.cs`). Against a room whose `baton run` pump is still live, the direct
+**`cancel`'s `--execution` is now optional** (#1495): omitted, it targets "the target lane" —
+exactly one candidate's latest execution, refused (naming every candidate) on zero or more than one
+(`RunningExecutionResolver.cs`). A candidate is a currently-`Running` step, or (#1607) a quota-parked
+one — `Failed` with a scheduled `RetryNotBefore`, the identical shape `MutationInterface`'s
+`IsParkedRetryTarget` and `CancelRequestPoller`'s own `isParked` check already use. A parked
+candidate is not delivered the same way a running one is: it is settled through the dedicated path
+#1605 built (`InFlightExecutionRegistry.MarkParkedCancelIntent` /
+`MutationInterface.SettleParkedCancelIntentsAsync`), never through `CoreEventAggregation` or
+`NonProcessCancellationDetector`'s own Running-only filters, which stay unmodified and unconsulted
+for a parked target. **Behaviour change from the widening, not just an addition:** a room with one
+`Running` step and a sibling sitting in ordinary retry backoff — previously an unambiguous single
+`Running` candidate — is now ambiguous and refuses/rejects, since the sibling's `RetryNotBefore` makes
+it a second candidate. Deliberately pinned
+(`RunningExecutionResolverTests.A_Running_step_and_a_quota_parked_step_together_are_ambiguous`): the
+resolver cannot tell "the operator means the one that's actually running" from "the operator means
+the one closest to being retried" without guessing, and guessing is exactly what this resolver exists
+to refuse to do. Against a room whose `baton run` pump is still live, the direct
 mutation call cannot win `flow.lock` — `cancel` catches that specific `WorkflowLockedException` and
 writes a room-scoped `cancel.request` file instead (`CancelRequestFile.cs`), which the pump itself
 polls at a modest cadence without ever contending the lock (`CancelRequestPoller.cs`) and delivers
 through the same `FlowEvent.CancellationRequested` path `MutationInterface` already uses. The
-fall-through path re-resolves `latest` at poll time (arresting whatever is running then), whereas the
-direct path cancels the execution resolved at command time; on the fall-through path, zero or more
-than one Running at act time lands as a `.rejected` record in the room (with the diagnostic reason
-written in its body), rather than a terminal command-line refusal. This is the arrest half of §10's
-"only cancellation-then-restart" ruling, not a reopening of it: nothing here reaches into a running
-worker to redirect it — it only makes the existing stop-then-`redispatch` sequence reachable from
-outside the lane's own process.
+fall-through path re-resolves `latest` at poll time (arresting whatever is running or parked then),
+whereas the direct path cancels the execution resolved at command time; on the fall-through path, zero
+or more than one candidate at act time lands as a `.rejected` record in the room (with the diagnostic
+reason written in its body), rather than a terminal command-line refusal. This is the arrest half of
+§10's "only cancellation-then-restart" ruling, not a reopening of it: nothing here reaches into a
+running worker to redirect it — it only makes the existing stop-then-`redispatch` sequence reachable
+from outside the lane's own process.
+
+A parked candidate reached through the **direct** path (no live pump contending the lock) is
+reachable only when its `RetryNotBefore` has already elapsed AND a live pump is confirmed — a
+genuinely still-future park is refused outright by the dead-holder check below before the resolver
+ever runs, since that check scans every step for a future deferral, not just the one being targeted.
+That check itself was widened in the same change (#1607) from firing only on a confirmed-`Dead`
+holder to firing on anything but a confirmed-`Alive` one — see `CancelCommand.cs`'s own dead-holder
+gate comment for which `EngineLivenessProbe.Unknown` cases motivate this and why leaving it at
+`Dead`-only would have reopened #1586's hang from a new entry point. An already-overdue park
+raced against a confirmed-live pump loses to `MutationInterface`'s own retry-obligation check, which
+redispatches it before a poller-less pump's parked-cancel-intent wait is ever reached — the same
+outcome explicit `--execution` targeting an overdue park already had (tracked separately, #1634);
+#1607 did not introduce it and does not close it.
+
+**The dead-holder gate applies to both targeting modes, deliberately, with a real cost on the
+explicit one.** The gate runs before `--execution` is even inspected, so `cancel <room> --execution
+<id>` against a still-future park is refused on Unknown liveness exactly like the bare `cancel
+<room>` form — not because the two paths share reasoning about *which* candidate to pick (they
+don't), but because the hang the gate prevents follows from the room holding any pending future
+`RetryNotBefore` once `flow.lock` is won, regardless of which execution the caller named. Scoping the
+refusal to room-level targeting only would leave the explicit path free to reopen #1586's hang from
+the one entry point #1607 widened this gate to close, which would defeat the point of widening it at
+all. The accepted cost: before #1607, `Dead` was the only liveness value this gate refused on, so a
+genuinely-alive pump with a failed or missing sidecar write (`Unknown`, not `Dead`) still had a
+working path — `--execution <id>` would proceed, lose the lock race to the real pump, and fall
+through to the `WorkflowLockedException` handling that writes `cancel.request`. Since #1607 widened
+`Dead`-only to "anything but confirmed `Alive`," that fall-through is no longer reachable either: an
+`Unknown` verdict now refuses both paths up front, even when the pump is genuinely alive. There is
+currently no verb that reaches a still-alive pump whose holder record can't be confirmed — the
+refusal's own hint (`CancelCommand.cs`) says so rather than pointing at a recovery that does not
+exist; `baton status` is not offered as one, since it consults the identical `EngineLivenessProbe`
+and would report the same `Unknown`.
+
+**`cancel`'s `--bindings` is now optional too** (#1607 friction fix): omitted, it defaults to
+`<room-dir>/bindings.json` — the file a room dispatched via `dispatch`/`redispatch` already holds,
+since both write one there (`CancelOptionsParser.cs`). A room started via bare `baton run --bindings
+<elsewhere>` never gets one copied in, so the default there simply won't exist; a nonexistent default
+surfaces through the same "file not found" `WorkerBindingConfigException` `WorkerBindingConfigParser`
+already raises for a bad explicit path — no new failure mode, and the operator falls back to passing
+`--bindings` explicitly as before. One fewer argument to retype for the common (dispatched-room) case.
+`CancelCommand` augments that exception's message for exactly this default-path case (never for
+run/decide/supply, whose `--bindings` is required rather than defaulted) — naming the defaulted path
+as a default rather than a mistyped explicit argument, and saying `--bindings` is still available for
+a room whose bindings file lives elsewhere.
 
 ---
 
@@ -323,8 +423,11 @@ paragraph's own caveat (briefly misreported as still `"Stalled"` while a live pu
 is the accurate scoping of what this recovers and what it does not.
 
 **`baton cancel` was also checked rather than assumed, and originally left the room worse than it
-found it — closed by #1586.** Without `--execution` it refuses (no `Running` step to resolve). With
-the parked execution's id explicitly named, it used to take the room's lock, clobber the one artifact
+found it — closed by #1586.** Without `--execution`, a room with no `Running` step used to refuse
+outright (`RunningExecutionResolver` had no notion of a parked candidate) — #1607 widened the
+resolver so a genuinely-still-parked room now targets that step the same way an explicit
+`--execution` always could (§2 above). With the parked execution's id (explicit or resolved), it
+used to take the room's lock, clobber the one artifact
 naming which engine died, and never come back — `CancelCommand`'s own dead-holder-check comment is
 the canonical account of that old failure and today's guard against it, not restated here. #1586's fix
 runs before any acquire: `CancelCommand` reuses the same `EngineLivenessProbe` arbiter this section's
@@ -443,6 +546,16 @@ contract-unsatisfied shape (#1594's own): a non-zero exit or a timeout never com
 since those failures are already self-explaining and this tripwire targets specifically the case
 where nothing else says why the work vanished. Diagnostic only — `StateProjector` records it durably
 but it drives no `StepState`/`FlowState` consequence; it exists to be loud, not to change scheduling.
+
+<!-- record-once-ok: #1583 src/Baton/Domain/FlowEvent.cs -->
+**`FlowEvent.StepRebound`** (`src/Baton/Domain/FlowEvent.cs`) records that a step's execution was rebound
+to a different adapter/model binding (#802 §3.3 / #1583). When crash-recovery resubmission encounters a
+binding in `bindings.json` that diverges from the accepted request's recorded `Adapter`/`Model`, Flow
+journals `StepRebound` (naming `PreviousAdapter`/`PreviousModel` → `NewAdapter`/`NewModel`) before
+dispatching; `StateProjector` applies it as an override on the accepted request's `Adapter`/`Model` so
+the rebind survives replay, and `ExecutionUsageProjector` re-attributes the execution's usage to the new
+binding rather than silently misattributing it to the pre-crash binding. S6 extends this event (adding
+`Effort` and a closed-token `Reason`, per #802 §3.3) rather than introducing a second one.
 
 **`settledAt`/`settledBy` remain unimplemented — S2 scope, not S1's.** The proposal on #1586 §2
 names two additive `terminal.json` fields (`settledAt`: ISO-8601 UTC, `settledBy`:
@@ -760,7 +873,8 @@ Output: a JSON array of
   "model"?: string,       // that role's WorkerBindingConfigEntry.Model
   "effort"?: string,      // that role's WorkerBindingConfigEntry.Effort
   "timeoutMs"?: number,   // that role's WorkerBindingConfigEntry.Timeout, in milliseconds
-  "label"?: string        // #1499: the room's --label, WorkerBindingConfigEntry.Label
+  "label"?: string,       // #1499: the room's --label, WorkerBindingConfigEntry.Label
+  "workstream"?: string   // #1619: the room's --workstream, WorkerBindingConfigEntry.Workstream
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
@@ -775,11 +889,13 @@ paragraph above, a display word `terminal.json`/`status --json` never emit — a
 identically across all three shapes must special-case this one divergence, the same way it already
 special-cases `linkedFrom`/`timestamp`.
 
-**`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503, extended by #1613 item 3)** are read from the
+**`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503, extended by #1584 and #1613 item 3)** are read from the
 room's own `bindings.json` (`WorkerBindingConfigWriter`/`WorkerBindingConfigParser`,
 `Baton.Vendors`). On the active-room path, scoped to whichever step this same projection currently
 calls `"Running"` — never a separate probe, and never one entry per worker role the room happens to
-define. On the **terminal-sentinel fast path** (#1613 item 3 — pre-#1613 this fast path never read
+define; `adapter`/`model` prefer the running step's recorded `ExecutionRequest.Adapter`/`.Model` values
+(#1584, matching `ExecutionUsageProjector` since #1567), falling back to `bindings.json` only when no
+execution has recorded them yet (pre-#1567 journals or non-process dispatches). On the **terminal-sentinel fast path** (#1613 item 3 — pre-#1613 this fast path never read
 `bindings.json` for these five fields at all, so they silently vanished the moment a room went
 terminal, even though the same `bindings.json` a live room reads from is still sitting right next to
 `terminal.json`), the resolution is different because there is no "Running" step left to key off:
@@ -821,6 +937,16 @@ this field — the same fail-open-for-display-metadata convention the quartet ab
 carries a room's label into its child unless overridden (§2), so a lineage of redispatches keeps
 reading as the same human-named lane.
 
+**`workstream` (#1619) is read from the same `bindings.json`, on the identical shape and gating as
+`label` immediately above** — a room-level fact stamped onto every entry at dispatch time, read off
+the first entry whose `Workstream` is non-null on both `ProcessRoomAsync` paths, absent under the same
+conditions `label` is absent under. `redispatch` carries a room's workstream into its child unless
+overridden (§2), so a lineage of redispatches keeps grouping as one workstream. Fleet Glass
+(`tools/fleet-glass/glass.html`, `groupLanesHtml`) groups each state bucket's rendered lanes by this
+field, alphabetically by slug, with a group heading spanning the lane grid; rooms with no workstream
+render as flat, ungrouped lanes exactly as every room did before #1619 — the same fail-open-to-flat
+contract `label`'s own absence already has.
+
 **`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510/#1522)** are copied verbatim from
 `WorkflowStatusStepView`, never re-derived here — see that record's own remarks for the gating
 rules (`src/Baton/Status/WorkflowStatusView.cs`). Same presence-gated, never-fabricated convention
@@ -840,9 +966,17 @@ one, and an ordinary `Retryable` backoff never emits this field despite scheduli
 `RetryNotBefore` of its own. Nothing re-derives or clears the value once (#1513) liveness confirms
 the scheduling engine dead — a Stalled room keeps reporting the exact same, now-past instant; the
 glass chip (`tools/fleet-glass/glass.html`) is what renders that honestly (a relative "was due 3d
-ago — no scheduler" rather than a live countdown), never this field. A far-future instant (#1183,
-not fixed here) is rendered, not fixed, by the same chip — the park's own crash-on-dispatch bug is
-tracked separately. In practice only one vendor path ever records an obligation to gate on: the agy
+ago — no scheduler" rather than a live countdown), never this field. A far-future or already-past
+reset instant (#1183, fixed) never reaches this field wholesale: `MutationInterface.GetRetryObligations`
+caps an instant more than `MaxExhaustionParkHorizon` (14 days) out to that horizon, and paces an
+instant less than `PastResetInstantRetryFloor` (1 second) away — already past, or legitimately
+future but imminent — up to that floor, before the obligation is ever recorded as a `RetryNotBefore`
+— the crash-on-dispatch bug this closes was `Task.Delay` throwing past its ~49.7-day ceiling on the
+raw instant. `exhaustedUntil` is still copied verbatim from
+`RetryNotBefore` per the paragraph above, but for a degenerate vendor instant `RetryNotBefore` itself
+is now this engine-computed cap or floor, not the raw value the vendor reported — "copied verbatim,
+never re-derived" describes this projection step, not a guarantee that `RetryNotBefore` always equals
+the vendor's own instant. In practice only one vendor path ever records an obligation to gate on: the agy
 duration-parse path (`Resets in …` → `AgyWorkerAdapter`) is what sets `RetryNotBefore` on an
 `ExhaustedUntil` park today; claude's `credits_required` park records none. **Corrected (#1609):**
 that is not "the vendor never reports a reset instant" — `claude -p "/usage"`/`/cost` reliably
@@ -1480,6 +1614,27 @@ chatty two-way traffic, and the steering model settled alongside this entry (arr
 corrections travel as briefs through `redispatch --spec`, #1495/#1381) guarantees there is none.
 Revisit only if a genuinely interactive surface is ever ruled in — which §10's mid-run-steering
 ruling currently forbids.
+
+### C-12 — Gate receipts: one passing run per tree, CI is the independent one
+
+Measured 2026-09-01: `.githooks/pre-push` ran `gates-fast` under the shared build lock
+(`tools/buildlock.py`) on every push, even seconds after a dispatched lane had already run
+`gates`/`gates-quiet` — a strict superset — on the identical tree. With several lanes queued on the
+lock, a push could sit for tens of minutes redoing work already done, and CI then ran everything a
+third time regardless. `tools/gates/gates.py` now writes a receipt (`<git-dir>/baton-gate-receipt`,
+one per worktree) on every PASS, recording the tree hash, a hash of the uncommitted diff, which mode
+passed, and a timestamp; a FAIL deletes it. The pre-push hook (`pixi run gates-check-receipt`) skips
+its own run only when the receipt's tree hash and dirty-hash still match `HEAD^{tree}` and it is
+under six hours old — any mismatch falls through to a real `gates-fast` run. This narrows what the
+hook re-verifies, not what CI verifies: CI remains the one platform-independent run and is never
+skipped by a local receipt.
+
+**Scope, stated plainly: tracked content only.** The dirty-hash is `git diff HEAD`, which does not
+see untracked files. A tree that was already dirty when its receipt was written, and then gains an
+untracked file before the next push, still matches -- the receipt does not re-verify content `git
+diff HEAD` cannot see. A clean tree gaining any file `git status --porcelain` reports (tracked or
+untracked) is still caught, because that flips the dirty bool itself -- a `.gitignore`d file is not
+reported by `--porcelain` either, so it is not caught by that path or any other.
 
 ---
 

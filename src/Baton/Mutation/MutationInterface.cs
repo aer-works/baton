@@ -20,6 +20,14 @@ namespace Baton.Mutation;
 /// </summary>
 public static class MutationInterface
 {
+    // #1183: the longest single Task.Delay the deferral waits below will ever issue, however far out
+    // the deadline they are waiting on actually is -- distinct from MaxExhaustionParkHorizon (the
+    // longest reset instant GetRetryObligations will trust), since a change to one must not silently
+    // move the other. Task.Delay's TimeSpan overload throws past ~49.7 days; the loop's `continue`
+    // after each wait re-checks readiness and re-issues the remainder, so any value safely under that
+    // ceiling works here.
+    private static readonly TimeSpan MaxParkWaitChunk = TimeSpan.FromDays(1);
+
     /// <summary>
     /// Acquires the room's concurrency guard, then repeatedly projects <see cref="FlowState"/>,
     /// resolves every ready step (retry-aware), and dispatches all of them to Core
@@ -887,6 +895,40 @@ public static class MutationInterface
                 {
                     var request = acceptedRequestByExecutionId[executionId];
                     var processBinding = (WorkerBinding.Process)workerBindings[request.Worker];
+
+                    // #1583 (spec/baton.md §3, pulling S6 / #802 section 3.3 forward): when the resubmit's current binding differs
+                    // from the request's recorded Adapter/Model, journal FlowEvent.StepRebound naming old->new
+                    // before dispatching so that usage projection attributes this execution to the new binding.
+                    // request.Adapter is null both for a pre-#1567 journal line (no Adapter field existed yet)
+                    // and for a real rebind's dropped model string (#1082) — the two are told apart by Model:
+                    // a pre-#1567 line has neither field recorded, so require both null before treating the
+                    // absence as "no prior binding recorded" rather than a divergence to journal.
+                    var isLegacyUnrecordedBinding = request.Adapter is null && request.Model is null;
+                    if (!isLegacyUnrecordedBinding
+                        && (request.Adapter != processBinding.Adapter || request.Model != processBinding.Model))
+                    {
+                        var stepId = request.StepId
+                            ?? throw new InvalidRoomMutationException(
+                                $"Crash-recovery resubmit for execution {executionId} has no recorded StepId; a step-less request must never reach the resubmit loop.");
+                        await eventLogWriter.AppendAsync(
+                            new FlowEvent.StepRebound(
+                                stepId,
+                                executionId,
+                                PreviousAdapter: request.Adapter,
+                                PreviousModel: request.Model,
+                                NewAdapter: processBinding.Adapter,
+                                NewModel: processBinding.Model,
+                                Reason: "crash-recovery resubmit: binding changed since accept"),
+                            ioCancellationToken).ConfigureAwait(false);
+
+                        request = request with
+                        {
+                            Adapter = processBinding.Adapter,
+                            Model = processBinding.Model,
+                        };
+                        acceptedRequestByExecutionId[executionId] = request;
+                    }
+
                     var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRootPath, executionId);
                     var prepared = new PreparedExecution(request, outputDirectory);
 
@@ -927,19 +969,34 @@ public static class MutationInterface
                         if (delay > TimeSpan.Zero)
                         {
                             // #1094: surface a vendor-quota park to the foreground before the (possibly
-                            // day-long) paced wait, so it does not read as a hang. Deduped to the instant
-                            // being waited on; ordinary retry backoff is not a quota park and stays quiet.
-                            // Notification only — the 0026 wait below is unchanged.
-                            if (onVendorQuotaPark is not null
-                                && lastQuotaParkNotified != minNotBefore
-                                && state.Steps.Any(s => s.RetryNotBefore == minNotBefore
-                                    && s.LatestFailureClassification == FailureClassification.ExhaustedUntil))
+                            // day-long) paced wait, so it does not read as a hang. Ordinary retry backoff
+                            // is not a quota park and stays quiet. Notification only — the 0026 wait below
+                            // is unchanged.
+                            var quotaParkStep = state.Steps.FirstOrDefault(s => s.RetryNotBefore == minNotBefore
+                                && s.LatestFailureClassification == FailureClassification.ExhaustedUntil);
+                            if (onVendorQuotaPark is not null && quotaParkStep is not null)
                             {
-                                lastQuotaParkNotified = minNotBefore;
-                                onVendorQuotaPark(minNotBefore);
+                                // #1183: deduped on the RAW vendor-reported instant
+                                // (LatestExecutionFailedRetryNotBefore), not the paced `minNotBefore` —
+                                // PastResetInstantRetryFloor recomputes a fresh `now + 1s` obligation on
+                                // every retry of a repeating stale instant, so deduping on the paced value
+                                // would re-notify (and re-print) once per second forever instead of once
+                                // per distinct vendor refusal.
+                                var dedupeInstant = quotaParkStep.LatestExecutionFailedRetryNotBefore ?? minNotBefore;
+                                if (lastQuotaParkNotified != dedupeInstant)
+                                {
+                                    lastQuotaParkNotified = dedupeInstant;
+                                    onVendorQuotaPark(minNotBefore);
+                                }
                             }
 
-                            var delayTask = Task.Delay(delay, timeProvider, ioCancellationToken);
+                            // #1183: Task.Delay's TimeSpan overload throws past ~49.7 days -- clamp
+                            // to a chunk and let the loop's `continue` below re-check readiness and
+                            // re-issue the remainder, rather than trust `delay` to already be sane.
+                            // GetRetryObligations caps every obligation it schedules, so this is
+                            // belt-and-suspenders for the wait itself, not the only guard.
+                            var chunkedDelay = delay > MaxParkWaitChunk ? MaxParkWaitChunk : delay;
+                            var delayTask = Task.Delay(chunkedDelay, timeProvider, ioCancellationToken);
                             var deferralHostStopWatcher = cancellationToken.CanBeCanceled
                                 ? Task.Delay(Timeout.Infinite, cancellationToken)
                                 : null;
@@ -1076,7 +1133,11 @@ public static class MutationInterface
                         var wakeDelay = pendingRetryDeadlines.Min() - timeProvider.GetUtcNow();
                         if (wakeDelay > TimeSpan.Zero)
                         {
-                            deferralWakeup = Task.Delay(wakeDelay, timeProvider, ioCancellationToken);
+                            // #1183: same clamp as the idle branch's delayTask above -- an early
+                            // wakeup here is harmless, `completed == deferralWakeup` below already
+                            // just `continue`s to re-check readiness against the real deadline.
+                            var chunkedWakeDelay = wakeDelay > MaxParkWaitChunk ? MaxParkWaitChunk : wakeDelay;
+                            deferralWakeup = Task.Delay(chunkedWakeDelay, timeProvider, ioCancellationToken);
                             waitCandidates.Add(deferralWakeup);
                         }
                     }
@@ -1448,13 +1509,18 @@ public static class MutationInterface
                 // redispatch minting a new ExecutionId — dropping the stale id silently here instead
                 // of settling it. Known, not fixed here. It is NOT silently lost end to end: the
                 // poller never consumed the request file for a parked mark (its own isParked branch
-                // just re-marks, never consumes), and the request's Target is always the ORIGINAL
-                // literal execution id in this scenario ('latest' can never resolve to a parked step
-                // in the first place — RunningExecutionResolver only sees Running steps, F2's own
-                // point). So the poller's next tick re-checks that same stale id, finds it no longer
-                // matches any step's LatestExecutionId, and reports the ordinary "too late (it already
-                // settled)" verdict — an honest, if imprecise, outcome (the intent was not wrong, just
-                // reported as arriving after the fact), not a request that vanishes with no trace.
+                // just re-marks, never consumes), so the poller's next tick re-resolves the request
+                // and reacts to whatever it now finds. For a request naming a literal execution id,
+                // that id no longer matches any step's LatestExecutionId, so it reports the ordinary
+                // "too late (it already settled)" verdict — an honest, if imprecise, outcome (the
+                // intent was not wrong, just reported as arriving after the fact). #1607 widened
+                // RunningExecutionResolver so a 'latest' request CAN now have resolved to a parked
+                // step in the first place (pre-#1607, F2's point, it never could) — for that case the
+                // next tick's re-resolution instead finds the step's fresh, just-redispatched
+                // execution as the new Running candidate and arrests that one, rather than reporting
+                // "too late". Different outcome than the literal-id case, not a worse one: the operator
+                // asked to stop whatever this room is doing, and it does, just against the attempt
+                // that actually exists by the time the poller looks again.
                 continue;
             }
 
@@ -1485,6 +1551,19 @@ public static class MutationInterface
         ExecutionId ForExecutionId,
         DateTimeOffset RetryNotBefore,
         int RetryDelayMs);
+
+    // #1183: a vendor never legitimately reports a quota reset this far out (the instant comes from
+    // PARSING vendor prose/fields, and a parse bug or garbage value must not become a pump crash) --
+    // an ExhaustedUntil reset instant beyond this horizon is treated as bogus and capped rather than
+    // trusted wholesale. Chosen comfortably under both the ~24.8-day int-ms cast range this obligation's
+    // own RetryDelayMs is computed into, and the ~49.7-day range Task.Delay's TimeSpan overload accepts.
+    private static readonly TimeSpan MaxExhaustionParkHorizon = TimeSpan.FromDays(14);
+
+    // #1183: an ExhaustedUntil reset instant already at or in the past collapsed to a zero-delay
+    // retry -- with ConsecutiveFailureCount frozen at 0 for quota hits, a vendor that keeps reporting
+    // the same stale instant machine-guns the pump in a tight spend-nothing-but-CPU loop. A floor
+    // makes the retry rate bounded instead, whether or not the instant is genuinely repeating.
+    private static readonly TimeSpan PastResetInstantRetryFloor = TimeSpan.FromSeconds(1);
 
     private static List<RetryObligation> GetRetryObligations(
         FlowState state,
@@ -1548,8 +1627,36 @@ public static class MutationInterface
             if (stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil &&
                 stepState.LatestExecutionFailedRetryNotBefore is { } resetMoment)
             {
-                notBefore = resetMoment;
-                delayMs = (int)Math.Max(0, Math.Round((notBefore - timeProvider.GetUtcNow()).TotalMilliseconds));
+                var utcNow = timeProvider.GetUtcNow();
+
+                // #1183: cap an absurd (parse-bug/garbage) far-future instant to the sane horizon
+                // rather than trust it wholesale -- keeps RetryNotBefore and RetryDelayMs mutually
+                // consistent for DependencyResolver's #712 backwards-clock-jump clamp below, and keeps
+                // every downstream wait on this obligation's RetryNotBefore inside a range Task.Delay
+                // actually accepts.
+                var cappedResetMoment = resetMoment - utcNow > MaxExhaustionParkHorizon
+                    ? utcNow + MaxExhaustionParkHorizon
+                    : resetMoment;
+                var rawDelay = cappedResetMoment - utcNow;
+
+                // #1183: an instant less than PastResetInstantRetryFloor away -- already at or before
+                // now (including one repeating unchanged), or legitimately future but imminent -- is
+                // paced up to the floor instead of collapsing to a near-zero-delay retry. This branch
+                // does not and need not distinguish "already past" from "about to hit": both would
+                // otherwise machine-gun the pump the same way.
+                if (rawDelay < PastResetInstantRetryFloor)
+                {
+                    notBefore = utcNow + PastResetInstantRetryFloor;
+                    delayMs = (int)PastResetInstantRetryFloor.TotalMilliseconds;
+                }
+                else
+                {
+                    notBefore = cappedResetMoment;
+                    // #1183: Ceiling, not Round -- DependencyResolver's #712 clamp needs
+                    // delayMs >= the real notBefore-utcNow gap so a sub-millisecond rounddown can never
+                    // make `remaining > maxDelay` misfire and release this step before cappedResetMoment.
+                    delayMs = (int)Math.Ceiling(rawDelay.TotalMilliseconds);
+                }
             }
             else
             {

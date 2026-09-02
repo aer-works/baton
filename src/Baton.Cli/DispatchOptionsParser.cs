@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Baton.Cli;
 
 /// <summary>
@@ -12,13 +14,30 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
     /// #1496 env-snapshot lane" and short enough to stay legible in a lane card next to the state chips.
     /// </summary>
     public const int MaxLabelLength = 60;
+
+    /// <summary>
+    /// <c>--workstream</c>'s cap (#1619) — matches <see cref="MaxLabelLength"/> so a workstream group
+    /// heading never dwarfs the label it sits beside in Fleet Glass.
+    /// </summary>
+    public const int MaxWorkstreamLength = 60;
+
+    /// <summary>
+    /// <c>--workstream</c>'s slug grammar (#1619): starts with a letter or digit, then any run of
+    /// letters, digits, <c>.</c>, <c>_</c>, or <c>-</c>. Unlike <c>--label</c>'s free text, this value
+    /// is later used verbatim as a Windows directory name
+    /// (<see cref="WorkstreamJunctionLinker"/>, under <c>BatonPaths.ByWorkstream</c>), so it is
+    /// restricted to characters safe as one path segment rather than sanitized/folded like a label —
+    /// the allowlist also rules out <c>.</c>/<c>..</c> and every character cmd.exe or the filesystem
+    /// would treat specially.
+    /// </summary>
+    private static readonly Regex WorkstreamSlugPattern = new("^[A-Za-z0-9][A-Za-z0-9._-]*$", RegexOptions.Compiled);
 
     /// <summary>
     /// The hard ceiling <c>--timeout</c> refuses outright (#1442) — why refuse rather than confirm:
@@ -46,6 +65,7 @@ public static class DispatchOptionsParser
         TimeSpan? timeout = null;
         long? tokenBudget = null;
         string? label = null;
+        string? workstream = null;
         var attachments = new List<string>();
         var listCapabilities = false;
 
@@ -90,6 +110,9 @@ public static class DispatchOptionsParser
                     break;
                 case "--label":
                     label = SanitizeLabel(RequireValue(args, ref i, arg));
+                    break;
+                case "--workstream":
+                    workstream = SanitizeWorkstream(RequireValue(args, ref i, arg));
                     break;
                 case "--list-capabilities":
                     listCapabilities = true;
@@ -154,7 +177,7 @@ public static class DispatchOptionsParser
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             model, effort,
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout, label,
+            timeout, label, workstream,
             attachments.Count > 0 ? attachments : null,
             listCapabilities,
             tokenBudget);
@@ -202,6 +225,40 @@ public static class DispatchOptionsParser
         return folded.Length == 0
             ? null
             : Baton.Outcomes.ContractValidator.TrimWithoutSplittingSurrogatePair(folded, MaxLabelLength);
+    }
+
+    /// <summary>
+    /// <c>--workstream</c>'s sanitization (#1619): trimmed, then checked against
+    /// <see cref="WorkstreamSlugPattern"/> and <see cref="MaxWorkstreamLength"/>. A blank result after
+    /// trimming is treated the same as never passing the flag, matching <see cref="SanitizeLabel"/>'s
+    /// convention — but unlike a label, a non-blank value that fails the slug grammar or exceeds the
+    /// cap is refused outright rather than silently folded/truncated: this value is a grouping *key*
+    /// (two different long slugs truncated to the same prefix would silently merge two workstreams)
+    /// and later becomes a literal directory name under <c>BatonPaths.ByWorkstream</c>
+    /// (<see cref="WorkstreamJunctionLinker"/>), so a value the filesystem can't use as one path
+    /// segment must fail loud at parse time, the same non-interactive-CLI doctrine
+    /// <see cref="ParseTimeout"/>'s ceiling rests on. Folded to lowercase after the grammar check
+    /// passes — spec/baton.md §2 has the NTFS-vs-Fleet-Glass rationale. Shared with
+    /// <see cref="RedispatchOptionsParser"/>, which parses the identical flag.
+    /// </summary>
+    internal static string? SanitizeWorkstream(string rawValue)
+    {
+        var trimmed = rawValue.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        if (trimmed.Length > MaxWorkstreamLength || !WorkstreamSlugPattern.IsMatch(trimmed))
+        {
+            throw new CliArgumentException(
+                $"'--workstream {rawValue}' is not a valid slug. It becomes a Windows directory name "
+                + $"under '~/.baton/by-workstream/', so it must be 1-{MaxWorkstreamLength} characters, start "
+                + "with a letter or digit, and contain only letters, digits, '.', '_', or '-'.",
+                "pass a short slug, e.g. --workstream 1619 or --workstream w1619.");
+        }
+
+        return trimmed.ToLowerInvariant();
     }
 
     /// <summary>

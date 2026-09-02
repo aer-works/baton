@@ -14,7 +14,7 @@ public static class RedispatchOptionsParser
     public const string Usage =
         "Usage: baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] "
         + "[--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] "
-        + "[--token-budget <n>] [--label <text>]";
+        + "[--token-budget <n>] [--label <text>] [--workstream <slug>]";
 
     public static RedispatchOptions Parse(IReadOnlyList<string> args)
     {
@@ -29,6 +29,8 @@ public static class RedispatchOptionsParser
         long? tokenBudget = null;
         string? label = null;
         var labelSpecified = false;
+        string? workstream = null;
+        var workstreamSpecified = false;
 
         var i = 0;
         while (i < args.Count)
@@ -63,6 +65,10 @@ public static class RedispatchOptionsParser
                 case "--label":
                     label = DispatchOptionsParser.SanitizeLabel(RequireValue(args, ref i, arg));
                     labelSpecified = true;
+                    break;
+                case "--workstream":
+                    workstream = DispatchOptionsParser.SanitizeWorkstream(RequireValue(args, ref i, arg));
+                    workstreamSpecified = true;
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -101,7 +107,7 @@ public static class RedispatchOptionsParser
             adapter, model, effort,
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout, label, labelSpecified, tokenBudget);
+            timeout, label, labelSpecified, tokenBudget, workstream, workstreamSpecified);
     }
 
     /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--token-budget</c> (#1623).</summary>

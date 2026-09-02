@@ -104,6 +104,10 @@ public class FlowEventSerializationTests
                 new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000),
                 LastToolNames: ["manage_task", "manage_task", "run_command"])
         ];
+
+        // #1583
+        yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover")];
+        yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", null, "claude", null)];
     }
 
     [Theory]

@@ -383,6 +383,7 @@ ALLOWLIST: dict[str, str] = {
     "flake-watch-selftest": "pure synthetic selftest exercising 5 flake disagreement discrimination arms",
     "buildlock-selftest": "pure synthetic selftest exercising subprocess serialization, crash safety, and timeouts",
     "baton-dispatch-selftest": "pure synthetic selftest exercising denied-tool guard, catalog names, and loader failure modes",
+    "gates-selftest": "pure synthetic selftest exercising aggregation polarity plus the #1636 gate-receipt and pre-push-hook discrimination arms",
     "fmt-check": "MSBuild-driven code format verification where sabotage requires compiling the .NET solution",
     "lint": "MSBuild compiler warning-as-error gate where sabotage requires compiling the .NET solution",
     "vendor-check": "dotnet CLI probe runner that queries host CLI versions under grace-window semantics",

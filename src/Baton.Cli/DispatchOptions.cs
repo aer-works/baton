@@ -44,6 +44,11 @@ namespace Baton.Cli;
 /// The <c>--label</c> escape hatch (#1499) — full contract in spec/baton.md §2. Sanitized by
 /// <see cref="DispatchOptionsParser"/>, not here. Null keeps a room unlabeled.
 /// </param>
+/// <param name="Workstream">
+/// The <c>--workstream</c> grouping slug (#1619, rung 1 of #1614's ruling) — full contract in
+/// spec/baton.md §2. Sanitized and slug-validated by <see cref="DispatchOptionsParser"/>, not here.
+/// Null keeps a room out of every workstream group and skips the by-workstream junction.
+/// </param>
 /// <param name="Attachments">The <c>--attach</c> context files copied into the room (#1500).</param>
 /// <param name="ListCapabilities">True when <c>--list-capabilities</c> was passed to print discoverability info (#1500).</param>
 /// <param name="TokenBudget">
@@ -63,6 +68,7 @@ public sealed record DispatchOptions(
     string? OutputPath = null,
     TimeSpan? Timeout = null,
     string? Label = null,
+    string? Workstream = null,
     IReadOnlyList<string>? Attachments = null,
     bool ListCapabilities = false,
     long? TokenBudget = null);

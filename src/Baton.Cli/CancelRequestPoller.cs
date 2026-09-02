@@ -94,9 +94,12 @@ public static class CancelRequestPoller
     /// <summary>
     /// One poll cycle: absent file is the overwhelmingly common case and costs one stat. A present file
     /// is parsed, resolved (<see cref="CancelRequestFile.LatestTarget"/> against the room's own
-    /// currently-projected <see cref="Domain.StepStatus.Running"/> step via
-    /// <see cref="RunningExecutionResolver"/>, or taken as a literal <see cref="ExecutionId"/> otherwise),
-    /// and delivered to <paramref name="inFlightExecutions"/>. A delivered request or a genuinely settled
+    /// currently-projected candidate — a <see cref="Domain.StepStatus.Running"/> step or a
+    /// quota-parked one (#1607) — via <see cref="RunningExecutionResolver"/>, or taken as a literal
+    /// <see cref="ExecutionId"/> otherwise), and delivered to <paramref name="inFlightExecutions"/>.
+    /// A resolved parked target still lands on the <c>isParked</c> branch below exactly like an
+    /// explicit one always has — this method never needed to change for the resolver to widen, only
+    /// the resolver itself did. A delivered request or a genuinely settled
     /// one is consumed; an undelivered still-running target is retried up to 5 ticks before being rejected
     /// (#1530); malformed content or an unresolvable <c>latest</c> is rejected immediately (fail closed,
     /// no guessing, reason in body) rather than retried forever or left to crash the pump.
@@ -136,9 +139,9 @@ public static class CancelRequestPoller
                     requestPath,
                     content.Target,
                     resolved.RunningExecutionIds.Count == 0
-                        ? "'latest' requested, but no execution is currently Running"
+                        ? "'latest' requested, but no execution is currently Running or quota-parked"
                         : $"'latest' requested, but {resolved.RunningExecutionIds.Count} executions are currently " +
-                            $"Running ({string.Join(", ", resolved.RunningExecutionIds.Select(id => id.Value))}) — ambiguous");
+                            $"Running or quota-parked ({string.Join(", ", resolved.RunningExecutionIds.Select(id => id.Value))}) — ambiguous");
                 return;
             }
 

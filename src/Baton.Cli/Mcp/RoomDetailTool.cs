@@ -423,6 +423,7 @@ public sealed class RoomDetailTool : IMcpTool
         FlowEvent.WorkflowPaused paused => paused.StepId.Value,
         FlowEvent.ExternalDecisionRecorded decision => decision.TargetStepId?.Value,
         FlowEvent.StepRetryScheduled retry => retry.StepId.Value,
+        FlowEvent.StepRebound rebound => rebound.StepId.Value,
         _ => null,
     };
 

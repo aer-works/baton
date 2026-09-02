@@ -49,6 +49,7 @@ public class FlowEventLogJsonTests
         new FlowEvent.VerifyPassed(ExecutionId),
         new FlowEvent.VerifyFailed(ExecutionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
         new FlowEvent.ExecutionArrested(ExecutionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000), ["manage_task"]),
+        new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover"),
     ];
 
     /// <summary>
