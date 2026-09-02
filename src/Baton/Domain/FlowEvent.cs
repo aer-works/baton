@@ -25,6 +25,9 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(VerifyStarted), "verifyStarted")]
 [JsonDerivedType(typeof(VerifyPassed), "verifyPassed")]
 [JsonDerivedType(typeof(VerifyFailed), "verifyFailed")]
+[JsonDerivedType(typeof(VerifyNotRun), "verifyNotRun")]
+[JsonDerivedType(typeof(VerifyDeclarationIgnored), "verifyDeclarationIgnored")]
+[JsonDerivedType(typeof(VerifyDeclarationUnreviewed), "verifyDeclarationUnreviewed")]
 [JsonDerivedType(typeof(ExecutionArrested), "executionArrested")]
 [JsonDerivedType(typeof(ExecutionIndeterminate), "executionIndeterminate")]
 [JsonDerivedType(typeof(CaptureResolved), "captureResolved")]
@@ -209,6 +212,73 @@ public abstract record FlowEvent
         IReadOnlyList<string>? FailingMembers = null,
         string? Tail = null,
         VerifyFailedKind Kind = VerifyFailedKind.GatesFailed) : FlowEvent;
+
+    /// <summary>
+    /// #1702 — spec/baton.md §3's not-run outcome:
+    /// <see cref="Mutation.VerifyCommandResolver.CheckRunnableAsync"/>'s pre-flight probe found the
+    /// resolved verify command not runnable, so it was never spawned. Diagnostic only, same "no
+    /// <see cref="Status.WorkflowOutcome.Indeterminate"/> consequence" shape as <see cref="VerifyPassed"/>
+    /// — the execution's own already-<c>Succeeded</c> classification decides the room word unassisted.
+    /// Never emitted alongside <see cref="VerifyStarted"/> for the same execution, so
+    /// <see cref="ProjectionCheckpointState.UnmatchedVerifyExecutionIds"/> and the #1608
+    /// <c>EngineRestart</c> recovery path are both untouched by this arm.
+    /// </summary>
+    /// <param name="Reason"><see cref="Mutation.VerifyCommandResolver"/>'s own verdict text, never re-derived here.</param>
+    public sealed record VerifyNotRun(ExecutionId ExecutionId, string Reason) : FlowEvent;
+
+    /// <summary>
+    /// #1708 H1: the workspace's working-tree <c>.baton/verify</c> differed from the one committed in
+    /// <c>HEAD</c> when this execution was dispatched, so the working-tree file was IGNORED and the
+    /// committed declaration (or, if there is none, the role default) decided what verify ran. The
+    /// self-verification boundary made audible: a worker can write that file, and this says when one
+    /// did — or, just as often, that a legitimate declaration was never committed and therefore never
+    /// took effect.
+    /// <para>
+    /// <b>Diagnostic only, and deliberately terminal as a record.</b> Same shape as
+    /// <see cref="VerifyStarted"/>/<see cref="VerifyPassed"/>: no <see cref="StepState"/> field, no
+    /// <c>WorkflowStatusView</c> surface, no <c>fleet_status</c> plumbing, no
+    /// <see cref="Status.WorkflowOutcome"/> consequence. It changes no verdict, so it needs no reader
+    /// beyond <c>flow.jsonl</c> — do not "complete" it into one.
+    /// </para>
+    /// </summary>
+    /// <param name="CommittedDigest">
+    /// <see cref="Mutation.VerifyCommandResolver.DeclarationDigest"/> of the COMMITTED command line —
+    /// null when <c>HEAD</c> holds no declaration (including a non-git workspace), which is exactly the
+    /// "an uncommitted declaration was ignored" case.
+    /// </param>
+    /// <param name="WorkingTreeDigest">The same digest of the working-tree command line; null when the file is absent or comment-only.</param>
+    public sealed record VerifyDeclarationIgnored(
+        ExecutionId ExecutionId,
+        string? CommittedDigest,
+        string? WorkingTreeDigest) : FlowEvent;
+
+    /// <summary>
+    /// #1708 M1: the declaration that graded this execution came from <c>HEAD</c> rather than from the
+    /// merge-base with <c>origin/main</c>, because no merge-base could be computed — no remote, a
+    /// default branch that is not <c>main</c>, or unrelated histories. The per-execution boundary still
+    /// holds (the value was read before the worker spawned), but the WIDER property does not: on this
+    /// workspace, a commit made by an earlier lane on the current branch is inside what grades the next
+    /// one, and nothing has reviewed it. This is what says so out loud instead of leaving it to be
+    /// inferred from the absence of a ref.
+    /// <para>
+    /// <b>Diagnostic only</b>, exactly like <see cref="VerifyDeclarationIgnored"/> — no
+    /// <see cref="StepState"/> field, no <c>WorkflowStatusView</c> surface, no <c>fleet_status</c>
+    /// plumbing, no <see cref="Status.WorkflowOutcome"/> consequence. It changes no verdict and needs no
+    /// reader beyond <c>flow.jsonl</c>; do not "complete" it into one.
+    /// </para>
+    /// <para>
+    /// Appended only when a declaration was actually FOUND that way. A workspace with no reviewed
+    /// baseline and no <c>.baton/verify</c> at all has nothing unreviewed to announce — it runs the role
+    /// default, same as any other.
+    /// </para>
+    /// </summary>
+    /// <param name="Digest">
+    /// <see cref="Mutation.VerifyCommandResolver.DeclarationDigest"/> of the command line that was read,
+    /// so the journal names WHICH unreviewed line took effect rather than only that one did.
+    /// </param>
+    public sealed record VerifyDeclarationUnreviewed(
+        ExecutionId ExecutionId,
+        string? Digest) : FlowEvent;
 
     /// <summary>
     /// #1623 (contract: <c>spec/baton.md</c> §3; the addendum's own words are quoted on

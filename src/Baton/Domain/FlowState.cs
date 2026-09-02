@@ -263,7 +263,13 @@ public sealed record StepState(
     bool IndeterminateAwaitingResolution = false,
     string? IndeterminateReason = null,
     IndeterminateProducer? IndeterminateProducer = null,
-    string? IndeterminateVerifyTail = null);
+    string? IndeterminateVerifyTail = null,
+    // #1702: FlowEvent.VerifyNotRun's own reason for the latest attempt -- the pre-flight "not
+    // runnable" verdict, never a gate. Null whenever the latest attempt's verify step either never ran
+    // a pre-flight check (no resolved command, or the command WAS runnable), or the step has since had
+    // a fresh execution accepted (StateProjector clears this the same breath it clears
+    // IndeterminateReason on ExecutionRequestAccepted).
+    string? VerifyNotRunReason = null);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

@@ -59,7 +59,8 @@ public sealed record ProjectionCheckpointState(
     Dictionary<StepId, string?>? IndeterminateReasonByStepId = null,
     HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null,
     Dictionary<StepId, IndeterminateProducer?>? IndeterminateProducerByStepId = null,
-    Dictionary<StepId, string?>? IndeterminateVerifyTailByStepId = null)
+    Dictionary<StepId, string?>? IndeterminateVerifyTailByStepId = null,
+    Dictionary<StepId, string?>? VerifyNotRunReasonByStepId = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -127,6 +128,18 @@ public sealed record ProjectionCheckpointState(
     /// </summary>
     public Dictionary<StepId, string?> IndeterminateVerifyTailByStepId { get; init; } = IndeterminateVerifyTailByStepId ?? new();
 
+    /// <summary>
+    /// #1702: which steps' latest attempt recorded a <see cref="FlowEvent.VerifyNotRun"/> — the
+    /// pre-flight "not runnable" reason, surfaced on <see cref="Status.WorkflowStatusStepView"/> as
+    /// <c>verify: "not-run"</c> so a conductor can tell "this ran unverified" apart from an ordinary
+    /// Succeeded step. Same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/>
+    /// above, and the same <see cref="DeepCopy"/> load-bearing note applies. Cleared on a fresh
+    /// <see cref="FlowEvent.ExecutionRequestAccepted"/> for the step, the same "the pump is dispatching
+    /// it, so the prior attempt's diagnostic is stale" reasoning <see cref="IndeterminateReasonByStepId"/>
+    /// already follows.
+    /// </summary>
+    public Dictionary<StepId, string?> VerifyNotRunReasonByStepId { get; init; } = VerifyNotRunReasonByStepId ?? new();
+
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
         new Dictionary<StepId, Dictionary<StepId, ExecutionId>>(),
@@ -189,5 +202,6 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<StepId, string?>(IndeterminateReasonByStepId),
         new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds),
         new Dictionary<StepId, IndeterminateProducer?>(IndeterminateProducerByStepId),
-        new Dictionary<StepId, string?>(IndeterminateVerifyTailByStepId));
+        new Dictionary<StepId, string?>(IndeterminateVerifyTailByStepId),
+        new Dictionary<StepId, string?>(VerifyNotRunReasonByStepId));
 }
