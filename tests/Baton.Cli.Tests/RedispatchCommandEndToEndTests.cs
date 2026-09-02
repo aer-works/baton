@@ -493,6 +493,12 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         {
             var parentRoom = Path.Combine(testRoot, "parent");
             Directory.CreateDirectory(parentRoom);
+            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["advise"] = new("fake", new WorkerContract("advise", [], [new ProducedOutput("advice.md")], []), "prompt", TimeSpan.FromMinutes(30)),
+            };
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                bindings, BatonPaths.RoomBindingsFile(parentRoom), TestContext.Current.CancellationToken);
             await TerminalSentinelWriter.WriteAsync(
                 parentRoom,
                 new WorkflowStatusView(
@@ -537,6 +543,14 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         {
             var parentRoom = Path.Combine(testRoot, "parent");
             Directory.CreateDirectory(parentRoom);
+            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["advise"] = new(
+                    "fake", new WorkerContract("advise", [], [new ProducedOutput("advice.md")], []), "prompt",
+                    TimeSpan.FromMinutes(45), Model: "sonnet", WorkingDirectory: "/repo"),
+            };
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                bindings, BatonPaths.RoomBindingsFile(parentRoom), TestContext.Current.CancellationToken);
             await TerminalSentinelWriter.WriteAsync(
                 parentRoom,
                 new WorkflowStatusView(
@@ -553,9 +567,17 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
             Assert.Contains("Indeterminate", ex.Message, StringComparison.Ordinal);
             Assert.False(Directory.Exists(childRoom));
 
+            // #1623 re-review U1: the remedy must be a reachable command, not "re-dispatch the
+            // parent" (which just names the refused invocation itself) -- a fresh `baton dispatch`
+            // carrying the parent's own recorded flags forward.
             Assert.NotNull(ex.TryInvocation);
             Assert.DoesNotContain("baton resolve " + parentRoom, ex.TryInvocation, StringComparison.Ordinal);
-            Assert.Contains("re-dispatch", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("re-dispatch the parent", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("baton dispatch advise --spec <brief>", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--adapter fake", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--timeout 45", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--model sonnet", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--workspace /repo", ex.TryInvocation, StringComparison.Ordinal);
         }
         finally
         {

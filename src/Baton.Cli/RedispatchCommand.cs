@@ -71,6 +71,24 @@ public static class RedispatchCommand
         var parentTerminal = await TerminalSentinelWriter.TryReadAsync(options.ParentRoomDirectoryPath, cancellationToken)
             .ConfigureAwait(false);
 
+        // Loaded ahead of the Indeterminate refusal below so the refusal's own remedy string can name
+        // the parent's recorded flags (adapter/model/timeout/workspace) rather than the dead-end
+        // "re-dispatch the parent" (#1623 re-review U1) — the same bindings.json read this method
+        // needs later regardless, for the ordinary redispatch path.
+        var parentBindingsPath = BatonPaths.RoomBindingsFile(options.ParentRoomDirectoryPath);
+        var parentBindings = await WorkerBindingConfigParser.LoadFromFileAsync(parentBindingsPath, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (parentBindings.Count != 1)
+        {
+            throw new CliArgumentException(
+                $"Parent room '{options.ParentRoomDirectoryPath}' dispatched {parentBindings.Count} workers — "
+                + "redispatch only supports a single-role dispatch (baton dispatch <role> --spec ...), not a "
+                + "composed template.");
+        }
+
+        var (workerName, parentEntry) = parentBindings.Single();
+
         // #1586 S1 (ratified amendment, consumer obligation item 2): an Indeterminate parent refuses
         // bare, mirroring #1604's signage pattern (a diagnosis plus a concrete next step) rather than
         // the ordinary warn-and-proceed a Failed/Cancelled parent gets below. "Indeterminate" means
@@ -96,9 +114,12 @@ public static class RedispatchCommand
                     ? $"run `baton resolve {options.ParentRoomDirectoryPath} [--execution <id>] "
                         + "--accept-capture | --reject --reason <text>` first, then redispatch — see spec/baton.md §3."
                     : "this room settled Indeterminate without a captured response (a verify failure or a "
-                        + $"token-budget arrest), so `baton resolve` does not apply. Read `baton status "
-                        + $"{options.ParentRoomDirectoryPath} --json` for the step's reason, fix the "
-                        + "underlying cause, and re-dispatch the parent — see spec/baton.md §3.");
+                        + $"token-budget arrest), so neither `baton resolve` nor `baton redispatch` applies — "
+                        + "redispatch is permanently unavailable for this producer, since there is no parent "
+                        + $"terminal.json fact it could clear. Read `baton status {options.ParentRoomDirectoryPath} "
+                        + "--json` for the step's reason, fix the underlying cause, and run "
+                        + $"{DescribeFreshDispatchRemedy(workerName, parentEntry)} into a fresh room — "
+                        + "see spec/baton.md §3.");
         }
 
         if (parentTerminal is not null && !string.Equals(parentTerminal.State, WorkflowOutcome.Succeeded, StringComparison.Ordinal))
@@ -107,20 +128,6 @@ public static class RedispatchCommand
                 $"Warning: parent room '{options.ParentRoomDirectoryPath}' did not succeed "
                 + $"(state: {parentTerminal.State}) — redispatching it anyway.");
         }
-
-        var parentBindingsPath = BatonPaths.RoomBindingsFile(options.ParentRoomDirectoryPath);
-        var parentBindings = await WorkerBindingConfigParser.LoadFromFileAsync(parentBindingsPath, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (parentBindings.Count != 1)
-        {
-            throw new CliArgumentException(
-                $"Parent room '{options.ParentRoomDirectoryPath}' dispatched {parentBindings.Count} workers — "
-                + "redispatch only supports a single-role dispatch (baton dispatch <role> --spec ...), not a "
-                + "composed template.");
-        }
-
-        var (workerName, parentEntry) = parentBindings.Single();
 
         WorkflowDefinition definition;
         WorkerBindingConfigEntry entry;
@@ -286,5 +293,31 @@ public static class RedispatchCommand
             // Program's typed boundary as a CliArgumentException, never a raw crash.
             throw new CliArgumentException(ex.Message);
         }
+    }
+
+    /// <summary>
+    /// #1623 re-review U1: the escape a verify-failed or arrested Indeterminate parent's refusal
+    /// points at — a fresh `baton dispatch` (a *new* room, whose own ExecutionRequestAccepted clears
+    /// the projector's Indeterminate tracking, <see cref="Baton.Projection.StateProjector"/>), carrying
+    /// the parent's own recorded flags forward the same way <see cref="RebuildFromAmendedSpecAsync"/>
+    /// does for an ordinary redispatch. Never "re-dispatch the parent" — that names the refused command
+    /// itself, a closed loop this method exists to stop printing.
+    /// </summary>
+    private static string DescribeFreshDispatchRemedy(string workerName, WorkerBindingConfigEntry parentEntry)
+    {
+        var workspace = parentEntry.WorkingDirectory ?? parentEntry.Worktree?.Repository;
+        var timeoutMinutes = Math.Max(1, (int)Math.Ceiling(parentEntry.Timeout.TotalMinutes));
+        var flags = $"--adapter {parentEntry.Adapter} --timeout {timeoutMinutes}";
+        if (parentEntry.Model is { } model)
+        {
+            flags += $" --model {model}";
+        }
+
+        if (workspace is { } dir)
+        {
+            flags += $" --workspace {dir}";
+        }
+
+        return $"`baton dispatch {workerName} --spec <brief> {flags}`";
     }
 }

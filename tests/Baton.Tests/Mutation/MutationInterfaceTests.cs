@@ -523,9 +523,12 @@ public class MutationInterfaceTests
     }
 
     [Fact]
-    public async Task StartWorkflowAsync_cancelling_during_verify_settles_Indeterminate_with_Cancelled_kind()
+    public async Task StartWorkflowAsync_operator_cancel_during_verify_settles_Cancelled_not_Indeterminate()
     {
-        // #1623 / F4: cancelling while verify is running settles Indeterminate with Kind == Cancelled
+        // #1623 re-review N3: the operator's own cancel landing inside the verify window is journalled
+        // as ExecutionCancelled (the journal CAN decide here -- it holds the cancel), never VerifyFailed
+        // / Indeterminate -- that would foreclose retry with no discharge verb (U1). VerifyStarted
+        // still survives as the diagnostic record that verify was running when the cancel landed.
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
         var logPath = Path.Combine(roomDirectory, "flow.jsonl");
@@ -556,14 +559,13 @@ public class MutationInterfaceTests
                 new WorkflowId("wf-verify-cancel"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: cts.Token);
 
             var architect = Assert.Single(finalState.Steps);
-            Assert.Equal(StepStatus.Failed, architect.Status);
-            Assert.NotNull(architect.IndeterminateReason);
-            Assert.Contains("cancelled", architect.IndeterminateReason, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(StepStatus.Cancelled, architect.Status);
+            Assert.Null(architect.IndeterminateReason);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             Assert.Single(events.OfType<FlowEvent.VerifyStarted>());
-            var verifyFailed = Assert.Single(events.OfType<FlowEvent.VerifyFailed>());
-            Assert.Equal(VerifyFailedKind.Cancelled, verifyFailed.Kind);
+            Assert.Empty(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Single(events.OfType<FlowEvent.ExecutionCancelled>());
             Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
         }
         finally

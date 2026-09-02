@@ -1704,6 +1704,20 @@ public static class MutationInterface
                     await eventLogWriter.AppendAsync(new FlowEvent.VerifyPassed(prepared.Request.ExecutionId), CancellationToken.None)
                         .ConfigureAwait(false);
                 }
+                else if (verifyOutcome.Kind == VerifyFailedKind.Cancelled && dispatchCancellationToken.IsCancellationRequested)
+                {
+                    // The operator's own cancel landed inside the verify window: VerifyStarted above
+                    // stays as the diagnostic record of what was running, but the settlement is
+                    // ExecutionCancelled, not VerifyFailed -- the journal *can* decide here (it holds
+                    // the cancel), so this must not fall into ApplyIndeterminate's retry-foreclosed,
+                    // no-discharge-verb path (#1623 re-review N3). A verify TIMEOUT still settles
+                    // Indeterminate via the VerifyFailed branch below -- only an operator-driven cancel
+                    // gets this arm.
+                    await eventLogWriter.AppendAsync(
+                        new FlowEvent.ExecutionCancelled(prepared.Request.ExecutionId),
+                        CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
                 else
                 {
                     // Never a blind retry (the ruling's own words): this IS the terminal event for this
