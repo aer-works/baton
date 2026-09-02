@@ -178,6 +178,18 @@ public static class BatonPaths
     public const string RoomRegistryFileName = "room-registry.jsonl";
 
     /// <summary>
+    /// <c>{Root}/deleted-rooms.jsonl</c> — see <see cref="DeletedRoomsTombstoneStore"/> (#1659). The
+    /// CLI has no reach into the Cloudflare Worker's KV deliverables index (<c>tools/fleet-glass</c>),
+    /// so <c>baton room delete</c>/<c>baton rooms prune</c> cannot remove a deleted room's deliverables
+    /// there directly — this tombstone is the local record of "this room's deliverables should be
+    /// forwarded to KV as a removal", left for the pusher to read and act on.
+    /// </summary>
+    public static string DeletedRoomsFile => Path.Combine(Root, DeletedRoomsFileName);
+
+    /// <summary>Filename of <see cref="DeletedRoomsFile"/> relative to a root.</summary>
+    public const string DeletedRoomsFileName = "deleted-rooms.jsonl";
+
+    /// <summary>
     /// <c>{Root}/draining.json</c> — the tool-refresh drain marker. <see cref="DrainMarker"/> owns what
     /// it means and who refuses under it; this type only names where it lives, the same split
     /// <see cref="RoomRegistryFile"/> has with <see cref="RoomRegistryStore"/>.

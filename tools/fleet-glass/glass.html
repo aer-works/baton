@@ -652,12 +652,21 @@ function shq(s){ return s.replace(/"/g, '\\"'); }
 function copyButtonHtml(verb, label){
   return `<button class="copybtn" data-verb="${esc(verb)}">${esc(label)}</button><input class="revealbox mono" readonly hidden>`;
 }
-function copyButtonsHtml(room, running){
+// #1659: `baton room delete` copy button, terminal cards only -- a room still Running/Stalled may
+// have a live engine holding its files (RoomDeleteCommand's own refusal exists for exactly that), so
+// this is offered only where `terminal` is true (Failed/Succeeded/Indeterminate, the states a room's
+// terminal.json is actually written for). Dry-run-free (no --force) on purpose: a terminal card is
+// already known terminal from the same fleet_status read this page renders from, so the default
+// refusal `baton room delete` would hit on a non-terminal room never applies here.
+function copyButtonsHtml(room, running, terminal){
   if(!room.path || !shellArgSafe(room.path)) return "";
   const buttons = [copyButtonHtml(`baton redispatch "${shq(room.path)}"`, "copy redispatch")];
   if(room.state === "Running" && running && running.execution){
     const cancelVerb = `baton cancel "${shq(room.path)}" --execution ${running.execution} --bindings "${shq(bindingsPathFor(room.path))}"`;
     buttons.push(copyButtonHtml(cancelVerb, "copy cancel"));
+  }
+  if(terminal){
+    buttons.push(copyButtonHtml(`baton room delete "${shq(room.path)}"`, "copy delete"));
   }
   return `<div class="verbs">${buttons.join("")}</div>`;
 }
@@ -684,6 +693,10 @@ async function copyToClipboard(text){
 document.addEventListener("click", async (ev) => {
   const btn = ev.target.closest(".copybtn");
   if(!btn) return;
+  // #1659: the Terminal section's "copy prune" button lives inside <summary> (so it reads as part of
+  // the section header) -- without this, a click on it would ALSO fire the native <summary> toggle
+  // and collapse/expand the section the operator was not trying to touch.
+  ev.preventDefault();
   const verb = btn.dataset.verb;
   const ok = await copyToClipboard(verb);
   const reveal = btn.nextElementSibling;
@@ -723,7 +736,7 @@ function liveTelemetryHtml(room){
   if(a) bits.push(`active ${a} ago`);
   return bits.length ? `<div class="ev mono">${bits.join(" · ")}</div>` : "";
 }
-function laneHtml(room, timelines, dismissable = false, openTimelines = null){
+function laneHtml(room, timelines, dismissable = false, openTimelines = null, terminal = false){
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   // Chips key off the step that actually failed, not array position: in A->B->C with B
@@ -774,7 +787,7 @@ function laneHtml(room, timelines, dismissable = false, openTimelines = null){
     ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${tryLine}${err}${ageLine}
     ${liveTelemetryHtml(room)}
     ${timelineHtml(room, timelines, isTlOpen)}
-    ${copyButtonsHtml(room, running)}
+    ${copyButtonsHtml(room, running, terminal)}
     ${deliverables}</div>`;
 }
 // -----------------------------------------------------------------------------------------------
@@ -782,7 +795,7 @@ function laneHtml(room, timelines, dismissable = false, openTimelines = null){
 // Rooms without the field render exactly as before this feature -- flat, no heading, same fail-open
 // contract projectLineHtml/bindingLineHtml already follow for their own absent-safe fields.
 // -----------------------------------------------------------------------------------------------
-function groupLanesHtml(rooms, timelines, dismissable, openTimelines){
+function groupLanesHtml(rooms, timelines, dismissable, openTimelines, terminal = false){
   if(!rooms.length) return `<div class="lane"><div class="ev">none</div></div>`;
   const groups = new Map();
   const ungrouped = [];
@@ -795,15 +808,15 @@ function groupLanesHtml(rooms, timelines, dismissable, openTimelines){
     }
   }
   if(groups.size === 0){
-    return rooms.map(r => laneHtml(r, timelines, dismissable, openTimelines)).join("");
+    return rooms.map(r => laneHtml(r, timelines, dismissable, openTimelines, terminal)).join("");
   }
   let html = "";
   for(const [slug, groupRooms] of Array.from(groups.entries()).sort((a,b) => a[0].localeCompare(b[0]))){
     html += `<div class="workstream-group"><h3 class="workstream-heading">${esc(slug)} · ${groupRooms.length}</h3><div class="lanes">`
-      + groupRooms.map(r => laneHtml(r, timelines, dismissable, openTimelines)).join("") + `</div></div>`;
+      + groupRooms.map(r => laneHtml(r, timelines, dismissable, openTimelines, terminal)).join("") + `</div></div>`;
   }
   if(ungrouped.length){
-    html += ungrouped.map(r => laneHtml(r, timelines, dismissable, openTimelines)).join("");
+    html += ungrouped.map(r => laneHtml(r, timelines, dismissable, openTimelines, terminal)).join("");
   }
   return html;
 }
@@ -908,11 +921,11 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
     // #1656: no more client-side `.slice(0,12)` -- the byte budget that cap used to protect is now
     // enforced upstream (pusher.py's hot-set cap + fleet_status's page/limit), so every terminal
     // room actually delivered to this view is worth rendering.
-    termContent += `<h2><span>Failed · ${visibleFailed.length}</span>${failedDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleFailed, timelines, true, openTimelinePaths) + `</div>`;
+    termContent += `<h2><span>Failed · ${visibleFailed.length}</span>${failedDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleFailed, timelines, true, openTimelinePaths, true) + `</div>`;
   }
   if(visibleDone.length > 0){
     const doneDismissAll = `<a class="dismissall" data-section="succeeded">dismiss all</a>`;
-    termContent += `<h2><span>Succeeded · ${visibleDone.length}</span>${doneDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleDone, timelines, true, openTimelinePaths) + `</div>`;
+    termContent += `<h2><span>Succeeded · ${visibleDone.length}</span>${doneDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleDone, timelines, true, openTimelinePaths, true) + `</div>`;
   }
   if(!visibleFailed.length && !visibleDone.length){
     termContent += `<div class="lanes"><div class="lane"><div class="ev">none</div></div></div>`;
@@ -928,7 +941,14 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   // Preserve the section's open/closed state across a re-render -- otherwise every dismiss/restore
   // click (which rebuilds #content from scratch) would slam an opened Terminal section shut again.
   const terminalWasOpen = !!($("terminal-details") && $("terminal-details").open);
-  html += `<details id="terminal-details"${terminalWasOpen ? " open" : ""}><summary>Terminal · ${termSummary}</summary>${termContent}</details>`;
+  // #1659: "copy prune" in the section header -- the batch form of the per-card "copy delete" button
+  // above. Copies the dry-run form (no --yes): the operator reviews what would be removed before
+  // opting into the destructive form themselves, same "copy text, never execute" contract every
+  // other button on this page follows (spec/baton.md §10: origination and arrest stay
+  // orchestrator-only). document's click handler stops this from also toggling the <details> open/
+  // closed, since a native <summary> click otherwise fires on any element inside it.
+  const pruneCopyBtn = copyButtonHtml("baton rooms prune --terminal", "copy prune");
+  html += `<details id="terminal-details"${terminalWasOpen ? " open" : ""}><summary>Terminal · ${termSummary} ${pruneCopyBtn}</summary>${termContent}</details>`;
   const unreadableWasOpen = !!($("unreadable-details") && $("unreadable-details").open);
   if(other.length) html += `<details id="unreadable-details"${unreadableWasOpen ? " open" : ""}><summary>Unreadable entries · ${other.length}</summary><div class="lanes">${other.slice(0,20).map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("")}</div></details>`;
   $("content").innerHTML = html;
