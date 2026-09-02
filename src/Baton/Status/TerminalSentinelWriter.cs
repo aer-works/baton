@@ -94,8 +94,10 @@ public static class TerminalSentinelWriter
     /// </list>
     /// </remarks>
     /// <exception cref="StaleSentinelDeletionException">
-    /// The sentinel exists and could not be deleted, and <paramref name="bestEffort"/> is
-    /// <c>false</c>.
+    /// The delete failed and <paramref name="bestEffort"/> is <c>false</c>. Not only a locked
+    /// sentinel: an absent room directory raises <see cref="DirectoryNotFoundException"/> here too,
+    /// which is unreachable from the shipped call site (<c>RunCommand</c> creates the directory
+    /// first) but is part of this method's contract now that it has a public default.
     /// </exception>
     public static void DeleteStaleSentinel(string roomDirectoryPath, bool bestEffort = false)
     {

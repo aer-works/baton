@@ -175,7 +175,7 @@ public enum StepStatus
 /// <see cref="Failed"/> — the "single added enum value" ruling adds this at the room-level word only,
 /// never at <see cref="StepStatus"/>), and <see cref="Scheduling.RetryEngine.MayRetry"/> refuses
 /// unconditionally while this is <c>true</c>, the same explicit-arm shape as
-/// <see cref="RetryForeclosed"/>. An accepted resolution flips <see cref="Status"/> to
+/// <see cref="RetryForeclosed"/>. An accepted resolution flips the step's <b>raw</b> status to
 /// <see cref="Succeeded"/> in the same projected step that clears this — but this can also read
 /// <c>true</c> while <see cref="Status"/> is <see cref="Paused"/>, not only <see cref="Failed"/> — a
 /// step declaring a <see cref="PausePoint"/> settles into <see cref="Paused"/> with this flag still

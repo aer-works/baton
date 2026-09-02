@@ -577,6 +577,10 @@ public class TerminalSentinelEndToEndTests
             Assert.Contains("Room is not yet complete", stdout, StringComparison.Ordinal);
             Assert.Contains("baton decide", stdout, StringComparison.Ordinal);
             Assert.DoesNotContain("--room-dir", stdout, StringComparison.Ordinal);
+            // Every option DecideOptionsParser refuses without, spelled out: naming a verb whose
+            // required arguments the operator cannot see is the same dead end review finding 1 hit.
+            Assert.Contains("--type", stdout, StringComparison.Ordinal);
+            Assert.Contains("--bindings", stdout, StringComparison.Ordinal);
         }
         finally
         {

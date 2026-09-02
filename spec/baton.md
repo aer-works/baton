@@ -354,7 +354,14 @@ absence alone.
 room that previously failed pre-ledger does not leave the old `terminal.json` in place for the whole
 duration of a new, genuinely in-progress attempt. A file-watching harness must expect `terminal.json`
 to vanish and reappear across a re-dispatch of the same room directory, not treat its disappearance
-as an error.
+as an error. **And that delete can refuse the run (#1608 re-review).** When the stale sentinel cannot
+be deleted — held open by a reader without `FileShare.Delete` — `baton run`/`dispatch`/`redispatch`
+refuse before the pump starts, exiting `ValidationRefused` with a message naming the locked file,
+rather than pumping behind a record that reads "already done"; only the post-`resolve` delete
+(`Program.cs`, which runs after a durable mutation) swallows that failure and warns instead. So the
+mirror of the absence list above holds too: **presence** can mean "a previous attempt's sentinel this
+attempt refused to start behind", and a harness keyed on the file existing must read the exit code
+before treating it as the current dispatch's result.
 
 `baton status` is read-only, produces no `CommandResult`, and always exits 0 when it manages to print a
 status at all (`Program.cs`) — it cannot complete a room or substitute for watching the

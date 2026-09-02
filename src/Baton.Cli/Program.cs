@@ -285,11 +285,14 @@ try
         // Indeterminate is Paused with the flag still set (spec/baton.md §3), and resolving it clears
         // the flag but not the pause — only FlowEvent.WorkflowResumed removes it — so the room is
         // still Paused here, and a `baton run` against it re-enters the same unfulfilled obligation
-        // and returns Paused again. `baton decide` is the verb that discharges it; FlowStateReporter
-        // above has already printed the execution id and supersede targets it needs.
+        // and returns Paused again. `baton decide` is the verb that discharges it, spelled out in
+        // full rather than deferred to "the arguments above": FlowStateReporter prints the execution
+        // id and supersede targets, but --type and --bindings appear nowhere in this stdout, and a
+        // verb an operator cannot actually invoke is the dead end review finding 1 was about.
         Console.WriteLine(result.State.Status == WorkflowStatus.Paused
             ? "Room is not yet complete — this room is still paused; record the pause decision with "
-              + "`baton decide` (arguments printed above), which is what resumes it."
+              + "`baton decide <room-dir> --execution <execution-id> --type resume|reject|retry-with-revision|supersede "
+              + "--bindings <bindings-file>` (the execution id is printed above), which is what resumes it."
             : $"Room is not yet complete — {RecoveryGuidance.RunRoomDirInstruction}.");
     }
 

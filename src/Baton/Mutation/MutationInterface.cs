@@ -397,10 +397,13 @@ public static class MutationInterface
     /// repair: nothing recorded on <see cref="FlowEvent.CaptureResolved"/> says how long the body should
     /// have been, and re-deriving it by re-reading the capture on every call would clobber a declared
     /// output a human deliberately edited after acceptance — the case this same existence-only predicate
-    /// is what protects. In the other direction, an accepted capture whose stripped body is genuinely
-    /// empty (nothing requires a non-empty body) reads as permanently repairable, so the ordinary
-    /// exactly-once duplicate refusal never fires for that room; stated rather than defended against,
-    /// since the repair itself stays idempotent and appends no second fact.
+    /// is what protects. In the other direction, an output that is legitimately empty would read as
+    /// permanently repairable (and, with the capture also gone, as needing manual repair) — reachable
+    /// only by hand: <see cref="Outcomes.OutputMaterializer.TryCaptureFinalResponse"/> refuses to
+    /// capture a blank response at all, and it is the only producer of the unresolved captures this
+    /// path repairs, so an engine-produced accepted capture always has a non-empty body. Stated rather
+    /// than defended against, since the repair is idempotent and appends no second fact — but it is
+    /// also why that capture-time gate must not be relaxed without revisiting this predicate.
     /// </para>
     /// </summary>
     /// <returns>
