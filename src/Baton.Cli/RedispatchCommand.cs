@@ -80,12 +80,25 @@ public static class RedispatchCommand
         // is the only sanctioned way to clear this refusal.
         if (parentTerminal is not null && string.Equals(parentTerminal.State, WorkflowOutcome.Indeterminate, StringComparison.Ordinal))
         {
+            // #1623 merge: the refusal is unconditional as before, but the REMEDY is not — Indeterminate
+            // has three producers now and `baton resolve` only handles one of them. Discriminated on the
+            // same fact MutationInterface.RecordCaptureResolutionAsync admits on, read here off the
+            // sentinel's own per-step `capturedResponseFile`. Naming `baton resolve` unconditionally
+            // would send a verify-failed or arrested parent to a verb that refuses it outright — a dead
+            // end in a user-facing string, and the whole point of this signage is a next step that works.
+            var hasCapture = parentTerminal.Steps.Any(step => step.CapturedResponseFile is not null);
+
             throw new CliArgumentException(
                 $"Parent room '{options.ParentRoomDirectoryPath}' settled Indeterminate — journal facts "
                 + "alone could not decide whether it succeeded or failed, so redispatching it would "
                 + "silently discard that ambiguity rather than resolve it.",
-                $"run `baton resolve {options.ParentRoomDirectoryPath} [--execution <id>] "
-                + "--accept-capture | --reject --reason <text>` first, then redispatch — see spec/baton.md §3.");
+                hasCapture
+                    ? $"run `baton resolve {options.ParentRoomDirectoryPath} [--execution <id>] "
+                        + "--accept-capture | --reject --reason <text>` first, then redispatch — see spec/baton.md §3."
+                    : "this room settled Indeterminate without a captured response (a verify failure or a "
+                        + $"token-budget arrest), so `baton resolve` does not apply. Read `baton status "
+                        + $"{options.ParentRoomDirectoryPath} --json` for the step's reason, fix the "
+                        + "underlying cause, and re-dispatch the parent — see spec/baton.md §3.");
         }
 
         if (parentTerminal is not null && !string.Equals(parentTerminal.State, WorkflowOutcome.Succeeded, StringComparison.Ordinal))

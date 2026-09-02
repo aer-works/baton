@@ -670,9 +670,13 @@ public class StateProjectorTests
     }
 
     [Fact]
-    public void A_fresh_ExecutionRequestAccepted_clears_IndeterminateReason_on_an_indeterminate_step()
+    public void A_fresh_ExecutionRequestAccepted_reopens_an_indeterminate_step()
     {
-        // #1623 / F5: a fresh dispatch clears IndeterminateReason alongside RetryForeclosedStepIds
+        // #1623 / F5: a fresh dispatch clears the Indeterminate flag and its reason text alongside
+        // RetryForeclosedStepIds. Both halves asserted, not just the text: the flag is what would
+        // otherwise leave WorkflowOutcome pinned to Indeterminate and MayRetry permanently false
+        // underneath a legitimate new attempt -- which is the whole failure this clear exists to
+        // prevent, and it is invisible to an assertion that only reads the diagnostic string.
         var executionId = new ExecutionId("exec-1");
         var redriveExecutionId = new ExecutionId("exec-2");
         var events = new FlowEvent[]
@@ -685,6 +689,7 @@ public class StateProjectorTests
         var state = StateProjector.Project(events, TwoStepSnapshot());
 
         var architect = StepFor(state, Architect);
+        Assert.False(architect.IndeterminateAwaitingResolution);
         Assert.Null(architect.IndeterminateReason);
         Assert.False(architect.RetryForeclosed);
     }
@@ -1465,6 +1470,11 @@ public class StateProjectorTests
 
         var architect = StepFor(state, Architect);
         Assert.Equal(StepStatus.Failed, architect.Status);
+        // #1623/#1644 merge: the FLAG is what WorkflowOutcome and RetryEngine read for all three
+        // Indeterminate producers -- asserting only the reason text would leave the one line that
+        // unifies this producer with #1608's (ApplyIndeterminate's Add to
+        // IndeterminateAwaitingResolutionStepIds) deletable with every test still green.
+        Assert.True(architect.IndeterminateAwaitingResolution);
         Assert.NotNull(architect.IndeterminateReason);
         Assert.Contains("fmt-check", architect.IndeterminateReason);
         Assert.True(architect.RetryForeclosed);
@@ -1485,6 +1495,7 @@ public class StateProjectorTests
 
         var architect = StepFor(state, Architect);
         Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
         Assert.NotNull(architect.IndeterminateReason);
         Assert.Contains("620000", architect.IndeterminateReason);
         Assert.True(architect.RetryForeclosed);

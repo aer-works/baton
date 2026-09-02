@@ -93,7 +93,16 @@ public static class ResolveCommand
         var state = StateProjector.Project(events, snapshot);
 
         var namedStep = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
-        var isAwaitingResolution = namedStep is { IndeterminateAwaitingResolution: true };
+
+        // #1623 merge: the flag alone is NOT the admission test — it has three producers now, and only
+        // the captured-response one leaves something for this verb to accept or reject. Mirrors
+        // MutationInterface.RecordCaptureResolutionAsync's own guard (see its comment for the failure
+        // this closes) so the refusal lands here, with a message that can name the right remedy,
+        // rather than deeper in as a bare "no unresolved indeterminate capture".
+        var isAwaitingResolution =
+            namedStep is { IndeterminateAwaitingResolution: true, LatestCapturedResponseFile: not null };
+        var isNonCaptureIndeterminate =
+            namedStep is { IndeterminateAwaitingResolution: true, LatestCapturedResponseFile: null };
 
         // #1608 review finding 5: also admit a step already ACCEPTED for this exact execution, but
         // only when this call is itself an --accept-capture -- MutationInterface's own gate on this
@@ -108,6 +117,21 @@ public static class ResolveCommand
 
         if (!isAwaitingResolution && !isRepairableAccepted)
         {
+            // #1623 merge: stated as its own case rather than folded into the generic refusal below,
+            // because the generic one's advice ("confirm 'state' reads Indeterminate") is exactly the
+            // check this operator has already passed -- the room DOES read Indeterminate, and this
+            // verb still refuses. Sending them back to re-read `state` would be a loop.
+            if (isNonCaptureIndeterminate)
+            {
+                throw new CliArgumentException(
+                    $"Execution '{explicitExecutionId}' in room '{roomDirectoryPath}' settled Indeterminate "
+                    + "without a captured response — a verify failure or a token-budget arrest, not an "
+                    + "unwritten output. There is nothing for 'baton resolve' to accept or reject.",
+                    $"read the step's failure reason (`baton status {roomDirectoryPath} --json`) to see "
+                    + "which, fix the underlying cause, then re-dispatch — a fresh execution reopens the "
+                    + "step. See spec/baton.md §3.");
+            }
+
             // #1608 review finding 7: a resolved-but-Failed step and an unresolved one both read
             // ordinary "Failed" per-step in status --json (WorkflowStatusStepView carries no
             // IndeterminateAwaitingResolution field) -- the room-level `state` reading Indeterminate

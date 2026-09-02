@@ -483,17 +483,24 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
     [Fact]
     public async Task An_Indeterminate_parent_refuses_bare_redispatch_with_a_diagnosis()
     {
-        // #1586 S1: no producer in this slice writes "Indeterminate" to a real terminal.json (see
-        // WorkflowOutcome.Indeterminate's own remarks) -- this fixture writes the sentinel by hand,
-        // which the slice's scope note permits, so the CONSUMER side of the vocabulary gets proven
-        // ahead of any producer existing.
+        // #1586 S1: this fixture writes the sentinel by hand rather than driving a producer, so the
+        // CONSUMER side of the vocabulary is proven independently of which producer settled it.
+        // #1623/#1644 merge: the step now carries a capturedResponseFile, because that is what makes
+        // `baton resolve` the RIGHT remedy to name -- see the polarity partner below, where the same
+        // Indeterminate room without one must be sent somewhere else entirely.
         var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
         try
         {
             var parentRoom = Path.Combine(testRoot, "parent");
             Directory.CreateDirectory(parentRoom);
             await TerminalSentinelWriter.WriteAsync(
-                parentRoom, new WorkflowStatusView(WorkflowOutcome.Indeterminate, [], [], null), TestContext.Current.CancellationToken);
+                parentRoom,
+                new WorkflowStatusView(
+                    WorkflowOutcome.Indeterminate,
+                    [new WorkflowStatusStepView("a", "Failed", "exec-1", CapturedResponseFile: ".captured-response.md")],
+                    [],
+                    null),
+                TestContext.Current.CancellationToken);
 
             var childRoom = Path.Combine(testRoot, "child");
             var ex = await Assert.ThrowsAsync<CliArgumentException>(() => RedispatchCommand.ExecuteAsync(
@@ -509,6 +516,46 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
                 $"baton resolve {parentRoom} [--execution <id>] --accept-capture | --reject --reason <text>",
                 ex.TryInvocation, StringComparison.Ordinal);
             Assert.DoesNotContain("does not exist", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task An_Indeterminate_parent_without_a_capture_is_refused_but_NOT_sent_to_baton_resolve()
+    {
+        // #1623/#1644 merge. Polarity partner of the test above, one field apart (no
+        // capturedResponseFile): the refusal is unchanged, but the REMEDY must change. Indeterminate
+        // has three producers now and `baton resolve` handles only the captured-response one --
+        // MutationInterface.RecordCaptureResolutionAsync refuses the other two outright. Naming it
+        // here regardless would hand the operator an invocation guaranteed to throw: a dead end in a
+        // user-facing string, which is the specific defect this arm exists to catch.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = Path.Combine(testRoot, "parent");
+            Directory.CreateDirectory(parentRoom);
+            await TerminalSentinelWriter.WriteAsync(
+                parentRoom,
+                new WorkflowStatusView(
+                    WorkflowOutcome.Indeterminate,
+                    [new WorkflowStatusStepView("a", "Failed", "exec-1")],
+                    [],
+                    null),
+                TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, childRoom), Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("Indeterminate", ex.Message, StringComparison.Ordinal);
+            Assert.False(Directory.Exists(childRoom));
+
+            Assert.NotNull(ex.TryInvocation);
+            Assert.DoesNotContain("baton resolve " + parentRoom, ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("re-dispatch", ex.TryInvocation, StringComparison.Ordinal);
         }
         finally
         {
