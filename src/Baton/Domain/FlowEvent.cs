@@ -211,7 +211,7 @@ public abstract record FlowEvent
         VerifyFailedKind Kind = VerifyFailedKind.GatesFailed) : FlowEvent;
 
     /// <summary>
-    /// #1702 (contract: <c>spec/baton.md</c> §3, "Verify command resolution, and the not-run outcome"):
+    /// #1702 — spec/baton.md §3's not-run outcome:
     /// <see cref="Mutation.VerifyCommandResolver.CheckRunnableAsync"/>'s pre-flight probe found the
     /// resolved verify command not runnable, so it was never spawned. Diagnostic only, same "no
     /// <see cref="Status.WorkflowOutcome.Indeterminate"/> consequence" shape as <see cref="VerifyPassed"/>

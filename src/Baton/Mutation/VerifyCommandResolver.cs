@@ -36,7 +36,7 @@ public sealed record ResolvedVerifyCommand(
 /// </summary>
 public static class VerifyCommandResolver
 {
-    /// <summary>The repo-level declaration file — first non-blank, non-<c>#</c>-comment line is the command line. Contract: spec/baton.md §3.</summary>
+    /// <summary>The repo-level declaration file — see <see cref="ReadRepoDeclaration"/> and spec/baton.md §3 for its grammar.</summary>
     public const string RepoDeclarationRelativePath = ".baton/verify";
 
     public static ResolvedVerifyCommand? Resolve(string? workspaceDirectory, string? overrideCommand, string? roleVerifyPixiTask)

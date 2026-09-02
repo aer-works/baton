@@ -1731,9 +1731,8 @@ public static class MutationInterface
                     resolvedVerify, binding.Target.WorkingDirectory, dispatchCancellationToken).ConfigureAwait(false);
                 if (!runnable)
                 {
-                    // #1702 item 2: a resolved-but-absent verify command is not a gate failure -- the
-                    // execution's own already-Succeeded classification decides the room word below,
-                    // unassisted. No VerifyStarted here: it never started.
+                    // #1702: see FlowEvent.VerifyNotRun's own doc for what this settles to and why.
+                    // No VerifyStarted here: it never started.
                     await eventLogWriter.AppendAsync(
                         new FlowEvent.VerifyNotRun(prepared.Request.ExecutionId, notRunnableReason ?? "verify command not runnable"),
                         CancellationToken.None).ConfigureAwait(false);

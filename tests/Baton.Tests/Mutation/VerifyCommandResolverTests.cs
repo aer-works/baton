@@ -180,10 +180,7 @@ public sealed class VerifyCommandResolverTests
     [Fact]
     public async Task CheckRunnableAsync_role_default_reports_runnable_when_pixi_itself_cannot_spawn()
     {
-        // Second-reader finding: "the engine's own tool is broken" is a different fact than "this
-        // workspace's task list omits the task" -- must defer to the real VerifyRunner attempt (which
-        // hits the identical spawn failure and settles Indeterminate) rather than silently soften into
-        // a not-run/Succeeded pass.
+        // Pins the CheckPixiTaskAsync BatonException arm's own contract -- see its comment for why.
         var resolved = VerifyCommandResolver.Resolve(
             workspaceDirectory: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
 
