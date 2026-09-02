@@ -935,16 +935,25 @@ public static class MutationInterface
                         if (delay > TimeSpan.Zero)
                         {
                             // #1094: surface a vendor-quota park to the foreground before the (possibly
-                            // day-long) paced wait, so it does not read as a hang. Deduped to the instant
-                            // being waited on; ordinary retry backoff is not a quota park and stays quiet.
-                            // Notification only — the 0026 wait below is unchanged.
-                            if (onVendorQuotaPark is not null
-                                && lastQuotaParkNotified != minNotBefore
-                                && state.Steps.Any(s => s.RetryNotBefore == minNotBefore
-                                    && s.LatestFailureClassification == FailureClassification.ExhaustedUntil))
+                            // day-long) paced wait, so it does not read as a hang. Ordinary retry backoff
+                            // is not a quota park and stays quiet. Notification only — the 0026 wait below
+                            // is unchanged.
+                            var quotaParkStep = state.Steps.FirstOrDefault(s => s.RetryNotBefore == minNotBefore
+                                && s.LatestFailureClassification == FailureClassification.ExhaustedUntil);
+                            if (onVendorQuotaPark is not null && quotaParkStep is not null)
                             {
-                                lastQuotaParkNotified = minNotBefore;
-                                onVendorQuotaPark(minNotBefore);
+                                // #1183: deduped on the RAW vendor-reported instant
+                                // (LatestExecutionFailedRetryNotBefore), not the paced `minNotBefore` —
+                                // PastResetInstantRetryFloor recomputes a fresh `now + 1s` obligation on
+                                // every retry of a repeating stale instant, so deduping on the paced value
+                                // would re-notify (and re-print) once per second forever instead of once
+                                // per distinct vendor refusal.
+                                var dedupeInstant = quotaParkStep.LatestExecutionFailedRetryNotBefore ?? minNotBefore;
+                                if (lastQuotaParkNotified != dedupeInstant)
+                                {
+                                    lastQuotaParkNotified = dedupeInstant;
+                                    onVendorQuotaPark(minNotBefore);
+                                }
                             }
 
                             // #1183: Task.Delay's TimeSpan overload throws past ~49.7 days -- clamp
@@ -1528,7 +1537,10 @@ public static class MutationInterface
                 else
                 {
                     notBefore = cappedResetMoment;
-                    delayMs = (int)Math.Round(rawDelay.TotalMilliseconds);
+                    // #1183: Ceiling, not Round -- DependencyResolver's #712 clamp needs
+                    // delayMs >= the real notBefore-utcNow gap so a sub-millisecond rounddown can never
+                    // make `remaining > maxDelay` misfire and release this step before cappedResetMoment.
+                    delayMs = (int)Math.Ceiling(rawDelay.TotalMilliseconds);
                 }
             }
             else

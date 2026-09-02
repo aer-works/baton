@@ -1262,6 +1262,14 @@ public class MutationInterfaceRetryBackoffTests
             Assert.False(pumpTask.IsFaulted, pumpTask.IsFaulted ? pumpTask.Exception!.ToString() : "");
             Assert.False(pumpTask.IsCompleted);
 
+            // Positive anchor, not just "didn't crash": the settle window above is long enough for a
+            // loaded machine to pass vacuously (pump never even reaching GetRetryObligations) unless
+            // something confirms the obligation was actually scheduled and actually capped.
+            var eventsSoFar = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var scheduled = eventsSoFar.OfType<FlowEvent.StepRetryScheduled>().SingleOrDefault(e => e.StepId == StepA);
+            Assert.NotNull(scheduled);
+            Assert.Equal(now + TimeSpan.FromDays(14), scheduled.RetryNotBefore);
+
             // Host stop releases the still-parked pump cleanly, proving it never threw internally
             // and stayed a well-behaved wait the whole time.
             await cts.CancelAsync();
@@ -1327,10 +1335,9 @@ public class MutationInterfaceRetryBackoffTests
     }
 
     // #1183: an ExhaustedUntil reset instant already at or before now must not collapse to a
-    // zero-delay retry -- ConsecutiveFailureCount stays frozen at 0 for quota hits (0026), so an
-    // immediate retry against a vendor that keeps reporting the same stale instant is a tight
-    // spend-nothing-but-CPU machine-gun. Polarity: the future-but-imminent case below the floor
-    // still needs pacing too (this branch does not distinguish "already past" from "about to hit").
+    // zero-delay retry -- see PastResetInstantRetryFloor's own doc comment (MutationInterface.cs)
+    // for why that machine-guns. Polarity: the future-but-imminent case below the floor still needs
+    // pacing too (this branch does not distinguish "already past" from "about to hit").
     [Fact]
     public async Task Test1183_Past_reset_instant_is_paced_to_a_floor_not_an_immediate_retry()
     {
