@@ -507,12 +507,11 @@ public class MutationInterfaceCaptureResolutionTests
     /// alone is not this verb's admission test.
     /// <para>
     /// Asserted on the <c>--reject</c> path specifically, because that is the one that was reachable:
-    /// <c>--accept</c> already refused such a step further in, on its null captured file. Left
-    /// admitted, a reject would have journaled a <see cref="FlowEvent.CaptureResolved"/>, cleared the
-    /// flag, and handed the step back to <see cref="RetryEngine.MayRetry"/> as an ordinary Failed one
-    /// — the blind retry #1623's ruling forbids, arriving through a verb that never examined the
-    /// verify failure. The second assertion (no <c>CaptureResolved</c> in the log) is what pins that
-    /// consequence rather than only the message.
+    /// <c>--accept</c> already refused such a step further in, on its null captured file.
+    /// <see cref="MutationInterface.RecordCaptureResolutionAsync"/>'s own guard comment states what
+    /// admitting it would have cost; not restated here. The second assertion (no
+    /// <see cref="FlowEvent.CaptureResolved"/> in the log) is what pins that consequence rather than
+    /// only the message.
     /// </para>
     /// </summary>
     [Fact]
