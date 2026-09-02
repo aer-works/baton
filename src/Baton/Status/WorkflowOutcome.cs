@@ -26,22 +26,28 @@ public static class WorkflowOutcome
     /// does not reconcile at settle time. A single added value, not a two-field split, per the ruling's
     /// own wording.
     /// <para>
-    /// <b>No producer in this slice.</b> <see cref="Describe"/> never returns this today — the vocabulary
-    /// exists so every consumer can be swept and tested ahead of #2's <c>baton settle</c> verb (which
-    /// may settle a room TO this value) and #1608's classification-path swap (which flips the #1594
-    /// capture shape onto it). Wiring either producer here was explicitly deferred (S1's own scope
-    /// note): flipping the #1594 capture arm onto this value is #1608's job, not S1's — every
-    /// captured-response room's <see cref="Describe"/> reading is unchanged by this slice
-    /// (<c>WorkflowOutcomeAndExitCodeTests</c> pins that). Tests exercising the consumers below fabricate
-    /// a <c>terminal.json</c>/status view carrying this string directly rather than deriving it from a
-    /// journal, since nothing in <c>src/</c> can derive it yet.
+    /// <b>Producer, since #1608.</b> <see cref="DescribeTerminal"/> returns this whenever any step
+    /// reads <see cref="StepState.IndeterminateAwaitingResolution"/> true — projected from
+    /// <see cref="Domain.FlowEvent.ExecutionIndeterminate"/>, which
+    /// <see cref="Outcomes.OutcomeClassifier.Classify"/>'s captured-response arm now emits instead of
+    /// <c>Failed(Permanent)</c> (spec/baton.md §3's "one live exception" is closed). A worktree
+    /// fingerprint failing to reconcile at settle time is a second, still-unimplemented source —
+    /// <c>baton settle</c> (S2, tracked on #1586) is expected to be able to settle a room TO this value
+    /// for that case; #1608 only closed the #1594 captured-response arm.
     /// </para>
     /// <para>
     /// <b>Consumer obligations (ruling item 2, spelled out in full in <c>spec/baton.md</c> §3):</b>
     /// a room reading this refuses bare <c>baton redispatch</c> with a diagnosis
     /// (<c>Baton.Cli.RedispatchCommand</c>); the fleet glass renders a distinct chip; leaving this
-    /// value always requires a conductor's own recorded justification — it is not a state a room
-    /// exits on its own.
+    /// value always requires a conductor's own recorded justification — never silently, never by
+    /// default. <c>baton resolve</c> (#1608) is that recorded resolution: it reads a room's
+    /// <see cref="StepState.LatestCapturedResponseFile"/>/<see cref="StepState.LatestUnsatisfiedOutputNames"/>,
+    /// applies the prose-safe/all-or-nothing rule (<c>docs/dispatch.md</c>'s "Roles" section,
+    /// <see cref="Outcomes.OutputMaterializer"/>'s gating) — already enforced once, at capture time, so
+    /// reaching an unresolved capture at all is proof the rule passed — and either writes the real
+    /// declared output(s) and settles the step <see cref="StepStatus.Succeeded"/>, or records a
+    /// rejection and leaves it <see cref="StepStatus.Failed"/> but resolved (no longer
+    /// <see cref="Indeterminate"/> at the room level).
     /// </para>
     /// </summary>
     public const string Indeterminate = "Indeterminate";
@@ -85,6 +91,15 @@ public static class WorkflowOutcome
         if (steps.All(step => step.Status == StepStatus.Succeeded))
         {
             return Succeeded;
+        }
+
+        // #1608: checked ahead of the ordinary Failed/Rejected read below — an unresolved indeterminate
+        // step IS Status.Failed (the single-added-enum-value ruling keeps StepStatus itself untouched),
+        // so this must win the room-level word or every captured-response room would misreport Failed
+        // again, exactly the collapse #1608 exists to undo.
+        if (steps.Any(step => step.IndeterminateAwaitingResolution))
+        {
+            return Indeterminate;
         }
 
         if (steps.Any(step => step.Status is StepStatus.Failed or StepStatus.Rejected))

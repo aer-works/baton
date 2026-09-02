@@ -8,9 +8,10 @@ namespace Baton.Cli;
 /// The exit codes <c>baton run</c>/<c>baton dispatch</c> return (#1356) — distinct per failure class so a
 /// caller can branch on <c>$?</c>/<c>%ERRORLEVEL%</c> alone, without parsing <c>status --json</c>.
 /// <c>baton resume</c> (#1359) also routes here, on its own design ruling that it gets the same
-/// truthful completion contract. <c>baton cancel</c>/<c>baton decide</c>/<c>baton supply</c> keep their
-/// pre-existing 0/1 contract (<c>Program</c> only routes here for <c>run</c>/<c>dispatch</c>/<c>resume</c>)
-/// — those commands were not named in #1356's scope, and folding them in was not asked for.
+/// truthful completion contract. <c>baton cancel</c>/<c>baton decide</c>/<c>baton resolve</c>/<c>baton
+/// supply</c> keep their pre-existing 0/1 contract (<c>Program</c> only routes here for
+/// <c>run</c>/<c>dispatch</c>/<c>resume</c>) — those commands were not named in #1356's scope (or, for
+/// <c>resolve</c>, #1608's), and folding them in was not asked for.
 /// </summary>
 public enum RunExitCode
 {

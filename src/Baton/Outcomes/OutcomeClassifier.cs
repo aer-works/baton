@@ -5,12 +5,27 @@ using Baton.Status;
 
 namespace Baton.Outcomes;
 
-/// <summary>The three terminal outcomes a completed dispatch is classified into.</summary>
+/// <summary>The four terminal outcomes a completed dispatch is classified into.</summary>
 public enum OutcomeVerdict
 {
     Succeeded,
     Failed,
     Cancelled,
+
+    /// <summary>
+    /// #1608: the two-predicate model's disagreement case (spec/baton.md §3, "The terminal
+    /// vocabulary") — the worker's own execution outcome and the contract's completion outcome
+    /// disagree, most concretely the #1594 captured-response shape below, where substantial work
+    /// happened but the declared output(s) are simply absent. Distinct from
+    /// <see cref="Failed"/>: nothing here is a self-reported failure the worker or Flow diagnosed,
+    /// and — unlike <see cref="Failed"/> — it carries no <see cref="FailureClassification"/> at all,
+    /// since that vocabulary describes why a genuine failure should or should not retry, not why a
+    /// verdict cannot yet be read off the journal. Retry-ineligible by its own explicit
+    /// <see cref="Scheduling.RetryEngine.MayRetry"/> arm, not by borrowing
+    /// <see cref="FailureClassification.Permanent"/>'s unrelated semantics. Only a recorded conductor
+    /// resolution (<c>baton resolve</c>) ever settles a step away from this.
+    /// </summary>
+    Indeterminate,
 }
 
 /// <summary>
@@ -18,12 +33,13 @@ public enum OutcomeVerdict
 /// <see cref="Domain.FlowEvent"/> terminal case the <c>MutationInterface</c> appends to the log.
 /// </summary>
 /// <param name="Reason">
-/// A human-readable diagnostic for a <see cref="OutcomeVerdict.Failed"/> verdict — why exit code,
-/// exit reason, and contract state add up to a failure, computed once here from data available at
-/// classification time. Distinct from <paramref name="FailureClassification"/>, which is the
-/// worker's own self-reported retry hint, not a diagnostic Flow derives. Every failure path
-/// <i>in this class</i> sets it, and it is null for
-/// <see cref="OutcomeVerdict.Succeeded"/> and <see cref="OutcomeVerdict.Cancelled"/>.
+/// A human-readable diagnostic for a <see cref="OutcomeVerdict.Failed"/> or (#1608)
+/// <see cref="OutcomeVerdict.Indeterminate"/> verdict — why exit code, exit reason, and contract
+/// state add up to that verdict, computed once here from data available at classification time.
+/// Distinct from <paramref name="FailureClassification"/>, which is the worker's own self-reported
+/// retry hint, not a diagnostic Flow derives, and which <see cref="OutcomeVerdict.Indeterminate"/>
+/// never carries at all. Every failure/indeterminate path <i>in this class</i> sets it, and it is
+/// null for <see cref="OutcomeVerdict.Succeeded"/> and <see cref="OutcomeVerdict.Cancelled"/>.
 /// <para>
 /// That is deliberately a claim about this class and not about stored events. An earlier version of
 /// this comment inferred that a null <c>Reason</c> on a persisted
@@ -70,7 +86,7 @@ public sealed record OutcomeClassification(
 
 /// <summary>
 /// Maps a <see cref="CoreDispatchResult"/> plus a step's <see cref="WorkerContract"/> into one of
-/// the three terminal classifications. Flow alone interprets Core's purely
+/// the four terminal classifications. Flow alone interprets Core's purely
 /// mechanical report (exit code + reason) — Core itself has no notion of "success" beyond that.
 /// </summary>
 public static class OutcomeClassifier
@@ -111,6 +127,7 @@ public static class OutcomeClassifier
     /// <summary>
     /// Classifies <paramref name="result"/> per this table:
     /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied</c> → Succeeded;
+    /// <c>NaturalExit + code 0 + an unsatisfied ProducedOutput, captured (#1594/#1608)</c> → Indeterminate;
     /// <c>NaturalExit</c> otherwise, or <c>TimedOut</c> → Failed;
     /// <c>CancelRequested</c> → Cancelled.
     /// </summary>
@@ -188,10 +205,12 @@ public static class OutcomeClassifier
             // -- it did not crash mid-write -- but a declared output is absent. Give OutputMaterializer
             // a chance to extract the worker's own terminal response into an engine-owned file (see
             // that class's own remarks for why it never touches the declared output directory); this
-            // NEVER re-validates the contract, since that directory cannot have changed. The
-            // captured-response arm below always settles Failed(Permanent): a retry against the same,
-            // still-unsatisfied workspace would only burn budget, and the ruling is "the conductor
-            // resolves this", not "the engine retries it".
+            // NEVER re-validates the contract, since that directory cannot have changed. #1608: the
+            // captured-response arm below settles Indeterminate, not Failed(Permanent) — the two
+            // predicates disagree (substantial work happened, but the contract is unsatisfied), which
+            // is exactly the shape the journal previously had no word for. Retry-ineligible by
+            // RetryEngine.MayRetry's own explicit arm, not by FailureClassification.Permanent's
+            // unrelated semantics; only a recorded conductor resolution (baton resolve) settles it.
             var captured = OutputMaterializer.TryCaptureFinalResponse(validation, contract, outputDirectory, responseParser);
             if (captured is not null)
             {
@@ -202,7 +221,8 @@ public static class OutcomeClassifier
                         string.Join(", ", captured.UnsatisfiedOutputNames.Select(name => $"'{name}'")) +
                         $" were never written by the worker itself. baton captured its terminal " +
                         $"response to '{captured.FileName}' -- the declared output(s) were NOT " +
-                        "written, and this execution settles Failed pending conductor resolution.");
+                        "written, and this execution settles Indeterminate pending conductor resolution " +
+                        "('baton resolve').");
                 }
                 catch (IOException)
                 {
@@ -216,8 +236,8 @@ public static class OutcomeClassifier
                     + $" Response captured to '{captured.FileName}'; awaiting conductor resolution.";
 
                 return new OutcomeClassification(
-                    OutcomeVerdict.Failed,
-                    FailureClassification.Permanent, // Permanent: conductor-resolves means the engine never auto-retries against a workspace this capture just wrote into (RetryEngine.MayRetry gates on this unconditionally).
+                    OutcomeVerdict.Indeterminate,
+                    FailureClassification: null, // Indeterminate carries no FailureClassification — see OutcomeVerdict.Indeterminate's own remarks.
                     WithStderr(reason, result.StderrTail),
                     CapturedResponseFile: captured.FileName,
                     UnsatisfiedOutputNames: captured.UnsatisfiedOutputNames,

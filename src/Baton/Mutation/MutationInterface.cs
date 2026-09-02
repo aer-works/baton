@@ -171,6 +171,139 @@ public static class MutationInterface
     }
 
     /// <summary>
+    /// #1608: the conductor resolution surface — <c>baton resolve</c>'s own mutation-surface entry
+    /// point, and the only path ever allowed to write under a declared output name from a
+    /// <see cref="Outcomes.OutputMaterializer.CapturedResponse"/> (spec/baton.md §3). Unlike every
+    /// other entry point above, this never pumps: an unresolved
+    /// <see cref="FlowEvent.ExecutionIndeterminate"/> is unreachable from <c>baton decide</c>
+    /// (<see cref="ExternalDecisionValidator"/> only ever admits a Paused step, or a quota-parked
+    /// Failed one), so nothing downstream is waiting on this call the way a paused workflow waits on
+    /// <see cref="RecordDecisionAsync"/> — a follow-up <c>baton run --room-dir</c> is what re-drives
+    /// the DAG once a rejection leaves the step retry-eligible again.
+    /// </summary>
+    /// <param name="accepted">
+    /// <c>true</c>: the capture honestly satisfies its declared output(s) — writes each declared name
+    /// in the step's <see cref="StepState.LatestUnsatisfiedOutputNames"/> with the captured response's
+    /// body. The prose-safe/all-or-nothing rule is not re-derived here: reaching an unresolved capture
+    /// at all already proves <see cref="Outcomes.OutputMaterializer.TryCaptureFinalResponse"/>'s gate
+    /// passed for every name in that list. <c>false</c>: no file is written; <paramref name="reason"/>
+    /// is required.
+    /// </param>
+    /// <exception cref="InvalidCaptureResolutionException">
+    /// <paramref name="executionId"/> names no step with an unresolved
+    /// <see cref="FlowEvent.ExecutionIndeterminate"/>, <paramref name="accepted"/> is <c>false</c> and
+    /// <paramref name="reason"/> is null/whitespace, or reading/writing a captured or declared output
+    /// file failed.
+    /// </exception>
+    /// <exception cref="Baton.Concurrency.WorkflowLockedException">
+    /// Another Flow instance already holds <paramref name="roomDirectoryPath"/>'s lock.
+    /// </exception>
+    public static async Task<FlowState> RecordCaptureResolutionAsync(
+        string roomDirectoryPath,
+        WorkflowDefinitionSnapshot snapshot,
+        string artifactsRootPath,
+        IEventLogReader eventLogReader,
+        IEventLogWriter eventLogWriter,
+        ExecutionId executionId,
+        bool accepted,
+        string? reason,
+        CancellationToken cancellationToken = default,
+        string? holderDescription = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentException.ThrowIfNullOrEmpty(artifactsRootPath);
+        ArgumentNullException.ThrowIfNull(eventLogReader);
+        ArgumentNullException.ThrowIfNull(eventLogWriter);
+
+        if (!accepted && string.IsNullOrWhiteSpace(reason))
+        {
+            throw new InvalidCaptureResolutionException(
+                "Rejecting a captured response requires --reason: the conductor's justification is " +
+                "itself the room fact this verb exists to record.");
+        }
+
+        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, holderDescription);
+
+        var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
+        var log = await eventLogReader.ReadSnapshotFromOffsetAsync(checkpoint?.ByteOffset ?? 0, cancellationToken).ConfigureAwait(false);
+        if (log.IsFallbackToFull)
+        {
+            checkpoint = null;
+        }
+
+        var (state, _) = StateProjector.ProjectAndCheckpoint(log.FlowEvents, snapshot, checkpoint, log.ByteOffset);
+
+        var target = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
+        if (target is null || !target.IndeterminateAwaitingResolution)
+        {
+            throw new InvalidCaptureResolutionException(
+                $"Execution '{executionId.Value}' has no unresolved indeterminate capture in room " +
+                $"'{roomDirectoryPath}' — 'baton resolve' only targets a step still awaiting conductor resolution.");
+        }
+
+        IReadOnlyList<string> resolvedOutputNames = target.LatestUnsatisfiedOutputNames ?? [];
+
+        if (accepted)
+        {
+            if (target.LatestCapturedResponseFile is null || resolvedOutputNames.Count == 0)
+            {
+                throw new InvalidCaptureResolutionException(
+                    $"Execution '{executionId.Value}' has no captured response body to accept in room '{roomDirectoryPath}'.");
+            }
+
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, executionId);
+            var capturedPath = Path.Combine(outputDirectory, target.LatestCapturedResponseFile);
+            string capturedContent;
+            try
+            {
+                capturedContent = await File.ReadAllTextAsync(capturedPath, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidCaptureResolutionException(
+                    $"Could not read captured response '{capturedPath}' for execution '{executionId.Value}': {ex.Message}.", ex);
+            }
+
+            var body = Outcomes.OutputMaterializer.StripCapturedResponseHeader(capturedContent);
+
+            foreach (var outputName in resolvedOutputNames)
+            {
+                // Defense-in-depth, not re-validation: every name here already passed ProducedOutput's
+                // own reserved/traversal checks at contract-declaration time (WorkerContract.cs), and
+                // passed OutputMaterializer's prose-safe/all-or-nothing gate at capture time. This is
+                // the one permitted writer under a declared name (spec/baton.md §3) and refuses to
+                // trust that chain blindly on its way to a filesystem write.
+                if (ReservedOutputNames.IsReserved(outputName) || ReservedOutputNames.IsPathTraversal(outputName))
+                {
+                    throw new InvalidCaptureResolutionException(
+                        $"Declared output name '{outputName}' for execution '{executionId.Value}' is not " +
+                        "a bare, non-reserved file name — refusing to write it.");
+                }
+
+                var outputPath = Path.Combine(outputDirectory, outputName);
+                try
+                {
+                    await File.WriteAllTextAsync(outputPath, body, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    throw new InvalidCaptureResolutionException(
+                        $"Could not write declared output '{outputPath}' for execution '{executionId.Value}': {ex.Message}.", ex);
+                }
+            }
+        }
+
+        await eventLogWriter.AppendAsync(
+                new FlowEvent.CaptureResolved(target.StepId, executionId, accepted, reason, resolvedOutputNames),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var finalEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+        return StateProjector.Project(finalEvents, snapshot);
+    }
+
+    /// <summary>
     /// A third mutation-surface entry point: mints a step-less supplementary
     /// execution — a human, or any other non-process party, producing a new artifact outside the
     /// DAG during a pause. Appends <see cref="FlowEvent.ExecutionRequestAccepted"/> with
@@ -1363,6 +1496,8 @@ public static class MutationInterface
                 executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore,
                 classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
+            OutcomeVerdict.Indeterminate => new FlowEvent.ExecutionIndeterminate(
+                executionId, classification.Reason, classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
             _ => throw new ArgumentOutOfRangeException(nameof(classification), classification.Verdict, "Unknown OutcomeVerdict."),
         };
 

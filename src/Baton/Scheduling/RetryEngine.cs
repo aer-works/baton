@@ -35,6 +35,15 @@ public static class RetryEngine
     /// operator was never asked about, and <c>PrepareExecutionAsync</c>'s retry-minted
     /// <see cref="ExecutionRequest"/> carries no <see cref="ExecutionRequest.LinkedFromExecutionId"/>
     /// of its own, so a retry would also silently clear the very link this verb exists to record.
+    /// <see cref="StepState.IndeterminateAwaitingResolution"/> true bypasses everything else straight
+    /// to <c>false</c> (#1608): an unresolved <see cref="Domain.FlowEvent.ExecutionIndeterminate"/>
+    /// carries no <see cref="FailureClassification"/> to gate on (<see cref="FailureClassification.Permanent"/>
+    /// is a different verdict's vocabulary), so this is its own explicit arm rather than a value the
+    /// predicate below would happen to allow through — a null <see cref="StepState.LatestFailureClassification"/>
+    /// is ordinarily retryable, and Indeterminate's <c>Reason</c>/<c>CapturedResponseFile</c> shape
+    /// leaves that field null too. Only a recorded <c>baton resolve</c> clears this flag; once
+    /// cleared (accepted, or rejected with budget remaining), the predicate below applies exactly as
+    /// it would to any other Failed step.
     /// </summary>
     public static bool MayRetry(StepState stepState, RetryPolicy retryPolicy)
     {
@@ -47,6 +56,11 @@ public static class RetryEngine
         }
 
         if (stepState.LinkedFromExecutionId is not null)
+        {
+            return false;
+        }
+
+        if (stepState.IndeterminateAwaitingResolution)
         {
             return false;
         }

@@ -74,7 +74,7 @@ if (args.Length >= 1 && args[0] == "daemon")
     return 0;
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "supply", "resume", "status", "templates", "keep", "unkeep", "mcp", "daemon" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "templates", "keep", "unkeep", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -85,6 +85,8 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine(
         "       baton decide <room-dir> --execution <execution-id> --type resume|reject|retry-with-revision|supersede " +
         "[--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]");
+    Console.Error.WriteLine(
+        "       baton resolve <room-dir> [--execution <execution-id>] --accept-capture | --reject --reason <text>");
     Console.Error.WriteLine(
         "       baton supply <room-dir> --worker <role> --output <name> --file <source-path> " +
         "--bindings <bindings-file> [--workflow-id <id>]");
@@ -202,6 +204,14 @@ try
                 break;
             }
 
+        case "resolve":
+            {
+                var options = ResolveOptionsParser.Parse(args[1..]);
+                result = await ResolveCommand.ExecuteAsync(options, hostStopSource.Token)
+                    .ConfigureAwait(false);
+                break;
+            }
+
         case "resume":
             {
                 var options = ResumeOptionsParser.Parse(args[1..]);
@@ -259,7 +269,7 @@ try
         return (int)RunExitCodeResolver.Resolve(result);
     }
 
-    // Still the 0/1 contract for cancel/decide/supply — #1356 scoped its exit-code table to
+    // Still the 0/1 contract for cancel/decide/supply/resolve — #1356 scoped its exit-code table to
     // run/dispatch only; widening it to the rest was not asked for and is not done here. #1650 F2
     // moved the expression itself into MutationExitCodeResolver (which also handles cancel's queued
     // arm) so its arms are assertable without spawning a process.

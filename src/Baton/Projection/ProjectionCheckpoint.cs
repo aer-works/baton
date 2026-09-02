@@ -46,7 +46,8 @@ public sealed record ProjectionCheckpointState(
     Dictionary<StepId, int>? ExecutionCountByStepId = null,
     Dictionary<StepId, string?>? LatestCapturedResponseFileByStepId = null,
     Dictionary<StepId, List<string>?>? LatestUnsatisfiedOutputNamesByStepId = null,
-    HashSet<StepId>? RetryForeclosedStepIds = null)
+    HashSet<StepId>? RetryForeclosedStepIds = null,
+    HashSet<StepId>? IndeterminateAwaitingResolutionStepIds = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -67,6 +68,15 @@ public sealed record ProjectionCheckpointState(
     /// first (#1606).
     /// </summary>
     public HashSet<StepId> RetryForeclosedStepIds { get; init; } = RetryForeclosedStepIds ?? new();
+
+    /// <summary>
+    /// #1608: which steps carry a projected <see cref="FlowEvent.ExecutionIndeterminate"/> not since
+    /// resolved by a <see cref="FlowEvent.CaptureResolved"/>. Same trailing-optional replay-safety
+    /// shape as <see cref="RetryForeclosedStepIds"/> above, including that member's own <b>load-bearing
+    /// in <see cref="DeepCopy"/></b> warning — this hit the identical hazard the same day it was added,
+    /// not a fresh one.
+    /// </summary>
+    public HashSet<StepId> IndeterminateAwaitingResolutionStepIds { get; init; } = IndeterminateAwaitingResolutionStepIds ?? new();
 
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
@@ -125,5 +135,6 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<StepId, int>(ExecutionCountByStepId),
         new Dictionary<StepId, string?>(LatestCapturedResponseFileByStepId),
         LatestUnsatisfiedOutputNamesByStepId.ToDictionary(kvp => kvp.Key, kvp => kvp.Value is null ? null : new List<string>(kvp.Value)),
-        new HashSet<StepId>(RetryForeclosedStepIds));
+        new HashSet<StepId>(RetryForeclosedStepIds),
+        new HashSet<StepId>(IndeterminateAwaitingResolutionStepIds));
 }

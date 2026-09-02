@@ -133,23 +133,62 @@ public class WorkflowOutcomeAndExitCodeTests
         Assert.Equal(RunExitCode.Succeeded, RunExitCodeResolver.Resolve(Result(state, waitTimedOut: true)));
     }
 
-    // #1586 S1: the discriminating check that this slice did NOT wire the #1608 swap (the #1594
-    // capture arm flipping onto Indeterminate is explicitly that issue's job, not this one's — S1's
-    // own scope note names this exact shape as the example of what not to do). A captured-response
-    // Failed step must describe identically before and after this slice; this pins "after".
+    // #1608 review: was "S1 did NOT wire this swap" -- now inverted, since this PR IS that swap. What
+    // still matters about this exact fixture: a journal line written before #1608 shipped recorded
+    // FlowEvent.ExecutionFailed (Permanent) with the capture fields attached, never
+    // FlowEvent.ExecutionIndeterminate, so replaying it never sets IndeterminateAwaitingResolution.
+    // That backward-compat reading is what this pins now -- the capture *fields* being present is not
+    // by itself what makes a room read Indeterminate; the flag is.
     [Fact]
-    public void A_captured_response_step_still_describes_as_Failed_not_Indeterminate()
+    public void A_pre_1608_captured_response_Failed_step_without_the_new_flag_still_describes_as_Failed()
     {
         var step = new StepState(
             new StepId("a"), StepStatus.Failed, new ExecutionId("exec-1"), new Dictionary<StepId, ExecutionId>(),
             LatestFailureClassification: FailureClassification.Permanent,
             LatestFailureReason: "Contract not satisfied: 'advice.md' is missing. Response captured to '.captured-response.md'; awaiting conductor resolution.",
             LatestCapturedResponseFile: ".captured-response.md",
-            LatestUnsatisfiedOutputNames: ["advice.md"]);
+            LatestUnsatisfiedOutputNames: ["advice.md"],
+            IndeterminateAwaitingResolution: false);
         var state = TerminalState([step]);
 
         Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(state));
         Assert.NotEqual(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+    }
+
+    // #1608: the actual producer this issue adds -- an unresolved ExecutionIndeterminate projects
+    // IndeterminateAwaitingResolution true, and DescribeTerminal must read the room Indeterminate for
+    // it even though the step's own Status stays Failed (the "single added enum value" ruling).
+    [Fact]
+    public void An_unresolved_indeterminate_capture_describes_the_room_as_Indeterminate_not_Failed()
+    {
+        var step = new StepState(
+            new StepId("a"), StepStatus.Failed, new ExecutionId("exec-1"), new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: null,
+            LatestFailureReason: "Contract not satisfied: 'advice.md' is missing. Response captured to '.captured-response.md'; awaiting conductor resolution.",
+            LatestCapturedResponseFile: ".captured-response.md",
+            LatestUnsatisfiedOutputNames: ["advice.md"],
+            IndeterminateAwaitingResolution: true);
+        var state = TerminalState([step]);
+
+        Assert.Equal(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+        Assert.Equal(RunExitCode.Failed, RunExitCodeResolver.Resolve(Result(state)));
+    }
+
+    // Polarity partner: a resolved (rejected) capture clears the flag but leaves the step Failed --
+    // this is the shape 'baton resolve --reject' produces, and it must read as an ordinary Failed room
+    // again, not stay stuck reading Indeterminate forever.
+    [Fact]
+    public void A_resolved_rejected_capture_describes_the_room_as_Failed_again()
+    {
+        var step = new StepState(
+            new StepId("a"), StepStatus.Failed, new ExecutionId("exec-1"), new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: null,
+            LatestCapturedResponseFile: ".captured-response.md",
+            LatestUnsatisfiedOutputNames: ["advice.md"],
+            IndeterminateAwaitingResolution: false);
+        var state = TerminalState([step]);
+
+        Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(state));
     }
 
     // #1586 S1 review F1: the operator's amendment 1 called this a "tripwire pattern" that sweeps

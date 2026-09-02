@@ -166,6 +166,19 @@ public enum StepStatus
 /// <c>true</c>, independent of <see cref="LatestFailureClassification"/> or
 /// <see cref="ConsecutiveFailureCount"/>.
 /// </param>
+/// <param name="IndeterminateAwaitingResolution">
+/// #1608: whether a <see cref="FlowEvent.ExecutionIndeterminate"/> has been projected for this
+/// step's latest execution and no <see cref="FlowEvent.CaptureResolved"/> has been projected for it
+/// since. Drives two independent reads: <see cref="Status.WorkflowOutcome.Describe"/> reports the
+/// room <c>Indeterminate</c> whenever any step reads <c>true</c> here (ahead of the ordinary
+/// <see cref="Failed"/>/<see cref="Rejected"/> check, even though <see cref="Status"/> itself stays
+/// <see cref="Failed"/> — the "single added enum value" ruling adds this at the room-level word only,
+/// never at <see cref="StepStatus"/>), and <see cref="Scheduling.RetryEngine.MayRetry"/> refuses
+/// unconditionally while this is <c>true</c>, the same explicit-arm shape as
+/// <see cref="RetryForeclosed"/>. Never true and <see cref="Status"/> not <see cref="Failed"/>
+/// together — an accepted resolution flips <see cref="Status"/> to <see cref="Succeeded"/> in the
+/// same projected step that clears this.
+/// </param>
 public sealed record StepState(
     StepId StepId,
     StepStatus Status,
@@ -186,7 +199,8 @@ public sealed record StepState(
     int ExecutionCount = 0,
     string? LatestCapturedResponseFile = null,
     IReadOnlyList<string>? LatestUnsatisfiedOutputNames = null,
-    bool RetryForeclosed = false);
+    bool RetryForeclosed = false,
+    bool IndeterminateAwaitingResolution = false);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

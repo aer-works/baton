@@ -65,13 +65,14 @@ public class OutcomeClassifierTests
         }
     }
 
-    // #1594 (see OutputMaterializer's class remarks for the ruling): a missing declared output's
+    // #1594/#1608 (see OutputMaterializer's class remarks for the ruling): a missing declared output's
     // response recovered from the worker's own terminal result envelope is EXTRACTED into an
     // engine-owned dotfile and ATTACHED as a room fact -- it never lands under the declared output
-    // name, and the verdict is always Failed(Permanent), never Succeeded.
+    // name, and the verdict is always Indeterminate, never Succeeded and never Failed(Permanent) —
+    // only a recorded conductor resolution ('baton resolve') settles it either way.
 
     [Fact]
-    public void Classify_captures_a_missing_outputs_response_and_settles_Failed_Permanent_leaving_the_declared_output_unwritten()
+    public void Classify_captures_a_missing_outputs_response_and_settles_Indeterminate_leaving_the_declared_output_unwritten()
     {
         var directory = CreateTempDirectory();
         try
@@ -83,8 +84,8 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("the worker's real answer"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Equal(FailureClassification.Permanent, classification.FailureClassification);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
             Assert.Equal(OutputMaterializer.CapturedResponseFileName, classification.CapturedResponseFile);
             Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
             Assert.Contains(OutputMaterializer.CapturedResponseFileName, classification.Reason);
@@ -328,8 +329,8 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("ran the checkers, all green"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Equal(FailureClassification.Permanent, classification.FailureClassification);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
             Assert.Equal(OutputMaterializer.CapturedResponseFileName, classification.CapturedResponseFile);
             Assert.Equal(["janitor.md"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "janitor.md")));

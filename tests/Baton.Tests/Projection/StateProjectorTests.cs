@@ -766,6 +766,184 @@ public class StateProjectorTests
         Assert.Equal(WorkflowStatus.Running, state.Status);
     }
 
+    // #1608: FlowEvent.ExecutionIndeterminate / FlowEvent.CaptureResolved -- the two-predicate
+    // model's disagreement case and its own resolution verb's room fact.
+
+    [Fact]
+    public void ExecutionIndeterminate_projects_Failed_status_with_the_awaiting_resolution_flag_set()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(
+                executionId, "captured, awaiting conductor resolution", ".captured-response.md", ["plan.md"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        // Single-added-enum-value ruling: StepStatus itself stays Failed. IndeterminateAwaitingResolution
+        // is what actually distinguishes this from an ordinary Failed step -- pinned separately by
+        // WorkflowOutcomeAndExitCodeTests since WorkflowOutcome.DescribeTerminal is what reads it.
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
+        Assert.Equal(".captured-response.md", architect.LatestCapturedResponseFile);
+        Assert.Equal(["plan.md"], architect.LatestUnsatisfiedOutputNames);
+        Assert.Null(architect.LatestFailureClassification);
+        Assert.Null(architect.LatestExecutionFailedRetryNotBefore);
+    }
+
+    [Fact]
+    public void CaptureResolved_accepted_settles_the_step_Succeeded_and_clears_the_capture_fields()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+            new FlowEvent.CaptureResolved(Architect, executionId, Accepted: true, ResolvedOutputNames: ["plan"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.False(architect.IndeterminateAwaitingResolution);
+        Assert.Null(architect.LatestCapturedResponseFile);
+        Assert.Null(architect.LatestUnsatisfiedOutputNames);
+    }
+
+    [Fact]
+    public void CaptureResolved_rejected_leaves_the_step_Failed_but_clears_the_awaiting_resolution_flag()
+    {
+        // Polarity partner of the accepted test above -- one field apart (Accepted: false), otherwise
+        // identical, proving the Succeeded settle above is about Accepted, not incidentally about
+        // CaptureResolved being projected at all. The captured-response audit trail (file name,
+        // unsatisfied names) stays recorded -- only the resolution state changes.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+            new FlowEvent.CaptureResolved(Architect, executionId, Accepted: false, Reason: "not an honest plan.md"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.False(architect.IndeterminateAwaitingResolution);
+        Assert.Equal(".captured-response.md", architect.LatestCapturedResponseFile);
+        Assert.Equal(["plan"], architect.LatestUnsatisfiedOutputNames);
+    }
+
+    [Fact]
+    public void CaptureResolved_is_a_noop_when_StepId_does_not_match_the_execution_owning_step()
+    {
+        // The same stale-target guard StepRetryForeclosed's own ForExecutionId check already follows
+        // -- a resolution naming the wrong step for this execution id must not misapply.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+            new FlowEvent.CaptureResolved(Critic, executionId, Accepted: true, ResolvedOutputNames: ["plan"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
+    }
+
+    [Fact]
+    public void A_fresh_ExecutionRequestAccepted_clears_an_unresolved_indeterminate_capture()
+    {
+        // Review finding on this PR: mirrors A_fresh_ExecutionRequestAccepted_reopens_a_foreclosed_step
+        // above -- defensive symmetry, not a currently-reachable path (MayRetry refuses the step
+        // unconditionally while this flag is set, and ExternalDecisionValidator refuses a decide
+        // against it, so only CaptureResolved clears it today). Pinned anyway so a future producer
+        // that ever mints a fresh execution for this step cannot leave WorkflowOutcome pinned to
+        // Indeterminate underneath a legitimate new attempt.
+        var executionId = new ExecutionId("exec-1");
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.False(StepFor(state, Architect).IndeterminateAwaitingResolution);
+    }
+
+    [Fact]
+    public void ExecutionIndeterminate_survives_an_incremental_checkpoint_resume()
+    {
+        // The same DeepCopy landmine StepRetryForeclosed_survives_an_incremental_checkpoint_resume
+        // above pins for RetryForeclosedStepIds -- IndeterminateAwaitingResolutionStepIds is a second,
+        // independent trailing member relying on ProjectionCheckpointState.DeepCopy's positional
+        // constructor call actually carrying it forward.
+        var executionId = new ExecutionId("exec-1");
+        var events = new List<FlowEvent>
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+        };
+
+        var (freshState, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot());
+        Assert.True(StepFor(freshState, Architect).IndeterminateAwaitingResolution);
+
+        var resumedState = StateProjector.Project(events, TwoStepSnapshot(), checkpoint);
+
+        Assert.True(StepFor(resumedState, Architect).IndeterminateAwaitingResolution);
+    }
+
+    [Fact]
+    public void RetryEngine_MayRetry_refuses_an_unresolved_indeterminate_step_projected_from_real_events()
+    {
+        // Closes the loop between StateProjector's own projection and RetryEngineTests' hand-built
+        // fixtures: this proves the flag RetryEngine.MayRetry gates on is the same one
+        // ExecutionIndeterminate actually sets, not merely a field the two happen to share a name for.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.False(Baton.Scheduling.RetryEngine.MayRetry(StepFor(state, Architect), new RetryPolicy(MaxAttempts: 5)));
+    }
+
+    [Fact]
+    public void A_fresh_ExecutionRequestAccepted_reopens_an_unresolved_indeterminate_step()
+    {
+        // Defensive mirror of A_fresh_ExecutionRequestAccepted_reopens_a_foreclosed_step above: nothing
+        // in src/ can reach this today (MayRetry refuses the step unconditionally and
+        // ExternalDecisionValidator refuses a decide against it, so only CaptureResolved clears the flag
+        // before any fresh dispatch can be admitted) -- pinned anyway so a future producer minting a
+        // fresh execution for this step can never leave IndeterminateAwaitingResolutionStepIds stuck
+        // true underneath it.
+        var executionId = new ExecutionId("exec-1");
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.False(StepFor(state, Architect).IndeterminateAwaitingResolution);
+    }
+
     [Fact]
     public void RetryWithRevision_with_a_SupplementaryExecutionId_projects_it_as_pending_for_the_referenced_step()
     {

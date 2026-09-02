@@ -15,11 +15,16 @@ namespace Baton.Outcomes;
 /// </summary>
 /// <remarks>
 /// <para>
-/// It never writes into a declared output name. An engine-written file sitting under a declared name
-/// would satisfy the contract at the filesystem level — even a room later relabelled indeterminate
-/// would look Succeeded to every directory-reading check, which is the exact detection gap the
-/// original (pre-ruling) design reintroduced. The declared output directory stays untouched; its
-/// emptiness IS the honest state until a conductor's own recorded resolution writes the real file.
+/// This class itself never writes into a declared output name. An engine-written file sitting under
+/// a declared name would satisfy the contract at the filesystem level — even a room later relabelled
+/// indeterminate would look Succeeded to every directory-reading check, which is the exact detection
+/// gap the original (pre-ruling) design reintroduced. The declared output directory stays untouched
+/// by this class; its emptiness IS the honest state until a conductor's own recorded resolution
+/// writes the real file. #1608: <c>baton resolve</c> (<c>Mutation.MutationInterface.RecordCaptureResolutionAsync</c>)
+/// is that one permitted writer — it never re-implements this class's gating, since reaching an
+/// unresolved capture at all already proves the gate below passed; it only reads
+/// <see cref="StripCapturedResponseHeader"/>'s output and writes it under the declared name(s) this
+/// method already recorded as unsatisfied.
 /// </para>
 /// <para>
 /// Deliberately narrow, same eligibility as before the rework — only the effect changed, not when it
@@ -76,6 +81,22 @@ public static class OutputMaterializer
     {
         var extension = Path.GetExtension(outputName);
         return extension.Length == 0 || ProseSafeExtensions.Contains(extension);
+    }
+
+    /// <summary>
+    /// #1608: strips <see cref="CapturedResponseHeader"/>'s leading engine banner (plus the blank
+    /// line separating it from the response body) from a captured file's content, for
+    /// <c>baton resolve --accept-capture</c> — the header's own wording ("the worker did not write its
+    /// declared output(s), which remain unwritten in this directory") would be a false statement if it
+    /// landed verbatim under a declared name once that name IS written. Idempotent: content that does
+    /// not start with the header (already stripped, or never carried one) is returned unchanged rather
+    /// than throwing, since a resolve verb refusing to accept a capture over a formatting mismatch
+    /// would be a worse failure than writing the content as-is.
+    /// </summary>
+    public static string StripCapturedResponseHeader(string content)
+    {
+        var prefix = CapturedResponseHeader + "\n\n";
+        return content.StartsWith(prefix, StringComparison.Ordinal) ? content[prefix.Length..] : content;
     }
 
     /// <summary>
