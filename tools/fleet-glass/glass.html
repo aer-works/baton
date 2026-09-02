@@ -72,10 +72,6 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 @media (min-width: 768px){
   .lanes{grid-template-columns:repeat(auto-fill, minmax(29rem, 1fr));}
 }
-/* #1619: a workstream group spans the whole row of its enclosing .lanes grid, so its own nested
-   .lanes grid re-wraps across the full width instead of being squeezed into one outer grid cell. */
-.workstream-group{grid-column:1 / -1; margin:.15rem 0;}
-.workstream-heading{margin:0 0 .3rem; font:600 .72rem 'Public Sans'; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em;}
 @media (max-width: 600px){
   body{padding:12px 10px 48px;}
   .lane{padding:.5rem .6rem;}
@@ -164,6 +160,50 @@ summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .finding .finding-detail p{margin:.3em 0;}
 .empty{color:var(--ink-soft); font-size:.85rem;}
 footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:.6rem;}
+
+/* #1678 (Combo C+E): three-column state board + detail pane. Desktop: pane docked right of the
+   board. ≤900px (no room for board+pane side by side): pane stacks below the board instead of
+   losing the dock. ≤480px (the phone breakpoint the ruling names explicitly): carousel pills pick
+   one board column at a time, and tapping a card replaces the board with the pane plus Back. */
+.board-detail-layout{display:flex; gap:1rem; align-items:flex-start; margin-top:.5rem;}
+.board-area{flex:2 1 0; min-width:0;}
+.board-detail-side{flex:1 1 0; min-width:16rem; background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:.75rem .9rem; position:sticky; top:.75rem; max-height:calc(100vh - 1.5rem); overflow-y:auto;}
+.phone-carousel-pills{display:none;}
+.board-container{display:grid; grid-template-columns:repeat(3, 1fr); gap:.6rem;}
+.board-column{background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:.6rem; display:flex; flex-direction:column; gap:.4rem; min-height:6rem; min-width:0;}
+.column-header{display:flex; justify-content:space-between; align-items:center; gap:.4rem; padding-bottom:.3rem; border-bottom:1px solid var(--line);}
+.column-title{font:700 .72rem 'Public Sans'; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft);}
+.column-count{font:400 .68rem var(--mono); font-variant-numeric:tabular-nums; background:var(--chip-idle); padding:.1em .5em; border-radius:999px; color:var(--ink);}
+.column-extra{display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; font-size:.7rem;}
+.board-column-body{display:flex; flex-direction:column; gap:.4rem;}
+.board-card{background:var(--card); border:1px solid var(--line); border-radius:9px; padding:.5rem .6rem; cursor:pointer; display:flex; flex-direction:column; gap:.25rem; min-width:0;}
+.board-card.selected{border-color:var(--accent);}
+.board-card-top{display:flex; justify-content:space-between; align-items:center; gap:.4rem; min-width:0;}
+.board-card-title{font:500 .82rem 'Public Sans'; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;}
+.board-card-ws{font:400 .66rem 'Public Sans'; color:var(--ink-soft); font-style:italic; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.board-card-telem{font-size:.7rem; color:var(--ink-soft); font-variant-numeric:tabular-nums; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.board-card-dismiss{flex-shrink:0;}
+.detail-top{display:flex; justify-content:space-between; align-items:baseline; gap:.5rem; flex-wrap:wrap;}
+.detail-title{font:700 .92rem 'Sora',sans-serif;}
+.detail-path{font-size:.72rem; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; margin:.2rem 0;}
+.detail-path.expanded{white-space:normal; word-break:break-all;}
+.section-heading{font:600 .7rem 'Public Sans'; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin:.6rem 0 .2rem;}
+.detail-back-btn{display:none; align-self:flex-start; background:var(--paper); border:1px solid var(--line); border-radius:6px; padding:.25em .7em; font:500 .74rem 'Public Sans'; cursor:pointer; color:var(--ink); margin-bottom:.4rem;}
+@media (max-width:900px){
+  .board-detail-layout{flex-direction:column;}
+  .board-detail-side{position:static; max-height:none; width:100%; min-width:0;}
+}
+@media (max-width:480px){
+  .phone-carousel-pills{display:flex; gap:.3rem; margin-bottom:.5rem; background:var(--card); padding:.2rem; border-radius:8px; border:1px solid var(--line);}
+  .carousel-tab-btn{flex:1; min-width:0; background:transparent; border:none; font:600 .68rem 'Public Sans'; color:var(--ink-soft); padding:.35em .2em; border-radius:6px; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .carousel-tab-btn.active{background:var(--paper); color:var(--accent);}
+  .board-container{display:block;}
+  .board-column-wrap{display:none;}
+  .board-column-wrap.active-col{display:block;}
+  .board-detail-layout.showing-detail .board-area{display:none;}
+  .board-detail-layout:not(.showing-detail) .board-detail-side{display:none;}
+  .board-detail-layout.showing-detail .detail-back-btn{display:inline-block;}
+}
 </style>
 <main>
   <div class="masthead">
@@ -237,10 +277,25 @@ function dur(msVal){
   const m = Math.round(msVal/60000);
   return m < 1 ? Math.round(msVal/1000) + "s" : m + "m";
 }
+// #1591: spec/baton.md §3's summation rules -- on claude, cacheReadTokens/cacheCreationTokens are
+// true siblings of tokensIn/tokensOut (never subsets), so the honest burn sum adds all four; on agy,
+// cacheCreationTokens is never observed (stays absent, so it contributes 0 either way here) and
+// summing tokensIn+tokensOut+cacheReadTokens is the documented lower bound. thinkingTokens is never
+// added on either vendor -- a breakdown of tokensOut on claude, unmeasured containment on agy.
 function tokens(u){
   if(!u || u.tokensIn == null) return null;
-  const t = (u.tokensIn + (u.tokensOut||0))/1000;
+  const t = (u.tokensIn + (u.tokensOut||0) + (u.cacheReadTokens||0) + (u.cacheCreationTokens||0))/1000;
   return Math.round(t) + "k tok";
+}
+// #1678: fine-grained wall-clock for a terminal/needs-you card's telemetry line ("8m50s"/"45s") --
+// distinct from dur()'s coarse "8m" rounding, which loses the seconds a finished lane's card is
+// meant to show at a glance.
+function durFine(msVal){
+  if(msVal == null) return null;
+  const totalSec = Math.max(0, Math.round(msVal/1000));
+  const m = Math.floor(totalSec/60);
+  const s = totalSec % 60;
+  return m > 0 ? `${m}m${s}s` : `${s}s`;
 }
 // #1613 review (live tokens): compact "12.4k"/"68k" formatting for room.live's outputTokens/
 // contextTokens -- one decimal place below 10k for readability, whole numbers at or above it
@@ -372,10 +427,11 @@ function parkChip(step){
     ? [`resumes in ${rel} (${clock})`, "c-idle"]
     : [`overdue ${rel} (${clock})`, "c-bad"];
 }
-function chipsHtml(room, running, focusStep){
+// #1678: pulled out of chipsHtml so a compact board card can show the same single primary chip
+// without pulling in the timebox/attempt/failure/park chips a card has no room for.
+function primaryStateChip(room){
   const st = room.state;
-  const chips = [];
-  chips.push(st === "Running" ? ["RUNNING","c-run"]
+  return st === "Running" ? ["RUNNING","c-run"]
     : st === "Failed" && room.rejected ? ["REJECTED","c-warn"]
     : st === "Succeeded" ? ["SUCCEEDED","c-ok"]
     : st === "Failed" ? ["FAILED","c-bad"]
@@ -387,7 +443,11 @@ function chipsHtml(room, running, focusStep){
     // conductor has to look, same "needs you" colour as Stalled, distinct label. Producer since
     // #1608 (WorkflowOutcome.Indeterminate's own remarks) -- baton resolve is the way out.
     : st === "Indeterminate" ? ["INDETERMINATE","c-warn"]
-    : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"]);
+    : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"];
+}
+function chipsHtml(room, running, focusStep){
+  const chips = [];
+  chips.push(primaryStateChip(room));
   if(running && running.liveness === "dead") chips.push(["ZOMBIE","c-bad"]);
   const tb = timeboxChip(room, running);
   if(tb) chips.push(tb);
@@ -733,16 +793,61 @@ document.addEventListener("click", async (ev) => {
 // gated on the per-message capture shape -- see pusher.py's `extract_live_counts` doc for exactly
 // when each is present.
 // -----------------------------------------------------------------------------------------------
-function liveTelemetryHtml(room){
-  const live = room.live;
-  if(!live) return "";
+function liveTelemetryBits(live){
+  if(!live) return [];
   const bits = [];
   if(live.outputTokens != null) bits.push(`out ${fmtK(live.outputTokens)}`);
   if(live.contextTokens != null) bits.push(`ctx ${fmtK(live.contextTokens)}`);
   if(live.toolCalls != null) bits.push(`${live.toolCalls} call${live.toolCalls === 1 ? "" : "s"}`);
   const a = age(live.lastActivityAt);
   if(a) bits.push(`active ${a} ago`);
+  return bits;
+}
+function liveTelemetryHtml(room){
+  const bits = liveTelemetryBits(room.live);
   return bits.length ? `<div class="ev mono">${bits.join(" · ")}</div>` : "";
+}
+// #1678: the ruling's one-telemetry-line-per-card requirement, terminal/needs-you rooms included
+// (pre-#1678 only Running cards carried a telemetry line at all). Reads final usage off the last
+// step's own `usage`/`linkedFromUsage` (WorkflowStatusStepView, spec/baton.md §3) -- the same figures
+// the detail pane's full per-step breakdown below reads, just the tail summary a compact card has
+// room for. Never fabricates a number: an absent usage object renders the literal "—" the ruling
+// calls for, not a blank line that could be mistaken for zero.
+function cardTelemetryText(room){
+  if(room.state === "Running"){
+    const bits = liveTelemetryBits(room.live);
+    return bits.length ? bits.join(" · ") : "—";
+  }
+  const steps = room.steps || [];
+  const lastStep = steps[steps.length - 1];
+  const u = lastStep && (lastStep.usage || lastStep.linkedFromUsage);
+  if(!u) return "—";
+  const bits = [];
+  if(u.tokensOut != null) bits.push(`out ${fmtK(u.tokensOut)}`);
+  if(u.turns != null) bits.push(`${u.turns} turn${u.turns === 1 ? "" : "s"}`);
+  const wc = durFine(u.wallClockMs);
+  if(wc) bits.push(wc);
+  return bits.length ? bits.join(" · ") : "—";
+}
+// Detail pane's full telemetry section: every step that carries a usage figure, not just the last.
+function stepUsageLine(step){
+  const u = step.usage || step.linkedFromUsage;
+  if(!u) return null;
+  const bits = [];
+  if(u.tokensOut != null) bits.push(`out ${fmtK(u.tokensOut)}`);
+  if(u.turns != null) bits.push(`${u.turns} turn${u.turns === 1 ? "" : "s"}`);
+  const wc = durFine(u.wallClockMs);
+  if(wc) bits.push(wc);
+  const tk = tokens(u);
+  if(tk) bits.push(tk);
+  return bits.length ? `<div class="ev mono">${esc(step.id)}: ${bits.join(" · ")}</div>` : null;
+}
+function fullTelemetryHtml(room){
+  if(room.state === "Running"){
+    return liveTelemetryHtml(room) || `<div class="ev">—</div>`;
+  }
+  const lines = (room.steps || []).map(stepUsageLine).filter(Boolean);
+  return lines.length ? lines.join("") : `<div class="ev">—</div>`;
 }
 function laneHtml(room, timelines, dismissable = false, openTimelines = null, terminal = false){
   const running = (room.steps||[]).find(s => s.state === "Running");
@@ -798,36 +903,6 @@ function laneHtml(room, timelines, dismissable = false, openTimelines = null, te
     ${copyButtonsHtml(room, running, terminal)}
     ${deliverables}</div>`;
 }
-// -----------------------------------------------------------------------------------------------
-// #1619 (rung 1 of #1614's ruling): group a state bucket's lanes by --workstream before rendering.
-// Rooms without the field render exactly as before this feature -- flat, no heading, same fail-open
-// contract projectLineHtml/bindingLineHtml already follow for their own absent-safe fields.
-// -----------------------------------------------------------------------------------------------
-function groupLanesHtml(rooms, timelines, dismissable, openTimelines, terminal = false){
-  if(!rooms.length) return `<div class="lane"><div class="ev">none</div></div>`;
-  const groups = new Map();
-  const ungrouped = [];
-  for(const r of rooms){
-    if(r && r.workstream){
-      if(!groups.has(r.workstream)) groups.set(r.workstream, []);
-      groups.get(r.workstream).push(r);
-    } else {
-      ungrouped.push(r);
-    }
-  }
-  if(groups.size === 0){
-    return rooms.map(r => laneHtml(r, timelines, dismissable, openTimelines, terminal)).join("");
-  }
-  let html = "";
-  for(const [slug, groupRooms] of Array.from(groups.entries()).sort((a,b) => a[0].localeCompare(b[0]))){
-    html += `<div class="workstream-group"><h3 class="workstream-heading">${esc(slug)} · ${groupRooms.length}</h3><div class="lanes">`
-      + groupRooms.map(r => laneHtml(r, timelines, dismissable, openTimelines, terminal)).join("") + `</div></div>`;
-  }
-  if(ungrouped.length){
-    html += ungrouped.map(r => laneHtml(r, timelines, dismissable, openTimelines, terminal)).join("");
-  }
-  return html;
-}
 function underhoodHtml(list){
   if(!Array.isArray(list) || !list.length) return "";
   const rows = list.map(w => {
@@ -841,22 +916,96 @@ function underhoodHtml(list){
   }).join("");
   return `<h2>Under the hood · ${list.length}</h2><div class="lanes">` + rows + `</div>`;
 }
-function conductorHtml(conductor, inbox = inboxIndex){
-  if(!conductor || !conductor.artifacts_path) return "";
-  const conductorRoomPath = conductor.path || conductor.artifacts_path.replace(/[\\/]artifacts[\\/]conductor[\\/]?$/, "");
+function conductorRoomPathOf(conductor){
+  if(!conductor || !conductor.artifacts_path) return null;
+  return conductor.path || conductor.artifacts_path.replace(/[\\/]artifacts[\\/]conductor[\\/]?$/, "");
+}
+// -----------------------------------------------------------------------------------------------
+// #1678 (Combo C+E): the three-column state board + detail pane. A card carries only a label, one
+// state chip, and one telemetry line (cardTelemetryText above) -- no verbs, no path, no timeline;
+// those move to the detail pane on tap/click (the ruling's own "no verbs on cards"). The conductor
+// is pinned first in Needs You (#1681's link + copy-path verb, carried into the pane instead of the
+// card body -- the card itself is a plain board-card like any other, keyed "__conductor__").
+// -----------------------------------------------------------------------------------------------
+const CONDUCTOR_KEY = "__conductor__";
+function boardCardHtml(key, label, chip, telemetryText, selected, dismissKey, workstream){
+  const [chipLabel, chipCls] = chip;
+  const dismissBtn = dismissKey
+    ? `<button class="dismissbtn board-card-dismiss" data-path="${esc(dismissKey)}" title="Dismiss room" aria-label="Dismiss">×</button>`
+    : "";
+  const wsLine = workstream ? `<div class="board-card-ws">${esc(workstream)}</div>` : "";
+  return `<div class="board-card${selected ? " selected" : ""}" data-key="${esc(key)}">
+    <div class="board-card-top"><span class="board-card-title">${label}</span><span class="chip ${chipCls}">${esc(chipLabel)}</span>${dismissBtn}</div>
+    ${wsLine}
+    <div class="board-card-telem mono">${esc(telemetryText)}</div>
+  </div>`;
+}
+function roomCardHtml(room, selectedKey, dismissable){
+  const key = room.path;
+  const title = room.label ? esc(room.label) : esc(room.name);
+  return boardCardHtml(key, title, primaryStateChip(room), cardTelemetryText(room), key === selectedKey,
+    dismissable && key ? key : null, room.workstream);
+}
+function conductorCardHtml(conductor, selectedKey){
+  return boardCardHtml(CONDUCTOR_KEY, "conductor", ["STANDBY", "c-ok"], "—", selectedKey === CONDUCTOR_KEY, null, null);
+}
+function boardColumnHtml(title, count, cardsHtml){
+  return `<div class="board-column"><div class="column-header"><span class="column-title">${esc(title)}</span><span class="column-count">${count}</span></div>
+    <div class="board-column-body">${cardsHtml || `<div class="empty">none</div>`}</div></div>`;
+}
+function conductorDetailHtml(conductor){
+  const conductorRoomPath = conductorRoomPathOf(conductor);
+  if(!conductor || !conductor.artifacts_path) return `<div class="empty">No conductor.</div>`;
   const copyBtn = copyButtonHtml(conductor.artifacts_path, "copy path");
-  const items = Array.isArray(inbox) ? inbox.filter(m => m && (m.kind === "conductor" || (conductorRoomPath && m.room === conductorRoomPath))) : null;
+  const items = Array.isArray(inboxIndex) ? inboxIndex.filter(m => m && (m.kind === "conductor" || (conductorRoomPath && m.room === conductorRoomPath))) : null;
   const countLine = items !== null ? `<div class="ev">${items.length} deliverable${items.length === 1 ? "" : "s"}</div>` : "";
   const deliverables = conductorRoomPath
     ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(conductorRoomPath)}">deliverables &rarr;</a></div>`
     : "";
-  return `<h2>Conductor</h2><div class="lanes"><div class="lane">
-    <div class="top"><span class="name">conductor</span><span class="chips"><span class="chip c-ok">STANDBY</span></span></div>
-    <div class="ev mono" title="${esc(conductor.artifacts_path)}">${esc(conductor.artifacts_path)}</div>
+  return `<div class="detail-top"><span class="detail-title">conductor</span><span class="chips"><span class="chip c-ok">STANDBY</span></span></div>
+    <div class="detail-path mono" title="${esc(conductor.artifacts_path)}">${esc(conductor.artifacts_path)}</div>
     ${countLine}
     <div class="verbs">${copyBtn}</div>
-    ${deliverables}
-  </div></div>`;
+    ${deliverables}`;
+}
+// Full detail: path (tap to expand), role/adapter/model/effort, error, step timeline, full
+// telemetry, deliverables link, and the same state-appropriate copy verbs the old per-lane card
+// used to carry directly (copyButtonsHtml, unchanged -- read-only, copies only, never executes).
+function roomDetailHtml(room, timelines, openTimelinePaths){
+  const running = (room.steps||[]).find(s => s.state === "Running");
+  const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
+  const failedStep = (room.steps||[]).find(s => s.state === "Failed");
+  const focusStep = running || failedStep || lastStep;
+  const terminal = room.state === "Failed" || room.state === "Succeeded";
+  const title = room.label ? esc(room.label) : esc(room.name);
+  const roomIdLine = room.label ? `<div class="roomid">${esc(room.name)}</div>` : "";
+  const isTlOpen = !!(openTimelinePaths && room.path && openTimelinePaths.has(room.path));
+  const pathHtml = room.path
+    ? `<div class="detail-path mono" title="Tap to expand">${esc(room.path)}</div>` : "";
+  const err = room.error ? `<div class="ev" title="${esc(room.error)}">⛔ ${esc(room.error)}</div>` : "";
+  const tryLine = room.try ? `<div class="ev" title="${esc(room.try)}">↻ suggested: ${esc(room.try)}</div>` : "";
+  const roomDeliverablesKey = room.path || room.name;
+  const deliverables = roomDeliverablesKey
+    ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(roomDeliverablesKey)}">deliverables &rarr;</a></div>` : "";
+  return `<div class="detail-top"><span class="detail-title">${title}</span><span class="chips">${chipsHtml(room, running, focusStep)}</span></div>
+    ${roomIdLine}
+    ${pathHtml}
+    ${bindingLineHtml(room)}
+    ${err}${tryLine}
+    <div class="section-heading">Telemetry</div>
+    ${fullTelemetryHtml(room)}
+    <div class="section-heading">Timeline</div>
+    ${timelineHtml(room, timelines, isTlOpen) || `<div class="ev">no timeline entries</div>`}
+    ${copyButtonsHtml(room, running, terminal)}
+    ${deliverables}`;
+}
+function detailPaneHtml(selectedKey, roomsByPath, conductor, timelines, openTimelinePaths, backOnclick){
+  const backBtn = backOnclick ? `<button class="detail-back-btn" id="board-back">&larr; Back to board</button>` : "";
+  if(!selectedKey) return backBtn + `<div class="empty">Select a card.</div>`;
+  if(selectedKey === CONDUCTOR_KEY) return backBtn + conductorDetailHtml(conductor);
+  const room = roomsByPath.get(selectedKey);
+  if(!room) return backBtn + `<div class="empty">That room is no longer in the fleet snapshot.</div>`;
+  return backBtn + roomDetailHtml(room, timelines, openTimelinePaths);
 }
 function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCount){
   if(totalDismissed <= 0) return "";
@@ -871,6 +1020,11 @@ function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCoun
   const countLabel = totalDismissed === 1 ? "1 hidden" : `${totalDismissed} hidden`;
   return `${countLabel}${detail ? ` · ${detail}` : ""} · <a id="restore-dismissed">restore</a>`;
 }
+// #1678: Combo C+E -- a three-column state board (Needs You / Running / Done) with a detail pane
+// that opens on tap, docked beside the board on desktop and a slide-in second screen on the phone
+// (≤480px). Bucketing/dismiss/pagination logic below is unchanged from the pre-#1678 section
+// layout -- only how the buckets get PAINTED (columns + cards + pane instead of <h2> sections +
+// full lane cards) is new.
 function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms, conductor = lastGood && lastGood.conductor){
   const openTimelinePaths = new Set();
   if(typeof document !== "undefined"){
@@ -919,65 +1073,76 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
 
   const totalDismissed = dismissedFailed.length + dismissedDone.length + dismissedStalled.length;
 
-  let html = underhoodHtml(underhood);
-  html += conductorHtml(conductor);
-  html += `<h2>Running · ${running.length}</h2><div class="lanes">` + groupLanesHtml(running, timelines, false, openTimelinePaths) + `</div>`;
-  // Ranked above Failed and kept out of the collapsible Terminal section (unlike Failed/Succeeded):
-  // a stalled room isn't finished, and nothing but a person will ever move it, so it stays as
-  // visible as Running rather than one click away.
-  const stalledDismissAll = visibleStalled.length > 0 ? `<a class="dismissall" data-section="stalled">dismiss all</a>` : "";
-  html += `<h2><span>Stalled · ${visibleStalled.length}</span>${stalledDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleStalled, timelines, true, openTimelinePaths) + `</div>`;
-  // Same placement reasoning as Stalled above: an Indeterminate room isn't finished either -- it
-  // needs a conductor's recorded resolution, never a silent default -- so it stays out of the
-  // collapsible Terminal section too, as visible as Running/Stalled rather than one click away.
-  html += `<h2>Indeterminate · ${indeterminate.length}</h2><div class="lanes">` + groupLanesHtml(indeterminate, timelines, false, openTimelinePaths) + `</div>`;
+  // Needs You: the conductor pinned first, then Stalled + Indeterminate (both "nothing moves this
+  // without a person", the same reasoning the pre-#1678 layout already applied by keeping them out
+  // of the collapsible Terminal section). Done: Failed + Succeeded together -- both are over, only
+  // the outcome differs, and both get a card dismiss (×) button.
+  const needsYouRooms = visibleStalled.concat(indeterminate).sort(byNewest);
+  const doneRooms = visibleFailed.concat(visibleDone).sort(byNewest);
+  const roomsByPath = new Map();
+  for(const r of rooms) if(r && r.path) roomsByPath.set(r.path, r);
+  for(const r of terminalArchiveExtra) if(r && r.path && !roomsByPath.has(r.path)) roomsByPath.set(r.path, r);
 
-  const termParts = [];
-  if(visibleDone.length > 0 || visibleFailed.length === 0){
-    termParts.push(`${visibleDone.length} succeeded`);
+  const hasConductor = !!(conductor && conductor.artifacts_path);
+  if(selectedCardKey === null){
+    // First render only -- pick a default so the pane is never empty on load, without yanking the
+    // operator's own selection out from under them on a later poll.
+    selectedCardKey = hasConductor ? CONDUCTOR_KEY
+      : needsYouRooms[0] ? needsYouRooms[0].path
+      : running[0] ? running[0].path
+      : doneRooms[0] ? doneRooms[0].path
+      : null;
   }
-  if(visibleFailed.length > 0){
-    termParts.push(`${visibleFailed.length} failed`);
-  }
-  const termSummary = termParts.join(" · ");
 
-  let termContent = "";
-  if(visibleFailed.length > 0){
-    const failedDismissAll = `<a class="dismissall" data-section="failed">dismiss all</a>`;
-    // #1656: no more client-side `.slice(0,12)` -- the byte budget that cap used to protect is now
-    // enforced upstream (pusher.py's hot-set cap + fleet_status's page/limit), so every terminal
-    // room actually delivered to this view is worth rendering.
-    termContent += `<h2><span>Failed · ${visibleFailed.length}</span>${failedDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleFailed, timelines, true, openTimelinePaths, true) + `</div>`;
-  }
-  if(visibleDone.length > 0){
-    const doneDismissAll = `<a class="dismissall" data-section="succeeded">dismiss all</a>`;
-    termContent += `<h2><span>Succeeded · ${visibleDone.length}</span>${doneDismissAll}</h2><div class="lanes">` + groupLanesHtml(visibleDone, timelines, true, openTimelinePaths, true) + `</div>`;
-  }
-  if(!visibleFailed.length && !visibleDone.length){
-    termContent += `<div class="lanes"><div class="lane"><div class="ev">none</div></div></div>`;
-  }
+  const needsYouCards = (hasConductor ? conductorCardHtml(conductor, selectedCardKey) : "")
+    + needsYouRooms.map(r => roomCardHtml(r, selectedCardKey, true)).join("");
+  const runningCards = running.map(r => roomCardHtml(r, selectedCardKey, false)).join("");
+  let doneCards = doneRooms.map(r => roomCardHtml(r, selectedCardKey, true)).join("");
   // #1656: terminalTotal (server's count of ALL terminal rooms) vs. failed.length+done.length
   // (everything actually loaded so far, hot set + any "load older" pages) -- offer the link only
   // while there is provably more archive left to fetch.
   const loadedTerminalCount = failed.length + done.length;
   if(terminalTotal != null && loadedTerminalCount < terminalTotal && terminalNextPage != null){
-    termContent += `<div class="lanes"><a id="load-more-terminal" class="loadmore">load older (${terminalTotal - loadedTerminalCount} more)</a></div>`;
+    doneCards += `<a id="load-more-terminal" class="loadmore">load older (${terminalTotal - loadedTerminalCount} more)</a>`;
   }
 
-  // Preserve the section's open/closed state across a re-render -- otherwise every dismiss/restore
-  // click (which rebuilds #content from scratch) would slam an opened Terminal section shut again.
-  const terminalWasOpen = !!($("terminal-details") && $("terminal-details").open);
-  // #1659: "copy prune" in the section header -- the batch form of the per-card "copy delete" button
-  // above. Copies the dry-run form (no --yes): the operator reviews what would be removed before
-  // opting into the destructive form themselves, same "copy text, never execute" contract every
-  // other button on this page follows (spec/baton.md §10: origination and arrest stay
-  // orchestrator-only). document's click handler stops this from also toggling the <details> open/
-  // closed, since a native <summary> click otherwise fires on any element inside it.
-  const pruneCopyBtn = copyButtonHtml("baton rooms prune --terminal", "copy prune");
-  html += `<details id="terminal-details"${terminalWasOpen ? " open" : ""}><summary>Terminal · ${termSummary} ${pruneCopyBtn}</summary>${termContent}</details>`;
+  const needsYouDismissAll = visibleStalled.length > 0 ? `<a class="dismissall" data-section="stalled">dismiss stalled</a>` : "";
+  const doneDismissBits = [];
+  if(visibleFailed.length > 0) doneDismissBits.push(`<a class="dismissall" data-section="failed">dismiss failed</a>`);
+  if(visibleDone.length > 0) doneDismissBits.push(`<a class="dismissall" data-section="succeeded">dismiss succeeded</a>`);
+  // #1659: "copy prune" -- the batch form of a Done card's own "copy delete" verb. Copies the
+  // dry-run form (no --yes): the operator reviews what would be removed before opting into the
+  // destructive form themselves, same "copy text, never execute" contract every button on this page
+  // follows (spec/baton.md §10: origination and arrest stay orchestrator-only).
+  if(loadedTerminalCount > 0) doneDismissBits.push(copyButtonHtml("baton rooms prune --terminal", "copy prune"));
+  const doneColumnExtra = doneDismissBits.length ? `<div class="column-extra">${doneDismissBits.join(" ")}</div>` : "";
+
+  const needsYouCount = (hasConductor ? 1 : 0) + needsYouRooms.length;
+  const needsYouColumn = boardColumnHtml("Needs You", needsYouCount, needsYouDismissAll ? `<div class="column-extra">${needsYouDismissAll}</div>${needsYouCards}` : needsYouCards);
+  const runningColumn = boardColumnHtml("Running", running.length, runningCards);
+  const doneColumn = boardColumnHtml("Done", loadedTerminalCount, doneColumnExtra + doneCards);
+
+  const showingDetail = phoneShowDetail;
+  const boardHtml = underhoodHtml(underhood)
+    + `<div class="board-detail-layout${showingDetail ? " showing-detail" : ""}">`
+    + `<div class="board-area">`
+    + `<div class="phone-carousel-pills">`
+    + `<button class="carousel-tab-btn${phoneActiveColumn === "needsyou" ? " active" : ""}" data-col="needsyou">Needs You (${needsYouCount})</button>`
+    + `<button class="carousel-tab-btn${phoneActiveColumn === "running" ? " active" : ""}" data-col="running">Running (${running.length})</button>`
+    + `<button class="carousel-tab-btn${phoneActiveColumn === "done" ? " active" : ""}" data-col="done">Done (${loadedTerminalCount})</button>`
+    + `</div>`
+    + `<div class="board-container">`
+    + `<div class="board-column-wrap${phoneActiveColumn === "needsyou" ? " active-col" : ""}">${needsYouColumn}</div>`
+    + `<div class="board-column-wrap${phoneActiveColumn === "running" ? " active-col" : ""}">${runningColumn}</div>`
+    + `<div class="board-column-wrap${phoneActiveColumn === "done" ? " active-col" : ""}">${doneColumn}</div>`
+    + `</div></div>`
+    + `<div class="board-detail-side">${detailPaneHtml(selectedCardKey, roomsByPath, conductor, timelines, openTimelinePaths, true)}</div>`
+    + `</div>`;
+
   const unreadableWasOpen = !!($("unreadable-details") && $("unreadable-details").open);
-  if(other.length) html += `<details id="unreadable-details"${unreadableWasOpen ? " open" : ""}><summary>Unreadable entries · ${other.length}</summary><div class="lanes">${other.slice(0,20).map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("")}</div></details>`;
-  $("content").innerHTML = html;
+  const other20 = other.length ? `<details id="unreadable-details"${unreadableWasOpen ? " open" : ""}><summary>Unreadable entries · ${other.length}</summary><div class="lanes">${other.slice(0,20).map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("")}</div></details>` : "";
+
+  $("content").innerHTML = boardHtml + other20;
   $("fresh").textContent = freshLabel(pushedAt, "pushed ") || "push time unknown";
   const hb = freshLabel(heartbeatAt, "pusher alive ");
   if(hb) $("fresh").textContent += " · " + hb;
@@ -1421,8 +1586,52 @@ let dismissedRooms = loadPersistedDismissed();
 let terminalArchiveExtra = [];
 let terminalTotal = null;
 let terminalNextPage = 0;
+// #1678 (Combo C+E board state): the selected card's key (a room path, or CONDUCTOR_KEY) drives the
+// docked/slide-in detail pane; phoneActiveColumn is which carousel pill is showing on a ≤480px
+// viewport; phoneShowDetail is whether that viewport is showing the pane (replacing the board) or
+// the board itself -- the ruling's "tapping a card replaces the board with the pane plus a Back
+// control".
+let selectedCardKey = null;
+let phoneActiveColumn = "needsyou";
+let phoneShowDetail = false;
 
+function rerenderFromLastGood(){
+  if(lastGood && Array.isArray(lastGood.rooms)){
+    render(lastGood.rooms, lastGood.pushed_at, lastGood.underhood, lastGood.heartbeat_at, accumulatedTimelines, lastGood.stale_hidden_count, dismissedRooms, lastGood.conductor);
+  }
+}
 document.addEventListener("click", (ev) => {
+  // #1678: selecting a board card (or the conductor card) just changes which room the detail pane
+  // shows -- on a ≤480px viewport it also flips the board over to the pane (CSS's .showing-detail),
+  // the ruling's "tapping a card replaces the board with the pane plus a Back control". The per-card
+  // dismiss (×) button is a descendant of .board-card, so its own `.dismissbtn` branch further below
+  // must run instead of this one -- `isDismissClick` short-circuits the card-select branch for it
+  // rather than selecting the card that click just hid.
+  const isDismissClick = !!ev.target.closest(".board-card-dismiss");
+  const card = !isDismissClick && ev.target.closest(".board-card");
+  if(card && card.dataset.key){
+    selectedCardKey = card.dataset.key;
+    phoneShowDetail = true;
+    rerenderFromLastGood();
+    return;
+  }
+  const backBtn = ev.target.closest("#board-back");
+  if(backBtn){
+    phoneShowDetail = false;
+    rerenderFromLastGood();
+    return;
+  }
+  const carouselBtn = ev.target.closest(".carousel-tab-btn");
+  if(carouselBtn && carouselBtn.dataset.col){
+    phoneActiveColumn = carouselBtn.dataset.col;
+    rerenderFromLastGood();
+    return;
+  }
+  const detailPath = ev.target.closest(".detail-path");
+  if(detailPath){
+    detailPath.classList.toggle("expanded");
+    return;
+  }
   const loadMoreBtn = ev.target.closest("#load-more-terminal");
   if(loadMoreBtn){
     loadMoreTerminal();
