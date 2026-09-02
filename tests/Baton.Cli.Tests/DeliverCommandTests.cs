@@ -53,7 +53,12 @@ public sealed class DeliverCommandTests : IDisposable
         Assert.Equal("Morning Brief", result.Title);
         Assert.Equal(Path.GetFullPath(sourceFile), result.SourcePath);
         Assert.True(File.Exists(result.DestinationPath));
-        Assert.Equal(Path.Combine(conductorRoom, "artifacts", "conductor", "source-notes.md"), result.DestinationPath);
+        // F1 (2026-09-02 review): the destination filename is unique per source_path, not just the
+        // basename — it carries an 8-hex-char prefix hashed off the source path.
+        Assert.Equal(
+            Path.Combine(conductorRoom, "artifacts", "conductor"),
+            Path.GetDirectoryName(result.DestinationPath));
+        Assert.Matches("^[0-9a-f]{8}-source-notes\\.md$", Path.GetFileName(result.DestinationPath));
 
         // Verify bindings.json stub
         var bindingsFile = BatonPaths.RoomBindingsFile(conductorRoom);
@@ -75,6 +80,7 @@ public sealed class DeliverCommandTests : IDisposable
         Assert.Equal("Morning Brief", entry!.Title);
         Assert.Equal(Path.GetFullPath(sourceFile), entry.SourcePath);
         Assert.Equal(result.Sha256, entry.Sha256);
+        Assert.Equal(Path.GetFileName(result.DestinationPath), entry.ArtifactFile);
     }
 
     [Fact]
@@ -158,5 +164,40 @@ public sealed class DeliverCommandTests : IDisposable
         var manifestFile = Path.Combine(conductorRoom, "artifacts", "conductor", "manifest.jsonl");
         var manifestLines = await File.ReadAllLinesAsync(manifestFile, TestContext.Current.CancellationToken);
         Assert.Equal(2, manifestLines.Length);
+    }
+
+    [Fact]
+    public async Task Deliver_SameBasenameDifferentSourceDirs_ProducesTwoFilesWithCorrectBytes()
+    {
+        // F1 (2026-09-02 review): two different sources sharing a basename must land on two distinct
+        // on-disk files, each holding its own bytes -- not silently overwrite one another.
+        var dirA = Path.Combine(_tempHome, "projA");
+        var dirB = Path.Combine(_tempHome, "projB");
+        Directory.CreateDirectory(dirA);
+        Directory.CreateDirectory(dirB);
+        var fileA = Path.Combine(dirA, "notes.md");
+        var fileB = Path.Combine(dirB, "notes.md");
+        await File.WriteAllTextAsync(fileA, "# Notes A\nProject A content", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(fileB, "# Notes B\nProject B content", TestContext.Current.CancellationToken);
+
+        var conductorRoom = Path.Combine(BatonPaths.Rooms, "conductor");
+        using var sw = new StringWriter();
+
+        var resultA = await DeliverCommand.ExecuteAsync(new DeliverOptions(fileA, null, conductorRoom), sw, TestContext.Current.CancellationToken);
+        var resultB = await DeliverCommand.ExecuteAsync(new DeliverOptions(fileB, null, conductorRoom), sw, TestContext.Current.CancellationToken);
+
+        Assert.NotEqual(resultA.DestinationPath, resultB.DestinationPath);
+        Assert.True(File.Exists(resultA.DestinationPath));
+        Assert.True(File.Exists(resultB.DestinationPath));
+        Assert.Equal("# Notes A\nProject A content", await File.ReadAllTextAsync(resultA.DestinationPath, TestContext.Current.CancellationToken));
+        Assert.Equal("# Notes B\nProject B content", await File.ReadAllTextAsync(resultB.DestinationPath, TestContext.Current.CancellationToken));
+
+        var manifestFile = Path.Combine(conductorRoom, "artifacts", "conductor", "manifest.jsonl");
+        var manifestLines = await File.ReadAllLinesAsync(manifestFile, TestContext.Current.CancellationToken);
+        Assert.Equal(2, manifestLines.Length);
+        var entries = manifestLines.Select(l => JsonSerializer.Deserialize<ConductorManifestEntry>(l)!).ToList();
+        var entryA = entries.Single(e => e.SourcePath == Path.GetFullPath(fileA));
+        var entryB = entries.Single(e => e.SourcePath == Path.GetFullPath(fileB));
+        Assert.NotEqual(entryA.ArtifactFile, entryB.ArtifactFile);
     }
 }

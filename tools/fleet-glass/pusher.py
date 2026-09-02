@@ -1445,8 +1445,16 @@ def gather_conductor_deliverables(
             if not isinstance(source_path, str) or not source_path:
                 continue
 
+            # F1 (2026-09-02 review): artifact_file is read from the manifest line, never
+            # re-derived from the basename — DeliverCommand.cs keys the on-disk filename off a hash
+            # of source_path precisely so two sources sharing a basename land on two distinct files;
+            # re-deriving here would silently collapse them back onto one.
+            artifact_file_name = entry.get("artifact_file")
+            if not isinstance(artifact_file_name, str) or not artifact_file_name:
+                continue
+
             basename = Path(source_path).name
-            artifact_file = conductor_artifacts_dir / basename
+            artifact_file = conductor_artifacts_dir / artifact_file_name
             if not artifact_file.is_file():
                 continue
 
@@ -1456,7 +1464,7 @@ def gather_conductor_deliverables(
                 continue
 
             content_hash = sha256_hex(raw)
-            key = f"{conductor_room_path}::artifacts/conductor/{basename}"
+            key = f"{conductor_room_path}::artifacts/conductor/{artifact_file_name}"
             if state.get(key) == content_hash:
                 continue
 
@@ -1477,7 +1485,7 @@ def gather_conductor_deliverables(
                 "kind": "conductor",
                 "room": conductor_room_path,
                 "room_name": "conductor",
-                "artifact": f"artifacts/conductor/{basename}",
+                "artifact": f"artifacts/conductor/{artifact_file_name}",
                 "source_path": source_path,
                 "title": title,
                 "content_hash": content_hash,
@@ -2729,6 +2737,7 @@ def _selftest() -> int:
             "source_path": str(c_src),
             "delivered_at": "2026-09-02T12:00:00Z",
             "sha256": sha256_hex(b"# Plan Title\nSome content here"),
+            "artifact_file": "original-notes.md",
         }
         manifest_file.write_text(json.dumps(manifest_entry) + "\n", encoding="utf-8")
 
@@ -2757,6 +2766,7 @@ def _selftest() -> int:
             "source_path": str(c_src),
             "delivered_at": "2026-09-02T12:30:00Z",
             "sha256": sha256_hex(b"# Plan Title\nUpdated content"),
+            "artifact_file": "original-notes.md",
         }
         manifest_file.write_text(json.dumps(manifest_entry2) + "\n", encoding="utf-8")
 
@@ -2775,6 +2785,65 @@ def _selftest() -> int:
         c_items_leaked = gather_deliverables(c_root, {}, secret_pats)
         check("conductor deliverable with secret is withheld",
               len(c_items_leaked) == 1 and c_items_leaked[0].get("withheld") is True)
+
+    # F1 (2026-09-02 review): two sources sharing a basename must not collide on one on-disk file --
+    # artifact_file is read from the manifest line, never re-derived from the basename, so two
+    # distinct hashed filenames stay two distinct files with two distinct byte payloads.
+    with tempfile.TemporaryDirectory() as td:
+        c_root = Path(td)
+        c_room = c_root / "conductor"
+        c_art = c_room / "artifacts" / "conductor"
+        c_art.mkdir(parents=True)
+
+        src_a = Path(td) / "projA" / "notes.md"
+        src_a.parent.mkdir(parents=True)
+        src_a.write_bytes(b"# A\nProject A content")
+
+        src_b = Path(td) / "projB" / "notes.md"
+        src_b.parent.mkdir(parents=True)
+        src_b.write_bytes(b"# B\nProject B content")
+
+        dest_a = c_art / "aaaaaaaa-notes.md"
+        dest_a.write_bytes(b"# A\nProject A content")
+        dest_b = c_art / "bbbbbbbb-notes.md"
+        dest_b.write_bytes(b"# B\nProject B content")
+
+        manifest_file = c_art / "manifest.jsonl"
+        entries = [
+            {
+                "title": "A",
+                "source_path": str(src_a),
+                "delivered_at": "2026-09-02T12:00:00Z",
+                "sha256": sha256_hex(b"# A\nProject A content"),
+                "artifact_file": "aaaaaaaa-notes.md",
+            },
+            {
+                "title": "B",
+                "source_path": str(src_b),
+                "delivered_at": "2026-09-02T12:00:01Z",
+                "sha256": sha256_hex(b"# B\nProject B content"),
+                "artifact_file": "bbbbbbbb-notes.md",
+            },
+        ]
+        manifest_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+        same_basename_items = gather_deliverables(c_root, {}, [])
+        check("same-basename sources produce two distinct conductor deliverables",
+              len(same_basename_items) == 2)
+        by_source = {i.get("source_path"): i for i in same_basename_items}
+        check("same-basename source A keeps its own bytes",
+              by_source.get(str(src_a), {}).get("content") == "# A\nProject A content")
+        check("same-basename source B keeps its own bytes",
+              by_source.get(str(src_b), {}).get("content") == "# B\nProject B content")
+        check("same-basename sources use distinct artifact paths",
+              by_source.get(str(src_a), {}).get("artifact") != by_source.get(str(src_b), {}).get("artifact"))
+
+    # -- #1656 F3 (2026-09-02 review): nonterminal_warn_line threshold behavior, restored alongside
+    # the #1669 conductor block above rather than being displaced by it (F2, 2026-09-02 review) --
+    check("non_terminal_count at the threshold does not warn", nonterminal_warn_line(HOT_NONTERMINAL_WARN) is None)
+    check("non_terminal_count one over the threshold warns, naming the threshold",
+          nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1) is not None
+          and "HOT_NONTERMINAL_WARN" in nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1))
 
     conductor_obj = {"path": "/r/conductor", "artifacts_path": "/r/conductor/artifacts/conductor"}
     wrapped_with_conductor = build_wrapped([], [], {}, 0, conductor=conductor_obj)

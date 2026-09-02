@@ -266,7 +266,7 @@ public sealed class FleetStatusTool : IMcpTool
             // WorkerBindingConfigException, which TryLoadBindingsAsync catches and swallows) that
             // already covered the label alone.
             var terminalBindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
-            var terminalBinding = TryResolveSoleBinding(terminalBindings);
+            var terminalBinding = ConductorRoomDetector.TryResolveSoleBinding(terminalBindings);
             var (terminalRole, terminalAdapter, terminalModel, terminalEffort, terminalTimeoutMs) =
                 ProjectBindingFields(terminalBinding);
 
@@ -293,7 +293,7 @@ public sealed class FleetStatusTool : IMcpTool
         if (!File.Exists(snapshotPath))
         {
             var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
-            var soleBinding = TryResolveSoleBinding(bindings);
+            var soleBinding = ConductorRoomDetector.TryResolveSoleBinding(bindings);
             var (role, adapter, model, effort, timeoutMs) = ProjectBindingFields(soleBinding);
             if (string.Equals(role, "conductor", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(roomName, "conductor", StringComparison.OrdinalIgnoreCase))
@@ -485,26 +485,9 @@ public sealed class FleetStatusTool : IMcpTool
     }
 
     /// <summary>
-    /// The terminal-sentinel fast path's binding resolution (#1613 item 3) -- rationale for the
-    /// "exactly one role" requirement is spec/baton.md §6's fleet_status schema entry, not restated
-    /// here.
-    /// </summary>
-    private static (string Role, WorkerBindingConfigEntry Entry)? TryResolveSoleBinding(
-        IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings)
-    {
-        if (bindings is null || bindings.Count != 1)
-        {
-            return null;
-        }
-
-        var only = bindings.Single();
-        return (only.Key, only.Value);
-    }
-
-    /// <summary>
     /// One construction site (the #1590/#1597 lesson) for turning a resolved binding into the five
     /// wire fields -- both the active-room path (<see cref="TryResolveRunningBinding"/>) and the
-    /// terminal-sentinel fast path (<see cref="TryResolveSoleBinding"/>) resolve WHICH role
+    /// terminal-sentinel fast path (<see cref="ConductorRoomDetector.TryResolveSoleBinding"/>) resolve WHICH role
     /// differently and share this same projection, but the active-room overload additionally prefers
     /// a recorded <see cref="ExecutionRequest"/>'s Adapter/Model over the resolved
     /// <c>(Role, Entry)</c> pair's own values (issue #1584) -- the terminal path has no recorded

@@ -18,7 +18,8 @@ public sealed record ConductorManifestEntry(
     [property: JsonPropertyName("title")] string Title,
     [property: JsonPropertyName("source_path")] string SourcePath,
     [property: JsonPropertyName("delivered_at")] string DeliveredAt,
-    [property: JsonPropertyName("sha256")] string Sha256);
+    [property: JsonPropertyName("sha256")] string Sha256,
+    [property: JsonPropertyName("artifact_file")] string ArtifactFile);
 
 /// <summary>
 /// <c>baton deliver</c> (#1669): copies a conductor deliverable into a room's artifacts directory
@@ -73,7 +74,14 @@ public static class DeliverCommand
             explicitRegister: true,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        var destFilePath = Path.Combine(conductorArtifactsDir, basename);
+        // F1 (2026-09-02 review): the destination filename must be unique per source_path, not just
+        // per basename — two sources named 'notes.md' under different projects would otherwise
+        // collide on one on-disk file and cross-contaminate each other's manifest entry. Hashed off
+        // the source path itself (not its content) so re-delivering the same source with changed
+        // bytes keeps overwriting the same artifact_file rather than orphaning the old one.
+        var sourcePathHashHex = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sourceFullPath)));
+        var artifactFile = $"{sourcePathHashHex[..8]}-{basename}";
+        var destFilePath = Path.Combine(conductorArtifactsDir, artifactFile);
         File.Copy(sourceFullPath, destFilePath, overwrite: true);
 
         var fileBytes = await File.ReadAllBytesAsync(sourceFullPath, cancellationToken).ConfigureAwait(false);
@@ -91,7 +99,7 @@ public static class DeliverCommand
         }
 
         var deliveredAt = DateTime.UtcNow.ToString("O");
-        var entry = new ConductorManifestEntry(title, sourceFullPath, deliveredAt, sha256Hex);
+        var entry = new ConductorManifestEntry(title, sourceFullPath, deliveredAt, sha256Hex, artifactFile);
 
         var manifestPath = Path.Combine(conductorArtifactsDir, "manifest.jsonl");
         UpdateManifest(manifestPath, entry);

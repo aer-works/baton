@@ -249,7 +249,7 @@ line(s), and (best-effort) a deliverables tombstone — refusing a non-terminal 
 baton deliver <file> [--title <text>] [--room <room-dir>]
 ```
 
-This copies the file into `<room>/artifacts/conductor/<basename>` (defaulting to `~/.baton/rooms/conductor/`) and records it in `manifest.jsonl`, which `pusher.py` forwards to the inbox with a `CONDUCTOR` chip. Re-delivering the same source path updates the file and replaces the existing inbox item in place.
+`--room-dir` is also accepted as an alias for `--room`. This copies the file into `<room>/artifacts/conductor/` under a filename unique to the source path (recorded as `artifact_file` in the manifest, defaulting the room to `~/.baton/rooms/conductor/`) and records it in `manifest.jsonl`, which `pusher.py` forwards to the inbox with a `CONDUCTOR` chip. Re-delivering the same source path updates the file and replaces the existing inbox item in place.
 
 ---
 

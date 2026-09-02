@@ -65,6 +65,42 @@ public sealed class ConductorRoomExclusionTests : IDisposable
     }
 
     [Fact]
+    public async Task RoomsPrune_WorkerRoomWithConductorSubstringInLabel_IsNotExempt()
+    {
+        // F4 (2026-09-02 review): role is resolved off the actual binding key, the same way
+        // FleetStatusTool.TryResolveSoleBinding does -- never a raw substring search over
+        // bindings.json's text, which would also exempt an ordinary worker room whose label happens
+        // to contain the literal word "conductor".
+        var roomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var workerRoom = Path.Combine(roomsDir, "worker-room");
+        Directory.CreateDirectory(workerRoom);
+
+        const string bindingsWithConductorLabel = """
+            {
+              "coder": {
+                "Adapter": "none",
+                "Contract": { "WorkerName": "coder" },
+                "PromptTemplate": "coder",
+                "Timeout": "01:00:00",
+                "Label": "conductor-workstream"
+              }
+            }
+            """;
+        await File.WriteAllTextAsync(BatonPaths.RoomBindingsFile(workerRoom), bindingsWithConductorLabel, TestContext.Current.CancellationToken);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(workerRoom, sentinel, TestContext.Current.CancellationToken);
+        await RoomRegistryStore.AppendAsync(workerRoom, _tempHome, BatonPaths.RoomRegistryFile, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+        var options = new RoomsPruneOptions(Terminal: true, OlderThanDays: null, State: null, DryRun: true, Yes: false);
+        using var sw = new StringWriter();
+
+        var result = await RoomsPruneCommand.ExecuteAsync(options, sw, BatonPaths.RoomRegistryFile, cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Contains(result.Candidates, c => c.RoomDirectoryPath.Equals(workerRoom, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task FleetStatus_ConductorRoom_WithoutSnapshot_ReportsRoleConductorWithoutError()
     {
         var conductorRoom = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName, "conductor");

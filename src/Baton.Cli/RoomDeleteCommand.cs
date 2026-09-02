@@ -104,6 +104,18 @@ public static class RoomDeleteCommand
     /// </summary>
     internal static void RefuseUnlessTerminalOrForced(string roomDirectoryPath, bool force)
     {
+        // F3 (2026-09-02 review): the conductor room is refused outright, --force included — unlike
+        // the terminal-state refusal below, this is not a "not yet safe" check that --force can
+        // override. `rooms prune --terminal` already excludes it by role (ConductorRoomDetector); a
+        // forceless `room delete` was protected only incidentally (the room never gets a
+        // terminal.json), so `--force` alone used to delete it outright.
+        if (Directory.Exists(roomDirectoryPath) && ConductorRoomDetector.IsConductorRoom(roomDirectoryPath))
+        {
+            throw new CliArgumentException(
+                $"Room '{roomDirectoryPath}' is the conductor room (role '{ConductorRoomDetector.ConductorRole}') "
+                + "— refusing to delete it, even with --force.");
+        }
+
         if (force || !Directory.Exists(roomDirectoryPath))
         {
             return;

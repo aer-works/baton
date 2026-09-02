@@ -4,10 +4,13 @@ namespace Baton.Cli;
 
 /// <summary>
 /// Parses <c>baton deliver</c>'s arguments: <c>baton deliver &lt;file&gt; [--title &lt;text&gt;] [--room &lt;room-dir&gt;]</c> (#1669).
+/// <c>--room-dir</c> is accepted as an alias for <c>--room</c> (F6, 2026-09-02 review) — the flag
+/// name every other verb's own <c>&lt;room-dir&gt;</c> positional/option uses.
 /// </summary>
 public static class DeliverOptionsParser
 {
-    public const string Usage = "Usage: baton deliver <file> [--title <text>] [--room <room-dir>]";
+    public const string Usage =
+        "Usage: baton deliver <file> [--title <text>] [--room <room-dir>] [--room-dir <room-dir>]";
 
     public static DeliverOptions Parse(IReadOnlyList<string> args)
     {

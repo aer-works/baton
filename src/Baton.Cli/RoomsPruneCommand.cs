@@ -105,7 +105,7 @@ public static class RoomsPruneCommand
                 continue;
             }
 
-            if (IsConductorRoom(entry.RoomPath))
+            if (ConductorRoomDetector.IsConductorRoom(entry.RoomPath))
             {
                 continue;
             }
@@ -132,32 +132,5 @@ public static class RoomsPruneCommand
         }
 
         return candidates;
-    }
-
-    private static bool IsConductorRoom(string roomPath)
-    {
-        if (Path.GetFileName(Path.TrimEndingDirectorySeparator(roomPath)).Equals("conductor", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var bindingsPath = BatonPaths.RoomBindingsFile(roomPath);
-        if (File.Exists(bindingsPath))
-        {
-            try
-            {
-                var text = File.ReadAllText(bindingsPath);
-                if (text.Contains("\"conductor\"", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Ignore read errors
-            }
-        }
-
-        return false;
     }
 }
