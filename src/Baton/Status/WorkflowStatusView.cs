@@ -102,7 +102,16 @@ public sealed record WorkflowStatusStepView(
     // StepState.LatestUnsatisfiedOutputNames, carried the same hop.
     [property: JsonPropertyName("unsatisfiedOutputs")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<string>? UnsatisfiedOutputs = null);
+    IReadOnlyList<string>? UnsatisfiedOutputs = null,
+    // F1/F10 (#1593 review): StepState.IndeterminateProducer's enum member name verbatim, gated the
+    // same way CapturedResponseFile is above -- present only for a currently-Failed step. A consumer
+    // (RedispatchCommand's Indeterminate-parent remedy) needs this to tell a ContractFailure parent
+    // (which `baton resolve --reject --reason` can still resolve) from a VerifyFailed/Arrested one
+    // (which no `baton resolve` verb ever admits) without guessing from CapturedResponseFile alone,
+    // which both VerifyFailed/Arrested AND a not-yet-indeterminate step share as null.
+    [property: JsonPropertyName("indeterminateProducer")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? IndeterminateProducerKind = null);
 
 /// <summary>
 /// The one JSON object <c>baton status --json</c> writes to stdout (#1356's machine completion
@@ -278,11 +287,12 @@ public static class WorkflowStatusProjector
             // clears them), so only a currently-Failed step is allowed to surface a capture.
             string? capturedResponseFile = step.Status == StepStatus.Failed ? step.LatestCapturedResponseFile : null;
             IReadOnlyList<string>? unsatisfiedOutputs = step.Status == StepStatus.Failed ? step.LatestUnsatisfiedOutputNames : null;
+            string? indeterminateProducerKind = step.Status == StepStatus.Failed ? step.IndeterminateProducer?.ToString() : null;
 
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
                 usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible,
-                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs));
+                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))

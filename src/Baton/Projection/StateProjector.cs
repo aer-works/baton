@@ -80,7 +80,7 @@ public static class StateProjector
 
         var flowState = DeriveFlowState(state, snapshot);
         var finalByteOffset = logByteOffset > 0 ? logByteOffset : (checkpoint?.ByteOffset ?? 0);
-        var newCheckpoint = new ProjectionCheckpoint(totalEventOffset, state.DeepCopy(), finalByteOffset, Version: 3);
+        var newCheckpoint = new ProjectionCheckpoint(totalEventOffset, state.DeepCopy(), finalByteOffset, Version: 4);
         return (flowState, newCheckpoint);
     }
 
@@ -123,6 +123,7 @@ public static class StateProjector
                     // The reason text is cleared in the same breath as the flag, never separately.
                     state.IndeterminateAwaitingResolutionStepIds.Remove(acceptedStepId);
                     state.IndeterminateReasonByStepId.Remove(acceptedStepId);
+                    state.IndeterminateProducerByStepId.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -306,12 +307,12 @@ public static class StateProjector
 
             case FlowEvent.VerifyFailed verifyFailed:
                 state.UnmatchedVerifyExecutionIds.Remove(verifyFailed.ExecutionId);
-                ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed));
+                ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed), IndeterminateProducer.VerifyFailed);
                 break;
 
             case FlowEvent.ExecutionArrested arrested:
                 state.UnmatchedVerifyExecutionIds.Remove(arrested.ExecutionId);
-                ApplyIndeterminate(state, arrested.ExecutionId, DescribeArrest(arrested));
+                ApplyIndeterminate(state, arrested.ExecutionId, DescribeArrest(arrested), IndeterminateProducer.Arrested);
                 break;
 
             case FlowEvent.StepRebound rebound:
@@ -350,6 +351,13 @@ public static class StateProjector
                     state.LatestUnsatisfiedOutputNamesByStepId[indeterminateStepId] =
                         indeterminate.UnsatisfiedOutputNames is null ? null : new List<string>(indeterminate.UnsatisfiedOutputNames);
                     state.IndeterminateAwaitingResolutionStepIds.Add(indeterminateStepId);
+
+                    // F1 (#1593 review): the discriminant baton resolve's admission test reads.
+                    // spec/baton.md §3's producer table explains the CapturedResponse/ContractFailure
+                    // split.
+                    state.IndeterminateProducerByStepId[indeterminateStepId] = indeterminate.CapturedResponseFile is not null
+                        ? IndeterminateProducer.CapturedResponse
+                        : IndeterminateProducer.ContractFailure;
                 }
 
                 break;
@@ -362,8 +370,10 @@ public static class StateProjector
                 if (state.StepIdByExecutionId.TryGetValue(resolved.ExecutionId, out var resolvedStepId)
                     && resolvedStepId == resolved.StepId)
                 {
+                    var resolvedProducer = state.IndeterminateProducerByStepId.GetValueOrDefault(resolvedStepId);
                     state.IndeterminateAwaitingResolutionStepIds.Remove(resolvedStepId);
                     state.IndeterminateReasonByStepId.Remove(resolvedStepId);
+                    state.IndeterminateProducerByStepId.Remove(resolvedStepId);
 
                     if (resolved.Accepted)
                     {
@@ -382,12 +392,24 @@ public static class StateProjector
                         state.LatestCapturedResponseFileByStepId[resolvedStepId] = null;
                         state.LatestUnsatisfiedOutputNamesByStepId[resolvedStepId] = null;
                     }
+                    else if (resolvedProducer == IndeterminateProducer.ContractFailure)
+                    {
+                        // F8 (#1593 review): forecloses retry on a ContractFailure reject, the same way
+                        // #1623's VerifyFailed/Arrested producers already foreclose unconditionally in
+                        // ApplyIndeterminate -- otherwise CaptureResolved(Accepted: false) alone would
+                        // leave the step retry-eligible again on the very next pump. Deliberately NOT
+                        // applied to a CapturedResponse reject, which #1608's own ruling keeps
+                        // retry-eligible. spec/baton.md §3's producer table has the full reasoning.
+                        state.RetryForeclosedStepIds.Add(resolvedStepId);
+                    }
 
                     // Rejected: Status stays Failed, LatestCapturedResponseFile/UnsatisfiedOutputNames
                     // stay recorded (the audit trail of what was captured and refused) — only
                     // IndeterminateAwaitingResolutionStepIds above changes, which is what lets
                     // WorkflowOutcome.DescribeTerminal read this as an ordinary Failed step again and
-                    // RetryEngine.MayRetry re-apply its ordinary predicate instead of refusing outright.
+                    // RetryEngine.MayRetry re-apply its ordinary predicate instead of refusing outright
+                    // (CapturedResponse producer) — or stays foreclosed (ContractFailure producer,
+                    // above).
                 }
 
                 break;
@@ -415,7 +437,8 @@ public static class StateProjector
     /// capture-resolution target (<c>Mutation.MutationInterface.RecordCaptureResolutionAsync</c>).
     /// </para>
     /// </summary>
-    private static void ApplyIndeterminate(ProjectionCheckpointState state, ExecutionId executionId, string reason)
+    private static void ApplyIndeterminate(
+        ProjectionCheckpointState state, ExecutionId executionId, string reason, IndeterminateProducer producer)
     {
         state.TerminalStatusByExecutionId[executionId] = StepStatus.Failed;
         if (!state.StepIdByExecutionId.TryGetValue(executionId, out var stepId))
@@ -428,6 +451,7 @@ public static class StateProjector
         state.LatestFailureReasonByStepId[stepId] = reason;
         state.IndeterminateAwaitingResolutionStepIds.Add(stepId);
         state.IndeterminateReasonByStepId[stepId] = reason;
+        state.IndeterminateProducerByStepId[stepId] = producer;
         state.RetryForeclosedStepIds.Add(stepId);
         state.RetryNotBeforeByStepId.Remove(stepId);
         state.RetryDelayMsByStepId.Remove(stepId);
@@ -516,7 +540,8 @@ public static class StateProjector
                 state.LatestUnsatisfiedOutputNamesByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.RetryForeclosedStepIds.Contains(stepDefinition.StepId),
                 state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId),
-                state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

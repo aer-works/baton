@@ -507,25 +507,85 @@ fields. `StepStatus` itself stays untouched by this ruling too: a step whose lat
 `Domain.StepState.IndeterminateAwaitingResolution` (`Status.WorkflowOutcome.DescribeTerminal`, checked
 ahead of the ordinary `Failed`/`Rejected` read).
 
-**Three producers, since #1608 and #1623.** S1 added only the vocabulary, its consumer obligations
-below, and the missing retry-foreclosure primitive (next paragraph) — nothing in `src/` wrote
-`Indeterminate` from that slice alone. What writes it now:
+**Four producers, since #1608, #1593 and #1623.** S1 added only the vocabulary, its consumer
+obligations below, and the missing retry-foreclosure primitive (next paragraph) — nothing in `src/`
+wrote `Indeterminate` from that slice alone. What writes it now:
 
-| Producer | Event | Landed |
-|---|---|---|
-| `OutcomeClassifier.Classify`'s #1594 captured-response arm | `FlowEvent.ExecutionIndeterminate` | #1608 |
-| The role's engine-run verify command exited non-zero after a clean, contract-satisfied worker exit | `FlowEvent.VerifyFailed` | #1623 |
-| A live execution crossed its role's token budget and was arrested | `FlowEvent.ExecutionArrested` | #1623 |
+| Producer | Event | `Domain.IndeterminateProducer` | Landed |
+|---|---|---|---|
+| `OutcomeClassifier.Classify`'s #1594 captured-response arm — declared output(s) missing, but a terminal response was recoverable | `FlowEvent.ExecutionIndeterminate` (non-null `CapturedResponseFile`) | `CapturedResponse` | #1608 |
+| `OutcomeClassifier.Classify`'s #1593 uncaptured contract-failure arm — declared outputs simply absent or failed validation, or a dead worker (stream-json ending without a `result` record) on a mutated workspace, with no response to capture | `FlowEvent.ExecutionIndeterminate` (null `CapturedResponseFile`) | `ContractFailure` | #1593 |
+| The role's engine-run verify command exited non-zero after a clean, contract-satisfied worker exit | `FlowEvent.VerifyFailed` | `VerifyFailed` | #1623 |
+| A live execution crossed its role's token budget and was arrested | `FlowEvent.ExecutionArrested` | `Arrested` | #1623 |
 
-Every other Failed/Cancelled/Succeeded path is unchanged. All three raise the **one** flag
+Every other Failed/Cancelled/Succeeded path is unchanged. All four raise the **one** flag
 `Domain.StepState.IndeterminateAwaitingResolution` (`Projection.StateProjector`), which is the single
 predicate `Status.WorkflowOutcome.DescribeTerminal` and `Scheduling.RetryEngine.MayRetry` each read —
-one arm apiece, never one check per producer. The #1623 pair additionally carry human-readable
-diagnostic text on `Domain.StepState.IndeterminateReason`; that field is **display only and never a
-gate** (`WorkflowOutcomeAndExitCodeTests.An_IndeterminateReason_without_the_flag_describes_as_Failed_not_Indeterminate`
-is the discriminating control for that claim). `baton settle` (S2, tracked on #1586) is expected to be
-able to settle a room *to* `Indeterminate` for the worktree-fingerprint shape above; until it lands,
-that fourth source is reachable only by a test fabricating a `terminal.json`/status-view shape directly.
+one arm apiece, never one check per producer. Alongside it, `Domain.StepState.IndeterminateProducer`
+(F1, #1593 review) records which of the four raised it — the discriminant `baton resolve`'s admission
+test reads (Consumer obligations, below), replacing an earlier `LatestCapturedResponseFile` null/not-null
+read that could not tell `ContractFailure` (which DOES have something to reject: the conductor's
+judgement after inspecting the workspace) from `VerifyFailed`/`Arrested` (which never do).
+`VerifyFailed`/`Arrested` additionally carry human-readable diagnostic text on
+`Domain.StepState.IndeterminateReason`; that field is **display only and never a gate**
+(`WorkflowOutcomeAndExitCodeTests.An_IndeterminateReason_without_the_flag_describes_as_Failed_not_Indeterminate`
+is the discriminating control for that claim). A `ContractFailure` step is never automatically retried
+either: re-running blind on a potentially mutated workspace is refused the same way, via the one
+`IndeterminateAwaitingResolution` arm — and a `--reject` of it stays retry-foreclosed afterward too
+(F8, below), unlike a rejected `CapturedResponse`. `baton settle` (S2, tracked on #1586) is expected to
+be able to settle a room *to* `Indeterminate` for the worktree-fingerprint shape; until it lands, that
+fifth source is reachable only by a test fabricating a `terminal.json`/status-view shape directly.
+
+**Behaviour change (#1593 F3):** the bounded self-iteration pattern (a worker exits 0 having written a
+declared output whose `OutputCondition` is unsatisfied, gets retried, and eventually satisfies it) no
+longer retries. `ContractValidator.Validate` reports `UnsatisfiedOutputReason.ConditionFailed` the same
+way it reports `Missing`, and `OutcomeClassifier.Classify`'s uncaptured-contract-failure arm does not
+distinguish the two — both settle `ContractFailure` Indeterminate. This is the #1593 ruling's own
+reasoning applied to a second shape, not a separate decision: an exit-0 worker that fails its output
+contract has done unknown work on the workspace, whether the contract violation is a missing file or a
+failed condition, so re-running it blind is wrong either way. A worker relying on the old
+retry-until-satisfied pattern now settles `Indeterminate` on its first unsatisfied attempt and needs an
+explicit `baton resolve --reject --reason <text>` before a fresh dispatch can try again.
+
+**Workspace evidence in the reason (#1593 F2).** #1593's acceptance criteria include: "a room that ends
+`Failed` with uncommitted work in its workspace says so somewhere a person will see, rather than
+reporting `outputs: []` and leaving the evidence to `git status`." The `ContractFailure` reason text
+appends `Workspaces.WorktreeProvisioner.DescribeWorkspaceEvidence`'s bounded account (stray-path count
+plus a commits-over-base count, reusing `Audit`'s own git-status read) whenever a worktree path is
+available — a room that carries real, uncommitted work reads differently from one that carries nothing,
+without a new mechanism. Null (no worktree, or genuinely nothing to report) leaves the reason
+byte-identical to before this fix, which is why the fixed no-worktree case stays byte-pinned in
+`OutcomeClassifierTests`.
+
+**The resolved base (N2/P4, #1664 review) is meaningful only for a commit-ish ref.** `WorktreeBaseSha`
+is `WorktreeProvisioner.ResolveBaseCommit`'s resolution of the worktree spec's ref against the source
+repository, re-resolved on every `Walk`/`ReuseForResume` rather than persisted — safe for
+`RoleDispatch`'s own `"HEAD"`, since a symbolic `HEAD` always names the commit the source repo was at
+when the worker was dispatched, unaffected by anything the worker does inside its own detached
+worktree. An operator-authored binding naming a **branch** does not get that guarantee: `git worktree
+add` checks the branch out, so a worker's own commit advances it, and the next invocation re-resolves
+the same branch ref to the worker's own commit — reporting a workspace that did real work as untouched.
+
+
+
+**The dead-worker predicate reads a terminal RESULT, not a terminal SUCCESS (#1593 F6).**
+`OutcomeClassifier.Classify`'s `isDeadWorkerWithoutResult` keys on
+`CoreDispatchResult.TerminalResultObserved` — true when the worker emitted a terminal `result` record of
+ANY status (success or self-reported failure), via `CoreDispatchTarget.DetectsTerminalResult` (agy's own
+`IsTerminalResultLine`, wired the same way `DetectsTerminalSuccess`/`IsTerminalSuccessLine` already are).
+`TerminalSuccessObserved` cannot answer this question by itself: it reads false both when no result
+arrived at all (a dead worker) AND when one arrived reporting `is_error`/`FAILURE` (a worker that
+finished and self-reported non-success — a contract failure, not a death, by #1622's own vocabulary).
+
+**The claude adapter wires no terminal-result detector (N6, #1664 review) — a live asymmetry, not a
+gap in this fix.** `DetectsTerminalResult`/`DetectsTerminalSuccess` are agy-only
+(`git grep DetectsTerminalSuccess -- src/Baton.Vendors` returns `AgyWorkerAdapter.cs` alone); a
+claude-adapter worker's `CoreDispatchResult.TerminalResultObserved` is therefore always `false`, so
+`isDeadWorkerWithoutResult` is unconditionally `true` for that vendor and the untouched-workspace read
+(`Workspaces.WorktreeProvisioner.IsWorkspaceUntouched`) alone decides whether a claude worker's dead
+exit stays retryable `Failed` or settles `Indeterminate` — agy gets the extra terminal-result
+discrimination this section describes, claude does not. Pre-existing (predates #1593), not narrowed or
+widened by it; recorded here because #1664's review found it undocumented outside a response report.
 
 **Consumer obligations, ratified with the value itself.** `baton redispatch` refuses a bare
 `Indeterminate` parent outright, with a diagnosis naming the resolution verb
@@ -535,15 +595,20 @@ section, the same placement `"Stalled"` earned in #1513/#1582 (`tools/fleet-glas
 **Nothing settles FROM `Indeterminate` except an explicit, recorded conductor resolution** — never
 silently, never by default. `baton resolve` (#1608, `src/Baton.Cli/ResolveCommand.cs` +
 `Mutation.MutationInterface.RecordCaptureResolutionAsync`) is that resolution verb **for the
-captured-response producer specifically** — see §2's table for its grammar. It is *not* a resolution
-path for the other two producers: `RecordCaptureResolutionAsync` admits a target on
-`LatestCapturedResponseFile is not null` as well as the `IndeterminateAwaitingResolution` flag, so a
-verify-failed or arrested step (which has no captured response to accept or reject) is refused rather
-than admitted, in either direction. Those two reopen only through a fresh dispatch —
-`ExecutionRequestAccepted` clears the flag, per `StateProjector`. `baton redispatch` against the same
-parent room is not that fresh dispatch: its Indeterminate-parent gate refuses unconditionally and
-nothing ever clears it for these two producers, so redispatch is permanently unavailable here — only
-a brand-new `baton dispatch` room reopens the step. `baton resolve` reads the step's
+`CapturedResponse` and `ContractFailure` producers** — see §2's table for its grammar.
+`RecordCaptureResolutionAsync` admits a target on `Domain.IndeterminateProducer` (F1, #1593 review), not
+a bare `LatestCapturedResponseFile` null/not-null read: `CapturedResponse` admits both
+`--accept-capture` and `--reject --reason <text>`; `ContractFailure` has no captured body to accept, so
+only `--reject --reason <text>` admits it — the conductor's own judgement after inspecting the
+workspace IS something to reject, even with nothing captured. It is *not* a resolution path for the
+other two producers: a verify-failed or arrested step (which never carries a captured response, and
+whose workspace was never in question the way a `ContractFailure` step's is) is refused in either
+direction. Those two reopen only through a fresh dispatch — `ExecutionRequestAccepted` clears the flag,
+per `StateProjector`. `baton redispatch` against the same parent room is not that fresh dispatch: its
+Indeterminate-parent gate refuses unconditionally and nothing ever clears it for these two producers, so
+redispatch is permanently unavailable here — only a brand-new `baton dispatch` room reopens the step,
+which `RedispatchCommand`'s own refusal names by producer (`Status.WorkflowStatusStepView.IndeterminateProducerKind`)
+rather than offering a verb guaranteed to throw. `baton resolve` reads the step's
 `LatestCapturedResponseFile`/`LatestUnsatisfiedOutputNames`
 (already surfaced on `WorkflowStatusView`/`terminal.json`/`status --json`, per the schema below);
 `--accept-capture` writes the captured response (header stripped,
@@ -1476,6 +1541,8 @@ second mechanism. `RoomRetentionSweep` (§7) may call the batch form automatical
 retention prune with no `--state` filter deletes `Indeterminate` rooms too — the operator who opts
 into `RoomsRetentionDays` accepts that, and `--state Indeterminate` selects them explicitly (or any
 other `--state` value excludes them) if that default is unwanted.
+
+**Standing conductor room and `baton deliver` (#1669).** A standing orchestrator room under `{BATON_HOME}/rooms/conductor/` (`role: conductor` in its `bindings.json` stub) holds deliverables authored directly by an orchestrator rather than a worker subprocess. `baton deliver <file> [--title <text>] [--room <room-dir>]` (`--room-dir` also accepted as an alias for `--room`) copies the file to `<room>/artifacts/conductor/<hash-of-source-path>-<basename>` — the destination filename, hashed off the absolute source path rather than the basename alone so two sources sharing a basename never collide on one on-disk file — and appends/replaces an entry in `<room>/artifacts/conductor/manifest.jsonl` keyed on the absolute `source_path` (`title`, `source_path`, `delivered_at`, `sha256`, `artifact_file`). Re-delivery replaces the entry and updates the file in place. `pusher.py` reads the destination filename from the manifest's `artifact_file` field, never re-deriving it from the basename. The conductor room is never terminal (has no `terminal.json`), is explicitly excluded from `rooms prune --terminal` candidate discovery, from `room delete` (including `--force`), and from the stall detector — one shared check (`ConductorRoomDetector`, `src/Baton.Cli/ConductorRoomDetector.cs`) decides role for all three call sites, the same resolution `fleet_status` already used, so the definition cannot drift between them. `fleet_status` carries the conductor room's `artifacts_path` so it is visible in the Fleet Glass fleet tab with copyable text, and `pusher.py` scans `manifest.jsonl` to push items to `/deliver` with `kind: conductor` and upsert identity on `source_path`, surfacing them in the Glass inbox with a `CONDUCTOR` chip (newest first).
 
 ---
 

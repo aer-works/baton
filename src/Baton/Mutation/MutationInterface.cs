@@ -203,11 +203,13 @@ public static class MutationInterface
     /// required.
     /// </param>
     /// <exception cref="InvalidCaptureResolutionException">
-    /// <paramref name="executionId"/> names no step with an unresolved
-    /// <see cref="FlowEvent.ExecutionIndeterminate"/> <b>and a captured response to resolve</b> (an
+    /// <paramref name="executionId"/> names no step this verb admits for the requested
+    /// <paramref name="accepted"/> value — see the guard's own comment for
+    /// <see cref="Domain.IndeterminateProducer"/>'s per-verb admission table (F1, #1593 review): an
     /// Indeterminate settled by <see cref="FlowEvent.VerifyFailed"/> or
-    /// <see cref="FlowEvent.ExecutionArrested"/> is not a target of this verb — see the guard's own
-    /// comment), <paramref name="accepted"/> is <c>false</c> and
+    /// <see cref="FlowEvent.ExecutionArrested"/> is never a target of either verb, and one settled by
+    /// this class's own #1593 contract-failure arm (<see cref="Outcomes.OutcomeClassifier"/>, no
+    /// captured response) admits <c>--reject</c> only. <paramref name="accepted"/> is <c>false</c> and
     /// <paramref name="reason"/> is null/whitespace, or reading/writing a captured or declared output
     /// file failed.
     /// </exception>
@@ -252,19 +254,22 @@ public static class MutationInterface
 
         var target = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
 
-        // #1623 merge: LatestCapturedResponseFile, not IndeterminateAwaitingResolution alone, is what
-        // makes a step a CAPTURE-resolution target. Since #1623 that flag has three producers, and the
-        // other two (FlowEvent.VerifyFailed, FlowEvent.ExecutionArrested) settle Indeterminate with no
-        // captured response at all — StateProjector.ApplyIndeterminate deliberately leaves
-        // LatestCapturedResponseFile untouched. Without this second clause a `baton resolve --reject`
-        // against a verify-failed or arrested step would be admitted, journal a CaptureResolved that
-        // clears the flag, and hand the step back to RetryEngine.MayRetry as an ordinary Failed one —
-        // the blind retry #1623's ruling forbids, arriving through a verb that never examined the
-        // verify failure. (The --accept path already refuses such a step below on the same null file,
-        // so only the reject path was ever reachable; both are refused here instead, at admission.)
-        // The one ExecutionIndeterminate producer, OutcomeClassifier's captured-response arm, always
-        // records a file, so no #1608 target loses admission to this clause.
-        if (target is null || !target.IndeterminateAwaitingResolution || target.LatestCapturedResponseFile is null)
+        // F1 (#1593 review): IndeterminateProducer, not a bare LatestCapturedResponseFile null/not-null
+        // read, is what makes a step a target of this verb, and which of the two verbs. Mirrors
+        // ResolveCommand's own admission check one layer up.
+        // N3 (#1664 re-review): a null IndeterminateProducer on a step that IS awaiting resolution and
+        // DOES carry a captured response file is the legacy pre-#1593 shape — the same fallback
+        // RedispatchCommand.cs already applies to a pre-field terminal.json — not "a producer no verb
+        // admits". ProjectionCheckpointStore's Version bump (checkpoint.Version < 4) means this can now
+        // only be reached via a full replay off an old flow.jsonl that genuinely predates the field, so
+        // treating it as CapturedResponse is a correct read of the journal, not a workaround for a stale
+        // checkpoint.
+        var effectiveProducer = target?.IndeterminateProducer
+            ?? (target?.LatestCapturedResponseFile is not null ? IndeterminateProducer.CapturedResponse : (IndeterminateProducer?)null);
+        var admitsThisVerb = target is { IndeterminateAwaitingResolution: true }
+            && (effectiveProducer == IndeterminateProducer.CapturedResponse
+                || (accepted == false && effectiveProducer == IndeterminateProducer.ContractFailure));
+        if (!admitsThisVerb)
         {
             // #1608 review finding 5: an explicit --execution naming a step whose latest attempt
             // already recorded an ACCEPTED CaptureResolved for this exact execution is a repair
@@ -310,7 +315,7 @@ public static class MutationInterface
                 $"'{roomDirectoryPath}' — 'baton resolve' only targets a step still awaiting conductor resolution.");
         }
 
-        IReadOnlyList<string> resolvedOutputNames = target.LatestUnsatisfiedOutputNames ?? [];
+        IReadOnlyList<string> resolvedOutputNames = target!.LatestUnsatisfiedOutputNames ?? [];
 
         if (accepted)
         {
@@ -1028,12 +1033,21 @@ public static class MutationInterface
                         // (and fail-closed against a worktree that may be long gone).
                         var grantAuditMode = request.GrantAuditMode ?? GrantAuditMode.Enforced;
                         string? worktreePath = null;
+                        string? worktreeBaseRef = null;
                         IWorkerResponseParser? responseParser = null;
                         try
                         {
                             if (workerBindings.TryGetValue(request.Worker, out var b) && b is WorkerBinding.Process p)
                             {
-                                worktreePath = p.Target.WorkingDirectory;
+                                // F4 (#1593 review): only an ACTUALLY-provisioned worktree, never the
+                                // operator's own repository — see WorkerBinding.Process.IsWorktree's
+                                // remarks for why a retry decision must not see that directory at all.
+                                if (p.IsWorktree)
+                                {
+                                    worktreePath = p.Target.WorkingDirectory;
+                                    worktreeBaseRef = p.WorktreeBaseSha;
+                                }
+
                                 responseParser = p.ResponseParser;
                             }
                         }
@@ -1058,7 +1072,7 @@ public static class MutationInterface
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
-                            usageParser: usageParser);
+                            usageParser: usageParser, worktreeBaseRef: worktreeBaseRef);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
@@ -1683,10 +1697,12 @@ public static class MutationInterface
             // The request's mode was set from this binding at preparation; null can only mean a
             // request shape that predates the mode, and those were never promised an audit.
             var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
-            var worktreePath = binding.Target.WorkingDirectory;
+            // F4 (#1593 review): only an ACTUALLY-provisioned worktree, never the operator's own
+            // repository — see WorkerBinding.Process.IsWorktree's remarks.
+            var worktreePath = binding.IsWorktree ? binding.Target.WorkingDirectory : null;
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
-                grantAuditMode, worktreePath, binding.ResponseParser, usageParser);
+                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha);
 
             // #1623 (contract: spec/baton.md §3): the engine's own verify
             // step, spawned here -- between Classify returning Succeeded and the outcome event append

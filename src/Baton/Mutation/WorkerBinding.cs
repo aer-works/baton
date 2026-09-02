@@ -32,6 +32,21 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// #1623: the per-execution token ceiling — see <c>Baton.Vendors.WorkerRole.TokenBudget</c>'s
     /// remarks. Null enforces no budget.
     /// </param>
+    /// <param name="IsWorktree">
+    /// F4 (#1593 review): whether <see cref="Target"/>'s <c>WorkingDirectory</c> is an ACTUALLY
+    /// provisioned worktree (<see cref="Baton.Vendors.WorkerBindingConfigEntry.IsWorktree"/>'s own
+    /// stamp), as opposed to null or the operator's own repository (the value a room with no
+    /// provisioned worktree carries). <c>Outcomes.OutcomeClassifier</c>'s untouched-workspace
+    /// discrimination reads this before passing a path to
+    /// <c>Workspaces.WorktreeProvisioner.IsWorkspaceUntouched</c> — a retry decision must never be
+    /// handed the operator's own working directory, routinely dirty for reasons that have nothing to
+    /// do with the execution.
+    /// </param>
+    /// <param name="WorktreeBaseSha">
+    /// F5/N2 (#1593/#1664 review): <see cref="Baton.Vendors.WorkerBindingConfigEntry.WorktreeBaseSha"/>,
+    /// carried the same hop as <see cref="IsWorktree"/> — see that field's own remarks for when it is
+    /// null, and <c>WorktreeProvisioner.IsWorkspaceUntouched</c>'s for what it's compared against.
+    /// </param>
     public sealed record Process(
         WorkerContract Contract,
         CoreDispatchTarget Target,
@@ -45,7 +60,9 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         // declared output from the worker's own terminal response).
         Outcomes.IWorkerResponseParser? ResponseParser = null,
         string? VerifyPixiTask = null,
-        long? TokenBudget = null)
+        long? TokenBudget = null,
+        bool IsWorktree = false,
+        string? WorktreeBaseSha = null)
         : WorkerBinding(Contract, GrantAuditMode);
 
     /// <summary>

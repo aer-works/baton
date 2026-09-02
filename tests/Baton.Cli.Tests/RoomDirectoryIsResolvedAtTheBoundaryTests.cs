@@ -54,6 +54,8 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
             UnkeepOptionsParser.Parse([Relative]).RoomDirectoryPath,
         [typeof(RoomDeleteOptionsParser)] = () =>
             RoomDeleteOptionsParser.Parse([Relative]).RoomDirectoryPath,
+        [typeof(DeliverOptionsParser)] = () =>
+            DeliverOptionsParser.Parse(["file.md", "--room", Relative]).RoomDirectoryPath,
     };
 
     [Fact]

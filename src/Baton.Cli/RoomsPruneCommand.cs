@@ -105,6 +105,11 @@ public static class RoomsPruneCommand
                 continue;
             }
 
+            if (ConductorRoomDetector.IsConductorRoom(entry.RoomPath))
+            {
+                continue;
+            }
+
             var view = await TerminalSentinelWriter.TryReadAsync(entry.RoomPath, cancellationToken).ConfigureAwait(false);
             if (view is null)
             {

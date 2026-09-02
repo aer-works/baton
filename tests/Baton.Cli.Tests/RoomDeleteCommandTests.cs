@@ -130,6 +130,58 @@ public sealed class RoomDeleteCommandTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_ConductorRoom_RefusesWithoutForce()
+    {
+        // F3 (2026-09-02 review): the conductor room must be refused outright, not merely because it
+        // never carries a terminal.json.
+        var tempHome = CreateTempHome();
+        using var scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with { HomeOverride = tempHome });
+        try
+        {
+            var conductorRoom = Path.Combine(tempHome, "conductor");
+            Directory.CreateDirectory(conductorRoom);
+
+            var options = new RoomDeleteOptions(conductorRoom, KeepDeliverables: false, Force: false);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => RoomDeleteCommand.ExecuteAsync(options, TextWriter.Null, TestContext.Current.CancellationToken));
+
+            Assert.Contains("conductor room", ex.Message, StringComparison.Ordinal);
+            Assert.True(Directory.Exists(conductorRoom));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempHome);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ConductorRoom_RefusesEvenWithForce()
+    {
+        // F3 (2026-09-02 review): --force must not be a way past this refusal -- unlike the
+        // terminal-state refusal above, --force never overrides it.
+        var tempHome = CreateTempHome();
+        using var scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with { HomeOverride = tempHome });
+        try
+        {
+            var conductorRoom = Path.Combine(tempHome, "conductor");
+            Directory.CreateDirectory(conductorRoom);
+
+            var options = new RoomDeleteOptions(conductorRoom, KeepDeliverables: false, Force: true);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => RoomDeleteCommand.ExecuteAsync(options, TextWriter.Null, TestContext.Current.CancellationToken));
+
+            Assert.Contains("conductor room", ex.Message, StringComparison.Ordinal);
+            Assert.True(Directory.Exists(conductorRoom));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempHome);
+        }
+    }
+
+    [Fact]
     public async Task ExecuteAsync_RoomDirectoryAlreadyGone_StillCleansUpTheRegistryLine()
     {
         var tempHome = CreateTempHome();

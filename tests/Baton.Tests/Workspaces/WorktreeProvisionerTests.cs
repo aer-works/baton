@@ -273,4 +273,50 @@ public sealed class WorktreeProvisionerTests : IDisposable
             StringComparison.OrdinalIgnoreCase);
         Assert.Equal(expected, equal);
     }
+
+    [Fact]
+    public void IsWorkspaceUntouched_returns_true_for_a_freshly_provisioned_worktree()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+
+        Assert.True(WorktreeProvisioner.IsWorkspaceUntouched(worktree));
+    }
+
+    [Fact]
+    public void IsWorkspaceUntouched_returns_false_when_worktree_carries_uncommitted_changes()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+        File.WriteAllText(Path.Combine(worktree, "dirty.txt"), "dirty content");
+
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(worktree));
+    }
+
+    [Fact]
+    public void IsWorkspaceUntouched_returns_false_when_worktree_carries_commits_over_base()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+        File.WriteAllText(Path.Combine(worktree, "committed2.txt"), "more content");
+        RunGit(worktree, "add", ".");
+        RunGit(worktree, "commit", "-m", "worker commit");
+
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(worktree));
+    }
+
+    [Fact]
+    public void IsWorkspaceUntouched_returns_false_for_null_empty_or_nonexistent_directory()
+    {
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(null));
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched("   "));
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(Path.Combine(_root, "nonexistent")));
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(_root));
+    }
 }

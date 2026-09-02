@@ -27,13 +27,14 @@ public static class WorkflowOutcome
     /// does not reconcile at settle time. A single added value, not a two-field split, per the ruling's
     /// own wording.
     /// <para>
-    /// <b>Three producers, one reading.</b> <see cref="DescribeTerminal"/> returns this whenever any
+    /// <b>Four producers, one reading.</b> <see cref="DescribeTerminal"/> returns this whenever any
     /// step reads <see cref="StepState.IndeterminateAwaitingResolution"/> true — a single predicate,
-    /// deliberately not one check per producer. Which events raise that flag, and the one still
-    /// unimplemented, are enumerated once in <c>spec/baton.md</c> §3's producer table ("Three
-    /// producers, since #1608 and #1623"); not restated here. What belongs to this class: the flag
-    /// alone decides the room-level word, and <see cref="StepState.IndeterminateReason"/> — text two
-    /// of those producers carry for a human — is deliberately not read here.
+    /// deliberately not one check per producer. Which events raise that flag are enumerated once in
+    /// <c>spec/baton.md</c> §3's producer table ("Producers, since #1608 and #1593"); not restated
+    /// here. What belongs to this class: the flag alone decides the room-level word, and
+    /// <see cref="StepState.IndeterminateReason"/>/<see cref="StepState.IndeterminateProducer"/> —
+    /// per-producer detail some of those producers carry for a human or for <c>baton resolve</c> — are
+    /// deliberately not read here.
     /// </para>
     /// <para>
     /// <b>Consumer obligations (ruling item 2)</b> — spelled out in full in <c>spec/baton.md</c> §3,

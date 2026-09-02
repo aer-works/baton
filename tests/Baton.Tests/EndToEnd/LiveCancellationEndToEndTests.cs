@@ -220,7 +220,7 @@ public class LiveCancellationEndToEndTests
             {
                 ["a-worker"] = new WorkerBinding.Process(
                     new WorkerContract("a-worker", [], [new ProducedOutput("out")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     WorkflowTimeout),
             };
 

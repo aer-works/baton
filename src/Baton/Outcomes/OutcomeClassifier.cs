@@ -101,6 +101,16 @@ public static class OutcomeClassifier
     private const int MaxListedOutputs = 8;
 
     /// <summary>
+    /// N1 (#1664 re-review): bounds <see cref="Workspaces.WorktreeProvisioner.DescribeWorkspaceEvidence"/>
+    /// as a whole, on top of that method's own per-path and count caps — ten real repo-relative paths,
+    /// each individually capped, can still join into a string well past <see cref="MaxReasonLength"/>
+    /// on its own. This is the backstop that keeps the suffix's reserved budget
+    /// (<see cref="BuildContractFailureReason"/>) from going deeply negative before <see cref="Truncate"/>
+    /// even runs.
+    /// </summary>
+    private const int MaxWorkspaceEvidenceLength = 200;
+
+    /// <summary>
     /// How much of <see cref="CoreDispatchResult.StderrTail"/> a reason renders (#563).
     /// </summary>
     /// <remarks>
@@ -127,7 +137,7 @@ public static class OutcomeClassifier
     /// <summary>
     /// Classifies <paramref name="result"/> per this table:
     /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied</c> → Succeeded;
-    /// <c>NaturalExit + code 0 + an unsatisfied ProducedOutput, captured (#1594/#1608)</c> → Indeterminate;
+    /// <c>NaturalExit + code 0 + an unsatisfied ProducedOutput</c> → Indeterminate (#1593/#1594/#1608, unless a dead worker without result on an untouched workspace);
     /// <c>NaturalExit</c> otherwise, or <c>TimedOut</c> → Failed;
     /// <c>CancelRequested</c> → Cancelled.
     /// </summary>
@@ -140,7 +150,8 @@ public static class OutcomeClassifier
         GrantAuditMode grantAuditMode = GrantAuditMode.Enforced,
         string? worktreePath = null,
         IWorkerResponseParser? responseParser = null,
-        IWorkerUsageParser? usageParser = null)
+        IWorkerUsageParser? usageParser = null,
+        string? worktreeBaseRef = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(contract);
@@ -232,8 +243,9 @@ public static class OutcomeClassifier
                     // line reached the console.
                 }
 
-                var reason = BuildContractFailureReason(validation.UnsatisfiedOutputs)
-                    + $" Response captured to '{captured.FileName}'; awaiting conductor resolution.";
+                var reason = BuildContractFailureReason(
+                    validation.UnsatisfiedOutputs,
+                    $" Response captured to '{captured.FileName}'; awaiting conductor resolution.");
 
                 return new OutcomeClassification(
                     OutcomeVerdict.Indeterminate,
@@ -280,15 +292,45 @@ public static class OutcomeClassifier
             return new OutcomeClassification(OutcomeVerdict.Succeeded);
         }
 
-        // Stderr is appended here too, not just on the non-zero-exit path. The exit-0-but-no-output
-        // worker is #597's case, and a worker that decided it had nothing to write very often says
-        // why on stderr on its way out — that is precisely the failure with the least other evidence.
-        var (contractClassification, contractRetryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
+        // #1593: Natural exit 0 with unsatisfied contract settles Indeterminate (spec/baton.md §3 Producers).
+        // #1622: A dead streaming worker retains the retryable Failed path when untouched (WorktreeProvisioner.IsWorkspaceUntouched).
+        // F6 (#1593 review): keys on CoreDispatchResult.TerminalResultObserved, not TerminalSuccessObserved.
+        // Register entry: spec/baton.md §3 F6.
+        var isDeadWorkerWithoutResult = responseParser is not null && !result.TerminalResultObserved;
+        if (isDeadWorkerWithoutResult && Workspaces.WorktreeProvisioner.IsWorkspaceUntouched(worktreePath, worktreeBaseRef))
+        {
+            var (contractClassification, contractRetryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
+            return new OutcomeClassification(
+                OutcomeVerdict.Failed,
+                contractClassification,
+                WithStderr(BuildContractFailureReason(validation.UnsatisfiedOutputs), result.StderrTail),
+                contractRetryNotBefore,
+                SubstantialWorkNoOutputsEvidence: substantialWorkNoOutputsEvidence);
+        }
+
+        // F2 (#1593 review): closes #1593's second acceptance bullet — see
+        // WorktreeProvisioner.DescribeWorkspaceEvidence's own remarks. Appended to the SAME suffix
+        // BuildContractFailureReason already reserves budget for, so it truncates the same visible way
+        // an overflowing output list does.
+        // Null (no worktree, or nothing to report) leaves the reason unchanged — the byte-pinned
+        // no-worktree case in Classify_leaves_the_reason_byte_for_byte_unchanged_when_the_worker_wrote_no_stderr.
+        var workspaceEvidence = Workspaces.WorktreeProvisioner.DescribeWorkspaceEvidence(worktreePath, worktreeBaseRef);
+        var boundedWorkspaceEvidence = workspaceEvidence is null
+            ? null
+            : Truncate(workspaceEvidence, MaxWorkspaceEvidenceLength);
+        var indeterminateSuffix = " — worker exited 0 with work possibly on disk; awaiting conductor resolution."
+            + (boundedWorkspaceEvidence is null ? string.Empty : $" Workspace {boundedWorkspaceEvidence}.");
+
+        var indeterminateReason = BuildContractFailureReason(
+            validation.UnsatisfiedOutputs,
+            indeterminateSuffix);
+
         return new OutcomeClassification(
-            OutcomeVerdict.Failed,
-            contractClassification,
-            WithStderr(BuildContractFailureReason(validation.UnsatisfiedOutputs), result.StderrTail),
-            contractRetryNotBefore,
+            OutcomeVerdict.Indeterminate,
+            FailureClassification: null, // Indeterminate carries no FailureClassification — see OutcomeVerdict.Indeterminate's own remarks.
+            WithStderr(indeterminateReason, result.StderrTail),
+            CapturedResponseFile: null,
+            UnsatisfiedOutputNames: validation.UnsatisfiedOutputs.Select(u => u.Name).ToList(),
             SubstantialWorkNoOutputsEvidence: substantialWorkNoOutputsEvidence);
     }
 
@@ -428,13 +470,16 @@ public static class OutcomeClassifier
     /// unsatisfied output, so a reason that promised to name them all named one. With the per-item
     /// bounds in place the final <see cref="Truncate"/> is a backstop that should not normally fire.
     /// </remarks>
-    private static string BuildContractFailureReason(IReadOnlyList<UnsatisfiedOutput> unsatisfiedOutputs)
+    private static string BuildContractFailureReason(
+        IReadOnlyList<UnsatisfiedOutput> unsatisfiedOutputs,
+        string? suffix = null)
     {
         var listed = unsatisfiedOutputs.Count <= MaxListedOutputs
             ? unsatisfiedOutputs
             : unsatisfiedOutputs.Take(MaxListedOutputs).ToList();
 
         var reason = "Contract not satisfied: " + string.Join("; ", listed.Select(DescribeUnsatisfiedOutput));
+        var fullSuffix = suffix ?? string.Empty;
 
         // The suffix's own length is reserved from the budget rather than appended after
         // truncating. Appending it left the marker as the first thing Truncate cut — reinstating,
@@ -443,8 +488,13 @@ public static class OutcomeClassifier
         var overflow = unsatisfiedOutputs.Count - listed.Count;
         if (overflow > 0)
         {
-            var suffix = $" (+{overflow} more)";
-            return Truncate(reason, MaxReasonLength - suffix.Length) + suffix;
+            var overflowSuffix = $" (+{overflow} more)" + fullSuffix;
+            return Truncate(reason, MaxReasonLength - overflowSuffix.Length) + overflowSuffix;
+        }
+
+        if (fullSuffix.Length > 0)
+        {
+            return Truncate(reason, MaxReasonLength - fullSuffix.Length) + fullSuffix;
         }
 
         return Truncate(reason, MaxReasonLength);
@@ -530,6 +580,13 @@ public static class OutcomeClassifier
     /// </summary>
     private static string Truncate(string value, int maxLength)
     {
+        // N1 (#1664 re-review): a caller (BuildContractFailureReason) computes maxLength as the
+        // budget minus an already-assembled suffix, which can go negative when the suffix alone
+        // overruns MaxReasonLength — clamped here rather than trusted, so Classify cannot throw while
+        // recording an outcome. TrimWithoutSplittingSurrogatePair clamps too, defensively; this is the
+        // one that decides "value.Length <= maxLength" correctly for a non-positive maxLength.
+        maxLength = Math.Max(maxLength, 0);
+
         if (value.Length <= maxLength)
         {
             return value;

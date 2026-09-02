@@ -113,7 +113,11 @@ public static class WorktreeWorkspaces
             };
         }
 
-        return entry with { WorkingDirectory = worktreePath, Worktree = null, IsWorktree = true };
+        // N2 (#1664 re-review): resolved against spec.Repository/spec.Ref BEFORE Worktree is nulled
+        // below — the same SHA-not-symbolic-ref fix Walk applies for a fresh provision.
+        var baseSha = WorktreeProvisioner.ResolveBaseCommit(spec.Repository, spec.Ref);
+
+        return entry with { WorkingDirectory = worktreePath, Worktree = null, IsWorktree = true, WorktreeBaseSha = baseSha };
     }
 
     /// <summary>
@@ -184,7 +188,12 @@ public static class WorktreeWorkspaces
 
                 provisioned.Add(new ProvisionedWorktree(spec.Repository, worktreePath));
                 rewritten ??= new Dictionary<string, WorkerBindingConfigEntry>(bindings);
-                rewritten[workerName] = entry with { WorkingDirectory = worktreePath, Worktree = null, IsWorktree = true };
+
+                // N2 (#1664 re-review): resolved BEFORE Worktree is nulled below — see
+                // WorktreeProvisioner.ResolveBaseCommit's own remarks for why this has to run against
+                // the source repository rather than the symbolic ref it replaces.
+                var baseSha = WorktreeProvisioner.ResolveBaseCommit(spec.Repository, spec.Ref);
+                rewritten[workerName] = entry with { WorkingDirectory = worktreePath, Worktree = null, IsWorktree = true, WorktreeBaseSha = baseSha };
             }
             catch (Exception ex) when (!throwOnFailure
                 && ex is InvalidWorkspaceSpecException or WorktreeProvisioningException)
