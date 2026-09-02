@@ -1988,6 +1988,14 @@ under six hours old — any mismatch falls through to a real `gates-fast` run. T
 hook re-verifies, not what CI verifies: CI remains the one platform-independent run and is never
 skipped by a local receipt.
 
+**The pre-push hook is a fast local mirror; CI is the authority (#1676).** `.github/workflows/ci.yml`
+runs `pixi run gates-ci-quiet` (`gates.py --ci`) as its own required job — the same tracked member
+list the hook and a dispatched lane run, never a hand-picked subset of individual `pixi run <member>`
+steps that could drift from it. `--ci` excludes any `CI_SKIP`-marked member (each entry needs a
+reason, ratcheted the way `sabotage.py`'s `ALLOWLIST` is) and asserts the executed member list
+matches the tracked one, so a member silently dropped from either side fails loudly instead of
+passing quiet.
+
 **Scope, stated plainly: tracked content only.** The dirty-hash is `git diff HEAD`, which does not
 see untracked files. A tree that was already dirty when its receipt was written, and then gains an
 untracked file before the next push, still matches -- the receipt does not re-verify content `git
