@@ -4,9 +4,8 @@ using Baton.Vendors;
 namespace Baton.Cli.Tests;
 
 /// <summary>
-/// <c>baton room delete</c> (#1659, ruling in full at spec/baton.md §8): removes the room directory,
-/// its <c>room-registry.jsonl</c> lines, and records a deliverables tombstone — see
-/// <see cref="RoomDeleteCommand"/>'s own remarks for what it cannot reach.
+/// <c>baton room delete</c> (#1659, ruling in full at spec/baton.md §8) — see
+/// <see cref="RoomDeleteCommand"/>'s own remarks for exactly what it removes and what it cannot reach.
 /// </summary>
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class RoomDeleteCommandTests
