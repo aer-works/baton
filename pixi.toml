@@ -15,8 +15,14 @@ version = "0.1.0"
 # activation env (not a shell) so EVERY `pixi run` build inherits it, including a dispatched worker's
 # self-gate, which is the case that needs it. Cost is a small per-build startup penalty; the win is
 # that concurrent worktree builds each own throwaway nodes and cannot collide.
+#
+# #1671: also disable Roslyn's shared VBCSCompiler.exe server -- same activation-env scope as
+# MSBUILDDISABLENODEREUSE above, same reason (a memory-bound box, one fewer long-lived process per
+# machine). Why this scope and not a Directory.Build.props condition, and what it costs: spec/baton.md
+# §11 C-13.
 [activation.env]
 MSBUILDDISABLENODEREUSE = "1"
+UseSharedCompilation = "false"
 
 [tasks]
 # Every toolchain below (Go, .NET) is installed separately and is NOT
@@ -61,7 +67,11 @@ test-other = { cmd = "python tools/buildlock.py dotnet build --no-incremental &&
 # cover" note under `lint` below) -- so building again inside the same run was pure duplication.
 # Standalone use is EXPOSED to the #688 stale-assembly trap `test` exists to close: outside a
 # gates run, use `pixi run test`.
-test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build" }
+#
+# `-m:1` (#1671): serializes the five xUnit test projects' testhost processes; in-assembly
+# parallelism is untouched. Why `-m:1` and not a VSTest runsettings `MaxCpuCount`, and what was
+# measured to tell them apart: spec/baton.md §11 C-13.
+test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1" }
 # Coverage report (#199): collects per-test-project Cobertura via coverlet, merges into an HTML
 # report + text summary at artifacts/coverage/report/ (open index.html, or read Summary.txt).
 # Results are wiped first so stale collections never skew the merge. Excludes source-generated
