@@ -59,13 +59,9 @@ public sealed record CoreDispatchTarget(
     // content, spec Rule 1); null on adapters/paths that do not stream, where the #1089 guard fails
     // safe to "a timeout always fails". Latched into CoreDispatchResult.TerminalSuccessObserved.
     Func<string, bool>? DetectsTerminalSuccess = null,
-    // F6 (#1593 review): given one complete stdout line, true iff it is this vendor's terminal
-    // "result" marker of ANY status — success or self-reported failure. Distinct from
-    // DetectsTerminalSuccess, which only fires on the success spelling: a worker that streams
-    // `{"event":"result","result":{"status":"FAILURE"}}` and then exits sets this but not that.
-    // Adapter Isolation applies the same way; null on adapters/paths that do not stream, where the
-    // dead-worker guard fails safe to "no result observed". Latched into
-    // CoreDispatchResult.TerminalResultObserved.
+    // F6 (#1593 review): same shape as DetectsTerminalSuccess above, but matches ANY status, not
+    // just success — see CoreDispatchResult.TerminalResultObserved's own remarks for why that
+    // distinction matters. Latched there.
     Func<string, bool>? DetectsTerminalResult = null);
 
 /// <summary>
@@ -125,12 +121,9 @@ public sealed record CoreDispatchResult(
     string? StderrTail = null,
     bool TerminalSuccessObserved = false,
     string? StdoutTail = null,
-    // F6 (#1593 review): true when the worker emitted a terminal `result` record of ANY status
-    // (success or self-reported failure) — see CoreDispatchTarget.DetectsTerminalResult. This is
-    // "did the worker report a terminal outcome at all", which OutcomeClassifier's dead-worker
-    // predicate needs; TerminalSuccessObserved answers a narrower question ("...and was it success")
-    // and is false both when no result arrived and when one arrived reporting failure, so it cannot
-    // by itself distinguish "worker died mid-stream" from "worker finished and self-reported failure".
+    // F6 (#1593 review): latched from CoreDispatchTarget.DetectsTerminalResult — spec/baton.md §3 F6
+    // is the register entry for why OutcomeClassifier's dead-worker predicate reads this field rather
+    // than TerminalSuccessObserved.
     bool TerminalResultObserved = false);
 
 

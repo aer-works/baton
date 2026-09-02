@@ -93,11 +93,8 @@ internal static class ShellWorkerCommands
     /// <c>BATON_OUTPUT_DIR</c> — each attempt's output directory is fresh by design, so durable state
     /// across attempts has to live elsewhere, same as <see cref="FailOnFirstAttemptThenSucceed"/>.
     /// Exits 0 both times: only the caller's declared <c>OutputCondition</c> on the produced output
-    /// distinguishes the two attempts. F3: the retry this pattern relied on no longer happens — an
-    /// exit-0 attempt whose <c>OutputCondition</c> fails now settles <c>Indeterminate</c> the same way
-    /// a missing declared output does (the #1593 ruling's own reasoning applies identically: an exit-0
-    /// worker that fails its output contract has done unknown work on the workspace, whether the
-    /// contract violation is a missing file or a failed condition). Kept for
+    /// distinguishes the two attempts. F3: the retry this pattern relied on no longer happens — see
+    /// spec/baton.md's #1593 register entry for the reasoning. Kept for
     /// <see cref="Baton.Tests.EndToEnd.WorkflowEndToEndTests.An_exit_0_worker_whose_OutputCondition_fails_settles_Indeterminate_and_is_not_retried"/>,
     /// which exercises the FIRST attempt only and never reaches the "approved" branch.
     /// </summary>

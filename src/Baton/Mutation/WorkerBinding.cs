@@ -43,11 +43,9 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// do with the execution.
     /// </param>
     /// <param name="WorktreeBaseRef">
-    /// F5 (#1593 review): the ref this worktree was provisioned from
-    /// (<see cref="Baton.Vendors.WorktreeWorkspace.Ref"/>, carried the same hop as
-    /// <see cref="IsWorktree"/>) — what <c>WorktreeProvisioner.IsWorkspaceUntouched</c> compares HEAD
-    /// against via <c>git rev-list --count</c>, rather than inferring "untouched" from the reflog's
-    /// newest entry alone. Null whenever <see cref="IsWorktree"/> is false.
+    /// F5 (#1593 review): <see cref="Baton.Vendors.WorktreeWorkspace.Ref"/>, carried the same hop as
+    /// <see cref="IsWorktree"/> — see <c>WorktreeProvisioner.IsWorkspaceUntouched</c>'s own remarks for
+    /// what it's compared against. Null whenever <see cref="IsWorktree"/> is false.
     /// </param>
     public sealed record Process(
         WorkerContract Contract,

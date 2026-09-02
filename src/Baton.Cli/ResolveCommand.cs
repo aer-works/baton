@@ -94,15 +94,11 @@ public static class ResolveCommand
 
         var namedStep = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
 
-        // F1 (#1593 review): the flag alone is NOT the admission test — it has four producers now, and
-        // which verb(s) admit which producer is IndeterminateProducer's own discriminant, not a bare
-        // null/not-null read of LatestCapturedResponseFile. CapturedResponse admits both --accept-capture
-        // and --reject; ContractFailure has no captured body to accept but DOES have something to
-        // reject (the conductor's judgement after inspecting the workspace), so only --reject admits it;
-        // VerifyFailed/Arrested admit neither verb — there was never a captured response and #1593 never
-        // applies to either. Mirrors MutationInterface.RecordCaptureResolutionAsync's own guard (see its
-        // comment for the failure this closes) so the refusal lands here, with a message that can name
-        // the right remedy, rather than deeper in as a bare "no unresolved indeterminate capture".
+        // F1 (#1593 review): admission is per-verb, keyed on IndeterminateProducer rather than a bare
+        // LatestCapturedResponseFile null/not-null read — see spec/baton.md §3's producer table for
+        // which verb admits which. Mirrors MutationInterface.RecordCaptureResolutionAsync's own guard
+        // so the refusal lands here, with a message naming the right remedy, rather than deeper in as
+        // a bare "no unresolved indeterminate capture".
         var admitsAccept = namedStep is { IndeterminateAwaitingResolution: true }
             && namedStep.IndeterminateProducer == IndeterminateProducer.CapturedResponse;
         var admitsReject = namedStep is { IndeterminateAwaitingResolution: true }
@@ -125,13 +121,8 @@ public static class ResolveCommand
         {
             // #1623 merge / F1 (#1593 review): stated as its own case rather than folded into the
             // generic refusal below, because the generic one's advice ("confirm 'state' reads
-            // Indeterminate") is exactly the check this operator has already passed -- the room DOES
-            // read Indeterminate, and this verb still refuses. Sending them back to re-read `state`
-            // would be a loop. Two distinct shapes reach here, and the message must not conflate them:
-            // VerifyFailed/Arrested never had a captured response to begin with (fix the underlying
-            // cause and re-dispatch); ContractFailure has no captured BODY but the conductor's own
-            // judgement is still a valid --reject target — an --accept-capture attempt against it is
-            // refused for a different, narrower reason than "nothing here at all".
+            // Indeterminate") is exactly the check this operator has already passed. Two distinct
+            // shapes reach here — see ThrowDiscriminatedRefusal for which message each gets.
             if (isNonCaptureIndeterminate)
             {
                 ThrowDiscriminatedRefusal(namedStep!.IndeterminateProducer, explicitExecutionId, roomDirectoryPath, accepted);

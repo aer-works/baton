@@ -565,10 +565,9 @@ public class MutationInterfaceCaptureResolutionTests
             Assert.False(resolvedStep.IndeterminateAwaitingResolution);
             Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(resolvedState));
 
-            // F8 (#1593 review): a reject of a ContractFailure producer must not hand the step back to
-            // blind retry -- the review's own finding was that this test asserted the post-reject state
-            // was Failed but never checked MayRetry on it, so a reject that silently re-armed retry on
-            // a possibly-mutated workspace would have passed unnoticed.
+            // F8 (#1593 review): this test previously asserted the post-reject state was Failed but
+            // never checked MayRetry -- StateProjector's own comment on the ContractFailure reject
+            // branch has the reasoning.
             Assert.True(resolvedStep.RetryForeclosed);
             Assert.False(Baton.Scheduling.RetryEngine.MayRetry(resolvedStep, snapshot.Steps[0].RetryPolicy));
         }

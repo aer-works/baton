@@ -255,17 +255,8 @@ public static class MutationInterface
         var target = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
 
         // F1 (#1593 review): IndeterminateProducer, not a bare LatestCapturedResponseFile null/not-null
-        // read, is what makes a step a target of THIS verb — and which of the two verbs. Since #1593
-        // IndeterminateAwaitingResolution has four producers. VerifyFailed/Arrested settle Indeterminate
-        // with no captured response at all (StateProjector.ApplyIndeterminate deliberately leaves
-        // LatestCapturedResponseFile untouched) and admit neither verb — a `baton resolve --reject`
-        // against either would otherwise be admitted, journal a CaptureResolved that clears the flag,
-        // and hand the step back to RetryEngine.MayRetry as an ordinary Failed one, the blind retry
-        // #1623's ruling forbids, arriving through a verb that never examined the failure.
-        // ContractFailure (#1593) has no captured response either, but DOES have something a `--reject`
-        // is allowed to record: the conductor's own judgement after inspecting the workspace. Only
-        // `--accept-capture` keeps refusing it, on the same "nothing to accept" logic that already
-        // covered every producer before this fix, since there is genuinely no file to write from.
+        // read, is what makes a step a target of this verb, and which of the two verbs. Mirrors
+        // ResolveCommand's own admission check one layer up.
         var admitsThisVerb = target is { IndeterminateAwaitingResolution: true }
             && (target.IndeterminateProducer == IndeterminateProducer.CapturedResponse
                 || (accepted == false && target.IndeterminateProducer == IndeterminateProducer.ContractFailure));

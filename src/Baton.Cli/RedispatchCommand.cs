@@ -98,19 +98,10 @@ public static class RedispatchCommand
         // is the only sanctioned way to clear this refusal.
         if (parentTerminal is not null && string.Equals(parentTerminal.State, WorkflowOutcome.Indeterminate, StringComparison.Ordinal))
         {
-            // F1 (#1593 review): the refusal is unconditional as before, but the REMEDY is not —
-            // Indeterminate has four producers now and each admits a different remedy.
-            // WorkflowStatusStepView.IndeterminateProducerKind (Domain.IndeterminateProducer's own enum
-            // member name) is the discriminant, replacing a bare CapturedResponseFile null/not-null
-            // read that could not tell ContractFailure (which DOES have something for `baton resolve
-            // --reject` to record: the conductor's judgement after inspecting the workspace) from
-            // VerifyFailed/Arrested (which never do). Naming `baton resolve` unconditionally, or naming
-            // it only for CapturedResponse, would send a ContractFailure or verify-failed/arrested
-            // parent to a dead end — the whole point of this signage is a next step that works.
-            // A terminal.json written before this field existed carries no IndeterminateProducerKind
-            // at all -- fall back to the pre-F1 hasCapture read so an older sentinel still gets the
-            // remedy its shape actually supports, rather than always landing on the fresh-dispatch
-            // fallback below.
+            // F1 (#1593 review): the refusal is unconditional, but the remedy is picked per producer
+            // (spec/baton.md §3's "Consumer obligations" has the reasoning; not restated here).
+            // A terminal.json written before IndeterminateProducerKind existed falls back to the
+            // pre-F1 hasCapture read.
             var indeterminateStep = parentTerminal.Steps.FirstOrDefault(
                 step => step.State == nameof(StepStatus.Failed)
                     && (step.IndeterminateProducerKind is not null || step.CapturedResponseFile is not null));

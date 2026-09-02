@@ -240,18 +240,15 @@ public class WorkflowEndToEndTests
 
     /// <summary>
     /// F3 (#1593 review): the "bounded self-iteration" pattern this test used to pin (write
-    /// <c>needs_revision</c>, get retried, write <c>approved</c>) no longer works, and that is a
-    /// mandated behaviour change rather than a defect — the #1593 ruling's own reasoning ("an exit-0
-    /// worker that fails its output contract has done unknown work on the workspace; re-running it
-    /// blind is wrong") applies identically whether the contract violation is a missing declared output
-    /// or, as here, a failed <see cref="OutputCondition"/>. This test was previously kept green by
-    /// changing its fixture to <c>exit 1</c> instead of repointing what it measures — the exact
-    /// <c>v-and-v</c> failure the repo's own gate names: a control arm rewritten until it stops
-    /// discriminating the behaviour it was positioned to catch. Renamed and rewritten to assert the
-    /// actual current behaviour: the worker exits 0, its <c>verdict</c> output fails the declared
-    /// condition, and the step settles <see cref="WorkflowOutcome.Indeterminate"/> without a second
-    /// attempt ever being dispatched. See spec/baton.md §3 and docs/dispatch.md's "Behaviour change"
-    /// note (#1593 PR body) for where this is recorded.
+    /// <c>needs_revision</c>, get retried, write <c>approved</c>) no longer works — a mandated
+    /// behaviour change, not a defect; see spec/baton.md §3's "Behaviour change (#1593 F3)" for why a
+    /// failed <see cref="OutputCondition"/> gets the same treatment as a missing declared output. This
+    /// test was previously kept green by changing its fixture to <c>exit 1</c> instead of repointing
+    /// what it measures — the exact <c>v-and-v</c> failure the repo's own gate names: a control arm
+    /// rewritten until it stops discriminating the behaviour it was positioned to catch. Renamed and
+    /// rewritten to assert the actual current behaviour: the worker exits 0, its <c>verdict</c> output
+    /// fails the declared condition, and the step settles <see cref="WorkflowOutcome.Indeterminate"/>
+    /// without a second attempt ever being dispatched.
     /// </summary>
     [Fact]
     public async Task An_exit_0_worker_whose_OutputCondition_fails_settles_Indeterminate_and_is_not_retried()

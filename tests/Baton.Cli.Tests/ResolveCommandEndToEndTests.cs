@@ -80,11 +80,11 @@ public class ResolveCommandEndToEndTests
     }
 
     /// <summary>
-    /// F1 (#1593 review): a ContractFailure producer (no captured response — an exit-0 contract
-    /// failure, or a dead worker on a mutated workspace) has nothing for <c>--accept-capture</c> to
-    /// accept, but the conductor's own judgement is still a valid <c>--reject</c> target. Distinct from
-    /// a VerifyFailed/Arrested producer (<c>MutationInterfaceCaptureResolutionTests.A_verify_failed_Indeterminate_step_is_refused_by_baton_resolve</c>),
-    /// which admits NEITHER verb — this one admits exactly one.
+    /// F1 (#1593 review): admits exactly one verb for a ContractFailure producer, per
+    /// <c>ResolveCommand.ResolveExplicitExecutionAsync</c>'s own admission logic. Distinct from a
+    /// VerifyFailed/Arrested producer
+    /// (<c>MutationInterfaceCaptureResolutionTests.A_verify_failed_Indeterminate_step_is_refused_by_baton_resolve</c>),
+    /// which admits neither.
     /// </summary>
     [Fact]
     public async Task A_ContractFailure_step_refuses_accept_capture_but_admits_reject()

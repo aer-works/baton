@@ -352,10 +352,9 @@ public static class StateProjector
                         indeterminate.UnsatisfiedOutputNames is null ? null : new List<string>(indeterminate.UnsatisfiedOutputNames);
                     state.IndeterminateAwaitingResolutionStepIds.Add(indeterminateStepId);
 
-                    // F1 (#1593 review): the discriminant baton resolve's admission test reads —
-                    // CapturedResponse (has something to accept OR reject) vs. ContractFailure (has
-                    // only something to reject: the conductor's judgement after inspecting the
-                    // workspace, no captured body).
+                    // F1 (#1593 review): the discriminant baton resolve's admission test reads.
+                    // spec/baton.md §3's producer table explains the CapturedResponse/ContractFailure
+                    // split.
                     state.IndeterminateProducerByStepId[indeterminateStepId] = indeterminate.CapturedResponseFile is not null
                         ? IndeterminateProducer.CapturedResponse
                         : IndeterminateProducer.ContractFailure;
@@ -395,18 +394,12 @@ public static class StateProjector
                     }
                     else if (resolvedProducer == IndeterminateProducer.ContractFailure)
                     {
-                        // F8 (#1593 review): a reject of a ContractFailure producer must not hand the
-                        // step back to blind retry. CaptureResolved(Accepted: false) alone only clears
-                        // IndeterminateAwaitingResolutionStepIds above -- MayRetry would then read the
-                        // step as an ordinary Failed one again on the very next pump, re-arming the
-                        // retry-on-a-mutated-workspace the #1593 ruling exists to forbid. Forecloses the
-                        // same way #1623's VerifyFailed/Arrested producers already foreclose
-                        // unconditionally in ApplyIndeterminate, for consistent treatment across every
-                        // producer that settled Indeterminate on a workspace Flow cannot vouch for.
-                        // CapturedResponse producer reject is deliberately excluded: #1608's own ruling
-                        // is that a rejected capture stays retry-eligible -- that shape is "substantial
-                        // work happened", never "the workspace may have been mutated", so nothing here
-                        // needs foreclosing.
+                        // F8 (#1593 review): forecloses retry on a ContractFailure reject, the same way
+                        // #1623's VerifyFailed/Arrested producers already foreclose unconditionally in
+                        // ApplyIndeterminate -- otherwise CaptureResolved(Accepted: false) alone would
+                        // leave the step retry-eligible again on the very next pump. Deliberately NOT
+                        // applied to a CapturedResponse reject, which #1608's own ruling keeps
+                        // retry-eligible. spec/baton.md §3's producer table has the full reasoning.
                         state.RetryForeclosedStepIds.Add(resolvedStepId);
                     }
 

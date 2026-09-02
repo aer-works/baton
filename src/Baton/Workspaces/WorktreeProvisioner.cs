@@ -249,17 +249,14 @@ public static class WorktreeProvisioner
 
     /// <summary>
     /// F2 (#1593 review): a bounded, human-readable account of what survives in
-    /// <paramref name="worktreePath"/> — the second half of #1593's acceptance ("a room that ends
-    /// Failed with uncommitted work in its workspace says so somewhere a person will see"), which
-    /// <see cref="Audit"/> alone did not close since its message is grant-enforcement phrasing and this
-    /// call site is descriptive evidence for a conductor, not a refusal. Deliberately NOT the
-    /// false-positive source <see cref="Outcomes.OutcomeClassifier.DescribeSubstantialWorkEvidence"/>'s
-    /// own remarks reject a worktree-dirty read for (a retry PREDICATE): here nothing is decided by
-    /// this string, so an operator's own uncommitted edits showing up in it is noise for a human to
-    /// discount, not a false positive that silently changes behaviour. Combines the stray-path count
-    /// (<see cref="DescribeStrayPaths"/>) with a commits-over-<paramref name="baseRef"/> count when a
-    /// base ref is available. Null when the workspace is null/missing, or genuinely has nothing to
-    /// report (clean tree, zero commits over base).
+    /// <paramref name="worktreePath"/> — closes #1593's second acceptance bullet (spec/baton.md §3,
+    /// "Workspace evidence in the reason"), which <see cref="Audit"/> alone did not since its message
+    /// is grant-enforcement phrasing and this call site is descriptive, not a refusal. Deliberately NOT
+    /// the false-positive source <see cref="Outcomes.OutcomeClassifier.DescribeSubstantialWorkEvidence"/>'s
+    /// own remarks reject a worktree-dirty read for: this string decides nothing, so an operator's own
+    /// uncommitted edits showing up in it is noise for a human, not a behaviour-changing false positive.
+    /// Combines <see cref="DescribeStrayPaths"/> with a commits-over-<paramref name="baseRef"/> count.
+    /// Null when the workspace is null/missing, or genuinely has nothing to report.
     /// </summary>
     public static string? DescribeWorkspaceEvidence(string? worktreePath, string? baseRef)
     {
