@@ -229,6 +229,16 @@ public enum StepStatus
 /// its verbs on. Null whenever <paramref name="IndeterminateAwaitingResolution"/> is false; cleared in
 /// the same breath as <paramref name="IndeterminateReason"/> on resolution or reopen.
 /// </param>
+/// <param name="IndeterminateVerifyTail">
+/// #1701: <see cref="FlowEvent.VerifyFailed"/>'s own <c>Tail</c> — the failing member(s)' OWN
+/// captured output, not <paramref name="IndeterminateReason"/>'s one-line member-name summary. Set
+/// only by the <see cref="Domain.IndeterminateProducer.VerifyFailed"/> producer (an arrest's
+/// <paramref name="IndeterminateReason"/> is already the full diagnostic — nothing truncated to
+/// recover); cleared in the same breath as <paramref name="IndeterminateReason"/> on resolution or
+/// reopen. Why this exists at all: before #1701, a verify flake's own output lived only in
+/// <c>flow.jsonl</c>'s raw event, unreachable from <c>baton status --json</c> — a conductor diagnosing
+/// an Indeterminate room had no way to read it without reconstructing the room by hand.
+/// </param>
 public sealed record StepState(
     StepId StepId,
     StepStatus Status,
@@ -252,7 +262,14 @@ public sealed record StepState(
     bool RetryForeclosed = false,
     bool IndeterminateAwaitingResolution = false,
     string? IndeterminateReason = null,
-    IndeterminateProducer? IndeterminateProducer = null);
+    IndeterminateProducer? IndeterminateProducer = null,
+    string? IndeterminateVerifyTail = null,
+    // #1702: FlowEvent.VerifyNotRun's own reason for the latest attempt -- the pre-flight "not
+    // runnable" verdict, never a gate. Null whenever the latest attempt's verify step either never ran
+    // a pre-flight check (no resolved command, or the command WAS runnable), or the step has since had
+    // a fresh execution accepted (StateProjector clears this the same breath it clears
+    // IndeterminateReason on ExecutionRequestAccepted).
+    string? VerifyNotRunReason = null);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

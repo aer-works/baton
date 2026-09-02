@@ -102,7 +102,7 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   workflow nobody has decided.
 - **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
   [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]
-  [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]`**
+  [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]`**
   — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
   template (`src/Baton.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
   directory under `BatonPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
@@ -171,7 +171,7 @@ forward — it settles one execution's `Indeterminate` verdict and stops.
 
 **`baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
 <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>]
-[--max-tool-steps <n>] [--label <text>] [--workstream <slug>]`** (#1441) reruns
+[--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]`** (#1441) reruns
 a single-role `baton dispatch` room into a fresh one, once the operator finds the brief was wrong or
 incomplete — without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch
 `baton dispatch` would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the
@@ -230,8 +230,8 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
-| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
+| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `resolve` | `baton resolve <room-dir> [--execution <execution-id>] --accept-capture \| --reject --reason <text>` | `ResolveOptionsParser.cs` |
@@ -729,7 +729,7 @@ names two additive `terminal.json` fields (`settledAt`: ISO-8601 UTC, `settledBy
 room was declared finished after its pump died". Reserved here as a forward pointer only — no field
 exists on `WorkflowStatusView` yet, and none should until S2 has a real writer for it.
 
-### Engine-run verify and the token budget (#1623)
+### Engine-run verify and the three arrest triggers (#1623, #1682, #1691)
 
 Two more producers, both ratified together (operator ruling, 2026-09-01 night, "option 3 ratified",
 plus the same night's addendum on token consumption).
@@ -743,10 +743,15 @@ serialized against other lanes by the build lock each gate member takes for itse
 `DispatchAndRecordOutcomeAsync`, between `OutcomeClassifier.Classify` returning `Succeeded` and the
 outcome event append; deliberately not inside `Classify` itself, which also runs on the crash-recovery
 replay branch against a possibly-defunct workspace). `FlowEvent.VerifyStarted`/`VerifyPassed` are
-diagnostic-only; `FlowEvent.VerifyFailed` (`FailingMembers`/`Tail`, parsed from `tools/gates/gates.py`'s
-own deterministic `summarise()` line) settles the step `Indeterminate` — never a blind retry, the
-ruling's own wording — via the same `StateProjector.ApplyIndeterminate` helper the budget arrest below
-shares. An operator cancel landing inside the verify window is the one exception: `VerifyFailedKind.Cancelled`
+diagnostic-only; `FlowEvent.VerifyFailed` (`FailingMembers`, parsed from `tools/gates/gates.py`'s own
+deterministic `summarise()` line) settles the step `Indeterminate` — never a blind retry, the ruling's
+own wording — via the same `StateProjector.ApplyIndeterminate` helper the budget arrest below shares.
+`Tail` (#1701) is each named failing member's OWN captured output, keyed off `gates.py`'s own
+per-member `"  pass/FAIL  name  (exit code)"` summary lines — never a blind cut of the whole combined
+`gates-quiet` run (`Baton.Mutation.VerifyRunner`'s own remarks are the canonical account of why, and
+of its whole-stream fallback when a `gates.py` shape drift leaves no marker line to key off). This is
+also what `baton status --json` now surfaces per step as `verifyTail`, so a flake is diagnosable from
+the room without reconstructing it by hand. An operator cancel landing inside the verify window is the one exception: `VerifyFailedKind.Cancelled`
 observed together with the caller's own cancellation token already firing means the journal *can*
 decide (it holds the cancel), so `MutationInterface` appends `FlowEvent.ExecutionCancelled` instead —
 room reads `Cancelled`, retry stays open, `VerifyStarted` survives as the diagnostic record of what was
@@ -754,6 +759,149 @@ running. A verify *timeout* still settles `Indeterminate` through the ordinary `
 Worker briefs no longer ask for the full gate suite themselves; the prompt-level foreground instruction
 from #1625 (`AgyWorkerAdapter.ForegroundGateInstructionText`) stays as belt (any slow command, not just
 gates, should run in the foreground) now that this is the braces.
+
+**Verify command resolution, and the not-run outcome (#1702).** The verify command run above is a
+property of the WORKSPACE being worked on, not of the role — a role's `verify_pixi_task` bakes in an
+assumption (that the workspace is this repo, or shares its task names) which fails by construction
+against a foreign workspace (measured 2026-09-02: an `implement` lane dispatched with `--workspace`
+pointing at a different, non-baton repo ran `pixi run gates-quiet` there, got "command not found",
+and settled `Indeterminate` even though the worker's own exit and output contract were already clean).
+`Baton.Mutation.VerifyCommandResolver.Resolve` resolves the command actually run, in precedence order:
+
+1. `--verify <cmd>` (`DispatchOptions.VerifyCommand` → `RoleDispatch.ToBinding`'s `verifyCommandOverride`
+   → `WorkerBindingConfigEntry.VerifyCommandOverride` → `WorkerBinding.Process.VerifyCommandOverride`) —
+   mirrors `--token-budget`'s override plumbing end to end, including through `baton redispatch`.
+2. The workspace's own declaration: a `.baton/verify` file directly under the dispatched workspace
+   directory, whose first non-blank, non-`#`-comment line is the command line to run. The one
+   repo-level declaration mechanism this issue picks (never also a `[tool.baton]` table in
+   `pixi.toml`/`pyproject.toml`) — a plain-text file works for any workspace, pixi-based or not, which
+   is the whole point since a foreign workspace's own task runner is unknown to this engine.
+   **Read from the workspace's REVIEWED tree — `git show <merge-base of HEAD and origin/main>:.baton/verify`
+   — at dispatch time, before the worker is spawned (#1708).** Both halves are load-bearing: a worker
+   with write access to its own workspace must never be able to author the command that grades it, and
+   a worker with shell access could commit one, so a read taken *after* the worker ran, or taken from
+   the branch tip, would be no boundary at all. The merge-base is what makes the boundary hold across
+   *executions* and not only within one: an `implement` lane committing and pushing is its ordinary
+   designed behaviour, so `HEAD` on a lane branch contains the lane's own work, and a second dispatch
+   or a `baton redispatch` into the same worktree would otherwise be graded by a file the previous
+   worker wrote. Nothing a lane commits on its own branch changes what grades it. A fresh dispatch
+   still takes a fresh snapshot, so a `baton redispatch` against a workspace whose *reviewed* declaration
+   changed never runs a stale command.
+
+   **Scope, precisely — the one shape where that wider claim does not hold.** When no merge-base can be
+   computed (no remote at all, a default branch that is not `main`, unrelated histories) the read falls
+   back to `HEAD` and the engine appends the diagnostic-only
+   `FlowEvent.VerifyDeclarationUnreviewed(ExecutionId, Digest)`. On such a workspace the boundary is the
+   narrower, per-execution one: this execution still cannot author what grades it, but an earlier lane's
+   commit on the current branch is inside the baseline. That is announced rather than silent, which is
+   the whole point of the event. `origin/main` is one fixed ref on purpose and is never discovered from
+   `refs/remotes/origin/HEAD` or `remote.origin.*`: discovery would read repository config a worker can
+   write, which is the boundary this read exists to hold — so a repo whose default branch is not `main`
+   takes the loud fallback rather than a quiet, steerable answer.
+
+   Two deliberate costs, both fail-closed: an **uncommitted** `.baton/verify` does not take effect (and
+   neither does one committed only on the lane's branch), and a workspace that is not a git repository
+   (or whose `git` cannot spawn) declares nothing, falling through to the role default rather than to a
+   worker-writable file. When the working-tree file differs from what was read, the engine appends the
+   diagnostic-only `FlowEvent.VerifyDeclarationIgnored(ExecutionId, CommittedDigest, WorkingTreeDigest)`
+   — **on every execution that drift is observed, whatever the verdict**, because "did anything touch my
+   verify declaration?" is a question an operator asks after a failed, arrested or cancelled run just as
+   often as after a clean one. No `StepState` field, no status surface, no verdict consequence for
+   either event: the journal is the whole record, and it is what tells an operator that the file in
+   their workspace is not what graded the run.
+
+   **The `git` spawns that produce this value are hardened (#1708), because their stdout decides what
+   command grades the run** — a stricter job than `pixi task list`'s, whose output only chooses between
+   running a gate and not. They run with a scrubbed environment (an allowlist, so no ambient `GIT_*`
+   redirects the read and no `~/.gitconfig` is consulted), a `PATH` with every relative or
+   workspace-rooted entry removed (so a `git.exe` dropped into the dispatched workspace cannot answer
+   the question), `-c core.hooksPath=` and `--no-textconv` (so nothing written into the workspace's
+   `.git/config` or `.gitattributes` filters — or executes against — the bytes), `--no-pager`, and
+   **stdout only**, so a warning git writes to stderr can never be taken for the declaration's own first
+   non-comment line. `Baton.Mutation.VerifyCommandResolver`'s single hardened-spawn helper is where all
+   of that is applied; there is no second, unhardened path to this value.
+3. `WorkerRole.VerifyPixiTask` (`implement` → `gates-quiet`; every other shipped role → none) — today's
+   only source, run as `pixi run <task>`, unchanged. Baton's own repo keeps working unchanged under
+   this arm: no `.baton/verify` file here and no `--verify` on baton's own dispatches.
+
+An override/repo-declared command line runs through the platform shell (`cmd.exe /d /c <line>`, this
+project ships Windows-only per #1405) rather than hand-tokenized; the role default stays a direct
+`pixi run <task>` spawn, unchanged from #1623.
+
+**A verify command is now a property of the workspace, not gated on the role declaring one.** Unlike
+pre-#1702, where no `VerifyPixiTask` meant no verify step full stop, `Resolve` can still produce an
+override or repo-declared command for a role that declares none (`review`/`advise`/every other
+non-`implement` shipped role) — a workspace's own `.baton/verify` speaks for that workspace regardless
+of which role is dispatched against it, the same way `--verify` does. This is deliberate, not a gap:
+the whole point of #1702 is that verify answers "does this workspace's own gate suite pass", which a
+role has no authority to opt a workspace out of. A red run through this arm settles `Indeterminate`
+exactly like any other running-and-red verify.
+
+**Before running, the engine checks the resolved command is runnable** (`VerifyCommandResolver.CheckRunnableAsync`) —
+and after #1708 that probe exists for the `pixi run <task>` shape ONLY: a role-default task name checked
+against that workspace's own `pixi task list` output, the #1702 measured shape. **An override or
+repo-declared command line is not pre-probed at all.** It runs through `cmd.exe /d /c`, where a cmd
+intrinsic (`echo`, `call`, `exit`, `cd`) is perfectly runnable while resolving to no file on PATH — so
+the filesystem lookup that used to run here answered a question the shell was never going to ask, and
+answering it wrong skipped a real gate. The exit code decides instead: a command line that cannot run
+fails, and a failing verify is a `VerifyFailed` with output, never a silent pass. **`VerifyNotRun` has
+exactly two producers, and both are POSITIVE evidence that `pixi run <task>` does not exist in this
+workspace** — never an inference from something failing:
+
+- **The workspace is not a pixi project** (#1708): no `pixi.toml`, and no `pyproject.toml` carrying a
+  `[tool.pixi]` table, in the dispatched directory or any ancestor. A filesystem read, taken **before**
+  any spawn. Reason: `"no pixi project: gates-quiet"`. The ancestor walk mirrors pixi's own manifest
+  discovery and is load-bearing: a monorepo package dispatched with `--workspace` is a real pixi
+  workspace whose manifest sits at the repo root, and calling that "not a pixi project" would skip a
+  gate that plainly exists. Every uncertain answer (an unreadable manifest, an unresolvable path) is
+  read as "it is a pixi project", which defers to the probe and then to the real run.
+- **A SUCCESSFUL `pixi task list` whose output positively does not contain the role's task.** Reason:
+  `"task absent: gates-quiet"` — #1702's own measured shape.
+
+A probe that fails — non-zero exit from a stale lockfile, a failed solve, an unparseable
+manifest, a concurrent lock, or `pixi` refusing to spawn at all — is an engine-environment problem and
+is never read as absence; it reports runnable and lets the real run decide, which fails closed. **The
+ordering between the two is what keeps those compatible**: the manifest check runs first, so a
+non-pixi workspace on a host with no `pixi` at all is answered by the filesystem, while a workspace
+that *is* a pixi project and whose `pixi` will not spawn stays "the engine's own tool is broken" and
+never softens into a not-run. If not runnable, the engine appends
+`FlowEvent.VerifyNotRun(ExecutionId, Reason)` and stops: **no
+`VerifyStarted` (never started), no `VerifyFailed`, and no
+`Indeterminate` settle.** The execution's own already-`Succeeded` classification (this branch is only
+reached when it is) decides `StepStatus`/`WorkflowOutcome` unassisted, exactly as if the role declared
+no verify command at all — the same "ENGINE, never the worker" ownership as an ordinary verify run, just
+never fired. `StateProjector` records the reason on `StepState.VerifyNotRunReason` (cleared on the
+step's next `ExecutionRequestAccepted`, same as `IndeterminateReason`); `WorkflowStatusProjector`
+surfaces it as `verify: "not-run"` / `verifyReason` on `WorkflowStatusStepView` (§3 schema above) and
+`fleet_status`'s `FleetStepStatusView` copies it verbatim, so `baton status --json`/Fleet Glass can
+render "unverified" instead of a bare `Succeeded` — Fleet Glass's own `UNVERIFIED` chip. **A verify
+command that actually STARTS and then fails still settles `Indeterminate` exactly as before** — #1702
+only changes the "never ran at all" case; a genuinely broken gate is not softened into a pass. A
+pre-flight probe cancelled by the operator's own cancellation token is never read as "not runnable" —
+it falls through as if runnable, so the real (already-cancelled) attempt below resolves the SAME
+cancellation the ordinary verify-window handling above already covers, rather than a second, divergent
+cancellation path.
+
+**`--output` delivery is unconditional on the worker's own write, never on verify's verdict (#1702).**
+Before this fix, `DispatchCommand.CopyPrimaryOutputToOverride` only copied a produced output when its
+step's terminal `Status` read `Succeeded` — but a verify failure (or, pre-#1702, the not-run case
+misread as a failure) settles the step `Failed`/`Indeterminate` even though the worker already wrote
+its declared output before the engine's own (later) verify step ran at all. The measured cost: a
+foreign-workspace `implement` lane's report sat unseen in the room's artifacts while `--output` was
+never written. The copy is now keyed on the step actually having executed (`LatestExecutionId is not
+null`) and the declared output file existing on disk at that execution's artifact path — the real,
+unconditional gate — regardless of what verify (running-and-green, running-and-red, or #1702's
+not-run) decided.
+
+**That gate is deliberately broader than the verify case that motivated it (#1708).** Keying on
+"the step executed and the file exists" also delivers from an execution that never exited naturally —
+an `ExecutionArrested` (token/tool-step budget), an operator `ExecutionCancelled`, or a timeout — where
+the worker was killed *during* the write and the file on disk may be **partial**. That is the intended
+behaviour, not an oversight: a partial report is better evidence than none, it is the only account of
+what the arrested worker had done, and nothing about delivering it reads as success — the room word and
+the process exit code both still say arrested/cancelled/failed, and `--output` has never been a claim
+about the verdict. A caller that needs "this file is complete" reads the terminal state, never the mere
+existence of the file.
 
 **The per-execution token budget (#1682: arrests on billed, not context level).** #1623's own review
 recorded the ceiling as "not shown reachable" from `600,000 − 200,000(context) = 400,000 needed from
@@ -875,7 +1023,10 @@ real `.stdout.log` captures (`dispatch-implement-3dc5e21a`: 246 usage-bearing `"
 lines, only 153 distinct `message.id`s; `dispatch-implement-5d9686dd`: 176 lines, 94 distinct ids;
 `dispatch-review-9ef0b9c3`: 85 lines, 33 distinct ids) — claude's stream-json splits a single API
 response's content blocks across several consecutive `assistant` events that each repeat the SAME
-`message.id` and an IDENTICAL `message.usage` object. Summing every line's usage without deduping would
+`message.id` and an IDENTICAL `message.usage` object. That identity is measured, not assumed, and is
+what settles #1686 review F4: `docs/vendor-capabilities.md` records zero repeat lines differing from
+their id's first sighting, so first-sighting dedupe is correct and no "read the last one" rule would
+recover anything. Summing every line's usage without deduping would
 have over-counted `BilledTokens` by roughly 40-60% on these three real rooms alone.
 `ClaudeUsageParser.TryParseIncrementalUsage` now also reads `message.id` onto
 `WorkerUsage.MessageId`, and `TokenBudgetMonitor` tracks the set of ids already accumulated for the
@@ -999,9 +1150,110 @@ arrest, on either trigger, for `38c24d11`. The tool-step cap's real, provable va
 DIFFERENT failure shape — a poll loop or a call-count runaway — not this one; §3's prior text claiming
 the cap "is what actually arrests both evidence rooms" no longer holds under the corrected unit and is
 retracted here rather than left standing. **The uncaught failure shape — burning tokens per real tool
-call rather than making an unusual number of calls — is tracked as #1691** (#1686 review F14): a
-windowed billed-rate trigger, in two phases (stamp arrival time and record a per-execution windowed-rate
-maximum first; set the trigger from a measured distribution second), not implemented here.
+call rather than making an unusual number of calls — was taken up as #1691**, whose measured answer is
+the next block.
+
+**The billed-rate trigger (#1691): the mechanism ships, no role arms it, and the premise it was opened
+on is refuted.** #1691 proposed that room `38c24d11` is a RATE anomaly where #1682 proved it is not a
+TOTAL anomaly, and that a windowed billed-rate limit (proposal: 250,000 billed tokens in any trailing
+5 minutes) could therefore ship as a role default. Measured over the whole room corpus rather than the
+three rooms the issue named — `python tools/room-rate-sweep/sweep.py --sweep`, which is the register
+for these numbers and is re-runnable as the corpus grows — **no such value exists.** Six
+`dispatch-implement` rooms that PRODUCED THEIR WORK burned billed tokens FASTER than `38c24d11`'s
+68,240/minute, topping out at 123,531/minute (1.81×), and the closest is still 1.07× — the populations
+do not merely overlap, they interleave with no gap to put a threshold in. Those figures involve no
+modelling at all: each room's billed total and its `executionStarted`..`executionExited` span are both
+measured exactly. "Produced their work" is the load-bearing filter and is stricter than it looks — a
+`Natural` uncancelled exit says only that the PROCESS ended cleanly, so the sweep reads the outcome
+events instead (at least one `executionSucceeded`, no `executionFailed`); `dispatch-implement-e5567544`
+passes the weaker test while journalling `executionFailed: Contract not satisfied` three times and is
+excluded (#1707 review, which caught it counted). **Corrected 2026-09-02 (#1707 review §1c): the answer
+does not rest on any reconstruction, and the prior text here — a windowed sweep across
+`--offsets uniform|duration` — should never have been the load-bearing leg, because both
+reconstructions rescale onto the same measured `executionStarted`..`executionExited` span and so
+cannot in principle represent burstiness the span does not already imply.** A reconstruction-free bound
+follows instead from the `separation` block alone, by pigeonhole over disjoint 5-minute windows:
+`dispatch-implement-46d513e7` billed 1,754,518 over a 14.2-minute span, so across `⌈14.2/5⌉ = 3`
+disjoint windows some one of them held at least `1,754,518 / 3 = 584,839` — no offset, no modelling, no
+reconstruction. The runaway's own true peak is bounded above by its entire per-execution total, 794,940
+(single-execution arithmetic: `794,940 / 698.948 s = 68,235/min`, matching the recorded 68,240/min). Any
+limit that arrests the runaway while sparing `46d513e7` must therefore sit in `(584,839, 794,940]` —
+which requires the runaway to have concentrated at least 73.6% of its whole burn into 5 of its 11.65
+minutes, against reconstructed peaks of 464,238 (uniform) and 372,774 (duration), kept here only as
+illustration of how far short of that band both land. The same bound applies to the rest of the
+delivered population: `dispatch-implement-55aa75ae` floors at 473,318, `dispatch-implement-46e842cd` at
+401,799, `dispatch-implement-6142bd07` at 399,600, `dispatch-implement-17d325bf` at 349,769,
+`dispatch-implement-7d25642b` at 336,908 — so the proposed 250,000 provably false-arrests all six
+delivered rooms, not only `6142bd07`. The concrete cost is pinned in `BilledRateReplayTests`: the proposed 250,000
+arrests `38c24d11` at usage line 27 of 70 (278,565 billed, 65% of the burn saved) **and arrests
+`dispatch-implement-6142bd07` at usage line 30 of 221** — an `implement` lane that journalled
+`executionSucceeded` with no failure, at 1,198,800 billed, under the shipped budget and cap, which
+nothing else would have touched. Arrest forecloses retry, so that is a permanently killed legitimate
+lane.
+
+Two things follow, and neither is a hedge. First, **`WorkerRole.BilledRateLimit` is null for every role
+in `WorkerRoles.json`, and that null is the finding** — pinned by
+`WorkerRoleCatalogTests.The_shipped_catalog_arms_no_billed_rate_trigger_on_any_role` over EVERY role,
+not the three carrying a token budget, because #1686 review F1 was exactly a fourth role quietly holding
+an unmeasured cap while three documents said it held none. Second, the mechanism ships anyway, complete
+and tested, because it is what makes a future calibration possible: `TokenBudgetMonitor` now takes an
+injected `TimeProvider` and keeps a trailing-window Σ of the SAME deduped per-turn billed samples
+#1682's total already takes, exposes the largest window it ever held
+(`SnapshotPeakBilledInWindow`, accumulated whether or not a limit is armed), and records that peak plus
+the armed limit onto `FlowEvent.ExecutionArrested`. **Scoped precisely, because an earlier draft of this
+paragraph over-claimed it (#1707 review): that record is written on an ARREST, and a normally-completed
+execution journals no `ExecutionArrested`, so the ledger carries no peak for exactly the lanes whose
+peaks a false-positive calibration needs.** Nothing is lost — every completed room keeps its own
+`.stdout.log`, which is what the sweep reads — but #1686 review F14's phase 1 is only half landed here:
+the live measurement exists and is exposed, and persisting it for a non-arrested execution is #1709.
+
+Mechanics, stated once. The window is fixed at 5 minutes (`TokenBudgetMonitor.BilledRateWindow`) and
+only the ceiling is configurable, so two roles' limits stay comparable; it is closed at both ends, so a
+sample sitting exactly on the edge still counts. Arrival time is the clock, not anything on the line:
+only claude stamps a WALL-CLOCK time (`timestamp`) on its usage line, and reading one vendor's stamp
+while timing the other by arrival would make the trigger mean two different things. **Corrected
+2026-09-02 (#1707 review): an earlier draft of this paragraph said agy "carries no time field at all",
+which is false — every agy `step_update` carries `duration_seconds`, that step's own elapsed time.** It
+is not a wall-clock stamp and cannot be used live, but it gives the sweep a second, independent
+reconstruction (`--offsets duration`) that cross-checks the uniform one. **Corrected 2026-09-02 (#1707
+review F2): the two reconstructions do NOT reproduce every replay result exactly, and the prior claim
+here was unfalsifiable from the tree.** `BilledRateReplayTests` is fixtured exclusively under
+`--offsets uniform` — the sweep's own `--offsets` argparse default — so its exact assertions
+(`464,238` for the runaway's disabled-trigger peak, `278,565`/`255,121` at arrest) are uniform-only
+numbers; no test arm runs `--offsets duration`, and none of this repository's checked-in fixtures cover
+it. What is true and checkable is narrower: both reconstructions preserve the same ordering and the
+same arrest/no-arrest outcome on every case `BilledRateReplayTests` exercises. They do not agree on the
+runaway's own peak — the duration reconstruction puts it at 372,774 against uniform's 464,238 (and the
+disabled-cap comparison at 623,222 against 538,687) — so a claim that hinges on the exact figure, not
+merely the ordering, must say which reconstruction it used. No timestamped billed history exists
+anywhere on disk for a completed room, so a reconstruction of some kind is unavoidable when reading
+history, and the sweep says which one it used at every use. **There is deliberately no warm-up**: for an execution's first 5 minutes
+the trailing window covers the whole run, so an armed limit behaves as a second, tighter budget over
+that opening stretch. A warm-up would blind the trigger to exactly the opening burst it exists to see —
+the runaway's own crossing lands between 2.6 and 4.5 minutes depending on which reconstruction is used,
+i.e. inside the warm-up any plausible one would have imposed.
+
+Ordering: the token budget wins over the tool-step cap wins over the rate limit when one line crosses
+more than one, so a ledger written before #1691 and one written after describe the same failure the
+same way. `ArrestReason.BilledRate` is the third member, and `StateProjector.DescribeArrest`'s switch
+over that enum is now driven-tested against `Enum.GetValues<ArrestReason>()`
+(`ExecutionArrested_DescribeArrest_covers_every_ArrestReason_member`) rather than relying on its
+throwing default arm to surface a missing case in production.
+
+**`--billed-rate-limit <n>` (#1691)** is the only way a rate trigger is ever armed today. It mirrors
+`--token-budget` end to end — a positive whole number of billed tokens per 5-minute window, refused the
+same way on a non-positive value, rejected on a workflow-template dispatch the same way
+`--timeout`/`--token-budget`/`--max-tool-steps` are — and `baton redispatch` carries AND overrides it on
+**both** its paths, the specific hole #1686 review F2 found in `--max-tool-steps`'s own threading, with
+`RedispatchBindingTests` pinning both polarities.
+
+**A cross-vendor caveat that is load-bearing for all three triggers, not just this one (#1706).**
+`BilledTokens` is not the same quantity on the two vendors: on claude it is a FLOOR, on agy a
+measurement. The measurement, the per-room table and the consequences are stated once, above, under
+"On claude, the live billed figure is a FLOOR, not a measurement (#1706)" — not restated here. What it
+means for THIS trigger is the one clause that belongs here: every token-side threshold is tight on agy
+and loose on claude, and #1691's premise is a direct consequence, since it compared an agy runaway
+against two claude reference rooms.
 
 **`--max-tool-steps <n>` (#1686 review F11)** is `baton dispatch`'s override for this axis, mirroring
 `--token-budget` end to end — a positive whole number of real tool calls (this fixed unit), or refused
@@ -1018,47 +1270,83 @@ covers only the 26-room sample it was measured against, so an operator whose leg
 that sample's tail still has the same dispatch-time (and now redispatch-time) escape hatch the token
 axis already had.
 
-**Defaults, re-derived — corrected twice (#1682, then #1706: `implement`'s token budget, in billed
-tokens).** `implement`'s `TokenBudget` moved from 600,000 to 1,200,000 in #1682, measured from two
-recent, normally-completed (never arrested) `implement` rooms under `~/.baton/rooms` —
-`dispatch-implement-3dc5e21a` (~65 minutes) and `dispatch-implement-5d9686dd` (~55 minutes). The OLD
+**Defaults, re-derived (#1682: `implement`'s token budget, in billed tokens).** `implement`'s
+`TokenBudget` moves from 600,000 to 1,200,000, measured from two recent, normally-completed (never
+arrested) `implement` rooms under `~/.baton/rooms` — `dispatch-implement-3dc5e21a` (~65 minutes,
+628,302 billed tokens) and `dispatch-implement-5d9686dd` (~55 minutes, 507,402 billed tokens).
+**Corrected 2026-09-02 (#1691): those two figures are the NON-deduped sums, taken before #1686 review
+F6's `message.id` dedupe landed in the same PR that stated them. Under the accounting that actually
+shipped they are 344,225 and 228,536** (recompute with `python tools/room-rate-sweep/sweep.py --sweep`),
+so 1,200,000 is ~3.5× the higher measured normal rather than the ~2× this paragraph derives it as.
+**Corrected 2026-09-02 (#1707 review F4): this budget does NOT "err loose, not tight" — the PR's own
+`fasterAndDelivered` corpus shows it arresting four delivered agy lanes in a single execution, each
+over the shipped 1,200,000 ceiling and each carrying `produced_work: true`: `dispatch-implement-7d25642b`
+(2,358,353, ~2× the budget), `dispatch-implement-46d513e7` (1,754,518), `dispatch-implement-55aa75ae`
+(1,419,955), and `dispatch-implement-46e842cd` (1,205,398). Only `dispatch-implement-6142bd07`
+(1,198,800) and `dispatch-implement-17d325bf` (1,049,306) sit under it. The budget is left unchanged in
+THIS PR regardless — not because it is loose, but because the fix is blocked on an operator ruling this
+PR does not make: whether `implement`'s ceiling should move per-vendor or the scalar should simply rise,
+and the number that would settle either question is itself under-read on claude by #1706 above, so
+re-deriving it belongs with that fix rather than here.** The OLD
 600,000 default, read under the NEW billed-token arithmetic rather than the OLD level-based one it was
 tuned for, would already false-arrest the FIRST of those two ordinary, successful lanes mid-run: that
 part of the case stands.
 
-**The stated method did not describe the shipped code, and now does not describe the figures either.**
-This paragraph read "roughly 2× the higher of the two measured normal totals" against 628,302 and
-507,402 — sums taken under pre-#1686 accounting, before the `message.id` dedupe. Deduped they are
-344,225 and 228,536; corrected for the placeholder columns and read against the terminal whole-tree
-line (#1706's table above) they are **884,568 and 294,769**. Applying "2× the higher" to the corrected
-pair would give ~1,769,000, not 1,200,000. **The value stays at 1,200,000 and the derivation text is
-what changes**, because the test the shipped value has to pass is whether it false-arrests a delivered
-claude room, and it does not: 884,568 is the higher corrected total and sits under it with ~26% margin
-(`TokenBudgetReplayTests.HONEST_neither_delivered_claude_room_arrests_at_the_shipped_implement_budget_live_or_terminal`).
-So 1,200,000 is **~1.36× the higher corrected normal room**, i.e. TIGHTER than the "2×" the old text
-claimed, not looser — and tighter still in intent than in effect, since what a live claude budget is
-actually compared against is the floor, not these corrected figures (see the effective-ceiling
-paragraph above). Moving it to a true 2× on corrected numbers is a calibration decision this issue
-does not make: it would need the normal-room population #1709 exists to start collecting, not two
-rooms. **On the sweep instrument:** #1706's own task named `tools/room-rate-sweep/sweep.py` as the
-thing to extend, and that tool is not on `main` — it exists only on #1707's unmerged branch, so this
-issue could not extend it. The 126-room figures above were produced by a throwaway script over
-`~/.baton/rooms` and are NOT reproducible from this repo; the per-room figures that a claim rests on
-are pinned in `TokenBudgetReplayTests` instead, which is. Committing a sweep here would have made a
-second copy of #1707's tool.
+**The re-derivation #1707 deferred here (#1706), taken up and answered in halves.** #1707 deferred
+re-deriving this number to #1706 on the ground that the claude side of it was under-read. #1706 bounds
+that under-read but does **not** close the derivation, and the reason is `claim-scope`: the two
+populations disagree, and a single cross-vendor scalar cannot be sized from either alone.
+
+- **claude (this issue's population).** The old stated method — "roughly 2× the higher of the two
+  measured normal totals" — was applied to 628,302 and 507,402, sums taken under pre-#1686 accounting,
+  before the `message.id` dedupe. Deduped they are 344,225 and 228,536; corrected for the mid-stream
+  placeholder columns and read against the terminal whole-tree line (#1706's table above) they are
+  **884,568 and 294,769**. Applying "2× the higher" to the corrected pair would give ~1,769,000, not
+  1,200,000. On this population 1,200,000 false-arrests nothing: 884,568 sits under it with ~26% margin
+  (`TokenBudgetReplayTests.HONEST_neither_delivered_claude_room_arrests_at_the_shipped_implement_budget_live_or_terminal`),
+  making the shipped value **~1.36× the higher corrected normal room** — TIGHTER than the "2×" the old
+  text claimed, not looser. Tighter in intent than in effect, since what a live claude budget is
+  actually compared against is the floor, not these corrected figures (see the effective-ceiling
+  paragraph above).
+- **agy (#1707's population, above).** On the same shipped ceiling, four delivered agy lanes are over
+  it — `7d25642b` (2,358,353), `46d513e7` (1,754,518), `55aa75ae` (1,419,955), `46e842cd` (1,205,398).
+  There the value is not loose, it is already false-arresting.
+
+**So the two halves point in opposite directions, and a scalar cannot satisfy both.** ~26% of headroom
+on the higher of two delivered claude rooms and four delivered agy rooms over the same line is not a
+number that is "a bit off" — it is evidence that **`implement`'s ceiling is not a single-vendor-sizable
+quantity**, because `BilledTokens` does not mean the same thing on the two vendors (the FLOOR paragraph
+above). Raising the scalar to cover agy's 2.36M would make it ~2.7× the higher claude room and, read
+against claude's own live floor, an effective real ceiling past 8M on the worst-seen room in the sweep;
+holding it at 1,200,000 keeps arresting delivered agy work. **`WorkerRoles.json` is therefore left
+untouched by this PR, and the open item is named rather than passed on again: whether `implement`
+carries a per-vendor budget or a single raised scalar is an OPERATOR ruling, not an engineering one, and
+it is the last thing blocking the derivation.** #1706 does not defer it to #1709 — what #1709 collects
+(a normal-room population) would inform the *value* chosen under either shape, but it cannot choose the
+shape. Neither can a further measurement.
+
+**On the sweep instrument.** `tools/room-rate-sweep/sweep.py` is on `main` (#1707) and is the
+re-runnable instrument for the room figures above — `python tools/room-rate-sweep/sweep.py --sweep`.
+#1706 extends its claude arm to this issue's accounting (cache-creation only, the mid-stream
+input/output columns dropped) so the tool and `TokenBudgetMonitor` cannot disagree about what a claude
+billed token is, and marks the vendor asymmetry in its output. The 126-room seen-fraction figures above
+predate that extension and were produced by a throwaway script over `~/.baton/rooms`; the per-room
+figures a claim rests on are pinned in `TokenBudgetReplayTests`, which is committed.
 
 `review`/`advise` keep their pre-#1682 token-budget figures (250,000/150,000) unchanged — no comparable "two normal completed
 rooms" measurement exists for those roles in this issue's evidence set, so their ceilings stay
 carried-over-unverified in the same sense #1623's re-review already flagged, not freshly justified.
 
-**The shared mechanism.** All three producers (engine-run verify, the token budget, and #1682's
-tool-step cap) route through the one `StateProjector.ApplyIndeterminate` helper — flag, reason text,
+**The shared mechanism.** All four producers (engine-run verify, the token budget, #1682's tool-step
+cap, and #1691's billed-rate limit) route through the one `StateProjector.ApplyIndeterminate` helper — flag, reason text,
 foreclosure; the `IndeterminateAwaitingResolution` flag is what `WorkflowOutcome.DescribeTerminal` and
 `RetryEngine.MayRetry` each check (one arm apiece), per the producer table above; `StepState.IndeterminateReason`
 stays display-only, never itself a gate. `StateProjector.DescribeArrest` is the one place
 `FlowEvent.ExecutionArrested.Reason` is switched on — a `null` `Reason` (a ledger line written before
 #1682) reads the same as `ArrestReason.TokenBudget`, since every arrest recorded before #1682 was one
-(the tool-step cap did not exist yet); the switch is total over `TokenBudget`/`ToolStepCap`/`null`.
+(the tool-step cap did not exist yet); the switch is total over
+`TokenBudget`/`ToolStepCap`/`BilledRate`/`null`, and since #1691 that totality is a test over
+`Enum.GetValues<ArrestReason>()` rather than a claim.
 
 ### Exit codes
 
@@ -1114,7 +1402,10 @@ code is the only signal a lane is even still going, and it is unreliable for tha
       "usage"?: ExecutionUsageView,
       "linkedFromUsage"?: ExecutionUsageView,
       "liveness"?: "alive" | "dead" | "unknown",  // #1375/#1513: present while this step reads "Running", or "Failed" with a RetryNotBefore still pending
-      "exhaustedUntil"?: string  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
+      "exhaustedUntil"?: string,  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
+      "verifyTail"?: string,      // #1701: the failing gate member(s)' OWN captured output for a VerifyFailed Indeterminate -- see "Engine-run verify" below. Distinct from "verify"/"verifyReason": that pair says verify never ran, this says it ran and went red.
+      "verify"?: "not-run",       // #1702: present iff the latest attempt's resolved verify command failed its pre-flight runnability check -- an ordinarily-Succeeded step, never a gate. See "Verify command resolution" below.
+      "verifyReason"?: string     // #1702: the pre-flight verdict -- "task absent: <task>", the only shape #1708 leaves reachable -- present only alongside "verify"
     }
   ],
   "outputs": [string],                 // resolved output paths
@@ -1940,6 +2231,33 @@ flips at most once per bucket/grain of REAL progress. A structural change (a dif
 state transition, a new or changed deliverable, error text) lives in fields this quantization never
 touches, so it still changes the hash — and triggers a push, budget permitting — on the very next
 cycle.
+
+**#1712: the KV daily write cap is a vendor error, not a ledger event.** Measured 2026-09-02
+(`wrangler tail` on `baton-fleet`): once Cloudflare's free-tier KV namespace hits its hard daily
+write cap, every `env.FLEET.put` throws `Error: KV put() limit exceeded for the day.`, which
+`worker.js` was letting through as a bare 500 -- the pusher logged 136 `HTTP Error 500` lines in 20
+minutes and kept retrying every cycle, and because the heartbeat write fails right alongside the
+snapshot/derivation write, `heartbeat_at` and `derived_at` go stale together, which the pre-fix
+`glass.html` banner misread as "derivation may be stuck" rather than "the worker itself can't
+write." This is the HARD Cloudflare limit underneath the #1690 ledger's own SOFT exhaustion above --
+that ledger stops the pusher voluntarily before it ever spends 700/day; this is what happens if the
+real cap is hit anyway (a day with more real activity than the ledger's own arithmetic modeled, or
+a cap lower than assumed) -- discovered live via a 429, never counted in advance. Fixed at all three
+layers: `worker.core.mjs`'s `classifyKvError` recognizes the exact message on every KV put path
+(push, heartbeat, and deliver's index/batch/eviction writes) and `worker.js` answers `429
+{"reason": "kv-write-cap", "resets_at": <next 00:00 UTC>}` instead of a 500. `pusher.py`'s
+`post_json` raises `KvWriteCapError` on that specific 429; every producer that catches it
+(`mark_kv_write_cap_exhausted`) forces all three write-budget sub-budgets to their daily ceiling and
+`exhausted_notice_sent` to true in one step -- reusing the #1690 exhausted/skip-producer path rather
+than a parallel one, and deliberately never attempting the exhaustion-notice snapshot itself (it is
+exactly the write that cannot land) -- and logs one line, `kv write cap hit at <t>; no writes until
+<resets_at>`, the first and only time this happens each day (every later cycle finds the ledger
+already exhausted and never re-attempts the POST that would re-trigger it). `glass.html`'s banner
+chain gets one new arm, placed after `writeBudgetExhaustedUntil` and before "Snapshot derivation may
+be stuck": `heartbeat_at` and `derived_at` both stale and within one push interval of each other
+reads as the worker refusing writes, not a stuck derivation -- the two ages tracking together is
+exactly what a shared write failure looks like, whereas a genuinely stuck derivation leaves
+`heartbeat_at` fresh (only the derivation write is failing) while `derived_at` alone ages.
 
 ---
 

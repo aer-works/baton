@@ -332,9 +332,9 @@ public class MutationInterfaceTests
     [Fact]
     public async Task StartWorkflowAsync_runs_the_engine_verify_step_and_settles_Succeeded_when_it_passes()
     {
-        // #1623: the real end-to-end path through a REAL pixi subprocess -- MutationInterface's own
-        // gating (Verdict == Succeeded && binding.VerifyPixiTask is not null) plus the real
-        // VerifyRunner.RunAsync's "pixi" spawn, not a fake. `buildlock-selftest` is an existing,
+        // #1623/#1702: the real end-to-end path through a REAL pixi subprocess -- MutationInterface's
+        // own gating (Verdict == Succeeded && a resolved verify command) plus the real
+        // VerifyRunner.RunProcessAsync's "pixi" spawn, not a fake. `buildlock-selftest` is an existing,
         // already-fast (a few seconds), already-deterministic pixi task (tools/buildlock.py's own
         // control arm) -- reused as the fixture rather than adding a new pixi.toml entry just for this
         // test. The FAIL half is covered by VerifyRunnerTests against a fake command instead of a real
@@ -383,18 +383,22 @@ public class MutationInterfaceTests
     }
 
     [Fact]
-    public async Task StartWorkflowAsync_settles_Indeterminate_when_VerifyPixiTask_fails()
+    public async Task StartWorkflowAsync_settles_Succeeded_with_VerifyNotRun_when_the_role_task_is_absent()
     {
-        // #1623 / F6: a failing verify task appends VerifyFailed, does NOT append ExecutionSucceeded,
-        // and settles the step Indeterminate.
+        // #1702 (the measured defect this test replaces #1623/F6's own "VerifyPixiTask fails" test
+        // with): a role's baked-in task the workspace's own `pixi task list` does not contain is a
+        // distinct not-run outcome, never a gate failure -- the ExecutionSucceeded classification
+        // decides the room word unassisted, and the report the worker wrote is still delivered
+        // (DispatchCommand.CopyPrimaryOutputToOverride's own #1702 fix covers the CLI-level half of
+        // that; this test covers the engine-level settle).
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
         var logPath = Path.Combine(roomDirectory, "flow.jsonl");
         try
         {
             var snapshot = new WorkflowDefinitionSnapshot(
-                new WorkflowDefinitionSnapshotId("snapshot-verify-fail"),
-                new WorkflowTemplateId("verify-fail"),
+                new WorkflowDefinitionSnapshotId("snapshot-verify-not-run"),
+                new WorkflowTemplateId("verify-not-run"),
                 WorkflowTemplateVersion: 1,
                 Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
 
@@ -412,18 +416,301 @@ public class MutationInterfaceTests
             var dispatcher = new CoreDispatcher(writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
-                new WorkflowId("wf-verify-fail"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+                new WorkflowId("wf-verify-not-run"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Succeeded, architect.Status);
+            Assert.Null(architect.IndeterminateReason);
+            Assert.False(architect.IndeterminateAwaitingResolution);
+            Assert.Equal("task absent: this-task-definitely-does-not-exist", architect.VerifyNotRunReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.VerifyStarted>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyPassed>());
+            var notRun = Assert.Single(events.OfType<FlowEvent.VerifyNotRun>());
+            Assert.Equal("task absent: this-task-definitely-does-not-exist", notRun.Reason);
+            Assert.Single(events.OfType<FlowEvent.ExecutionSucceeded>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1708 H1, red-first end to end: a worker writes its own <c>.baton/verify</c> saying <c>exit 0</c>
+    /// during its execution, into the very workspace it was dispatched against. The engine must run the
+    /// workspace's COMMITTED declaration instead — which here goes red — and journal
+    /// <see cref="FlowEvent.VerifyDeclarationIgnored"/> naming both sides. Against the pre-fix code the
+    /// worker's file wins, verify exits 0, and the step settles <c>Succeeded</c> with its gate skipped.
+    /// </summary>
+    [Fact]
+    public async Task StartWorkflowAsync_ignores_a_verify_declaration_the_worker_wrote_and_runs_the_committed_one()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var workspace = Path.Combine(Path.GetTempPath(), $"workspace-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            // A workspace whose committed declaration fails. Nothing else in this test can make verify
+            // go red, so a red settle proves the committed line is what ran.
+            Directory.CreateDirectory(workspace);
+            Directory.CreateDirectory(Path.Combine(workspace, ".baton"));
+            await File.WriteAllTextAsync(
+                Path.Combine(workspace, ".baton", "verify"),
+                "python -c \"import sys; sys.exit(1)\"\n",
+                TestContext.Current.CancellationToken);
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-worker-authored"),
+                new WorkflowTemplateId("verify-worker-authored"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            // The worker overwrites .baton/verify with a verifier that always passes, then satisfies its
+            // own output contract and exits 0 -- an ordinary clean run that would settle Succeeded.
+            var worker = new CoreDispatchTarget(
+                "cmd",
+                ["/c", "echo exit 0 >.baton\\verify & echo plan>%BATON_OUTPUT_DIR%\\plan"])
+            {
+                WorkingDirectory = workspace,
+            };
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    worker,
+                    TimeSpan.FromSeconds(30)),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-worker-authored"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            // The worker really did write the file -- otherwise this test proves nothing about ignoring it.
+            Assert.Equal(
+                "exit 0",
+                Baton.Mutation.VerifyCommandResolver.ReadWorkingTreeRepoDeclaration(workspace));
+
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Failed, architect.Status);
+            Assert.NotNull(architect.IndeterminateReason);
+            Assert.Null(architect.VerifyNotRunReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events.OfType<FlowEvent.VerifyStarted>());
+            Assert.Single(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyPassed>());
+
+            var ignored = Assert.Single(events.OfType<FlowEvent.VerifyDeclarationIgnored>());
+            Assert.Equal(
+                VerifyCommandResolver.DeclarationDigest("python -c \"import sys; sys.exit(1)\""),
+                ignored.CommittedDigest);
+            Assert.Equal(VerifyCommandResolver.DeclarationDigest("exit 0"), ignored.WorkingTreeDigest);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    /// <summary>
+    /// #1708 L1, red-first: the drift record is appended whenever the working-tree declaration differs
+    /// from the one that graded the run — <b>not only on a Succeeded execution</b>. Here the worker
+    /// writes <c>.baton/verify</c> and then exits NON-ZERO, so no verify ever runs; spec/baton.md §3
+    /// states why that operator question still deserves an answer. Against the pre-fix code this event
+    /// was inside the <c>Verdict == Succeeded</c> branch and the assertion below finds nothing.
+    /// </summary>
+    [Fact]
+    public async Task StartWorkflowAsync_journals_a_drifted_verify_declaration_even_when_the_execution_FAILS()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var workspace = Path.Combine(Path.GetTempPath(), $"workspace-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            Directory.CreateDirectory(workspace);
+            Directory.CreateDirectory(Path.Combine(workspace, ".baton"));
+            await File.WriteAllTextAsync(
+                Path.Combine(workspace, ".baton", "verify"),
+                "python -c \"import sys; sys.exit(1)\"\n",
+                TestContext.Current.CancellationToken);
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+            TempGitRepository.SetReviewedBaselineAtHead(workspace);
+
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-drift-on-failure"),
+                new WorkflowTemplateId("verify-drift-on-failure"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            // Writes the declaration, then fails. Nothing here can reach the verify block at all.
+            var worker = new CoreDispatchTarget(
+                "cmd",
+                ["/c", "echo exit 0 >.baton\\verify & exit 7"])
+            {
+                WorkingDirectory = workspace,
+            };
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    worker,
+                    TimeSpan.FromSeconds(30)),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-drift-on-failure"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            // The premise: the execution really did NOT succeed, so this is the branch the pre-fix code
+            // skipped -- and the worker really did write the file.
+            var architect = Assert.Single(finalState.Steps);
+            Assert.NotEqual(StepStatus.Succeeded, architect.Status);
+            Assert.Equal("exit 0", VerifyCommandResolver.ReadWorkingTreeRepoDeclaration(workspace));
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.VerifyStarted>());
+
+            var ignored = Assert.Single(events.OfType<FlowEvent.VerifyDeclarationIgnored>());
+            Assert.Equal(
+                VerifyCommandResolver.DeclarationDigest("python -c \"import sys; sys.exit(1)\""),
+                ignored.CommittedDigest);
+            Assert.Equal(VerifyCommandResolver.DeclarationDigest("exit 0"), ignored.WorkingTreeDigest);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    /// <summary>
+    /// #1708 M1's fallback, end to end: a workspace with no <c>origin/main</c> still runs its committed
+    /// declaration, and the journal announces the narrower boundary spec/baton.md §3 scopes. Pins that
+    /// <see cref="FlowEvent.VerifyDeclarationUnreviewed"/> has a real producer on the live path — a
+    /// serialization round-trip alone would not.
+    /// </summary>
+    [Fact]
+    public async Task StartWorkflowAsync_journals_an_unreviewed_declaration_when_the_workspace_has_no_origin_main()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var workspace = Path.Combine(Path.GetTempPath(), $"workspace-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            Directory.CreateDirectory(workspace);
+            Directory.CreateDirectory(Path.Combine(workspace, ".baton"));
+            await File.WriteAllTextAsync(
+                Path.Combine(workspace, ".baton", "verify"),
+                "exit 0\n",
+                TestContext.Current.CancellationToken);
+            // No SetReviewedBaselineAtHead: this repo has no origin/main, which is the whole fixture.
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-unreviewed"),
+                new WorkflowTemplateId("verify-unreviewed"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var worker = new CoreDispatchTarget("cmd", ["/c", "echo plan>%BATON_OUTPUT_DIR%\\plan"])
+            {
+                WorkingDirectory = workspace,
+            };
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    worker,
+                    TimeSpan.FromSeconds(30)),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-unreviewed"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            // The HEAD declaration really did take effect -- it ran, and it passed.
+            var architect = Assert.Single(finalState.Steps);
+            Assert.Equal(StepStatus.Succeeded, architect.Status);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events.OfType<FlowEvent.VerifyPassed>());
+
+            var unreviewed = Assert.Single(events.OfType<FlowEvent.VerifyDeclarationUnreviewed>());
+            Assert.Equal(VerifyCommandResolver.DeclarationDigest("exit 0"), unreviewed.Digest);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_verify_override_wins_over_the_role_default_and_settles_Indeterminate_when_it_runs_red()
+    {
+        // #1702 item 5's discriminating control (spec/baton.md §3 states the general rule this
+        // pins). The role default here (buildlock-selftest) would pass, proving the override -- not
+        // the role default -- is what actually ran.
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-verify-override-red"),
+                new WorkflowTemplateId("verify-override-red"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    WriteFile("plan", "architect") with { WorkingDirectory = RepoRoot() },
+                    TimeSpan.FromSeconds(30),
+                    VerifyPixiTask: "buildlock-selftest",
+                    VerifyCommandOverride: "python -c \"import sys; sys.exit(1)\""),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-verify-override-red"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
 
             var architect = Assert.Single(finalState.Steps);
             Assert.Equal(StepStatus.Failed, architect.Status);
             Assert.NotNull(architect.IndeterminateReason);
             Assert.True(architect.RetryForeclosed);
+            Assert.Null(architect.VerifyNotRunReason);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             Assert.Single(events.OfType<FlowEvent.VerifyStarted>());
             var verifyFailed = Assert.Single(events.OfType<FlowEvent.VerifyFailed>());
             Assert.Equal(VerifyFailedKind.GatesFailed, verifyFailed.Kind);
             Assert.Empty(events.OfType<FlowEvent.VerifyPassed>());
+            Assert.Empty(events.OfType<FlowEvent.VerifyNotRun>());
             Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
         }
         finally

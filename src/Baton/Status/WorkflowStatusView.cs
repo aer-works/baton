@@ -111,7 +111,30 @@ public sealed record WorkflowStatusStepView(
     // which both VerifyFailed/Arrested AND a not-yet-indeterminate step share as null.
     [property: JsonPropertyName("indeterminateProducer")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? IndeterminateProducerKind = null);
+    string? IndeterminateProducerKind = null,
+    // #1701: StepState.IndeterminateVerifyTail verbatim -- see that field's own remarks (FlowState.cs)
+    // for why it exists and what it carries. Gated the same way IndeterminateProducerKind is above
+    // (present only for a currently-Failed step). In practice only non-null when
+    // IndeterminateProducerKind is VerifyFailed -- ApplyIndeterminate (StateProjector.cs) writes null
+    // for every other producer -- but that invariant is enforced there, not by this gate; this field
+    // carries whatever StepState.IndeterminateVerifyTail records.
+    [property: JsonPropertyName("verifyTail")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? VerifyTail = null,
+    // #1702: StepState.VerifyNotRunReason's mere presence, not its text -- the one machine-readable
+    // token a status/glass consumer branches on ("this step ran unverified"), the same "bare token,
+    // never prose" shape State/liveness/failureKind already keep. Always "not-run" when present; no
+    // other value exists yet (an ordinary verify pass/fail carries no field here at all -- ordinary
+    // Succeeded/Failed already say everything a consumer needs). Omitted, never null, for every step
+    // whose latest attempt did not hit the pre-flight "not runnable" check.
+    [property: JsonPropertyName("verify")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Verify = null,
+    // #1702: the pre-flight verdict text (e.g. "task absent: gates-quiet") -- present only alongside
+    // Verify above.
+    [property: JsonPropertyName("verifyReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? VerifyReason = null);
 
 /// <summary>
 /// The one JSON object <c>baton status --json</c> writes to stdout (#1356's machine completion
@@ -288,11 +311,18 @@ public static class WorkflowStatusProjector
             string? capturedResponseFile = step.Status == StepStatus.Failed ? step.LatestCapturedResponseFile : null;
             IReadOnlyList<string>? unsatisfiedOutputs = step.Status == StepStatus.Failed ? step.LatestUnsatisfiedOutputNames : null;
             string? indeterminateProducerKind = step.Status == StepStatus.Failed ? step.IndeterminateProducer?.ToString() : null;
+            string? verifyTail = step.Status == StepStatus.Failed ? step.IndeterminateVerifyTail : null;
+
+            // #1702: gated on the reason being present at all, not on Status -- unlike failureKind/
+            // capturedResponseFile above, a not-run verify step is ordinarily Succeeded, never Failed.
+            string? verify = step.VerifyNotRunReason is not null ? "not-run" : null;
+            string? verifyReason = step.VerifyNotRunReason;
 
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
                 usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible,
-                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind));
+                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind,
+                verifyTail, verify, verifyReason));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))
@@ -344,8 +374,8 @@ public static class WorkflowStatusProjector
                         // CoreEvent.ExecutionExited (a few ms earlier), not a staleness bug but an
                         // unnecessary inconsistency with ExecutionSucceeded/ExecutionFailed above. The
                         // switch is still not exhaustive over every FlowEvent even with these arms:
-                        // CaptureResolved (#1608 review finding 7) and #1623's own diagnostic-only
-                        // VerifyStarted/VerifyPassed all still fall to `_ => null` below.
+                        // CaptureResolved (#1608 review finding 7) and #1623/#1702's own diagnostic-only
+                        // VerifyStarted/VerifyPassed/VerifyNotRun all still fall to `_ => null` below.
                         FlowEvent.ExecutionIndeterminate indeterminate => indeterminate.ExecutionId.Value,
                         FlowEvent.ExecutionArrested arrested => arrested.ExecutionId.Value,
                         FlowEvent.VerifyFailed verifyFailed => verifyFailed.ExecutionId.Value,

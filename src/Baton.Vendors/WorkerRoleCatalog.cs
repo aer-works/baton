@@ -43,6 +43,15 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// <c>--max-tool-steps</c> overrides this per dispatch (#1686 review F11,
 /// <see cref="RoleDispatch.ToBinding"/>'s own parameter).
 /// </param>
+/// <param name="BilledRateLimit">
+/// #1691 (contract: <c>spec/baton.md</c> §3): the default per-execution ceiling on Σ billed tokens
+/// inside one trailing <c>Mutation.TokenBudgetMonitor.BilledRateWindow</c> — a third arrest trigger,
+/// independent of <see cref="TokenBudget"/> and <see cref="MaxToolSteps"/>, on RATE rather than total
+/// volume. EVERY role in <c>WorkerRoles.json</c> leaves this null on purpose, and that is a measurement
+/// rather than an omission — <c>spec/baton.md</c> §3 is where the measurement lives, and
+/// <c>tools/room-rate-sweep/sweep.py</c> is what re-runs it. <c>--billed-rate-limit</c> supplies one per
+/// dispatch (<see cref="RoleDispatch.ToBinding"/>'s own parameter), the only way one is ever set today.
+/// </param>
 public sealed record WorkerRole(
     string Id,
     string Tier,
@@ -56,7 +65,8 @@ public sealed record WorkerRole(
     IReadOnlyList<WorkerRoleOutput> Outputs,
     string? VerifyPixiTask = null,
     long? TokenBudget = null,
-    int? MaxToolSteps = null);
+    int? MaxToolSteps = null,
+    long? BilledRateLimit = null);
 
 /// <summary>
 /// One file a role's dispatch produces in <c>BATON_OUTPUT_DIR</c> (#897) — the structured, per-role
@@ -184,7 +194,8 @@ public static class WorkerRoleCatalog
                 Outputs: raw.Outputs.Select(o => ResolveOutput(raw.Id, o)).ToList(),
                 VerifyPixiTask: raw.VerifyPixiTask,
                 TokenBudget: raw.TokenBudget,
-                MaxToolSteps: raw.MaxToolSteps));
+                MaxToolSteps: raw.MaxToolSteps,
+                BilledRateLimit: raw.BilledRateLimit));
         }
 
         return roles;
@@ -287,7 +298,11 @@ public static class WorkerRoleCatalog
         string? VerifyPixiTask = null,
         long? TokenBudget = null,
         // #1682: optional for the same reason -- most roles declare no tool-step cap.
-        int? MaxToolSteps = null);
+        int? MaxToolSteps = null,
+        // #1691: optional for the same reason, and here NO role declares one -- the key is readable
+        // from the catalog so an operator can pin a rate limit durably in their own worker-roles.json
+        // override, but spec/baton.md §3's calibration found no defensible shipped default.
+        long? BilledRateLimit = null);
 
     private sealed record RawOutput(
         [property: JsonRequired] string Name,

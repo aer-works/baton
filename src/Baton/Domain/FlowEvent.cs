@@ -25,6 +25,9 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(VerifyStarted), "verifyStarted")]
 [JsonDerivedType(typeof(VerifyPassed), "verifyPassed")]
 [JsonDerivedType(typeof(VerifyFailed), "verifyFailed")]
+[JsonDerivedType(typeof(VerifyNotRun), "verifyNotRun")]
+[JsonDerivedType(typeof(VerifyDeclarationIgnored), "verifyDeclarationIgnored")]
+[JsonDerivedType(typeof(VerifyDeclarationUnreviewed), "verifyDeclarationUnreviewed")]
 [JsonDerivedType(typeof(ExecutionArrested), "executionArrested")]
 [JsonDerivedType(typeof(ExecutionIndeterminate), "executionIndeterminate")]
 [JsonDerivedType(typeof(CaptureResolved), "captureResolved")]
@@ -200,8 +203,9 @@ public abstract record FlowEvent
     /// </summary>
     /// <param name="FailingMembers">Which gate members failed, by name — empty/null if the verify
     /// command reports no per-member breakdown.</param>
-    /// <param name="Tail">A bounded tail of the verify command's own output, for a human to read
-    /// without re-running it.</param>
+    /// <param name="Tail">Each named failing member's OWN captured output (#1701) — see
+    /// <see cref="Mutation.VerifyRunner"/>'s own remarks for why a blind tail of the whole run isn't
+    /// this, and what happens when the shape isn't recognized.</param>
     /// <param name="Kind">#1623 / F3: whether the failure was broken gates, a timeout, a cancellation, or an engine restart.</param>
     public sealed record VerifyFailed(
         ExecutionId ExecutionId,
@@ -210,9 +214,78 @@ public abstract record FlowEvent
         VerifyFailedKind Kind = VerifyFailedKind.GatesFailed) : FlowEvent;
 
     /// <summary>
+    /// #1702 — spec/baton.md §3's not-run outcome:
+    /// <see cref="Mutation.VerifyCommandResolver.CheckRunnableAsync"/>'s pre-flight probe found the
+    /// resolved verify command not runnable, so it was never spawned. Diagnostic only, same "no
+    /// <see cref="Status.WorkflowOutcome.Indeterminate"/> consequence" shape as <see cref="VerifyPassed"/>
+    /// — the execution's own already-<c>Succeeded</c> classification decides the room word unassisted.
+    /// Never emitted alongside <see cref="VerifyStarted"/> for the same execution, so
+    /// <see cref="ProjectionCheckpointState.UnmatchedVerifyExecutionIds"/> and the #1608
+    /// <c>EngineRestart</c> recovery path are both untouched by this arm.
+    /// </summary>
+    /// <param name="Reason"><see cref="Mutation.VerifyCommandResolver"/>'s own verdict text, never re-derived here.</param>
+    public sealed record VerifyNotRun(ExecutionId ExecutionId, string Reason) : FlowEvent;
+
+    /// <summary>
+    /// #1708 H1: the workspace's working-tree <c>.baton/verify</c> differed from the one committed in
+    /// <c>HEAD</c> when this execution was dispatched, so the working-tree file was IGNORED and the
+    /// committed declaration (or, if there is none, the role default) decided what verify ran. The
+    /// self-verification boundary made audible: a worker can write that file, and this says when one
+    /// did — or, just as often, that a legitimate declaration was never committed and therefore never
+    /// took effect.
+    /// <para>
+    /// <b>Diagnostic only, and deliberately terminal as a record.</b> Same shape as
+    /// <see cref="VerifyStarted"/>/<see cref="VerifyPassed"/>: no <see cref="StepState"/> field, no
+    /// <c>WorkflowStatusView</c> surface, no <c>fleet_status</c> plumbing, no
+    /// <see cref="Status.WorkflowOutcome"/> consequence. It changes no verdict, so it needs no reader
+    /// beyond <c>flow.jsonl</c> — do not "complete" it into one.
+    /// </para>
+    /// </summary>
+    /// <param name="CommittedDigest">
+    /// <see cref="Mutation.VerifyCommandResolver.DeclarationDigest"/> of the COMMITTED command line —
+    /// null when <c>HEAD</c> holds no declaration (including a non-git workspace), which is exactly the
+    /// "an uncommitted declaration was ignored" case.
+    /// </param>
+    /// <param name="WorkingTreeDigest">The same digest of the working-tree command line; null when the file is absent or comment-only.</param>
+    public sealed record VerifyDeclarationIgnored(
+        ExecutionId ExecutionId,
+        string? CommittedDigest,
+        string? WorkingTreeDigest) : FlowEvent;
+
+    /// <summary>
+    /// #1708 M1: the declaration that graded this execution came from <c>HEAD</c> rather than from the
+    /// merge-base with <c>origin/main</c>, because no merge-base could be computed — no remote, a
+    /// default branch that is not <c>main</c>, or unrelated histories. The per-execution boundary still
+    /// holds (the value was read before the worker spawned), but the WIDER property does not: on this
+    /// workspace, a commit made by an earlier lane on the current branch is inside what grades the next
+    /// one, and nothing has reviewed it. This is what says so out loud instead of leaving it to be
+    /// inferred from the absence of a ref.
+    /// <para>
+    /// <b>Diagnostic only</b>, exactly like <see cref="VerifyDeclarationIgnored"/> — no
+    /// <see cref="StepState"/> field, no <c>WorkflowStatusView</c> surface, no <c>fleet_status</c>
+    /// plumbing, no <see cref="Status.WorkflowOutcome"/> consequence. It changes no verdict and needs no
+    /// reader beyond <c>flow.jsonl</c>; do not "complete" it into one.
+    /// </para>
+    /// <para>
+    /// Appended only when a declaration was actually FOUND that way. A workspace with no reviewed
+    /// baseline and no <c>.baton/verify</c> at all has nothing unreviewed to announce — it runs the role
+    /// default, same as any other.
+    /// </para>
+    /// </summary>
+    /// <param name="Digest">
+    /// <see cref="Mutation.VerifyCommandResolver.DeclarationDigest"/> of the command line that was read,
+    /// so the journal names WHICH unreviewed line took effect rather than only that one did.
+    /// </param>
+    public sealed record VerifyDeclarationUnreviewed(
+        ExecutionId ExecutionId,
+        string? Digest) : FlowEvent;
+
+    /// <summary>
     /// #1623 (contract: <c>spec/baton.md</c> §3; the addendum's own words are quoted on
     /// <see cref="Mutation.TokenBudgetMonitor"/>): a live execution's measured usage crossed its role's
-    /// token budget, OR (#1682) its tool-step count crossed its role's tool-step cap. The engine cancels
+    /// token budget, OR (#1682) its tool-step count crossed its role's tool-step cap, OR (#1691) its
+    /// billed tokens inside one trailing <c>TokenBudgetMonitor.BilledRateWindow</c> crossed an
+    /// operator-supplied <c>--billed-rate-limit</c>. The engine cancels
     /// the execution (arrest, not park) rather than let it keep running.
     /// <paramref name="Usage"/> is the measured usage at arrest time; <paramref name="LastToolNames"/>
     /// the last few tool calls observed, which is what a conductor reads to tell a runaway loop from a
@@ -228,12 +301,26 @@ public abstract record FlowEvent
     /// <param name="ToolStepCount">
     /// #1682: the tool-step count at arrest time, set independently of <paramref name="Usage"/> (spec/baton.md §3).
     /// </param>
+    /// <param name="PeakBilledInWindow">
+    /// #1691: the largest Σ billed tokens this execution held inside one trailing
+    /// <c>TokenBudgetMonitor.BilledRateWindow</c> — the OBSERVED rate, recorded whether or not
+    /// <paramref name="BilledRateLimit"/> was set. Note the scope: this is an ARREST record, so a
+    /// normally-completed execution's peak reaches no ledger line at all — #1709, and spec/baton.md §3
+    /// states what that does and does not buy a future calibration. Null on any ledger line written
+    /// before #1691.
+    /// </param>
+    /// <param name="BilledRateLimit">
+    /// #1691: the limit <paramref name="PeakBilledInWindow"/> was compared against, or null when no
+    /// rate trigger was armed (every role's default — spec/baton.md §3).
+    /// </param>
     public sealed record ExecutionArrested(
         ExecutionId ExecutionId,
         WorkerUsage? Usage = null,
         IReadOnlyList<string>? LastToolNames = null,
         ArrestReason? Reason = null,
-        int? ToolStepCount = null) : FlowEvent;
+        int? ToolStepCount = null,
+        long? PeakBilledInWindow = null,
+        long? BilledRateLimit = null) : FlowEvent;
 
     /// <summary>
     /// S6 (spec/baton.md §3, #802 section 3.3, pulled forward by #1583): records that a step's execution was rebound to a different

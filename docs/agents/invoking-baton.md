@@ -230,13 +230,26 @@ the full per-producer register, summarized without restating it below: `Captured
 `--accept-capture` writes the capture's body under each declared name it stands in for, settling the
 step `Succeeded`; `ContractFailure` admits only `--reject --reason <text>`, recording a rejection and
 leaving the step resolved-but-`Failed`; the other two producers admit neither verb and reopen only
-through a fresh `baton dispatch`. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
+through a fresh `baton dispatch`. Of those two, `VerifyFailed` carries the failing member(s)' own
+output on `steps[].verifyTail`, bounded — `spec/baton.md` §3 is the canonical account of the field
+and its whole-stream fallback. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
 capture can and can't ever resolve into. `baton resolve` never re-drives the DAG itself, either way —
 in a multi-step lane, check its stdout / the returned `state` for whether the room reached Terminal; if
 not (a downstream step just became deliverable, or a rejected step still has retry budget), re-run
 `baton run --room-dir <room-dir>` — except on a room left `Paused`, where `baton decide` is the verb
 that moves it and `baton run` cannot. `baton resolve` names whichever of the two applies on its own
 stdout; follow that rather than the general rule (spec/baton.md §3).
+
+**`Succeeded` does not by itself mean the engine's gate ran (#1702).** After a step exits 0 with its
+outputs written, the engine runs that workspace's own verify command — but when the workspace does not
+define one (a role's baked-in `pixi` task absent from a foreign workspace), the step still settles
+`Succeeded`, and the room still exits 0, with the gate never having fired. `steps[].verify` is where
+that is said: it reads `"not-run"` exactly in that case and is **absent otherwise**, with
+`steps[].verifyReason` naming what was missing. So exit 0 plus `verify: "not-run"` means "the worker's
+own work looks clean and nothing checked it" — read the field before reporting a run as gated.
+`spec/baton.md` §3 is the register for the resolution order, for how to declare a verify command for
+your own workspace (`.baton/verify`, which must be **committed** to take effect), and for the
+`--verify <cmd>` override.
 
 Once a room is genuinely done with, `baton room delete <room-dir>` (or its batch form,
 `baton rooms prune --terminal --yes`) actually removes it — the directory, its `room-registry.jsonl`
@@ -343,7 +356,7 @@ already Failed, even a perfectly good resume exits 1; read the resumed step's ow
 
 | Code | Meaning |
 |---|---|
-| 0 | `Succeeded` — every step Succeeded |
+| 0 | `Succeeded` — every step Succeeded. **Not the same as "the gates passed" (#1702).** A step can succeed with the engine's own verify command never having run — see `steps[].verify` below |
 | 1 | `Failed` — a step ran and failed for an ordinary reason (also the bucket a still-Running or still-Paused process falls into if it returns short of Terminal, e.g. no `--wait`) |
 | 2 | `ValidationRefused` — refused **before anything was dispatched**. Two causes: bindings/workflow validation or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), typically against a room with no ledger yet; or (#1608) a stale `terminal.json` from a prior attempt that could not be deleted — that one fires against a ledgered room too, and its message names the locked file, so read the message before assuming the bindings are at fault |
 | 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own; or (#1378) `baton run --wait --wait-timeout <minutes>` hit that bound before the room reached Terminal — the room itself is still Paused/Running in that case, check `baton status` |

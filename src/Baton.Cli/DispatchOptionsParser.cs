@@ -14,7 +14,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -65,6 +65,8 @@ public static class DispatchOptionsParser
         TimeSpan? timeout = null;
         long? tokenBudget = null;
         int? maxToolSteps = null;
+        long? billedRateLimit = null;
+        string? verifyCommand = null;
         string? label = null;
         string? workstream = null;
         string? repoPath = null;
@@ -112,6 +114,12 @@ public static class DispatchOptionsParser
                     break;
                 case "--max-tool-steps":
                     maxToolSteps = ParseMaxToolSteps(RequireValue(args, ref i, arg));
+                    break;
+                case "--billed-rate-limit":
+                    billedRateLimit = ParseBilledRateLimit(RequireValue(args, ref i, arg));
+                    break;
+                case "--verify":
+                    verifyCommand = RequireValue(args, ref i, arg);
                     break;
                 case "--label":
                     label = SanitizeLabel(RequireValue(args, ref i, arg));
@@ -190,7 +198,9 @@ public static class DispatchOptionsParser
             listCapabilities,
             tokenBudget,
             repoPath is null ? null : Path.GetFullPath(repoPath),
-            maxToolSteps);
+            maxToolSteps,
+            billedRateLimit,
+            verifyCommand);
     }
 
     /// <summary>
@@ -226,6 +236,25 @@ public static class DispatchOptionsParser
         }
 
         return steps;
+    }
+
+    /// <summary>
+    /// Parses <c>--billed-rate-limit</c>'s value (#1691): a positive whole number of billed tokens per
+    /// trailing <c>Baton.Mutation.TokenBudgetMonitor.BilledRateWindow</c> (5 minutes — the window is
+    /// fixed, only the ceiling is an argument), same shape and no-ceiling rationale as
+    /// <see cref="ParseTokenBudget"/>. spec/baton.md §3 states why this flag is the only source a rate
+    /// limit ever has.
+    /// </summary>
+    private static long ParseBilledRateLimit(string rawValue)
+    {
+        if (!long.TryParse(rawValue, out var tokens) || tokens <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--billed-rate-limit {rawValue}' is not a positive whole number of billed tokens per 5 minutes. {Usage}",
+                "pass a positive integer, e.g. --billed-rate-limit 250000.");
+        }
+
+        return tokens;
     }
 
     /// <summary>

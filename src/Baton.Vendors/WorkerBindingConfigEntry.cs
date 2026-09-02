@@ -53,7 +53,15 @@ namespace Baton.Vendors;
 /// </param>
 /// <param name="VerifyPixiTask">
 /// #1623: <see cref="WorkerRole.VerifyPixiTask"/>, carried onto the resolved
-/// <c>Baton.Mutation.WorkerBinding.Process</c> unchanged — the engine, never the worker, runs it.
+/// <c>Baton.Mutation.WorkerBinding.Process</c> unchanged — the engine, never the worker, runs it. Since
+/// #1702 this is only the lowest-precedence input to <c>Baton.Mutation.VerifyCommandResolver.Resolve</c>,
+/// not the sole source of a verify step.
+/// </param>
+/// <param name="VerifyCommandOverride">
+/// #1702: the <c>--verify</c> escape hatch (<see cref="RoleDispatch.ToBinding"/>'s
+/// <c>verifyCommandOverride</c>), mirroring <paramref name="TokenBudget"/>'s override pattern —
+/// highest precedence in <c>Baton.Mutation.VerifyCommandResolver.Resolve</c>. Null defers to the
+/// workspace's own <c>.baton/verify</c> declaration, then <paramref name="VerifyPixiTask"/>.
 /// </param>
 /// <param name="TokenBudget">
 /// #1623: <see cref="WorkerRole.TokenBudget"/>, or the <c>--token-budget</c> override
@@ -63,6 +71,12 @@ namespace Baton.Vendors;
 /// #1682: <see cref="WorkerRole.MaxToolSteps"/>, or the <c>--max-tool-steps</c> override (#1686 review
 /// F11, <see cref="RoleDispatch.ToBinding"/>'s <c>maxToolStepsOverride</c>) when one was supplied —
 /// same axis shape as <paramref name="TokenBudget"/>'s <c>--token-budget</c>.
+/// </param>
+/// <param name="BilledRateLimit">
+/// #1691: <see cref="WorkerRole.BilledRateLimit"/>, or the <c>--billed-rate-limit</c> override
+/// (<see cref="RoleDispatch.ToBinding"/>'s <c>billedRateLimitOverride</c>) when one was supplied —
+/// same axis shape as <paramref name="TokenBudget"/>'s <c>--token-budget</c>. In practice the override
+/// is the ONLY source: no role declares a default (spec/baton.md §3).
 /// </param>
 /// <param name="Workstream">
 /// The operator-supplied <c>--workstream</c> slug (#1619, rung 1 of #1614's ruling) — a grouping key,
@@ -105,8 +119,10 @@ public sealed record WorkerBindingConfigEntry(
     bool IsWorktree = false,
     string? Label = null,
     string? VerifyPixiTask = null,
+    string? VerifyCommandOverride = null,
     long? TokenBudget = null,
     int? MaxToolSteps = null,
+    long? BilledRateLimit = null,
     string? Workstream = null,
     string? WorktreeBaseSha = null,
     string? ToolSha = null);

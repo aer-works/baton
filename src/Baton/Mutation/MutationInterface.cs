@@ -1654,9 +1654,13 @@ public static class MutationInterface
             // #1682: a monitor now arms on EITHER trigger existing -- a role with only a tool-step cap
             // and no token budget still watches, where before this issue a budget was required for a
             // monitor to be constructed at all.
-            if ((binding.TokenBudget is not null || binding.MaxToolSteps is not null) && usageParser is not null)
+            // #1691: the billed-rate trigger joins the same disjunction -- a dispatch carrying only
+            // --billed-rate-limit still watches.
+            if ((binding.TokenBudget is not null || binding.MaxToolSteps is not null || binding.BilledRateLimit is not null)
+                && usageParser is not null)
             {
-                budgetMonitor = new TokenBudgetMonitor(binding.TokenBudget, binding.MaxToolSteps, usageParser);
+                budgetMonitor = new TokenBudgetMonitor(
+                    binding.TokenBudget, binding.MaxToolSteps, binding.BilledRateLimit, usageParser);
                 var innerOnStdoutLine = target.OnStdoutLine;
                 target = target with
                 {
@@ -1672,6 +1676,25 @@ public static class MutationInterface
                 ? CancellationTokenSource.CreateLinkedTokenSource(dispatchCancellationToken, budgetMonitor.ArrestRequested)
                 : null;
             var effectiveCancellationToken = linkedCancellation?.Token ?? dispatchCancellationToken;
+
+            // #1708 H1/M1: the workspace's REVIEWED .baton/verify is read HERE, before the worker is
+            // spawned -- not in the verify block below, which runs against a working tree the worker has
+            // just had write access to. Both halves matter: the merge-base with origin/main (so neither
+            // an edit to the working tree nor a commit on the lane's own branch is inside it) and
+            // pre-dispatch. See VerifyCommandResolver.ReadCommittedRepoDeclarationAsync for what a failed
+            // read falls back to, and for the one shape (no merge-base) that is announced as unreviewed.
+            var committedVerify = await VerifyCommandResolver
+                .ReadCommittedRepoDeclarationAsync(binding.Target.WorkingDirectory, dispatchCancellationToken)
+                .ConfigureAwait(false);
+            var committedVerifyDeclaration = committedVerify.CommandLine;
+            if (committedVerify.Unreviewed)
+            {
+                await eventLogWriter.AppendAsync(
+                    new FlowEvent.VerifyDeclarationUnreviewed(
+                        prepared.Request.ExecutionId,
+                        VerifyCommandResolver.DeclarationDigest(committedVerifyDeclaration)),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
 
             // Rests on ICoreDispatcher's contract that cancellation via its token argument comes back
             // as a normal CoreDispatchResult (CoreExitReason.CancelRequested), never as
@@ -1698,7 +1721,11 @@ public static class MutationInterface
                         budgetMonitor.SnapshotUsage(),
                         budgetMonitor.SnapshotLastToolNames(),
                         budgetMonitor.ArrestReasonValue,
-                        budgetMonitor.SnapshotToolStepCount()),
+                        budgetMonitor.SnapshotToolStepCount(),
+                        // #1691: recorded on EVERY arrest, not only a BilledRate one -- see
+                        // TokenBudgetMonitor.SnapshotPeakBilledInWindow for why.
+                        budgetMonitor.SnapshotPeakBilledInWindow(),
+                        binding.BilledRateLimit),
                     CancellationToken.None).ConfigureAwait(false);
                 return;
             }
@@ -1719,44 +1746,83 @@ public static class MutationInterface
             // on the crash-recovery ToClassify branch (PumpToFixedPointAsync above) replaying a
             // recorded exit from a possibly-defunct workspace; a real subprocess belongs only on the
             // live-dispatch path.
-            if (classification.Verdict == OutcomeVerdict.Succeeded && binding.VerifyPixiTask is { } verifyTask)
+            // #1702: the resolution order lives on VerifyCommandResolver's own doc, not restated here.
+            // #1708 H1: the repo-declaration arm is the pre-dispatch committed snapshot above; a
+            // redispatch still re-reads it (a fresh dispatch takes a fresh snapshot), which is the
+            // no-stale-command property spec/baton.md §3 states.
+            // #1708 L1: appended on DRIFT, whatever the verdict -- not only on a Succeeded execution,
+            // and whatever the precedence outcome, including when --verify would have won anyway. The
+            // operator-facing fact is "the file in your workspace is not what graded this run", which is
+            // true either way; spec/baton.md §3 states why it is owed after a failed, arrested or
+            // cancelled run too.
+            var workingTreeDeclaration = VerifyCommandResolver.ReadWorkingTreeRepoDeclaration(binding.Target.WorkingDirectory);
+            if (!string.Equals(workingTreeDeclaration, committedVerifyDeclaration, StringComparison.Ordinal))
             {
-                await eventLogWriter.AppendAsync(new FlowEvent.VerifyStarted(prepared.Request.ExecutionId), CancellationToken.None)
-                    .ConfigureAwait(false);
-                var verifyOutcome = await VerifyRunner.RunAsync(verifyTask, binding.Target.WorkingDirectory, dispatchCancellationToken)
-                    .ConfigureAwait(false);
-                if (verifyOutcome.Passed)
+                await eventLogWriter.AppendAsync(
+                    new FlowEvent.VerifyDeclarationIgnored(
+                        prepared.Request.ExecutionId,
+                        VerifyCommandResolver.DeclarationDigest(committedVerifyDeclaration),
+                        VerifyCommandResolver.DeclarationDigest(workingTreeDeclaration)),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            ResolvedVerifyCommand? resolvedVerify = classification.Verdict == OutcomeVerdict.Succeeded
+                ? VerifyCommandResolver.Resolve(
+                    committedVerifyDeclaration, binding.VerifyCommandOverride, binding.VerifyPixiTask)
+                : null;
+
+            if (resolvedVerify is not null)
+            {
+                var (runnable, notRunnableReason) = await VerifyCommandResolver.CheckRunnableAsync(
+                    resolvedVerify, binding.Target.WorkingDirectory, dispatchCancellationToken).ConfigureAwait(false);
+                if (!runnable)
                 {
-                    await eventLogWriter.AppendAsync(new FlowEvent.VerifyPassed(prepared.Request.ExecutionId), CancellationToken.None)
-                        .ConfigureAwait(false);
-                }
-                else if (verifyOutcome.Kind == VerifyFailedKind.Cancelled && dispatchCancellationToken.IsCancellationRequested)
-                {
-                    // The operator's own cancel landed inside the verify window: VerifyStarted above
-                    // stays as the diagnostic record of what was running, but the settlement is
-                    // ExecutionCancelled, not VerifyFailed -- the journal *can* decide here (it holds
-                    // the cancel), so this must not fall into ApplyIndeterminate's retry-foreclosed,
-                    // no-discharge-verb path (#1623 re-review N3). A verify TIMEOUT still settles
-                    // Indeterminate via the VerifyFailed branch below -- only an operator-driven cancel
-                    // gets this arm.
+                    // #1702: see FlowEvent.VerifyNotRun's own doc for what this settles to and why.
+                    // No VerifyStarted here: it never started.
                     await eventLogWriter.AppendAsync(
-                        new FlowEvent.ExecutionCancelled(prepared.Request.ExecutionId),
+                        new FlowEvent.VerifyNotRun(prepared.Request.ExecutionId, notRunnableReason ?? "verify command not runnable"),
                         CancellationToken.None).ConfigureAwait(false);
-                    return;
                 }
                 else
                 {
-                    // Never a blind retry (the ruling's own words): this IS the terminal event for this
-                    // execution -- no FlowEvent.ExecutionSucceeded, no ZeroOutputsTripwire check, the
-                    // step settles Indeterminate via StateProjector.ApplyIndeterminate instead.
-                    await eventLogWriter.AppendAsync(
-                        new FlowEvent.VerifyFailed(
-                            prepared.Request.ExecutionId,
-                            verifyOutcome.FailingMembers,
-                            verifyOutcome.Tail,
-                            verifyOutcome.Kind ?? VerifyFailedKind.GatesFailed),
-                        CancellationToken.None).ConfigureAwait(false);
-                    return;
+                    await eventLogWriter.AppendAsync(new FlowEvent.VerifyStarted(prepared.Request.ExecutionId), CancellationToken.None)
+                        .ConfigureAwait(false);
+                    var verifyOutcome = await VerifyRunner.RunProcessAsync(
+                        resolvedVerify.Program, resolvedVerify.Args, binding.Target.WorkingDirectory, dispatchCancellationToken)
+                        .ConfigureAwait(false);
+                    if (verifyOutcome.Passed)
+                    {
+                        await eventLogWriter.AppendAsync(new FlowEvent.VerifyPassed(prepared.Request.ExecutionId), CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    else if (verifyOutcome.Kind == VerifyFailedKind.Cancelled && dispatchCancellationToken.IsCancellationRequested)
+                    {
+                        // The operator's own cancel landed inside the verify window: VerifyStarted above
+                        // stays as the diagnostic record of what was running, but the settlement is
+                        // ExecutionCancelled, not VerifyFailed -- the journal *can* decide here (it holds
+                        // the cancel), so this must not fall into ApplyIndeterminate's retry-foreclosed,
+                        // no-discharge-verb path (#1623 re-review N3). A verify TIMEOUT still settles
+                        // Indeterminate via the VerifyFailed branch below -- only an operator-driven cancel
+                        // gets this arm.
+                        await eventLogWriter.AppendAsync(
+                            new FlowEvent.ExecutionCancelled(prepared.Request.ExecutionId),
+                            CancellationToken.None).ConfigureAwait(false);
+                        return;
+                    }
+                    else
+                    {
+                        // Never a blind retry (the ruling's own words): this IS the terminal event for this
+                        // execution -- no FlowEvent.ExecutionSucceeded, no ZeroOutputsTripwire check, the
+                        // step settles Indeterminate via StateProjector.ApplyIndeterminate instead.
+                        await eventLogWriter.AppendAsync(
+                            new FlowEvent.VerifyFailed(
+                                prepared.Request.ExecutionId,
+                                verifyOutcome.FailingMembers,
+                                verifyOutcome.Tail,
+                                verifyOutcome.Kind ?? VerifyFailedKind.GatesFailed),
+                            CancellationToken.None).ConfigureAwait(false);
+                        return;
+                    }
                 }
             }
 

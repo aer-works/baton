@@ -72,6 +72,80 @@ public sealed class VerifyRunnerTests
     }
 
     [Fact]
+    public async Task The_tail_is_the_failing_members_own_block_not_a_blind_whole_stream_tail()
+    {
+        // Mirrors tools/gates/gates.py's own per-member marker line shape: "  pass  name  (exit 0)"
+        // / "  FAIL  name  (exit 1)", one after each member's own output. gate-b's own diagnostic
+        // text ("GATE_B_UNIQUE_FAILURE_TEXT") sits well before a long run of trailing pass markers
+        // and padding -- a blind tail of the whole stream (the pre-#1701 behavior) would have cut
+        // it, since the padding after gate-b's marker line alone exceeds the 4000-char tail bound.
+        var padding = new string('p', 200);
+        var trailingPadding = string.Join(" & ", Enumerable.Repeat($"echo {padding}", 25));
+        var command = string.Join(" & ", new[]
+        {
+            "echo   pass  gate-a  (exit 0)",
+            "echo GATE_B_UNIQUE_FAILURE_TEXT",
+            "echo   FAIL  gate-b  (exit 1)",
+            trailingPadding,
+            "echo   pass  gate-c  (exit 0)",
+            "echo GATES: FAIL 1 of 3 -- gate-b",
+        }) + " & exit 1";
+
+        var outcome = await VerifyRunner.RunProcessAsync("cmd", ["/c", command], workingDirectory: null, CancellationToken.None);
+
+        Assert.False(outcome.Passed);
+        Assert.Equal(["gate-b"], outcome.FailingMembers);
+        Assert.NotNull(outcome.Tail);
+        Assert.Contains("GATE_B_UNIQUE_FAILURE_TEXT", outcome.Tail);
+        Assert.DoesNotContain(padding, outcome.Tail);
+    }
+
+    [Fact]
+    public async Task Two_failing_members_own_blocks_are_both_present_and_the_joined_total_still_bounded()
+    {
+        // #1701 review: a naive per-member cap (each independently allowed the full MaxTailChars)
+        // would let N failing members yield N times the intended bound. Two large failing blocks must
+        // still fit inside one MaxTailChars-sized joined result, and each contributes its OWN tail
+        // text, not just whichever member happened to be captured last.
+        var bigBlock = new string('x', 3000);
+        var command = string.Join(" & ", new[]
+        {
+            $"echo {bigBlock}",
+            "echo GATE_A_TEXT",
+            "echo   FAIL  gate-a  (exit 1)",
+            $"echo {bigBlock}",
+            "echo GATE_B_TEXT",
+            "echo   FAIL  gate-b  (exit 1)",
+            "echo GATES: FAIL 2 of 2 -- gate-a, gate-b",
+        }) + " & exit 1";
+
+        var outcome = await VerifyRunner.RunProcessAsync("cmd", ["/c", command], workingDirectory: null, CancellationToken.None);
+
+        Assert.False(outcome.Passed);
+        Assert.Equal(["gate-a", "gate-b"], outcome.FailingMembers);
+        Assert.NotNull(outcome.Tail);
+        Assert.True(outcome.Tail!.Length <= 4000, $"joined tail was {outcome.Tail.Length} chars, want <= 4000");
+        Assert.Contains("GATE_A_TEXT", outcome.Tail);
+        Assert.Contains("GATE_B_TEXT", outcome.Tail);
+    }
+
+    [Fact]
+    public async Task A_marker_line_present_with_no_matching_FAIL_entry_falls_back_to_the_whole_stream_tail()
+    {
+        // Shape drift: the summary line named a failing member, but no per-member marker line for
+        // that name is anywhere in the output (e.g. gates.py changed its own summary vocabulary).
+        // Must degrade to the pre-#1701 whole-stream tail, never silently return an empty Tail.
+        var command = "echo   pass  gate-a  (exit 0) & echo GATES: FAIL 1 of 2 -- gate-missing & exit 1";
+
+        var outcome = await VerifyRunner.RunProcessAsync("cmd", ["/c", command], workingDirectory: null, CancellationToken.None);
+
+        Assert.False(outcome.Passed);
+        Assert.Equal(["gate-missing"], outcome.FailingMembers);
+        Assert.NotNull(outcome.Tail);
+        Assert.Contains("GATES: FAIL 1 of 2 -- gate-missing", outcome.Tail);
+    }
+
+    [Fact]
     public async Task An_unspawnable_program_reports_Failed_rather_than_throwing()
     {
         var outcome = await VerifyRunner.RunProcessAsync(

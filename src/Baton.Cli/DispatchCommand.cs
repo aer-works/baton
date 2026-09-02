@@ -265,7 +265,11 @@ public static class DispatchCommand
     /// </summary>
     private static void CopyPrimaryOutputToOverride(DispatchOptions options, CommandResult result, string primaryOutputName)
     {
-        var step = result.State.Steps.FirstOrDefault(s => s.Status == StepStatus.Succeeded);
+        // #1702: NOT gated on Status == Succeeded — a verify failure flips the step to
+        // Failed/Indeterminate after the output already exists on disk (report-953.md's own repro;
+        // full account spec/baton.md §3, "the resolved verify command" section). File.Exists(srcPath)
+        // below is the real, unconditional gate.
+        var step = result.State.Steps.FirstOrDefault(s => s.LatestExecutionId is not null);
         if (step is null || step.LatestExecutionId is not { } execId)
         {
             return;
@@ -450,6 +454,24 @@ public static class DispatchCommand
                 "remove the --max-tool-steps flag, or dispatch a single role instead of a template.");
         }
 
+        if (options.BilledRateLimit is not null)
+        {
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — each phase carries its own role's billed-rate "
+                + "limit, so --billed-rate-limit does not apply to one of them. Pass --billed-rate-limit "
+                + "only when dispatching a role.",
+                "remove the --billed-rate-limit flag, or dispatch a single role instead of a template.");
+        }
+
+        if (options.VerifyCommand is not null)
+        {
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — each phase carries its own role's verify "
+                + "command, so --verify does not apply to one of them. Pass --verify only when "
+                + "dispatching a role.",
+                "remove the --verify flag, or dispatch a single role instead of a template.");
+        }
+
         var template = WorkflowTemplateCatalog.For(options.Name);
         // #1083: hand every phase the workspace too, so a role run as a template phase can read the repo
         // exactly as a directly-dispatched role now can.
@@ -492,7 +514,9 @@ public static class DispatchCommand
             role, spec, options.Adapter, workingDirectory: workspaceDirectory,
             modelOverride: options.Model, effortOverride: options.Effort, outputOverride: options.OutputPath,
             timeoutOverride: options.Timeout, attachments: options.Attachments, roomDirectoryPath: options.RoomDirectoryPath,
-            tokenBudgetOverride: options.TokenBudget, maxToolStepsOverride: options.MaxToolSteps);
+            tokenBudgetOverride: options.TokenBudget, maxToolStepsOverride: options.MaxToolSteps,
+            billedRateLimitOverride: options.BilledRateLimit,
+            verifyCommandOverride: options.VerifyCommand);
     }
 
     /// <summary>
