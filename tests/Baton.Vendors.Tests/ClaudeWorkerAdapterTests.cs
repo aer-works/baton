@@ -1238,13 +1238,11 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
-    /// #1622: exit code is not the only exhaustion signal. Room dispatch-implement-d6101c3c exited 0
-    /// with the vendor's quota-exhaustion signal already in the stream, and settled Succeeded with
-    /// staged-but-uncommitted work. This is the real integration arm — <see cref="ClaudeWorkerAdapter"/>
-    /// itself as the <see cref="IFailureClassifier"/>, parsing a genuine multi-line stream-json tail —
-    /// unlike the OutcomeClassifierTests.cs arms in Baton.Tests, which stand in a canned classifier
-    /// double (Baton cannot reference Baton.Vendors, Architecture Rule 2, so this is the one place the
-    /// real parse and OutcomeClassifier.Classify can run together).
+    /// #1622: the real integration arm for room dispatch-implement-d6101c3c's own measured shape —
+    /// <see cref="ClaudeWorkerAdapter"/> itself as the <see cref="IFailureClassifier"/>, parsing a
+    /// genuine multi-line stream-json tail, unlike Baton.Tests' OutcomeClassifierTests.cs arms, which
+    /// stand in a canned double (Baton cannot reference Baton.Vendors, Architecture Rule 2 -- this is
+    /// the one place the real parse and OutcomeClassifier.Classify run together).
     /// </summary>
     [Fact]
     public void Classify_vetoes_a_satisfied_exit_0_run_when_the_real_stream_json_stdout_tail_carries_credits_required()
@@ -1271,7 +1269,7 @@ public class ClaudeWorkerAdapterTests
         }
         finally
         {
-            Directory.Delete(directory, recursive: true);
+            DirectoryCleanup.DeleteRecursively(directory);
         }
     }
 

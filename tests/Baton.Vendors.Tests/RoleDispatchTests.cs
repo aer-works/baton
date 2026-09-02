@@ -286,13 +286,9 @@ public class RoleDispatchTests
     }
 
     /// <summary>
-    /// #1622 (b)/#1390: <see cref="WorkerBindingConfigEntry.ChangesTree"/> is derived, never a second
-    /// hardcoded role-name list — read straight off every role the catalog actually declares
-    /// (<see cref="WorkerRoleCatalog.All"/>), so a role added or removed from <c>WorkerRoles.json</c>
-    /// is covered automatically. Implement/janitor are the only two whose catalog grant is BOTH
-    /// <c>write_files</c> and <c>run_shell_commands</c> today; there is no <c>fix</c> role in the
-    /// catalog (#1622's own parenthetical names one, but the catalog does not) — an assertion this
-    /// test pins by asserting the exact set rather than merely "implement and janitor are true".
+    /// #1622 (b)/#1390: pins the exact role set <see cref="WorkerBindingConfigEntry.ChangesTree"/>
+    /// derives against the live <see cref="WorkerRoleCatalog.All"/> (never a second hardcoded list,
+    /// per that field's own remarks), including that no <c>fix</c> role exists to derive against.
     /// </summary>
     [Fact]
     public void ChangesTree_is_derived_from_the_catalogs_own_write_and_shell_grant_for_every_role()
@@ -319,13 +315,9 @@ public class RoleDispatchTests
     }
 
     /// <summary>
-    /// The specific defect the derivation exists to avoid (see
-    /// <see cref="WorkerBindingConfigEntry.ChangesTree"/>'s own remarks): a read-only role's grant can
-    /// be WIDENED to <c>WriteFiles: true</c> (audited-not-enforced) purely so a non-outbox-capable
-    /// adapter can still write its own declared report -- re-deriving <c>ChangesTree</c> from that
-    /// widened grant would misclassify e.g. <c>review</c> as tree-changing under such an adapter.
-    /// <c>fact-check</c> (no declared outputs beyond its own report, <c>write_files: false</c>) forced
-    /// onto an adapter without outbox support reaches exactly that widened-grant shape.
+    /// The specific defect the derivation avoids, per <see cref="WorkerBindingConfigEntry.ChangesTree"/>'s
+    /// own remarks: <c>fact-check</c> forced onto an adapter without outbox support reaches the
+    /// widened-grant shape those remarks describe, and <c>ChangesTree</c> must still read false.
     /// </summary>
     [Fact]
     public void ChangesTree_stays_false_even_when_the_grant_widens_write_files_for_a_non_outbox_adapter()

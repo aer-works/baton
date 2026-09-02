@@ -225,13 +225,16 @@ with nothing recoverable to capture), and driving `--accept-capture` off the wro
 the `CapturedResponse` producer names an engine-owned file (in the execution's own output directory,
 never a declared name) on `steps[].capturedResponseFile`, alongside `steps[].unsatisfiedOutputs` naming
 which declared outputs are still unwritten. `baton resolve <room-dir> [--execution <id>]
---accept-capture | --reject --reason <text>` is the one resolution verb, and which of its two verbs a
-step admits depends on `indeterminateProducer` — spec/baton.md §3's "Consumer obligations" section is
-the full per-producer register, summarized without restating it below: `CapturedResponse` admits either verb and
+--accept-capture | --reject --reason <text> | --close --reason <text>` is the one resolution verb, and
+which of its three verbs a step admits depends on `indeterminateProducer` — spec/baton.md §3's "Consumer
+obligations" section (and its settle-shape table) is the full per-producer register, summarized without
+restating it below: `CapturedResponse` admits either `--accept-capture` or `--reject`, and
 `--accept-capture` writes the capture's body under each declared name it stands in for, settling the
 step `Succeeded`; `ContractFailure` admits only `--reject --reason <text>`, recording a rejection and
-leaving the step resolved-but-`Failed`; the other two producers admit neither verb and reopen only
-through a fresh `baton dispatch`. Of those two, `VerifyFailed` carries the failing member(s)' own
+leaving the step resolved-but-`Failed`; `VerifyFailed`/`ExecutionArrested` admit only
+`--close --reason <text>` (neither ever carried a captured response for `--accept-capture`/`--reject` to
+act on), settling the step resolved-but-`Failed` through the identical room fact `--reject` uses. Of
+those two, `VerifyFailed` carries the failing member(s)' own
 output on `steps[].verifyTail`, bounded — `spec/baton.md` §3 is the canonical account of the field
 and its whole-stream fallback. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
 capture can and can't ever resolve into. `baton resolve` never re-drives the DAG itself, either way —

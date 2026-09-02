@@ -8,13 +8,10 @@ using Baton.Workspaces;
 namespace Baton.Tests.Outcomes;
 
 /// <summary>
-/// #1622 (b) / #1390: work-product evidence on a Succeeded verdict for a tree-changing role. A
-/// permission-blocked or otherwise no-op worker can exit 0 with a satisfied (often zero-output)
-/// contract and settle Succeeded with nothing durable in the tree — #1390's own measured defect.
-/// <see cref="OutcomeClassifier.Classify"/>'s <c>changesTree</c> parameter is what turns this
-/// evidence on; these tests exercise it against a real git worktree, the same discipline
-/// <see cref="Workspaces.WorktreeProvisionerTests"/> uses, since a fake would not discriminate a git
-/// status/rev-list probe.
+/// #1622 (b)/#1390: <see cref="OutcomeClassifier.Classify"/>'s <c>changesTree</c> parameter is what
+/// turns the work-product evidence spec/baton.md §3 specifies on; these tests exercise it against a
+/// real git worktree, the same discipline <see cref="Workspaces.WorktreeProvisionerTests"/> uses,
+/// since a fake would not discriminate a git status/rev-list probe.
 /// </summary>
 public sealed class OutcomeClassifierWorkProductTests : IDisposable
 {
@@ -79,13 +76,10 @@ public sealed class OutcomeClassifierWorkProductTests : IDisposable
     }
 
     /// <summary>
-    /// #1622 (b)'s "a review role → field absent" arm: the identical untouched-worktree, no-outputs
-    /// shape as the hollow test above, but with <c>changesTree: false</c> (a review/patch/fact-check/
-    /// advise/orchestrate role never sets it — <c>RoleDispatch.ToBinding</c>'s own grant-derived
-    /// predicate). <c>WorkspaceChanged</c>/<c>Hollow</c> must stay null, not merely false, so
-    /// <c>WorkflowStatusStepView</c>'s <c>JsonIgnoreCondition.WhenWritingNull</c> omits the fields
-    /// entirely rather than asserting "unchanged" about a role whose contract was never "change the
-    /// tree" in the first place.
+    /// #1622 (b): the review-role field-absence arm -- same fixture shape as the hollow test above,
+    /// <c>changesTree: false</c> (what every non-tree-changing role gets). Must read null, not false,
+    /// so status --json omits the field rather than asserting "unchanged" about a role that was never
+    /// tree-changing to begin with.
     /// </summary>
     [Fact]
     public void A_non_tree_changing_role_never_computes_workspaceChanged_or_hollow()
@@ -103,11 +97,7 @@ public sealed class OutcomeClassifierWorkProductTests : IDisposable
         Assert.Null(classification.HollowReason);
     }
 
-    /// <summary>
-    /// A hollow success never reclassifies the room word: spec/baton.md §3 and #1622's own instruction
-    /// leave "should a hollow success be Failed instead" to the operator. This pins that the verdict
-    /// stays Succeeded even in the strongest hollow case.
-    /// </summary>
+    /// <summary>Pins that the room word stays "Succeeded" even in the strongest hollow case (spec/baton.md §3).</summary>
     [Fact]
     public void Hollow_success_does_not_reclassify_the_verdict()
     {

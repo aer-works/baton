@@ -1254,11 +1254,9 @@ public class OutcomeClassifierTests
     [Fact]
     public void Classify_vetoes_a_satisfied_exit_0_run_when_the_stream_carries_a_quota_exhaustion_signal()
     {
-        // #1622: exit code is not the only exhaustion signal. A worker can hit quota mid-lane, lose
-        // the ability to continue, and still exit 0 with a trivially-satisfied (zero-output) contract
-        // — Baton must not record that as Succeeded. Same shape as the exit-1 park path (#1605): the
-        // ExhaustedUntil classification and RetryNotBefore are carried onto a Failed verdict so
-        // RetryEngine parks it exactly like the exit-1 case.
+        // #1622: a worker hitting quota mid-lane can still exit 0 against a trivially-satisfied
+        // (zero-output) contract; this must not read Succeeded. See OutcomeClassifier.Classify's own
+        // remarks for why -- pinned here as the gating unit test, mock classifier and all.
         var directory = CreateTempDirectory();
         try
         {
