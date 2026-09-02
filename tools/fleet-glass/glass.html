@@ -841,6 +841,15 @@ function underhoodHtml(list){
   }).join("");
   return `<h2>Under the hood · ${list.length}</h2><div class="lanes">` + rows + `</div>`;
 }
+function conductorHtml(conductor){
+  if(!conductor || !conductor.artifacts_path) return "";
+  const copyBtn = copyButtonHtml(conductor.artifacts_path, "copy path");
+  return `<h2>Conductor</h2><div class="lanes"><div class="lane">
+    <div class="top"><span class="name">conductor</span><span class="chips"><span class="chip c-ok">STANDBY</span></span></div>
+    <div class="ev mono" title="${esc(conductor.artifacts_path)}">${esc(conductor.artifacts_path)}</div>
+    <div class="verbs">${copyBtn}</div>
+  </div></div>`;
+}
 function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCount){
   if(totalDismissed <= 0) return "";
   const parts = [];
@@ -854,7 +863,7 @@ function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCoun
   const countLabel = totalDismissed === 1 ? "1 hidden" : `${totalDismissed} hidden`;
   return `${countLabel}${detail ? ` · ${detail}` : ""} · <a id="restore-dismissed">restore</a>`;
 }
-function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms){
+function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms, conductor = lastGood && lastGood.conductor){
   const openTimelinePaths = new Set();
   if(typeof document !== "undefined"){
     for(const el of document.querySelectorAll("#content details.tl-details[open]")){
@@ -903,6 +912,7 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   const totalDismissed = dismissedFailed.length + dismissedDone.length + dismissedStalled.length;
 
   let html = underhoodHtml(underhood);
+  html += conductorHtml(conductor);
   html += `<h2>Running · ${running.length}</h2><div class="lanes">` + groupLanesHtml(running, timelines, false, openTimelinePaths) + `</div>`;
   // Ranked above Failed and kept out of the collapsible Terminal section (unlike Failed/Succeeded):
   // a stalled room isn't finished, and nothing but a person will ever move it, so it stays as
@@ -1236,7 +1246,8 @@ function renderMarkdown(text){
   return html;
 }
 function itemRow(item){
-  const [label, cls] = verdictChip(item.verdict);
+  const isConductor = item.kind === "conductor";
+  const [label, cls] = isConductor ? ["CONDUCTOR", "c-run"] : verdictChip(item.verdict);
   const a = age(item.created_at || item.pushed_at);
   const withheld = item.withheld ? ` · <span title="${esc(item.stub_reason || "")}">withheld</span>` : "";
   const roomLabel = item.room_name || item.room;
@@ -1280,9 +1291,10 @@ function renderInboxDoc(item, text){
   const isVerdictShaped = parsed && typeof parsed === "object" && !Array.isArray(parsed) && (
     Array.isArray(parsed.findings) || typeof parsed.verdict === "string"
   );
+  const isConductor = item && item.kind === "conductor";
   const verdictForChip = (isVerdictShaped && typeof parsed.verdict === "string") ? parsed.verdict : (item && item.verdict);
-  const [label, cls] = verdictChip(verdictForChip);
-  const verdict = item && item.verdict;
+  const [label, cls] = isConductor ? ["CONDUCTOR", "c-run"] : verdictChip(verdictForChip);
+  const verdict = isConductor ? null : (item && item.verdict);
   const verdictLine = verdict
     ? `<div class="meta">${esc(verdict.state || "?")}${verdict.error ? " — " + esc(verdict.error) : ""}${verdict.try ? " (" + esc(verdict.try) + ")" : ""}</div>`
     : "";
@@ -1532,7 +1544,7 @@ window.addEventListener("hashchange", applyRoute);
         } else {
           banner("");
         }
-        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count, dismissedRooms);
+        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count, dismissedRooms, snap.conductor);
       } else if(snap && snap.rooms === null){
         $("content").innerHTML = "";
         $("dismissnote").innerHTML = "";

@@ -28,6 +28,7 @@ narrowed daemon, and bindings/permissions. If this README and the spec disagree,
 | `baton cancel` / `baton decide` / `baton resolve` / `baton resume` / `baton supply` | Mutate an already-started room — cancel a lane, record a pause decision, resolve a captured response, resume a stalled pump, supply a supplementary output. |
 | `baton status` | Read-only projection of a room's current state. |
 | `baton keep` / `baton unkeep` | Mark/unmark a room exempt from `RoomRetentionSweep`'s artifact pruning. |
+| `baton deliver <file> [--title <text>] [--room <room-dir>]` (`--room-dir` also accepted) | Deliver an orchestrator artifact into a room (defaults to standing conductor room) so it reaches the Fleet Glass inbox. |
 | `baton room delete <room-dir> [--keep-deliverables] [--force]` | Remove one room for good: its directory, its `room-registry.jsonl` lines, and (best-effort) a deliverables tombstone. Refuses a non-terminal room unless `--force` — see `spec/baton.md` §8. |
 | `baton rooms prune --terminal [--older-than <days>] [--state <state>] [--dry-run] [--yes]` | Batch form of `room delete`, plus unconditional registry hygiene (dedupe, drop lines whose directory is gone). Lists candidates by default; `--yes` actually deletes. |
 | `baton templates` | List the built-in workflow template catalog. |
