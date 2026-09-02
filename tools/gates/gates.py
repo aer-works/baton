@@ -362,6 +362,10 @@ def _write_stub_pixi(bin_dir, real_gates_py, call_log, fast_exit=0):
     `run gates-fast` call to call_log instead of actually running gates -- exiting `fast_exit`,
     configurable so a test can prove the hook still propagates a REAL gates failure, not just that
     it attempted one (a hardcoded exit 0 here would pass a hook that swallowed gates-fast's exit).
+
+    Also appends the stub's own GIT_DIR/GIT_INDEX_FILE (or `unset` for either) to call_log,
+    alongside `called` -- this is what lets the caller prove the HOOK's `unset` line, not just
+    scrubbed_env(), scrubbed them before this subprocess ever ran (#1651 F1).
     """
     stub = os.path.join(bin_dir, "pixi")
     with open(stub, "w", encoding="utf-8", newline="\n") as f:
@@ -372,6 +376,7 @@ def _write_stub_pixi(bin_dir, real_gates_py, call_log, fast_exit=0):
             "fi\n"
             'if [ "$1" = "run" ] && [ "$2" = "gates-fast" ]; then\n'
             f'    printf \'called\\n\' >> "{call_log}"\n'
+            f'    printf \'%s\\n\' "${{GIT_DIR-unset}}/${{GIT_INDEX_FILE-unset}}" >> "{call_log}"\n'
             f'    exit {fast_exit}\n'
             "fi\n"
             'exit 1\n'
@@ -539,6 +544,15 @@ def selftest():
             _write_stub_pixi(bin_dir, real_gates_py, call_log, fast_exit=7)
             env = dict(os.environ)
             env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+            # #1651 F1: main() (:618-619) already popped GIT_ENV_KEYS from THIS process's
+            # os.environ before selftest() ran, so `env = dict(os.environ)` above starts clean
+            # regardless of what .githooks/pre-push:19 does -- copying it gave the hook's own
+            # `unset` line no discriminating control. Poison GIT_DIR/GIT_INDEX_FILE into the
+            # subprocess's env here so the hook itself has to scrub them; the stub records what it
+            # actually saw (see _write_stub_pixi) and the miss arm below asserts on that record.
+            hookenv_decoy = os.path.join(td, "hookenv-decoy", ".git")
+            env["GIT_DIR"] = hookenv_decoy
+            env["GIT_INDEX_FILE"] = os.path.join(hookenv_decoy, "index")
 
             write_receipt("fast", cwd=repo)
             hit = subprocess.run([sh, hook], cwd=repo, env=env,
@@ -558,17 +572,29 @@ def selftest():
                 print(f"  control FAILED: hook did not attempt gates with no receipt -- "
                       f"exit={miss.returncode} stdout={miss.stdout!r} stderr={miss.stderr!r}")
                 ok = False
+            else:
+                with open(call_log, encoding="utf-8") as f:
+                    call_log_lines = f.read().splitlines()
+                if len(call_log_lines) < 2 or call_log_lines[1] != "unset/unset":
+                    print(f"  control FAILED: hook did not scrub GIT_DIR/GIT_INDEX_FILE before "
+                          f"calling gates-fast -- call_log={call_log_lines!r}")
+                    ok = False
             if miss.returncode != 7:
                 print(f"  control FAILED: hook did not propagate gates-fast's own exit code -- "
                       f"got {miss.returncode}, gates-fast exited 7")
                 ok = False
 
-    # Tripwire (#1648): _init_temp_repo must survive an inherited GIT_DIR, not merely work in a
-    # plain shell. A DECOY repo stands in for "the real repo an inherited GIT_DIR would redirect
-    # this fixture into"; if _init_temp_repo's env=scrubbed_env() is ever dropped, git honours
-    # GIT_DIR over `-C other` and this arm goes red with the decoy's HEAD/tree/config rewritten --
-    # see the commit that added this arm for the red (scrub reverted) and green (scrub restored)
-    # transcripts.
+    # Tripwire (#1648): _init_temp_repo must survive an inherited GIT_DIR/GIT_INDEX_FILE, not
+    # merely work in a plain shell. A DECOY repo stands in for "the real repo an inherited
+    # GIT_DIR would redirect this fixture into"; if _init_temp_repo's env=scrubbed_env() is ever
+    # dropped, this arm goes red one of two ways depending on platform (#1651 F2): finish and
+    # leave the decoy's HEAD/tree/config rewritten, caught by the before/after comparison below --
+    # or `_init_temp_repo(other)` can raise CalledProcessError partway through (observed on
+    # Windows: `git -C other init` guesses bare because the redirected GIT_DIR's path ends in
+    # `/.git`, so the later `git add .` fails against that bare guess), which is caught below so
+    # selftest still reports FAIL instead of crashing before printing it. Both paths run on every
+    # platform; see the commit that added this arm for the red (scrub reverted) and green (scrub
+    # restored) transcripts.
     with tempfile.TemporaryDirectory() as td:
         decoy = os.path.join(td, "decoy")
         os.makedirs(decoy)
@@ -588,21 +614,35 @@ def selftest():
         other = os.path.join(td, "other")
         os.makedirs(other)
         prior_git_dir = os.environ.get("GIT_DIR")
+        prior_git_index_file = os.environ.get("GIT_INDEX_FILE")
         os.environ["GIT_DIR"] = os.path.join(decoy, ".git")
+        os.environ["GIT_INDEX_FILE"] = os.path.join(decoy, ".git", "index")
+        crashed_reason = None
         try:
             _init_temp_repo(other)
+        except subprocess.CalledProcessError as e:
+            crashed_reason = str(e)
         finally:
             if prior_git_dir is None:
                 os.environ.pop("GIT_DIR", None)
             else:
                 os.environ["GIT_DIR"] = prior_git_dir
+            if prior_git_index_file is None:
+                os.environ.pop("GIT_INDEX_FILE", None)
+            else:
+                os.environ["GIT_INDEX_FILE"] = prior_git_index_file
+
+        if crashed_reason is not None:
+            print(f"  control FAILED: _init_temp_repo under an inherited GIT_DIR/GIT_INDEX_FILE "
+                  f"crashed instead of finishing -- {crashed_reason}")
+            ok = False
 
         after = _decoy_state()
         if before != after:
-            print("  control FAILED: _init_temp_repo under an inherited GIT_DIR clobbered the decoy repo")
+            print("  control FAILED: _init_temp_repo under an inherited GIT_DIR/GIT_INDEX_FILE clobbered the decoy repo")
             ok = False
         if not os.path.isdir(os.path.join(other, ".git")):
-            print("  control FAILED: _init_temp_repo did not create its own repo under an inherited GIT_DIR")
+            print("  control FAILED: _init_temp_repo did not create its own repo under an inherited GIT_DIR/GIT_INDEX_FILE")
             ok = False
 
     print("selftest: pass" if ok else "selftest: FAIL")
