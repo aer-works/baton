@@ -101,6 +101,16 @@ public static class OutcomeClassifier
     private const int MaxListedOutputs = 8;
 
     /// <summary>
+    /// N1 (#1664 re-review): bounds <see cref="Workspaces.WorktreeProvisioner.DescribeWorkspaceEvidence"/>
+    /// as a whole, on top of that method's own per-path and count caps — ten real repo-relative paths,
+    /// each individually capped, can still join into a string well past <see cref="MaxReasonLength"/>
+    /// on its own. This is the backstop that keeps the suffix's reserved budget
+    /// (<see cref="BuildContractFailureReason"/>) from going deeply negative before <see cref="Truncate"/>
+    /// even runs.
+    /// </summary>
+    private const int MaxWorkspaceEvidenceLength = 200;
+
+    /// <summary>
     /// How much of <see cref="CoreDispatchResult.StderrTail"/> a reason renders (#563).
     /// </summary>
     /// <remarks>
@@ -305,8 +315,11 @@ public static class OutcomeClassifier
         // Null (no worktree, or nothing to report) leaves the reason unchanged — the byte-pinned
         // no-worktree case in Classify_leaves_the_reason_byte_for_byte_unchanged_when_the_worker_wrote_no_stderr.
         var workspaceEvidence = Workspaces.WorktreeProvisioner.DescribeWorkspaceEvidence(worktreePath, worktreeBaseRef);
+        var boundedWorkspaceEvidence = workspaceEvidence is null
+            ? null
+            : Truncate(workspaceEvidence, MaxWorkspaceEvidenceLength);
         var indeterminateSuffix = " — worker exited 0 with work possibly on disk; awaiting conductor resolution."
-            + (workspaceEvidence is null ? string.Empty : $" Workspace {workspaceEvidence}.");
+            + (boundedWorkspaceEvidence is null ? string.Empty : $" Workspace {boundedWorkspaceEvidence}.");
 
         var indeterminateReason = BuildContractFailureReason(
             validation.UnsatisfiedOutputs,
@@ -567,6 +580,13 @@ public static class OutcomeClassifier
     /// </summary>
     private static string Truncate(string value, int maxLength)
     {
+        // N1 (#1664 re-review): a caller (BuildContractFailureReason) computes maxLength as the
+        // budget minus an already-assembled suffix, which can go negative when the suffix alone
+        // overruns MaxReasonLength — clamped here rather than trusted, so Classify cannot throw while
+        // recording an outcome. TrimWithoutSplittingSurrogatePair clamps too, defensively; this is the
+        // one that decides "value.Length <= maxLength" correctly for a non-positive maxLength.
+        maxLength = Math.Max(maxLength, 0);
+
         if (value.Length <= maxLength)
         {
             return value;

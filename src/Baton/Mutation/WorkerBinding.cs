@@ -42,10 +42,10 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// handed the operator's own working directory, routinely dirty for reasons that have nothing to
     /// do with the execution.
     /// </param>
-    /// <param name="WorktreeBaseRef">
-    /// F5 (#1593 review): <see cref="Baton.Vendors.WorktreeWorkspace.Ref"/>, carried the same hop as
-    /// <see cref="IsWorktree"/> — see <c>WorktreeProvisioner.IsWorkspaceUntouched</c>'s own remarks for
-    /// what it's compared against. Null whenever <see cref="IsWorktree"/> is false.
+    /// <param name="WorktreeBaseSha">
+    /// F5/N2 (#1593/#1664 review): <see cref="Baton.Vendors.WorkerBindingConfigEntry.WorktreeBaseSha"/>,
+    /// carried the same hop as <see cref="IsWorktree"/> — see that field's own remarks for when it is
+    /// null, and <c>WorktreeProvisioner.IsWorkspaceUntouched</c>'s for what it's compared against.
     /// </param>
     public sealed record Process(
         WorkerContract Contract,
@@ -62,7 +62,7 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         string? VerifyPixiTask = null,
         long? TokenBudget = null,
         bool IsWorktree = false,
-        string? WorktreeBaseRef = null)
+        string? WorktreeBaseSha = null)
         : WorkerBinding(Contract, GrantAuditMode);
 
     /// <summary>

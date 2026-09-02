@@ -1653,6 +1653,15 @@ public class OutcomeClassifierTests
     /// a real provisioned worktree and its real base ref, so this pins the branch production actually
     /// takes rather than the non-worktree <c>@{upstream}</c> arm.
     /// </summary>
+    /// <summary>
+    /// N2 (#1664 re-review): passes the REAL resolved base SHA
+    /// (<see cref="WorktreeProvisioner.ResolveBaseCommit"/>), not the literal symbolic
+    /// <c>"HEAD"</c> the pre-fix version of this test passed. A literal <c>"HEAD"</c>, read back out
+    /// of the worktree itself, is <c>HEAD..HEAD ≡ 0</c> — degenerate, and unable to discriminate a
+    /// commit from no commit, which is exactly why production's own use of the same value could not
+    /// have caught N2. This is the control: same clean workspace, but now compared against a base
+    /// that is genuinely capable of being ahead of.
+    /// </summary>
     [Fact]
     public void Dead_worker_without_terminal_result_on_untouched_workspace_retains_Failed_verdict()
     {
@@ -1663,6 +1672,8 @@ public class OutcomeClassifierTests
         try
         {
             InitGitRepository(sourceRepo);
+            var baseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+            Assert.NotNull(baseSha);
             WorktreeProvisioner.Provision(worktreeDir, sourceRepo, "HEAD");
             var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
 
@@ -1673,12 +1684,101 @@ public class OutcomeClassifierTests
                 outboxDir,
                 responseParser: new FakeResponseParser(response: null),
                 worktreePath: worktreeDir,
-                worktreeBaseRef: "HEAD");
+                worktreeBaseRef: baseSha);
 
             Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
             Assert.Contains("Contract not satisfied: 'advice.md' is missing", classification.Reason);
             Assert.DoesNotContain("work possibly on disk", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(sourceRepo);
+            DirectoryCleanup.DeleteRecursively(worktreeParent);
+        }
+    }
+
+    /// <summary>
+    /// N2 (#1664 re-review): the commit polarity the rewritten "untouched" test above cannot exercise
+    /// — a worker that commits inside its worktree, compared against the REAL resolved base SHA, must
+    /// NOT read as untouched. Before this fix, production never populated a real base SHA at all
+    /// (<c>WorktreeWorkspaces</c> nulled <c>Worktree</c> in the same expression that stamped
+    /// <c>IsWorktree: true</c>), so this arm of <see cref="WorktreeProvisioner.IsWorkspaceUntouched"/>
+    /// could never fire and this test is what makes that reachable.
+    /// </summary>
+    [Fact]
+    public void Dead_worker_without_terminal_result_who_committed_over_the_real_base_sha_settles_Indeterminate()
+    {
+        var outboxDir = CreateTempDirectory();
+        var sourceRepo = CreateTempDirectory();
+        var worktreeParent = CreateTempDirectory();
+        var worktreeDir = Path.Combine(worktreeParent, "workspace");
+        try
+        {
+            InitGitRepository(sourceRepo);
+            var baseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+            Assert.NotNull(baseSha);
+            WorktreeProvisioner.Provision(worktreeDir, sourceRepo, "HEAD");
+
+            File.WriteAllText(Path.Combine(worktreeDir, "committed.txt"), "the worker's own commit");
+            RunGitProcess(worktreeDir, "add", ".");
+            RunGitProcess(worktreeDir, "commit", "-m", "worker commit");
+
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir,
+                worktreeBaseRef: baseSha);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(sourceRepo);
+            DirectoryCleanup.DeleteRecursively(worktreeParent);
+        }
+    }
+
+    /// <summary>
+    /// N5/F6 (#1664 re-review): the single behaviour F6 asked for, previously unmeasured — a worker
+    /// that emitted a terminal `result` record reporting FAILURE (not SUCCESS) on an otherwise
+    /// UNTOUCHED workspace must settle Indeterminate, not take the dead-worker Failed/retry path.
+    /// <see cref="CoreDispatchResult.TerminalResultObserved"/>, not
+    /// <see cref="CoreDispatchResult.TerminalSuccessObserved"/>, is what tells
+    /// <c>isDeadWorkerWithoutResult</c> a result actually arrived — every other test at this workspace
+    /// shape passes <c>TerminalResultObserved: false</c> (the default) and would pass identically
+    /// under the old, retired predicate.
+    /// </summary>
+    [Fact]
+    public void A_self_reported_failure_result_on_an_untouched_workspace_settles_Indeterminate_not_Failed()
+    {
+        var outboxDir = CreateTempDirectory();
+        var sourceRepo = CreateTempDirectory();
+        var worktreeParent = CreateTempDirectory();
+        var worktreeDir = Path.Combine(worktreeParent, "workspace");
+        try
+        {
+            InitGitRepository(sourceRepo);
+            var baseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+            Assert.NotNull(baseSha);
+            WorktreeProvisioner.Provision(worktreeDir, sourceRepo, "HEAD");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false, TerminalResultObserved: true),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir,
+                worktreeBaseRef: baseSha);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
         }
         finally
         {
@@ -1744,6 +1844,52 @@ public class OutcomeClassifierTests
             Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
             Assert.Contains("work possibly on disk", classification.Reason);
             Assert.Contains("awaiting conductor resolution", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(worktreeDir);
+        }
+    }
+
+    /// <summary>
+    /// N1 (#1664 re-review): ten baton-repo-shaped stray paths (each ≥40 chars) on a dirty provisioned
+    /// worktree used to blow the suffix budget and throw <c>ArgumentOutOfRangeException</c> out of
+    /// <see cref="OutcomeClassifier.Classify"/> — while recording the very outcome the crash then never
+    /// journaled. The count cap alone (10 paths) let ten real repo-relative paths still assemble a
+    /// suffix past <c>MaxReasonLength</c>; this pins the length cap that closes it: <c>Classify</c>
+    /// must return, not throw, and the reason must still respect the 500-char cap.
+    /// </summary>
+    [Fact]
+    public void Classify_bounds_ten_long_stray_paths_on_a_dirty_worktree_instead_of_throwing()
+    {
+        var outboxDir = CreateTempDirectory();
+        var worktreeDir = CreateTempDirectory();
+        try
+        {
+            InitGitRepository(worktreeDir);
+            var nestedDir = Path.Combine(worktreeDir, "src", "Baton", "Outcomes");
+            Directory.CreateDirectory(nestedDir);
+            for (var i = 0; i < 10; i++)
+            {
+                // Each repo-relative path (from worktreeDir) is well past 40 characters.
+                File.WriteAllText(Path.Combine(nestedDir, $"OutcomeClassifierScenarioNumber{i:D2}.cs"), "stray work");
+            }
+
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.NotNull(classification.Reason);
+            Assert.True(
+                classification.Reason.Length <= 500,
+                $"Reason length {classification.Reason.Length} exceeded the 500-character cap.");
         }
         finally
         {

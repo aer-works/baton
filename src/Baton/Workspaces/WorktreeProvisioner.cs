@@ -97,6 +97,36 @@ public static class WorktreeProvisioner
     }
 
     /// <summary>
+    /// N2 (#1664 re-review): resolves <paramref name="reference"/> to a commit SHA against
+    /// <paramref name="repository"/> — never the worktree, and never after it exists — so the value
+    /// callers carry forward is fixed at provisioning time. A symbolic ref like <c>HEAD</c> read back
+    /// out of the *worktree* later is <c>HEAD..HEAD ≡ 0</c>, degenerate and unable to see a worker's
+    /// own commit; resolving to a SHA first, here, against the SOURCE repository, is what
+    /// <see cref="IsWorkspaceUntouched"/>'s <c>rev-list --count &lt;sha&gt;..HEAD</c> arm needs to mean
+    /// anything. Returns null (rather than throwing) on any git failure — a caller loses only the
+    /// stronger check and falls back to the reflog heuristic <see cref="IsWorkspaceUntouched"/> already
+    /// has for "no base ref available"; <see cref="Provision"/> itself is what surfaces a genuinely bad
+    /// ref as a refusal.
+    /// </summary>
+    public static string? ResolveBaseCommit(string repository, string reference)
+    {
+        try
+        {
+            var (exitCode, stdout, _) = RunGit(repository, "rev-parse", "--verify", $"{reference}^{{commit}}");
+            if (exitCode != 0 || string.IsNullOrWhiteSpace(stdout))
+            {
+                return null;
+            }
+
+            return stdout.Trim();
+        }
+        catch (WorktreeProvisioningException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Creates a git worktree of <paramref name="repository"/> at <paramref name="reference"/> at the
     /// absolute <paramref name="worktreePath"/> — the value the worker's WorkingDirectory then points
     /// at. The caller owns the path so a room with several workers gives each its own tree (one
@@ -238,6 +268,11 @@ public static class WorktreeProvisioner
         var strayPaths = lines
             .Select(l => l.Length > 3 ? l[3..].Trim() : l)
             .Take(maxListed)
+            // N1 (#1664 re-review): bounded by COUNT above, not by LENGTH — a real repo-relative path
+            // is unbounded, and ten of them past this point used to be able to blow the 500-char
+            // reason budget on their own. See Outcomes.ContractValidator.ClampRenderedValue's own
+            // remarks for the shared per-value clamp this reuses.
+            .Select(Outcomes.ContractValidator.ClampRenderedValue)
             .ToList();
 
         var overflow = totalCount - strayPaths.Count;

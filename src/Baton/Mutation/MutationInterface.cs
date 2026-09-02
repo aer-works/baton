@@ -257,9 +257,18 @@ public static class MutationInterface
         // F1 (#1593 review): IndeterminateProducer, not a bare LatestCapturedResponseFile null/not-null
         // read, is what makes a step a target of this verb, and which of the two verbs. Mirrors
         // ResolveCommand's own admission check one layer up.
+        // N3 (#1664 re-review): a null IndeterminateProducer on a step that IS awaiting resolution and
+        // DOES carry a captured response file is the legacy pre-#1593 shape — the same fallback
+        // RedispatchCommand.cs already applies to a pre-field terminal.json — not "a producer no verb
+        // admits". ProjectionCheckpointStore's Version bump (checkpoint.Version < 4) means this can now
+        // only be reached via a full replay off an old flow.jsonl that genuinely predates the field, so
+        // treating it as CapturedResponse is a correct read of the journal, not a workaround for a stale
+        // checkpoint.
+        var effectiveProducer = target?.IndeterminateProducer
+            ?? (target?.LatestCapturedResponseFile is not null ? IndeterminateProducer.CapturedResponse : (IndeterminateProducer?)null);
         var admitsThisVerb = target is { IndeterminateAwaitingResolution: true }
-            && (target.IndeterminateProducer == IndeterminateProducer.CapturedResponse
-                || (accepted == false && target.IndeterminateProducer == IndeterminateProducer.ContractFailure));
+            && (effectiveProducer == IndeterminateProducer.CapturedResponse
+                || (accepted == false && effectiveProducer == IndeterminateProducer.ContractFailure));
         if (!admitsThisVerb)
         {
             // #1608 review finding 5: an explicit --execution naming a step whose latest attempt
@@ -1036,7 +1045,7 @@ public static class MutationInterface
                                 if (p.IsWorktree)
                                 {
                                     worktreePath = p.Target.WorkingDirectory;
-                                    worktreeBaseRef = p.WorktreeBaseRef;
+                                    worktreeBaseRef = p.WorktreeBaseSha;
                                 }
 
                                 responseParser = p.ResponseParser;
@@ -1693,7 +1702,7 @@ public static class MutationInterface
             var worktreePath = binding.IsWorktree ? binding.Target.WorkingDirectory : null;
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
-                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseRef);
+                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha);
 
             // #1623 (contract: spec/baton.md §3): the engine's own verify
             // step, spawned here -- between Classify returning Succeeded and the outcome event append
