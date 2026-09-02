@@ -865,6 +865,22 @@ HOT_TERMINAL_CAP = 40  # matches what glass.html already slices the Succeeded bu
                         # picked to keep the same "what an operator actually looks at" size, not a
                         # new number.
 
+HOT_NONTERMINAL_WARN = 60  # F3 (2026-09-02 review): the cap above bounds only the terminal bucket
+                            # -- Running/Stalled/Indeterminate rooms ride the plain fleet_status
+                            # response in FULL, uncapped (spec/baton.md §6). This is a signal, not a
+                            # cap: one log line when concurrently-active rooms cross the threshold,
+                            # so an incident storm shows up in pusher.log rather than only as a
+                            # bigger push the day it happens.
+
+
+def nonterminal_warn_line(non_terminal_count: int) -> str | None:
+    """One log line when `non_terminal_count` exceeds HOT_NONTERMINAL_WARN, else None -- a signal,
+    not a cap. Full contract: spec/baton.md §6, "Paging and the terminal hot-set cap"."""
+    if non_terminal_count > HOT_NONTERMINAL_WARN:
+        return (f"non-terminal room count {non_terminal_count} exceeds HOT_NONTERMINAL_WARN "
+                f"({HOT_NONTERMINAL_WARN}) -- unbounded, no cap")
+    return None
+
 _TERMINAL_STATES = frozenset({"Succeeded", "Failed"})  # the two buckets glass.html's own Terminal
                                                         # section covers (render()'s `termContent`)
                                                         # -- Running/Stalled/Indeterminate/unreadable
@@ -1490,6 +1506,10 @@ def main() -> None:
                 # `hot_paths` (not the wider `surviving_paths`) -- spec/baton.md §6, "Paging and the
                 # terminal hot-set cap".
                 hot_rooms, terminal_archive, terminal_total = split_hot_and_archive(room_list or [])
+                non_terminal_count = len(room_list or []) - terminal_total
+                warn_line = nonterminal_warn_line(non_terminal_count)
+                if warn_line:
+                    log(warn_line)
                 hot_paths = {r.get("path") for r in hot_rooms if isinstance(r, dict)}
                 wrapped = build_wrapped(
                     hot_rooms,
@@ -1614,29 +1634,6 @@ def _make_room(root: Path, name: str, outputs_rel: list, state="Succeeded", erro
     }), encoding="utf-8")
     return room_dir
 
-
-# ---------------------------------------------------------------------------------------------
-# #1656: test-only mirror of worker.js's own displayed-heartbeat_at merge (handleMcp's
-# fleet_status branch: `maxIsoOrNull(heartbeatAt, storedSnapshot?.pushed_at)`). The MERGE ITSELF
-# runs server-side in the Worker, never here -- this function exists solely so `_selftest` below
-# can prove the invariant that fixed the measured bug (heartbeat_at stuck at 07:11:28Z across
-# successful pushes at 07:32/07:34) without a live Cloudflare Worker to call. Keep it in lockstep
-# with worker.js's maxIsoOrNull by hand -- the same "shape-agnostic ISO-8601 string max, no Date
-# parsing" comparison, since both values are stamped by the same `datetime.isoformat()`/
-# `Date.toISOString()` producers this module already relies on elsewhere (see `maxIsoOrNull`'s own
-# JS-side comment, not restated here).
-# ---------------------------------------------------------------------------------------------
-
-def worker_displayed_heartbeat_at(raw_heartbeat_at: str | None, pushed_at: str | None) -> str | None:
-    a_ok = isinstance(raw_heartbeat_at, str) and len(raw_heartbeat_at) > 0
-    b_ok = isinstance(pushed_at, str) and len(pushed_at) > 0
-    if a_ok and b_ok:
-        return raw_heartbeat_at if raw_heartbeat_at > pushed_at else pushed_at
-    if a_ok:
-        return raw_heartbeat_at
-    if b_ok:
-        return pushed_at
-    return None
 
 
 def _selftest() -> int:
@@ -2581,21 +2578,17 @@ def _selftest() -> int:
                                             "stale_hidden_count": 0, "terminal_total": 0,
                                             "terminal_archive": []})
 
-    # -- #1656: heartbeat_at advances on every successful push (worker_displayed_heartbeat_at
-    # mirrors worker.js's own maxIsoOrNull merge in handleMcp's fleet_status branch) --
-    check("push → heartbeat_at advances: a fresher pushed_at pulls the displayed heartbeat forward",
-          worker_displayed_heartbeat_at("2026-09-02T07:11:28Z", "2026-09-02T07:34:00Z")
-          == "2026-09-02T07:34:00Z")
-    check("(control) an OLDER pushed_at never regresses the displayed heartbeat",
-          worker_displayed_heartbeat_at("2026-09-02T07:11:28Z", "2026-09-02T06:00:00Z")
-          == "2026-09-02T07:11:28Z")
-    check("a quiet fleet (no push at all) still shows the raw heartbeat -- the dead-pusher "
-          "distinction this field exists for is never weakened by the merge",
-          worker_displayed_heartbeat_at("2026-09-02T07:11:28Z", None) == "2026-09-02T07:11:28Z")
-    check("no heartbeat recorded yet, but a push has landed: the push time is still an honest signal",
-          worker_displayed_heartbeat_at(None, "2026-09-02T07:34:00Z") == "2026-09-02T07:34:00Z")
-    check("neither heartbeat nor push recorded yet: stays absent, never fabricated",
-          worker_displayed_heartbeat_at(None, None) is None)
+    # #1656 F2 (2026-09-02 review): worker_displayed_heartbeat_at, the hand-copied Python mirror of
+    # worker.js's maxIsoOrNull heartbeat merge, is deleted -- the real function now has executable
+    # coverage in tools/fleet-glass/worker.selftest.mjs (`node tools/fleet-glass/worker.selftest.mjs`
+    # / `pixi run fleet-glass-worker-selftest`), which discriminates against the actual worker.core.mjs
+    # code path instead of a copy that could drift from it silently.
+
+    # -- F3 (2026-09-02 review): non-terminal hot-set warn, a signal not a cap --
+    check("non_terminal_count at the threshold does not warn", nonterminal_warn_line(HOT_NONTERMINAL_WARN) is None)
+    check("non_terminal_count one over the threshold warns, naming the threshold",
+          nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1) is not None
+          and "HOT_NONTERMINAL_WARN" in nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1))
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)

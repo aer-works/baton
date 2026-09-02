@@ -55,6 +55,13 @@
  *                          back a page at a time via fleet_status's own `page`/`limit` arguments.
  */
 
+import {
+  computeDeliverablesPage,
+  computeFleetStatusPage,
+  isValidFleetStatusPage,
+  maxIsoOrNull,
+} from "./worker.core.mjs";
+
 const INBOX_CAP = 500;
 
 const TOOLS = [
@@ -151,19 +158,6 @@ async function readHeartbeat(env) {
   return { heartbeatAt: at, derivedAt, pendingPushAgeS };
 }
 
-// Both isoStrings this ever compares come from the same producer's datetime.isoformat() call
-// (pusher.py), so a plain string comparison over two well-formed ISO-8601 UTC instants sorts the
-// same as comparing the instants themselves -- no Date parsing, and no timezone-offset pitfall to
-// get wrong. Either argument being absent/non-string degrades to "the other one, or null".
-function maxIsoOrNull(a, b) {
-  const aOk = typeof a === "string" && a.length > 0;
-  const bOk = typeof b === "string" && b.length > 0;
-  if (aOk && bOk) return a > b ? a : b;
-  if (aOk) return a;
-  if (bOk) return b;
-  return null;
-}
-
 async function readInboxIndex(env) {
   const raw = await env.FLEET.get("inbox:index");
   if (!raw) return [];
@@ -175,23 +169,6 @@ async function readInboxIndex(env) {
     // metadata (the SECRET gate below is what fails closed; this is a resilience nicety for it).
     return [];
   }
-}
-
-// #1656: deliverables_list's opaque cursor (full contract in spec/baton.md §6). `atob`/`btoa` are
-// standard Workers runtime globals.
-function encodeDeliverablesCursor(item) {
-  return btoa(JSON.stringify({ pushedAt: item.pushed_at || "", id: item.id }));
-}
-function decodeDeliverablesCursor(cursor) {
-  try {
-    const parsed = JSON.parse(atob(cursor));
-    if (parsed && typeof parsed.id === "string" && parsed.id) {
-      return { pushedAt: typeof parsed.pushedAt === "string" ? parsed.pushedAt : "", id: parsed.id };
-    }
-  } catch {
-    // Malformed or foreign cursor -- degrade to page 0, never throw.
-  }
-  return null;
 }
 
 async function handleDeliver(request, env) {
@@ -269,9 +246,7 @@ async function handleMcp(request, env) {
       // single append-mostly array with no independent per-item identity worth round-tripping. On
       // the SAME tool rather than a new one so worker.js's TOOLS array stays exactly the three
       // read-only names FleetGlassReadOnlyTests pins.
-      if (typeof args.page === "number" && Number.isFinite(args.page) && args.page >= 0) {
-        const limit = typeof args.limit === "number" && args.limit > 0 ? Math.min(Math.floor(args.limit), 200) : 50;
-        const page = Math.floor(args.page);
+      if (isValidFleetStatusPage(args.page)) {
         const raw = await env.FLEET.get("terminal_archive");
         let archive = [];
         if (raw) {
@@ -282,15 +257,7 @@ async function handleMcp(request, env) {
             archive = [];
           }
         }
-        const start = page * limit;
-        const rooms = archive.slice(start, start + limit);
-        return json(rpcResult(id, toolText(JSON.stringify({
-          rooms,
-          page,
-          limit,
-          terminal_total: archive.length,
-          next_page: start + limit < archive.length ? page + 1 : null,
-        }))));
+        return json(rpcResult(id, toolText(JSON.stringify(computeFleetStatusPage(archive, args.page, args.limit)))));
       }
       const stored = await env.FLEET.get("snapshot");
       const { heartbeatAt, derivedAt: derivedAtFromHeartbeat, pendingPushAgeS } = await readHeartbeat(env);
@@ -324,21 +291,8 @@ async function handleMcp(request, env) {
       // /deliver POST (dedupe-by-id unshift, INBOX_CAP eviction), so a page-index cursor could skip
       // or repeat items across two calls; a cursor anchored to a specific item's own identity
       // degrades gracefully (falls back to the start) instead of returning a silently wrong slice.
-      const limit = typeof params?.arguments?.limit === "number" && params.arguments.limit > 0
-        ? Math.min(Math.floor(params.arguments.limit), 200) : 50;
-      const cursor = params?.arguments?.cursor;
-      let startIndex = 0;
-      if (typeof cursor === "string" && cursor) {
-        const decoded = decodeDeliverablesCursor(cursor);
-        if (decoded) {
-          const foundAt = filtered.findIndex((m) => m && m.id === decoded.id && (m.pushed_at || "") === decoded.pushedAt);
-          startIndex = foundAt >= 0 ? foundAt + 1 : 0;
-        }
-      }
-      const items = filtered.slice(startIndex, startIndex + limit);
-      const nextItem = filtered[startIndex + limit];
-      const nextCursor = nextItem ? encodeDeliverablesCursor(nextItem) : null;
-      return json(rpcResult(id, toolText(JSON.stringify({ items, count: filtered.length, next_cursor: nextCursor }))));
+      const page = computeDeliverablesPage(filtered, params?.arguments?.limit, params?.arguments?.cursor);
+      return json(rpcResult(id, toolText(JSON.stringify(page))));
     }
     if (name === "deliverable_read") {
       const itemId = params?.arguments?.id;

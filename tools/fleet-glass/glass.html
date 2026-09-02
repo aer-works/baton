@@ -1215,7 +1215,7 @@ function itemRow(item){
     <div class="meta">${esc(roomLabel)}${item.artifact ? " · " + esc(item.artifact) : ""} · ${a ? a + " ago" : "?"}${withheld}</div>
   </div>`;
 }
-function renderInboxList(items, roomFilter){
+function renderInboxList(items, roomFilter, count){
   let filterLabel = roomFilter;
   if(roomFilter){
     const match = (items.length > 0 ? items : inboxIndex).find(m => m.room === roomFilter && m.room_name);
@@ -1226,9 +1226,18 @@ function renderInboxList(items, roomFilter){
     : "";
   const clear = $("clearfilter");
   if(clear) clear.addEventListener("click", () => { inboxRoomFilter = ""; location.hash = "#inbox"; applyRoute(); });
-  $("inboxcontent").innerHTML = items.length
+  const list = items.length
     ? items.map(itemRow).join("")
     : `<div class="empty">No deliverables ${roomFilter ? "for this room " : ""}yet.</div>`;
+  // #1656 F1: "showing N of count" plus a load-more control mirroring loadMoreTerminal() above --
+  // never silently truncate to the first page. `count` is null only before the first page for the
+  // current filter has come back (fetchInboxPage's one-shot fetch); the summary line waits for it.
+  const summary = count != null
+    ? `<div class="lanes">showing ${items.length} of ${count}`
+      + (inboxNextCursor != null ? ` · <a id="load-more-inbox" class="loadmore">load more</a>` : "")
+      + `</div>`
+    : "";
+  $("inboxcontent").innerHTML = list + summary;
   for(const el of document.querySelectorAll("#inboxcontent .item")){
     el.addEventListener("click", () => { location.hash = "#inbox:" + encodeURIComponent(el.dataset.id); });
   }
@@ -1272,6 +1281,44 @@ function renderInboxDoc(item, text){
 // -----------------------------------------------------------------------------------------------
 let inboxRoomFilter = new URLSearchParams(location.search).get("room") || "";
 let inboxIndex = [];
+// #1656 F1: on-demand paging over the inbox, mirroring terminalArchiveExtra/terminalNextPage/
+// terminalTotal below. inboxExtra/inboxCount/inboxNextCursor are (re)populated by fetchInboxPage
+// whenever the active filter changes (including landing on the unfiltered view) or "load more" is
+// clicked; inboxLoadedFilter records which filter they currently answer for, so switching rooms
+// resets accumulation instead of mixing pages fetched under a different filter.
+let inboxExtra = [];
+let inboxCount = null;
+let inboxNextCursor = null;
+let inboxLoadedFilter = null;
+// One-shot fetch of a deliverables_list page for `room` (empty string/undefined = unfiltered),
+// scoped by an opaque cursor from a prior call's next_cursor. `replace` is true for the first page
+// of a (re)started filter -- overwrites inboxExtra outright rather than appending, since a filter
+// switch must not mix pages fetched under the OLD filter into the new one's count/items.
+function fetchInboxPage(room, cursor, replace){
+  if(!window.mcpHandle) return;
+  const args = { limit: 50 };
+  if(room) args.room = room;
+  if(cursor) args.cursor = cursor;
+  window.mcpHandle.watchTool("baton", "deliverables_list", args, (ev) => {
+    if(ev.type !== "data") return;
+    let payload = ev.result.payload;
+    if(typeof payload === "string"){ try { payload = JSON.parse(payload); } catch { payload = null; } }
+    if(!payload || !Array.isArray(payload.items)) return;
+    if(replace){
+      inboxExtra = payload.items;
+    } else {
+      const known = new Set(inboxExtra.map(m => m && m.id));
+      for(const it of payload.items){ if(it && it.id && !known.has(it.id)){ inboxExtra.push(it); known.add(it.id); } }
+    }
+    if(typeof payload.count === "number") inboxCount = payload.count;
+    inboxNextCursor = payload.next_cursor || null;
+    if(!location.hash.startsWith("#inbox:")) applyRoute();
+  }, { refetchInterval: 0 });
+}
+function loadMoreInbox(){
+  if(inboxNextCursor == null) return;
+  fetchInboxPage(inboxRoomFilter, inboxNextCursor, false);
+}
 function applyRoute(){
   const h = location.hash;
   const onInbox = h === "#inbox" || h.startsWith("#inbox:");
@@ -1293,8 +1340,21 @@ function applyRoute(){
       }
     }, { refetchInterval: 0 });
   } else {
-    const items = inboxRoomFilter ? inboxIndex.filter((m) => m.room === inboxRoomFilter) : inboxIndex;
-    renderInboxList(items, inboxRoomFilter);
+    // #1656 F1: a room filter pages the same way the unfiltered view does -- a fresh, server-side
+    // room-scoped fetch on every filter switch, never a client-side .filter() of the unfiltered
+    // top page (which would silently miss older items for that room, past whatever the unfiltered
+    // page happened to carry).
+    if(inboxLoadedFilter !== inboxRoomFilter){
+      inboxExtra = [];
+      inboxNextCursor = null;
+      inboxCount = null;
+      inboxLoadedFilter = inboxRoomFilter;
+      fetchInboxPage(inboxRoomFilter, null, true);
+    }
+    const base = inboxRoomFilter ? [] : inboxIndex;
+    const knownIds = new Set(base.map(m => m && m.id));
+    const items = base.concat(inboxExtra.filter(m => m && !knownIds.has(m.id)));
+    renderInboxList(items, inboxRoomFilter, inboxCount);
   }
 }
 let lastGood = null;
@@ -1316,6 +1376,11 @@ document.addEventListener("click", (ev) => {
   const loadMoreBtn = ev.target.closest("#load-more-terminal");
   if(loadMoreBtn){
     loadMoreTerminal();
+    return;
+  }
+  const loadMoreInboxBtn = ev.target.closest("#load-more-inbox");
+  if(loadMoreInboxBtn){
+    loadMoreInbox();
     return;
   }
   const dismissBtn = ev.target.closest(".dismissbtn");
