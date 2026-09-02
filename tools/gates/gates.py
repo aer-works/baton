@@ -15,7 +15,9 @@ Run every gate even after one fails -- fail-fast hides the others, and a session
 re-run the whole set to discover the next problem starts filtering output again.
 """
 import argparse
+import csv
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -339,7 +341,7 @@ def delete_receipt(cwd=None):
 # ---------------------------------------------------------------------------------------------
 
 TELEMETRY_NAME = "baton-gate-receipt.telemetry"
-BUILD_PROCESS_NAMES = ("MSBuild.exe", "VBCSCompiler.exe", "testhost.exe")
+BUILD_PROCESS_NAMES = ("MSBuild.exe", "VBCSCompiler.exe")
 
 
 def telemetry_path(cwd=None):
@@ -375,22 +377,43 @@ def _free_physical_mb():
         return None
 
 
-def _build_process_count():
-    """System-wide MSBuild.exe/VBCSCompiler.exe/testhost.exe process count -- `None` off Windows.
+def _is_build_process(name, commandline):
+    """Pure filter: MSBuild.exe/VBCSCompiler.exe by name, a test host by command line.
 
-    `tasklist`, not WMI: no extra dependency (no `psutil` in this repo's Python env) and no
-    PowerShell subprocess, just the OS tool every Windows install already has on PATH.
+    Why a test host needs the command-line half: spec/baton.md §11 C-13. Kept pure and
+    fixture-tested (selftest below) so the WMI call in `_build_process_count` stays a thin,
+    untested-by-necessity adapter.
+    """
+    if name in BUILD_PROCESS_NAMES:
+        return True
+    return name == "dotnet.exe" and bool(commandline) and "testhost" in commandline
+
+
+def _build_process_count():
+    """System-wide MSBuild/VBCSCompiler/testhost process count -- `None` off Windows.
+
+    `Get-CimInstance Win32_Process`, not `tasklist`: a testhost only discriminates from any other
+    `dotnet.exe` process by its command line, which `tasklist` does not expose. One PowerShell
+    call, no new dependency (no `psutil` in this repo's Python env).
     """
     if sys.platform != "win32":
         return None
     try:
         out = subprocess.run(
-            ["tasklist", "/fo", "csv", "/nh"],
+            [
+                "powershell", "-NoProfile", "-Command",
+                "Get-CimInstance Win32_Process | Select-Object Name,CommandLine "
+                "| ConvertTo-Csv -NoTypeInformation",
+            ],
             capture_output=True, text=True, check=False, timeout=15,
         ).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return sum(1 for line in out.splitlines() if any(f'"{n}"' in line for n in BUILD_PROCESS_NAMES))
+    try:
+        rows = list(csv.reader(io.StringIO(out)))
+    except csv.Error:
+        return None
+    return sum(1 for row in rows[1:] if len(row) >= 2 and _is_build_process(row[0], row[1]))
 
 
 def telemetry_snapshot():
@@ -610,7 +633,6 @@ def selftest():
         print(f"  control FAILED: the quiet overlapped path did not report the failing gate -- {failed}")
         ok = False
 
-    import io
     captured = io.BytesIO()
 
     class _Buf:
@@ -718,6 +740,23 @@ def selftest():
             telemetry = json.load(f)
         if telemetry.get("start", {}).get("build_process_count") != 4:
             print(f"  control FAILED: telemetry sidecar did not round-trip its snapshot -- {telemetry!r}")
+            ok = False
+
+        # #1671 follow-up: a testhost only discriminates by command line -- a `dotnet.exe` whose
+        # command line names `testhost` must count, and an unrelated `dotnet.exe` (no testhost in
+        # its command line) must not. Red-first: a plain `name == "testhost.exe"` filter fails the
+        # first fixture (VSTest never runs as that literal process name) and the old `tasklist`
+        # substring approach would fail the second by over-matching any "dotnet.exe" line.
+        fixture = [
+            ("MSBuild.exe", "MSBuild.exe /nologo project.sln"),
+            ("VBCSCompiler.exe", "VBCSCompiler.exe -pipename:foo"),
+            ("dotnet.exe", r"C:\Program Files\dotnet\dotnet.exe exec ...\testhost.dll --port 123"),
+            ("dotnet.exe", "dotnet.exe build project.csproj"),
+            ("explorer.exe", None),
+        ]
+        counted = sum(1 for name, cmd in fixture if _is_build_process(name, cmd))
+        if counted != 3:
+            print(f"  control FAILED: _is_build_process miscounted the fixture -- got {counted}, want 3")
             ok = False
 
         # The hook itself (sh): a forged, currently-valid receipt makes it exit 0 with the skip

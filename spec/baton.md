@@ -1998,7 +1998,15 @@ accumulates) and again in an outer `finally` around the whole run (`run_gates_an
 `--fast` run with no test leg, or a crash before one is reached, still frees the nodes for the next
 lane queued on `tools/buildlock.py`. Proven red-first: `gates.py --selftest` injects a counting fake
 in place of the real shutdown and asserts it fires on a FAILING test-shaped gate and when the inner
-run raises, not only on a passing run.
+run raises, not only on a passing run. Trade-off, stated once: `dotnet build-server shutdown` (no
+target argument) is scoped to the current user session, not to the invoking repo or lane, so a gates
+run also kills any build server a concurrent *non*-pixi build on this box is using -- an interactive
+IDE/hand `dotnet build`, which deliberately keeps node reuse and the shared compiler on (the "the
+interactive developer build is unchanged" scope stated above). Accepted rather than narrowed: every
+tool path this repo tells its own tooling to use goes through pixi (CLAUDE.md, "never invoke `dotnet`
+directly"), where both are already off, so a concurrent lane's own in-flight `pixi run` build has no
+server process to lose to another lane's shutdown call; `--vbcscompiler`/`--msbuild` targets narrow
+*which* servers die, not the session-wide scope, so there is no narrower target that fixes this.
 
 **`dotnet test` serializes across the five xUnit projects, in-assembly parallelism untouched.**
 `test-no-build` (the leg `gates` runs) now passes `-m:1`, MSBuild's own max-node-count. MEASURED
@@ -2019,14 +2027,19 @@ already invoked through it before this issue, so at most one MSBuild tree exists
 regardless of how many lanes are running `gates` concurrently. Confirmed, not changed.
 
 **Telemetry: `gates.py` records what a run cost, in a sidecar the receipt never reads.** Free
-physical MB (`GlobalMemoryStatusEx`) and the system-wide MSBuild/VBCSCompiler/testhost process count
-(`tasklist`), sampled once at the start and once at the end of every run, land in
+physical MB (`GlobalMemoryStatusEx`) and the system-wide MSBuild/VBCSCompiler/testhost process count,
+sampled once at the start and once at the end of every run, land in
 `<git-dir>/baton-gate-receipt.telemetry` -- a file separate from `baton-gate-receipt` itself, the
 same shape as `buildlock`'s own `.info` sidecar, so it can never become part of what
-`--check-receipt` matches (tree/dirty/diff_hash/timestamp). Both are best-effort and `None` off
-Windows (pixi.toml's `linux-64` dev-sandbox leg carries no `GlobalMemoryStatusEx`/`tasklist`). This
-is what a future "measured `<N> MB free` → no new lane" conductor rule would read instead of the
-fixed `<2 GB free` guess it replaces -- that rule itself is not part of this change.
+`--check-receipt` matches (tree/dirty/diff_hash/timestamp). The process count reads `Get-CimInstance
+Win32_Process` (name + command line), not `tasklist`: VSTest's per-project hosts run as `dotnet.exe
+exec ...testhost.dll`, never as a process literally named `testhost.exe` (measured, report-1671.md --
+`Get-Process -Name testhost` read 0 throughout both a baseline and a `-m:1` run), so a testhost is
+only visible by matching `dotnet.exe`'s command line, which `tasklist` does not expose. Both readers
+are best-effort and `None` off Windows (pixi.toml's `linux-64` dev-sandbox leg carries no
+`GlobalMemoryStatusEx`/`Get-CimInstance`). This is what a future "measured `<N> MB free` → no new
+lane" conductor rule would read instead of the fixed `<2 GB free` guess it replaces -- that rule
+itself is not part of this change.
 
 ---
 
