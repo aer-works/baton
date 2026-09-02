@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/philipreese/baton/compare/vendors-v0.27.0...vendors-v0.28.0) (2026-09-02)
+
+
+### Features
+
+* **dispatch:** Add --workstream grouping field plus by-workstream junction links ([#1642](https://github.com/philipreese/baton/issues/1642)) ([17ce115](https://github.com/philipreese/baton/commit/17ce115f299a68735f64d67b4b2ae5f7372c1f48))
+
 ## [0.27.0](https://github.com/philipreese/baton/compare/vendors-v0.26.1...vendors-v0.27.0) (2026-09-01)
 
 

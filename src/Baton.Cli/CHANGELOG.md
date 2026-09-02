@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.28.0](https://github.com/philipreese/baton/compare/cli-v0.27.0...cli-v0.28.0) (2026-09-02)
+
+
+### Features
+
+* **dispatch:** Add --workstream grouping field plus by-workstream junction links ([#1642](https://github.com/philipreese/baton/issues/1642)) ([17ce115](https://github.com/philipreese/baton/commit/17ce115f299a68735f64d67b4b2ae5f7372c1f48))
+
+
+### Bug Fixes
+
+* **flow:** Journal StepRebound on crash-recovery resubmit with divergent binding ([#1640](https://github.com/philipreese/baton/issues/1640)) ([0957c1c](https://github.com/philipreese/baton/commit/0957c1c826bc130046fbc641081c628b4b3937d1))
+* **flow:** Prefer recorded Adapter and Model on fleet_status running bindings ([#1637](https://github.com/philipreese/baton/issues/1637)) ([8f8cd49](https://github.com/philipreese/baton/commit/8f8cd4927d346c535bff7b45fddd6e435c523ddf))
+
 ## [0.27.0](https://github.com/philipreese/baton/compare/cli-v0.26.1...cli-v0.27.0) (2026-09-01)
 
 

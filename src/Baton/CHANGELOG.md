@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.28.0](https://github.com/philipreese/baton/compare/flow-v0.27.0...flow-v0.28.0) (2026-09-02)
+
+
+### Features
+
+* **dispatch:** Add --workstream grouping field plus by-workstream junction links ([#1642](https://github.com/philipreese/baton/issues/1642)) ([17ce115](https://github.com/philipreese/baton/commit/17ce115f299a68735f64d67b4b2ae5f7372c1f48))
+
+
+### Bug Fixes
+
+* **flow:** Clamp far-future exhaustion park delays and pace stale ones ([#1639](https://github.com/philipreese/baton/issues/1639)) ([c5a275e](https://github.com/philipreese/baton/commit/c5a275eeb3b7f7ddaae69b4195ded978827d01ac))
+* **flow:** Journal StepRebound on crash-recovery resubmit with divergent binding ([#1640](https://github.com/philipreese/baton/issues/1640)) ([0957c1c](https://github.com/philipreese/baton/commit/0957c1c826bc130046fbc641081c628b4b3937d1))
+* **flow:** Support legacy aerComputed discriminator on EnvironmentVariable ([#1635](https://github.com/philipreese/baton/issues/1635)) ([da39baf](https://github.com/philipreese/baton/commit/da39baf87df4e6eaab63170008e068224e2e82f9))
+
 ## [0.27.0](https://github.com/philipreese/baton/compare/flow-v0.26.1...flow-v0.27.0) (2026-09-01)
 
 
