@@ -2,7 +2,7 @@ namespace Baton.Cli;
 
 /// <summary>
 /// Parses <c>baton run</c>'s arguments: <c>baton run &lt;workflow-file&gt; --bindings &lt;bindings-file&gt;
-/// [--room-dir &lt;dir&gt;] [--workflow-id &lt;id&gt;] [--echo-worker]</c>. Never throws a bare
+/// [--room-dir &lt;dir&gt;] [--workflow-id &lt;id&gt;] [--echo-worker] [--register]</c>. Never throws a bare
 /// <see cref="InvalidOperationException"/> for a malformed invocation — every failure here is a
 /// <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules).
 /// </summary>
@@ -13,7 +13,7 @@ public static class RunOptionsParser
     /// by <c>Program</c> in the full command list.
     /// </summary>
     public const string Usage =
-        "Usage: baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]";
+        "Usage: baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--register] [--wait] [--wait-timeout <minutes>]";
 
     /// <summary>
     /// #628: <c>&lt;workflow-file&gt;</c> reads as "this is what runs", and under
@@ -33,6 +33,7 @@ public static class RunOptionsParser
         string? workflowId = null;
         var echoWorker = false;
         var wait = false;
+        var register = false;
         TimeSpan? waitTimeout = null;
 
         var i = 0;
@@ -56,6 +57,10 @@ public static class RunOptionsParser
                     break;
                 case "--wait":
                     wait = true;
+                    i++;
+                    break;
+                case "--register":
+                    register = true;
                     i++;
                     break;
                 case "--wait-timeout":
@@ -98,7 +103,7 @@ public static class RunOptionsParser
 
         return new RunOptions(
             workflowFilePath, bindingsFilePath, RoomDirectoryPath.Resolve(roomDirectoryPath), workflowId, echoWorker,
-            Wait: wait, WaitTimeout: waitTimeout);
+            Wait: wait, WaitTimeout: waitTimeout, Register: register);
     }
 
     /// <summary>

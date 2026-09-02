@@ -1177,6 +1177,19 @@ created-at.
   respect to the run itself — an `IOException`/`UnauthorizedAccessException`/`WaitHandleCannotBeOpenedException`
   is reported on stderr and swallowed, never surfaced as a run failure, because the registry only ever
   *adds* `fleet_status` coverage and must never gate a dispatch.
+- **#1657: throwaway repro rooms are excluded, not registered then pruned.** `RoomRegistryStore.AppendAsync`
+  skips writing a room that looks like a repro rather than fleet work (one stderr line names it) —
+  `IsThrowawayReproPath`'s doc comment on that type is the one place the exact rule is stated. This is
+  wider than the manually-created `%TEMP%\...` repros the issue reported: a **bare `baton run` with no
+  `--room-dir`** defaults to `{cwd}/.baton/{workflow}` (`RunOptionsParser`) and is caught by the same
+  `.baton`-segment rule, so an ad hoc `baton run` against a workflow file is unregistered by default too,
+  not only an explicit temp-dir repro. `baton run`'s `--register` flag (`RunOptions.Register`) opts a
+  given room back in; `baton dispatch`/`redispatch` always pass it, since a resolved dispatch/redispatch
+  room is fleet work by construction — the flag only ever matters there for an explicit `--room-dir`
+  override outside `BatonPaths.Rooms`. `AppendAsync` is also a no-op when a line for the exact same (room
+  path, project root) pair is already present, so re-registering an unchanged room on every pump call no
+  longer grows the file — a genuine project-root change for the same room path still appends, preserving
+  the last-writer-wins fold below.
 - **Format: append-only JSONL, not a rewritten JSON map, guarded by a named `Mutex`.** Every dispatch
   that creates a room is a separate, potentially concurrent `baton` process — that concurrency is the
   reason a fleet-wide registry exists at all. A last-writer-wins map would need a read-modify-write

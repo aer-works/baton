@@ -168,7 +168,9 @@ public static class RedispatchCommand
             .ConfigureAwait(false);
 
         var workspace = entry.WorkingDirectory ?? entry.Worktree?.Repository ?? Directory.GetCurrentDirectory();
-        var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, ProjectRootDirectory: workspace);
+        // Register: true -- same rationale as DispatchCommand's own RunOptions construction (spec/baton.md §8, #1657).
+        var runOptions = new RunOptions(
+            workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, ProjectRootDirectory: workspace, Register: true);
         return await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
