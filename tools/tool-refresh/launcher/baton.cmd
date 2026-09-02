@@ -39,5 +39,8 @@ if not exist "%EXE_PATH%" (
     exit /b 1
 )
 
-endlocal & "%EXE_PATH%" %*
+set "FINAL_EXE_PATH=%EXE_PATH%"
+endlocal & set "EXE_PATH=%FINAL_EXE_PATH%"
+
+"%EXE_PATH%" %*
 exit /b %ERRORLEVEL%

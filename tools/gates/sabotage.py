@@ -391,6 +391,7 @@ ALLOWLIST: dict[str, str] = {
     "test-no-build": "full xUnit test suite runner where sabotage is covered by individual test assertions",
     "gate-sabotage": "the sabotage suite and ratchet runner itself; self-tested by executing all sabotage fixtures",
     "fleet-glass-worker-selftest": "pure synthetic selftest already proving red/green discrimination for the heartbeat merge (#1656 F2) and cursor/limit/count polarity, over in-memory fixtures with no live Worker",
+    "launcher-selftest": "pure synthetic selftest exercising fail-closed pointer arms plus real argv-forwarding/exit-code/pointer-flip discrimination (#1670 F2) against a compiled mock exe fixture under a temp BATON_HOME",
 }
 
 

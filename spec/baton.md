@@ -1784,7 +1784,9 @@ pointer fails closed with exit code 1, printing an error naming `pixi run tool-r
 
 **Pruning (#1668).** After a successful pointer flip, `tool-refresh` prunes `{BATON_HOME}/tools/<sha>` directories beyond the
 newest 3 that no live room references. A room is live when it has no `terminal.json`; dispatch records `ToolSha` in each room's
-`bindings.json` so the pruner preserves any directory a running lane was dispatched from even if it falls outside the top 3.
+`bindings.json` so the pruner preserves any directory a running lane was dispatched from even if it falls outside the top 3. A
+live room with no recorded `ToolSha` protects nothing under this check — for such a room the newest-3 cushion is the only guard
+against pruning the directory it actually runs from.
 
 **Tool refresh.** Refreshing is `pixi run tool-refresh` (`tools/tool-refresh/refresh.py`): packs the checkout, installs into the
 new `{BATON_HOME}/tools/<sha>`, verifies `--version` and `templates --json` directly from that directory's binary, flips `current`

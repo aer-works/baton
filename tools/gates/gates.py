@@ -73,6 +73,11 @@ OVERLAP = [
     # and a silent revert going undetected (the F2 finding this fixes: reverting the merge broke
     # nothing in CI before this).
     "fleet-glass-worker-selftest",
+    # #1670 F2: exercises baton.cmd/baton.ps1 against a mock exe fixture built with the legacy
+    # Framework csc.exe (ships with Windows, no MSBuild involved) -- entirely under a temp
+    # BATON_HOME, never the live tools root, same overlap-safety shape as tool-refresh-selftest
+    # above.
+    "launcher-selftest",
 ]
 
 # The MSBuild owners, strictly sequential: one MSBuild at a time.

@@ -184,6 +184,32 @@ def purge_nuget_cache(deps: Deps, version: str, dry_run: bool, print_fn: Callabl
         print_fn(f"tool-refresh: NuGet cache {cache_dir} already absent, nothing to purge")
 
 
+def read_current_pointer(tools_root: str) -> Optional[str]:
+    current_file = os.path.join(tools_root, "current")
+    if not os.path.isfile(current_file):
+        return None
+    try:
+        with open(current_file, "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def verify_target_exe(deps: Deps, tool_dir: str, version: str) -> bool:
+    """Returns True iff tool_dir's binary reports `version` via --version and passes the
+    `templates --json` smoke check. Shared by the fresh-install verify gate and by the idempotent
+    re-refresh check (F4, #1670 review) that decides whether an already-installed SHA can be reused
+    as-is."""
+    target_exe = os.path.join(tool_dir, "baton.exe" if (sys.platform == "win32" or os.name == "nt") else "baton")
+    if not os.path.isfile(target_exe):
+        return False
+    version_result = deps.run([target_exe, "--version"])
+    if version_result.returncode != 0 or version_result.stdout.strip() != version:
+        return False
+    smoke_result = deps.run([target_exe, "templates", "--json"])
+    return smoke_result.returncode == 0
+
+
 def write_current_pointer(tools_root: str, sha: str, dry_run: bool, print_fn: Callable[[str], None]) -> bool:
     """Atomically updates ~/.baton/tools/current to point at sha."""
     current_path = os.path.join(tools_root, "current")
@@ -210,8 +236,28 @@ def write_current_pointer(tools_root: str, sha: str, dry_run: bool, print_fn: Ca
                 pass
 
 
+def sweep_stale_launcher_backups(deps: Deps, dry_run: bool, print_fn: Callable[[str], None]) -> None:
+    """F6 (#1670 review): install_launcher's rename fallback leaves baton.exe.old.<guid> files behind
+    on every failed-uninstall/failed-delete event; nothing else in this tool ever cleaned them up.
+    Sweeps them on each refresh, skipping any still locked by a live process."""
+    if dry_run or not os.path.isdir(deps.dotnet_tools_root):
+        return
+    for name in os.listdir(deps.dotnet_tools_root):
+        if not name.startswith("baton.exe.old."):
+            continue
+        path = os.path.join(deps.dotnet_tools_root, name)
+        try:
+            os.remove(path)
+            print_fn(f"tool-refresh: swept stale launcher backup {path}")
+        except OSError:
+            pass  # still locked -- leave it for a later refresh
+
+
 def install_launcher(deps: Deps, dry_run: bool, print_fn: Callable[[str], None]) -> bool:
-    """Installs the baton launcher scripts into ~/.dotnet/tools, uninstalling any legacy global tool."""
+    """Installs the baton launcher scripts into ~/.dotnet/tools, uninstalling any legacy global tool.
+    Returns False (refresh must fail closed, F5) if a stale baton.exe is still present afterward --
+    PATHEXT resolves .exe before .cmd/.ps1, so a leftover global-tool shim would silently shadow the
+    launcher on every bare `baton` invocation."""
     if dry_run:
         print_fn("tool-refresh: [dry-run] would uninstall legacy global baton tool if present")
     elif dotnet_tool_installed(deps):
@@ -232,6 +278,19 @@ def install_launcher(deps: Deps, dry_run: bool, print_fn: Callable[[str], None])
                         print_fn(f"tool-refresh: warning: could not remove legacy baton.exe: {exc2}")
         else:
             print_fn("tool-refresh: uninstalled legacy global baton tool to allow launcher scripts to resolve on PATH")
+
+    if not dry_run:
+        legacy_exe = os.path.join(deps.dotnet_tools_root, "baton.exe")
+        if os.path.isfile(legacy_exe):
+            print_fn(
+                f"tool-refresh: baton.exe is still present at {legacy_exe} after uninstall/remove/rename -- "
+                "PATHEXT resolves .exe before .cmd/.ps1, so a bare `baton` would keep silently running the "
+                "stale global tool instead of the launcher. Refusing to declare the refresh done; close "
+                "whatever process holds it and re-run."
+            )
+            return False
+
+    sweep_stale_launcher_backups(deps, dry_run, print_fn)
 
     launcher_dir = os.path.join(deps.repo_root, "tools", "tool-refresh", "launcher")
     if not dry_run:
@@ -363,50 +422,82 @@ def refresh(deps: Deps, dry_run: bool, print_fn: Callable[[str], None]) -> int:
     purge_nuget_cache(deps, version, dry_run, print_fn)
 
     tool_dir = os.path.join(deps.tools_root, sha)
+    skip_install = False
+
+    # F4 (#1670 review): a re-refresh at an unchanged HEAD must never rmtree a directory a live lane
+    # loaded from. If the SHA is already installed and verifies, this is a no-op -- skip straight to
+    # the pointer flip. If it exists but fails verify, only remove it when nothing live references it
+    # (current pointer or a non-terminal room's ToolSha); otherwise install into a fresh `<sha>-<n>`
+    # side path and flip there instead of touching the directory in place.
     if not dry_run and os.path.isdir(tool_dir):
-        try:
-            shutil.rmtree(tool_dir)
-        except OSError as exc:
-            print_fn(f"tool-refresh: warning: could not clean existing tool directory {tool_dir}: {exc}")
+        if verify_target_exe(deps, tool_dir, version):
+            print_fn(f"tool-refresh: {sha} is already installed and verified at {tool_dir} -- skipping reinstall")
+            skip_install = True
+        else:
+            current_sha = read_current_pointer(deps.tools_root)
+            live_shas = scan_live_room_shas(deps.rooms_root)
+            is_live = sha == current_sha or sha in live_shas
+            if is_live:
+                suffix = 1
+                candidate = f"{tool_dir}-{suffix}"
+                while os.path.isdir(candidate):
+                    suffix += 1
+                    candidate = f"{tool_dir}-{suffix}"
+                tool_dir = candidate
+                print_fn(
+                    f"tool-refresh: {sha} exists at {os.path.join(deps.tools_root, sha)} but failed "
+                    f"verification and is live -- installing into {tool_dir} instead of touching a "
+                    "directory a running lane may be using"
+                )
+            else:
+                try:
+                    shutil.rmtree(tool_dir)
+                    print_fn(f"tool-refresh: {sha} exists but failed verification and is not live -- reinstalling at {tool_dir}")
+                except OSError as exc:
+                    print_fn(f"tool-refresh: warning: could not clean existing tool directory {tool_dir}: {exc}")
 
-    install_cmd = [
-        "dotnet", "tool", "install", "baton",
-        "--tool-path", tool_dir,
-        "--add-source", "bin/pack",
-    ]
-    install_result = run_step(deps, install_cmd, dry_run, print_fn)
-    if install_result.returncode != 0:
-        print_fn(f"tool-refresh: install failed (exit {install_result.returncode}): {install_result.stderr.strip()}")
-        return 1
-
-    target_exe = os.path.join(tool_dir, "baton.exe" if (sys.platform == "win32" or os.name == "nt") else "baton")
-
-    if dry_run:
-        print_fn(f"tool-refresh: [dry-run] would verify directly: '{target_exe} --version' == {version} and 'templates --json'")
-    else:
-        version_result = deps.run([target_exe, "--version"])
-        installed_version = version_result.stdout.strip()
-        if version_result.returncode != 0 or installed_version != version:
-            print_fn(
-                f"tool-refresh: verify failed -- '{target_exe} --version' printed "
-                f"{installed_version!r} (exit {version_result.returncode}), expected {version!r}."
-            )
+    if not skip_install:
+        install_cmd = [
+            "dotnet", "tool", "install", "baton",
+            "--tool-path", tool_dir,
+            "--add-source", "bin/pack",
+        ]
+        install_result = run_step(deps, install_cmd, dry_run, print_fn)
+        if install_result.returncode != 0:
+            print_fn(f"tool-refresh: install failed (exit {install_result.returncode}): {install_result.stderr.strip()}")
             return 1
 
-        smoke_result = deps.run([target_exe, "templates", "--json"])
-        if smoke_result.returncode != 0:
-            print_fn(
-                f"tool-refresh: verify failed -- '{target_exe} templates --json' exited "
-                f"{smoke_result.returncode}: {smoke_result.stderr.strip()}"
-            )
-            return 1
+        target_exe = os.path.join(tool_dir, "baton.exe" if (sys.platform == "win32" or os.name == "nt") else "baton")
 
-    # Atomically flip pointer
-    if not write_current_pointer(deps.tools_root, sha, dry_run, print_fn):
+        if dry_run:
+            print_fn(f"tool-refresh: [dry-run] would verify directly: '{target_exe} --version' == {version} and 'templates --json'")
+        else:
+            version_result = deps.run([target_exe, "--version"])
+            installed_version = version_result.stdout.strip()
+            if version_result.returncode != 0 or installed_version != version:
+                print_fn(
+                    f"tool-refresh: verify failed -- '{target_exe} --version' printed "
+                    f"{installed_version!r} (exit {version_result.returncode}), expected {version!r}."
+                )
+                return 1
+
+            smoke_result = deps.run([target_exe, "templates", "--json"])
+            if smoke_result.returncode != 0:
+                print_fn(
+                    f"tool-refresh: verify failed -- '{target_exe} templates --json' exited "
+                    f"{smoke_result.returncode}: {smoke_result.stderr.strip()}"
+                )
+                return 1
+
+    # Atomically flip pointer -- the actual installed directory name, which may be a `<sha>-<n>`
+    # side path rather than `sha` itself (see the live-directory guard above).
+    pointer_sha = sha if dry_run else os.path.basename(tool_dir)
+    if not write_current_pointer(deps.tools_root, pointer_sha, dry_run, print_fn):
         return 1
 
-    # Ensure launcher on PATH
-    install_launcher(deps, dry_run, print_fn)
+    # Ensure launcher on PATH -- fails closed (F5) if a stale global-tool baton.exe still shadows it
+    if not install_launcher(deps, dry_run, print_fn):
+        return 1
 
     # Rebuild Baton.Cli Debug for the pusher
     rebuild_result = run_step(deps, ["dotnet", "build", "src/Baton.Cli"], dry_run, print_fn)
@@ -431,7 +522,7 @@ def refresh(deps: Deps, dry_run: bool, print_fn: Callable[[str], None]) -> int:
     # Prune old tool installations
     prune_tools(deps, dry_run, print_fn, keep_count=3)
 
-    print_fn(f"tool-refresh: verified -- baton {version} ({sha}) installed at {tool_dir} and active")
+    print_fn(f"tool-refresh: verified -- baton {version} ({pointer_sha}) installed at {tool_dir} and active")
     return 0
 
 
@@ -826,6 +917,283 @@ def _selftest_abort() -> bool:
     return ok
 
 
+def _selftest_marker_filename_matches_the_cli() -> bool:
+    """F7 (#1670 review): reinstates the cross-check the deleted drain-scan selftest used to run.
+    DRAIN_MARKER_FILENAME/ABORT_INVOCATION are transcriptions of BatonPaths.DrainMarkerFileName /
+    DrainMarker.AbortInvocation -- a mismatch is silent (refresh.py would write/name a marker no
+    verb reads or a recovery command that doesn't work), and nothing else catches a future rename on
+    the C# side. Reads this repo's own real source files, not a fixture -- there is nothing to fake
+    a cross-check against."""
+    ok = True
+    props_path = os.path.join(default_repo_root(), BATON_PATHS_RELATIVE_PATH)
+    try:
+        with open(props_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as exc:
+        print(f"  FAILED: could not read {props_path} to check the marker filename ({exc})")
+        return False
+
+    match = DRAIN_MARKER_CONST.search(text)
+    if match is None:
+        print(f"  FAILED: no DrainMarkerFileName constant found in {BATON_PATHS_RELATIVE_PATH}")
+        return False
+    if match.group("name") != DRAIN_MARKER_FILENAME:
+        print(
+            f"  FAILED: this tool writes {DRAIN_MARKER_FILENAME!r} but the CLI reads "
+            f"{match.group('name')!r} -- the two halves of the drain would not meet"
+        )
+        ok = False
+
+    marker_type_path = os.path.join(default_repo_root(), DRAIN_MARKER_TYPE_RELATIVE_PATH)
+    try:
+        with open(marker_type_path, "r", encoding="utf-8") as f:
+            marker_type_text = f.read()
+    except OSError as exc:
+        print(f"  FAILED: could not read {marker_type_path} to check the abort invocation ({exc})")
+        return False
+
+    abort_match = ABORT_INVOCATION_CONST.search(marker_type_text)
+    if abort_match is None:
+        print(f"  FAILED: no AbortInvocation constant found in {DRAIN_MARKER_TYPE_RELATIVE_PATH}")
+        return False
+    if abort_match.group("invocation") != ABORT_INVOCATION:
+        print(
+            f"  FAILED: every refusal tells the operator to run "
+            f"{abort_match.group('invocation')!r}, which is not this tool's own {ABORT_INVOCATION!r}"
+        )
+        ok = False
+
+    return ok
+
+
+def _selftest_rerefresh_skips_reinstall_when_sha_already_verified() -> bool:
+    """F4 (#1670 review): a same-head re-refresh of an already-installed, already-verified, LIVE
+    SHA must be a no-op for that directory -- never rmtree it, never reinstall into it."""
+    import tempfile
+
+    ok = True
+    with tempfile.TemporaryDirectory() as td:
+        baton_home = os.path.join(td, "baton")
+        tools_root = os.path.join(baton_home, "tools")
+        rooms_root = os.path.join(baton_home, "rooms")
+        dotnet_tools_root = os.path.join(td, "dotnet_tools")
+        nuget_root = os.path.join(td, "nuget")
+        repo_root = _fixture_repo(os.path.join(td, "repo"), "7.7.7")
+
+        install_calls: List[List[str]] = []
+
+        def run(cmd: List[str]) -> CommandResult:
+            if cmd[:3] == ["git", "-C", repo_root] and cmd[3:5] == ["rev-parse", "--short"]:
+                return CommandResult(0, "deadbeef\n")
+            if cmd[:3] == ["pixi", "run", "pack"]:
+                return CommandResult(0)
+            if cmd[:3] == ["dotnet", "tool", "list"]:
+                return CommandResult(0, "")
+            if cmd[:4] == ["dotnet", "tool", "install", "baton"]:
+                install_calls.append(cmd)
+                install_dir = cmd[cmd.index("--tool-path") + 1]
+                os.makedirs(install_dir, exist_ok=True)
+                target_exe = os.path.join(install_dir, "baton.exe" if (sys.platform == "win32" or os.name == "nt") else "baton")
+                open(target_exe, "w").close()
+                return CommandResult(0)
+            if len(cmd) == 2 and cmd[1] == "--version":
+                return CommandResult(0, "7.7.7\n")
+            if len(cmd) == 3 and cmd[1:] == ["templates", "--json"]:
+                return CommandResult(0, "[]\n")
+            if cmd[:3] == ["dotnet", "build", "src/Baton.Cli"]:
+                return CommandResult(0)
+            if cmd[0] == "powershell":
+                return CommandResult(0)
+            raise AssertionError(f"unexpected command in re-refresh selftest: {cmd}")
+
+        deps = Deps(
+            run=run, baton_home=baton_home, rooms_root=rooms_root,
+            tools_root=tools_root, dotnet_tools_root=dotnet_tools_root,
+            nuget_packages_root=nuget_root, repo_root=repo_root
+        )
+        _assert_isolated(deps)
+
+        messages: List[str] = []
+        if refresh(deps, dry_run=False, print_fn=messages.append) != 0:
+            print(f"  FAILED: first refresh did not exit 0. Messages: {messages}")
+            ok = False
+
+        # A live room now references this SHA, as dispatch would have recorded after the first refresh.
+        _make_room(rooms_root, "live-room", terminal=False, tool_sha="deadbeef")
+
+        tool_dir = os.path.join(tools_root, "deadbeef")
+        marker = os.path.join(tool_dir, "marker.txt")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("byte-identical-sentinel")
+
+        messages2: List[str] = []
+        if refresh(deps, dry_run=False, print_fn=messages2.append) != 0:
+            print(f"  FAILED: second (same-head, live) refresh did not exit 0. Messages: {messages2}")
+            ok = False
+
+        if len(install_calls) != 1:
+            print(f"  FAILED: 'dotnet tool install' ran {len(install_calls)} times, want 1 -- re-refresh must skip reinstall")
+            ok = False
+
+        if not os.path.isfile(marker):
+            print("  FAILED: re-refresh touched/removed the live tool directory -- marker.txt is gone")
+            ok = False
+
+        current_file = os.path.join(tools_root, "current")
+        with open(current_file, "r", encoding="utf-8") as f:
+            if f.read().strip() != "deadbeef":
+                print("  FAILED: current pointer is not 'deadbeef' after the idempotent re-refresh")
+                ok = False
+
+    return ok
+
+
+def _selftest_rerefresh_sidepaths_when_live_and_broken() -> bool:
+    """F4 (#1670 review): if the existing tool_dir for this SHA fails verify AND is live (current or
+    a room's ToolSha), refresh must install into a fresh `<sha>-<n>` side path rather than rmtree the
+    directory a lane may be running from."""
+    import tempfile
+
+    ok = True
+    with tempfile.TemporaryDirectory() as td:
+        baton_home = os.path.join(td, "baton")
+        tools_root = os.path.join(baton_home, "tools")
+        rooms_root = os.path.join(baton_home, "rooms")
+        dotnet_tools_root = os.path.join(td, "dotnet_tools")
+        nuget_root = os.path.join(td, "nuget")
+        repo_root = _fixture_repo(os.path.join(td, "repo"), "8.8.8")
+
+        os.makedirs(tools_root, exist_ok=True)
+        broken_dir = os.path.join(tools_root, "broken01")
+        os.makedirs(broken_dir, exist_ok=True)
+        with open(os.path.join(broken_dir, "marker.txt"), "w", encoding="utf-8") as f:
+            f.write("must-survive")
+        with open(os.path.join(tools_root, "current"), "w", encoding="utf-8") as f:
+            f.write("broken01\n")
+
+        install_calls: List[List[str]] = []
+
+        def run(cmd: List[str]) -> CommandResult:
+            if cmd[:3] == ["git", "-C", repo_root] and cmd[3:5] == ["rev-parse", "--short"]:
+                return CommandResult(0, "broken01\n")
+            if cmd[:3] == ["pixi", "run", "pack"]:
+                return CommandResult(0)
+            if cmd[:3] == ["dotnet", "tool", "list"]:
+                return CommandResult(0, "")
+            if cmd[:4] == ["dotnet", "tool", "install", "baton"]:
+                install_calls.append(cmd)
+                install_dir = cmd[cmd.index("--tool-path") + 1]
+                os.makedirs(install_dir, exist_ok=True)
+                target_exe = os.path.join(install_dir, "baton.exe" if (sys.platform == "win32" or os.name == "nt") else "baton")
+                open(target_exe, "w").close()
+                return CommandResult(0)
+            if len(cmd) == 2 and cmd[1] == "--version":
+                # broken01's own exe is a stub with nothing behind it -- only a freshly-installed
+                # exe (under a side path) reports the right version.
+                if os.path.normcase(os.path.dirname(cmd[0])) == os.path.normcase(broken_dir):
+                    return CommandResult(1, "", "not a real exe")
+                return CommandResult(0, "8.8.8\n")
+            if len(cmd) == 3 and cmd[1:] == ["templates", "--json"]:
+                return CommandResult(0, "[]\n")
+            if cmd[:3] == ["dotnet", "build", "src/Baton.Cli"]:
+                return CommandResult(0)
+            if cmd[0] == "powershell":
+                return CommandResult(0)
+            raise AssertionError(f"unexpected command in side-path selftest: {cmd}")
+
+        deps = Deps(
+            run=run, baton_home=baton_home, rooms_root=rooms_root,
+            tools_root=tools_root, dotnet_tools_root=dotnet_tools_root,
+            nuget_packages_root=nuget_root, repo_root=repo_root
+        )
+        _assert_isolated(deps)
+
+        messages: List[str] = []
+        code = refresh(deps, dry_run=False, print_fn=messages.append)
+        if code != 0:
+            print(f"  FAILED: refresh did not exit 0. Messages: {messages}")
+            ok = False
+
+        if not os.path.isfile(os.path.join(broken_dir, "marker.txt")):
+            print("  FAILED: the live-but-broken directory was touched (marker.txt gone) instead of side-pathed")
+            ok = False
+
+        side_path = os.path.join(tools_root, "broken01-1")
+        if not os.path.isdir(side_path):
+            print(f"  FAILED: expected a side-installed directory at {side_path}, found none")
+            ok = False
+        elif not any(cmd[cmd.index("--tool-path") + 1] == side_path for cmd in install_calls if "--tool-path" in cmd):
+            print(f"  FAILED: 'dotnet tool install' was never targeted at {side_path}")
+            ok = False
+
+        current_file = os.path.join(tools_root, "current")
+        with open(current_file, "r", encoding="utf-8") as f:
+            if f.read().strip() != "broken01-1":
+                print("  FAILED: current pointer was not flipped to the side-installed directory")
+                ok = False
+
+    return ok
+
+
+def _selftest_install_launcher_fails_closed_on_stale_exe() -> bool:
+    """F5 (#1670 review): install_launcher must fail closed, naming the holder, if baton.exe is
+    still present in the launcher directory after the uninstall/remove/rename fallback chain --
+    PATHEXT resolves .exe before .cmd/.ps1, so a stale shim would silently shadow the launcher."""
+    import tempfile
+
+    ok = True
+    with tempfile.TemporaryDirectory() as td:
+        dotnet_tools_root = os.path.join(td, "dotnet_tools")
+        os.makedirs(dotnet_tools_root, exist_ok=True)
+        stale_exe = os.path.join(dotnet_tools_root, "baton.exe")
+        with open(stale_exe, "w", encoding="utf-8") as f:
+            f.write("stale global-tool shim")
+
+        def run(cmd: List[str]) -> CommandResult:
+            if cmd[:3] == ["dotnet", "tool", "list"]:
+                return CommandResult(0, "Package Id      Version\nbaton           1.0.0\n")
+            if cmd[:4] == ["dotnet", "tool", "uninstall", "--global"]:
+                # Simulate the uninstall failing while something still holds baton.exe open, and the
+                # remove/rename fallback ALSO failing (both raise inside install_launcher naturally
+                # if the file is genuinely locked; here we monkeypatch os.remove/os.rename instead).
+                return CommandResult(1, "", "process cannot access the file")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        real_remove = os.remove
+        real_rename = os.rename
+
+        def locked_remove(path):
+            if os.path.normcase(path) == os.path.normcase(stale_exe):
+                raise PermissionError("locked")
+            return real_remove(path)
+
+        def locked_rename(src, dst):
+            if os.path.normcase(src) == os.path.normcase(stale_exe):
+                raise PermissionError("locked")
+            return real_rename(src, dst)
+
+        deps = Deps(run=run, dotnet_tools_root=dotnet_tools_root, repo_root=td,
+                    baton_home=td, rooms_root=os.path.join(td, "rooms"),
+                    tools_root=os.path.join(td, "tools"), nuget_packages_root=os.path.join(td, "nuget"))
+        _assert_isolated(deps)
+
+        os.remove, os.rename = locked_remove, locked_rename
+        try:
+            messages: List[str] = []
+            result = install_launcher(deps, dry_run=False, print_fn=messages.append)
+        finally:
+            os.remove, os.rename = real_remove, real_rename
+
+        if result is not False:
+            print("  FAILED: install_launcher returned truthy despite a stale baton.exe still present")
+            ok = False
+        if not any(stale_exe in m for m in messages):
+            print(f"  FAILED: install_launcher's failure message did not name the holder path {stale_exe}. Messages: {messages}")
+            ok = False
+
+    return ok
+
+
 def selftest() -> int:
     arms = [
         ("version compare", _selftest_version_compare),
@@ -835,6 +1203,10 @@ def selftest() -> int:
         ("fail closed on verify failure", _selftest_fail_closed_on_verify_failure),
         ("dry-run touches nothing", _selftest_dry_run_touches_nothing),
         ("abort clears drain marker", _selftest_abort),
+        ("the marker filename this tool writes is the one the CLI reads", _selftest_marker_filename_matches_the_cli),
+        ("re-refresh skips reinstall when the SHA is already verified", _selftest_rerefresh_skips_reinstall_when_sha_already_verified),
+        ("re-refresh side-paths when live and broken", _selftest_rerefresh_sidepaths_when_live_and_broken),
+        ("install_launcher fails closed on a stale exe", _selftest_install_launcher_fails_closed_on_stale_exe),
     ]
     ok = True
     for name, fn in arms:

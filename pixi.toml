@@ -309,3 +309,7 @@ verify-pack = { cmd = "bash scripts/verify-pack-roundtrip.sh", depends-on = ["pa
 # so it stays operator-run rather than gated.
 tool-refresh = { cmd = "python tools/tool-refresh/refresh.py" }
 tool-refresh-selftest = { cmd = "python -u tools/tool-refresh/refresh.py --selftest" }
+
+# #1670 F2: exercises baton.cmd/baton.ps1 end to end against a mock exe fixture. Isolation and
+# overlap-safety rationale live in tools/gates/gates.py's OVERLAP comment, where this is wired in.
+launcher-selftest = { cmd = "powershell.exe -NoProfile -File tests/Launcher.Tests.ps1" }
