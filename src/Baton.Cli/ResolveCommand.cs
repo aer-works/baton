@@ -93,14 +93,14 @@ public static class ResolveCommand
 
         if (!state.Steps.Any(step => step.LatestExecutionId == executionId && step.IndeterminateAwaitingResolution))
         {
+            // #1608 review finding 7: a resolved-but-Failed step and an unresolved one both read
+            // ordinary "Failed" per-step in status --json (WorkflowStatusStepView carries no
+            // IndeterminateAwaitingResolution field) -- the room-level `state` reading Indeterminate
+            // is the one thing status --json actually distinguishes, so that is what this points at.
             throw new CliArgumentException(
                 $"Execution '{explicitExecutionId}' has no unresolved indeterminate capture in room " +
-                $"'{roomDirectoryPath}' — 'baton resolve' only targets a step still awaiting conductor resolution.",
-                // #1608 review finding 7: a resolved-but-Failed step and an unresolved one both read
-                // ordinary "Failed" per-step in status --json (WorkflowStatusStepView carries no
-                // IndeterminateAwaitingResolution field) -- the room-level `state` reading Indeterminate
-                // is the one thing status --json actually distinguishes, so that is what this points at.
-                $"run 'baton status {roomDirectoryPath} --json' and confirm 'state' reads Indeterminate before naming --execution.");
+                $"'{roomDirectoryPath}' — 'baton resolve' only targets a step still awaiting conductor resolution. " +
+                $"Run 'baton status {roomDirectoryPath} --json' and confirm 'state' reads Indeterminate before naming --execution.");
         }
 
         return executionId;
