@@ -36,15 +36,15 @@ public sealed class EnvironmentVariableJsonConverter : JsonConverter<Environment
         {
             if (string.Equals(prop.Name, "kind", StringComparison.OrdinalIgnoreCase))
             {
-                kind = prop.Value.GetString();
+                kind = RequireString(prop);
             }
             else if (string.Equals(prop.Name, "Name", StringComparison.OrdinalIgnoreCase))
             {
-                name = prop.Value.GetString();
+                name = RequireString(prop);
             }
             else if (string.Equals(prop.Name, "Value", StringComparison.OrdinalIgnoreCase))
             {
-                value = prop.Value.GetString();
+                value = RequireString(prop);
             }
         }
 
@@ -88,6 +88,16 @@ public sealed class EnvironmentVariableJsonConverter : JsonConverter<Environment
         }
 
         return result;
+    }
+
+    private static string? RequireString(JsonProperty prop)
+    {
+        if (prop.Value.ValueKind is not JsonValueKind.String and not JsonValueKind.Null)
+        {
+            throw new JsonException($"'{prop.Name}' must be a string on EnvironmentVariable.");
+        }
+
+        return prop.Value.GetString();
     }
 
     public override void Write(Utf8JsonWriter writer, EnvironmentVariable value, JsonSerializerOptions options)

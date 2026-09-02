@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using Baton.Domain;
 using Baton.Store;
@@ -144,5 +145,39 @@ public class EnvironmentVariableSerializationTests
 
         Assert.Contains("\"kind\":\"passThrough\"", json, StringComparison.Ordinal);
         Assert.Contains("\"Name\":\"ANTHROPIC_API_KEY\"", json, StringComparison.Ordinal);
+    }
+
+    // The converter's Write hand-enumerates each arm's members (EnvironmentVariableJsonConverter.cs).
+    // A member added to a record without a matching Write branch would compile and round-trip
+    // silently, because Read builds each arm by hand too — this pins the emitted property set
+    // against the constructor's, so an added member fails here instead of vanishing on every
+    // journal write.
+    [Fact]
+    public void Write_emits_every_constructor_parameter_for_each_EnvironmentVariable_arm()
+    {
+        var arms = typeof(EnvironmentVariable).GetNestedTypes()
+            .Where(t => typeof(EnvironmentVariable).IsAssignableFrom(t) && !t.IsAbstract);
+
+        foreach (var arm in arms)
+        {
+            var ctor = arm.GetConstructors().Single();
+            var parameters = ctor.GetParameters();
+            var instance = (EnvironmentVariable)ctor.Invoke(
+                parameters.Select(p => (object)$"test-{p.Name}").ToArray());
+
+            var json = JsonSerializer.Serialize(instance, typeof(EnvironmentVariable), FlowEventLogJson.Options);
+            using var doc = JsonDocument.Parse(json);
+
+            var emitted = doc.RootElement.EnumerateObject()
+                .Select(p => p.Name)
+                .Where(name => !string.Equals(name, "kind", StringComparison.OrdinalIgnoreCase))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var expected = parameters.Select(p => p.Name!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            Assert.True(
+                expected.SetEquals(emitted),
+                $"{arm.Name}: Write emitted [{string.Join(", ", emitted)}] but the constructor declares [{string.Join(", ", expected)}].");
+        }
     }
 }

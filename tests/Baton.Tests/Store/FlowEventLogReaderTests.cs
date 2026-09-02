@@ -128,6 +128,54 @@ public class FlowEventLogReaderTests
         }
     }
 
+    /// <summary>
+    /// A line with a non-string <c>Value</c> or <c>kind</c> on an <c>EnvironmentVariable</c> — a torn
+    /// write, a hand-edited journal, a foreign writer — must surface at this boundary as
+    /// <see cref="FlowEventLogReadException"/>, the type every catch in the reader and its callers
+    /// (<c>Program.cs</c>, <c>RoomDetailTool</c>) actually handles. Asserting only at the converter
+    /// would miss a converter that throws <see cref="InvalidOperationException"/> instead of
+    /// <see cref="JsonException"/>: <see cref="FlowEventLogReader"/> catches <c>JsonException</c> only
+    /// (<see cref="FlowEventLogJson"/> remarks), so anything else propagates unhandled.
+    /// </summary>
+    [Theory]
+    [InlineData("Value")]
+    [InlineData("kind")]
+    public async Task ReadAllAsync_throws_a_FlowEventLogReadException_for_a_non_string_EnvironmentVariable_field(string fieldName)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var request = new ExecutionRequest(
+                new ExecutionId("exec-1"),
+                new WorkflowId("wf-1"),
+                new StepId("step-1"),
+                "claude",
+                Inputs: [],
+                Outputs: [],
+                Timeout: TimeSpan.FromMinutes(10),
+                Environment: [new EnvironmentVariable.BatonComputed("BATON_OUTPUT_DIR", "/artifacts/execution_1")],
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+            var line = JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(request)),
+                typeof(LogEntry),
+                FlowEventLogJson.Options);
+
+            var lineNode = JsonNode.Parse(line)!.AsObject();
+            var environmentEntry = lineNode["Event"]!["Request"]!["Environment"]!.AsArray()[0]!.AsObject();
+            environmentEntry[fieldName] = 123;
+
+            await File.WriteAllTextAsync(path, lineNode.ToJsonString() + "\n", Encoding.UTF8, TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAsync<FlowEventLogReadException>(
+                () => new FlowEventLogReader(path).ReadAllAsync(TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
     [Fact]
     public async Task ReadAllAsync_skips_core_owned_lines_and_returns_only_flow_events()
     {
