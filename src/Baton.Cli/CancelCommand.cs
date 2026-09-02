@@ -61,9 +61,15 @@ public static class CancelCommand
     /// fail closed rather than guess; the message names every Running candidate found.
     /// </exception>
     /// <exception cref="Baton.Store.FlowJournalHeldException">
-    /// #816: only from the room-level target resolution's read (<see cref="ResolveRunningExecutionAsync"/>,
-    /// called before the try block below) — the rare read-open collision that doc's own remarks describe
-    /// (a killed process whose handle the OS has not finished tearing down), not the live-pump case. The
+    /// #816: only from one of this method's ledger <em>reads</em>, never its append — the rare read-open
+    /// collision that doc's own remarks describe (a killed process whose handle the OS has not finished
+    /// tearing down), not the live-pump case. Three reads can raise it, and none is inside the try:
+    /// the #1586 dead-holder pre-check, the room-level target resolution
+    /// (<see cref="ResolveRunningExecutionAsync"/>), and the re-projection inside the catch itself —
+    /// which would escape after the <see cref="CancelRequestFile"/> was already written, reporting
+    /// failure for a cancellation that was in fact queued. All three go through
+    /// <c>FlowEventLogReader</c>, which opens <see cref="FileShare.ReadWrite"/>, so all three are
+    /// near-unreachable in practice; this is a statement of the surface, not of an observed failure. The
     /// far more common append-open collision — this room's <c>FlowEventLogWriter</c> losing to the SAME
     /// live pump's own long-lived writer — is caught inside <see cref="ExecuteAsync"/> and folded into the
     /// same fall-through as <see cref="Baton.Concurrency.WorkflowLockedException"/> below (#1646).
@@ -175,6 +181,9 @@ public static class CancelCommand
                 .ConfigureAwait(false);
 
         FlowState state;
+        // #1650 F2: this call queued the cancellation instead of applying it — see CommandResult's
+        // own doc for why the projected state cannot say so on its own.
+        var cancellationQueued = false;
         // Defaulted here, not inside the catch below: WorktreeWorkspaces.ProvisionLazily can succeed
         // (assigning a real list) and STILL have the later mutation call below lose the guard race, in
         // which case the catch must not discard what was actually provisioned. Only a throw from
@@ -182,11 +191,14 @@ public static class CancelCommand
         IReadOnlyList<ProvisionedWorktree> provisionedWorktrees = [];
         try
         {
-            // #1495 finding: WorktreeWorkspaces.ProvisionLazily takes the SAME flow.lock guard
-            // (WorktreeWorkspaces.Walk, "worktree provisioning" holder) even when no binding declares a
-            // worktree — so a live pump contends this call too, not only the mutation call below. Both
-            // must share one WorkflowLockedException catch, or the fall-through would only cover half
-            // of what actually contends the lock.
+            // #1495 finding, as amended by #1646: WorktreeWorkspaces.ProvisionLazily can take the SAME
+            // flow.lock guard (WorktreeWorkspaces.Walk, "worktree provisioning" holder) as the mutation
+            // call below, so a live pump contends this call too and both must share one catch — else
+            // the fall-through would cover only half of what contends the lock. What changed is the
+            // scope of "can": #1646 stopped Walk touching flow.lock at all when no binding declares a
+            // worktree, which is the common shape, so this call now contends only for a bindings file
+            // that actually declares one. The catch stays shared regardless — see the #1646 note in it
+            // for what reaching further down the try block newly exposed.
             var (provisionedConfig, walkedProvisionedWorktrees, _) =
                 WorktreeWorkspaces.ProvisionLazily(bindingConfig, options.RoomDirectoryPath);
             provisionedWorktrees = walkedProvisionedWorktrees;
@@ -242,9 +254,16 @@ public static class CancelCommand
             await CancelRequestFile.WriteAsync(options.RoomDirectoryPath, fileTarget, cancellationToken)
                 .ConfigureAwait(false);
 
+            // #1650 F4: purpose-written per arm, never ex.Message wholesale. FlowJournalHeldException's
+            // own message is written for a caller whose command was REFUSED — it ends "retry once
+            // nothing else holds the ledger; for a decision, the workflow's latest attempt must be
+            // Paused…", which is decide-oriented advice, wrong for a cancel that was in fact accepted
+            // and queued, and it terminates with a holder list rather than a period, so it ran straight
+            // into the sentence below. Telling an operator to retry something that already succeeded is
+            // the documentation defect CLAUDE.md names ("a reader's wrong conclusion").
             var holderClause = ex is WorkflowLockedException lockedException
                 ? $"'{options.RoomDirectoryPath}'s {BatonPaths.FlowLockFileName} is currently held by '{lockedException.HolderDescription ?? "an unnamed holder"}'."
-                : ex.Message;
+                : $"'{logPath}' is held open by another process.";
             Console.Out.WriteLine(
                 $"Requested — {holderClause} " +
                 "If that is a live pump, it will act on this cancellation the next time its cancel.request poll " +
@@ -252,11 +271,14 @@ public static class CancelCommand
 
             var events = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
             state = StateProjector.Project(events, snapshot);
+            cancellationQueued = true;
         }
 
         var worktreeTeardowns = WorktreeProvisioner.TeardownIfTerminal(state.Status, provisionedWorktrees);
 
-        return new CommandResult(state, snapshot, RoomDirectoryPath: options.RoomDirectoryPath, WorktreeTeardowns: worktreeTeardowns);
+        return new CommandResult(
+            state, snapshot, RoomDirectoryPath: options.RoomDirectoryPath, WorktreeTeardowns: worktreeTeardowns,
+            CancellationQueued: cancellationQueued);
     }
 
     /// <summary>

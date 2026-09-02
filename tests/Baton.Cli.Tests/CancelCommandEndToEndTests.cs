@@ -66,6 +66,19 @@ public class CancelCommandEndToEndTests
 
             var requestFilePath = Path.Combine(roomDirectory, CancelRequestFile.FileName);
             Assert.True(File.Exists(requestFilePath), "expected the same CancelRequestFile fall-through the WorkflowLockedException path uses");
+
+            // #1650 F2: the fall-through must not turn this into exit 0. Before #1646 folded
+            // FlowJournalHeldException into the catch, this input escaped to Program's typed-exception
+            // boundary and exited 1; the room reached here is Terminal with every step Succeeded, which
+            // is precisely the shape MutationExitCodeResolver's queued arm exists to keep off 0 — see
+            // that arm's own comment for why. Asserted through the resolver Program itself calls, so
+            // this pins the actual exit code rather than a proxy for it.
+            Assert.True(result.CancellationQueued);
+            Assert.Equal(MutationExitCodeResolver.Failure, MutationExitCodeResolver.Resolve(result));
+
+            // Polarity control: the same resolver on the same room WITHOUT the queued flag is 0, so the
+            // assertion above is discriminating the fall-through rather than the room's own state.
+            Assert.Equal(MutationExitCodeResolver.Success, MutationExitCodeResolver.Resolve(result with { CancellationQueued = false }));
         }
         finally
         {
