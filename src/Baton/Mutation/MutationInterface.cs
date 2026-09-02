@@ -171,6 +171,313 @@ public static class MutationInterface
     }
 
     /// <summary>
+    /// #1608: the conductor resolution surface — <c>baton resolve</c>'s own mutation-surface entry
+    /// point; see <see cref="FlowEvent.CaptureResolved"/>'s own remarks for the exclusivity claim this
+    /// enforces. Unlike every other entry point above, this never pumps.
+    /// <para>
+    /// A step with no declared <see cref="PausePoint"/> keeps an unresolved
+    /// <see cref="FlowEvent.ExecutionIndeterminate"/> entirely unreachable from <c>baton decide</c>
+    /// (<see cref="ExternalDecisionValidator"/> only ever admits a Paused step, or a step parked on a
+    /// pending retry deadline), so nothing downstream is waiting on this call the way a paused workflow
+    /// waits on <see cref="RecordDecisionAsync"/>. A step that DOES declare <see cref="PausePoint"/> is
+    /// the exception: <see cref="Scheduling.PauseEngine.GetPauseObligations"/> reaches it through the
+    /// ordinary <c>Failed &amp;&amp; !MayRetry</c> path regardless of why retry is refused, so it becomes
+    /// <see cref="StepStatus.Paused"/> with <see cref="StepState.IndeterminateAwaitingResolution"/>
+    /// still set — and IS reachable from <c>baton decide</c> in that state (#1608 review finding 3).
+    /// This verb does not special-case that step; a conductor deciding not to resolve first gets
+    /// whatever ordinary pause-decision consequence follows, still carrying the unresolved flag.
+    /// </para>
+    /// A follow-up <c>baton run --room-dir</c> is what re-drives
+    /// the DAG once a rejection leaves the step retry-eligible again.
+    /// </summary>
+    /// <param name="accepted">
+    /// Same boolean as <see cref="FlowEvent.CaptureResolved.Accepted"/> — see its remarks for what
+    /// each value means and why the prose-safe/all-or-nothing rule (spec/baton.md §3, "Consumer
+    /// obligations") is not re-derived here. When the unsatisfied-output list names more than one
+    /// output, every name gets the SAME captured body verbatim on acceptance — there is only ever
+    /// one captured response per execution, never one per declared name, so a two-name capture (e.g.
+    /// two prose-safe `.md` outputs on one contract) produces two identical files. No shipped role
+    /// hits this today (every multi-output role's second output is structured, which blocks the
+    /// capture from forming at all per <see cref="Outcomes.OutputMaterializer"/>'s own gate), so this
+    /// is latent rather than live. <c>false</c>: no file is written; <paramref name="reason"/> is
+    /// required.
+    /// </param>
+    /// <exception cref="InvalidCaptureResolutionException">
+    /// <paramref name="executionId"/> names no step with an unresolved
+    /// <see cref="FlowEvent.ExecutionIndeterminate"/>, <paramref name="accepted"/> is <c>false</c> and
+    /// <paramref name="reason"/> is null/whitespace, or reading/writing a captured or declared output
+    /// file failed.
+    /// </exception>
+    /// <exception cref="Baton.Concurrency.WorkflowLockedException">
+    /// Another Flow instance already holds <paramref name="roomDirectoryPath"/>'s lock.
+    /// </exception>
+    public static async Task<FlowState> RecordCaptureResolutionAsync(
+        string roomDirectoryPath,
+        WorkflowDefinitionSnapshot snapshot,
+        string artifactsRootPath,
+        IEventLogReader eventLogReader,
+        IEventLogWriter eventLogWriter,
+        ExecutionId executionId,
+        bool accepted,
+        string? reason,
+        CancellationToken cancellationToken = default,
+        string? holderDescription = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentException.ThrowIfNullOrEmpty(artifactsRootPath);
+        ArgumentNullException.ThrowIfNull(eventLogReader);
+        ArgumentNullException.ThrowIfNull(eventLogWriter);
+
+        if (!accepted && string.IsNullOrWhiteSpace(reason))
+        {
+            throw new InvalidCaptureResolutionException(
+                "Rejecting a captured response requires --reason: the conductor's justification is " +
+                "itself the room fact this verb exists to record.");
+        }
+
+        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, holderDescription);
+
+        var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
+        var log = await eventLogReader.ReadSnapshotFromOffsetAsync(checkpoint?.ByteOffset ?? 0, cancellationToken).ConfigureAwait(false);
+        if (log.IsFallbackToFull)
+        {
+            checkpoint = null;
+        }
+
+        var (state, _) = StateProjector.ProjectAndCheckpoint(log.FlowEvents, snapshot, checkpoint, log.ByteOffset);
+
+        var target = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
+        if (target is null || !target.IndeterminateAwaitingResolution)
+        {
+            // #1608 review finding 5: an explicit --execution naming a step whose latest attempt
+            // already recorded an ACCEPTED CaptureResolved for this exact execution is a repair
+            // request, not an invalid target — see ReconcileAcceptedCaptureAsync's own remarks for why
+            // "already resolved" must not always mean "refuse" now that the fact is journaled before
+            // the files it describes. Reads the full log rather than the checkpoint-relative slice
+            // above: this branch is rare (a crash-repair path) and the prior resolution can predate
+            // the checkpoint this call happened to load. Gated on `accepted` too: a --reject against
+            // an already-accepted execution must still refuse, not silently reinterpret the caller's
+            // explicit reject as a repair of someone else's earlier accept.
+            if (target is not null && accepted)
+            {
+                var fullEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+                var priorResolution = fullEvents.OfType<FlowEvent.CaptureResolved>()
+                    .LastOrDefault(resolved => resolved.ExecutionId == executionId && resolved.StepId == target.StepId);
+                if (priorResolution is { Accepted: true })
+                {
+                    var outcome = await ReconcileAcceptedCaptureAsync(priorResolution, artifactsRootPath, cancellationToken)
+                        .ConfigureAwait(false);
+                    switch (outcome)
+                    {
+                        case ReconciliationOutcome.Repaired:
+                            return StateProjector.Project(fullEvents, snapshot);
+                        case ReconciliationOutcome.Unrecoverable:
+                            throw new InvalidCaptureResolutionException(
+                                $"Execution '{executionId.Value}' was already accepted in room '{roomDirectoryPath}', but its " +
+                                "declared output(s) are missing on disk AND its captured response is also gone — nothing " +
+                                "left to re-materialize from; this room needs manual repair.");
+                        case ReconciliationOutcome.NothingToRepair:
+                        default:
+                            // Every declared output is already on disk -- an ordinary duplicate
+                            // resolution attempt, not a crash to repair. Falls through to the
+                            // exactly-once refusal below, unchanged from before this repair path
+                            // existed (MutationInterfaceCaptureResolutionTests' own
+                            // "second resolution throws" pin).
+                            break;
+                    }
+                }
+            }
+
+            throw new InvalidCaptureResolutionException(
+                $"Execution '{executionId.Value}' has no unresolved indeterminate capture in room " +
+                $"'{roomDirectoryPath}' — 'baton resolve' only targets a step still awaiting conductor resolution.");
+        }
+
+        IReadOnlyList<string> resolvedOutputNames = target.LatestUnsatisfiedOutputNames ?? [];
+
+        if (accepted)
+        {
+            if (target.LatestCapturedResponseFile is null || resolvedOutputNames.Count == 0)
+            {
+                throw new InvalidCaptureResolutionException(
+                    $"Execution '{executionId.Value}' has no captured response body to accept in room '{roomDirectoryPath}'.");
+            }
+
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, executionId);
+            var capturedPath = Path.Combine(outputDirectory, target.LatestCapturedResponseFile);
+            string capturedContent;
+            try
+            {
+                capturedContent = await File.ReadAllTextAsync(capturedPath, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidCaptureResolutionException(
+                    $"Could not read captured response '{capturedPath}' for execution '{executionId.Value}': {ex.Message}.", ex);
+            }
+
+            var body = Outcomes.OutputMaterializer.StripCapturedResponseHeader(capturedContent);
+
+            // #1608 review finding 3: validated in its own pass, entirely before the fact is journaled
+            // below — sharing one foreach with the write pass meant a later name's reserved/traversal
+            // failure could leave an earlier name already written to disk with no
+            // FlowEvent.CaptureResolved ever appended (InvalidCaptureResolutionException's own remarks
+            // promise "no file is written" when it's thrown, and a declared output sitting on disk
+            // while the room still reads Indeterminate is exactly the filesystem-level false-Succeeded
+            // gap OutputMaterializer's class remarks exist to prevent). Every name here already passed
+            // ProducedOutput's own reserved/traversal checks at contract-declaration time
+            // (WorkerContract.cs) and OutputMaterializer's prose-safe/all-or-nothing gate at capture
+            // time — this is defense-in-depth on the one permitted writer under a declared name
+            // (spec/baton.md §3), not re-validation of either.
+            foreach (var outputName in resolvedOutputNames)
+            {
+                if (ReservedOutputNames.IsReserved(outputName) || ReservedOutputNames.IsPathTraversal(outputName))
+                {
+                    throw new InvalidCaptureResolutionException(
+                        $"Declared output name '{outputName}' for execution '{executionId.Value}' is not " +
+                        "a bare, non-reserved file name — refusing to write it.");
+                }
+            }
+
+            // #1608 review finding 5: "fact then files" — this append deliberately precedes the writes
+            // below, trading a self-healing gap (ledger Succeeded, declared output still missing) for
+            // the un-healable one the reverse order left open. spec/baton.md §3 holds why; the healing
+            // half is ReconcileAcceptedCaptureAsync below, which a later explicit --execution re-enters.
+            await eventLogWriter.AppendAsync(
+                    new FlowEvent.CaptureResolved(target.StepId, executionId, accepted, reason, resolvedOutputNames),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (var outputName in resolvedOutputNames)
+            {
+                var outputPath = Path.Combine(outputDirectory, outputName);
+                try
+                {
+                    await File.WriteAllTextAsync(outputPath, body, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    throw new InvalidCaptureResolutionException(
+                        $"Could not write declared output '{outputPath}' for execution '{executionId.Value}': {ex.Message}. " +
+                        "The resolution itself is already durably recorded — re-run 'baton resolve' naming this same " +
+                        "--execution once the environment issue is fixed to re-materialize the missing output(s).", ex);
+                }
+            }
+
+            var acceptedFinalEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            return StateProjector.Project(acceptedFinalEvents, snapshot);
+        }
+
+        await eventLogWriter.AppendAsync(
+                new FlowEvent.CaptureResolved(target.StepId, executionId, accepted, reason, resolvedOutputNames),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var finalEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+        return StateProjector.Project(finalEvents, snapshot);
+    }
+
+    /// <summary>
+    /// #1608 review finding 5: repairs the one crash window "fact then files" (above) can leave open
+    /// — a durable <see cref="FlowEvent.CaptureResolved"/> with <c>Accepted: true</c> whose write(s)
+    /// never completed, or completed only partially, because the process died between the append and
+    /// the writes it describes. Never called automatically: an explicit <c>baton resolve --execution
+    /// &lt;id&gt;</c> naming an execution whose step is no longer
+    /// <see cref="StepState.IndeterminateAwaitingResolution"/> re-enters here (see
+    /// <see cref="RecordCaptureResolutionAsync"/>'s own remarks) rather than being refused outright,
+    /// the same "just run it again" idempotent-retry shape the pre-#1608-review write order already
+    /// promised — restored, not abandoned, by moving what "again" means past the fact instead of
+    /// before it.
+    /// <para>
+    /// #1608 re-review finding 3 — what "missing" means, and its two edges. A declared output counts as
+    /// missing when it is absent <b>or</b> zero-length, so the likeliest crash shape (killed mid-write,
+    /// leaving an empty file <see cref="File.Exists"/> reports as present) is repairable rather than
+    /// reported as nothing-to-repair. A <b>torn but non-empty</b> write is NOT detected and needs manual
+    /// repair: nothing recorded on <see cref="FlowEvent.CaptureResolved"/> says how long the body should
+    /// have been, and re-deriving it by re-reading the capture on every call would clobber a declared
+    /// output a human deliberately edited after acceptance — the case this same existence-only predicate
+    /// is what protects. In the other direction, an output that is legitimately empty would read as
+    /// permanently repairable (and, with the capture also gone, as needing manual repair) — reachable
+    /// only by hand: <see cref="Outcomes.OutputMaterializer.TryCaptureFinalResponse"/> refuses to
+    /// capture a blank response at all, and it is the only producer of the unresolved captures this
+    /// path repairs, so an engine-produced accepted capture always has a non-empty body. Stated rather
+    /// than defended against, since the repair is idempotent and appends no second fact — but it is
+    /// also why that capture-time gate must not be relaxed without revisiting this predicate.
+    /// </para>
+    /// </summary>
+    /// <returns>
+    /// <see cref="ReconciliationOutcome.NothingToRepair"/> when every declared output the resolving
+    /// <see cref="FlowEvent.CaptureResolved"/> named is already on disk — an ordinary duplicate
+    /// resolution attempt, not a crash, and the caller's exactly-once refusal applies unchanged.
+    /// <see cref="ReconciliationOutcome.Repaired"/> once this call has re-materialized every name that
+    /// was missing. <see cref="ReconciliationOutcome.Unrecoverable"/> when outputs are missing AND the
+    /// underlying captured-response file this resolution was accepted from is ALSO gone — nothing left
+    /// to re-derive from; the caller fails closed on that result.
+    /// </returns>
+    private static async Task<ReconciliationOutcome> ReconcileAcceptedCaptureAsync(
+        FlowEvent.CaptureResolved resolution,
+        string artifactsRootPath,
+        CancellationToken cancellationToken)
+    {
+        var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, resolution.ExecutionId);
+        var outputNames = resolution.ResolvedOutputNames ?? [];
+        var missingNames = outputNames.Where(name =>
+        {
+            // #1608 re-review finding 3: absent OR zero-length. File.WriteAllTextAsync opens with
+            // FileMode.Create, so a kill DURING the write -- not merely between the append and the
+            // loop -- leaves a file that exists and is empty; existence alone would report that as
+            // NothingToRepair and the caller would tell the operator the room has nothing to fix.
+            // One FileInfo stat answers both, rather than an Exists check the Length read could race.
+            var info = new FileInfo(Path.Combine(outputDirectory, name));
+            return !info.Exists || info.Length == 0;
+        }).ToList();
+
+        if (missingNames.Count == 0)
+        {
+            return ReconciliationOutcome.NothingToRepair;
+        }
+
+        // Deliberately re-derived from the well-known capture path rather than
+        // StepState.LatestCapturedResponseFile — StateProjector's CaptureResolved(Accepted: true) case
+        // clears that field from projected state (it belongs to the audit trail of an UNresolved
+        // capture, not a resolved one), so this repair must read the raw file, not projected state.
+        var capturedPath = Path.Combine(outputDirectory, Outcomes.OutputMaterializer.CapturedResponseFileName);
+        if (!File.Exists(capturedPath))
+        {
+            return ReconciliationOutcome.Unrecoverable;
+        }
+
+        var capturedContent = await File.ReadAllTextAsync(capturedPath, cancellationToken).ConfigureAwait(false);
+        var body = Outcomes.OutputMaterializer.StripCapturedResponseHeader(capturedContent);
+
+        foreach (var outputName in missingNames)
+        {
+            var outputPath = Path.Combine(outputDirectory, outputName);
+            try
+            {
+                await File.WriteAllTextAsync(outputPath, body, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidCaptureResolutionException(
+                    $"Could not re-materialize declared output '{outputPath}' for execution " +
+                    $"'{resolution.ExecutionId.Value}': {ex.Message}.", ex);
+            }
+        }
+
+        return ReconciliationOutcome.Repaired;
+    }
+
+    /// <summary>See <see cref="ReconcileAcceptedCaptureAsync"/>'s own remarks for each member.</summary>
+    private enum ReconciliationOutcome
+    {
+        NothingToRepair,
+        Repaired,
+        Unrecoverable,
+    }
+
+    /// <summary>
     /// A third mutation-surface entry point: mints a step-less supplementary
     /// execution — a human, or any other non-process party, producing a new artifact outside the
     /// DAG during a pause. Appends <see cref="FlowEvent.ExecutionRequestAccepted"/> with
@@ -1363,6 +1670,8 @@ public static class MutationInterface
                 executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore,
                 classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
+            OutcomeVerdict.Indeterminate => new FlowEvent.ExecutionIndeterminate(
+                executionId, classification.Reason, classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
             _ => throw new ArgumentOutOfRangeException(nameof(classification), classification.Verdict, "Unknown OutcomeVerdict."),
         };
 

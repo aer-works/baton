@@ -501,6 +501,14 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
 
             Assert.Contains("Indeterminate", ex.Message, StringComparison.Ordinal);
             Assert.False(Directory.Exists(childRoom));
+
+            // F1 (PR #1644 review): the refusal must name the real resolution verb and its flags,
+            // not claim one doesn't exist -- #1608 shipped `baton resolve` in the same PR.
+            Assert.NotNull(ex.TryInvocation);
+            Assert.Contains(
+                $"baton resolve {parentRoom} [--execution <id>] --accept-capture | --reject --reason <text>",
+                ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("does not exist", ex.TryInvocation, StringComparison.Ordinal);
         }
         finally
         {

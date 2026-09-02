@@ -32,6 +32,9 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
         [typeof(DecideOptionsParser)] = () =>
             DecideOptionsParser.Parse([Relative, "--execution", "e1", "--type", "resume", "--bindings", "b.json"])
                 .RoomDirectoryPath,
+        [typeof(ResolveOptionsParser)] = () =>
+            ResolveOptionsParser.Parse([Relative, "--execution", "e1", "--accept-capture"])
+                .RoomDirectoryPath,
         [typeof(SupplyOptionsParser)] = () =>
             SupplyOptionsParser.Parse([Relative, "--worker", "w", "--output", "o", "--file", "f.txt", "--bindings", "b.json"])
                 .RoomDirectoryPath,

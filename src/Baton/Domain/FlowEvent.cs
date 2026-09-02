@@ -22,6 +22,8 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(StepRetryForeclosed), "stepRetryForeclosed")]
 [JsonDerivedType(typeof(ZeroOutputsDespiteSubstantialWork), "zeroOutputsDespiteSubstantialWork")]
 [JsonDerivedType(typeof(StepRebound), "stepRebound")]
+[JsonDerivedType(typeof(ExecutionIndeterminate), "executionIndeterminate")]
+[JsonDerivedType(typeof(CaptureResolved), "captureResolved")]
 public abstract record FlowEvent
 {
     private FlowEvent()
@@ -194,4 +196,77 @@ public abstract record FlowEvent
         string? NewAdapter = null,
         string? NewModel = null,
         string? Reason = null) : FlowEvent;
+
+    /// <summary>
+    /// #1608: Flow has classified a completed execution as <see cref="Outcomes.OutcomeVerdict.Indeterminate"/>
+    /// — see that type's own remarks for what disagrees with what. Distinct from
+    /// <see cref="ExecutionFailed"/> rather than reusing it with a sentinel classification: a reader
+    /// of this journal sees the disagreement as its own fact, not a <c>Failed</c> collapsed onto a
+    /// null <see cref="FailureClassification"/>. Carries no <see cref="FailureClassification"/> at
+    /// all — see <see cref="Outcomes.OutcomeVerdict.Indeterminate"/>'s own remarks for why. Projects
+    /// to <see cref="StepStatus.Failed"/> (the single-added-enum-value ruling keeps this out of
+    /// <see cref="StepStatus"/> itself) plus <see cref="StepState.IndeterminateAwaitingResolution"/>,
+    /// which is what actually drives the room-level <c>WorkflowOutcome.Indeterminate</c> reading and
+    /// <see cref="Scheduling.RetryEngine.MayRetry"/>'s refusal.
+    /// </summary>
+    /// <param name="Reason">See <see cref="Outcomes.OutcomeClassification.Reason"/>'s remarks — the same "null means not recorded" rule.</param>
+    /// <param name="CapturedResponseFile">See <see cref="ExecutionFailed.CapturedResponseFile"/>'s remarks — carried the same hop.</param>
+    /// <param name="UnsatisfiedOutputNames">See <see cref="ExecutionFailed.UnsatisfiedOutputNames"/>'s remarks — carried the same hop.</param>
+    public sealed record ExecutionIndeterminate(
+        ExecutionId ExecutionId,
+        string? Reason = null,
+        string? CapturedResponseFile = null,
+        IReadOnlyList<string>? UnsatisfiedOutputNames = null) : FlowEvent;
+
+    /// <summary>
+    /// #1608: the conductor resolution verb's own room fact — <c>baton resolve</c> is the only
+    /// path ever allowed to write under a declared output name from a
+    /// <see cref="Outcomes.OutputMaterializer.CapturedResponse"/>, and this event is what makes that
+    /// resolution durable and falsifiable from the room record alone. Recorded exactly once per
+    /// <see cref="ExecutionIndeterminate"/> — <see cref="Projection.StateProjector"/> clears
+    /// <see cref="StepState.IndeterminateAwaitingResolution"/> on apply, so a second resolution
+    /// attempt against the same execution is refused before this is ever appended
+    /// (<c>Mutation.MutationInterface.RecordCaptureResolutionAsync</c>), not silently re-applied.
+    /// </summary>
+    /// <param name="StepId">
+    /// The step this resolution applies to — carried explicitly (not solely derived via
+    /// <paramref name="ExecutionId"/>) the same way <see cref="StepRetryForeclosed"/> carries both
+    /// its <c>StepId</c> and its <c>ForExecutionId</c>, so a stale target is a guarded no-op on
+    /// replay rather than a silent misapplication to whichever step now owns that execution id.
+    /// </param>
+    /// <param name="ExecutionId">The indeterminate execution this resolution settles.</param>
+    /// <param name="Accepted">
+    /// <c>true</c>: the capture honestly satisfies its declared output(s) — the step settles
+    /// <see cref="StepStatus.Succeeded"/>, and this event is itself journaled BEFORE the real file(s)
+    /// are written (#1608 review finding 5: fact then files, not files then fact — a crash in between
+    /// leaves this fact durable with a declared output still missing, which
+    /// <c>Mutation.MutationInterface</c>'s own resolution surface re-materializes from the still-durable
+    /// capture on the next matching <c>--execution</c>, rather than the mirror gap the opposite order
+    /// left open: an orphaned file on disk with no fact and a room still reading Indeterminate).
+    /// <c>false</c>: rejected — the step stays
+    /// <see cref="StepStatus.Failed"/>, no file is written, and <see cref="Scheduling.RetryEngine.MayRetry"/>
+    /// re-applies its ordinary predicate rather than refusing unconditionally, since the conductor
+    /// has now made the call this room was blocked on.
+    /// </param>
+    /// <param name="Reason">
+    /// The conductor's own justification — required by <c>ResolveOptionsParser</c> for a rejection,
+    /// optional for an acceptance (the accept/reject choice already speaks for itself there).
+    /// </param>
+    /// <param name="ResolvedOutputNames">
+    /// The declared output name(s) this resolution covers — <see cref="ExecutionIndeterminate.UnsatisfiedOutputNames"/>
+    /// at resolution time, carried onto this event too so the durable record of "what was written, or
+    /// refused" never depends on re-deriving it from projected state.
+    /// </param>
+    /// <param name="Decider">Attribution info for the decider. Defaults to human, same as <see cref="ExternalDecisionRecorded"/>.</param>
+    public sealed record CaptureResolved(
+        StepId StepId,
+        ExecutionId ExecutionId,
+        bool Accepted,
+        string? Reason = null,
+        IReadOnlyList<string>? ResolvedOutputNames = null,
+        DeciderInfo? Decider = null) : FlowEvent
+    {
+        [JsonIgnore]
+        public DeciderInfo EffectiveDecider => Decider ?? DeciderInfo.DefaultHuman;
+    }
 }

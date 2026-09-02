@@ -110,6 +110,16 @@ public static class StateProjector
                     // whatever blocked it is moot" reasoning the three clears above already rest on.
                     // Never permanent, per the state-truth design's own ruling on #1586.
                     state.RetryForeclosedStepIds.Remove(acceptedStepId);
+
+                    // #1608 review: the same "the pump is dispatching it, so whatever blocked it is
+                    // moot" reasoning applies to an unresolved indeterminate capture. Today nothing
+                    // ever reaches this while true (MayRetry refuses the step unconditionally and
+                    // ExternalDecisionValidator refuses a decide against it, so only CaptureResolved
+                    // clears the flag before any fresh dispatch can be admitted) — cleared here anyway,
+                    // defensively, so a future producer (S2's baton settle, or a new DecisionType) that
+                    // ever mints a fresh execution for this step cannot leave WorkflowOutcome pinned to
+                    // Indeterminate and MayRetry permanently false underneath a legitimate new attempt.
+                    state.IndeterminateAwaitingResolutionStepIds.Remove(acceptedStepId);
                 }
                 else
                 {
@@ -298,6 +308,64 @@ public static class StateProjector
             case FlowEvent.ZeroOutputsDespiteSubstantialWork:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
                 break;
+
+            case FlowEvent.ExecutionIndeterminate indeterminate:
+                // #1608: projects to StepStatus.Failed, same as FlowEvent.ExecutionFailed — the
+                // "single added enum value" ruling adds Indeterminate at the room-level word only
+                // (WorkflowOutcome.DescribeTerminal, below), never at StepStatus. What actually
+                // distinguishes this from an ordinary Failed step is IndeterminateAwaitingResolutionStepIds.
+                state.TerminalStatusByExecutionId[indeterminate.ExecutionId] = StepStatus.Failed;
+                if (state.StepIdByExecutionId.TryGetValue(indeterminate.ExecutionId, out var indeterminateStepId))
+                {
+                    state.ConsecutiveFailureCountByStepId[indeterminateStepId] =
+                        state.ConsecutiveFailureCountByStepId.GetValueOrDefault(indeterminateStepId) + 1;
+                    state.LatestFailureClassificationByStepId[indeterminateStepId] = null;
+                    state.LatestFailureReasonByStepId[indeterminateStepId] = indeterminate.Reason;
+                    state.LatestExecutionFailedRetryNotBeforeByStepId[indeterminateStepId] = null;
+                    state.LatestCapturedResponseFileByStepId[indeterminateStepId] = indeterminate.CapturedResponseFile;
+                    state.LatestUnsatisfiedOutputNamesByStepId[indeterminateStepId] =
+                        indeterminate.UnsatisfiedOutputNames is null ? null : new List<string>(indeterminate.UnsatisfiedOutputNames);
+                    state.IndeterminateAwaitingResolutionStepIds.Add(indeterminateStepId);
+                }
+
+                break;
+
+            case FlowEvent.CaptureResolved resolved:
+                // Guarded on StepId matching the event's own recorded target, the same discipline
+                // FlowEvent.StepRetryForeclosed's ForExecutionId guard already follows — a stale
+                // resolution (replayed against a step a later fresh dispatch has since moved past)
+                // must be a no-op, not a misapplication to whichever execution the id now maps to.
+                if (state.StepIdByExecutionId.TryGetValue(resolved.ExecutionId, out var resolvedStepId)
+                    && resolvedStepId == resolved.StepId)
+                {
+                    state.IndeterminateAwaitingResolutionStepIds.Remove(resolvedStepId);
+
+                    if (resolved.Accepted)
+                    {
+                        // #1608 review finding 5: this event is journaled BEFORE the real output
+                        // file(s) it describes (MutationInterface.RecordCaptureResolutionAsync) — the
+                        // opposite of ExecutionSucceeded's own clear below, which only ever records a
+                        // write already durable on disk. A replay can therefore project Succeeded here
+                        // for a file that is not (yet, or ever) actually on disk; that gap is what
+                        // RecordCaptureResolutionAsync's own repair path (ReconcileAcceptedCaptureAsync)
+                        // exists to close on a later matching --execution, not something this pure
+                        // projection can see or correct.
+                        state.TerminalStatusByExecutionId[resolved.ExecutionId] = StepStatus.Succeeded;
+                        state.ConsecutiveFailureCountByStepId[resolvedStepId] = 0;
+                        state.LatestFailureClassificationByStepId[resolvedStepId] = null;
+                        state.LatestFailureReasonByStepId[resolvedStepId] = null;
+                        state.LatestCapturedResponseFileByStepId[resolvedStepId] = null;
+                        state.LatestUnsatisfiedOutputNamesByStepId[resolvedStepId] = null;
+                    }
+
+                    // Rejected: Status stays Failed, LatestCapturedResponseFile/UnsatisfiedOutputNames
+                    // stay recorded (the audit trail of what was captured and refused) — only
+                    // IndeterminateAwaitingResolutionStepIds above changes, which is what lets
+                    // WorkflowOutcome.DescribeTerminal read this as an ordinary Failed step again and
+                    // RetryEngine.MayRetry re-apply its ordinary predicate instead of refusing outright.
+                }
+
+                break;
         }
     }
 
@@ -356,7 +424,8 @@ public static class StateProjector
                 state.ExecutionCountByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.LatestCapturedResponseFileByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.LatestUnsatisfiedOutputNamesByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.RetryForeclosedStepIds.Contains(stepDefinition.StepId)));
+                state.RetryForeclosedStepIds.Contains(stepDefinition.StepId),
+                state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

@@ -144,4 +144,40 @@ public class RetryEngineTests
 
         Assert.True(mayRetry);
     }
+
+    [Fact]
+    public void An_unresolved_indeterminate_capture_may_not_retry_even_with_full_budget_and_no_classification()
+    {
+        // #1608: this is the explicit arm the ruling asks for -- a null LatestFailureClassification is
+        // ordinarily retryable (An_absent_classification_defaults_to_retryable above), and an
+        // ExecutionIndeterminate event carries no FailureClassification at all (unlike Permanent, which
+        // already short-circuits via the ordinary predicate). Without its own early return, this exact
+        // shape would read True: neither RetryForeclosed nor LinkedFromExecutionId are set, the
+        // classification comparisons all pass (null != Permanent, null != ToolDenied), and the budget
+        // is untouched.
+        var stepState = new StepState(
+            Architect, StepStatus.Failed, ExecutionId, NoUpstream,
+            ConsecutiveFailureCount: 0, LatestFailureClassification: null,
+            IndeterminateAwaitingResolution: true);
+
+        var mayRetry = RetryEngine.MayRetry(stepState, new RetryPolicy(MaxAttempts: 10));
+
+        Assert.False(mayRetry);
+    }
+
+    [Fact]
+    public void The_same_shape_with_the_capture_resolved_retries_again_given_budget()
+    {
+        // Polarity partner: one field apart (IndeterminateAwaitingResolution false, the post-'baton
+        // resolve --reject' shape), otherwise identical, proving the refusal above is about the
+        // unresolved flag and not incidentally about the null classification.
+        var stepState = new StepState(
+            Architect, StepStatus.Failed, ExecutionId, NoUpstream,
+            ConsecutiveFailureCount: 0, LatestFailureClassification: null,
+            IndeterminateAwaitingResolution: false);
+
+        var mayRetry = RetryEngine.MayRetry(stepState, new RetryPolicy(MaxAttempts: 10));
+
+        Assert.True(mayRetry);
+    }
 }

@@ -74,7 +74,7 @@ if (args.Length >= 1 && args[0] == "daemon")
     return 0;
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "supply", "resume", "status", "templates", "keep", "unkeep", "mcp", "daemon" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "templates", "keep", "unkeep", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -85,6 +85,8 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine(
         "       baton decide <room-dir> --execution <execution-id> --type resume|reject|retry-with-revision|supersede " +
         "[--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]");
+    Console.Error.WriteLine(
+        "       baton resolve <room-dir> [--execution <execution-id>] --accept-capture | --reject --reason <text>");
     Console.Error.WriteLine(
         "       baton supply <room-dir> --worker <role> --output <name> --file <source-path> " +
         "--bindings <bindings-file> [--workflow-id <id>]");
@@ -202,6 +204,14 @@ try
                 break;
             }
 
+        case "resolve":
+            {
+                var options = ResolveOptionsParser.Parse(args[1..]);
+                result = await ResolveCommand.ExecuteAsync(options, hostStopSource.Token)
+                    .ConfigureAwait(false);
+                break;
+            }
+
         case "resume":
             {
                 var options = ResumeOptionsParser.Parse(args[1..]);
@@ -249,6 +259,42 @@ try
         // then lose the sentinel write for the terminal state it just reached.
         await TerminalSentinelWriter.WriteAsync(terminalRoomDirectoryPath, view, CancellationToken.None).ConfigureAwait(false);
     }
+    else if (args[0] == "resolve" && result.RoomDirectoryPath is { } resolvedNonTerminalRoomDirectoryPath)
+    {
+        // #1608 review finding 1: `baton resolve --reject` on a step with retry budget remaining
+        // clears IndeterminateAwaitingResolution and re-arms RetryEngine.MayRetry's ordinary
+        // predicate, so DeriveWorkflowStatus can read Running again on a room whose LAST write above
+        // (back when it first settled Indeterminate) left a Terminal sentinel on disk. Left in place,
+        // that stale terminal.json both fools FleetStatusTool's sentinel-first fast path into a frozen
+        // "Indeterminate" reading and permanently blocks RedispatchCommand's own sentinel-gated refusal
+        // from ever clearing — a resolved-but-reopened room a harness can never redispatch again. No
+        // other verb can turn a Terminal room back non-Terminal, so this is scoped to `resolve` alone
+        // rather than a general post-command rule.
+        // bestEffort: the resolution above is already durable, so a sentinel this call cannot delete
+        // must not report a succeeded resolution as failed (#1608 re-review finding 2 — see
+        // DeleteStaleSentinel's own remarks for the opposite choice at RunCommand's call site).
+        TerminalSentinelWriter.DeleteStaleSentinel(resolvedNonTerminalRoomDirectoryPath, bestEffort: true);
+
+        // #1608 review finding 4: `resolve` never re-drives the DAG itself (spec/baton.md §3) — a
+        // rejected, retry-eligible step OR an accepted step that just made a downstream step
+        // deliverable both leave this room genuinely non-Terminal with nothing left to notice, unless
+        // told. Named here rather than left implicit so a harness never has to infer the follow-up.
+        //
+        // #1608 re-review finding 1: branched on the returned state, because `baton run` is the wrong
+        // verb for one of the two non-Terminal shapes. A step that declares a PausePoint and settles
+        // Indeterminate is Paused with the flag still set (spec/baton.md §3), and resolving it clears
+        // the flag but not the pause — only FlowEvent.WorkflowResumed removes it — so the room is
+        // still Paused here, and a `baton run` against it re-enters the same unfulfilled obligation
+        // and returns Paused again. `baton decide` is the verb that discharges it, spelled out in
+        // full rather than deferred to "the arguments above": FlowStateReporter prints the execution
+        // id and supersede targets, but --type and --bindings appear nowhere in this stdout, and a
+        // verb an operator cannot actually invoke is the dead end review finding 1 was about.
+        Console.WriteLine(result.State.Status == WorkflowStatus.Paused
+            ? "Room is not yet complete — this room is still paused; record the pause decision with "
+              + "`baton decide <room-dir> --execution <execution-id> --type resume|reject|retry-with-revision|supersede "
+              + "--bindings <bindings-file>` (the execution id is printed above), which is what resumes it."
+            : $"Room is not yet complete — {RecoveryGuidance.RunRoomDirInstruction}.");
+    }
 
     // #1359: baton resume gets the same truthful exit-code table as run/dispatch — its own design
     // ruling names the completion contract explicitly, unlike cancel/decide/supply below, which
@@ -259,7 +305,7 @@ try
         return (int)RunExitCodeResolver.Resolve(result);
     }
 
-    // Still the 0/1 contract for cancel/decide/supply — #1356 scoped its exit-code table to
+    // Still the 0/1 contract for cancel/decide/supply/resolve — #1356 scoped its exit-code table to
     // run/dispatch only; widening it to the rest was not asked for and is not done here. #1650 F2
     // moved the expression itself into MutationExitCodeResolver (which also handles cancel's queued
     // arm) so its arms are assertable without spawning a process.
@@ -275,6 +321,17 @@ catch (BatonFlowException ex) when (ex is Baton.Concurrency.WorkflowLockedExcept
     // moment. The room is left exactly as it was; the exit code alone says "retry later".
     WriteErrorWithTry(ex);
     return args[0] is "run" or "dispatch" or "redispatch" or "resume" ? (int)RunExitCode.RoomHeld : 1;
+}
+catch (Baton.Status.StaleSentinelDeletionException ex)
+{
+    // #1608 re-review finding 2: a stale terminal.json that could not be deleted refuses the run
+    // rather than starting a pump behind a false "already done" signal. Kept out of the catch below
+    // deliberately: that one would answer a locked sentinel by trying to WRITE the very same locked
+    // path (WriteValidationRefusedAsync -> File.Move onto terminal.json), turning a clean refusal
+    // back into the raw IOException this arm exists to remove -- the same "leave the room exactly as
+    // it was" carve-out shape #1374 F1 uses above.
+    WriteErrorWithTry(ex);
+    return args[0] is "run" or "dispatch" or "redispatch" or "resume" ? (int)RunExitCode.ValidationRefused : 1;
 }
 catch (BatonFlowException ex)
 {

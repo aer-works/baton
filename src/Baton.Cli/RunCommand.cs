@@ -63,6 +63,10 @@ public static class RunCommand
     /// <see cref="MutationInterface.StartWorkflowAsync"/>'s guard is ever reached, so it is contended
     /// first. <see cref="DecideCommand"/> holds the reasoning.
     /// </exception>
+    /// <exception cref="Baton.Status.StaleSentinelDeletionException">
+    /// The room carries a stale <c>terminal.json</c> from a prior attempt that could not be deleted, so
+    /// this call refuses rather than pumping behind a false "already done" signal (#1608 re-review).
+    /// </exception>
     /// <param name="inFlightExecutions">
     /// M15 Phase 4's (issue #140) caller-retained delivery point — forwarded to
     /// <see cref="MutationInterface.StartWorkflowAsync"/>. A caller that retains one can signal a
@@ -142,6 +146,10 @@ public static class RunCommand
         // sentinel at all -- "absence means not terminal yet" (spec/baton-room-spec-v1.0.md) would then
         // be false. A room that is not yet Terminal never has a sentinel to lose, so the probe costs
         // nothing there and the delete still runs.
+        //
+        // #1608 re-review finding 2: fail-closed (DeleteStaleSentinel's default), unlike the
+        // post-`resolve` call site — a sentinel this call cannot remove is exactly the false
+        // "already done" signal above, so refusing before the pump starts is the whole point.
         var priorProbe = await WorkflowTerminalProbe.ProbeAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
         if (!priorProbe.IsTerminal)
         {

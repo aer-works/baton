@@ -46,6 +46,8 @@ public class FlowEventLogJsonTests
         new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park", ForeclosedBy: "settle"),
         new FlowEvent.ZeroOutputsDespiteSubstantialWork(ExecutionId, "4 turns, 500 output tokens"),
         new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover"),
+        new FlowEvent.ExecutionIndeterminate(ExecutionId, "reason", ".captured-response.md", ["advice.md"]),
+        new FlowEvent.CaptureResolved(StepId, ExecutionId, Accepted: true, Reason: "capture honestly satisfies advice.md", ResolvedOutputNames: ["advice.md"]),
     ];
 
     /// <summary>

@@ -216,15 +216,27 @@ The room directory also holds `snapshot.json` (the workflow this room is bound t
 append-only event ledger), and `flow.lock`. The authoritative room layout is
 [`spec/baton.md`](../../spec/baton.md) §2–§3.
 
-**A path in `outputs` IS the worker's own write (#1594, conductor-writes shape).** Baton never writes
-into a declared output itself. When a declared output is missing at settle time but the worker's
-terminal response was recoverable, a step's own `steps[].capturedResponseFile` names an engine-owned
-file (in the execution's own output directory, never a declared name) the response was captured into,
-alongside `steps[].unsatisfiedOutputs` naming which declared outputs are still unwritten — present only
-on a `Failed` step, and readable from `status --json`/`terminal.json` without opening the execution
-directory. That step's own room settles `Failed`; the missing output stays missing until a conductor
-resolves the capture. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a capture can
-and can't ever resolve into.
+**A path in `outputs` IS the worker's own write (#1594/#1608, conductor-writes shape).** Baton never
+writes into a declared output itself except through the one verb below. When a declared output is
+missing at settle time but the worker's terminal response was recoverable, a step's own
+`steps[].capturedResponseFile` names an engine-owned file (in the execution's own output directory,
+never a declared name) the response was captured into, alongside `steps[].unsatisfiedOutputs` naming
+which declared outputs are still unwritten — present only on a step whose own `state` still reads
+`Failed`, and readable from `status --json`/`terminal.json` without opening the execution directory.
+That step's own **room** settles the top-level `state` `Indeterminate`, not `Failed` (#1608 — see
+`spec/baton.md` §3 for why) — a bare `baton redispatch` refuses an
+`Indeterminate` parent outright, so read `state` before assuming a captured-response room is an
+ordinary retryable failure. The missing output stays missing until a conductor resolves the capture:
+`baton resolve <room-dir> [--execution <id>] --accept-capture | --reject --reason <text>` either
+writes the capture's body under each declared name it stands in for and settles the step `Succeeded`,
+or records a rejection and leaves the step resolved-but-`Failed`. See `docs/dispatch.md`'s "Roles"
+section for exactly which outputs a capture can and can't ever resolve into. `baton resolve` never
+re-drives the DAG itself, either way — in a multi-step lane, check its stdout / the returned `state`
+for whether the room reached Terminal; if not (a downstream step just became deliverable, or a
+rejected step still has retry budget), re-run `baton run --room-dir <room-dir>` — except on a room left
+`Paused`, where `baton decide` is the verb that moves it and `baton run` cannot. `baton resolve` names
+whichever of the two applies on its own stdout; follow that rather than the general rule
+(spec/baton.md §3).
 
 ---
 
@@ -320,7 +332,7 @@ already Failed, even a perfectly good resume exits 1; read the resumed step's ow
 |---|---|
 | 0 | `Succeeded` — every step Succeeded |
 | 1 | `Failed` — a step ran and failed for an ordinary reason (also the bucket a still-Running or still-Paused process falls into if it returns short of Terminal, e.g. no `--wait`) |
-| 2 | `ValidationRefused` — bindings/workflow validation, or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), was refused **before anything was dispatched, against a room with no ledger yet** |
+| 2 | `ValidationRefused` — refused **before anything was dispatched**. Two causes: bindings/workflow validation or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), typically against a room with no ledger yet; or (#1608) a stale `terminal.json` from a prior attempt that could not be deleted — that one fires against a ledgered room too, and its message names the locked file, so read the message before assuming the bindings are at fault |
 | 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own; or (#1378) `baton run --wait --wait-timeout <minutes>` hit that bound before the room reached Terminal — the room itself is still Paused/Running in that case, check `baton status` |
 | 4 | `Cancelled` — the workflow settled via cancellation, not failure |
 | 5 | `RoomHeld` — another Flow instance already holds this room (a live pump, or a background component's brief lock). Not a terminal outcome and not written to `terminal.json`: the room may be perfectly healthy, so nothing here overwrites its real state. Retry later, or check `baton status`/the sentinel for what the room actually is |
