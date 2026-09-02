@@ -443,6 +443,8 @@ function primaryStateChip(room){
     // it without a person, so it gets the "needs you" colour, never the idle grey the generic
     // fallback below would give an unrecognized state.
     : st === "Stalled" ? ["STALLED","c-warn"]
+    // #1698: Cancelled is over and nobody needs to act -- idle grey, never the "needs you" amber.
+    : st === "Cancelled" ? ["CANCELLED","c-idle"]
     // #1586 S1: Indeterminate means journal facts alone could not decide success vs failure -- a
     // conductor has to look, same "needs you" colour as Stalled, distinct label. Producer since
     // #1608 (WorkflowOutcome.Indeterminate's own remarks) -- baton resolve is the way out.
@@ -980,7 +982,7 @@ function roomDetailHtml(room, timelines, openTimelinePaths){
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   const failedStep = (room.steps||[]).find(s => s.state === "Failed");
   const focusStep = running || failedStep || lastStep;
-  const terminal = room.state === "Failed" || room.state === "Succeeded";
+  const terminal = room.state === "Failed" || room.state === "Succeeded" || room.state === "Cancelled";
   const title = room.label ? esc(room.label) : esc(room.name);
   const roomIdLine = room.label ? `<div class="roomid">${esc(room.name)}</div>` : "";
   const isTlOpen = !!(openTimelinePaths && room.path && openTimelinePaths.has(room.path));
@@ -1048,7 +1050,11 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   // matches none of the exact-match buckets below AND isn't `!r.state`, so without its own bucket
   // it would vanish off the page entirely rather than surface anywhere. Producer since #1608.
   const indeterminate = rooms.filter(r => r.state === "Indeterminate");
-  const failed  = rooms.filter(r => r.state === "Failed");
+  // #1698: Cancelled (`baton cancel`'s terminal word) rides the Failed bucket -- over, not
+  // successful, dismissable, deletable. Measured 9/2: 29 of 72 live rooms were Cancelled and none
+  // rendered, the same truthy-unrecognised-state hole Stalled and Indeterminate closed above.
+  const isFailedLike = (r) => r.state === "Failed" || r.state === "Cancelled";
+  const failed  = rooms.filter(isFailedLike);
   const done    = rooms.filter(r => r.state === "Succeeded");
   const other   = rooms.filter(r => !r.state);
   // #1656: fold in whatever terminal-archive pages the operator has already loaded via "load
@@ -1060,7 +1066,7 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
     for(const r of terminalArchiveExtra){
       if(!r || !r.path || seenPaths.has(r.path)) continue;
       seenPaths.add(r.path);
-      (r.state === "Failed" ? failed : r.state === "Succeeded" ? done : other).push(r);
+      (isFailedLike(r) ? failed : r.state === "Succeeded" ? done : other).push(r);
     }
   }
   const byNewest = (a,b) => (newestStepTime(b)||"").localeCompare(newestStepTime(a)||"");
