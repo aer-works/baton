@@ -1083,6 +1083,11 @@ Both mailbox tools (`tools/fleet-glass/worker.js`'s `handleMcp`) now page:
   server-side per-cursor state. Response carries `items`, `count` (the total after any `room`
   filter), and `next_cursor` (`null` once exhausted). A malformed or foreign cursor degrades to the
   start rather than throwing, same posture as every other optional-field convention in this module.
+  The list's order is delivery order, not a `pushed_at` sort — `handleDeliver` builds the index
+  purely via `index.unshift(...)` per delivered item (`worker.js`), so "newest first" means "most
+  recently delivered to the worker," not "newest `pushed_at` first." The cursor is identity-based
+  (matched by `(id, pushed_at)`, not by position), so it tolerates a `/deliver` POST landing between
+  two `deliverables_list` calls rather than skipping or repeating items.
 - **`fleet_status`** stays a single tool (no `rooms_list` sibling — `FleetGlassReadOnlyTests` pins
   the mailbox's `TOOLS` array to exactly `fleet_status`/`deliverables_list`/`deliverable_read`) but
   grows a `page`/`limit` argument pair. With neither argument, `rooms` carries every non-terminal
@@ -1100,6 +1105,14 @@ Both mailbox tools (`tools/fleet-glass/worker.js`'s `handleMcp`) now page:
   limit)` call through the same `watchTool` the periodic poll already uses) and merges them into the
   rendered Failed/Succeeded buckets, deduped by room path against whatever the hot set already
   showed.
+
+  The cap bounds only the terminal bucket. `non_terminal` rooms — Running, Stalled, Indeterminate —
+  ride the plain (no `page`) `fleet_status` response in full, uncapped; `split_hot_and_archive` never
+  slices that list, and `glass.html` never pages it either. The 265 KB / 234-room measurement above
+  was terminal-room-dominated; a fleet with many concurrently *active* rooms at once (an incident
+  storm) can still produce an unbounded default payload, and nothing in this module measures or caps
+  that case. `pusher.py` logs one line via `HOT_NONTERMINAL_WARN` (60) when the non-terminal count
+  exceeds it on a push — a signal for an operator to notice, not a cap.
 
 **`heartbeat_at` now advances on every successful push (#1656), not just on the hourly
 `/heartbeat` ping.** Measured 2026-09-02: `heartbeat_at` stayed at `07:11:28Z` across pushes at
