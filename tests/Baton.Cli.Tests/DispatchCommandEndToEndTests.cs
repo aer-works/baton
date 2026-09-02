@@ -220,10 +220,8 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         }
         finally
         {
-            // Unlink the junction (and its now-empty slug/root parents) BEFORE the real room directory
-            // is removed -- .NET's Directory.Delete throws UnauthorizedAccessException walking a
-            // junction whose target has already vanished (measured), even non-recursively -- while the
-            // scope still resolves BatonPaths.ByWorkstream into tempHome.
+            // Unlink before the real room directory is removed -- see CleanupWorkstreamJunction's own
+            // doc for why the order matters here too.
             CleanupWorkstreamJunction("w1619", "task");
             scope.Dispose();
             DirectoryCleanup.DeleteRecursively(testRoot);

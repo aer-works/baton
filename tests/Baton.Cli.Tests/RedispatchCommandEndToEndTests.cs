@@ -181,13 +181,12 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
     }
 
     /// <summary>
-    /// #1619's navigational half: a bare <c>baton redispatch</c> with no <c>--workstream</c> flag at
-    /// all still inherits the parent's slug (<see cref="RedispatchBindingTests"/> pins the
-    /// inheritance rule itself) and must still get its own by-workstream junction, not just the
-    /// parent's -- otherwise a redispatch chain's later rooms would be invisible from the workstream
-    /// directory even though they read as the same group in Fleet Glass. Runs under an isolated
-    /// <c>BatonPaths.Root</c> (<see cref="DispatchCommandEndToEndTests.BeginIsolatedBatonHome"/>)
-    /// rather than the machine's real <c>~/.baton</c>.
+    /// See spec/baton.md §2 ("`--workstream` inherits the identical way...") for why a bare
+    /// <c>baton redispatch</c> with no <c>--workstream</c> flag must still get its own by-workstream
+    /// junction rather than just the parent's (<see cref="RedispatchBindingTests"/> pins the
+    /// inheritance rule itself). Runs under an isolated <c>BatonPaths.Root</c>
+    /// (<see cref="DispatchCommandEndToEndTests.BeginIsolatedBatonHome"/>) rather than the machine's
+    /// real <c>~/.baton</c>.
     /// </summary>
     [Fact]
     public async Task Redispatching_with_an_inherited_workstream_still_creates_its_own_junction()
@@ -227,8 +226,8 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
     /// <summary>
     /// Runs under an isolated <c>BatonPaths.Root</c>
     /// (<see cref="DispatchCommandEndToEndTests.BeginIsolatedBatonHome"/>): the parent dispatch below
-    /// passes <c>workstream: "w1619"</c>, which creates a real by-workstream junction as a side effect
-    /// even though the child clears its own.
+    /// (<c>workstream: "w1619"</c>) links its own by-workstream junction as <c>DispatchCommand</c>'s
+    /// side effect, even though the child below clears its own workstream and gets none.
     /// </summary>
     [Fact]
     public async Task A_blank_workstream_clears_the_inherited_workstream_on_an_unchanged_spec_redispatch()

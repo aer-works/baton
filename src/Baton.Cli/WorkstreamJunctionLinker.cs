@@ -5,13 +5,10 @@ using Baton.Status;
 namespace Baton.Cli;
 
 /// <summary>
-/// The navigational half of #1619's ruling (issue #1614): <c>BatonPaths.ByWorkstream</c>
-/// (<c>~/.baton/by-workstream/</c>) holds one Windows directory junction per room dispatched with a
-/// <c>--workstream</c> slug, filed under a subdirectory named for that slug and pointing at the
-/// room's real directory under <see cref="BatonPaths.Rooms"/> — so <c>cd
-/// ~/.baton/by-workstream/1619</c> lists every room in that workstream without moving a single file
-/// on disk (<c>DispatchCommand</c>'s and <c>RedispatchCommand</c>'s <c>bindings.json</c> stay the
-/// single source of the room ↔ workstream mapping; this is a read-time convenience over it).
+/// Creates the by-workstream junction under <see cref="BatonPaths.ByWorkstream"/> for a dispatched
+/// room. What this buys and why it exists is written up under spec/baton.md's dispatch section
+/// (§2). <c>DispatchCommand</c>'s and <c>RedispatchCommand</c>'s <c>bindings.json</c> stay the
+/// single source of the room ↔ workstream mapping; this is a read-time convenience over it.
 /// </summary>
 /// <remarks>
 /// Junctions (<c>mklink /J</c>), not symlinks: junction creation needs no elevation or Developer Mode

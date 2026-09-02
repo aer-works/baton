@@ -297,11 +297,8 @@ public class DispatchOptionsParserTests
     }
 
     /// <summary>
-    /// #1619: a valid slug is folded to lowercase -- the #1614 design record's own wording
-    /// ("path-safe, lowercase, short") -- because NTFS resolves the by-workstream junction directory
-    /// case-insensitively while glass.html's groupLanesHtml groups on the exact string in a
-    /// case-sensitive JS Map; without folding, "W1619" and "w1619" would share one junction directory
-    /// but render as two separate glass groups.
+    /// #1619: a valid slug is folded to lowercase -- <see cref="DispatchOptionsParser.SanitizeWorkstream"/>
+    /// has the pointer to the rationale.
     /// </summary>
     [Theory]
     [InlineData("W1619", "w1619")]

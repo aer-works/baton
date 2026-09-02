@@ -215,11 +215,7 @@ public static class DispatchOptionsParser
     /// (<see cref="WorkstreamJunctionLinker"/>), so a value the filesystem can't use as one path
     /// segment must fail loud at parse time, the same non-interactive-CLI doctrine
     /// <see cref="ParseTimeout"/>'s ceiling rests on. Folded to lowercase after the grammar check
-    /// passes — the #1614 design record's own slug wording ("path-safe, lowercase, short") — because
-    /// NTFS resolves <c>BatonPaths.ByWorkstream</c> directory names case-insensitively while
-    /// <c>glass.html</c>'s <c>groupLanesHtml</c> groups on the exact string in a case-sensitive JS
-    /// <c>Map</c>: without folding, <c>--workstream W1619</c> and <c>--workstream w1619</c> would
-    /// share one junction directory but render as two separate glass groups. Shared with
+    /// passes — spec/baton.md §2 has the NTFS-vs-Fleet-Glass rationale. Shared with
     /// <see cref="RedispatchOptionsParser"/>, which parses the identical flag.
     /// </summary>
     internal static string? SanitizeWorkstream(string rawValue)
