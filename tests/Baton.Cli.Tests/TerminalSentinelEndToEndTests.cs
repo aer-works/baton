@@ -4,7 +4,9 @@ using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Concurrency;
 using Baton.Domain;
+using Baton.Projection;
 using Baton.Status;
+using Baton.Store;
 using Baton.Templates;
 
 namespace Baton.Cli.Tests;
@@ -437,6 +439,70 @@ public class TerminalSentinelEndToEndTests
             await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory, Json: true), jsonOutput, TestContext.Current.CancellationToken);
             var statusView = JsonSerializer.Deserialize<WorkflowStatusView>(jsonOutput.ToString());
             Assert.Equal("Failed", statusView!.State);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_real_CLI_resolve_reject_with_retry_budget_remaining_invalidates_the_stale_sentinel()
+    {
+        // #1608 review finding 1: 'baton resolve --reject' on a step with retry budget remaining
+        // clears IndeterminateAwaitingResolution and re-arms RetryEngine.MayRetry's ordinary
+        // predicate, so the room's own ledger can read Running again -- but the LAST time this room
+        // was Terminal (when it first settled Indeterminate), Program's shared post-pump step wrote a
+        // terminal.json sentinel for it. Without Program's own invalidation on the resolve path, that
+        // sentinel would still claim a Terminal, Indeterminate room a harness has to treat as done --
+        // the same class of staleness RunCommand's own delete already guards on the run path (the
+        // tests above). RetryPolicy(3) here matters: every existing resolve fixture elsewhere uses
+        // RetryPolicy(1), which always leaves budget exhausted and so never exercises this arm at all.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-sentinel-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            Directory.CreateDirectory(roomDirectory);
+            var definition = new WorkflowDefinition(
+                new WorkflowTemplateId("resolve-sentinel-test"), 1,
+                [new WorkflowStepDefinition(new StepId("a"), "a", [], ["advice.md"], [], new RetryPolicy(3))]);
+            var snapshot = SnapshotBinder.Bind(definition);
+            await SnapshotBinder.PersistAsync(
+                snapshot, Path.Combine(roomDirectory, "snapshot.json"), TestContext.Current.CancellationToken);
+
+            var executionId = new ExecutionId($"exec-{Guid.NewGuid():N}");
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(
+                    new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
+                        executionId, new WorkflowId("wf"), new StepId("a"), "a", [], [], TimeSpan.FromSeconds(30), [],
+                        new Dictionary<StepId, ExecutionId>())),
+                    TestContext.Current.CancellationToken);
+                await writer.AppendAsync(
+                    new FlowEvent.ExecutionIndeterminate(
+                        executionId, "captured, awaiting conductor resolution", ".captured-response.md", ["advice.md"]),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var reader = new FlowEventLogReader(logPath);
+            var state = StateProjector.Project(await reader.ReadAllAsync(TestContext.Current.CancellationToken), snapshot);
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+            var entries = await reader.ReadAllEntriesWithTimestampsAsync(TestContext.Current.CancellationToken);
+            var view = WorkflowStatusProjector.Project(state, snapshot, roomDirectory, entries);
+            await TerminalSentinelWriter.WriteAsync(roomDirectory, view, TestContext.Current.CancellationToken);
+            var sentinelPath = Path.Combine(roomDirectory, "terminal.json");
+            Assert.True(File.Exists(sentinelPath), "setup must leave a sentinel behind to invalidate.");
+
+            using var process = StartBatonProcess(
+                "resolve", roomDirectory, "--execution", executionId.Value, "--reject", "--reason", "not honest advice.md");
+            var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            var stderr = await stderrTask;
+
+            Assert.False(
+                File.Exists(sentinelPath),
+                $"'baton resolve --reject' with retry budget remaining must invalidate the now-stale sentinel. stderr: {stderr}");
         }
         finally
         {

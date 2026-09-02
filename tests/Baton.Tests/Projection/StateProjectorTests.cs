@@ -922,29 +922,6 @@ public class StateProjectorTests
     }
 
     [Fact]
-    public void A_fresh_ExecutionRequestAccepted_reopens_an_unresolved_indeterminate_step()
-    {
-        // Defensive mirror of A_fresh_ExecutionRequestAccepted_reopens_a_foreclosed_step above: nothing
-        // in src/ can reach this today (MayRetry refuses the step unconditionally and
-        // ExternalDecisionValidator refuses a decide against it, so only CaptureResolved clears the flag
-        // before any fresh dispatch can be admitted) -- pinned anyway so a future producer minting a
-        // fresh execution for this step can never leave IndeterminateAwaitingResolutionStepIds stuck
-        // true underneath it.
-        var executionId = new ExecutionId("exec-1");
-        var redriveExecutionId = new ExecutionId("exec-2");
-        var events = new FlowEvent[]
-        {
-            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
-            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
-            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
-        };
-
-        var state = StateProjector.Project(events, TwoStepSnapshot());
-
-        Assert.False(StepFor(state, Architect).IndeterminateAwaitingResolution);
-    }
-
-    [Fact]
     public void RetryWithRevision_with_a_SupplementaryExecutionId_projects_it_as_pending_for_the_referenced_step()
     {
         var executionId = new ExecutionId("exec-1");

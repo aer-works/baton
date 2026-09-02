@@ -186,8 +186,13 @@ public static class MutationInterface
     /// in the step's <see cref="StepState.LatestUnsatisfiedOutputNames"/> with the captured response's
     /// body. The prose-safe/all-or-nothing rule is not re-derived here: reaching an unresolved capture
     /// at all already proves <see cref="Outcomes.OutputMaterializer.TryCaptureFinalResponse"/>'s gate
-    /// passed for every name in that list. <c>false</c>: no file is written; <paramref name="reason"/>
-    /// is required.
+    /// passed for every name in that list. When that list names more than one output, every name gets
+    /// the SAME captured body verbatim — there is only ever one captured response per execution, never
+    /// one per declared name, so a two-name capture (e.g. two prose-safe `.md` outputs on one contract)
+    /// produces two identical files. No shipped role hits this today (every multi-output role's second
+    /// output is structured, which blocks the capture from forming at all per
+    /// <see cref="Outcomes.OutputMaterializer"/>'s own gate), so this is latent rather than live.
+    /// <c>false</c>: no file is written; <paramref name="reason"/> is required.
     /// </param>
     /// <exception cref="InvalidCaptureResolutionException">
     /// <paramref name="executionId"/> names no step with an unresolved
@@ -267,20 +272,28 @@ public static class MutationInterface
 
             var body = Outcomes.OutputMaterializer.StripCapturedResponseHeader(capturedContent);
 
+            // #1608 review finding 3: validated in its own pass, entirely before the write pass below
+            // — sharing one foreach meant a later name's reserved/traversal failure could leave an
+            // earlier name already written to disk with no FlowEvent.CaptureResolved ever appended
+            // (InvalidCaptureResolutionException's own remarks promise "no file is written" when it's
+            // thrown, and a declared output sitting on disk while the room still reads Indeterminate is
+            // exactly the filesystem-level false-Succeeded gap OutputMaterializer's class remarks exist
+            // to prevent). Every name here already passed ProducedOutput's own reserved/traversal
+            // checks at contract-declaration time (WorkerContract.cs) and OutputMaterializer's
+            // prose-safe/all-or-nothing gate at capture time — this is defense-in-depth on the one
+            // permitted writer under a declared name (spec/baton.md §3), not re-validation of either.
             foreach (var outputName in resolvedOutputNames)
             {
-                // Defense-in-depth, not re-validation: every name here already passed ProducedOutput's
-                // own reserved/traversal checks at contract-declaration time (WorkerContract.cs), and
-                // passed OutputMaterializer's prose-safe/all-or-nothing gate at capture time. This is
-                // the one permitted writer under a declared name (spec/baton.md §3) and refuses to
-                // trust that chain blindly on its way to a filesystem write.
                 if (ReservedOutputNames.IsReserved(outputName) || ReservedOutputNames.IsPathTraversal(outputName))
                 {
                     throw new InvalidCaptureResolutionException(
                         $"Declared output name '{outputName}' for execution '{executionId.Value}' is not " +
                         "a bare, non-reserved file name — refusing to write it.");
                 }
+            }
 
+            foreach (var outputName in resolvedOutputNames)
+            {
                 var outputPath = Path.Combine(outputDirectory, outputName);
                 try
                 {

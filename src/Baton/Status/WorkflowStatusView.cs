@@ -327,6 +327,11 @@ public static class WorkflowStatusProjector
                         FlowEvent.ExecutionRequestAccepted accepted => accepted.Request.ExecutionId.Value,
                         FlowEvent.ExecutionSucceeded succeeded => succeeded.ExecutionId.Value,
                         FlowEvent.ExecutionFailed failed => failed.ExecutionId.Value,
+                        // #1608 review finding 8: same terminal-event timestamp as ExecutionFailed above
+                        // — without this arm an indeterminate execution fell back to CoreEvent.ExecutionExited
+                        // (a few ms earlier), not a staleness bug but an unnecessary inconsistency with
+                        // every other terminal case this switch already covers.
+                        FlowEvent.ExecutionIndeterminate indeterminate => indeterminate.ExecutionId.Value,
                         _ => null,
                     };
                     break;

@@ -259,6 +259,19 @@ try
         // then lose the sentinel write for the terminal state it just reached.
         await TerminalSentinelWriter.WriteAsync(terminalRoomDirectoryPath, view, CancellationToken.None).ConfigureAwait(false);
     }
+    else if (args[0] == "resolve" && result.RoomDirectoryPath is { } resolvedNonTerminalRoomDirectoryPath)
+    {
+        // #1608 review finding 1: `baton resolve --reject` on a step with retry budget remaining
+        // clears IndeterminateAwaitingResolution and re-arms RetryEngine.MayRetry's ordinary
+        // predicate, so DeriveWorkflowStatus can read Running again on a room whose LAST write above
+        // (back when it first settled Indeterminate) left a Terminal sentinel on disk. Left in place,
+        // that stale terminal.json both fools FleetStatusTool's sentinel-first fast path into a frozen
+        // "Indeterminate" reading and permanently blocks RedispatchCommand's own sentinel-gated refusal
+        // from ever clearing — a resolved-but-reopened room a harness can never redispatch again. No
+        // other verb can turn a Terminal room back non-Terminal, so this is scoped to `resolve` alone
+        // rather than a general post-command rule.
+        TerminalSentinelWriter.DeleteStaleSentinel(resolvedNonTerminalRoomDirectoryPath);
+    }
 
     // #1359: baton resume gets the same truthful exit-code table as run/dispatch — its own design
     // ruling names the completion contract explicitly, unlike cancel/decide/supply below, which
