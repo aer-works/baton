@@ -18,6 +18,65 @@ function Assert-Contains($haystack, $needle, $message) {
     }
 }
 
+# Standard Win32/CRT command-line quoting (the algorithm CommandLineToArgvW expects on the way in),
+# so a forwarded argument round-trips through cmd's %* passthrough and the target process's own argv
+# parser byte-for-byte instead of being reconstructed loosely by a naive space-join.
+function ConvertTo-CommandLineArg([string]$arg) {
+    if ($arg -eq "") { return '""' }
+    if ($arg -notmatch '[\s"]') { return $arg }
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    for ($i = 0; $i -lt $arg.Length; $i++) {
+        $backslashes = 0
+        while ($i -lt $arg.Length -and $arg[$i] -eq '\') { $backslashes++; $i++ }
+        if ($i -eq $arg.Length) {
+            [void]$sb.Append('\' * ($backslashes * 2))
+            break
+        } elseif ($arg[$i] -eq '"') {
+            [void]$sb.Append('\' * ($backslashes * 2 + 1))
+            [void]$sb.Append('"')
+        } else {
+            [void]$sb.Append('\' * $backslashes)
+            [void]$sb.Append($arg[$i])
+        }
+    }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
+
+# Builds a real mock `baton.exe` fixture in $outDir: echoes $label plus its forwarded argv, then
+# exits with $exitCode. Compiled with the legacy csc.exe rather than `dotnet publish`/`dotnet build`
+# -- a few hundred milliseconds, and it doesn't compete for the lock `dotnet build` takes (see
+# tools/gates/gates.py's OVERLAP/BUILD_PHASE split for why that matters here).
+function New-MockBatonExe([string]$outDir, [string]$label, [int]$exitCode) {
+    [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
+    $cscCandidates = @(
+        (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
+        (Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe")
+    )
+    $csc = $cscCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $csc) {
+        throw "csc.exe not found under $env:WINDIR\Microsoft.NET -- cannot build the launcher test's mock exe fixture"
+    }
+
+    $src = Join-Path $outDir "MockBaton.cs"
+    $exe = Join-Path $outDir "baton.exe"
+    $lines = @(
+        'class MockBaton {',
+        '    static int Main(string[] args) {',
+        ('        System.Console.WriteLine("' + $label + ' " + string.Join(" ", args));'),
+        ('        return ' + $exitCode + ';'),
+        '    }',
+        '}'
+    )
+    Set-Content -LiteralPath $src -Value $lines
+    $cscOutput = & $csc /nologo "/out:$exe" $src 2>&1
+    if (-not (Test-Path -LiteralPath $exe)) {
+        throw "csc.exe failed to build the mock baton.exe fixture: $cscOutput"
+    }
+    return $exe
+}
+
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "baton-launcher-tests-$([System.Guid]::NewGuid().ToString('N'))"
 [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
 
@@ -75,34 +134,50 @@ try {
     Assert-Contains $err "pixi run tool-refresh" "baton.cmd garbage pointer error message"
 
     # 4. Valid pointer executes target binary and forwards args and exit code
-    Write-Host "Test 4: Valid pointer launches target binary and preserves exit code..."
+    Write-Host "Test 4: Valid pointer launches target binary and forwards args verbatim..."
     $validSha = "v1_sha_abcd"
     $shaDir = Join-Path $toolsDir $validSha
     [System.IO.Directory]::CreateDirectory($shaDir) | Out-Null
     Set-Content -LiteralPath $currentFile -Value "$validSha`r`n"
+    New-MockBatonExe -outDir $shaDir -label "mock-v1" -exitCode 42 | Out-Null
 
-    # Create a mock baton.cmd in the target dir that echoes args and exits with code 42
-    $mockBat = Join-Path $shaDir "baton.exe.cmd" # cmd/powershell will resolve
-    # On Windows, we can create a tiny batch or dotnet binary; let's create a .cmd shim or copy dotnet host
-    # For cmd launcher, it looks for baton.exe. Let's create mock baton.cmd / baton.exe
-    # Let's test with a mock batch file named baton.exe.bat / baton.exe.cmd or a real test script
-    # Alternatively, create a small C# console app or use cmd
-    Set-Content -LiteralPath (Join-Path $shaDir "baton.exe.cmd") -Value "@echo mock-baton-v1 %*`r`n@exit /b 42"
-    # To satisfy Test-Path / exist for baton.exe:
-    Set-Content -LiteralPath (Join-Path $shaDir "baton.exe") -Value "mock"
+    # A space, a `!` next to a real variable name (would get eaten by delayed expansion left active
+    # in baton.cmd's dispatch line), and an embedded double quote -- the three hazards F3's fix and
+    # this test exist for. baton.cmd's manual `%*` forwarding is where all three matter; baton.ps1's
+    # `& $exePath @args` forwarding is idiomatic and untested only for the embedded quote, which
+    # Windows PowerShell 5.1's own native-command argument passing mangles regardless of what
+    # baton.ps1 does with it (a host limitation, not a launcher defect) -- so the space and `!` cases
+    # are asserted on both launchers, and the quote only through baton.cmd.
+    $cmdTestArgs = @('has space', 'bang!TOOL_SHA!end', 'quo"te')
+    $rawArgs = ($cmdTestArgs | ForEach-Object { ConvertTo-CommandLineArg $_ }) -join ' '
 
-    # Test with baton.ps1 calling a powershell script
-    $mockPs1 = Join-Path $shaDir "mock.ps1"
-    Set-Content -LiteralPath $mockPs1 -Value "Write-Output `"mock-ps1-v1 `$($args -join ' ')`"; exit 42"
-    
-    # Test atomic pointer flip to v2
-    Write-Host "Test 5: Pointer flip to new version..."
+    # cmd.exe's own `/c "..."` handling strips only the very first and very last quote of the whole
+    # command line when it begins AND ends with one, then treats everything between as a single
+    # unparsed token -- an extra outer quote pair is required so cmd re-parses the inner content
+    # (the launcher path plus forwarded args) normally instead of swallowing it as one blob.
+    $cmdOut = Join-Path $tempDir "cmd_out4.txt"
+    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"`"$cmdLauncher`" $rawArgs`"" -RedirectStandardOutput $cmdOut -RedirectStandardError (Join-Path $tempDir "cmd_err4.txt") -Wait -PassThru -NoNewWindow
+    Assert-Equal 42 $proc.ExitCode "baton.cmd exit code propagation"
+    $out = (Get-Content -LiteralPath $cmdOut -Raw)
+    Assert-Contains $out "mock-v1" "baton.cmd launched the mock target"
+    foreach ($a in $cmdTestArgs) { Assert-Contains $out $a "baton.cmd forwarded arg '$a' verbatim" }
+
+    $ps1TestArgs = @('has space', 'bang!TOOL_SHA!end')
+    $ps1RawArgs = ($ps1TestArgs | ForEach-Object { ConvertTo-CommandLineArg $_ }) -join ' '
+    $ps1Out = Join-Path $tempDir "ps1_out4.txt"
+    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -File `"$ps1Launcher`" $ps1RawArgs" -RedirectStandardOutput $ps1Out -RedirectStandardError (Join-Path $tempDir "ps1_err4.txt") -Wait -PassThru -NoNewWindow
+    Assert-Equal 42 $proc.ExitCode "baton.ps1 exit code propagation"
+    $out = (Get-Content -LiteralPath $ps1Out -Raw)
+    Assert-Contains $out "mock-v1" "baton.ps1 launched the mock target"
+    foreach ($a in $ps1TestArgs) { Assert-Contains $out $a "baton.ps1 forwarded arg '$a' verbatim" }
+
+    # 5. Atomic pointer flip actually redirects the launcher to the new target
+    Write-Host "Test 5: Pointer flip to new version launches the NEW target..."
     $v2Sha = "v2_sha_ef01"
     $v2Dir = Join-Path $toolsDir $v2Sha
     [System.IO.Directory]::CreateDirectory($v2Dir) | Out-Null
-    Set-Content -LiteralPath (Join-Path $v2Dir "baton.exe") -Value "mock2"
+    New-MockBatonExe -outDir $v2Dir -label "mock-v2" -exitCode 0 | Out-Null
 
-    # Perform atomic replace
     $tmpPointer = Join-Path $toolsDir "current.tmp.test"
     $bakPointer = Join-Path $toolsDir "current.bak.test"
     Set-Content -LiteralPath $tmpPointer -Value "$v2Sha`r`n"
@@ -111,6 +186,15 @@ try {
 
     $readSha = (Get-Content -LiteralPath $currentFile -Raw).Trim()
     Assert-Equal $v2Sha $readSha "Pointer was updated to v2Sha"
+
+    $cmdOut5 = Join-Path $tempDir "cmd_out5.txt"
+    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"`"$cmdLauncher`" ping`"" -RedirectStandardOutput $cmdOut5 -RedirectStandardError (Join-Path $tempDir "cmd_err5.txt") -Wait -PassThru -NoNewWindow
+    Assert-Equal 0 $proc.ExitCode "baton.cmd exit code after pointer flip"
+    $out5 = (Get-Content -LiteralPath $cmdOut5 -Raw)
+    Assert-Contains $out5 "mock-v2" "baton.cmd ran the NEW target after the pointer flip"
+    if ($out5.Contains("mock-v1")) {
+        throw "Assertion failed: baton.cmd still ran the OLD target after the pointer flip. Got:`n$out5"
+    }
 
     Write-Host "All launcher tests PASSED!"
 } finally {
