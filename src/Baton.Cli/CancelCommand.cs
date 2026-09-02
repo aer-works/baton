@@ -44,20 +44,10 @@ namespace Baton.Cli;
 /// the identical widened resolver.
 /// </para>
 /// <para>
-/// #1607 review finding (F1): the dead-holder gate sits before target resolution (it does not know
-/// yet whether <paramref name="options"/>' <see cref="CancelOptions.ExecutionId"/> is <c>null</c> or
-/// caller-named), so its widening to "anything but confirmed Alive" applies identically to an
-/// <b>explicit</b> <c>--execution &lt;id&gt;</c> invocation, not only room-level targeting — a genuinely
-/// still-future park is refused either way. Deliberate, not an oversight: narrowing the gate to
-/// room-level-only would leave <c>--execution &lt;parkedId&gt;</c> against an Unknown-liveness room able
-/// to re-open #1586's hang from the one entry point the widening exists to close, since the hang
-/// follows from the room having ANY future <c>RetryNotBefore</c> once the lock is won — not from how
-/// the target id was named. The accepted cost: a genuinely-alive pump whose sidecar write failed or
-/// went missing (Unknown, not Dead) is now unreachable through EITHER path until its liveness can be
-/// confirmed, where before #1607 only the room-level path was newly blocked and the explicit path
-/// could still win the race and fall through to <see cref="WorkflowLockedException"/> handling. That
-/// explicit-path regression is real and pre-dates no fix in this PR — recorded here rather than left
-/// implicit, per the gate comment below and spec/baton.md §2.
+/// #1607 review finding (F1): the dead-holder gate below sits before target resolution, so its
+/// Unknown-liveness widening is deliberately NOT scoped to room-level targeting — it refuses an
+/// explicit <c>--execution &lt;id&gt;</c> just as readily. See spec/baton.md §2 for why (narrowing it
+/// would reopen #1586's hang from the explicit path) and what that costs a genuinely-alive pump.
 /// </para>
 /// </summary>
 public static class CancelCommand
@@ -164,15 +154,9 @@ public static class CancelCommand
         // that: Unknown is treated the same as Dead here.
         //
         // This gate runs BEFORE targetExecutionId is resolved below, so it applies identically to
-        // room-level (--execution omitted) AND explicit (--execution <id>) targeting -- deliberately:
-        // the room-level widening above is what motivated raising Unknown to a refusal, but a
-        // still-future park's hang follows from the room having any pending future RetryNotBefore
-        // once the lock is won, not from how the caller named the target. Narrowing this gate to
-        // room-level-only would leave `--execution <parkedId>` against an Unknown-liveness room free
-        // to reopen the identical #1586 hang. See this type's own class-level doc (F1) and
-        // spec/baton.md §2 for the accepted cost this carries on the explicit path: a genuinely-alive
-        // pump with a failed or missing sidecar write is refused here too, where before #1607 the
-        // explicit path alone could still win the WorkflowLockedException race below.
+        // room-level (--execution omitted) AND explicit (--execution <id>) targeting -- deliberately,
+        // not an oversight (#1607 review finding F1). See this type's own class-level doc and
+        // spec/baton.md §2 for why, and for what that costs the explicit path.
         if (liveness.Status != EngineLivenessStatus.Alive)
         {
             var preCheckEvents = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
@@ -186,13 +170,12 @@ public static class CancelCommand
                     : "its holder record cannot confirm one exists"
                         + (recordedHolderDescription is not null ? $" (last recorded: '{recordedHolderDescription}')" : " (no holder record at all)");
                 // F2 (#1607 review): a Dead verdict is confirmed, so re-running against --room-dir is
-                // unconditionally the right pointer. An Unknown verdict is NOT a confirmation of
-                // death -- it also covers a genuinely-alive pump whose sidecar write failed or never
-                // landed (this gate's own comment above lists the causes) -- so pointing that case at
-                // the SAME instruction tells an operator whose pump is actually still running to run a
-                // command that only contends its lock. `baton status` is not offered as an alternative
-                // here: it reads the identical EngineLivenessProbe (StatusCommand.FormatStepStatus), so
-                // it would report the same Unknown rather than resolving it.
+                // unconditionally the right pointer. An Unknown verdict is not a confirmation of death
+                // (see the gate comment above for the causes) -- pointing that case at the SAME
+                // instruction tells an operator whose pump is genuinely still running to run a command
+                // that only contends its lock. `baton status` is not offered as an alternative here: it
+                // reads the identical EngineLivenessProbe (StatusCommand.FormatStepStatus), so it would
+                // report the same Unknown rather than resolving it.
                 var tryInvocation = liveness.Status == EngineLivenessStatus.Dead
                     ? $"{RecoveryGuidance.RunRoomDirInstruction} (see spec/baton.md §3)."
                     : "if you can independently confirm (Task Manager/`ps`) that no pump is actually " +
