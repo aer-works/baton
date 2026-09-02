@@ -10,9 +10,9 @@ namespace Baton.Vendors;
 /// <c>effort.agy-effort-and-suffix-must-agree</c>: <c>gemini-3.6-flash-low --effort high</c> is one
 /// control spelled two conflicting ways, refused at agy-bind-time with a raw <c>conflicts with</c>).
 /// Also from agy, but from <c>AgyWorkerAdapter.RequiresAgyEffort</c> (#1596): no <c>--effort</c> was
-/// given at all, and the model requires one (a suffix-less gemini model, e.g. <c>gemini-3.7-flash</c>)
-/// — agy's own refusal for this is <c>--model X requires --effort (available: ...)</c>, paid for by a
-/// full spawn first; this refuses it at resolution instead, before that spawn.
+/// given at all, and the model is one of that method's catalogued families that requires one — see
+/// its own remarks for which and why. Paid for by a full spawn on agy itself before this method
+/// existed; this refuses it at resolution instead, before that spawn.
 /// On both agy and claude, from <see cref="EffortTierMapping"/>'s shared <c>Resolve</c> (used by both
 /// <see cref="EffortTierMapping.ResolveForClaude"/> and <see cref="EffortTierMapping.ResolveForAgy"/>):
 /// the effort string is neither one of 0023's four canonical words nor already one of that vendor's
