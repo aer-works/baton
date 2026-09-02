@@ -33,6 +33,7 @@ internal static class RoleSpecMaterializer
         string roomDirectoryPath,
         long? tokenBudgetOverride,
         int? maxToolStepsOverride,
+        long? billedRateLimitOverride,
         string? verifyCommandOverride)
     {
         ValidateAttachments(attachments);
@@ -66,6 +67,7 @@ internal static class RoleSpecMaterializer
             modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride,
             timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory,
             tokenBudgetOverride: tokenBudgetOverride, maxToolStepsOverride: maxToolStepsOverride,
+            billedRateLimitOverride: billedRateLimitOverride,
             verifyCommandOverride: verifyCommandOverride);
     }
 

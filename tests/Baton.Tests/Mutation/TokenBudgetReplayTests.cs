@@ -115,7 +115,7 @@ public sealed class TokenBudgetReplayTests
     {
         // The original #1682 acceptance criterion, still runnable against the superseded budget --
         // NOT the shipped configuration (see the honest-replay tests below for that).
-        var monitor = new TokenBudgetMonitor(budget: SupersededPre1682AcceptanceBudget, maxToolSteps: null, new AgyUsageParser());
+        var monitor = new TokenBudgetMonitor(budget: SupersededPre1682AcceptanceBudget, maxToolSteps: null, billedRateLimit: null, new AgyUsageParser());
 
         var arrestedAtLine = -1;
         for (var i = 0; i < Room38c24d11Turns.Length; i++)
@@ -149,7 +149,7 @@ public sealed class TokenBudgetReplayTests
         // replay -- it is the honest result of fixing F1/F2 correctly, and it is recorded here as a
         // durable fact rather than left to only exist in a PR body that will drift out of sync with the
         // code the moment either constant changes again.
-        var monitor = new TokenBudgetMonitor(budget: ShippedImplementBudget, maxToolSteps: ShippedImplementMaxToolSteps, new AgyUsageParser());
+        var monitor = new TokenBudgetMonitor(budget: ShippedImplementBudget, maxToolSteps: ShippedImplementMaxToolSteps, billedRateLimit: null, new AgyUsageParser());
 
         var arrestedAtLine = ReplayRoom38c24d11(monitor);
 
@@ -166,7 +166,7 @@ public sealed class TokenBudgetReplayTests
         // #1686 review F3's second, independently satisfiable assertion: isolated from the tool-step
         // axis entirely (maxToolSteps: null), the token trigger alone never crosses 1,200,000 on this
         // room's real 794,940-token total.
-        var monitor = new TokenBudgetMonitor(budget: ShippedImplementBudget, maxToolSteps: null, new AgyUsageParser());
+        var monitor = new TokenBudgetMonitor(budget: ShippedImplementBudget, maxToolSteps: null, billedRateLimit: null, new AgyUsageParser());
 
         foreach (var (inTokens, outTokens) in Room38c24d11Turns)
         {
@@ -188,7 +188,7 @@ public sealed class TokenBudgetReplayTests
         // the real interleaved replay at the OLD cap value (80), isolated from the budget axis. Under
         // the fixed unit the room made only 69 real calls, so even the pre-F2 cap number does not fire --
         // proving the unit fix, not the recalibrated cap, is what changed this replay's outcome.
-        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: PreF2ImplementMaxToolSteps, new AgyUsageParser());
+        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: PreF2ImplementMaxToolSteps, billedRateLimit: null, new AgyUsageParser());
 
         var arrestedAtLine = ReplayRoom38c24d11(monitor);
 

@@ -210,8 +210,23 @@ def verify_target_exe(deps: Deps, tool_dir: str, version: str) -> bool:
     return smoke_result.returncode == 0
 
 
-def write_current_pointer(tools_root: str, sha: str, dry_run: bool, print_fn: Callable[[str], None]) -> bool:
-    """Atomically updates ~/.baton/tools/current to point at sha."""
+# #1701: a just-written destination file can carry a transient handle (Defender/indexer scanning
+# it, more likely under machine load) that makes Windows' ReplaceFile -- what os.replace calls --
+# fail with ERROR_ACCESS_DENIED even though nothing else in this process holds it open. Same class
+# as the well-known shutil/os.replace PermissionError on Windows. Retried, not failed closed
+# immediately, because the race is transient and a real `pixi run tool-refresh` flip can hit it.
+POINTER_REPLACE_RETRIES = 10
+POINTER_REPLACE_BACKOFF_S = 0.2
+
+
+def write_current_pointer(
+    tools_root: str, sha: str, dry_run: bool, print_fn: Callable[[str], None],
+    replace: Callable[[str, str], None] = os.replace, sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Atomically updates ~/.baton/tools/current to point at sha.
+
+    `replace`/`sleep` are injectable so a selftest arm can inject a transient PermissionError on
+    the first replace attempt without waiting out a real backoff or faking the filesystem."""
     current_path = os.path.join(tools_root, "current")
     if dry_run:
         print_fn(f"tool-refresh: [dry-run] would atomically write current pointer '{sha}' to {current_path}")
@@ -222,9 +237,21 @@ def write_current_pointer(tools_root: str, sha: str, dry_run: bool, print_fn: Ca
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(f"{sha}\n")
-        os.replace(tmp_path, current_path)
-        print_fn(f"tool-refresh: flipped current pointer to {sha}")
-        return True
+        last_exc: Optional[OSError] = None
+        for attempt in range(POINTER_REPLACE_RETRIES):
+            try:
+                replace(tmp_path, current_path)
+                if attempt > 0:
+                    print_fn(f"tool-refresh: flipped current pointer to {sha} (retry {attempt} after a transient replace failure)")
+                else:
+                    print_fn(f"tool-refresh: flipped current pointer to {sha}")
+                return True
+            except PermissionError as exc:
+                last_exc = exc
+                if attempt < POINTER_REPLACE_RETRIES - 1:
+                    sleep(POINTER_REPLACE_BACKOFF_S)
+        print_fn(f"tool-refresh: could not write current pointer to {current_path}: {last_exc}")
+        return False
     except OSError as exc:
         print_fn(f"tool-refresh: could not write current pointer to {current_path}: {exc}")
         return False
@@ -653,6 +680,83 @@ def _selftest_pointer_flip_atomic() -> bool:
             content = f.read().strip()
         if content != "def67890":
             print(f"  FAILED: updated current pointer has {content!r}, want 'def67890'")
+            ok = False
+
+    return ok
+
+
+def _selftest_pointer_flip_retries_transient_permission_error() -> bool:
+    """#1701: a real second occurrence hit `[WinError 5] Access is denied` on os.replace flipping
+    current -- a transient handle on a just-written destination, not shared state between runs.
+    One injected PermissionError must not fail the flip; a PERSISTENT one still must fail closed."""
+    import tempfile
+
+    ok = True
+    with tempfile.TemporaryDirectory() as td:
+        tools_dir = os.path.join(td, "tools")
+        real_replace = os.replace
+
+        # One transient failure, then success -- the flip must retry and still land.
+        calls: List[int] = []
+        sleeps: List[float] = []
+
+        def flaky_once(src: str, dst: str) -> None:
+            calls.append(1)
+            if len(calls) == 1:
+                raise PermissionError("[WinError 5] Access is denied")
+            real_replace(src, dst)
+
+        messages: List[str] = []
+        result = write_current_pointer(
+            tools_dir, "abc12345", dry_run=False, print_fn=messages.append,
+            replace=flaky_once, sleep=sleeps.append,
+        )
+        if not result:
+            print("  FAILED: write_current_pointer failed despite the transient PermissionError being retryable")
+            ok = False
+        if len(calls) != 2:
+            print(f"  FAILED: replace was called {len(calls)} time(s), want 2 (one failure, one retry that lands)")
+            ok = False
+        if not sleeps:
+            print("  FAILED: no backoff sleep was taken between the failed attempt and the retry")
+            ok = False
+
+        current_file = os.path.join(tools_dir, "current")
+        if not os.path.isfile(current_file):
+            print("  FAILED: current pointer file was not created after the retried flip")
+            ok = False
+        else:
+            with open(current_file, "r", encoding="utf-8") as f:
+                if f.read().strip() != "abc12345":
+                    print("  FAILED: current pointer does not hold the flipped-to sha after retry")
+                    ok = False
+
+        # A PERSISTENT PermissionError must still fail closed, not retry forever.
+        def always_locked(src: str, dst: str) -> None:
+            raise PermissionError("[WinError 5] Access is denied")
+
+        persistent_sleeps: List[float] = []
+        messages2: List[str] = []
+        result2 = write_current_pointer(
+            tools_dir, "def67890", dry_run=False, print_fn=messages2.append,
+            replace=always_locked, sleep=persistent_sleeps.append,
+        )
+        if result2:
+            print("  FAILED: write_current_pointer reported success despite a persistent PermissionError")
+            ok = False
+        if len(persistent_sleeps) != POINTER_REPLACE_RETRIES - 1:
+            print(f"  FAILED: persistent failure slept {len(persistent_sleeps)} time(s), want {POINTER_REPLACE_RETRIES - 1} (retries exhausted, then fail closed)")
+            ok = False
+        # Fail closed means the LAST GOOD pointer survives -- never a half-written or missing one.
+        with open(current_file, "r", encoding="utf-8") as f:
+            if f.read().strip() != "abc12345":
+                print("  FAILED: current pointer was corrupted by the persistent failure -- want it still holding the prior good sha 'abc12345'")
+                ok = False
+        if any(name.startswith("current.tmp.") for name in os.listdir(tools_dir)):
+            print("  FAILED: a current.tmp.<uuid> file was left behind after the persistent failure exhausted its retries")
+            ok = False
+        if not any("Access is denied" in m for m in messages2):
+            print(f"  FAILED: failure message did not surface the underlying PermissionError. Messages: {messages2}")
             ok = False
 
     return ok
@@ -1198,6 +1302,7 @@ def selftest() -> int:
     arms = [
         ("version compare", _selftest_version_compare),
         ("pointer flip atomic", _selftest_pointer_flip_atomic),
+        ("pointer flip retries a transient PermissionError, fails closed on a persistent one", _selftest_pointer_flip_retries_transient_permission_error),
         ("prune logic", _selftest_prune_logic),
         ("refresh end-to-end mocked", _selftest_refresh_end_to_end_mocked),
         ("fail closed on verify failure", _selftest_fail_closed_on_verify_failure),

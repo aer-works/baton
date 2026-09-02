@@ -1482,6 +1482,101 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void VerifyFailed_records_the_failing_members_own_output_as_IndeterminateVerifyTail()
+    {
+        // #1701: proves the ApplyIndeterminate->StepState wiring this new field depends on.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["tool-refresh-selftest"], "FAILED: could not write current pointer"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal("FAILED: could not write current pointer", architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void ExecutionArrested_leaves_IndeterminateVerifyTail_null_never_fabricated()
+    {
+        // #1701: an arrest's IndeterminateReason is already the full diagnostic (DescribeArrest) --
+        // nothing truncated to recover, so this must stay null rather than echoing the reason text.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000), ["manage_task", "manage_task"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.NotNull(architect.IndeterminateReason);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void A_fresh_ExecutionRequestAccepted_clears_IndeterminateVerifyTail_alongside_IndeterminateReason()
+    {
+        // The reopen path (a future producer minting a fresh execution for a still-Indeterminate
+        // step) -- CaptureResolved and the Arrested-stays-null path each have their own test; this is
+        // the third clearing site (StateProjector.cs, ExecutionRequestAccepted's reopen arm).
+        var executionId = new ExecutionId("exec-1");
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void CaptureResolved_clears_IndeterminateVerifyTail_alongside_IndeterminateReason()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.CaptureResolved(Architect, executionId, Accepted: false),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void ExecutionIndeterminate_overwriting_the_producer_clears_the_stale_IndeterminateVerifyTail()
+    {
+        // #1711 review F3: a VerifyFailed tail must not survive the producer being overwritten by
+        // ExecutionIndeterminate's CapturedResponse/ContractFailure arms -- same clearing discipline
+        // as the other three sites (:127, :378).
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(IndeterminateProducer.CapturedResponse, architect.IndeterminateProducer);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
     public void ExecutionArrested_settles_the_step_Failed_and_records_an_IndeterminateReason()
     {
         var executionId = new ExecutionId("exec-1");
@@ -1545,6 +1640,84 @@ public class StateProjectorTests
         Assert.Equal(
             "Execution arrested: tool-step cap exceeded (81 tool steps measured) — awaiting conductor resolution.",
             architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_pins_the_billed_rate_text_naming_window_observed_and_limit()
+    {
+        // #1691: the THIRD producer's own pinned text -- window width, observed rate, armed limit, all
+        // three named. StateProjector.DescribeBilledRateArrest carries why each one is there.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                new WorkerUsage(TokensIn: 96_546, TokensOut: 3_679, BilledTokens: 278_565),
+                LastToolNames: ["run_command"],
+                Reason: ArrestReason.BilledRate,
+                ToolStepCount: 26,
+                PeakBilledInWindow: 278_565,
+                BilledRateLimit: 250_000),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: billed-token rate limit exceeded (278565 billed tokens in a 5 min window, limit 250000) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_degrades_the_billed_rate_text_when_the_figures_are_absent()
+    {
+        // #1691, the polarity arm: a BilledRate line with neither figure still names the mechanism and
+        // the window rather than fabricating a zero-token claim. Only reachable from a writer older
+        // than the fields, which cannot exist today -- pinned so it stays a graceful degrade rather
+        // than becoming "(0 billed tokens in a 5 min window, limit 0)" under a later edit.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, Usage: null, Reason: ArrestReason.BilledRate),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: billed-token rate limit exceeded (over a 5 min window) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    /// <summary>
+    /// #1691 state-enumeration sweep: <c>DescribeArrest</c>'s switch has a THROWING default arm, so
+    /// before this test a member added to <see cref="ArrestReason"/> without an arm failed at runtime,
+    /// in production, on the one code path that runs when something has already gone wrong. Driven off
+    /// <see cref="Enum.GetValues{T}"/> so a new member fails here instead, the moment it is declared.
+    /// </summary>
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_covers_every_ArrestReason_member()
+    {
+        foreach (var reason in Enum.GetValues<ArrestReason>())
+        {
+            var executionId = new ExecutionId("exec-1");
+            var events = new FlowEvent[]
+            {
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+                new FlowEvent.ExecutionArrested(executionId, Usage: null, Reason: reason),
+            };
+
+            var state = StateProjector.Project(events, TwoStepSnapshot());
+
+            var architect = StepFor(state, Architect);
+            Assert.False(string.IsNullOrWhiteSpace(architect.IndeterminateReason),
+                $"ArrestReason.{reason} produced no arrest description — DescribeArrest is missing an arm for it.");
+            Assert.StartsWith("Execution arrested:", architect.IndeterminateReason, StringComparison.Ordinal);
+            Assert.True(architect.RetryForeclosed,
+                $"ArrestReason.{reason} must foreclose retry like every other arrest — a new trigger silently allowing a blind retry is the failure this sweep exists to catch.");
+        }
     }
 
     [Fact]
@@ -1681,9 +1854,13 @@ public class StateProjectorTests
 
         var (freshState, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot());
         Assert.NotNull(StepFor(freshState, Architect).IndeterminateReason);
+        // #1701: IndeterminateVerifyTailByStepId is a third trailing dictionary added the same way --
+        // same DeepCopy landmine, so it gets the same fresh/resumed round-trip proof.
+        Assert.Equal("tail", StepFor(freshState, Architect).IndeterminateVerifyTail);
 
         var resumedState = StateProjector.Project(events, TwoStepSnapshot(), checkpoint);
         Assert.NotNull(StepFor(resumedState, Architect).IndeterminateReason);
+        Assert.Equal("tail", StepFor(resumedState, Architect).IndeterminateVerifyTail);
     }
 
     [Fact]

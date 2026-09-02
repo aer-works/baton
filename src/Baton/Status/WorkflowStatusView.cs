@@ -112,6 +112,15 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("indeterminateProducer")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? IndeterminateProducerKind = null,
+    // #1701: StepState.IndeterminateVerifyTail verbatim -- see that field's own remarks (FlowState.cs)
+    // for why it exists and what it carries. Gated the same way IndeterminateProducerKind is above
+    // (present only for a currently-Failed step). In practice only non-null when
+    // IndeterminateProducerKind is VerifyFailed -- ApplyIndeterminate (StateProjector.cs) writes null
+    // for every other producer -- but that invariant is enforced there, not by this gate; this field
+    // carries whatever StepState.IndeterminateVerifyTail records.
+    [property: JsonPropertyName("verifyTail")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? VerifyTail = null,
     // #1702: StepState.VerifyNotRunReason's mere presence, not its text -- the one machine-readable
     // token a status/glass consumer branches on ("this step ran unverified"), the same "bare token,
     // never prose" shape State/liveness/failureKind already keep. Always "not-run" when present; no
@@ -302,6 +311,7 @@ public static class WorkflowStatusProjector
             string? capturedResponseFile = step.Status == StepStatus.Failed ? step.LatestCapturedResponseFile : null;
             IReadOnlyList<string>? unsatisfiedOutputs = step.Status == StepStatus.Failed ? step.LatestUnsatisfiedOutputNames : null;
             string? indeterminateProducerKind = step.Status == StepStatus.Failed ? step.IndeterminateProducer?.ToString() : null;
+            string? verifyTail = step.Status == StepStatus.Failed ? step.IndeterminateVerifyTail : null;
 
             // #1702: gated on the reason being present at all, not on Status -- unlike failureKind/
             // capturedResponseFile above, a not-run verify step is ordinarily Succeeded, never Failed.
@@ -312,7 +322,7 @@ public static class WorkflowStatusProjector
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
                 usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible,
                 exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind,
-                verify, verifyReason));
+                verifyTail, verify, verifyReason));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))

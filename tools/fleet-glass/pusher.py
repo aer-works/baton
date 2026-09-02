@@ -172,8 +172,10 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -658,7 +660,92 @@ def _quantized_activity_iso(mtime: float, bucket_seconds: float = LAST_ACTIVITY_
     return datetime.fromtimestamp(bucketed, tz=timezone.utc).isoformat()
 
 
-def live_telemetry_for_room(room: dict, live_cache: dict | None = None) -> dict | None:
+STDOUT_TAIL_MAX_LINES = 40  # #1710: "last ~40 lines" per the issue's own design.
+STDOUT_TAIL_MAX_BYTES = 4_000  # #1710: hard cap per room, ~4 KB.
+STDOUT_TAIL_READ_WINDOW_BYTES = 65_536  # generous headroom read from EOF -- a run of unusually long
+                                          # lines still yields STDOUT_TAIL_MAX_LINES candidates before
+                                          # the byte cap below trims them. Never a whole-file read of a
+                                          # log that can run to megabytes -- the module docstring's
+                                          # "read the file the way extract_live_counts does" means the
+                                          # same bounded-read discipline, not literally that function
+                                          # (extract_live_counts parses JSON events off an incremental
+                                          # delta; this reads a fixed tail window off the whole file
+                                          # every cycle, since the tail is a snapshot of "now", not an
+                                          # accumulator).
+STDOUT_TAIL_TRUNCATION_MARK = "…"
+
+
+def _read_tail_text(path: Path, window_bytes: int = STDOUT_TAIL_READ_WINDOW_BYTES) -> str:
+    """Last `window_bytes` bytes of `path`, decoded, with a possibly-torn leading line dropped (the
+    seek landed mid-line unless it started at byte 0). Bounds the read against a multi-megabyte log
+    -- #1710's own selftest arm (a 5 MB log) is what this window exists for."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    start = max(0, size - window_bytes)
+    try:
+        with path.open("rb") as f:
+            f.seek(start)
+            chunk = f.read()
+    except OSError:
+        return ""
+    text = chunk.decode("utf-8", errors="replace")
+    if start > 0:
+        nl = text.find("\n")
+        text = text[nl + 1:] if nl != -1 else ""
+    return text
+
+
+def _gate_tail_lines(lines: list[str], patterns: list[re.Pattern] | None) -> list[str]:
+    """Per-LINE secret gate for #1710's stdout tail -- never the whole-tail withholding
+    `_apply_secret_gate` does for a deliverable artifact: a matching line becomes `[withheld]`, every
+    other line rides through untouched, so one hit never blanks a room's whole tail. `patterns is
+    None` (the `load_secret_patterns` fail-closed sentinel -- missing/unreadable patterns file)
+    withholds every line, the same fail-closed posture the deliverables path takes on the same
+    condition (`_apply_secret_gate`'s own `patterns is None` branch)."""
+    if patterns is None:
+        return ["[withheld]" for _ in lines]
+    return ["[withheld]" if secret_hit_index(line, patterns) is not None else line for line in lines]
+
+
+def stdout_tail_for_room(room_path: str, execution_id: str, patterns: list[re.Pattern] | None,
+                          max_lines: int = STDOUT_TAIL_MAX_LINES,
+                          max_bytes: int = STDOUT_TAIL_MAX_BYTES) -> str | None:
+    """`live.stdoutTail` for one Running room (#1710): the last `max_lines` lines of the CURRENT
+    execution's `.stdout.log`, secret-gated per line (`_gate_tail_lines`), hard-capped at `max_bytes`
+    by truncating from the FRONT (the newest lines are what a live tail is for) and marking the cut
+    with `STDOUT_TAIL_TRUNCATION_MARK` on the first surviving line. None when there is no captured
+    stdout yet for this execution -- absent, never a fabricated empty string, matching
+    `live_telemetry_for_room`'s own never-fabricated convention."""
+    stdout_path, _rollover_path = _find_stdout_paths(room_path, execution_id)
+    if stdout_path is None:
+        return None
+    text = _read_tail_text(stdout_path)
+    if not text:
+        return None
+    lines = text.splitlines()[-max_lines:]
+    gated = _gate_tail_lines(lines, patterns)
+    tail = "\n".join(gated)
+    if not tail:
+        return None
+    encoded = tail.encode("utf-8")
+    if len(encoded) > max_bytes:
+        # Reserve the marker's own bytes out of the budget UP FRONT so the final, marker-prefixed
+        # tail never exceeds max_bytes -- computing the cut against the full budget and prepending
+        # the marker afterwards can overshoot by the marker's own length.
+        marker_bytes = STDOUT_TAIL_TRUNCATION_MARK.encode("utf-8")
+        content_budget = max(0, max_bytes - len(marker_bytes))
+        cut = encoded[len(encoded) - content_budget:]
+        decoded = cut.decode("utf-8", errors="replace")
+        nl = decoded.find("\n")
+        decoded = decoded[nl + 1:] if nl != -1 else decoded
+        tail = STDOUT_TAIL_TRUNCATION_MARK + decoded
+    return tail
+
+
+def live_telemetry_for_room(room: dict, live_cache: dict | None = None,
+                             patterns: list[re.Pattern] | None = None) -> dict | None:
     """None when there is no Running step, or its execution has no captured stdout yet (dispatch
     just started) -- absent, never a fabricated zero, matching ExecutionUsageView's own
     never-null/never-fabricated convention on the engine side. `lastActivityAt`'s honesty property
@@ -726,10 +813,13 @@ def live_telemetry_for_room(room: dict, live_cache: dict | None = None) -> dict 
     if state["context"] is not None:
         result.update(state["context"])
     result["lastActivityAt"] = _quantized_activity_iso(mtime)
+    tail = stdout_tail_for_room(room_path, execution_id, patterns)
+    if tail is not None:
+        result["stdoutTail"] = tail
     return result
 
 
-def attach_live_telemetry(room_list: list, live_cache: dict) -> None:
+def attach_live_telemetry(room_list: list, live_cache: dict, patterns: list[re.Pattern] | None = None) -> None:
     """Mutates each Running room in the (already stale-filtered) list in place, adding a `live`
     field. Gated on the pusher's own displayed `state`, not the raw engine state: a room
     fleet_status already downgraded to Stalled (#1513, a CONFIRMED-dead process) never gets a live
@@ -745,7 +835,7 @@ def attach_live_telemetry(room_list: list, live_cache: dict) -> None:
     for room in room_list:
         if not isinstance(room, dict) or room.get("state") != "Running":
             continue
-        live = live_telemetry_for_room(room, live_cache)
+        live = live_telemetry_for_room(room, live_cache, patterns)
         if live is not None:
             room["live"] = live
 
@@ -1070,15 +1160,38 @@ def gather_underhood(cfg: dict) -> list:
     return entries
 
 
+class KvWriteCapError(RuntimeError):
+    """#1712: the Worker answered 429 {"reason": "kv-write-cap", "resets_at": ...} -- Cloudflare's
+    own daily KV write cap (spec/baton.md §6), not an ordinary push failure. Raised out of
+    post_json so every producer can back its own write-budget ledger sub-budget off immediately
+    (mark_kv_write_cap_exhausted below) rather than retrying into the same cap every cycle."""
+
+    def __init__(self, resets_at: str):
+        super().__init__(f"kv write cap hit -- resumes {resets_at}")
+        self.resets_at = resets_at
+
+
 def post_json(url: str, body: str) -> None:
     req = urllib.request.Request(
         url, data=body.encode("utf-8"), method="POST",
         # Cloudflare's edge 403s the default Python-urllib user-agent.
         headers={"content-type": "application/json", "user-agent": "fleet-pusher/0.2"},
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        if resp.status != 200:
-            raise RuntimeError(f"push status {resp.status}")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"push status {resp.status}")
+    except urllib.error.HTTPError as ex:
+        if ex.code == 429:
+            try:
+                payload = json.loads(ex.read().decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                payload = None
+            resets_at = payload.get("resets_at") if isinstance(payload, dict) else None
+            if isinstance(payload, dict) and payload.get("reason") == "kv-write-cap" \
+                    and isinstance(resets_at, str) and resets_at:
+                raise KvWriteCapError(resets_at) from ex
+        raise RuntimeError(f"push status {ex.code}") from ex
 
 
 SNAPSHOT_HASH_KEY = "__snapshot_hash__"
@@ -1236,6 +1349,25 @@ def load_budget_ledger(state: dict, now_ts: float) -> dict:
             return {"date": today, "snapshot": 0, "deliver": 0, "heartbeat": 0, "exhausted_notice_sent": False}
         return stored  # F10: refuse the rollback -- keep serving the later, already-spent day.
     return {"date": today, "snapshot": 0, "deliver": 0, "heartbeat": 0, "exhausted_notice_sent": False}
+
+
+def mark_kv_write_cap_exhausted(state: dict, now_ts: float) -> dict:
+    """#1712: a live 429 (reason=kv-write-cap) from the Worker is stronger evidence than the
+    ledger's own count -- exhaust every producer's sub-budget for the rest of today outright, so
+    the existing #1690 exhausted/skip-producer paths (snapshot_pushes_allowed / deliver_allowed /
+    heartbeat_allowed) take over on the very next check for ALL THREE producers, not just whichever
+    one happened to hit the cap. Also marks `exhausted_notice_sent` so the day's one final
+    "budget exhausted" snapshot is never attempted -- it is exactly the write that cannot land
+    either. `max(...)` rather than a plain assignment: never regresses a sub-budget that has
+    already counted higher than its own daily target (shouldn't happen, but a real KV write already
+    recorded must never be un-recorded)."""
+    ledger = load_budget_ledger(state, now_ts)
+    ledger["snapshot"] = max(ledger.get("snapshot", 0), SNAPSHOT_DAILY_WRITES)
+    ledger["deliver"] = max(ledger.get("deliver", 0), DELIVER_DAILY_WRITES)
+    ledger["heartbeat"] = max(ledger.get("heartbeat", 0), HEARTBEAT_DAILY_WRITES)
+    ledger["exhausted_notice_sent"] = True
+    state[BUDGET_STATE_KEY] = ledger
+    return ledger
 
 
 def budget_used(ledger: dict) -> int:
@@ -2099,7 +2231,11 @@ def main() -> None:
                 # (never touches drop_stale_rooms' own newest_timestamp scan above) so it plays no
                 # part in the staleness decision at all.
                 live_telemetry_cache = prune_live_telemetry_cache(live_telemetry_cache, room_list)
-                attach_live_telemetry(room_list, live_telemetry_cache)
+                # #1710: same fail-closed patterns load the deliverables path below uses -- a missing/
+                # unreadable patterns file withholds every stdout-tail line rather than skipping the
+                # gate (load_secret_patterns' own None sentinel).
+                stdout_tail_patterns = load_secret_patterns(patterns_path)
+                attach_live_telemetry(room_list, live_telemetry_cache, stdout_tail_patterns)
                 # Timelines were fetched pre-stale-filter, keyed by path; only carry forward the ones
                 # for rooms that survived drop_stale_rooms above, so a hidden room's timeline is hidden
                 # with it rather than riding along as orphaned payload.
@@ -2155,6 +2291,15 @@ def main() -> None:
                         save_push_state(budget_path, ledger_state)
                         try:
                             post_json(cfg["push_url"], post_body)
+                        except KvWriteCapError as ex:
+                            # #1712: the notice snapshot is itself a KV write -- if the Worker is
+                            # refusing writes for real, it cannot land either. Confirm the ledger is
+                            # fully exhausted (all three producers) and log the ONE line; do not
+                            # retry the notice.
+                            mark_kv_write_cap_exhausted(ledger_state, now_ts)
+                            save_push_state(budget_path, ledger_state)
+                            log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                                f"no writes until {ex.resets_at}")
                         except Exception as ex:  # noqa: BLE001 — loop must survive anything
                             log(f"ERROR (push, budget-exhausted notice) {type(ex).__name__}: {ex}")
                         else:
@@ -2191,6 +2336,16 @@ def main() -> None:
                             push_snapshot_and_record(
                                 lambda b: post_json(cfg["push_url"], b),
                                 post_body, snap_state, state_path, current_hash, now_ts=now_ts)
+                        except KvWriteCapError as ex:
+                            # #1712: exhaust every producer's sub-budget right now rather than
+                            # waiting for deliver/heartbeat to each independently rediscover the same
+                            # hard cap -- this producer's own SNAPSHOT_KV_WRITE_COST charge above
+                            # already stands (F3(b)); this widens it to all three.
+                            ledger_state = load_push_state(budget_path)
+                            mark_kv_write_cap_exhausted(ledger_state, now_ts)
+                            save_push_state(budget_path, ledger_state)
+                            log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                                f"no writes until {ex.resets_at}")
                         except Exception as ex:  # noqa: BLE001 — a failing push must not skip the
                             # pending-push-age computation below (finding 2's whole point), and the
                             # loop must survive regardless -- caught here, not the outer except, so
@@ -2265,6 +2420,14 @@ def main() -> None:
                             lambda: post_json(heartbeat_url, payload),
                             hb_state, state_path, now_ts, extra_state=extra_state)
                         log("heartbeat sent" if heartbeat_due else "derived-freshness ping sent")
+            except KvWriteCapError as ex:
+                # #1712: same hard-cap posture as the snapshot producer above -- exhaust every
+                # producer's sub-budget right now, not just heartbeat's own.
+                ledger_state = load_push_state(budget_path)
+                mark_kv_write_cap_exhausted(ledger_state, time.time())
+                save_push_state(budget_path, ledger_state)
+                log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                    f"no writes until {ex.resets_at}")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (heartbeat) {type(ex).__name__}: {ex}")
 
@@ -2310,6 +2473,14 @@ def main() -> None:
                                 save_push_state(state_path, state)
                                 log(f"delivered {len(items)} item(s) "
                                     f"({sum(1 for i in items if i['withheld'])} withheld)")
+            except KvWriteCapError as ex:
+                # #1712: same hard-cap posture as the other two producers -- exhaust every
+                # producer's sub-budget right now, not just deliver's own.
+                ledger_state = load_push_state(budget_path)
+                mark_kv_write_cap_exhausted(ledger_state, time.time())
+                save_push_state(budget_path, ledger_state)
+                log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                    f"no writes until {ex.resets_at}")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (deliver) {type(ex).__name__}: {ex}")
 
@@ -3147,6 +3318,138 @@ def _selftest() -> int:
           "still differs from the persisted hash",
           pending_push_age_s({LAST_PUSH_TS_KEY: 9_000.0}, "h", 10_000.0) == 1_000.0)
 
+    # -- #1710: stdout tail for a Running room's detail pane -- the cap, the per-line secret gate, and
+    # absence on both a terminal room and a missing log. --
+    with tempfile.TemporaryDirectory() as tmp:
+        room_dir = Path(tmp) / "tail-room"
+        exec_dir = room_dir / "artifacts" / "execution_exec-tail-1"
+        exec_dir.mkdir(parents=True)
+        stdout_path = exec_dir / ".stdout.log"
+
+        # A 5 MB log: a giant early line neither the read window nor the line cap should ever
+        # surface, followed by 60 lines long enough (~150 bytes each) that the last 40 of them alone
+        # exceed STDOUT_TAIL_MAX_BYTES -- exercising the truncate-from-the-front path, not just the
+        # line-count cap.
+        big_line = "x" * (5 * 1024 * 1024)
+        tail_lines = [f"line-{i:03d}-" + "y" * 140 for i in range(60)]
+        stdout_path.write_text(big_line + "\n" + "\n".join(tail_lines) + "\n", encoding="utf-8")
+        tail = stdout_tail_for_room(str(room_dir), "exec-tail-1", [])
+        check("stdout_tail_for_room caps a 5 MB log at STDOUT_TAIL_MAX_BYTES",
+              tail is not None and len(tail.encode("utf-8")) <= STDOUT_TAIL_MAX_BYTES)
+        check("stdout_tail_for_room never surfaces the padding line that pushed the log to 5 MB",
+              tail is not None and "x" * 100 not in tail)
+        check("stdout_tail_for_room keeps only the newest lines (the last one written survives)",
+              tail is not None and "line-059" in tail)
+        check("truncating from the front marks the cut with STDOUT_TAIL_TRUNCATION_MARK on the "
+              "first surviving line, rather than silently dropping the earliest lines",
+              tail is not None and tail.startswith(STDOUT_TAIL_TRUNCATION_MARK))
+        check("the byte cap actually dropped lines (fewer than the STDOUT_TAIL_MAX_LINES the "
+              "line-count slice alone would have kept) -- proves the truncate-from-the-front path "
+              "ran, not just the line-count cap",
+              tail is not None and len(tail.split("\n")) < STDOUT_TAIL_MAX_LINES)
+
+        # The withheld line: one matching line becomes [withheld], the rest of the tail rides through.
+        secret_room_dir = Path(tmp) / "secret-room"
+        secret_exec_dir = secret_room_dir / "artifacts" / "execution_exec-secret-1"
+        secret_exec_dir.mkdir(parents=True)
+        secret_stdout = secret_exec_dir / ".stdout.log"
+        secret_stdout.write_text("plain line one\nAKIA_FAKE_SECRET_TOKEN\nplain line two\n", encoding="utf-8")
+        secret_patterns = [re.compile(r"AKIA_FAKE")]
+        secret_tail = stdout_tail_for_room(str(secret_room_dir), "exec-secret-1", secret_patterns)
+        check("a line matching a secret pattern is replaced with [withheld], never dropping the tail",
+              secret_tail is not None and "[withheld]" in secret_tail
+              and "plain line one" in secret_tail and "plain line two" in secret_tail
+              and "AKIA_FAKE_SECRET_TOKEN" not in secret_tail)
+        withheld_all_tail = stdout_tail_for_room(str(secret_room_dir), "exec-secret-1", None)
+        check("a missing/unreadable patterns file (None, the fail-closed sentinel) withholds every "
+              "line of the tail, matching the deliverables path's own fail-closed posture",
+              withheld_all_tail is not None
+              and all(ln == "[withheld]" for ln in withheld_all_tail.split("\n")))
+
+        # Absence: no captured stdout yet for this execution.
+        check("stdout_tail_for_room is absent (None), never a fabricated empty string, when the "
+              "execution has no captured .stdout.log yet",
+              stdout_tail_for_room(str(room_dir), "exec-never-started", []) is None)
+
+    # Absence on a terminal room: attach_live_telemetry never runs live_telemetry_for_room (and so
+    # never the stdout tail) for anything other than a Running room -- covered structurally by the
+    # same gate "attach_live_telemetry never adds a `live` key" above proves for the whole `live`
+    # section, restated here for the field #1710 adds specifically.
+    with tempfile.TemporaryDirectory() as tmp:
+        terminal_room_dir = Path(tmp) / "terminal-room"
+        terminal_exec_dir = terminal_room_dir / "artifacts" / "execution_exec-done-1"
+        terminal_exec_dir.mkdir(parents=True)
+        (terminal_exec_dir / ".stdout.log").write_text("last line before it finished\n", encoding="utf-8")
+        terminal_room = {"path": str(terminal_room_dir), "state": "Succeeded",
+                          "steps": [{"id": "s1", "state": "Succeeded", "execution": "exec-done-1"}]}
+        terminal_list = [terminal_room]
+        attach_live_telemetry(terminal_list, {}, [])
+        check("a terminal room never gets a `live` section, so it never gets a stdoutTail either",
+              "live" not in terminal_room)
+
+    # Payload growth bound: N Running rooms each carrying a full-cap stdout tail add at most
+    # N * STDOUT_TAIL_MAX_BYTES to the pushed payload -- #1710's own bound, summed off the real
+    # `live.stdoutTail` values `attach_live_telemetry` produced rather than asserted in the abstract.
+    with tempfile.TemporaryDirectory() as tmp:
+        running_rooms = []
+        for i in range(3):
+            room_dir = Path(tmp) / f"bound-room-{i}"
+            exec_dir = room_dir / "artifacts" / f"execution_exec-bound-{i}"
+            exec_dir.mkdir(parents=True)
+            (exec_dir / ".stdout.log").write_text(("z" * 200 + "\n") * 100, encoding="utf-8")
+            running_rooms.append({"path": str(room_dir), "state": "Running", "name": f"bound-{i}",
+                                   "steps": [{"id": "s1", "state": "Running", "execution": f"exec-bound-{i}"}]})
+        bare_rooms = [{"path": r["path"], "state": r["state"], "name": r["name"], "steps": r["steps"]}
+                      for r in running_rooms]
+        attach_live_telemetry(running_rooms, {}, [])
+        tail_bytes_total = sum(
+            len(r["live"]["stdoutTail"].encode("utf-8"))
+            for r in running_rooms if isinstance(r.get("live"), dict) and "stdoutTail" in r["live"])
+        bound = len(running_rooms) * STDOUT_TAIL_MAX_BYTES
+        print(f"pusher.py selftest: #1710 stdout-tail bytes across {len(running_rooms)} Running "
+              f"rooms = {tail_bytes_total} bytes (bound {bound} bytes)")
+        check("#1710: pushed-payload growth from Running rooms' stdout tails stays within "
+              "Running rooms x STDOUT_TAIL_MAX_BYTES -- the per-room cap `stdout_tail_for_room` "
+              "already enforces, summed across the fleet",
+              tail_bytes_total <= bound)
+
+    # Worst-day write count is unchanged with the tail present: SNAPSHOT_KV_WRITE_COST is a FLAT
+    # per-push charge (spec/baton.md §6) with no notion of payload bytes, so a push carrying Running
+    # rooms' stdout tails costs the identical ledger charge as one that does not -- the tail costs
+    # bytes and churn, never an extra write.
+    small_ledger_state: dict = {}
+    small_body = json.dumps(build_wrapped(bare_rooms, [], {}, 0))
+    record_budget_write(small_ledger_state, 0.0, "snapshot", SNAPSHOT_KV_WRITE_COST)
+    small_used = budget_used(load_budget_ledger(small_ledger_state, 0.0))
+
+    tail_ledger_state: dict = {}
+    tail_body = json.dumps(build_wrapped(running_rooms, [], {}, 0))
+    record_budget_write(tail_ledger_state, 0.0, "snapshot", SNAPSHOT_KV_WRITE_COST)
+    tail_used = budget_used(load_budget_ledger(tail_ledger_state, 0.0))
+
+    check("#1710: a push with Running rooms' stdout tails attached (a bigger payload) still charges "
+          "the identical flat SNAPSHOT_KV_WRITE_COST a push without them would charge",
+          len(tail_body) > len(small_body) and small_used == tail_used == SNAPSHOT_KV_WRITE_COST)
+
+    # -- #1710: the tail rides the hash as-is (never quantized) -- a Running room whose stdoutTail is
+    # the only thing that changed still flips snapshot_hash on the very next cycle, the same as any
+    # other structural change. Proven end-to-end through the real quantize_live_for_hash/
+    # build_wrapped/snapshot_hash path, not just by reading _quantize_live_value's field list. --
+    tail_room_a = {"path": "/r/tail", "state": "Running",
+                   "live": {"toolCalls": 1, "lastActivityAt": _quantized_activity_iso(1000.0),
+                             "stdoutTail": "line one\nline two"}}
+    tail_room_b = {"path": "/r/tail", "state": "Running",
+                   "live": {"toolCalls": 1, "lastActivityAt": _quantized_activity_iso(1000.0),
+                             "stdoutTail": "line one\nline two\nline three"}}
+    hash_tail_a = snapshot_hash(build_wrapped(quantize_live_for_hash([tail_room_a]), [], {}, 0))
+    hash_tail_b = snapshot_hash(build_wrapped(quantize_live_for_hash([tail_room_b]), [], {}, 0))
+    check("#1710: quantize_live_for_hash never touches stdoutTail -- a room whose tail is the ONLY "
+          "thing that changed (every quantized field identical) still changes the pushed hash",
+          hash_tail_a != hash_tail_b)
+    check("#1710: quantize_live_for_hash rides stdoutTail through byte-for-byte, unlike toolCalls/"
+          "lastActivityAt above it",
+          quantize_live_for_hash([tail_room_a])[0]["live"]["stdoutTail"] == "line one\nline two")
+
     with tempfile.TemporaryDirectory() as tmp:
         sp = Path(tmp) / "push-state.json"
         push_fail_state = {LAST_PUSH_TS_KEY: 0.0, SNAPSHOT_HASH_KEY: "old-hash"}
@@ -3635,6 +3938,66 @@ def _selftest() -> int:
     check("a clock jump backward against an ALL-ZERO stored ledger is harmless and re-keys onto the "
           "earlier day (nothing to double-count yet)",
           rolled_backward_zero["snapshot"] == 0 and rolled_backward_zero["date"] != day1)
+
+    # -- #1712: post_json classifies a live 429 {"reason": "kv-write-cap", "resets_at": ...} into
+    # KvWriteCapError instead of a generic push-status RuntimeError, and mark_kv_write_cap_exhausted
+    # exhausts ALL THREE producers' sub-budgets in one step (not just whichever one hit the cap). --
+    def _fake_429(reason: str | None, resets_at: str | None) -> object:
+        body: dict = {}
+        if reason is not None:
+            body["reason"] = reason
+        if resets_at is not None:
+            body["resets_at"] = resets_at
+        payload = json.dumps(body).encode("utf-8")
+
+        class _FakeOpener:
+            def open(self, req, data=None, timeout=None):  # noqa: ARG002 — matches OpenerDirector.open's positional shape
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", None, BytesIO(payload))
+        return _FakeOpener()
+
+    real_opener = urllib.request._opener
+    try:
+        urllib.request.install_opener(_fake_429("kv-write-cap", "2026-09-03T00:00:00+00:00"))
+        try:
+            post_json("https://example.invalid/push/tok", "{}")
+            check("(#1712) a 429 kv-write-cap response raises KvWriteCapError", False)
+        except KvWriteCapError as caught:
+            check("(#1712) post_json classifies a 429 kv-write-cap body into KvWriteCapError", True)
+            check("(#1712) KvWriteCapError carries the body's resets_at verbatim",
+                  caught.resets_at == "2026-09-03T00:00:00+00:00")
+        except Exception:  # noqa: BLE001 — the check above already records failure either way
+            check("(#1712) a 429 kv-write-cap response raises KvWriteCapError, not some other error", False)
+
+        # (control) a 429 with a DIFFERENT reason (or none at all) is an ordinary push failure, not
+        # the write cap -- proves the classifier discriminates rather than treating every 429 alike.
+        urllib.request.install_opener(_fake_429("some-other-reason", "2026-09-03T00:00:00+00:00"))
+        try:
+            post_json("https://example.invalid/push/tok", "{}")
+            check("(control, #1712) a 429 with an unrelated reason still raises", False)
+        except KvWriteCapError:
+            check("(control, #1712) a 429 with an unrelated reason must NOT classify as kv-write-cap", False)
+        except RuntimeError:
+            check("(control, #1712) a 429 with an unrelated reason raises the ordinary RuntimeError", True)
+    finally:
+        urllib.request.install_opener(real_opener)
+
+    kv_cap_ledger_state: dict = {}
+    mark_kv_write_cap_exhausted(kv_cap_ledger_state, 1000.0)
+    kv_cap_ledger = load_budget_ledger(kv_cap_ledger_state, 1000.0)
+    check("(#1712) mark_kv_write_cap_exhausted exhausts ALL THREE producers' sub-budgets in one call",
+          not snapshot_pushes_allowed(kv_cap_ledger) and not deliver_allowed(kv_cap_ledger)
+          and not heartbeat_allowed(kv_cap_ledger))
+    check("(#1712) mark_kv_write_cap_exhausted also marks exhausted_notice_sent, so the #1690 "
+          "exhaustion-notice snapshot (itself a KV write) is never attempted",
+          kv_cap_ledger["exhausted_notice_sent"] is True)
+    already_high_state: dict = {"__write_budget__": {"date": utc_day_str(1000.0),
+                                                       "snapshot": SNAPSHOT_DAILY_WRITES + 5,
+                                                       "deliver": 0, "heartbeat": 0,
+                                                       "exhausted_notice_sent": False}}
+    mark_kv_write_cap_exhausted(already_high_state, 1000.0)
+    check("(#1712) mark_kv_write_cap_exhausted never regresses a sub-budget already counted higher "
+          "than its own daily target",
+          already_high_state["__write_budget__"]["snapshot"] == SNAPSHOT_DAILY_WRITES + 5)
 
     check("(control) an empty ledger allows every producer",
           snapshot_pushes_allowed(fresh_ledger) and deliver_allowed(fresh_ledger) and heartbeat_allowed(fresh_ledger))

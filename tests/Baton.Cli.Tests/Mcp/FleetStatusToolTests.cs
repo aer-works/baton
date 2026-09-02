@@ -1900,13 +1900,19 @@ public sealed class FleetStatusToolTests : IDisposable
     public void Every_step_view_property_is_either_mirrored_onto_the_fleet_view_or_deliberately_omitted()
     {
         // Deliberate omissions, each with its reason. fleet_status is a fleet-wide glance, not a
-        // resolution surface: these three exist to drive `baton resolve`'s admission test against ONE
-        // room, which a caller reads from `baton status --json` on that room (spec/baton.md §3).
+        // resolution surface: the first three exist to drive `baton resolve`'s admission test against
+        // ONE room, which a caller reads from `baton status --json` on that room (spec/baton.md §3).
+        // VerifyTail (#1701) is omitted for the same reason plus a size one: it is a failing gate
+        // member's own captured output, bounded at VerifyRunner.MaxTailChars (4000 chars) PER STEP, so
+        // mirroring it would put a multi-kilobyte diagnostic blob into every room's entry of a
+        // fleet-wide listing. The short verify/verifyReason tokens are mirrored; the blob is read from
+        // `baton status --json` on the one room being diagnosed.
         var deliberatelyOmitted = new HashSet<string>(StringComparer.Ordinal)
         {
             nameof(WorkflowStatusStepView.CapturedResponseFile),
             nameof(WorkflowStatusStepView.UnsatisfiedOutputs),
             nameof(WorkflowStatusStepView.IndeterminateProducerKind),
+            nameof(WorkflowStatusStepView.VerifyTail),
         };
 
         var source = typeof(WorkflowStatusStepView).GetProperties().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);

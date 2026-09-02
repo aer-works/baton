@@ -230,7 +230,9 @@ the full per-producer register, summarized without restating it below: `Captured
 `--accept-capture` writes the capture's body under each declared name it stands in for, settling the
 step `Succeeded`; `ContractFailure` admits only `--reject --reason <text>`, recording a rejection and
 leaving the step resolved-but-`Failed`; the other two producers admit neither verb and reopen only
-through a fresh `baton dispatch`. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
+through a fresh `baton dispatch`. Of those two, `VerifyFailed` carries the failing member(s)' own
+output on `steps[].verifyTail`, bounded — `spec/baton.md` §3 is the canonical account of the field
+and its whole-stream fallback. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
 capture can and can't ever resolve into. `baton resolve` never re-drives the DAG itself, either way —
 in a multi-step lane, check its stdout / the returned `state` for whether the room reached Terminal; if
 not (a downstream step just became deliverable, or a rejected step still has retry budget), re-run

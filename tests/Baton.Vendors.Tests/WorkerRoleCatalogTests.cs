@@ -147,6 +147,23 @@ public class WorkerRoleCatalogTests
         Assert.Null(WorkerRoleCatalog.For("advise").MaxToolSteps);
     }
 
+    // #1691: the catalog's third arrest axis, pinned the same way and for a stronger reason -- here
+    // "unset" is the WHOLE finding, and spec/baton.md §3 is where the measurement behind it lives.
+    // Deliberately iterates the whole catalog rather than naming roles, so the drift #1686 review F1
+    // found -- a role whose caps the records and the JSON disagreed about -- has nowhere to hide.
+    [Fact]
+    public void The_shipped_catalog_arms_no_billed_rate_trigger_on_any_role()
+    {
+        using var env = ShippedDefault();
+
+        foreach (var role in WorkerRoleCatalog.All)
+        {
+            Assert.True(
+                role.BilledRateLimit is null,
+                $"role '{role.Id}' declares billed_rate_limit {role.BilledRateLimit}, which spec/baton.md §3 says no role does. Re-run tools/room-rate-sweep/sweep.py: if a defensible value now exists, §3's calibration changes with it.");
+        }
+    }
+
     [Fact]
     public void One_tier_edit_reaches_every_role_on_that_tier_with_no_rebuild()
     {

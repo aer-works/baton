@@ -24,6 +24,11 @@ namespace Baton.Cli;
 /// refuses the combination outright when null — see its own refusal for the reason, not restated here.
 /// </param>
 /// <param name="MaxToolSteps">The <c>--max-tool-steps</c> override (#1686 review F2). Null keeps the parent's.</param>
+/// <param name="BilledRateLimit">
+/// The <c>--billed-rate-limit</c> override (#1691), mirroring <see cref="TokenBudget"/> end to end.
+/// Null keeps the parent's — carried by BOTH redispatch paths, which is the specific hole #1686 review
+/// F2 found in <see cref="MaxToolSteps"/>'s own threading and this field is deliberately not repeating.
+/// </param>
 /// <param name="VerifyCommand">The <c>--verify</c> override (#1702). Null keeps the parent's.</param>
 public sealed record RedispatchOptions(
     string ParentRoomDirectoryPath,
@@ -42,4 +47,5 @@ public sealed record RedispatchOptions(
     bool WorkstreamSpecified = false,
     IReadOnlyList<string>? Attachments = null,
     int? MaxToolSteps = null,
+    long? BilledRateLimit = null,
     string? VerifyCommand = null);

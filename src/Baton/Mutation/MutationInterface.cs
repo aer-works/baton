@@ -1654,9 +1654,13 @@ public static class MutationInterface
             // #1682: a monitor now arms on EITHER trigger existing -- a role with only a tool-step cap
             // and no token budget still watches, where before this issue a budget was required for a
             // monitor to be constructed at all.
-            if ((binding.TokenBudget is not null || binding.MaxToolSteps is not null) && usageParser is not null)
+            // #1691: the billed-rate trigger joins the same disjunction -- a dispatch carrying only
+            // --billed-rate-limit still watches.
+            if ((binding.TokenBudget is not null || binding.MaxToolSteps is not null || binding.BilledRateLimit is not null)
+                && usageParser is not null)
             {
-                budgetMonitor = new TokenBudgetMonitor(binding.TokenBudget, binding.MaxToolSteps, usageParser);
+                budgetMonitor = new TokenBudgetMonitor(
+                    binding.TokenBudget, binding.MaxToolSteps, binding.BilledRateLimit, usageParser);
                 var innerOnStdoutLine = target.OnStdoutLine;
                 target = target with
                 {
@@ -1707,7 +1711,11 @@ public static class MutationInterface
                         budgetMonitor.SnapshotUsage(),
                         budgetMonitor.SnapshotLastToolNames(),
                         budgetMonitor.ArrestReasonValue,
-                        budgetMonitor.SnapshotToolStepCount()),
+                        budgetMonitor.SnapshotToolStepCount(),
+                        // #1691: recorded on EVERY arrest, not only a BilledRate one -- see
+                        // TokenBudgetMonitor.SnapshotPeakBilledInWindow for why.
+                        budgetMonitor.SnapshotPeakBilledInWindow(),
+                        binding.BilledRateLimit),
                     CancellationToken.None).ConfigureAwait(false);
                 return;
             }

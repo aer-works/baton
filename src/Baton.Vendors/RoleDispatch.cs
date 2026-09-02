@@ -80,6 +80,11 @@ public static class RoleDispatch
     /// The <c>--max-tool-steps</c> escape hatch (#1686 review F11), mirroring <paramref
     /// name="tokenBudgetOverride"/> end to end. Null keeps <see cref="WorkerRole.MaxToolSteps"/>.
     /// </param>
+    /// <param name="billedRateLimitOverride">
+    /// The <c>--billed-rate-limit</c> escape hatch (#1691), mirroring <paramref
+    /// name="tokenBudgetOverride"/> end to end. Null keeps <see cref="WorkerRole.BilledRateLimit"/> —
+    /// which no role sets, so in practice null means no rate trigger at all.
+    /// </param>
     /// <param name="verifyCommandOverride">
     /// The <c>--verify</c> escape hatch (#1702), independent of the role like <paramref
     /// name="tokenBudgetOverride"/>. Null keeps the workspace-resolution order
@@ -92,7 +97,8 @@ public static class RoleDispatch
         IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null,
         bool autoProvisionWorktree = true, TimeSpan? timeoutOverride = null,
         IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null,
-        long? tokenBudgetOverride = null, int? maxToolStepsOverride = null, string? verifyCommandOverride = null)
+        long? tokenBudgetOverride = null, int? maxToolStepsOverride = null,
+        long? billedRateLimitOverride = null, string? verifyCommandOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -186,7 +192,9 @@ public static class RoleDispatch
             VerifyCommandOverride: verifyCommandOverride,
             TokenBudget: tokenBudgetOverride ?? role.TokenBudget,
             // #1686 review F11: the --max-tool-steps escape hatch, mirroring --token-budget.
-            MaxToolSteps: maxToolStepsOverride ?? role.MaxToolSteps);
+            MaxToolSteps: maxToolStepsOverride ?? role.MaxToolSteps,
+            // #1691: the --billed-rate-limit escape hatch, mirroring both of the above.
+            BilledRateLimit: billedRateLimitOverride ?? role.BilledRateLimit);
     }
 
     /// <summary>
@@ -209,7 +217,7 @@ public static class RoleDispatch
         string? modelOverride = null, string? effortOverride = null, string? outputOverride = null,
         TimeSpan? timeoutOverride = null, IReadOnlyList<string>? attachments = null,
         string? attachmentsDirectory = null, long? tokenBudgetOverride = null, int? maxToolStepsOverride = null,
-        string? verifyCommandOverride = null)
+        long? billedRateLimitOverride = null, string? verifyCommandOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
@@ -218,6 +226,7 @@ public static class RoleDispatch
             modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride,
             timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory,
             tokenBudgetOverride: tokenBudgetOverride, maxToolStepsOverride: maxToolStepsOverride,
+            billedRateLimitOverride: billedRateLimitOverride,
             verifyCommandOverride: verifyCommandOverride);
 
         var stepOutputs = binding.Contract.ProducedOutputs.Select(o => o.Name).ToList();

@@ -68,6 +68,14 @@ namespace Baton.Cli;
 /// template the same way <paramref name="TokenBudget"/> is. Null keeps the role's own default
 /// (<c>Baton.Vendors.WorkerRole.MaxToolSteps</c>).
 /// </param>
+/// <param name="BilledRateLimit">
+/// The <c>--billed-rate-limit</c> escape hatch (#1691) — the ceiling on billed tokens inside one
+/// trailing <c>Baton.Mutation.TokenBudgetMonitor.BilledRateWindow</c> (5 minutes), mirroring
+/// <paramref name="TokenBudget"/> end to end. Role dispatch only, rejected for a workflow template the
+/// same way <paramref name="TokenBudget"/> is. Null keeps the role's own default
+/// (<c>Baton.Vendors.WorkerRole.BilledRateLimit</c>) — which no role sets, so null means no rate
+/// trigger at all.
+/// </param>
 /// <param name="VerifyCommand">
 /// The <c>--verify</c> escape hatch (#1702) — the highest-precedence input to the engine's verify-command
 /// resolution (spec/baton.md §3), ahead of the workspace's own <c>.baton/verify</c> declaration and the
@@ -92,4 +100,5 @@ public sealed record DispatchOptions(
     long? TokenBudget = null,
     string? RepoPath = null,
     int? MaxToolSteps = null,
+    long? BilledRateLimit = null,
     string? VerifyCommand = null);

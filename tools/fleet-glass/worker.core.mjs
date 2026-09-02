@@ -157,3 +157,24 @@ export function deliverableBatchKeyFor(index, itemId) {
   const meta = index.find((m) => m && m.id === itemId);
   return meta && typeof meta.batch_id === "string" && meta.batch_id ? `inbox:batch:${meta.batch_id}` : null;
 }
+
+// #1712: Cloudflare's free-tier KV namespace hits a HARD daily write cap distinct from the pusher's
+// own #1690 soft ledger (spec/baton.md §6) -- measured live (`wrangler tail`, 2026-09-02) as every
+// `env.FLEET.put` throwing this exact message. worker.js was letting that bubble up as a bare 500;
+// this pure classifier is what lets every put path (push, heartbeat, deliver's index/batch/eviction
+// puts) answer 429 instead, without each one re-matching the message text itself.
+const KV_WRITE_CAP_MESSAGE = "KV put() limit exceeded for the day.";
+
+export function classifyKvError(err) {
+  const message = err && typeof err.message === "string" ? err.message : String(err ?? "");
+  return message.includes(KV_WRITE_CAP_MESSAGE) ? "kv-write-cap" : null;
+}
+
+// The 429 body's `resets_at`: the next UTC midnight strictly after `nowMs`, ISO-8601 -- same instant
+// shape as pusher.py's own `next_utc_midnight_iso` (this is the worker-side twin, not a shared
+// import: this file has no dependency on the pusher's Python).
+export function nextUtcMidnightIso(nowMs) {
+  const now = new Date(nowMs);
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
+  return next.toISOString();
+}

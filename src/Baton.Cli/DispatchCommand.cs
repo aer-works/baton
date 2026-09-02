@@ -454,6 +454,15 @@ public static class DispatchCommand
                 "remove the --max-tool-steps flag, or dispatch a single role instead of a template.");
         }
 
+        if (options.BilledRateLimit is not null)
+        {
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — each phase carries its own role's billed-rate "
+                + "limit, so --billed-rate-limit does not apply to one of them. Pass --billed-rate-limit "
+                + "only when dispatching a role.",
+                "remove the --billed-rate-limit flag, or dispatch a single role instead of a template.");
+        }
+
         if (options.VerifyCommand is not null)
         {
             throw new CliArgumentException(
@@ -506,6 +515,7 @@ public static class DispatchCommand
             modelOverride: options.Model, effortOverride: options.Effort, outputOverride: options.OutputPath,
             timeoutOverride: options.Timeout, attachments: options.Attachments, roomDirectoryPath: options.RoomDirectoryPath,
             tokenBudgetOverride: options.TokenBudget, maxToolStepsOverride: options.MaxToolSteps,
+            billedRateLimitOverride: options.BilledRateLimit,
             verifyCommandOverride: options.VerifyCommand);
     }
 

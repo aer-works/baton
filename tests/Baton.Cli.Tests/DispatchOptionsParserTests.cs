@@ -425,4 +425,55 @@ public class DispatchOptionsParserTests
 
         Assert.Null(options.VerifyCommand);
     }
+
+    /// <summary>#1691: --billed-rate-limit mirrors --token-budget end to end.</summary>
+    [Fact]
+    public void The_billed_rate_limit_option_parses_to_a_positive_long()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--billed-rate-limit", "250000"]);
+
+        Assert.Equal(250_000, options.BilledRateLimit);
+    }
+
+    [Fact]
+    public void Omitting_billed_rate_limit_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md"]);
+
+        Assert.Null(options.BilledRateLimit);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("not-a-number")]
+    public void A_non_positive_or_non_numeric_billed_rate_limit_throws(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--billed-rate-limit", rawValue]));
+
+        Assert.Contains("--billed-rate-limit", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1691: the flag appears in the usage line every parse error prints. A flag that exists and is
+    /// undiscoverable is the documentation defect CLAUDE.md's writing rule names, and the usage string
+    /// is the only place a CLI reader looks.
+    /// </summary>
+    [Fact]
+    public void The_usage_line_advertises_billed_rate_limit()
+    {
+        Assert.Contains("--billed-rate-limit <n>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1702: the usage line advertises --verify for the same reason the billed-rate-limit arm above
+    /// asserts its own — one flag added without the other's usage entry is the discoverability defect,
+    /// not a cosmetic omission.
+    /// </summary>
+    [Fact]
+    public void The_usage_line_advertises_verify()
+    {
+        Assert.Contains("--verify <cmd>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
 }

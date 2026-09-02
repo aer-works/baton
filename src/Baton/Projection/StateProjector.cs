@@ -124,6 +124,7 @@ public static class StateProjector
                     state.IndeterminateAwaitingResolutionStepIds.Remove(acceptedStepId);
                     state.IndeterminateReasonByStepId.Remove(acceptedStepId);
                     state.IndeterminateProducerByStepId.Remove(acceptedStepId);
+                    state.IndeterminateVerifyTailByStepId.Remove(acceptedStepId);
 
                     // #1702: a fresh dispatch's own verify step (if any) speaks for this attempt, not
                     // whatever the PRIOR attempt's pre-flight check found.
@@ -311,7 +312,7 @@ public static class StateProjector
 
             case FlowEvent.VerifyFailed verifyFailed:
                 state.UnmatchedVerifyExecutionIds.Remove(verifyFailed.ExecutionId);
-                ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed), IndeterminateProducer.VerifyFailed);
+                ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed), IndeterminateProducer.VerifyFailed, verifyFailed.Tail);
                 break;
 
             case FlowEvent.VerifyNotRun verifyNotRun:
@@ -377,6 +378,11 @@ public static class StateProjector
                     state.IndeterminateProducerByStepId[indeterminateStepId] = indeterminate.CapturedResponseFile is not null
                         ? IndeterminateProducer.CapturedResponse
                         : IndeterminateProducer.ContractFailure;
+
+                    // Neither arm here is VerifyFailed, so a tail recorded by an earlier VerifyFailed
+                    // producer on this step must not survive being overwritten — same discipline as
+                    // the other clear sites (the ExecutionRequestAccepted and CaptureResolved arms).
+                    state.IndeterminateVerifyTailByStepId.Remove(indeterminateStepId);
                 }
 
                 break;
@@ -393,6 +399,7 @@ public static class StateProjector
                     state.IndeterminateAwaitingResolutionStepIds.Remove(resolvedStepId);
                     state.IndeterminateReasonByStepId.Remove(resolvedStepId);
                     state.IndeterminateProducerByStepId.Remove(resolvedStepId);
+                    state.IndeterminateVerifyTailByStepId.Remove(resolvedStepId);
 
                     if (resolved.Accepted)
                     {
@@ -457,7 +464,8 @@ public static class StateProjector
     /// </para>
     /// </summary>
     private static void ApplyIndeterminate(
-        ProjectionCheckpointState state, ExecutionId executionId, string reason, IndeterminateProducer producer)
+        ProjectionCheckpointState state, ExecutionId executionId, string reason, IndeterminateProducer producer,
+        string? verifyTail = null)
     {
         state.TerminalStatusByExecutionId[executionId] = StepStatus.Failed;
         if (!state.StepIdByExecutionId.TryGetValue(executionId, out var stepId))
@@ -471,6 +479,10 @@ public static class StateProjector
         state.IndeterminateAwaitingResolutionStepIds.Add(stepId);
         state.IndeterminateReasonByStepId[stepId] = reason;
         state.IndeterminateProducerByStepId[stepId] = producer;
+        // #1701: null (never fabricated) for every producer but VerifyFailed -- an arrest's `reason`
+        // above is already the full diagnostic, and the other two producers carry their own account
+        // on LatestCapturedResponseFileByStepId/LatestUnsatisfiedOutputNamesByStepId instead.
+        state.IndeterminateVerifyTailByStepId[stepId] = verifyTail;
         state.RetryForeclosedStepIds.Add(stepId);
         state.RetryNotBeforeByStepId.Remove(stepId);
         state.RetryDelayMsByStepId.Remove(stepId);
@@ -492,16 +504,38 @@ public static class StateProjector
 
     private static string DescribeArrest(FlowEvent.ExecutionArrested arrested)
     {
-        // #1682: total over the two known producers (spec/baton.md §3). Pre-#1682 ledger lines carry
-        // no Reason, so null falls into the TokenBudget arm rather than a fabricated third case.
+        // #1682/#1691: total over the three known producers (spec/baton.md §3). Pre-#1682 ledger lines
+        // carry no Reason, so null falls into the TokenBudget arm rather than a fabricated third case.
+        // StateProjectorTests.ExecutionArrested_DescribeArrest_covers_every_ArrestReason_member pins
+        // this switch total against Enum.GetValues<ArrestReason>() so a new member fails a gate rather
+        // than the throwing default arm below in production.
         return arrested.Reason switch
         {
             ArrestReason.ToolStepCap => arrested.ToolStepCount is { } steps and > 0
                 ? $"Execution arrested: tool-step cap exceeded ({steps} tool steps measured) — awaiting conductor resolution."
                 : "Execution arrested: tool-step cap exceeded — awaiting conductor resolution.",
+            ArrestReason.BilledRate => DescribeBilledRateArrest(arrested),
             ArrestReason.TokenBudget or null => DescribeTokenBudgetArrest(arrested),
             _ => throw new ArgumentOutOfRangeException(nameof(arrested), arrested.Reason, "Unknown ArrestReason."),
         };
+    }
+
+    private static string DescribeBilledRateArrest(FlowEvent.ExecutionArrested arrested)
+    {
+        // #1691: names all three quantities a conductor needs to tell a false fire from a real one --
+        // the window's width, the rate observed inside it, and the limit that was armed. The window is
+        // read off TokenBudgetMonitor rather than restated, so it cannot drift from the code measuring
+        // it. Degrades to the bare sentence when a ledger line carries neither figure (only possible on
+        // a line written by an older writer, since this reason did not exist before #1691).
+        // Fully qualified, and a compile-time constant width -- NOT a clock read: this projector's own
+        // "no wall-clock time" purity contract is untouched.
+        var window = $"{Mutation.TokenBudgetMonitor.BilledRateWindow.TotalMinutes:0.##} min";
+        if (arrested.PeakBilledInWindow is { } observed && arrested.BilledRateLimit is { } limit)
+        {
+            return $"Execution arrested: billed-token rate limit exceeded ({observed} billed tokens in a {window} window, limit {limit}) — awaiting conductor resolution.";
+        }
+
+        return $"Execution arrested: billed-token rate limit exceeded (over a {window} window) — awaiting conductor resolution.";
     }
 
     private static string DescribeTokenBudgetArrest(FlowEvent.ExecutionArrested arrested)
@@ -582,6 +616,7 @@ public static class StateProjector
                 state.IndeterminateAwaitingResolutionStepIds.Contains(stepDefinition.StepId),
                 state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.IndeterminateVerifyTailByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.VerifyNotRunReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
