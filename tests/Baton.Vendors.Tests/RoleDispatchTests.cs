@@ -106,6 +106,20 @@ public class RoleDispatchTests
         Assert.NotEqual(Review.MaxToolSteps, 500);
     }
 
+    /// <summary>
+    /// #1691: the same threading proof for --billed-rate-limit. The role's own value is null (no role
+    /// declares one), so the discriminating arm is that an override REACHES the entry — a build
+    /// dropping billedRateLimitOverride would leave null here and, unlike the two axes above, there is
+    /// no catalog default to mask it.
+    /// </summary>
+    [Fact]
+    public void A_billed_rate_limit_override_reaches_the_binding_where_the_role_declares_none()
+    {
+        Assert.Null(Review.BilledRateLimit);
+        Assert.Null(RoleDispatch.ToBinding(Review, "spec").BilledRateLimit);
+        Assert.Equal(250_000, RoleDispatch.ToBinding(Review, "spec", billedRateLimitOverride: 250_000).BilledRateLimit);
+    }
+
     [Fact]
     public void The_adapter_defaults_to_the_roles_tier_but_an_override_wins()
     {

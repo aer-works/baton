@@ -1548,6 +1548,84 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void ExecutionArrested_DescribeArrest_pins_the_billed_rate_text_naming_window_observed_and_limit()
+    {
+        // #1691: the THIRD producer's own pinned text -- window width, observed rate, armed limit, all
+        // three named. StateProjector.DescribeBilledRateArrest carries why each one is there.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                new WorkerUsage(TokensIn: 96_546, TokensOut: 3_679, BilledTokens: 278_565),
+                LastToolNames: ["run_command"],
+                Reason: ArrestReason.BilledRate,
+                ToolStepCount: 26,
+                PeakBilledInWindow: 278_565,
+                BilledRateLimit: 250_000),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: billed-token rate limit exceeded (278565 billed tokens in a 5 min window, limit 250000) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_degrades_the_billed_rate_text_when_the_figures_are_absent()
+    {
+        // #1691, the polarity arm: a BilledRate line with neither figure still names the mechanism and
+        // the window rather than fabricating a zero-token claim. Only reachable from a writer older
+        // than the fields, which cannot exist today -- pinned so it stays a graceful degrade rather
+        // than becoming "(0 billed tokens in a 5 min window, limit 0)" under a later edit.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, Usage: null, Reason: ArrestReason.BilledRate),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: billed-token rate limit exceeded (over a 5 min window) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    /// <summary>
+    /// #1691 state-enumeration sweep: <c>DescribeArrest</c>'s switch has a THROWING default arm, so
+    /// before this test a member added to <see cref="ArrestReason"/> without an arm failed at runtime,
+    /// in production, on the one code path that runs when something has already gone wrong. Driven off
+    /// <see cref="Enum.GetValues{T}"/> so a new member fails here instead, the moment it is declared.
+    /// </summary>
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_covers_every_ArrestReason_member()
+    {
+        foreach (var reason in Enum.GetValues<ArrestReason>())
+        {
+            var executionId = new ExecutionId("exec-1");
+            var events = new FlowEvent[]
+            {
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+                new FlowEvent.ExecutionArrested(executionId, Usage: null, Reason: reason),
+            };
+
+            var state = StateProjector.Project(events, TwoStepSnapshot());
+
+            var architect = StepFor(state, Architect);
+            Assert.False(string.IsNullOrWhiteSpace(architect.IndeterminateReason),
+                $"ArrestReason.{reason} produced no arrest description — DescribeArrest is missing an arm for it.");
+            Assert.StartsWith("Execution arrested:", architect.IndeterminateReason, StringComparison.Ordinal);
+            Assert.True(architect.RetryForeclosed,
+                $"ArrestReason.{reason} must foreclose retry like every other arrest — a new trigger silently allowing a blind retry is the failure this sweep exists to catch.");
+        }
+    }
+
+    [Fact]
     public void ExecutionArrested_DescribeArrest_treats_a_null_reason_as_the_legacy_token_budget_case()
     {
         // A ledger line written before #1682 -- Reason/ToolStepCount/BilledTokens all absent.

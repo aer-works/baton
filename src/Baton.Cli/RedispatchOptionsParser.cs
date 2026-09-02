@@ -14,7 +14,7 @@ public static class RedispatchOptionsParser
     public const string Usage =
         "Usage: baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] "
         + "[--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] "
-        + "[--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]";
+        + "[--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]";
 
     public static RedispatchOptions Parse(IReadOnlyList<string> args)
     {
@@ -28,6 +28,7 @@ public static class RedispatchOptionsParser
         TimeSpan? timeout = null;
         long? tokenBudget = null;
         int? maxToolSteps = null;
+        long? billedRateLimit = null;
         string? label = null;
         var labelSpecified = false;
         string? workstream = null;
@@ -65,6 +66,9 @@ public static class RedispatchOptionsParser
                     break;
                 case "--max-tool-steps":
                     maxToolSteps = ParseMaxToolSteps(RequireValue(args, ref i, arg));
+                    break;
+                case "--billed-rate-limit":
+                    billedRateLimit = ParseBilledRateLimit(RequireValue(args, ref i, arg));
                     break;
                 case "--label":
                     label = DispatchOptionsParser.SanitizeLabel(RequireValue(args, ref i, arg));
@@ -111,7 +115,8 @@ public static class RedispatchOptionsParser
             adapter, model, effort,
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout, label, labelSpecified, tokenBudget, workstream, workstreamSpecified, maxToolSteps);
+            timeout, label, labelSpecified, tokenBudget, workstream, workstreamSpecified, maxToolSteps,
+            billedRateLimit);
     }
 
     /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--token-budget</c> (#1623).</summary>
@@ -138,6 +143,19 @@ public static class RedispatchOptionsParser
         }
 
         return steps;
+    }
+
+    /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--billed-rate-limit</c> (#1691).</summary>
+    private static long ParseBilledRateLimit(string rawValue)
+    {
+        if (!long.TryParse(rawValue, out var tokens) || tokens <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--billed-rate-limit {rawValue}' is not a positive whole number of billed tokens per 5 minutes. {Usage}",
+                "pass a positive integer, e.g. --billed-rate-limit 250000.");
+        }
+
+        return tokens;
     }
 
     /// <summary>Same ceiling/warn thresholds and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--timeout</c> (#1442).</summary>

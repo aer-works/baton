@@ -127,6 +127,20 @@ public class FlowEventSerializationTests
                 Reason: ArrestReason.ToolStepCap,
                 ToolStepCount: 81)
         ];
+        // #1691: the third reason plus the two fields it brought. PeakBilledInWindow is carried on
+        // EVERY arrest, so the TokenBudget/ToolStepCap variants above deliberately leave it null --
+        // that is the pre-#1691 ledger shape, and it must keep round-tripping as absent.
+        yield return
+        [
+            new FlowEvent.ExecutionArrested(
+                ExecutionId,
+                new WorkerUsage(TokensIn: 96_546, TokensOut: 3_679, BilledTokens: 278_565),
+                LastToolNames: ["run_command"],
+                Reason: ArrestReason.BilledRate,
+                ToolStepCount: 26,
+                PeakBilledInWindow: 278_565,
+                BilledRateLimit: 250_000)
+        ];
 
         // #1583
         yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover")];

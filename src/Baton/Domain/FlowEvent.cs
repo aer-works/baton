@@ -212,7 +212,9 @@ public abstract record FlowEvent
     /// <summary>
     /// #1623 (contract: <c>spec/baton.md</c> §3; the addendum's own words are quoted on
     /// <see cref="Mutation.TokenBudgetMonitor"/>): a live execution's measured usage crossed its role's
-    /// token budget, OR (#1682) its tool-step count crossed its role's tool-step cap. The engine cancels
+    /// token budget, OR (#1682) its tool-step count crossed its role's tool-step cap, OR (#1691) its
+    /// billed tokens inside one trailing <c>TokenBudgetMonitor.BilledRateWindow</c> crossed an
+    /// operator-supplied <c>--billed-rate-limit</c>. The engine cancels
     /// the execution (arrest, not park) rather than let it keep running.
     /// <paramref name="Usage"/> is the measured usage at arrest time; <paramref name="LastToolNames"/>
     /// the last few tool calls observed, which is what a conductor reads to tell a runaway loop from a
@@ -228,12 +230,26 @@ public abstract record FlowEvent
     /// <param name="ToolStepCount">
     /// #1682: the tool-step count at arrest time, set independently of <paramref name="Usage"/> (spec/baton.md §3).
     /// </param>
+    /// <param name="PeakBilledInWindow">
+    /// #1691: the largest Σ billed tokens this execution held inside one trailing
+    /// <c>TokenBudgetMonitor.BilledRateWindow</c> — the OBSERVED rate, recorded whether or not
+    /// <paramref name="BilledRateLimit"/> was set. Note the scope: this is an ARREST record, so a
+    /// normally-completed execution's peak reaches no ledger line at all — #1709, and spec/baton.md §3
+    /// states what that does and does not buy a future calibration. Null on any ledger line written
+    /// before #1691.
+    /// </param>
+    /// <param name="BilledRateLimit">
+    /// #1691: the limit <paramref name="PeakBilledInWindow"/> was compared against, or null when no
+    /// rate trigger was armed (every role's default — spec/baton.md §3).
+    /// </param>
     public sealed record ExecutionArrested(
         ExecutionId ExecutionId,
         WorkerUsage? Usage = null,
         IReadOnlyList<string>? LastToolNames = null,
         ArrestReason? Reason = null,
-        int? ToolStepCount = null) : FlowEvent;
+        int? ToolStepCount = null,
+        long? PeakBilledInWindow = null,
+        long? BilledRateLimit = null) : FlowEvent;
 
     /// <summary>
     /// S6 (spec/baton.md §3, #802 section 3.3, pulled forward by #1583): records that a step's execution was rebound to a different

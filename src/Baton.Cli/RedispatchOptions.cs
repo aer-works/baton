@@ -19,6 +19,11 @@ namespace Baton.Cli;
 /// <param name="Workstream">The <c>--workstream</c> override (#1619) — see spec/baton.md §2 for the inheritance/clear/override contract, mirroring <see cref="Label"/>'s own.</param>
 /// <param name="WorkstreamSpecified">True when <c>--workstream</c> was explicitly provided, even if blank — mirrors <see cref="LabelSpecified"/>.</param>
 /// <param name="MaxToolSteps">The <c>--max-tool-steps</c> override (#1686 review F2). Null keeps the parent's.</param>
+/// <param name="BilledRateLimit">
+/// The <c>--billed-rate-limit</c> override (#1691), mirroring <see cref="TokenBudget"/> end to end.
+/// Null keeps the parent's — carried by BOTH redispatch paths, which is the specific hole #1686 review
+/// F2 found in <see cref="MaxToolSteps"/>'s own threading and this field is deliberately not repeating.
+/// </param>
 public sealed record RedispatchOptions(
     string ParentRoomDirectoryPath,
     string RoomDirectoryPath,
@@ -34,4 +39,5 @@ public sealed record RedispatchOptions(
     long? TokenBudget = null,
     string? Workstream = null,
     bool WorkstreamSpecified = false,
-    int? MaxToolSteps = null);
+    int? MaxToolSteps = null,
+    long? BilledRateLimit = null);

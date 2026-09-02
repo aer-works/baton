@@ -102,7 +102,7 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   workflow nobody has decided.
 - **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
   [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]
-  [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]`**
+  [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]`**
   — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
   template (`src/Baton.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
   directory under `BatonPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
@@ -171,7 +171,7 @@ forward — it settles one execution's `Indeterminate` verdict and stops.
 
 **`baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
 <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>]
-[--max-tool-steps <n>] [--label <text>] [--workstream <slug>]`** (#1441) reruns
+[--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]`** (#1441) reruns
 a single-role `baton dispatch` room into a fresh one, once the operator finds the brief was wrong or
 incomplete — without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch
 `baton dispatch` would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the
@@ -227,8 +227,8 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
-| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
+| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `resolve` | `baton resolve <room-dir> [--execution <execution-id>] --accept-capture \| --reject --reason <text>` | `ResolveOptionsParser.cs` |
@@ -721,7 +721,7 @@ names two additive `terminal.json` fields (`settledAt`: ISO-8601 UTC, `settledBy
 room was declared finished after its pump died". Reserved here as a forward pointer only — no field
 exists on `WorkflowStatusView` yet, and none should until S2 has a real writer for it.
 
-### Engine-run verify and the token budget (#1623)
+### Engine-run verify and the three arrest triggers (#1623, #1682, #1691)
 
 Two more producers, both ratified together (operator ruling, 2026-09-01 night, "option 3 ratified",
 plus the same night's addendum on token consumption).
@@ -919,9 +919,100 @@ arrest, on either trigger, for `38c24d11`. The tool-step cap's real, provable va
 DIFFERENT failure shape — a poll loop or a call-count runaway — not this one; §3's prior text claiming
 the cap "is what actually arrests both evidence rooms" no longer holds under the corrected unit and is
 retracted here rather than left standing. **The uncaught failure shape — burning tokens per real tool
-call rather than making an unusual number of calls — is tracked as #1691** (#1686 review F14): a
-windowed billed-rate trigger, in two phases (stamp arrival time and record a per-execution windowed-rate
-maximum first; set the trigger from a measured distribution second), not implemented here.
+call rather than making an unusual number of calls — was taken up as #1691**, whose measured answer is
+the next block.
+
+**The billed-rate trigger (#1691): the mechanism ships, no role arms it, and the premise it was opened
+on is refuted.** #1691 proposed that room `38c24d11` is a RATE anomaly where #1682 proved it is not a
+TOTAL anomaly, and that a windowed billed-rate limit (proposal: 250,000 billed tokens in any trailing
+5 minutes) could therefore ship as a role default. Measured over the whole room corpus rather than the
+three rooms the issue named — `python tools/room-rate-sweep/sweep.py --sweep`, which is the register
+for these numbers and is re-runnable as the corpus grows — **no such value exists.** Seven
+`dispatch-implement` rooms that PRODUCED THEIR WORK burned billed tokens FASTER than `38c24d11`'s
+68,240/minute, topping out at 123,531/minute (1.81×), and the closest is still 1.07× — the populations
+do not merely overlap, they interleave with no gap to put a threshold in. Those figures involve no
+modelling at all: each room's billed total and its `executionStarted`..`executionExited` span are both
+measured exactly. "Produced their work" is the load-bearing filter and is stricter than it looks — a
+`Natural` uncancelled exit says only that the PROCESS ended cleanly, so the sweep reads the outcome
+events instead (at least one `executionSucceeded`, no `executionFailed`); `dispatch-implement-e5567544`
+passes the weaker test while journalling `executionFailed: Contract not satisfied` three times and is
+excluded (#1707 review, which caught it counted). Nor does the answer turn on the window's width or on
+how agy's per-line times are reconstructed: across every width swept (`--window`, 0.5 to 15 minutes) and
+under both reconstructions (`--offsets uniform|duration`) the runaway's windowed peak sits BELOW
+`dispatch-implement-6142bd07`'s, so no width reverses the ordering and no percentile rule isolates a
+room that sits mid-pack. The concrete cost is pinned in `BilledRateReplayTests`: the proposed 250,000
+arrests `38c24d11` at usage line 27 of 70 (278,565 billed, 65% of the burn saved) **and arrests
+`dispatch-implement-6142bd07` at usage line 30 of 221** — an `implement` lane that journalled
+`executionSucceeded` with no failure, at 1,198,800 billed, under the shipped budget and cap, which
+nothing else would have touched. Arrest forecloses retry, so that is a permanently killed legitimate
+lane.
+
+Two things follow, and neither is a hedge. First, **`WorkerRole.BilledRateLimit` is null for every role
+in `WorkerRoles.json`, and that null is the finding** — pinned by
+`WorkerRoleCatalogTests.The_shipped_catalog_arms_no_billed_rate_trigger_on_any_role` over EVERY role,
+not the three carrying a token budget, because #1686 review F1 was exactly a fourth role quietly holding
+an unmeasured cap while three documents said it held none. Second, the mechanism ships anyway, complete
+and tested, because it is what makes a future calibration possible: `TokenBudgetMonitor` now takes an
+injected `TimeProvider` and keeps a trailing-window Σ of the SAME deduped per-turn billed samples
+#1682's total already takes, exposes the largest window it ever held
+(`SnapshotPeakBilledInWindow`, accumulated whether or not a limit is armed), and records that peak plus
+the armed limit onto `FlowEvent.ExecutionArrested`. **Scoped precisely, because an earlier draft of this
+paragraph over-claimed it (#1707 review): that record is written on an ARREST, and a normally-completed
+execution journals no `ExecutionArrested`, so the ledger carries no peak for exactly the lanes whose
+peaks a false-positive calibration needs.** Nothing is lost — every completed room keeps its own
+`.stdout.log`, which is what the sweep reads — but #1686 review F14's phase 1 is only half landed here:
+the live measurement exists and is exposed, and persisting it for a non-arrested execution is #1709.
+
+Mechanics, stated once. The window is fixed at 5 minutes (`TokenBudgetMonitor.BilledRateWindow`) and
+only the ceiling is configurable, so two roles' limits stay comparable; it is closed at both ends, so a
+sample sitting exactly on the edge still counts. Arrival time is the clock, not anything on the line:
+only claude stamps a WALL-CLOCK time (`timestamp`) on its usage line, and reading one vendor's stamp
+while timing the other by arrival would make the trigger mean two different things. **Corrected
+2026-09-02 (#1707 review): an earlier draft of this paragraph said agy "carries no time field at all",
+which is false — every agy `step_update` carries `duration_seconds`, that step's own elapsed time.** It
+is not a wall-clock stamp and cannot be used live, but it gives the sweep a second, independent
+reconstruction (`--offsets duration`) that cross-checks the uniform one; both reproduce every replay
+result in `BilledRateReplayTests` exactly. No timestamped billed history exists anywhere on disk for a
+completed room, so a reconstruction of some kind is unavoidable when reading history, and the sweep says
+which one it used at every use. **There is deliberately no warm-up**: for an execution's first 5 minutes
+the trailing window covers the whole run, so an armed limit behaves as a second, tighter budget over
+that opening stretch. A warm-up would blind the trigger to exactly the opening burst it exists to see —
+the runaway's own crossing lands between 2.6 and 4.5 minutes depending on which reconstruction is used,
+i.e. inside the warm-up any plausible one would have imposed.
+
+Ordering: the token budget wins over the tool-step cap wins over the rate limit when one line crosses
+more than one, so a ledger written before #1691 and one written after describe the same failure the
+same way. `ArrestReason.BilledRate` is the third member, and `StateProjector.DescribeArrest`'s switch
+over that enum is now driven-tested against `Enum.GetValues<ArrestReason>()`
+(`ExecutionArrested_DescribeArrest_covers_every_ArrestReason_member`) rather than relying on its
+throwing default arm to surface a missing case in production.
+
+**`--billed-rate-limit <n>` (#1691)** is the only way a rate trigger is ever armed today. It mirrors
+`--token-budget` end to end — a positive whole number of billed tokens per 5-minute window, refused the
+same way on a non-positive value, rejected on a workflow-template dispatch the same way
+`--timeout`/`--token-budget`/`--max-tool-steps` are — and `baton redispatch` carries AND overrides it on
+**both** its paths, the specific hole #1686 review F2 found in `--max-tool-steps`'s own threading, with
+`RedispatchBindingTests` pinning both polarities.
+
+**A cross-vendor caveat that is load-bearing for all three triggers, not just this one (#1706).**
+`BilledTokens` is not the same quantity on the two vendors. claude's mid-stream `assistant` lines carry
+`message_start` PLACEHOLDER values on **both** the input and the output side — over
+`dispatch-implement-3dc5e21a`'s 153 distinct messages, Σ deduped `output_tokens` is **1,362** against
+the terminal line's own `modelUsage.outputTokens` of 113,293, and Σ deduped `input_tokens` is **306**
+against `modelUsage.inputTokens` of 421,821. The missing input side is 3.7× the missing output side, so
+"it's the output tokens" — the framing #1707's review caught in an earlier draft here and in #1706's
+own title — understates both the size and the fix. What the monitor bills on a claude stream is
+essentially `Σ cache_creation` alone: roughly 39% of THAT room's real billed volume (`5d9686dd`'s ratio
+is 78%, so the shortfall is heavily room-dependent and must not be quoted as a per-vendor constant).
+agy's `agent_response` DONE line carries the complete per-turn figure.
+Every token-side threshold is therefore tight on agy and loose on claude, and #1691's premise is a
+direct consequence: it compared an agy runaway against two claude reference rooms. Tracked as #1706,
+not fixed here — fixing it re-derives `implement`'s and `review`'s budgets, and #1691's own change ships
+no threshold at all. The same measurement settles #1686 review F4's open question in passing: repeated
+`message.id`s DO carry a byte-identical `usage` object with disjoint `content` blocks (verified over
+both captures, 64 of 153 and 72 of 94 ids repeat), so first-sighting dedupe is correct — and the missing
+output side is not something a different dedupe rule could recover, because the real figure never
+appears on any `assistant` line.
 
 **`--max-tool-steps <n>` (#1686 review F11)** is `baton dispatch`'s override for this axis, mirroring
 `--token-budget` end to end — a positive whole number of real tool calls (this fixed unit), or refused
@@ -941,7 +1032,13 @@ axis already had.
 **Defaults, re-derived (#1682: `implement`'s token budget, in billed tokens).** `implement`'s
 `TokenBudget` moves from 600,000 to 1,200,000, measured from two recent, normally-completed (never
 arrested) `implement` rooms under `~/.baton/rooms` — `dispatch-implement-3dc5e21a` (~65 minutes,
-628,302 billed tokens) and `dispatch-implement-5d9686dd` (~55 minutes, 507,402 billed tokens). The OLD
+628,302 billed tokens) and `dispatch-implement-5d9686dd` (~55 minutes, 507,402 billed tokens).
+**Corrected 2026-09-02 (#1691): those two figures are the NON-deduped sums, taken before #1686 review
+F6's `message.id` dedupe landed in the same PR that stated them. Under the accounting that actually
+shipped they are 344,225 and 228,536** (recompute with `python tools/room-rate-sweep/sweep.py --sweep`),
+so 1,200,000 is ~3.5× the higher measured normal rather than the ~2× this paragraph derives it as. The
+value is left unchanged: it errs loose, not tight, and the number that would justify moving it is itself
+under-read on claude by #1706 above, so re-deriving it belongs with that fix rather than here. The OLD
 600,000 default, read under the NEW billed-token arithmetic rather than the OLD level-based one it was
 tuned for, would already false-arrest the FIRST of those two ordinary, successful lanes mid-run — the
 new default is set to roughly 2× the higher of the two measured normal totals, giving headroom for a
@@ -952,14 +1049,16 @@ their pre-#1682 token-budget figures (250,000/150,000) unchanged — no comparab
 rooms" measurement exists for those roles in this issue's evidence set, so their ceilings stay
 carried-over-unverified in the same sense #1623's re-review already flagged, not freshly justified.
 
-**The shared mechanism.** All three producers (engine-run verify, the token budget, and #1682's
-tool-step cap) route through the one `StateProjector.ApplyIndeterminate` helper — flag, reason text,
+**The shared mechanism.** All four producers (engine-run verify, the token budget, #1682's tool-step
+cap, and #1691's billed-rate limit) route through the one `StateProjector.ApplyIndeterminate` helper — flag, reason text,
 foreclosure; the `IndeterminateAwaitingResolution` flag is what `WorkflowOutcome.DescribeTerminal` and
 `RetryEngine.MayRetry` each check (one arm apiece), per the producer table above; `StepState.IndeterminateReason`
 stays display-only, never itself a gate. `StateProjector.DescribeArrest` is the one place
 `FlowEvent.ExecutionArrested.Reason` is switched on — a `null` `Reason` (a ledger line written before
 #1682) reads the same as `ArrestReason.TokenBudget`, since every arrest recorded before #1682 was one
-(the tool-step cap did not exist yet); the switch is total over `TokenBudget`/`ToolStepCap`/`null`.
+(the tool-step cap did not exist yet); the switch is total over
+`TokenBudget`/`ToolStepCap`/`BilledRate`/`null`, and since #1691 that totality is a test over
+`Enum.GetValues<ArrestReason>()` rather than a claim.
 
 ### Exit codes
 

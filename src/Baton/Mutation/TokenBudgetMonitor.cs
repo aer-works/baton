@@ -9,10 +9,13 @@ namespace Baton.Mutation;
 /// accumulates a live execution's own usage from complete stdout lines — via
 /// <see cref="IWorkerUsageParser.TryParseIncrementalUsage"/>, the same per-vendor shape
 /// <c>ExecutionUsageProjector</c> reads post-hoc, but read as each line arrives rather than only after
-/// exit — and requests cancellation the moment either of two independent triggers fires: the running
-/// Σ of billed tokens crosses <paramref name="budget"/>, or the running tool-step count crosses
-/// <paramref name="maxToolSteps"/>. Why both exist, and what each catches that the other misses, is
-/// spec/baton.md §3's own evidence-backed case, not restated here.
+/// exit — and requests cancellation the moment any of three independent triggers fires: the running
+/// Σ of billed tokens crosses <paramref name="budget"/>, the running tool-step count crosses
+/// <paramref name="maxToolSteps"/>, or the Σ of billed tokens inside the trailing
+/// <see cref="BilledRateWindow"/> crosses <paramref name="billedRateLimit"/> (#1691). Why each exists,
+/// and what each catches that the others miss, is spec/baton.md §3's own evidence-backed case, not
+/// restated here — including §3's measured finding that NO role ships a
+/// <paramref name="billedRateLimit"/> default.
 /// </summary>
 /// <remarks>
 /// Wired at <c>MutationInterface.DispatchAndRecordOutcomeAsync</c>; <c>spec/baton.md</c> §3 states the
@@ -33,9 +36,25 @@ public sealed class TokenBudgetMonitor
     /// </summary>
     private const int MaxLastToolNames = 10;
 
+    /// <summary>
+    /// #1691: the width of the trailing window <paramref name="billedRateLimit"/> is measured over —
+    /// fixed, not configurable, because the catalog field and the <c>--billed-rate-limit</c> override
+    /// are both stated in this unit ("billed tokens per 5 minutes"). A second configurable dimension
+    /// would make two roles' limits incomparable without buying a catch — spec/baton.md §3 records the
+    /// width sweep behind that, and <c>tools/room-rate-sweep/sweep.py --window</c> re-runs it.
+    /// </summary>
+    public static readonly TimeSpan BilledRateWindow = TimeSpan.FromMinutes(5);
+
     private readonly long? _budget;
     private readonly int? _maxToolSteps;
+    private readonly long? _billedRateLimit;
+    private readonly TimeProvider _timeProvider;
     private readonly IWorkerUsageParser _usageParser;
+    // #1691: (arrival timestamp, billed delta) for every counted usage sample still inside
+    // BilledRateWindow, oldest first. Bounded by the window, not by the execution — a 5-minute window
+    // over the fastest measured real room (spec/baton.md §3) holds a few hundred entries, so unlike
+    // _seenMessageIds below this one shrinks on its own.
+    private readonly Queue<(long TimestampTicks, long Billed)> _rateWindow = new();
     private readonly CancellationTokenSource _arrestSource = new();
     private readonly Lock _lock = new();
     private readonly List<string> _lastToolNames = [];
@@ -53,6 +72,8 @@ public sealed class TokenBudgetMonitor
     private long? _tokensOut;
     private long? _billedTokens;
     private long? _cacheReadSum;
+    private long _rateWindowSum;
+    private long _peakBilledInWindow;
     private int _toolStepCount;
     private bool _arrested;
     private ArrestReason? _arrestReason;
@@ -67,10 +88,31 @@ public sealed class TokenBudgetMonitor
     /// instant the running count exceeds it, regardless of whether usage ever parses on this stream at
     /// all. Null enforces no tool-step trigger.
     /// </param>
-    public TokenBudgetMonitor(long? budget, int? maxToolSteps, IWorkerUsageParser usageParser)
+    /// <param name="billedRateLimit">
+    /// #1691: the ceiling on Σ billed tokens inside the trailing <see cref="BilledRateWindow"/>. Null
+    /// enforces no rate trigger, which is what every role ships; a value reaches here only from an
+    /// operator's own <c>--billed-rate-limit</c>. Note the semantics before the window has elapsed: the
+    /// trailing window covers the whole run, so this behaves as a second, tighter
+    /// <paramref name="budget"/> over an execution's opening stretch, unsuppressed by any warm-up.
+    /// spec/baton.md §3 has the reasoning for both.
+    /// </param>
+    /// <param name="timeProvider">
+    /// #1691: the clock <paramref name="billedRateLimit"/>'s window is measured against — the ARRIVAL
+    /// time of each usage line rather than anything on the line itself, for the reason spec/baton.md §3
+    /// gives. Defaults to <see cref="TimeProvider.System"/>; a replay test supplies a fake so a captured
+    /// stream can be re-run deterministically.
+    /// </param>
+    public TokenBudgetMonitor(
+        long? budget,
+        int? maxToolSteps,
+        long? billedRateLimit,
+        IWorkerUsageParser usageParser,
+        TimeProvider? timeProvider = null)
     {
         _budget = budget;
         _maxToolSteps = maxToolSteps;
+        _billedRateLimit = billedRateLimit;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _usageParser = usageParser ?? throw new ArgumentNullException(nameof(usageParser));
     }
 
@@ -148,7 +190,13 @@ public sealed class TokenBudgetMonitor
                     // #1682: per-line input + output + cache_creation, summed -- WorkerUsage.BilledTokens
                     // has the full arithmetic case for the shape and the thinking-tokens exclusion. Stays
                     // null (never a fabricated 0) until a usage line actually parses.
-                    _billedTokens = (_billedTokens ?? 0) + (usage.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
+                    var billedDelta = (usage.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
+                    _billedTokens = (_billedTokens ?? 0) + billedDelta;
+                    // #1691: the SAME deduped per-turn billed delta the running Σ above takes, admitted a
+                    // second time into the trailing window -- deliberately reusing #1682's accounting
+                    // rather than re-deriving a rate-specific one, so the two triggers can never disagree
+                    // about what a billed token is.
+                    AdmitRateSample(billedDelta);
                 }
             }
 
@@ -159,6 +207,10 @@ public sealed class TokenBudgetMonitor
             else if (!_arrested && _maxToolSteps is { } cap && _toolStepCount > cap)
             {
                 newlyArmed = ArrestReason.ToolStepCap;
+            }
+            else if (!_arrested && _billedRateLimit is { } rateLimit && _rateWindowSum >= rateLimit)
+            {
+                newlyArmed = ArrestReason.BilledRate;
             }
 
             if (newlyArmed is { } reason)
@@ -172,6 +224,41 @@ public sealed class TokenBudgetMonitor
         {
             _arrestSource.Cancel();
         }
+    }
+
+    /// <summary>
+    /// #1691: appends one counted billed delta to the trailing <see cref="BilledRateWindow"/>, evicts
+    /// everything that has fallen out of it, and keeps the running Σ and its peak. Called under
+    /// <see cref="_lock"/>.
+    /// </summary>
+    private void AdmitRateSample(long billedDelta)
+    {
+        var nowTicks = _timeProvider.GetUtcNow().UtcTicks;
+        _rateWindow.Enqueue((nowTicks, billedDelta));
+        _rateWindowSum += billedDelta;
+
+        var cutoff = nowTicks - BilledRateWindow.Ticks;
+        while (_rateWindow.Count > 0 && _rateWindow.Peek().TimestampTicks < cutoff)
+        {
+            _rateWindowSum -= _rateWindow.Dequeue().Billed;
+        }
+
+        if (_rateWindowSum > _peakBilledInWindow)
+        {
+            _peakBilledInWindow = _rateWindowSum;
+        }
+    }
+
+    /// <summary>
+    /// #1691: the largest Σ billed tokens this execution ever held inside one trailing
+    /// <see cref="BilledRateWindow"/> — the quantity <c>--billed-rate-limit</c> is compared against,
+    /// exposed so it is READABLE whether or not a limit was ever set — spec/baton.md §3 states what
+    /// that measurement is for. 0 until a usage line actually parses — a genuine measured zero here (no billed tokens were seen),
+    /// not the fabricated kind <c>SnapshotUsage</c>'s nullable fields avoid.
+    /// </summary>
+    public long SnapshotPeakBilledInWindow()
+    {
+        lock (_lock) { return _peakBilledInWindow; }
     }
 
     /// <summary>
