@@ -177,13 +177,10 @@ public enum StepStatus
 /// unconditionally while this is <c>true</c>, the same explicit-arm shape as
 /// <see cref="RetryForeclosed"/>. An accepted resolution flips <see cref="Status"/> to
 /// <see cref="Succeeded"/> in the same projected step that clears this — but this can also read
-/// <c>true</c> while <see cref="Status"/> is <see cref="Paused"/>, not only <see cref="Failed"/>:
-/// record-once-ok: #1608 spec/baton.md
-/// <see cref="Scheduling.PauseEngine.GetPauseObligations"/> treats a <see cref="Failed"/> step with
-/// <see cref="Scheduling.RetryEngine.MayRetry"/> false as a settled round owing a
-/// <see cref="FlowEvent.WorkflowPaused"/> regardless of why retry is refused, so a step declaring a
-/// <see cref="PausePoint"/> reaches <see cref="Paused"/> with this flag still set (#1608 review
-/// finding 3). Never true while <see cref="Status"/> is <see cref="Succeeded"/> or
+/// <c>true</c> while <see cref="Status"/> is <see cref="Paused"/>, not only <see cref="Failed"/> — a
+/// step declaring a <see cref="PausePoint"/> settles into <see cref="Paused"/> with this flag still
+/// set (spec/baton.md §3, "Unless the step declares a <c>PausePoint</c>", for the mechanism and what
+/// follows from it). Never true while <see cref="Status"/> is <see cref="Succeeded"/> or
 /// <see cref="Cancelled"/>.
 /// </param>
 public sealed record StepState(
