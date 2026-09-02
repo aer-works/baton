@@ -1853,27 +1853,44 @@ public class OutcomeClassifierTests
     }
 
     /// <summary>
-    /// N1 (#1664 re-review): ten baton-repo-shaped stray paths (each ≥40 chars) on a dirty provisioned
-    /// worktree used to blow the suffix budget and throw <c>ArgumentOutOfRangeException</c> out of
-    /// <see cref="OutcomeClassifier.Classify"/> — while recording the very outcome the crash then never
-    /// journaled. The count cap alone (10 paths) let ten real repo-relative paths still assemble a
-    /// suffix past <c>MaxReasonLength</c>; this pins the length cap that closes it: <c>Classify</c>
-    /// must return, not throw, and the reason must still respect the 500-char cap.
+    /// P1 (#1664 third re-review): the prior version of this test used a plain <c>git init</c>
+    /// directory (not a provisioned worktree — <see cref="WorktreeProvisioner.IsWorktree"/> reads false
+    /// for one), and left its ten files entirely untracked under one new directory, which
+    /// <c>git status --porcelain</c> collapses to a single <c>?? src/</c> line rather than ten. Both
+    /// gaps together made the fixture pass unchanged on the pre-fix tree — see the doc comment N1 left
+    /// on this test for what it wrongly claimed. Rewritten to provision a REAL worktree (so the
+    /// commits-over-base half of the evidence is in play too) and to COMMIT the ten files first, then
+    /// modify them, so <c>git status --porcelain</c> reports ten distinct <c> M …</c> lines — the shape
+    /// that actually blows the suffix budget.
     /// </summary>
     [Fact]
     public void Classify_bounds_ten_long_stray_paths_on_a_dirty_worktree_instead_of_throwing()
     {
         var outboxDir = CreateTempDirectory();
-        var worktreeDir = CreateTempDirectory();
+        var sourceRepo = CreateTempDirectory();
+        var worktreeParent = CreateTempDirectory();
+        var worktreeDir = Path.Combine(worktreeParent, "workspace");
         try
         {
-            InitGitRepository(worktreeDir);
+            InitGitRepository(sourceRepo);
+            var baseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+            Assert.NotNull(baseSha);
+            WorktreeProvisioner.Provision(worktreeDir, sourceRepo, "HEAD");
+
             var nestedDir = Path.Combine(worktreeDir, "src", "Baton", "Outcomes");
             Directory.CreateDirectory(nestedDir);
             for (var i = 0; i < 10; i++)
             {
                 // Each repo-relative path (from worktreeDir) is well past 40 characters.
                 File.WriteAllText(Path.Combine(nestedDir, $"OutcomeClassifierScenarioNumber{i:D2}.cs"), "stray work");
+            }
+            RunGitProcess(worktreeDir, "add", ".");
+            RunGitProcess(worktreeDir, "commit", "-m", "add ten scenario files");
+            // Now modify every committed file so porcelain reports ten " M …" lines instead of one
+            // collapsed "?? src/" directory entry.
+            for (var i = 0; i < 10; i++)
+            {
+                File.AppendAllText(Path.Combine(nestedDir, $"OutcomeClassifierScenarioNumber{i:D2}.cs"), " modified");
             }
 
             var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
@@ -1883,18 +1900,21 @@ public class OutcomeClassifierTests
                 contract,
                 outboxDir,
                 responseParser: new FakeResponseParser(response: null),
-                worktreePath: worktreeDir);
+                worktreePath: worktreeDir,
+                worktreeBaseRef: baseSha);
 
             Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.NotNull(classification.Reason);
             Assert.True(
                 classification.Reason.Length <= 500,
                 $"Reason length {classification.Reason.Length} exceeded the 500-character cap.");
+            Assert.Contains("OutcomeClassifierScenarioNumber", classification.Reason);
         }
         finally
         {
             DirectoryCleanup.DeleteRecursively(outboxDir);
-            DirectoryCleanup.DeleteRecursively(worktreeDir);
+            DirectoryCleanup.DeleteRecursively(sourceRepo);
+            DirectoryCleanup.DeleteRecursively(worktreeParent);
         }
     }
 

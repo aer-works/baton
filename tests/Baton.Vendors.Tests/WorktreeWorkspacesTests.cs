@@ -153,6 +153,107 @@ public sealed class WorktreeWorkspacesTests : IDisposable
         Assert.IsType<InvalidWorkspaceSpecException>(item.Exception);
     }
 
+    /// <summary>
+    /// P2 (#1664 third re-review): N2's actual fix was that a fresh provision now stamps
+    /// <see cref="WorkerBindingConfigEntry.WorktreeBaseSha"/> rather than nulling it in the same
+    /// expression that sets <see cref="WorkerBindingConfigEntry.IsWorktree"/> — nothing in the suite
+    /// asserted that until now. Reverting the <c>WorktreeBaseSha = baseSha</c> assignment at
+    /// <c>WorktreeWorkspaces.cs:196</c> turns this red (the property stays null) with the rest of the
+    /// suite green.
+    /// </summary>
+    [Fact]
+    public void Provision_stamps_WorktreeBaseSha_with_the_real_resolved_base_commit()
+    {
+        var sourceRepo = Path.Combine(_root, "source");
+        Directory.CreateDirectory(sourceRepo);
+        InitGitRepository(sourceRepo);
+        var expectedBaseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+        Assert.NotNull(expectedBaseSha);
+
+        const string worker = "reviewer";
+        var bindings = Bindings((worker, Entry(worktree: new WorktreeWorkspace(sourceRepo, "HEAD"))));
+
+        var (result, provisioned) = WorktreeWorkspaces.Provision(bindings, _root);
+
+        Assert.Equal(expectedBaseSha, result[worker].WorktreeBaseSha);
+        Assert.True(result[worker].IsWorktree);
+        Assert.Single(provisioned);
+    }
+
+    /// <summary>P2: the lazy/skip-capable walk shares the same stamping — same fix, same assertion.</summary>
+    [Fact]
+    public void ProvisionLazily_stamps_WorktreeBaseSha_with_the_real_resolved_base_commit()
+    {
+        var sourceRepo = Path.Combine(_root, "source");
+        Directory.CreateDirectory(sourceRepo);
+        InitGitRepository(sourceRepo);
+        var expectedBaseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+        Assert.NotNull(expectedBaseSha);
+
+        const string worker = "reviewer";
+        var bindings = Bindings((worker, Entry(worktree: new WorktreeWorkspace(sourceRepo, "HEAD"))));
+
+        var (result, provisioned, skipped) = WorktreeWorkspaces.ProvisionLazily(bindings, _root);
+
+        Assert.Equal(expectedBaseSha, result[worker].WorktreeBaseSha);
+        Assert.True(result[worker].IsWorktree);
+        Assert.Single(provisioned);
+        Assert.Empty(skipped);
+    }
+
+    /// <summary>
+    /// P2: the resume path's own stamping (<c>WorktreeWorkspaces.cs:120</c>) — a separate assignment
+    /// from the fresh-provision one above, so a regression in one does not imply a regression in the
+    /// other. Reverting just this site's <c>WorktreeBaseSha = baseSha</c> turns this red alone.
+    /// </summary>
+    [Fact]
+    public void ReuseForResume_stamps_WorktreeBaseSha_with_the_real_resolved_base_commit()
+    {
+        var sourceRepo = Path.Combine(_root, "source");
+        Directory.CreateDirectory(sourceRepo);
+        InitGitRepository(sourceRepo);
+        var expectedBaseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+        Assert.NotNull(expectedBaseSha);
+
+        const string worker = "reviewer";
+        var worktreePath = Path.Combine(_root, WorktreeWorkspaces.WorkspacesDirectoryName, worker);
+        WorktreeProvisioner.Provision(worktreePath, sourceRepo, "HEAD");
+        var entry = Entry(worktree: new WorktreeWorkspace(sourceRepo, "HEAD"));
+
+        var resumed = WorktreeWorkspaces.ReuseForResume(entry, worker, _root);
+
+        Assert.Equal(expectedBaseSha, resumed.WorktreeBaseSha);
+        Assert.True(resumed.IsWorktree);
+        Assert.Equal(worktreePath, resumed.WorkingDirectory);
+    }
+
+    private static void InitGitRepository(string path)
+    {
+        RunGitProcess(path, "init");
+        RunGitProcess(path, "config", "user.name", "Test");
+        RunGitProcess(path, "config", "user.email", "test@test.com");
+        File.WriteAllText(Path.Combine(path, "README.md"), "init");
+        RunGitProcess(path, "add", ".");
+        RunGitProcess(path, "commit", "-m", "initial");
+    }
+
+    private static void RunGitProcess(string cwd, params string[] args)
+    {
+        var startInfo = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            WorkingDirectory = cwd,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+        using var proc = System.Diagnostics.Process.Start(startInfo);
+        proc?.WaitForExit();
+    }
+
     private static Dictionary<string, WorkerBindingConfigEntry> Bindings(
         params (string Name, WorkerBindingConfigEntry Entry)[] entries)
     {

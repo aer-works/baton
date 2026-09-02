@@ -557,6 +557,17 @@ without a new mechanism. Null (no worktree, or genuinely nothing to report) leav
 byte-identical to before this fix, which is why the fixed no-worktree case stays byte-pinned in
 `OutcomeClassifierTests`.
 
+**The resolved base (N2/P4, #1664 review) is meaningful only for a commit-ish ref.** `WorktreeBaseSha`
+is `WorktreeProvisioner.ResolveBaseCommit`'s resolution of the worktree spec's ref against the source
+repository, re-resolved on every `Walk`/`ReuseForResume` rather than persisted — safe for
+`RoleDispatch`'s own `"HEAD"`, since a symbolic `HEAD` always names the commit the source repo was at
+when the worker was dispatched, unaffected by anything the worker does inside its own detached
+worktree. An operator-authored binding naming a **branch** does not get that guarantee: `git worktree
+add` checks the branch out, so a worker's own commit advances it, and the next invocation re-resolves
+the same branch ref to the worker's own commit — reporting a workspace that did real work as untouched.
+
+
+
 **The dead-worker predicate reads a terminal RESULT, not a terminal SUCCESS (#1593 F6).**
 `OutcomeClassifier.Classify`'s `isDeadWorkerWithoutResult` keys on
 `CoreDispatchResult.TerminalResultObserved` — true when the worker emitted a terminal `result` record of
