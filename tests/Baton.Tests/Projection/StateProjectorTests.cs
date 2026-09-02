@@ -1502,6 +1502,74 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void ExecutionArrested_DescribeArrest_pins_the_token_budget_text_off_BilledTokens()
+    {
+        // Must 6e: BilledTokens is what the arrest text now reports, not ContextLevelTokens + TokensOut.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000, ContextLevelTokens: 500_000, BilledTokens: 1_234_567),
+                Reason: ArrestReason.TokenBudget),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: token budget exceeded (1234567 billed tokens measured) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_pins_the_tool_step_cap_text()
+    {
+        // Must 6e: the SECOND, independent producer's own pinned text.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                Usage: null,
+                LastToolNames: ["run_command", "run_command"],
+                Reason: ArrestReason.ToolStepCap,
+                ToolStepCount: 81),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: tool-step cap exceeded (81 tool steps measured) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_treats_a_null_reason_as_the_legacy_token_budget_case()
+    {
+        // A ledger line written before #1682 -- Reason/ToolStepCount/BilledTokens all absent.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        // #1686 review F8: this figure is the OLD level-based (ContextLevelTokens/TokensIn + TokensOut)
+        // reading, computed because a pre-#1682 line never set BilledTokens at all -- it must not claim
+        // to be "billed tokens", the quantity this PR exists to stop treating as authoritative.
+        Assert.Equal(
+            "Execution arrested: token budget exceeded (620000 tokens measured) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    [Fact]
     public void VerifyFailed_is_never_retried_even_within_MaxAttempts()
     {
         var executionId = new ExecutionId("exec-1");

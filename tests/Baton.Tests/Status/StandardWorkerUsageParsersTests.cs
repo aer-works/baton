@@ -190,4 +190,101 @@ public sealed class StandardWorkerUsageParsersTests
 
         Assert.Null(parser.TryParseToolName(line));
     }
+
+    [Fact]
+    public void Agy_billed_tokens_reproduce_the_vendor_total_tokens_exactly_on_a_real_evidence_line()
+    {
+        // #1682: this is the primary source proof spec/baton.md §3 cites -- a real captured line
+        // (step_index 1 of dispatch-implement-38c24d11's .stdout.log): 14205 + 443 == 14648, and 349
+        // does not belong in that sum.
+        var parser = new AgyUsageParser();
+        const string line = """
+            {"event":"step_update","step_update":{"conversation_id":"a3815ffd-2aad-48f6-b01d-67534266bbdc","step_index":1,"state":"DONE","step_type":"agent_response","duration_seconds":4.7995627,"usage":{"input_tokens":14205,"output_tokens":443,"thinking_tokens":349,"cache_read_tokens":0,"total_tokens":14648}}}
+            """;
+
+        Assert.True(parser.TryParseIncrementalUsage(line, out var usage));
+        var billed = (usage!.TokensIn ?? 0) + (usage.TokensOut ?? 0);
+        Assert.Equal(14648, billed);
+        Assert.NotEqual(14648, billed + (usage.ThinkingTokens ?? 0));
+    }
+
+    [Fact]
+    public void Agy_CountToolSteps_counts_a_tool_step_update_ONLY_at_its_terminal_state()
+    {
+        // #1686 review F2, fixed unit: both ACTIVE and DONE step_updates for the SAME tool call carry
+        // tool_name (captured verbatim 2026-09-02 from a real agy lane's .stdout.log), but only the
+        // terminal (DONE/ERROR) line is a REAL tool call in the fixed unit -- counting ACTIVE too
+        // double-counted the #1682 evidence table's own "138 tool steps" for this room (69 distinct
+        // calls x 2 lifecycle lines each). See AgyUsageParser.CountToolSteps's own doc.
+        var parser = new AgyUsageParser();
+        const string activeLine = """
+            {"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"view_file"}}
+            """;
+        const string doneLine = """
+            {"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"tool","tool_name":"view_file"}}
+            """;
+        const string errorLine = """
+            {"event":"step_update","step_update":{"step_index":3,"state":"ERROR","step_type":"tool","tool_name":"run_command"}}
+            """;
+        const string agentResponseLine = """
+            {"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response"}}
+            """;
+
+        Assert.Equal(0, parser.CountToolSteps(activeLine));
+        Assert.Equal(1, parser.CountToolSteps(doneLine));
+        Assert.Equal(1, parser.CountToolSteps(errorLine));
+        Assert.Equal(0, parser.CountToolSteps(agentResponseLine));
+    }
+
+    [Fact]
+    public void Agy_parser_TryParseIncrementalUsage_ReturnsFalse_for_a_DONE_tool_step_even_if_it_carried_usage()
+    {
+        // #1686 review F4 (AgyUsageParser.TryParseIncrementalUsage's own doc has the full predicate
+        // case): a DONE/tool step is never a usage source, even in the unobserved case it carried one.
+        var parser = new AgyUsageParser();
+        const string line = """
+            {"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"x","usage":{"input_tokens":1,"output_tokens":1}}}
+            """;
+
+        Assert.False(parser.TryParseIncrementalUsage(line, out var usage));
+        Assert.Null(usage);
+    }
+
+    [Fact]
+    public void Claude_CountToolSteps_counts_every_tool_use_block_in_a_multi_tool_turn()
+    {
+        var parser = new ClaudeUsageParser();
+        const string multiToolLine = """
+            {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"},{"type":"text","text":"ok"},{"type":"tool_use","name":"Read"}]}}
+            """;
+        const string noToolLine = """{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}""";
+
+        Assert.Equal(2, parser.CountToolSteps(multiToolLine));
+        Assert.Equal(0, parser.CountToolSteps(noToolLine));
+
+        // Distinct from TryParseToolName, which deliberately reports only the FIRST block's name.
+        Assert.Equal("Bash", parser.TryParseToolName(multiToolLine));
+    }
+
+    [Fact]
+    public void Claude_parser_TryParseIncrementalUsage_reads_message_id_onto_the_usage_record()
+    {
+        // #1686 review F6: the caller (TokenBudgetMonitor) needs this to dedupe a repeated message.id
+        // rather than summing the same message's usage twice.
+        var parser = new ClaudeUsageParser();
+        const string line = """{"type":"assistant","message":{"id":"msg_abc123","usage":{"input_tokens":2,"output_tokens":3}}}""";
+
+        Assert.True(parser.TryParseIncrementalUsage(line, out var usage));
+        Assert.Equal("msg_abc123", usage!.MessageId);
+    }
+
+    [Fact]
+    public void Claude_parser_TryParseIncrementalUsage_leaves_message_id_null_when_absent()
+    {
+        var parser = new ClaudeUsageParser();
+        const string line = """{"type":"assistant","message":{"usage":{"input_tokens":2,"output_tokens":3}}}""";
+
+        Assert.True(parser.TryParseIncrementalUsage(line, out var usage));
+        Assert.Null(usage!.MessageId);
+    }
 }

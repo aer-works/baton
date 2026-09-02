@@ -102,7 +102,7 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   workflow nobody has decided.
 - **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
   [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]
-  [--token-budget <n>] [--label <text>] [--workstream <slug>]`**
+  [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]`**
   — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
   template (`src/Baton.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
   directory under `BatonPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
@@ -170,15 +170,15 @@ cancel`, and `baton supply` continue an already-dispatched room; §5 covers `dec
 forward — it settles one execution's `Indeterminate` verdict and stops.
 
 **`baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort
-<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label
-<text>] [--workstream <slug>]`** (#1441) reruns
+<name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>]
+[--max-tool-steps <n>] [--label <text>] [--workstream <slug>]`** (#1441) reruns
 a single-role `baton dispatch` room into a fresh one, once the operator finds the brief was wrong or
 incomplete — without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch
 `baton dispatch` would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the
 new room's own directory is always freshly generated (`RedispatchOptionsParser.cs`) — a redispatch is
 never a resume, same rule as §2's dispatch entry above. Every flag inherits the parent room's recorded
 `bindings.json` entry as its default — adapter, model, effort, workspace, timeout, token budget (#1623),
-and (#1499) label —
+tool-step cap (#1686 review F2), and (#1499) label —
 and is overridden by whichever flag the operator actually passes (`RedispatchCommand.InheritBinding`);
 `--output` is the one exception, never inherited, because a prior `--output`'s destination copy path is
 not persisted anywhere in the room (only the produced output's customized *name* is, on the bindings
@@ -227,8 +227,8 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
-| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
+| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
 | `resolve` | `baton resolve <room-dir> [--execution <execution-id>] --accept-capture \| --reject --reason <text>` | `ResolveOptionsParser.cs` |
@@ -747,46 +747,219 @@ Worker briefs no longer ask for the full gate suite themselves; the prompt-level
 from #1625 (`AgyWorkerAdapter.ForegroundGateInstructionText`) stays as belt (any slow command, not just
 gates, should run in the foreground) now that this is the braces.
 
-**The per-execution token budget.** Every role carries a default token ceiling
-(`WorkerRole.TokenBudget`: `implement` 600,000, `review` 250,000, `advise` 150,000; every other role
-none), overridable per dispatch with `--token-budget`. These figures are carried over unchanged from
-before the #1623 re-review; they have not been re-derived against the new `context_level + Σoutput`
-quantity below (see N2/F1 in the re-review response — nobody has yet shown, or ruled out, that 600,000
-is still the right ceiling for `implement` under the new arithmetic; treat this ceiling as
-unverified-but-unchanged, not as freshly justified). `Baton.Mutation.TokenBudgetMonitor` accumulates
-usage from the SAME per-vendor `IWorkerUsageParser` seam `ExecutionUsageProjector` reads post-hoc, but
-incrementally — `IWorkerUsageParser.TryParseIncrementalUsage` reads claude's mid-stream
-`"type":"assistant"` `message.usage` and agy's DONE-state `"step_update"` `usage` (both measured
-against real captures, `docs/vendor-capabilities.md` and this PR's own test fixtures respectively) —
-composed onto `CoreDispatchTarget.OnStdoutLine` the same way `CoreDispatcher`'s own
-`DetectsTerminalSuccess` composes onto an existing sink, never replacing one. The monitored quantity is
-`context_level + Σoutput_tokens`: the output side is additive across turns, but the input side is a
-*level* (`latest(input_tokens + cache_read_input_tokens + cache_creation_input_tokens)`) that each new
-turn's reading replaces rather than adds to — `IWorkerUsageParser`'s own doc states why (never restated
-here); `TokenBudgetMonitor` is the worked example. `context_level` is bounded above by the model's own context window (claude ~200k tokens as
-of this writing; other vendors' windows are larger and not pinned here), so a runaway `implement` lane
-sitting at a full 200k-token context still needs `Σoutput ≥ 400,000` to cross the 600,000 ceiling — this
-spec does not show whether that is reachable inside a 90-minute lane; the re-review response records the
-absence of that measurement rather than asserting either answer. The monitor reads every top-level `"type":"assistant"` line with no discrimination by
-`parent_tool_use_id`. `docs/vendor-doc-audit.md` (#1623 re-review N5) is the canonical measurement:
-against real `implement` rooms' captured `.stdout.log` files, a sub-agent's own turns DO appear on this
-stream — and because the input side is a level the caller replaces (above), that measurably lowers the
-tracked level on exactly the turns where the most work is happening, a live gap rather than merely an
-unmeasured one. Not the same surface `cost.subagent-tokens-excluded` (`tools/vendor-verify/verify.py`)
-measures, which is the terminal
-`usage` object under `--output-format json`, not this mid-stream one.
+**The per-execution token budget (#1682: arrests on billed, not context level).** #1623's own review
+recorded the ceiling as "not shown reachable" from `600,000 − 200,000(context) = 400,000 needed from
+Σoutput` — that derivation described a monitor tracking `context_level + Σoutput_tokens`, where the
+input side was a *level* (each new turn's reading REPLACED the running total, never added to it).
+That is the defect #1682 fixes: vendors bill INPUT per turn, not once for a whole conversation, so a
+worker making many tool calls over a large, mostly-unchanging context bills far more than a level-based
+read ever shows. Measured directly against #1682's own evidence rooms
+(`dispatch-implement-38c24d11`/`f7b24a80`, real `.stdout.log` captures): room `38c24d11` finished at
+794,940 vendor-reported `total_tokens` while the OLD level-based reading never exceeded 258,160 at any
+point in the same 70-turn replay (`TokenBudgetReplayTests.RED_the_same_replay_does_NOT_arrest_at_any_point_under_the_pre_1682_level_based_reading`,
+which reproduces the pre-#1682 formula turn-by-turn against real per-turn data and pins that peak).
+
+`Baton.Mutation.TokenBudgetMonitor` now accumulates `WorkerUsage.BilledTokens` — a running Σ, across
+every incremental usage line, of that line's own `input_tokens + output_tokens [+
+cache_creation_input_tokens, on claude]`. Deliberately excludes `thinking_tokens`: verified against
+every usage line in room `38c24d11`'s real capture, `Σinput_tokens + Σoutput_tokens` reproduces the
+vendor's own `Σtotal_tokens` exactly on every sampled line (e.g. one real line: `input_tokens: 14205,
+output_tokens: 443, thinking_tokens: 349, total_tokens: 14648` — `14205 + 443 = 14648`, and adding
+`thinking_tokens` would overshoot) — `thinking_tokens` is a breakdown already counted inside
+`output_tokens`, not a separate billed component. This corrects an arithmetic claim in #1682's own
+issue body and evidence comment ("Σ input+output+thinking, which equals it here" — it does not; found
+while fixing, corrected in this same change rather than filed separately). `ContextLevelTokens` keeps
+its pre-#1682 meaning unchanged — the latest `input_tokens + cache_read_input_tokens +
+cache_creation_input_tokens` reading, a level, DISPLAY-only now, never what a budget arrests on.
+`CacheReadTokens` on the monitor's own snapshot changes from a level to a running Σ (display-only, same
+convention).
+
+**Cache-read tokens are excluded from `BilledTokens` (#1686 review F5, stated here for the first time —
+the exclusion was previously implicit in the formula, never justified).** `cache_read_input_tokens`
+(claude) / `cache_read_tokens` (agy) are read onto `WorkerUsage.CacheReadTokens` but never added into
+`BilledTokens`, for the same reason `thinking_tokens` is excluded but with a different shape: a cache
+read is vendor-reconcilable — agy's own `total_tokens` already excludes it, so `BilledTokens` stays
+comparable to that vendor-reported figure — and it is a genuinely cheaper token (billed at a discount
+against a fresh input token on every vendor this project targets), so `BilledTokens` is a **token
+count**, not a **cost proxy**: it never claims to weight a cache-discounted token differently from a
+full-price one. The consequence is real and worth stating rather than leaving to inference: room
+`38c24d11`'s real capture reports 8,459,818 cache-read tokens over the same 70-turn stream whose
+`BilledTokens` total is 794,940 — more than ten times the counted figure, all of it invisible to the
+budget by design. A cache-heavy claude lane's actual context-carrying cost is therefore materially
+larger than `BilledTokens` alone suggests; an operator reading this figure as "the whole bill" rather
+than "the budget-relevant, vendor-reconcilable token count" would be misled, which is exactly why this
+paragraph exists.
+
+**Claude's incremental usage line is deduped by `message.id` (#1686 review F6).** Measured against
+real `.stdout.log` captures (`dispatch-implement-3dc5e21a`: 246 usage-bearing `"type":"assistant"`
+lines, only 153 distinct `message.id`s; `dispatch-implement-5d9686dd`: 176 lines, 94 distinct ids;
+`dispatch-review-9ef0b9c3`: 85 lines, 33 distinct ids) — claude's stream-json splits a single API
+response's content blocks across several consecutive `assistant` events that each repeat the SAME
+`message.id` and an IDENTICAL `message.usage` object. Summing every line's usage without deduping would
+have over-counted `BilledTokens` by roughly 40-60% on these three real rooms alone.
+`ClaudeUsageParser.TryParseIncrementalUsage` now also reads `message.id` onto
+`WorkerUsage.MessageId`, and `TokenBudgetMonitor` tracks the set of ids already accumulated for the
+execution, skipping any repeat. agy has no analogous id in its shape and is unaffected —
+`TokenBudgetMonitorTests.TryParseFinalUsage`'s own terminal-line polarity test already established that
+a terminal `"type":"result"`/`"event":"result"` line is never re-summed on either vendor; this closes
+the SAME class of defect on claude's mid-stream line, which had no discriminating control before this
+change.
+
+`IWorkerUsageParser.TryParseIncrementalUsage` reads claude's mid-stream `"type":"assistant"`
+`message.usage` and agy's DONE-state, `step_type: "agent_response"` `"step_update"` `usage` (both
+measured against real captures, `docs/vendor-capabilities.md` and this PR's own test fixtures
+respectively) — composed onto `CoreDispatchTarget.OnStdoutLine` the same way `CoreDispatcher`'s own
+`DetectsTerminalSuccess` composes onto an existing sink, never replacing one. **The engine's agy gate
+now matches glass's own `tools/fleet-glass/pusher.py`'s `extract_live_counts` exactly (#1686 review
+F4)**: both require `state == "DONE"` AND `step_type == "agent_response"` before reading a `usage`
+object — previously the engine read any DONE step_update carrying a `usage` object regardless of
+`step_type`, which would have double-counted against glass's own count had a DONE/`step_type: "tool"`
+line ever carried one (measured against the real `38c24d11` capture: it never does, so this closes a
+gap the evidence set has not yet exercised, not one observed firing). A shared-fixture test
+(`AgyEngineAndPusherUsageGateTests`) pins that the two implementations agree on the same real captured
+line. **The same DONE-or-ERROR unification applies to the tool-COUNT gate too (#1686 round-two review
+F3), reopened one field over from the usage gate above**: `pusher.py`'s `extract_live_counts` counted a
+`step_type: "tool"` step only at `state == "DONE"`, while the engine's own
+`ClaudeUsageParser.CountToolSteps`/`AgyUsageParser.CountToolSteps` count at either terminal state
+(`DONE` or `ERROR`) — so a failed agy tool call incremented the cap the engine arrests on without
+incrementing the count an operator sees on the lane card. `pusher.py` now counts `state in ("DONE",
+"ERROR")` for the tool branch too, and `AgyEngineAndPusherUsageGateTests` was extended to cover the
+tool-count gate alongside the usage gate it already pinned. The monitor reads every top-level
+`"type":"assistant"` line with no discrimination by
+`parent_tool_use_id` — whole-tree, including subagent turns, the SAME completeness property
+`docs/vendor-doc-audit.md` (#1623 re-review N5) measured missing from the terminal line's own
+cumulative figure (undercounts by ~22% with a single subagent in the tree).
+
 Crossing the budget cancels the execution via a linked `CancellationTokenSource` (never the
 operator-facing `CancellationRequested`/`ExecutionCancelled` pair — that's intent; this is the engine's
 own) and appends `FlowEvent.ExecutionArrested` (`Usage`, `LastToolNames` — the last few tool calls
-observed, from the same incremental read) instead of an ordinary outcome. Settles `Indeterminate`, same
-as a verify failure. A role with no budget and no `--token-budget` override runs unwatched, same as
-before this issue; a role whose resolved adapter has no registered `IWorkerUsageParser` also runs
-unwatched rather than refusing to dispatch.
+observed, from the same incremental read — plus `Reason`/`ToolStepCount`, below) instead of an ordinary
+outcome. Settles `Indeterminate`, same as a verify failure. A role with no budget and no
+`--token-budget` override, and no `MaxToolSteps`, runs unwatched, same as before this issue; a role
+whose resolved adapter has no registered `IWorkerUsageParser` also runs unwatched rather than refusing
+to dispatch.
 
-**The shared mechanism.** Both producers route through the one `StateProjector.ApplyIndeterminate`
-helper — flag, reason text, foreclosure; the `IndeterminateAwaitingResolution` flag is what
-`WorkflowOutcome.DescribeTerminal` and `RetryEngine.MayRetry` each check (one arm apiece), per the
-producer table above; `StepState.IndeterminateReason` stays display-only, never itself a gate.
+**The tool-step cap (#1682, second producer, independent of usage parsing) — unit fixed and
+false-positive floor measured (#1686 review F1/F2).** `WorkerRole` carries `MaxToolSteps`
+(`implement` 610, `review` 100, `advise` unset; every other role none) — a second, independent arrest
+trigger on the running COUNT of tool-step lines, entirely apart from whether usage ever parses on the
+stream at all (a stream with malformed or absent usage lines still gets the tool-step protection;
+`TokenBudgetMonitorTests.The_tool_step_cap_fires_at_cap_plus_one_with_zero_usage_lines` proves this).
+The cap arrests at cap+1 (the first line whose running count exceeds `MaxToolSteps`) with
+`FlowEvent.ExecutionArrested.Reason = ArrestReason.ToolStepCap` — independent of, and can fire before,
+the token-budget trigger; whichever fires first wins and the monitor never re-arms.
+
+`IWorkerUsageParser.CountToolSteps` counts ONE REAL TOOL CALL, in the same unit on both vendors, stated
+once here: claude counts every `tool_use` content block in a `"type":"assistant"` message (not just the
+first, unlike `TryParseToolName`'s single display name, which would undercount a multi-tool turn); agy
+counts a `step_update` with `step_type: "tool"` and a non-empty `tool_name` ONLY at its terminal
+lifecycle state (`DONE` or `ERROR`), not its `ACTIVE` heartbeat. Before this fix agy counted BOTH lines
+per real call — the same catalog number bought half as many real tool calls on agy as on claude, and
+`implement`'s prior 80 was calibrated against that doubled count (the issue's own "138 tool steps" for
+room `38c24d11`, which is 69 real calls × 2 lifecycle lines each). Measured against both real evidence
+captures — `38c24d11` (69 `ACTIVE`, 69 terminal) and `f7b24a80` (86 `ACTIVE`, 85 terminal; the one-line
+gap is a call still `ACTIVE` when the room was cancelled) — every real call's `ACTIVE` and terminal
+lines pair up 1:1, so counting terminal-only exactly halves the old scalar without losing or
+double-counting a call.
+
+**The false-positive floor, measured the same way the token budget's was (#1686 review F1).** Per-room
+real-tool-call counts, this fixed unit, from the rooms actually available:
+
+| Room | Role | Adapter | Real tool calls |
+|---|---|---|---|
+| `dispatch-implement-3dc5e21a` | implement | claude (override) | 161 |
+| `dispatch-implement-5d9686dd` | implement | claude (override) | 99 |
+| `dispatch-review-9ef0b9c3` | review | claude (tier default) | 50 |
+| `dispatch-review-00f716a7` | review | claude (tier default) | 47 |
+| `dispatch-implement-38c24d11` (evidence, not normal) | implement | agy (tier default) | 69 |
+| `dispatch-implement-f7b24a80` (evidence, not normal) | implement | agy (tier default) | 85 |
+
+No `advise` room in `~/.baton/rooms` carries a real vendor JSON stream at all — every `.stdout.log`
+under a completed `advise` room is a short plain-text echo of the final report, not a captured
+`stream-json`/agy-envelope log — so `advise`'s cap stays unset (null) rather than a guess; it was
+already unset before this change. `implement`'s and `review`'s two named rooms are the SAME ones
+already read for the token budget below; both happen to have run on the `claude` adapter override
+rather than `implement`'s/`review`'s own tier default, which this fixed unit makes safe to compare
+directly against agy-native rooms for the first time. `review`'s cap is set to `100` (≈2× 50) — the
+reviewer's own room (`9ef0b9c3`, reviewing this PR) made 50 real calls and would have been
+false-arrested under the OLD `40` cap.
+
+**`implement`'s cap is set from the 26-room agy-native sweep instead (#1686 review F7), not from the
+two claude-adapter rooms above.** The first round's `322` (≈2× 161, the higher of the two claude-adapter
+rooms) was knowingly below a population this PR itself had already measured: a sweep of 26
+`Succeeded`, agy-native `implement` rooms under `~/.baton/rooms` (real-tool-call counts, this fixed
+unit, recounted directly against each room's own `.stdout.log` with the shipped `CountToolSteps`):
+
+```
+47, 58, 58, 58, 64, 67, 90, 96, 110, 117, 144, 169, 181, 186, 188, 189, 220, 233, 234, 257, 262, 269,
+278, 286, 407, 482
+```
+
+(`dispatch-implement-e9516da2` at 407, `dispatch-implement-7d25642b` at 482 — the same two outliers
+the first round's text named, confirming this is the same 26-room population; the "0" the first round's
+range cited does not reproduce under a direct recount and is dropped here as unverified — see the F7
+recount below for the corrected floor, 47.) `p95` (nearest-rank, n=26) is `407` — the same
+`dispatch-implement-e9516da2` room. Applying the same 2×-style safety multiplier this PR already uses
+elsewhere, at 1.5× rather than 2× (p95 is already a tail figure, not a typical-room figure the way the
+161/50 medians were): `round(407 × 1.5, nearest 10)` = `610`. All 26 measured rooms sit at or under 482,
+comfortably under 610, so the measured false-arrest rate on this population at the shipped cap is `0/26`
+(0%); the residual risk is in the unmeasured tail past the 95th percentile of a 26-room sample, which
+`--max-tool-steps` (below) remains the escape hatch for.
+
+**Honest replay result: under this measured, false-positive-safe cap, neither evidence room is caught
+by the tool-step trigger, and neither is caught by the token trigger at the shipped 1,200,000 budget
+either.** `38c24d11` made only 69 real tool calls in its whole captured stream and `f7b24a80` only 85 —
+both well under any cap wide enough to avoid false-arresting the population above (`implement`'s normal
+range alone reaches 482). This is not a case of "raise the cap until it stops firing" being wrong in
+principle — the SAME 2×-normal method the token budget already used — it is that this specific pair of
+runaway rooms burned an enormous number of tokens per real tool call rather than making an enormous
+NUMBER of calls, which a call-count cap cannot see by construction. `TokenBudgetReplayTests` (below)
+replays the real interleaved stream through the shipped configuration and asserts this directly: no
+arrest, on either trigger, for `38c24d11`. The tool-step cap's real, provable value is bounding a
+DIFFERENT failure shape — a poll loop or a call-count runaway — not this one; §3's prior text claiming
+the cap "is what actually arrests both evidence rooms" no longer holds under the corrected unit and is
+retracted here rather than left standing. **The uncaught failure shape — burning tokens per real tool
+call rather than making an unusual number of calls — is tracked as #1691** (#1686 review F14): a
+windowed billed-rate trigger, in two phases (stamp arrival time and record a per-execution windowed-rate
+maximum first; set the trigger from a measured distribution second), not implemented here.
+
+**`--max-tool-steps <n>` (#1686 review F11)** is `baton dispatch`'s override for this axis, mirroring
+`--token-budget` end to end — a positive whole number of real tool calls (this fixed unit), or refused
+the same way `--token-budget` refuses a non-positive value; rejected on a workflow template dispatch
+the same way `--timeout`/`--token-budget` are, since a template's phases each carry their own role's
+cap. `baton redispatch` also carries it (#1686 review F2): `RedispatchCommand`'s amended-spec path
+previously dropped `MaxToolSteps` on the floor when rebuilding through `RoleDispatch.Materialize`, so
+an operator who dispatched with `--max-tool-steps` and then redispatched with an amended brief got the
+role's default back with no warning; both redispatch paths now pass
+`options.MaxToolSteps ?? parentEntry.MaxToolSteps` the same way the token-budget axis already did, and
+`RedispatchOptionsParser` gained its own `--max-tool-steps` flag mirroring `--token-budget`'s. Given the
+measured population above, this is not merely symmetry with the token axis: even a cap set from p95×1.5
+covers only the 26-room sample it was measured against, so an operator whose legitimate lane sits past
+that sample's tail still has the same dispatch-time (and now redispatch-time) escape hatch the token
+axis already had.
+
+**Defaults, re-derived (#1682: `implement`'s token budget, in billed tokens).** `implement`'s
+`TokenBudget` moves from 600,000 to 1,200,000, measured from two recent, normally-completed (never
+arrested) `implement` rooms under `~/.baton/rooms` — `dispatch-implement-3dc5e21a` (~65 minutes,
+628,302 billed tokens) and `dispatch-implement-5d9686dd` (~55 minutes, 507,402 billed tokens). The OLD
+600,000 default, read under the NEW billed-token arithmetic rather than the OLD level-based one it was
+tuned for, would already false-arrest the FIRST of those two ordinary, successful lanes mid-run — the
+new default is set to roughly 2× the higher of the two measured normal totals, giving headroom for a
+legitimate longer session. Both evidence rooms (794,940 and 529,425) sit BELOW this recalibrated
+budget, by the same sound method that recalibrated it — see the honest replay result above for what
+that means for the shipped configuration's actual coverage of these two rooms. `review`/`advise` keep
+their pre-#1682 token-budget figures (250,000/150,000) unchanged — no comparable "two normal completed
+rooms" measurement exists for those roles in this issue's evidence set, so their ceilings stay
+carried-over-unverified in the same sense #1623's re-review already flagged, not freshly justified.
+
+**The shared mechanism.** All three producers (engine-run verify, the token budget, and #1682's
+tool-step cap) route through the one `StateProjector.ApplyIndeterminate` helper — flag, reason text,
+foreclosure; the `IndeterminateAwaitingResolution` flag is what `WorkflowOutcome.DescribeTerminal` and
+`RetryEngine.MayRetry` each check (one arm apiece), per the producer table above; `StepState.IndeterminateReason`
+stays display-only, never itself a gate. `StateProjector.DescribeArrest` is the one place
+`FlowEvent.ExecutionArrested.Reason` is switched on — a `null` `Reason` (a ledger line written before
+#1682) reads the same as `ArrestReason.TokenBudget`, since every arrest recorded before #1682 was one
+(the tool-step cap did not exist yet); the switch is total over `TokenBudget`/`ToolStepCap`/`null`.
 
 ### Exit codes
 
@@ -1240,9 +1413,9 @@ ever populates an execution that has recorded BOTH a `CoreEvent.ExecutionStarted
 `ExecutionExited`, and its parser contract (`IWorkerUsageParser.TryParseFinalUsage`) reads exactly
 the last non-blank line of the captured stream — neither fits a still-running execution, which by
 definition has no exit event yet and needs every line scanned, not just the last:
-- **`rooms[].live` (item 1, extended by a 2026-09-01 review of #1613's PR)**, present only for a
-  room whose pusher-displayed `state` is exactly `"Running"`:
-  `{ "toolCalls"?: number, "outputTokens"?: number, "contextTokens"?: number,
+- **`rooms[].live` (item 1, extended by a 2026-09-01 review of #1613's PR, and by #1682)**, present
+  only for a room whose pusher-displayed `state` is exactly `"Running"`:
+  `{ "toolCalls"?: number, "billedTokens"?: number, "turns"?: number, "contextTokens"?: number,
     "cacheReadTokens"?: number, "lastActivityAt"?: string }`.
 
   `toolCalls` counts `tool_use` blocks in claude's `assistant` stream events and DONE/`tool`
@@ -1252,29 +1425,35 @@ definition has no exit event yet and needs every line scanned, not just the last
   one field name, disclosed rather than left to be inferred: claude counts tool *requests*, agy
   counts DONE tool *steps*. Both are whole-tree, including subagent turns — claude's `assistant`
   events for a subagent carry `parent_tool_use_id` but are never filtered out, deliberately (the
-  mirror image of `outputTokens`'s own subagent completeness below).
+  mirror image of `billedTokens`'s own subagent completeness below).
 
-  **Live tokens, claude only.** The original ruling — "token counts are deliberately never
+  **Live tokens, both vendors (#1682).** The original ruling — "token counts are deliberately never
   emitted… an absent field is honest, a summed one would re-count each turn's whole context" — was
   right about the trap and wrong about the conclusion: it correctly noted neither
   `docs/vendor-doc-audit.md` nor `python tools/vendor-verify/verify.py --list` records a
   per-assistant-message (mid-stream) usage figure, but treated that silence as a verdict rather than
-  an open question still worth checking. A live capture on 2026-09-01 settles it — see
-  `docs/vendor-capabilities.md`'s history table (top row) for the captured key list and the exact
-  command run; every one of the four raw usage keys that row names lands on the SAME assistant
-  message stream-json already flushes mid-turn, well before the lane's terminal `result` line.
-  `outputTokens` sums the message's output count across every `assistant` line in the execution's
-  `.stdout.log` (additive, whole-tree) — this is *more* accurate than the terminal line's own
-  cumulative figure, which `docs/vendor-doc-audit.md` measures undercounting by ~22% with a single
-  subagent in the tree (`usage.output_tokens` excludes subagent tokens; the gap grows with the
-  fan-out). `contextTokens` (the sum of the message's fresh-input count and both its cache counters)
-  and `cacheReadTokens` (the cache-read counter alone) are read off the LATEST `assistant` line only
-  — a LEVEL, replaced every turn, never summed: the trap the original ruling correctly named applies
-  to the fresh-input count specifically (summing it across turns re-counts each turn's whole
-  repeated context), not to output or to a single turn's own level. All three fields are absent, never a substituted zero, when a
-  line's `usage` object doesn't carry what is needed. agy emits none of the three: its `step_update`
-  heartbeat carries no `usage` field at all (`AgyWorkerAdapter.TryParseProgressEvent`,
-  `AgyWorkerAdapter.cs`) — a claude-only measurement stays a claude-only field.
+  an open question still worth checking. A live capture on 2026-09-01 settled claude's own shape; a
+  second live capture during #1682's own evidence gathering (2026-09-02, `dispatch-implement-38c24d11`'s
+  real `.stdout.log`) found the SAME thing true of agy — a prior version of this section's claim that
+  "agy emits none of the three: its `step_update` heartbeat carries no `usage` field at all" was
+  wrong (it checked the `tool` step_type's heartbeat, not the `agent_response` one, which does carry
+  `usage`) and is corrected here rather than left standing. `billedTokens` is the SAME quantity the
+  engine's own `Baton.Mutation.TokenBudgetMonitor` arrests on (§3 below) — `Σ(input_tokens +
+  output_tokens [+ cache_creation_input_tokens on claude])` per usage-bearing line, additive
+  (whole-tree on claude — `docs/vendor-doc-audit.md` measures the terminal line's own cumulative
+  figure undercounting by ~22% with a single subagent in the tree, so summing every mid-stream line
+  instead is *more* accurate, not less), never `thinking_tokens` (a breakdown already counted inside
+  `output_tokens` on both vendors — measured against real #1682 captures: Σinput + Σoutput
+  reproduces the vendor's own Σ`total_tokens` exactly). `turns` is the count of usage-bearing lines
+  contributing to `billedTokens`, additive the same way. `contextTokens` (the sum of the message's
+  fresh-input count and both its cache counters) and `cacheReadTokens` (the cache-read counter
+  alone) stay claude-only — read off the LATEST `assistant` line only, a LEVEL, replaced every turn,
+  never summed: the trap the original ruling correctly named applies to the fresh-input count
+  specifically (summing it across turns re-counts each turn's whole repeated context), not to
+  `billedTokens` or to a single turn's own level. agy's `step_update.usage` carries no
+  cache-creation figure, so there is no comparable trio to build `contextTokens`/`cacheReadTokens`
+  from on that vendor — a claude-only measurement stays a claude-only pair of fields. Every field
+  here is absent, never a substituted zero, when a batch's lines don't carry what is needed.
 
   `lastActivityAt` is the stdout log's own last-write instant (a real filesystem fact, not `now()`),
   quantized to a ~90s bucket before it enters the pushed payload (2026-09-01 review finding) — see
@@ -1795,8 +1974,9 @@ by path: `view_file` is granted whole for this role (`ReadFiles: true`), the hoo
 for the write-family tools, and `HOME`/`USERPROFILE` are not redirected for shell-granted workers, so
 a granted read tool can reach the operator's real home — this is pre-existing and identical on claude
 and `advise`, not something this probe measured or bounded. Unprobed: the subagent/`manage_task`
-tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects
-tracked in #1679 — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
+tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects, since
+fixed by #1679. `docs/vendor-doc-audit.md`'s dated entry names the full
+unprobed population, not
 restated here. Note that the six probed commands were run against the lists **as they stood then**,
 so #1679 and #1683 changed the lists under that measurement: the mechanism it measured is unaffected
 (nothing about how the hook narrows changed), but no probe covers the current `git grep`-free
