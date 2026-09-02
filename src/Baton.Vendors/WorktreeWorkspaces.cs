@@ -117,6 +117,21 @@ public static class WorktreeWorkspaces
     }
 
     /// <summary>
+    /// #1646: how long a walk that actually has a worktree to provision waits out a contended flow
+    /// lock before refusing. Sized against the holder it usually loses to — a live <c>baton
+    /// run --wait</c> pump that has already appended <c>WorkflowPaused</c> (so a status reader sees
+    /// Paused immediately) but has not yet looped back, found nothing further ready, and released
+    /// the guard: a re-projection with no I/O, measured in milliseconds, not the step dispatch
+    /// itself. A fail-fast acquire there turned that routine tail into a refused <c>baton decide</c>
+    /// twice within the same hour (#1646's measured failures) — the exact "routine overlap" shape
+    /// <see cref="ConcurrencyGuard.AcquireWithin"/>'s own doc describes, and the same fix
+    /// <see cref="Mutation.MemoryProposalResolution.LockContentionBudget"/> already applies to the
+    /// analogous room-events lock. Still bounded: a room genuinely held by a second live pump must
+    /// surface as a refusal, not be waited on for the length of that pump's own step.
+    /// </summary>
+    private static readonly TimeSpan LockContentionBudget = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// The one walk both entry points above share. <paramref name="throwOnFailure"/> rethrows at the
     /// failing entry rather than skipping it — which also stops the walk there, so the strict caller
     /// never leaves later entries' trees provisioned behind a refusal it is about to throw.
@@ -129,7 +144,17 @@ public static class WorktreeWorkspaces
         ArgumentNullException.ThrowIfNull(bindings);
         ArgumentException.ThrowIfNullOrWhiteSpace(roomDirectoryPath);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, "worktree provisioning");
+        // #1646 / CancelCommand's #1495 finding: this used to acquire the flow lock unconditionally,
+        // even when no entry declares a worktree at all — the common case, and the exact shape
+        // RunWaitEndToEndTests hit (an ordinary shell-worker bindings file with zero Worktree
+        // entries). Nothing below the guard does anything for such a walk, so there is nothing here
+        // to serialize and no reason to contend a live pump's lock over it.
+        if (!bindings.Values.Any(entry => entry.Worktree is not null))
+        {
+            return (bindings, [], []);
+        }
+
+        using var guard = ConcurrencyGuard.AcquireWithin(roomDirectoryPath, LockContentionBudget, "worktree provisioning");
 
         Dictionary<string, WorkerBindingConfigEntry>? rewritten = null;
         var provisioned = new List<ProvisionedWorktree>();
