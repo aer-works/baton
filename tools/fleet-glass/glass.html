@@ -724,21 +724,23 @@ document.addEventListener("click", async (ev) => {
 
 // -----------------------------------------------------------------------------------------------
 // #1613 item 1: live telemetry for a Running room's currently-executing step -- a tool-call COUNT,
-// claude-only live token counts (2026-09-01 review), and a last-stream-activity age, all read
-// pusher-side straight off the execution's own .stdout.log (no engine change; see pusher.py's own
-// "Seam choice" comment). Absent-safe like role/adapter/model/effort above: `room.live` is simply
-// never present until the pusher that produced this snapshot has been redeployed for #1613, same
-// convention every other optional fleet_status field on this page already follows. The token
-// fields are additionally claude-only (agy's step_update carries no usage to read) and further
-// gated on the per-message capture shape -- see pusher.py's `extract_live_counts` doc for exactly
-// when each is present.
+// billed-token/turn counts for BOTH vendors (#1682 -- widened from claude-only after a live capture
+// found agy's DONE/agent_response step_update also carries usage), claude-only context-level tokens
+// (2026-09-01 review), and a last-stream-activity age, all read pusher-side straight off the
+// execution's own .stdout.log (no engine change; see pusher.py's own "Seam choice" comment).
+// Absent-safe like role/adapter/model/effort above: `room.live` is simply never present until the
+// pusher that produced this snapshot has been redeployed for #1613, same convention every other
+// optional fleet_status field on this page already follows. `contextTokens`/`cacheReadTokens` stay
+// claude-only and are further gated on the per-message capture shape -- see pusher.py's
+// `extract_live_counts` doc for exactly when each is present.
 // -----------------------------------------------------------------------------------------------
 function liveTelemetryHtml(room){
   const live = room.live;
   if(!live) return "";
   const bits = [];
-  if(live.outputTokens != null) bits.push(`out ${fmtK(live.outputTokens)}`);
+  if(live.billedTokens != null) bits.push(`billed ${fmtK(live.billedTokens)}`);
   if(live.contextTokens != null) bits.push(`ctx ${fmtK(live.contextTokens)}`);
+  if(live.turns != null) bits.push(`${live.turns} turn${live.turns === 1 ? "" : "s"}`);
   if(live.toolCalls != null) bits.push(`${live.toolCalls} call${live.toolCalls === 1 ? "" : "s"}`);
   const a = age(live.lastActivityAt);
   if(a) bits.push(`active ${a} ago`);
