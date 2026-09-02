@@ -13,7 +13,8 @@ public static class RedispatchOptionsParser
     /// <summary><c>baton redispatch</c>'s usage string, same role as <see cref="DispatchOptionsParser"/>'s own.</summary>
     public const string Usage =
         "Usage: baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] "
-        + "[--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>]";
+        + "[--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>] "
+        + "[--workstream <slug>]";
 
     public static RedispatchOptions Parse(IReadOnlyList<string> args)
     {
@@ -27,6 +28,8 @@ public static class RedispatchOptionsParser
         TimeSpan? timeout = null;
         string? label = null;
         var labelSpecified = false;
+        string? workstream = null;
+        var workstreamSpecified = false;
 
         var i = 0;
         while (i < args.Count)
@@ -58,6 +61,10 @@ public static class RedispatchOptionsParser
                 case "--label":
                     label = DispatchOptionsParser.SanitizeLabel(RequireValue(args, ref i, arg));
                     labelSpecified = true;
+                    break;
+                case "--workstream":
+                    workstream = DispatchOptionsParser.SanitizeWorkstream(RequireValue(args, ref i, arg));
+                    workstreamSpecified = true;
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -96,7 +103,7 @@ public static class RedispatchOptionsParser
             adapter, model, effort,
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout, label, labelSpecified);
+            timeout, label, labelSpecified, workstream, workstreamSpecified);
     }
 
     /// <summary>Same ceiling/warn thresholds and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--timeout</c> (#1442).</summary>

@@ -132,4 +132,38 @@ public class RedispatchOptionsParserTests
         Assert.StartsWith(
             Path.GetFullPath(Baton.Status.BatonPaths.Rooms), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void A_workstream_is_sanitized_the_same_way_dispatchs_own_is()
+    {
+        // Shared sanitizer (DispatchOptionsParser.SanitizeWorkstream) -- one grammar/cap rule for both
+        // verbs, not a second implementation that could drift.
+        var options = RedispatchOptionsParser.Parse(["parent-room", "--workstream", "w1619"]);
+        Assert.Equal("w1619", options.Workstream);
+        Assert.True(options.WorkstreamSpecified);
+    }
+
+    [Fact]
+    public void A_blank_workstream_sets_WorkstreamSpecified_true_and_Workstream_null()
+    {
+        var options = RedispatchOptionsParser.Parse(["parent-room", "--workstream", "   "]);
+        Assert.Null(options.Workstream);
+        Assert.True(options.WorkstreamSpecified);
+    }
+
+    [Fact]
+    public void A_path_unsafe_workstream_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => RedispatchOptionsParser.Parse(["parent-room", "--workstream", "a/b"]));
+        Assert.Contains("--workstream", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Workstream_is_absent_and_unspecified_when_never_passed()
+    {
+        var options = RedispatchOptionsParser.Parse(["parent-room"]);
+        Assert.Null(options.Workstream);
+        Assert.False(options.WorkstreamSpecified);
+    }
 }

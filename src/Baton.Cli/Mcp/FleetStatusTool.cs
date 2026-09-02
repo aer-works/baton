@@ -113,12 +113,26 @@ public sealed class FleetStatusTool : IMcpTool
             searchRoots.Add(BatonPaths.Rooms);
         }
 
+        // #1619 LOW-3: BatonPaths.ByWorkstream, and everything under it, is nothing but junctions back
+        // into rooms BatonPaths.Rooms (or another caller-supplied root) already scans by their real
+        // path -- walking it too would double-count every room in it under a second, junction-derived
+        // path key, since RecordKey/seenRooms dedupe on the path string, not the resolved target.
+        var byWorkstreamKey = BatonPaths.RecordKey(BatonPaths.ByWorkstream);
         foreach (var extraRoot in extraRoots)
         {
-            if (Directory.Exists(extraRoot))
+            if (!Directory.Exists(extraRoot))
             {
-                searchRoots.Add(extraRoot);
+                continue;
             }
+
+            var extraRootKey = BatonPaths.RecordKey(extraRoot);
+            if (BatonPaths.RecordKeyComparer.Equals(extraRootKey, byWorkstreamKey)
+                || extraRootKey.StartsWith(byWorkstreamKey + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            searchRoots.Add(extraRoot);
         }
 
         // spec/baton.md §8: the registry's project-root map, keyed the same way seenRooms/roomDir
@@ -270,7 +284,8 @@ public sealed class FleetStatusTool : IMcpTool
                 Model: terminalModel,
                 Effort: terminalEffort,
                 TimeoutMs: terminalTimeoutMs,
-                Label: ExtractRoomLabel(terminalBindings));
+                Label: ExtractRoomLabel(terminalBindings),
+                Workstream: ExtractRoomWorkstream(terminalBindings));
         }
 
         // 2. Active room: load snapshot + flow events and project
@@ -369,7 +384,8 @@ public sealed class FleetStatusTool : IMcpTool
                 Model: model,
                 Effort: effort,
                 TimeoutMs: timeoutMs,
-                Label: ExtractRoomLabel(bindings));
+                Label: ExtractRoomLabel(bindings),
+                Workstream: ExtractRoomWorkstream(bindings));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -499,6 +515,14 @@ public sealed class FleetStatusTool : IMcpTool
     /// </summary>
     private static string? ExtractRoomLabel(IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings) =>
         bindings?.Values.Select(entry => entry.Label).FirstOrDefault(label => label is not null);
+
+    /// <summary>
+    /// Extracts a room's <c>--workstream</c> (#1619) off its loaded <c>bindings.json</c> dictionary —
+    /// same shape as <see cref="ExtractRoomLabel"/>, since both are room-level facts stamped onto
+    /// every entry at dispatch time, not scoped to one worker's Running step.
+    /// </summary>
+    private static string? ExtractRoomWorkstream(IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings) =>
+        bindings?.Values.Select(entry => entry.Workstream).FirstOrDefault(workstream => workstream is not null);
 }
 
 /// <summary>
@@ -552,7 +576,12 @@ public sealed record FleetRoomStatusView(
     // #1499: read via ExtractRoomLabel off each path's own loaded bindings.json, spec/baton.md §6 schema.
     [property: JsonPropertyName("label")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Label = null);
+    string? Label = null,
+    // #1619: read via ExtractRoomWorkstream off each path's own loaded bindings.json, same fail-open
+    // convention as Label immediately above -- spec/baton.md §6 schema.
+    [property: JsonPropertyName("workstream")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Workstream = null);
 
 /// <summary>
 /// Status of a single workflow step within a fleet room status report.

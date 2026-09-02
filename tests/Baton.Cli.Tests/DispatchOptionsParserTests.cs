@@ -256,4 +256,96 @@ public class DispatchOptionsParserTests
         Assert.Contains("--list-capabilities", ex.Message);
         Assert.Contains("review", ex.TryInvocation);
     }
+
+    [Fact]
+    public void Parses_the_workstream_axis()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", "1619"]);
+        Assert.Equal("1619", options.Workstream);
+    }
+
+    [Fact]
+    public void A_workstream_is_absent_when_never_passed()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md"]);
+        Assert.Null(options.Workstream);
+    }
+
+    [Fact]
+    public void A_blank_workstream_is_treated_as_absent_rather_than_refused()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", "   "]);
+        Assert.Null(options.Workstream);
+    }
+
+    [Fact]
+    public void A_workstream_is_trimmed_but_not_otherwise_folded()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", "  w1619  "]);
+        Assert.Equal("w1619", options.Workstream);
+    }
+
+    [Theory]
+    [InlineData("w1619")]
+    [InlineData("1619")]
+    [InlineData("review-worktree")]
+    [InlineData("a.b_c-9")]
+    public void A_path_safe_slug_is_accepted_verbatim(string slug)
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", slug]);
+        Assert.Equal(slug, options.Workstream);
+    }
+
+    /// <summary>
+    /// #1619: a valid slug is folded to lowercase -- <see cref="DispatchOptionsParser.SanitizeWorkstream"/>
+    /// has the pointer to the rationale.
+    /// </summary>
+    [Theory]
+    [InlineData("W1619", "w1619")]
+    [InlineData("Review-Worktree", "review-worktree")]
+    [InlineData("A.B_C-9", "a.b_c-9")]
+    public void A_valid_slug_is_folded_to_lowercase(string rawValue, string expected)
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", rawValue]);
+        Assert.Equal(expected, options.Workstream);
+    }
+
+    /// <summary>
+    /// #1619: unlike --label, a workstream slug is later used (lowercase-folded) as a Windows
+    /// directory name (WorkstreamJunctionLinker) -- so it is refused outright, never folded, when it
+    /// carries a character unsafe as one path segment.
+    /// </summary>
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("a:b")]
+    [InlineData("a&b")]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("-leading-dash")]
+    [InlineData(" has space")]
+    public void A_path_unsafe_workstream_is_a_typed_argument_error(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", rawValue]));
+        Assert.Contains("--workstream", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_workstream_longer_than_60_characters_is_a_typed_argument_error()
+    {
+        var raw = new string('x', 61);
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", raw]));
+        Assert.Contains("--workstream", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_workstream_at_exactly_60_characters_is_accepted()
+    {
+        var raw = new string('x', 60);
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", raw]);
+        Assert.Equal(raw, options.Workstream);
+    }
 }

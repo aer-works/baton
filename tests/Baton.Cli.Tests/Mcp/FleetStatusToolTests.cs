@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Baton.Cli;
 using Baton.Vendors;
 using Baton.Domain;
 using Baton.Status;
@@ -77,6 +78,47 @@ public sealed class FleetStatusToolTests : IDisposable
             if (Directory.Exists(extraRoot))
             {
                 DirectoryCleanup.DeleteRecursively(extraRoot);
+            }
+        }
+    }
+
+    /// <summary>
+    /// #1619 LOW-3: a harness that ever passes a by-workstream slug directory as a <c>roots</c> entry
+    /// must not double-count the room already found by the default <see cref="BatonPaths.Rooms"/>
+    /// scan -- everything under <see cref="BatonPaths.ByWorkstream"/> is a junction back into a room
+    /// the default scan already found by its real path, and <c>seenRooms</c> dedupes on the path
+    /// string (<see cref="BatonPaths.RecordKey"/>), not the resolved target.
+    /// </summary>
+    [Fact]
+    public async Task Enumeration_SkipsAByWorkstreamRoot_SoAJunctionedRoomIsNotDoubleCounted()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "room-grouped");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        WorkstreamJunctionLinker.CreateIfRequested("w1619", room);
+        var slugDir = Path.Combine(BatonPaths.ByWorkstream, "w1619");
+        try
+        {
+            var tool = new FleetStatusTool();
+            var escapedSlugDir = slugDir.Replace("\\", "\\\\");
+            var result = await tool.CallAsync(Parse($$"""{ "roots": ["{{escapedSlugDir}}"] }"""), TestContext.Current.CancellationToken);
+
+            Assert.False(result.IsError);
+            var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+            Assert.NotNull(rooms);
+            Assert.Single(rooms!);
+        }
+        finally
+        {
+            // Unlink before Dispose() tears down _tempHome and the room the junction points at.
+            var linkPath = WorkstreamJunctionLinker.ResolveLinkPath("w1619", room);
+            if (Directory.Exists(linkPath))
+            {
+                Directory.Delete(linkPath, recursive: false);
             }
         }
     }
@@ -1748,6 +1790,95 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Equal("env-snapshot lane", singleRoom.Label);
         Assert.Null(singleRoom.Role);
         Assert.Null(singleRoom.Adapter);
+    }
+
+    /// <summary>#1619, spec/baton.md §6 schema: the terminal-sentinel fast path still surfaces a workstream.</summary>
+    [Fact]
+    public async Task TerminalFastPath_WithWorkstreamInBindings_ReportsWorkstream()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "workstream-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["advise"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Weigh the options.",
+                TimeSpan.FromMinutes(5),
+                Workstream: "w1619"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", singleRoom.State);
+        Assert.Equal("w1619", singleRoom.Workstream);
+    }
+
+    [Fact]
+    public async Task TerminalFastPath_WithNoBindingsFile_OmitsWorkstreamFromTheWire()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "ungrouped-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        // Asserts on the actual MCP payload (result.Text), not a re-serialized deserialized copy --
+        // the real wire text is the thing a JsonIgnore regression would actually change.
+        Assert.DoesNotContain("\"workstream\"", result.Text);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.Null(Assert.Single(rooms!).Workstream);
+    }
+
+    /// <summary>#1619: a Pending room (no <c>flow.jsonl</c>, so no step is Running) still reports its workstream.</summary>
+    [Fact]
+    public async Task ActiveRoom_WithNoRunningStep_StillReportsWorkstream()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "pending-workstream-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-pending"), "advise", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("pending-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["advise"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Weigh the options.",
+                TimeSpan.FromMinutes(5),
+                Workstream: "w1619"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("w1619", singleRoom.Workstream);
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;

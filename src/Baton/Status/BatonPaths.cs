@@ -70,6 +70,16 @@ public static class BatonPaths
     public const string RoomsDirectoryName = "rooms";
 
     /// <summary>
+    /// <c>{Root}/by-workstream</c> — junction directories written by
+    /// <c>Baton.Cli.WorkstreamJunctionLinker</c>. <b>Deliberately a sibling of <see cref="Rooms"/>,
+    /// never a child</b>: spec/baton.md's dispatch section (§2) explains why.
+    /// </summary>
+    public static string ByWorkstream => Path.Combine(Root, ByWorkstreamDirectoryName);
+
+    /// <summary>Directory name of <see cref="ByWorkstream"/> relative to a root.</summary>
+    public const string ByWorkstreamDirectoryName = "by-workstream";
+
+    /// <summary>
     /// Filename, under a room's <c>.baton</c> directory, of the room marker whose <c>Kind</c> field
     /// distinguishes an interactive-session room from a workflow room. For an interactive room this
     /// file is the serialized session metadata (kind included); for a workflow room it is a minimal
