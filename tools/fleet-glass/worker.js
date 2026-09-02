@@ -30,6 +30,11 @@
  *    newest-first, optionally filtered by room), and `deliverable_read` (one item's full content).
  *    Read auth is the unguessable URL segment -- same posture as the operator's private ntfy topics.
  *
+ * #1712: every `env.FLEET.put` above (push, heartbeat, deliver's index/batch/eviction writes) is
+ * wrapped so Cloudflare's own daily KV write cap answers `429 {"reason": "kv-write-cap", "resets_at"}`
+ * (`worker.core.mjs`'s `classifyKvError`/`nextUtcMidnightIso`) instead of a bare 500 -- spec/baton.md
+ * §6 has the incident and the three-layer fix (worker/pusher/glass) this is one third of.
+ *
  * Storage, all in one KV namespace (#1690 folded this to ONE write per /push and TWO per /deliver
  * batch -- spec/baton.md §6, "Fleet Glass write budget", has the full arithmetic):
  *  - "snapshot"          : the fleet snapshot, verbatim JSON, carrying pushed_at so consumers can
@@ -78,6 +83,8 @@ import {
   deliverableReadOutcome,
   isValidFleetStatusPage,
   maxIsoOrNull,
+  classifyKvError,
+  nextUtcMidnightIso,
 } from "./worker.core.mjs";
 
 const INBOX_CAP = 500;
@@ -140,6 +147,11 @@ function json(body, status = 200) {
 }
 function toolText(text) {
   return { content: [{ type: "text", text }] };
+}
+// #1712: every KV put path answers this instead of a bare 500 once classifyKvError recognizes
+// Cloudflare's daily write-cap message -- spec/baton.md §6.
+function kvWriteCapResponse() {
+  return json({ reason: "kv-write-cap", resets_at: nextUtcMidnightIso(Date.now()) }, 429);
 }
 function toolError(text) {
   return { content: [{ type: "text", text }], isError: true };
@@ -208,22 +220,30 @@ async function handleDeliver(request, env) {
   const batchId = crypto.randomUUID();
   const { index, batchContent, stored, evicted, orphanedBatchIds } = computeDeliverBatch(existingIndex, items, batchId, INBOX_CAP);
 
-  for (const m of evicted) {
-    // A LEGACY (pre-#1690) evicted entry costs a delete: its content lives at its own
-    // inbox:item:<id> key.
-    if (!m.batch_id) await env.FLEET.delete(`inbox:item:${m.id}`);
+  // #1712: one try/catch around every write this POST makes -- the daily KV cap fails whichever
+  // put or delete hits it first, and the rest would fail the same way, so there is nothing to gain
+  // from classifying each call site separately.
+  try {
+    for (const m of evicted) {
+      // A LEGACY (pre-#1690) evicted entry costs a delete: its content lives at its own
+      // inbox:item:<id> key.
+      if (!m.batch_id) await env.FLEET.delete(`inbox:item:${m.id}`);
+    }
+    // F5 (2026-09-02 review): reclaim a batched entry's underlying `inbox:batch:<id>` blob once NO
+    // remaining index entry references it (eviction, or this same POST re-delivering an id under a
+    // new batch id) -- pre-fix, these were left orphaned forever, growing KV storage without bound
+    // even though storage isn't write-budgeted the way writes are.
+    for (const orphanId of orphanedBatchIds) {
+      await env.FLEET.delete(`inbox:batch:${orphanId}`);
+    }
+    if (stored > 0) {
+      await env.FLEET.put(`inbox:batch:${batchId}`, JSON.stringify(batchContent));
+    }
+    await env.FLEET.put("inbox:index", JSON.stringify(index));
+  } catch (err) {
+    if (classifyKvError(err) === "kv-write-cap") return kvWriteCapResponse();
+    throw err;
   }
-  // F5 (2026-09-02 review): reclaim a batched entry's underlying `inbox:batch:<id>` blob once NO
-  // remaining index entry references it (eviction, or this same POST re-delivering an id under a
-  // new batch id) -- pre-fix, these were left orphaned forever, growing KV storage without bound
-  // even though storage isn't write-budgeted the way writes are.
-  for (const orphanId of orphanedBatchIds) {
-    await env.FLEET.delete(`inbox:batch:${orphanId}`);
-  }
-  if (stored > 0) {
-    await env.FLEET.put(`inbox:batch:${batchId}`, JSON.stringify(batchContent));
-  }
-  await env.FLEET.put("inbox:index", JSON.stringify(index));
   return json({ ok: true, stored, index_size: index.length });
 }
 
@@ -408,7 +428,12 @@ export default {
       // own -- this file's own header docstring is the canonical record of who reads it back out
       // and how (the fleet_status handler, both the plain and the `page` branch).
       const snapshot = JSON.stringify({ pushed_at: new Date().toISOString(), ...payload });
-      await env.FLEET.put("snapshot", snapshot);
+      try {
+        await env.FLEET.put("snapshot", snapshot);
+      } catch (err) {
+        if (classifyKvError(err) === "kv-write-cap") return kvWriteCapResponse();
+        throw err;
+      }
       return new Response("ok", { status: 200 });
     }
 
@@ -441,7 +466,12 @@ export default {
       const stored = { at: new Date().toISOString() };
       if (derivedAt) stored.derived_at = derivedAt;
       if (pendingPushAgeS !== null) stored.pending_push_age_s = pendingPushAgeS;
-      await env.FLEET.put("heartbeat_at", JSON.stringify(stored));
+      try {
+        await env.FLEET.put("heartbeat_at", JSON.stringify(stored));
+      } catch (err) {
+        if (classifyKvError(err) === "kv-write-cap") return kvWriteCapResponse();
+        throw err;
+      }
       return new Response("ok", { status: 200 });
     }
 

@@ -172,8 +172,10 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -1158,15 +1160,38 @@ def gather_underhood(cfg: dict) -> list:
     return entries
 
 
+class KvWriteCapError(RuntimeError):
+    """#1712: the Worker answered 429 {"reason": "kv-write-cap", "resets_at": ...} -- Cloudflare's
+    own daily KV write cap (spec/baton.md §6), not an ordinary push failure. Raised out of
+    post_json so every producer can back its own write-budget ledger sub-budget off immediately
+    (mark_kv_write_cap_exhausted below) rather than retrying into the same cap every cycle."""
+
+    def __init__(self, resets_at: str):
+        super().__init__(f"kv write cap hit -- resumes {resets_at}")
+        self.resets_at = resets_at
+
+
 def post_json(url: str, body: str) -> None:
     req = urllib.request.Request(
         url, data=body.encode("utf-8"), method="POST",
         # Cloudflare's edge 403s the default Python-urllib user-agent.
         headers={"content-type": "application/json", "user-agent": "fleet-pusher/0.2"},
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        if resp.status != 200:
-            raise RuntimeError(f"push status {resp.status}")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"push status {resp.status}")
+    except urllib.error.HTTPError as ex:
+        if ex.code == 429:
+            try:
+                payload = json.loads(ex.read().decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                payload = None
+            resets_at = payload.get("resets_at") if isinstance(payload, dict) else None
+            if isinstance(payload, dict) and payload.get("reason") == "kv-write-cap" \
+                    and isinstance(resets_at, str) and resets_at:
+                raise KvWriteCapError(resets_at) from ex
+        raise RuntimeError(f"push status {ex.code}") from ex
 
 
 SNAPSHOT_HASH_KEY = "__snapshot_hash__"
@@ -1324,6 +1349,25 @@ def load_budget_ledger(state: dict, now_ts: float) -> dict:
             return {"date": today, "snapshot": 0, "deliver": 0, "heartbeat": 0, "exhausted_notice_sent": False}
         return stored  # F10: refuse the rollback -- keep serving the later, already-spent day.
     return {"date": today, "snapshot": 0, "deliver": 0, "heartbeat": 0, "exhausted_notice_sent": False}
+
+
+def mark_kv_write_cap_exhausted(state: dict, now_ts: float) -> dict:
+    """#1712: a live 429 (reason=kv-write-cap) from the Worker is stronger evidence than the
+    ledger's own count -- exhaust every producer's sub-budget for the rest of today outright, so
+    the existing #1690 exhausted/skip-producer paths (snapshot_pushes_allowed / deliver_allowed /
+    heartbeat_allowed) take over on the very next check for ALL THREE producers, not just whichever
+    one happened to hit the cap. Also marks `exhausted_notice_sent` so the day's one final
+    "budget exhausted" snapshot is never attempted -- it is exactly the write that cannot land
+    either. `max(...)` rather than a plain assignment: never regresses a sub-budget that has
+    already counted higher than its own daily target (shouldn't happen, but a real KV write already
+    recorded must never be un-recorded)."""
+    ledger = load_budget_ledger(state, now_ts)
+    ledger["snapshot"] = max(ledger.get("snapshot", 0), SNAPSHOT_DAILY_WRITES)
+    ledger["deliver"] = max(ledger.get("deliver", 0), DELIVER_DAILY_WRITES)
+    ledger["heartbeat"] = max(ledger.get("heartbeat", 0), HEARTBEAT_DAILY_WRITES)
+    ledger["exhausted_notice_sent"] = True
+    state[BUDGET_STATE_KEY] = ledger
+    return ledger
 
 
 def budget_used(ledger: dict) -> int:
@@ -2247,6 +2291,15 @@ def main() -> None:
                         save_push_state(budget_path, ledger_state)
                         try:
                             post_json(cfg["push_url"], post_body)
+                        except KvWriteCapError as ex:
+                            # #1712: the notice snapshot is itself a KV write -- if the Worker is
+                            # refusing writes for real, it cannot land either. Confirm the ledger is
+                            # fully exhausted (all three producers) and log the ONE line; do not
+                            # retry the notice.
+                            mark_kv_write_cap_exhausted(ledger_state, now_ts)
+                            save_push_state(budget_path, ledger_state)
+                            log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                                f"no writes until {ex.resets_at}")
                         except Exception as ex:  # noqa: BLE001 — loop must survive anything
                             log(f"ERROR (push, budget-exhausted notice) {type(ex).__name__}: {ex}")
                         else:
@@ -2283,6 +2336,16 @@ def main() -> None:
                             push_snapshot_and_record(
                                 lambda b: post_json(cfg["push_url"], b),
                                 post_body, snap_state, state_path, current_hash, now_ts=now_ts)
+                        except KvWriteCapError as ex:
+                            # #1712: exhaust every producer's sub-budget right now rather than
+                            # waiting for deliver/heartbeat to each independently rediscover the same
+                            # hard cap -- this producer's own SNAPSHOT_KV_WRITE_COST charge above
+                            # already stands (F3(b)); this widens it to all three.
+                            ledger_state = load_push_state(budget_path)
+                            mark_kv_write_cap_exhausted(ledger_state, now_ts)
+                            save_push_state(budget_path, ledger_state)
+                            log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                                f"no writes until {ex.resets_at}")
                         except Exception as ex:  # noqa: BLE001 — a failing push must not skip the
                             # pending-push-age computation below (finding 2's whole point), and the
                             # loop must survive regardless -- caught here, not the outer except, so
@@ -2357,6 +2420,14 @@ def main() -> None:
                             lambda: post_json(heartbeat_url, payload),
                             hb_state, state_path, now_ts, extra_state=extra_state)
                         log("heartbeat sent" if heartbeat_due else "derived-freshness ping sent")
+            except KvWriteCapError as ex:
+                # #1712: same hard-cap posture as the snapshot producer above -- exhaust every
+                # producer's sub-budget right now, not just heartbeat's own.
+                ledger_state = load_push_state(budget_path)
+                mark_kv_write_cap_exhausted(ledger_state, time.time())
+                save_push_state(budget_path, ledger_state)
+                log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                    f"no writes until {ex.resets_at}")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (heartbeat) {type(ex).__name__}: {ex}")
 
@@ -2402,6 +2473,14 @@ def main() -> None:
                                 save_push_state(state_path, state)
                                 log(f"delivered {len(items)} item(s) "
                                     f"({sum(1 for i in items if i['withheld'])} withheld)")
+            except KvWriteCapError as ex:
+                # #1712: same hard-cap posture as the other two producers -- exhaust every
+                # producer's sub-budget right now, not just deliver's own.
+                ledger_state = load_push_state(budget_path)
+                mark_kv_write_cap_exhausted(ledger_state, time.time())
+                save_push_state(budget_path, ledger_state)
+                log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                    f"no writes until {ex.resets_at}")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (deliver) {type(ex).__name__}: {ex}")
 
@@ -3859,6 +3938,66 @@ def _selftest() -> int:
     check("a clock jump backward against an ALL-ZERO stored ledger is harmless and re-keys onto the "
           "earlier day (nothing to double-count yet)",
           rolled_backward_zero["snapshot"] == 0 and rolled_backward_zero["date"] != day1)
+
+    # -- #1712: post_json classifies a live 429 {"reason": "kv-write-cap", "resets_at": ...} into
+    # KvWriteCapError instead of a generic push-status RuntimeError, and mark_kv_write_cap_exhausted
+    # exhausts ALL THREE producers' sub-budgets in one step (not just whichever one hit the cap). --
+    def _fake_429(reason: str | None, resets_at: str | None) -> object:
+        body: dict = {}
+        if reason is not None:
+            body["reason"] = reason
+        if resets_at is not None:
+            body["resets_at"] = resets_at
+        payload = json.dumps(body).encode("utf-8")
+
+        class _FakeOpener:
+            def open(self, req, data=None, timeout=None):  # noqa: ARG002 — matches OpenerDirector.open's positional shape
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", None, BytesIO(payload))
+        return _FakeOpener()
+
+    real_opener = urllib.request._opener
+    try:
+        urllib.request.install_opener(_fake_429("kv-write-cap", "2026-09-03T00:00:00+00:00"))
+        try:
+            post_json("https://example.invalid/push/tok", "{}")
+            check("(#1712) a 429 kv-write-cap response raises KvWriteCapError", False)
+        except KvWriteCapError as caught:
+            check("(#1712) post_json classifies a 429 kv-write-cap body into KvWriteCapError", True)
+            check("(#1712) KvWriteCapError carries the body's resets_at verbatim",
+                  caught.resets_at == "2026-09-03T00:00:00+00:00")
+        except Exception:  # noqa: BLE001 — the check above already records failure either way
+            check("(#1712) a 429 kv-write-cap response raises KvWriteCapError, not some other error", False)
+
+        # (control) a 429 with a DIFFERENT reason (or none at all) is an ordinary push failure, not
+        # the write cap -- proves the classifier discriminates rather than treating every 429 alike.
+        urllib.request.install_opener(_fake_429("some-other-reason", "2026-09-03T00:00:00+00:00"))
+        try:
+            post_json("https://example.invalid/push/tok", "{}")
+            check("(control, #1712) a 429 with an unrelated reason still raises", False)
+        except KvWriteCapError:
+            check("(control, #1712) a 429 with an unrelated reason must NOT classify as kv-write-cap", False)
+        except RuntimeError:
+            check("(control, #1712) a 429 with an unrelated reason raises the ordinary RuntimeError", True)
+    finally:
+        urllib.request.install_opener(real_opener)
+
+    kv_cap_ledger_state: dict = {}
+    mark_kv_write_cap_exhausted(kv_cap_ledger_state, 1000.0)
+    kv_cap_ledger = load_budget_ledger(kv_cap_ledger_state, 1000.0)
+    check("(#1712) mark_kv_write_cap_exhausted exhausts ALL THREE producers' sub-budgets in one call",
+          not snapshot_pushes_allowed(kv_cap_ledger) and not deliver_allowed(kv_cap_ledger)
+          and not heartbeat_allowed(kv_cap_ledger))
+    check("(#1712) mark_kv_write_cap_exhausted also marks exhausted_notice_sent, so the #1690 "
+          "exhaustion-notice snapshot (itself a KV write) is never attempted",
+          kv_cap_ledger["exhausted_notice_sent"] is True)
+    already_high_state: dict = {"__write_budget__": {"date": utc_day_str(1000.0),
+                                                       "snapshot": SNAPSHOT_DAILY_WRITES + 5,
+                                                       "deliver": 0, "heartbeat": 0,
+                                                       "exhausted_notice_sent": False}}
+    mark_kv_write_cap_exhausted(already_high_state, 1000.0)
+    check("(#1712) mark_kv_write_cap_exhausted never regresses a sub-budget already counted higher "
+          "than its own daily target",
+          already_high_state["__write_budget__"]["snapshot"] == SNAPSHOT_DAILY_WRITES + 5)
 
     check("(control) an empty ledger allows every producer",
           snapshot_pushes_allowed(fresh_ledger) and deliver_allowed(fresh_ledger) and heartbeat_allowed(fresh_ledger))
