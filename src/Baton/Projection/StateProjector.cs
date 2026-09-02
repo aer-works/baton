@@ -342,10 +342,14 @@ public static class StateProjector
 
                     if (resolved.Accepted)
                     {
-                        // The real output file(s) are written before this event is ever appended
-                        // (MutationInterface.RecordCaptureResolutionAsync) — this only records that the
-                        // step's outcome now reads Succeeded, the same intent-after-effect ordering
-                        // ExecutionSucceeded's own clear below already assumes.
+                        // #1608 review finding 5: this event is journaled BEFORE the real output
+                        // file(s) it describes (MutationInterface.RecordCaptureResolutionAsync) — the
+                        // opposite of ExecutionSucceeded's own clear below, which only ever records a
+                        // write already durable on disk. A replay can therefore project Succeeded here
+                        // for a file that is not (yet, or ever) actually on disk; that gap is what
+                        // RecordCaptureResolutionAsync's own repair path (ReconcileAcceptedCaptureAsync)
+                        // exists to close on a later matching --execution, not something this pure
+                        // projection can see or correct.
                         state.TerminalStatusByExecutionId[resolved.ExecutionId] = StepStatus.Succeeded;
                         state.ConsecutiveFailureCountByStepId[resolvedStepId] = 0;
                         state.LatestFailureClassificationByStepId[resolvedStepId] = null;

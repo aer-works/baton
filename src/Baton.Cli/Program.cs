@@ -271,6 +271,12 @@ try
         // other verb can turn a Terminal room back non-Terminal, so this is scoped to `resolve` alone
         // rather than a general post-command rule.
         TerminalSentinelWriter.DeleteStaleSentinel(resolvedNonTerminalRoomDirectoryPath);
+
+        // #1608 review finding 4: `resolve` never re-drives the DAG itself (spec/baton.md §3) — a
+        // rejected, retry-eligible step OR an accepted step that just made a downstream step
+        // deliverable both leave this room genuinely non-Terminal with nothing left to notice, unless
+        // told. Named here rather than left implicit so a harness never has to infer the follow-up.
+        Console.WriteLine($"Room is not yet complete — {RecoveryGuidance.RunRoomDirInstruction}.");
     }
 
     // #1359: baton resume gets the same truthful exit-code table as run/dispatch — its own design

@@ -237,9 +237,13 @@ public abstract record FlowEvent
     /// <param name="ExecutionId">The indeterminate execution this resolution settles.</param>
     /// <param name="Accepted">
     /// <c>true</c>: the capture honestly satisfies its declared output(s) — the step settles
-    /// <see cref="StepStatus.Succeeded"/> and the real file(s) are written first (never by this event
-    /// alone; the write happens before this is appended, same intent-after-effect ordering
-    /// <see cref="ExecutionSucceeded"/> already assumes). <c>false</c>: rejected — the step stays
+    /// <see cref="StepStatus.Succeeded"/>, and this event is itself journaled BEFORE the real file(s)
+    /// are written (#1608 review finding 5: fact then files, not files then fact — a crash in between
+    /// leaves this fact durable with a declared output still missing, which
+    /// <c>Mutation.MutationInterface</c>'s own resolution surface re-materializes from the still-durable
+    /// capture on the next matching <c>--execution</c>, rather than the mirror gap the opposite order
+    /// left open: an orphaned file on disk with no fact and a room still reading Indeterminate).
+    /// <c>false</c>: rejected — the step stays
     /// <see cref="StepStatus.Failed"/>, no file is written, and <see cref="Scheduling.RetryEngine.MayRetry"/>
     /// re-applies its ordinary predicate rather than refusing unconditionally, since the conductor
     /// has now made the call this room was blocked on.

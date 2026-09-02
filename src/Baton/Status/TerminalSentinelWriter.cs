@@ -73,14 +73,31 @@ public static class TerminalSentinelWriter
     /// Without this, retrying a room that previously failed pre-ledger leaves the old
     /// <c>terminal.json</c> in place for the whole duration of the new, genuinely in-progress
     /// attempt — exactly the false "already done" signal a file-watcher (this file's whole reason to
-    /// exist) must never see. Best-effort: <see cref="File.Delete"/> is already a silent no-op when
-    /// the file is absent.
+    /// exist) must never see. Best-effort in full, not only for absence (#1608 review finding 8):
+    /// <see cref="File.Delete"/> is already a silent no-op when the file is absent, but still throws
+    /// for a locked file (a concurrent reader on Windows without <see cref="FileShare.Delete"/>) —
+    /// swallowed the same way <c>CancelRequestFile</c>'s own best-effort rename is, since one call site
+    /// (<c>Program.cs</c>'s post-<c>resolve</c> step) runs this AFTER a mutation is already durable, and
+    /// a delete failure there must not report a resolution as having failed when it in fact succeeded.
     /// </remarks>
     public static void DeleteStaleSentinel(string roomDirectoryPath)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         var path = Path.Combine(roomDirectoryPath, TerminalSentinelFileName);
-        File.Delete(path);
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                Console.Error.WriteLine($"Could not delete stale sentinel '{path}': {ex.Message}");
+            }
+            catch
+            {
+            }
+        }
     }
 
     /// <summary>

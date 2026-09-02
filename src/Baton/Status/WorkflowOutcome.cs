@@ -4,8 +4,9 @@ namespace Baton.Status;
 
 /// <summary>
 /// The single coarse outcome word for a <see cref="FlowState"/> — "Running", "Paused", or, once
-/// <see cref="WorkflowStatus.Terminal"/> is reached, which of "Succeeded" / "Failed" / "Cancelled" it
-/// settled into. <see cref="WorkflowStatus"/> itself only says the pump reached its fixed point, not
+/// <see cref="WorkflowStatus.Terminal"/> is reached, which of "Succeeded" / "Failed" / "Cancelled" /
+/// "Indeterminate" (#1608 — journal facts alone could not decide, see <see cref="Indeterminate"/>'s
+/// own remarks) it settled into. <see cref="WorkflowStatus"/> itself only says the pump reached its fixed point, not
 /// which one — every other terminal-outcome consumer (<c>StatusCommand</c>'s <c>--json</c>,
 /// <c>RunExitCodeResolver</c>, the terminal sentinel) needs this same word, so it is computed here
 /// once rather than re-derived per caller (#1356).

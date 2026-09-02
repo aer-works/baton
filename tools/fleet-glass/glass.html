@@ -367,9 +367,8 @@ function chipsHtml(room, running, focusStep){
     // fallback below would give an unrecognized state.
     : st === "Stalled" ? ["STALLED","c-warn"]
     // #1586 S1: Indeterminate means journal facts alone could not decide success vs failure -- a
-    // conductor has to look, same "needs you" colour as Stalled, distinct label. No production
-    // writer emits this state yet (WorkflowOutcome.Indeterminate's own remarks); this branch is
-    // ahead of that so the render is already correct once S2/#1608 land.
+    // conductor has to look, same "needs you" colour as Stalled, distinct label. Producer since
+    // #1608 (WorkflowOutcome.Indeterminate's own remarks) -- baton resolve is the way out.
     : st === "Indeterminate" ? ["INDETERMINATE","c-warn"]
     : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"]);
   if(running && running.liveness === "dead") chips.push(["ZOMBIE","c-bad"]);
@@ -417,6 +416,10 @@ const EVENT_NAMES = {
   "workflowResumed": "workflow resumed",
   "flow.stepRetryScheduled": "retry scheduled",
   "stepRetryScheduled": "retry scheduled",
+  "flow.executionIndeterminate": "execution indeterminate",
+  "executionIndeterminate": "execution indeterminate",
+  "flow.captureResolved": "capture resolved",
+  "captureResolved": "capture resolved",
 
   // Core events (CoreEvent.cs)
   "core.executionStarted": "execution started",
@@ -820,8 +823,7 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   const stalled = rooms.filter(r => r.state === "Stalled");
   // #1586 S1: same hole Stalled itself closed pre-#1582 -- a truthy, unrecognized state string
   // matches none of the exact-match buckets below AND isn't `!r.state`, so without its own bucket
-  // it would vanish off the page entirely rather than surface anywhere. No production writer emits
-  // this state yet; the bucket exists so the render is already correct once one does.
+  // it would vanish off the page entirely rather than surface anywhere. Producer since #1608.
   const indeterminate = rooms.filter(r => r.state === "Indeterminate");
   const failed  = rooms.filter(r => r.state === "Failed");
   const done    = rooms.filter(r => r.state === "Succeeded");

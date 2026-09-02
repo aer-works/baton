@@ -57,7 +57,8 @@ public static class ResolveCommand
         var reader = new FlowEventLogReader(logPath);
 
         var targetExecutionId = options.ExecutionId is { } explicitExecutionId
-            ? await ResolveExplicitExecutionAsync(reader, snapshot, explicitExecutionId, options.RoomDirectoryPath, cancellationToken)
+            ? await ResolveExplicitExecutionAsync(
+                    reader, snapshot, explicitExecutionId, options.RoomDirectoryPath, options.Accept, cancellationToken)
                 .ConfigureAwait(false)
             : await ResolveSingleCandidateAsync(reader, snapshot, options.RoomDirectoryPath, cancellationToken)
                 .ConfigureAwait(false);
@@ -84,13 +85,28 @@ public static class ResolveCommand
         WorkflowDefinitionSnapshot snapshot,
         string explicitExecutionId,
         string roomDirectoryPath,
+        bool accepted,
         CancellationToken cancellationToken)
     {
         var executionId = new ExecutionId(explicitExecutionId);
         var events = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
         var state = StateProjector.Project(events, snapshot);
 
-        if (!state.Steps.Any(step => step.LatestExecutionId == executionId && step.IndeterminateAwaitingResolution))
+        var namedStep = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
+        var isAwaitingResolution = namedStep is { IndeterminateAwaitingResolution: true };
+
+        // #1608 review finding 5: also admit a step already ACCEPTED for this exact execution, but
+        // only when this call is itself an --accept-capture -- MutationInterface's own gate on this
+        // (RecordCaptureResolutionAsync) requires the same, so a --reject against an already-accepted
+        // execution still refuses here rather than reading as a repair of someone else's accept.
+        // MutationInterface.RecordCaptureResolutionAsync treats an admitted repair as a crash-repair
+        // request (its own ReconcileAcceptedCaptureAsync), not a fresh resolution.
+        var isRepairableAccepted = accepted && namedStep is not null
+            && events.OfType<FlowEvent.CaptureResolved>()
+                .LastOrDefault(resolved => resolved.ExecutionId == executionId && resolved.StepId == namedStep.StepId)
+            is { Accepted: true };
+
+        if (!isAwaitingResolution && !isRepairableAccepted)
         {
             // #1608 review finding 7: a resolved-but-Failed step and an unresolved one both read
             // ordinary "Failed" per-step in status --json (WorkflowStatusStepView carries no
@@ -98,7 +114,8 @@ public static class ResolveCommand
             // is the one thing status --json actually distinguishes, so that is what this points at.
             throw new CliArgumentException(
                 $"Execution '{explicitExecutionId}' has no unresolved indeterminate capture in room " +
-                $"'{roomDirectoryPath}' — 'baton resolve' only targets a step still awaiting conductor resolution. " +
+                $"'{roomDirectoryPath}' — 'baton resolve' only targets a step still awaiting conductor resolution " +
+                "(or already accepted, to repair a crash-interrupted write). " +
                 $"Run 'baton status {roomDirectoryPath} --json' and confirm 'state' reads Indeterminate before naming --execution.");
         }
 

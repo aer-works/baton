@@ -424,6 +424,10 @@ public sealed class RoomDetailTool : IMcpTool
         FlowEvent.ExternalDecisionRecorded decision => decision.TargetStepId?.Value,
         FlowEvent.StepRetryScheduled retry => retry.StepId.Value,
         FlowEvent.StepRebound rebound => rebound.StepId.Value,
+        // #1608 review finding 10: carries StepId explicitly (FlowEvent.cs's own remarks on this
+        // param stress that it does, precisely so a stale resolution is a guarded no-op rather than
+        // misattributed) -- was falling to `_ => null` and losing that attribution here.
+        FlowEvent.CaptureResolved resolved => resolved.StepId.Value,
         _ => null,
     };
 

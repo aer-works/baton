@@ -880,6 +880,46 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void A_step_declaring_PausePoint_that_settles_Indeterminate_projects_Paused_with_the_flag_still_set()
+    {
+        // #1608 review finding 3: FlowState.cs's IndeterminateAwaitingResolution doc previously
+        // claimed "never true and Status not Failed together" -- falsified by the pause path.
+        // PauseEngine.GetPauseObligations treats a Failed step with RetryEngine.MayRetry false as a
+        // settled round regardless of WHY retry is refused, so a step that both declares PausePoint
+        // and settles ExecutionIndeterminate owes a WorkflowPaused the same as any other terminally
+        // failed pause point -- and StateProjector renders Paused status while leaving the flag set,
+        // since only CaptureResolved (never WorkflowPaused) clears it. This fixture appends the same
+        // two events MutationInterface's pump would append for that obligation, to pin the projected
+        // shape independent of the scheduling layer that decides to append them.
+        var snapshot = new WorkflowDefinitionSnapshot(
+            new WorkflowDefinitionSnapshotId("snapshot-pause"),
+            new WorkflowTemplateId("architect-only-paused"),
+            WorkflowTemplateVersion: 1,
+            Steps:
+            [
+                new WorkflowStepDefinition(
+                    Architect, "architect", ["goal"], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1),
+                    PausePoint: new PausePoint([])),
+            ]);
+
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(
+                executionId, "captured, awaiting conductor resolution", ".captured-response.md", ["plan"]),
+            new FlowEvent.WorkflowPaused(executionId, Architect),
+        };
+
+        var state = StateProjector.Project(events, snapshot);
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Paused, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
+        Assert.Equal(WorkflowStatus.Paused, state.Status);
+    }
+
+    [Fact]
     public void ExecutionIndeterminate_survives_an_incremental_checkpoint_resume()
     {
         // The same DeepCopy landmine StepRetryForeclosed_survives_an_incremental_checkpoint_resume

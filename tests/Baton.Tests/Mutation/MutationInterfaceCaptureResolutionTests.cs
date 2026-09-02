@@ -160,6 +160,159 @@ public class MutationInterfaceCaptureResolutionTests
         }
     }
 
+    [Fact]
+    public async Task A_reserved_third_name_in_a_multi_output_capture_refuses_before_writing_either_earlier_name()
+    {
+        // F9 (#1608 review): every existing fixture before this one is single-output, so aa51b902's own
+        // headline fix -- splitting validation into its own pass ahead of the write pass, specifically
+        // so a later name's reserved/traversal failure can never leave an earlier name already written
+        // -- was unfalsifiable: merging the two passes back into one foreach would still pass every
+        // other test in this file. A two-output capture with a reserved third name is what actually
+        // exercises the split, and reaches the reserved/traversal refusal arm at all (also untested
+        // before this).
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var executionId = new ExecutionId($"exec-{Guid.NewGuid():N}");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId($"snapshot-{Guid.NewGuid():N}"),
+                new WorkflowTemplateId("resolve-multi-output-test"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(A, "stub-worker", [], [], DependsOn: [], RetryPolicy: new RetryPolicy(2))]);
+
+            Directory.CreateDirectory(roomDirectory);
+            await using (var seedWriter = new FlowEventLogWriter(logPath))
+            {
+                await seedWriter.AppendAsync(
+                    new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
+                        executionId, new WorkflowId("wf"), A, "stub-worker", [], [], TimeSpan.FromSeconds(30), [],
+                        new Dictionary<StepId, ExecutionId>())),
+                    TestContext.Current.CancellationToken);
+                await seedWriter.AppendAsync(
+                    new FlowEvent.ExecutionIndeterminate(
+                        executionId, "captured, awaiting conductor resolution",
+                        OutputMaterializer.CapturedResponseFileName, ["advice.md", "notes.md", "../evil.md"]),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
+            await File.WriteAllTextAsync(
+                Path.Combine(outputDirectory, OutputMaterializer.CapturedResponseFileName),
+                OutputMaterializer.CapturedResponseHeader + "\n\nthe worker's real answer",
+                TestContext.Current.CancellationToken);
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var ex = await Assert.ThrowsAsync<InvalidCaptureResolutionException>(() =>
+                MutationInterface.RecordCaptureResolutionAsync(
+                    roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                    accepted: true, reason: null, cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Contains("../evil.md", ex.Message, StringComparison.Ordinal);
+
+            Assert.False(File.Exists(Path.Combine(outputDirectory, "advice.md")), "the earlier name must not have been written.");
+            Assert.False(File.Exists(Path.Combine(outputDirectory, "notes.md")), "the earlier name must not have been written.");
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.CaptureResolved>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task A_crash_between_the_journaled_fact_and_the_write_re_materializes_the_missing_output_on_the_next_resolve()
+    {
+        // #1608 review finding 5: RecordCaptureResolutionAsync now journals CaptureResolved BEFORE
+        // writing the declared output(s) ("fact then files"), so a crash in that window leaves exactly
+        // this shape -- durably recorded as accepted, but the file it describes never written. Fabricated
+        // by hand rather than driven through CrashTestHost: the thing under test is the reconciliation
+        // predicate (fact present + file missing -> repair), not crash mechanics: a real kill mid-write
+        // would produce the identical durable shape this constructs directly.
+        var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) = await SeedIndeterminateRoomAsync(
+            outputName: "advice.md", capturedBody: "the worker's real answer");
+        try
+        {
+            await using (var crashWriter = new FlowEventLogWriter(logPath))
+            {
+                await crashWriter.AppendAsync(
+                    new FlowEvent.CaptureResolved(A, executionId, Accepted: true, ResolvedOutputNames: ["advice.md"]),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var outputPath = Path.Combine(ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId), "advice.md");
+            Assert.False(File.Exists(outputPath), "the fixture must reproduce fact-present/file-missing, not an ordinary accept.");
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var state = await MutationInterface.RecordCaptureResolutionAsync(
+                roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                accepted: true, reason: null, cancellationToken: TestContext.Current.CancellationToken);
+
+            var step = Assert.Single(state.Steps, s => s.StepId == A);
+            Assert.Equal(StepStatus.Succeeded, step.Status);
+
+            var written = await File.ReadAllTextAsync(outputPath, TestContext.Current.CancellationToken);
+            Assert.Equal("the worker's real answer", written);
+
+            // The repair must not append a second fact -- the crashed attempt's own CaptureResolved is
+            // still the only one on the ledger, matching the exactly-once invariant the ordinary
+            // (non-repair) duplicate-resolution refusal above also protects.
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events.OfType<FlowEvent.CaptureResolved>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task A_crash_that_also_took_the_captured_response_file_fails_closed_instead_of_reporting_a_repair()
+    {
+        // Polarity partner of the repair test above, one condition apart (the raw capture file is also
+        // gone, not just the declared output) -- proving the repair path actually depends on the
+        // capture surviving, rather than reporting success regardless.
+        var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) = await SeedIndeterminateRoomAsync(
+            outputName: "advice.md", capturedBody: "the worker's real answer");
+        try
+        {
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId);
+            FileCleanup.EnsureDeleted(Path.Combine(outputDirectory, OutputMaterializer.CapturedResponseFileName));
+
+            await using (var crashWriter = new FlowEventLogWriter(logPath))
+            {
+                await crashWriter.AppendAsync(
+                    new FlowEvent.CaptureResolved(A, executionId, Accepted: true, ResolvedOutputNames: ["advice.md"]),
+                    TestContext.Current.CancellationToken);
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var ex = await Assert.ThrowsAsync<InvalidCaptureResolutionException>(() =>
+                MutationInterface.RecordCaptureResolutionAsync(
+                    roomDirectory, snapshot, artifactsRoot, reader, writer, executionId,
+                    accepted: true, reason: null, cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Contains("manual repair", ex.Message, StringComparison.Ordinal);
+
+            var outputPath = Path.Combine(outputDirectory, "advice.md");
+            Assert.False(File.Exists(outputPath));
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events.OfType<FlowEvent.CaptureResolved>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     /// <summary>
     /// #1608: pins <see cref="MutationInterface"/>'s own private <c>ToOutcomeEvent</c> switch —
     /// every other test above fabricates <see cref="FlowEvent.ExecutionIndeterminate"/> directly, so

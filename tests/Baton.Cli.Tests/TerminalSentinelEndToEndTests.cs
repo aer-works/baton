@@ -492,13 +492,21 @@ public class TerminalSentinelEndToEndTests
 
             using var process = StartBatonProcess(
                 "resolve", roomDirectory, "--execution", executionId.Value, "--reject", "--reason", "not honest advice.md");
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
             var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
             await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            var stdout = await stdoutTask;
             var stderr = await stderrTask;
 
             Assert.False(
                 File.Exists(sentinelPath),
                 $"'baton resolve --reject' with retry budget remaining must invalidate the now-stale sentinel. stderr: {stderr}");
+
+            // #1608 review finding 4: `resolve` never re-drives the DAG itself, so a room it leaves
+            // non-Terminal must name the follow-up invocation rather than reading as though nothing is
+            // needed.
+            Assert.Contains("Room is not yet complete", stdout, StringComparison.Ordinal);
+            Assert.Contains("--room-dir", stdout, StringComparison.Ordinal);
         }
         finally
         {

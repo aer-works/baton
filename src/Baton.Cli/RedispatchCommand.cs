@@ -69,17 +69,16 @@ public static class RedispatchCommand
         // the ordinary warn-and-proceed a Failed/Cancelled parent gets below. "Indeterminate" means
         // journal facts alone could not decide success vs failure — redispatching it silently would
         // treat an unresolved room as though it were an ordinary failed one, discarding the exact
-        // ambiguity the state exists to preserve. Unconditional in this slice: there is no
-        // conductor-resolution verb yet (#1608) and no `--force` escape hatch to name — S2/#1608
-        // landing is what turns this from "always refuses" into "refuses unless resolved".
+        // ambiguity the state exists to preserve. No `--force` escape hatch: `baton resolve` (#1608)
+        // is the only sanctioned way to clear this refusal.
         if (parentTerminal is not null && string.Equals(parentTerminal.State, WorkflowOutcome.Indeterminate, StringComparison.Ordinal))
         {
             throw new CliArgumentException(
                 $"Parent room '{options.ParentRoomDirectoryPath}' settled Indeterminate — journal facts "
                 + "alone could not decide whether it succeeded or failed, so redispatching it would "
                 + "silently discard that ambiguity rather than resolve it.",
-                "a conductor must resolve the room first (recording a justification) before it can be "
-                + "redispatched — see spec/baton.md §3. That resolution verb does not exist yet (#1608).");
+                $"run `baton resolve {options.ParentRoomDirectoryPath} [--execution <id>] "
+                + "--accept-capture | --reject --reason <text>` first, then redispatch — see spec/baton.md §3.");
         }
 
         if (parentTerminal is not null && !string.Equals(parentTerminal.State, WorkflowOutcome.Succeeded, StringComparison.Ordinal))

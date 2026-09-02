@@ -10,14 +10,21 @@ namespace Baton.Mutation;
 /// silently widened; no <see cref="Domain.FlowEvent.CaptureResolved"/> is ever appended to the log
 /// when this is thrown.
 /// <para>
-/// Every name in a multi-name capture is validated before any of them is written
-/// (<c>MutationInterface.RecordCaptureResolutionAsync</c>), so a bad name never leaves an earlier one
-/// on disk. A genuine mid-write <see cref="IOException"/>/<see cref="UnauthorizedAccessException"/>
-/// across multiple declared names (disk full, permissions revoked between writes) is the one case
-/// this exception can still surface with an earlier name already written and no
-/// <see cref="Domain.FlowEvent.CaptureResolved"/> appended — an environment failure, not a validation
-/// one, and re-running <c>baton resolve</c> once the environment issue is fixed re-attempts the same
-/// resolution idempotently (the write is the same content under the same name either way).
+/// Every name in a multi-name capture is validated before any of them is written OR the resolution is
+/// journaled (<c>MutationInterface.RecordCaptureResolutionAsync</c>), so a bad name never leaves an
+/// earlier one on disk and never journals a fact this exception's own throw contradicts.
+/// </para>
+/// <para>
+/// #1608 review finding 5 changed what "re-run it" means for a genuine mid-write
+/// <see cref="IOException"/>/<see cref="UnauthorizedAccessException"/> across multiple declared names
+/// (disk full, permissions revoked between writes): the resolution is journaled BEFORE the writes, not
+/// after, so this exception can now surface with <see cref="Domain.FlowEvent.CaptureResolved"/>
+/// ALREADY appended and one or more declared names still missing. Re-running <c>baton resolve
+/// --execution &lt;id&gt;</c> against that same, already-accepted execution does not re-attempt an
+/// ordinary fresh resolution (the step is no longer awaiting one) — it is admitted as a repair request
+/// instead and re-materializes exactly the names still missing from the still-durable captured
+/// response, idempotently, without appending a second fact. See
+/// <c>MutationInterface.ReconcileAcceptedCaptureAsync</c>'s own remarks.
 /// </para>
 /// </summary>
 public sealed class InvalidCaptureResolutionException : BatonFlowException

@@ -516,16 +516,48 @@ the step `Succeeded` — the one path ever allowed to write under a declared nam
 per `OutputMaterializer`'s own ruling — while `--reject --reason <text>` writes nothing and leaves the
 step resolved-but-`Failed`. Either way a `Domain.FlowEvent.CaptureResolved` room fact records which,
 carrying the conductor's own justification (required for `--reject`; the accept/reject choice already
-speaks for itself for `--accept-capture`). The prose-safe/all-or-nothing rule
+speaks for itself for `--accept-capture`). **Fact then files, not files then fact (#1608 review finding
+5).** `--accept-capture` journals `CaptureResolved` *before* writing the declared output(s) it names —
+the fact is durable first, deliberately accepting that a crash between the two can leave the ledger
+reading `Succeeded` with an output still missing, rather than the opposite gap the reverse order left
+open (a declared output honestly on disk with the room still reading `Indeterminate` and the step still
+resolvable, so a later `--reject` could record a rejection while the earlier file silently stayed put).
+That gap self-heals: an explicit `baton resolve --execution <id>` naming an execution already accepted
+for this exact id is treated as a repair request, not an invalid target, and re-materializes any missing
+declared output(s) from the still-durable captured response — a no-op if nothing is missing (the
+ordinary exactly-once refusal still applies then), and a fail-closed `InvalidCaptureResolutionException`
+if the captured response itself is also gone, with nothing left to re-derive from. The prose-safe/all-or-nothing rule
 (`docs/dispatch.md`'s "Roles" section) is not re-derived at resolution time: reaching an unresolved
 capture at all already proves `OutputMaterializer.TryCaptureFinalResponse`'s gate passed for every name
 in that list, at capture time. `RetryEngine.MayRetry` refuses an unresolved capture unconditionally,
 via its own explicit arm on `StepState.IndeterminateAwaitingResolution` — deliberately not by reusing
 `FailureClassification.Permanent`'s semantics, since `Indeterminate` carries no classification at all;
 once resolved (accepted, or rejected with retry budget remaining), the step's ordinary retry
-eligibility applies again. `baton resolve` never re-drives the DAG itself — a rejected, retry-eligible
-step needs a follow-up `baton run --room-dir` to dispatch again, the same recovery §7 already
-describes for a stalled room.
+eligibility applies again. `baton resolve` never re-drives the DAG itself, in either direction — a
+rejected, retry-eligible step, *and* an accepted step that leaves a downstream step newly deliverable
+in a multi-step room, both need a follow-up `baton run --room-dir` to dispatch again, the same recovery
+§7 already describes for a stalled room (F4, #1608 review — the acceptance case was previously
+undocumented, reading as though only rejection needed it). `baton resolve` names that follow-up
+invocation on stdout whenever the state it returns is not `WorkflowStatus.Terminal`, so a harness never
+has to infer it — see "Consumer obligations" above for the sentinel side of the same non-Terminal case.
+
+**Unless the step declares a `PausePoint`.** Every claim above about `baton resolve` being the *only*
+path to an unresolved `Indeterminate` step assumes the step is not also a pause point.
+`Scheduling.PauseEngine.GetPauseObligations` reaches a `Failed` step with `RetryEngine.MayRetry` false
+through the same round-settled check regardless of *why* retry is refused, so a step that both declares
+`PausePoint` and settles `ExecutionIndeterminate` becomes `StepStatus.Paused` with
+`IndeterminateAwaitingResolution` still set — and `ExternalDecisionValidator` admits any `Paused` step
+to `baton decide`, unresolved capture or not. Two consequences: the room reads `Paused`, not
+`Indeterminate`, while it waits (`WorkflowOutcome.Describe` checks `Status` before `DescribeTerminal`
+is ever reached — expected, since `Paused` is not itself a terminal word); and a `baton decide` against
+that pause leaves `IndeterminateAwaitingResolution` set with no `CaptureResolved` ever appended, so a
+later Terminal read of that room still reports `Indeterminate` even though a conductor already decided
+its fate through `baton decide` rather than `baton resolve`. Both are pre-existing shapes of the pause
+path (the same step read `Failed(Permanent)` with `MayRetry` false before #1608, with an identical
+`PauseEngine` interaction) — #1608 changed what the eventual terminal word *is*, not whether a pause
+point can intercept it first. Whether `ExternalDecisionValidator` should refuse an unresolved capture
+outright, or `DescribeTerminal` should let a recorded decision outrank the flag, is an open owner call,
+not settled by this slice.
 
 **`FlowEvent.StepRetryForeclosed`** (`src/Baton/Domain/FlowEvent.cs`) is the missing primitive the
 quota-park symptom this section opened with rests on: before this slice, three events could clear a

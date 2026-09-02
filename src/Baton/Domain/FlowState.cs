@@ -175,9 +175,15 @@ public enum StepStatus
 /// <see cref="Failed"/> — the "single added enum value" ruling adds this at the room-level word only,
 /// never at <see cref="StepStatus"/>), and <see cref="Scheduling.RetryEngine.MayRetry"/> refuses
 /// unconditionally while this is <c>true</c>, the same explicit-arm shape as
-/// <see cref="RetryForeclosed"/>. Never true and <see cref="Status"/> not <see cref="Failed"/>
-/// together — an accepted resolution flips <see cref="Status"/> to <see cref="Succeeded"/> in the
-/// same projected step that clears this.
+/// <see cref="RetryForeclosed"/>. An accepted resolution flips <see cref="Status"/> to
+/// <see cref="Succeeded"/> in the same projected step that clears this — but this can also read
+/// <c>true</c> while <see cref="Status"/> is <see cref="Paused"/>, not only <see cref="Failed"/>:
+/// <see cref="Scheduling.PauseEngine.GetPauseObligations"/> treats a <see cref="Failed"/> step with
+/// <see cref="Scheduling.RetryEngine.MayRetry"/> false as a settled round owing a
+/// <see cref="FlowEvent.WorkflowPaused"/> regardless of why retry is refused, so a step declaring a
+/// <see cref="PausePoint"/> reaches <see cref="Paused"/> with this flag still set (#1608 review
+/// finding 3). Never true while <see cref="Status"/> is <see cref="Succeeded"/> or
+/// <see cref="Cancelled"/>.
 /// </param>
 public sealed record StepState(
     StepId StepId,
