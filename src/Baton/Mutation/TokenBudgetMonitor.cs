@@ -104,16 +104,24 @@ public sealed class TokenBudgetMonitor
         }
     }
 
-    /// <summary>The measured usage at the moment of the snapshot — <see cref="FlowEvent.ExecutionArrested.Usage"/>.</summary>
+    /// <summary>
+    /// The measured usage at the moment of the snapshot — <see cref="FlowEvent.ExecutionArrested.Usage"/>.
+    /// #1623 re-review N6: <see cref="WorkerUsage.TokensIn"/> stays the vendor-raw latest reading
+    /// (never fabricated, per <see cref="WorkerUsage"/>'s own doc); the accumulated level this monitor
+    /// actually budgets against — already <c>TokensIn + CacheReadTokens + CacheCreationTokens</c> —
+    /// goes on <see cref="WorkerUsage.ContextLevelTokens"/> instead, so a reader summing the three raw
+    /// fields does not silently double-count it.
+    /// </summary>
     public WorkerUsage SnapshotUsage()
     {
         lock (_lock)
         {
             return new WorkerUsage(
-                TokensIn: _inputLevel,
+                TokensIn: _latestTokensIn,
                 TokensOut: _tokensOut,
                 CacheReadTokens: _latestCacheRead,
-                CacheCreationTokens: _latestCacheCreation);
+                CacheCreationTokens: _latestCacheCreation,
+                ContextLevelTokens: _inputLevel);
         }
     }
 

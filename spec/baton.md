@@ -651,52 +651,69 @@ exists on `WorkflowStatusView` yet, and none should until S2 has a real writer f
 ### Engine-run verify and the token budget (#1623)
 
 Two more producers, both ratified together (operator ruling, 2026-09-01 night, "option 3 ratified",
-plus the same night's addendum on token consumption): the first live producers of `Indeterminate`.
+plus the same night's addendum on token consumption).
 
 **The engine-run verify step.** A role may declare a `pixi run <task>` verify command (`implement` →
 `gates-quiet`; `review`/`advise`/every other role → none, `WorkerRole.VerifyPixiTask`). On worker exit
 0 with its output contract satisfied, the ENGINE — never the worker — runs the declared command once,
-via `Baton.Mutation.VerifyRunner`, at the live-dispatch call site only (`MutationInterface`'s
+serialized against other lanes by the build lock each gate member takes for itself
+(`tools/buildlock.py`); the engine holds no lock across the run (see N1 below). It runs via
+`Baton.Mutation.VerifyRunner`, at the live-dispatch call site only (`MutationInterface`'s
 `DispatchAndRecordOutcomeAsync`, between `OutcomeClassifier.Classify` returning `Succeeded` and the
 outcome event append; deliberately not inside `Classify` itself, which also runs on the crash-recovery
 replay branch against a possibly-defunct workspace). `FlowEvent.VerifyStarted`/`VerifyPassed` are
 diagnostic-only; `FlowEvent.VerifyFailed` (`FailingMembers`/`Tail`, parsed from `tools/gates/gates.py`'s
 own deterministic `summarise()` line) settles the step `Indeterminate` — never a blind retry, the
 ruling's own wording — via the same `StateProjector.ApplyIndeterminate` helper the budget arrest below
-shares. Worker briefs no longer ask for the full gate suite themselves; the prompt-level foreground
-instruction from #1625 (`AgyWorkerAdapter.ForegroundGateInstructionText`) stays as belt (any slow
-command, not just gates, should run in the foreground) now that this is the braces.
+shares. An operator cancel landing inside the verify window is the one exception: `VerifyFailedKind.Cancelled`
+observed together with the caller's own cancellation token already firing means the journal *can*
+decide (it holds the cancel), so `MutationInterface` appends `FlowEvent.ExecutionCancelled` instead —
+room reads `Cancelled`, retry stays open, `VerifyStarted` survives as the diagnostic record of what was
+running. A verify *timeout* still settles `Indeterminate` through the ordinary `VerifyFailed` path.
+Worker briefs no longer ask for the full gate suite themselves; the prompt-level foreground instruction
+from #1625 (`AgyWorkerAdapter.ForegroundGateInstructionText`) stays as belt (any slow command, not just
+gates, should run in the foreground) now that this is the braces.
 
 **The per-execution token budget.** Every role carries a default token ceiling
 (`WorkerRole.TokenBudget`: `implement` 600,000, `review` 250,000, `advise` 150,000; every other role
-none), overridable per dispatch with `--token-budget`. `Baton.Mutation.TokenBudgetMonitor` accumulates
+none), overridable per dispatch with `--token-budget`. These figures are carried over unchanged from
+before the #1623 re-review; they have not been re-derived against the new `context_level + Σoutput`
+quantity below (see N2/F1 in the re-review response — nobody has yet shown, or ruled out, that 600,000
+is still the right ceiling for `implement` under the new arithmetic; treat this ceiling as
+unverified-but-unchanged, not as freshly justified). `Baton.Mutation.TokenBudgetMonitor` accumulates
 usage from the SAME per-vendor `IWorkerUsageParser` seam `ExecutionUsageProjector` reads post-hoc, but
 incrementally — `IWorkerUsageParser.TryParseIncrementalUsage` reads claude's mid-stream
 `"type":"assistant"` `message.usage` and agy's DONE-state `"step_update"` `usage` (both measured
 against real captures, `docs/vendor-capabilities.md` and this PR's own test fixtures respectively) —
 composed onto `CoreDispatchTarget.OnStdoutLine` the same way `CoreDispatcher`'s own
-`DetectsTerminalSuccess` composes onto an existing sink, never replacing one. Crossing the budget
-cancels the execution via a linked `CancellationTokenSource` (never the operator-facing
-`CancellationRequested`/`ExecutionCancelled` pair — that's intent; this is the engine's own) and appends
-`FlowEvent.ExecutionArrested` (`Usage`, `LastToolNames` — the last few tool calls observed, from the
-same incremental read) instead of an ordinary outcome. Settles `Indeterminate`, same as a verify
-failure. A role with no budget and no `--token-budget` override runs unwatched, same as before this
-issue; a role whose resolved adapter has no registered `IWorkerUsageParser` also runs unwatched rather
-than refusing to dispatch.
+`DetectsTerminalSuccess` composes onto an existing sink, never replacing one. The monitored quantity is
+`context_level + Σoutput_tokens`: the output side is additive across turns, but the input side is a
+*level* (`latest(input_tokens + cache_read_input_tokens + cache_creation_input_tokens)`) that each new
+turn's reading replaces rather than adds to — `IWorkerUsageParser`'s own doc states why (never restated
+here); `TokenBudgetMonitor` is the worked example. `context_level` is bounded above by the model's own context window (claude ~200k tokens as
+of this writing; other vendors' windows are larger and not pinned here), so a runaway `implement` lane
+sitting at a full 200k-token context still needs `Σoutput ≥ 400,000` to cross the 600,000 ceiling — this
+spec does not show whether that is reachable inside a 90-minute lane; the re-review response records the
+absence of that measurement rather than asserting either answer. The monitor reads every top-level `"type":"assistant"` line with no discrimination by
+`parent_tool_use_id`. `docs/vendor-doc-audit.md` (#1623 re-review N5) is the canonical measurement:
+against real `implement` rooms' captured `.stdout.log` files, a sub-agent's own turns DO appear on this
+stream — and because the input side is a level the caller replaces (above), that measurably lowers the
+tracked level on exactly the turns where the most work is happening, a live gap rather than merely an
+unmeasured one. Not the same surface `cost.subagent-tokens-excluded` (`tools/vendor-verify/verify.py`)
+measures, which is the terminal
+`usage` object under `--output-format json`, not this mid-stream one.
+Crossing the budget cancels the execution via a linked `CancellationTokenSource` (never the
+operator-facing `CancellationRequested`/`ExecutionCancelled` pair — that's intent; this is the engine's
+own) and appends `FlowEvent.ExecutionArrested` (`Usage`, `LastToolNames` — the last few tool calls
+observed, from the same incremental read) instead of an ordinary outcome. Settles `Indeterminate`, same
+as a verify failure. A role with no budget and no `--token-budget` override runs unwatched, same as
+before this issue; a role whose resolved adapter has no registered `IWorkerUsageParser` also runs
+unwatched rather than refusing to dispatch.
 
-**The shared mechanism.** Both producers route through one helper: the step's underlying
-`StepStatus` settles `Failed` (so `DeriveWorkflowStatus`'s existing deliverability predicate reaches
-`Terminal` the way any other failure does — no new `StepStatus` value needed), `StepState.RetryForeclosed`
-is set (never a blind retry), and `StepState.IndeterminateReason` carries the diagnostic text that
-doubles as the flag `WorkflowOutcome.DescribeTerminal` checks ahead of the ordinary `Failed`/`Rejected`
-read. `RetryEngine.MayRetry` also checks `IndeterminateReason` directly, not merely the `RetryForeclosed`
-side effect — retry-ineligible by an explicit arm, the same discipline #1608's own ruling states for its
-own producer. **Overlap with #1608 (PR #1644, open, not merged as of this writing):** that PR's own
-design adds a sibling `StepState.IndeterminateAwaitingResolution` bool plus `ExecutionIndeterminate`/
-`CaptureResolved` events for the captured-response producer specifically. #1623 could not build on that
-shape since it had not merged; whichever of the two lands second should fold both flags into the one
-`WorkflowOutcome.DescribeTerminal` arm this section describes, rather than leaving two Indeterminate
-checks side by side — noted here so the merge order is explicit, not silent.
+**The shared mechanism.** Both producers route through the one `StateProjector.ApplyIndeterminate`
+helper — flag, reason text, foreclosure; the `IndeterminateAwaitingResolution` flag is what
+`WorkflowOutcome.DescribeTerminal` and `RetryEngine.MayRetry` each check (one arm apiece), per the
+producer table above; `StepState.IndeterminateReason` stays display-only, never itself a gate.
 
 ### Exit codes
 

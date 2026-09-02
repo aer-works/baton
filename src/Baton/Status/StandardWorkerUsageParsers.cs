@@ -309,7 +309,8 @@ public sealed class AgyUsageParser : IWorkerUsageParser
     /// <c>input_tokens</c>/<c>output_tokens</c>/<c>thinking_tokens</c>/<c>cache_read_tokens</c>/
     /// <c>total_tokens</c> shape this class's own <see cref="TryParseFinalUsage"/> reads off the
     /// terminal <c>result</c> event's <c>usage</c> object -- same field names, different envelope. One
-    /// line = one step's own usage, not a running total -- a caller sums across calls.
+    /// line = one step's own usage; see <see cref="IWorkerUsageParser.TryParseIncrementalUsage"/> for
+    /// the output-additive/input-level split a caller applies to it.
     /// </summary>
     public bool TryParseIncrementalUsage(string rawLine, out WorkerUsage? usage)
     {

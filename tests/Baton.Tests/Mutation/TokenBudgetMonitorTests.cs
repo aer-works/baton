@@ -51,6 +51,7 @@ public sealed class TokenBudgetMonitorTests
         var usage = monitor.SnapshotUsage();
 
         Assert.Equal(200, usage.TokensIn);
+        Assert.Equal(200, usage.ContextLevelTokens);
         Assert.Equal(30, usage.TokensOut);
     }
 
@@ -68,10 +69,13 @@ public sealed class TokenBudgetMonitorTests
         monitor.OnStdoutLine(pusherLine);
 
         var usage = monitor.SnapshotUsage();
-        Assert.Equal(27160, usage.TokensIn);
+        // #1623 re-review N6: see SnapshotUsage's own doc for why TokensIn stays vendor-raw while the
+        // accumulated level moves to ContextLevelTokens.
+        Assert.Equal(2, usage.TokensIn);
         Assert.Equal(4, usage.TokensOut);
         Assert.Equal(15092, usage.CacheReadTokens);
         Assert.Equal(12066, usage.CacheCreationTokens);
+        Assert.Equal(27160, usage.ContextLevelTokens);
         Assert.False(monitor.Arrested);
 
         // A second turn with same cache state and 4000 output tokens crosses 30k budget
@@ -103,9 +107,9 @@ public sealed class TokenBudgetMonitorTests
 
         Assert.True(claudeMonitor.Arrested);
         Assert.True(agyMonitor.Arrested);
-        Assert.Equal(25100, claudeMonitor.SnapshotUsage().TokensIn);
+        Assert.Equal(25100, claudeMonitor.SnapshotUsage().ContextLevelTokens);
         Assert.Equal(900, claudeMonitor.SnapshotUsage().TokensOut);
-        Assert.Equal(25100, agyMonitor.SnapshotUsage().TokensIn);
+        Assert.Equal(25100, agyMonitor.SnapshotUsage().ContextLevelTokens);
         Assert.Equal(900, agyMonitor.SnapshotUsage().TokensOut);
     }
 
@@ -118,7 +122,10 @@ public sealed class TokenBudgetMonitorTests
         monitor.OnStdoutLine("""{"type":"system","subtype":"init"}""");
 
         Assert.False(monitor.Arrested);
-        Assert.Equal(0, monitor.SnapshotUsage().TokensIn);
+        // #1623 re-review N6: TokensIn is the vendor-raw latest reading, null (not 0) when no usage
+        // line has ever parsed -- ContextLevelTokens is the accumulator that defaults to 0.
+        Assert.Null(monitor.SnapshotUsage().TokensIn);
+        Assert.Equal(0, monitor.SnapshotUsage().ContextLevelTokens);
     }
 
     [Fact]
@@ -150,6 +157,7 @@ public sealed class TokenBudgetMonitorTests
         monitor.OnStdoutLine("""{"type":"result","usage":{"input_tokens":100,"output_tokens":100}}""");
 
         Assert.False(monitor.Arrested);
-        Assert.Equal(0, monitor.SnapshotUsage().TokensIn);
+        Assert.Null(monitor.SnapshotUsage().TokensIn);
+        Assert.Equal(0, monitor.SnapshotUsage().ContextLevelTokens);
     }
 }

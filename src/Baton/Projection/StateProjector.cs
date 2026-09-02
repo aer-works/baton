@@ -449,7 +449,11 @@ public static class StateProjector
 
     private static string DescribeArrest(FlowEvent.ExecutionArrested arrested)
     {
-        var tokens = (arrested.Usage?.TokensIn ?? 0) + (arrested.Usage?.TokensOut ?? 0);
+        // #1623 re-review N6: ContextLevelTokens (already TokensIn + cache-read + cache-creation) is
+        // the aggregate this arrest was measured against; fall back to raw TokensIn for a WorkerUsage
+        // that never set it (e.g. a synthetic/legacy value with no level tracking).
+        var contextTokens = arrested.Usage?.ContextLevelTokens ?? arrested.Usage?.TokensIn ?? 0;
+        var tokens = contextTokens + (arrested.Usage?.TokensOut ?? 0);
         return tokens > 0
             ? $"Execution arrested: token budget exceeded ({tokens} tokens measured) — awaiting conductor resolution."
             : "Execution arrested: token budget exceeded — awaiting conductor resolution.";

@@ -22,9 +22,10 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// A role never names a vendor or model directly, so a model swap never touches a role's capability.
 /// </summary>
 /// <param name="VerifyPixiTask">
-/// #1623 (contract: <c>spec/baton.md</c> §3, "Engine-run verify and the token budget"): the
-/// <c>pixi run &lt;task&gt;</c> task name the ENGINE runs once, under the build lock, once this role's
-/// worker has exited 0 with a satisfied output contract -- never the worker itself. Null (every role but
+/// #1623 (contract: <c>spec/baton.md</c> §3, "Engine-run verify and the token budget", which states
+/// the actual build-lock mechanism -- not restated here): the <c>pixi run &lt;task&gt;</c> task name
+/// the ENGINE runs once, itself holding no lock across the run, once this role's worker has exited 0
+/// with a satisfied output contract -- never the worker itself. Null (every role but
 /// <c>implement</c>) means no verify step; the worker's own exit-0 + satisfied-contract IS the whole
 /// story for that role, same as before this issue.
 /// </param>

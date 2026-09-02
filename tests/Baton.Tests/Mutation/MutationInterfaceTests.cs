@@ -526,9 +526,10 @@ public class MutationInterfaceTests
     public async Task StartWorkflowAsync_operator_cancel_during_verify_settles_Cancelled_not_Indeterminate()
     {
         // #1623 re-review N3: the operator's own cancel landing inside the verify window is journalled
-        // as ExecutionCancelled (the journal CAN decide here -- it holds the cancel), never VerifyFailed
-        // / Indeterminate -- that would foreclose retry with no discharge verb (U1). VerifyStarted
-        // still survives as the diagnostic record that verify was running when the cancel landed.
+        // as ExecutionCancelled, not VerifyFailed/Indeterminate -- see MutationInterface.cs's own
+        // comment on the branch under test for why. Foreclosing retry here would leave no discharge
+        // verb (U1). VerifyStarted still survives as the diagnostic record that verify was running
+        // when the cancel landed.
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
         var logPath = Path.Combine(roomDirectory, "flow.jsonl");
