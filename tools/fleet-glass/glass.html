@@ -191,7 +191,11 @@ footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px s
 .detail-back-btn{display:none; align-self:flex-start; background:var(--paper); border:1px solid var(--line); border-radius:6px; padding:.25em .7em; font:500 .74rem 'Public Sans'; cursor:pointer; color:var(--ink); margin-bottom:.4rem;}
 @media (max-width:900px){
   .board-detail-layout{flex-direction:column;}
-  .board-detail-side{position:static; max-height:none; width:100%; min-width:0;}
+  /* #1693: in a column, the desktop `flex:1 1 0` is a ZERO height basis with nothing to grow into,
+     and the base overflow-y:auto then clips the pane to its padding; width:100% + padding also
+     overflowed the viewport under content-box sizing. */
+  .board-area{flex:none; width:100%;}
+  .board-detail-side{flex:none; position:static; max-height:none; overflow:visible; width:auto; min-width:0;}
 }
 @media (max-width:480px){
   .phone-carousel-pills{display:flex; gap:.3rem; margin-bottom:.5rem; background:var(--card); padding:.2rem; border-radius:8px; border:1px solid var(--line);}
