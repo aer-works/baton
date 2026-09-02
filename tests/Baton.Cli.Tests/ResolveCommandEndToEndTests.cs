@@ -346,10 +346,11 @@ public class ResolveCommandEndToEndTests
     }
 
     /// <summary>
-    /// The durable shape a crash between "fact" and "files" leaves behind: an accepted
-    /// <see cref="FlowEvent.CaptureResolved"/> on the ledger whose declared output was never written.
-    /// Fabricated by hand rather than driven through a real kill — the thing under test is the CLI's
-    /// admission of that shape as a repair request, not crash mechanics.
+    /// The durable shape a crash between "fact" and "files" leaves behind — an accepted
+    /// <see cref="FlowEvent.CaptureResolved"/> whose declared output is not on disk — constructed
+    /// directly, since what these fixtures test is the CLI's admission of that shape as a repair
+    /// request rather than the crash mechanics that produce it (<c>MutationInterfaceCaptureResolutionTests</c>
+    /// makes the same choice, for the same reason, one layer down).
     /// </summary>
     private static async Task<ExecutionId> SeedAcceptedButUnwrittenAsync(string testRoot, string roomDirectory)
     {

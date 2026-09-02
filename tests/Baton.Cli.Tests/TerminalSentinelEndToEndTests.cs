@@ -516,13 +516,11 @@ public class TerminalSentinelEndToEndTests
     [Fact]
     public async Task A_real_CLI_resolve_on_a_still_Paused_room_names_baton_decide_not_baton_run()
     {
-        // #1608 re-review finding 1: the post-`resolve` guidance was unconditional over "non-Terminal",
-        // and `baton run` is the wrong verb for one of the two non-Terminal shapes. A step declaring a
-        // PausePoint that settles Indeterminate is Paused with the flag still set (spec/baton.md §3);
-        // accepting its capture clears the flag but not the pause -- only WorkflowResumed removes that --
-        // so `baton run` against it re-enters the same unfulfilled obligation and a harness following the
-        // printed instruction loops. Asserted against the REAL binary's stdout because Program.cs is what
-        // branches; a projection-layer assertion would pass whether or not the branch exists.
+        // #1608 re-review finding 1: the post-`resolve` guidance used to be unconditional over
+        // "non-Terminal", which sends a harness in a circle on the Paused shape -- see Program.cs's
+        // post-`resolve` step (and spec/baton.md §3) for why that verb cannot move this room.
+        // Asserted against the REAL binary's stdout, because Program.cs is what branches: an assertion
+        // at the projection layer would pass whether or not the branch exists at all.
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-paused-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try

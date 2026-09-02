@@ -316,11 +316,9 @@ public class MutationInterfaceCaptureResolutionTests
     [Fact]
     public async Task A_crash_DURING_the_write_leaving_a_zero_length_output_is_repaired_like_a_missing_one()
     {
-        // #1608 re-review finding 3: the repair predicate was existence-only, but File.WriteAllTextAsync
-        // opens with FileMode.Create -- so the likeliest instance of the window "fact then files"
-        // deliberately opens (killed mid-write, not between the append and the loop) leaves a file that
-        // EXISTS and is empty. Existence-only read that as NothingToRepair and the caller then told the
-        // operator the room had no unresolved capture, for a room whose declared output is empty.
+        // #1608 re-review finding 3: the repair predicate used to be existence-only, which reported the
+        // likeliest crash shape as nothing-to-repair -- see ReconcileAcceptedCaptureAsync's own remarks
+        // for what "missing" now means and why. This is the arm that shape reaches.
         var (roomDirectory, artifactsRoot, logPath, executionId, snapshot) = await SeedIndeterminateRoomAsync(
             outputName: "advice.md", capturedBody: "the worker's real answer");
         try
