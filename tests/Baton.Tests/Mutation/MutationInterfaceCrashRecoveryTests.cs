@@ -700,9 +700,7 @@ public class MutationInterfaceCrashRecoveryTests
     [Fact]
     public async Task StartWorkflowAsync_settles_unmatched_VerifyStarted_Indeterminate_across_engine_restart()
     {
-        // #1623 / F2: an execution carrying an unmatched VerifyStarted must NOT settle by classification
-        // into ExecutionSucceeded across an engine restart; it must append VerifyFailed(EngineRestart)
-        // settling Indeterminate.
+        // #1623 F2 crash recovery arm: see MutationInterface.cs ToClassify reconciliation.
         var snapshot = MakeSnapshot(Step(A, dependsOn: []));
         var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
         try
