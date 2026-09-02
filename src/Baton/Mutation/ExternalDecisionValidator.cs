@@ -20,11 +20,13 @@ public static class ExternalDecisionValidator
         ExecutionId referencedExecutionId,
         DecisionType decisionType,
         StepId? targetStepId,
-        ExecutionId? supplementaryExecutionId)
+        ExecutionId? supplementaryExecutionId,
+        string roomDirectoryPath)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(succeededExecutionIds);
+        ArgumentNullException.ThrowIfNull(roomDirectoryPath);
 
         // "One resolving decision per pause" needs no separate check: once a prior decision
         // has resolved this ExecutionId, WorkflowResumed has already cleared its Paused status, so a
@@ -45,6 +47,22 @@ public static class ExternalDecisionValidator
         {
             throw new InvalidExternalDecisionException(
                 $"Execution '{referencedExecutionId}' is not the currently paused latest attempt of any step.");
+        }
+
+        // #1655 ruling (option 1, spec/baton.md §3 "Unless the step declares a PausePoint"): a step
+        // that both declares PausePoint and settles ExecutionIndeterminate reaches here as Paused with
+        // IndeterminateAwaitingResolution still set (PauseEngine.GetPauseObligations's round-settled
+        // check does not distinguish why retry was refused). Recording a decision over that flag would
+        // leave it set with no CaptureResolved ever appended — the same silent default #1608 exists to
+        // forbid, just reached through baton decide instead of baton resolve. Only CaptureResolved
+        // clears the flag; fail closed here rather than admit and let a later Terminal read still say
+        // Indeterminate for a step a conductor already decided.
+        if (referencedStep.IndeterminateAwaitingResolution)
+        {
+            throw new InvalidExternalDecisionException(
+                $"Room '{roomDirectoryPath}', step '{referencedStep.StepId}' is paused with an unresolved " +
+                "indeterminate capture — 'baton decide' refuses until it is resolved. Run 'baton resolve " +
+                $"{roomDirectoryPath} --accept-capture | --reject --reason <text>' first, then 'baton decide'.");
         }
 
         // Every Paused step was paused by the Pause Engine only for a step declaring PausePoint —
