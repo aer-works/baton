@@ -1742,16 +1742,39 @@ false of the worker's actual reach: state it that way rather than letting the fl
 guarantee than it gives. `ShellCommandsAreReadOnly` is what lets this narrow, command-scoped network
 reach coexist with `NetworkAccess: false` in the coherence check — see the field's own doc comment.
 
-**`agy` cannot express this at all, and the review role's shell reversal does not reach it.**
-`AgyWorkerAdapter.TryTranslatePermissionGrant` refuses `RunShellCommands` without `NetworkAccess`
-outright (no scoped-shell-without-network exists on that vendor, #1387 is the open ask for one) —
-unchanged by this work. `review`'s tier defaults to `claude` (`WorkerTiers.json`'s `frontier` entry),
-so a default dispatch is unaffected; an operator who overrides `--adapter agy` on `review` now gets
-`PermissionGrantUnsupportedException` at bind time — a loud refusal, not a silent drop back to
-`review`'s pre-#1456 no-shell shape. This is the same #529 coherence rule §9 already enforces
-everywhere else, applied to a grant that #1355 had previously kept flat specifically to avoid it;
-#1456 accepts the agy-side refusal as the honest cost of giving claude real scoped shell rather than
-declining both to keep the two vendors' capability identical.
+**`agy` now expresses this too, by deferring to the hook rather than refusing (#1387).**
+`AgyWorkerAdapter.TryTranslatePermissionGrant` used to refuse `RunShellCommands` without
+`NetworkAccess` outright, reasoning that agy has no scoped-shell-without-network flag. That reasoning
+still holds for the *vendor flag* — `--dangerously-skip-permissions` is still all-or-nothing — but
+#1387's second probe measured that AER's own `PreToolUse` hook (`AgyHookCheckCommand`, the same one
+that already enforces the pattern allow/deny lists on the wire) narrows the `run_command` channel
+correctly on six probed commands: launched under `--dangerously-skip-permissions` with
+`BATON_HOOK_SHELL_PATTERNS`/`BATON_HOOK_DENIED_SHELL_PATTERNS` set to `review`'s own allow/deny
+lists, a write was denied, a push was denied (the DenyAlways channel), `curl` was denied, a
+non-git/gh read was denied by the same allowlist-shape mechanism as the write —
+`docs/vendor-doc-audit.md`'s dated entry states the precise reason and the qualifier it carries, not
+restated here — `git status`/
+`git log` were allowed, and a hook deny did not cancel the run. Reads are bounded by tool grant, not
+by path: `view_file` is granted whole for this role (`ReadFiles: true`), the hook only bounds a path
+for the write-family tools, and `HOME`/`USERPROFILE` are not redirected for shell-granted workers, so
+a granted read tool can reach the operator's real home — this is pre-existing and identical on claude
+and `advise`, not something this probe measured or bounded. Unprobed: the subagent/`manage_task`
+tools (denied outright rather than narrowed, #1387 review F1) and the allow/deny lists' own defects
+tracked in #1679 — `docs/vendor-doc-audit.md`'s dated entry names the full unprobed population, not
+restated here. So a grant with `RunShellCommands`, `NetworkAccess: false`, and a non-empty
+`ShellCommandPatterns` now resolves to `--dangerously-skip-permissions` and lets the hook do the
+narrowing; a grant with shell but no patterns still refuses, because nothing would bound it. A hook
+that cannot start reads as an allow on this vendor, so for `review` specifically a broken hook widens
+the role to an unscoped shell rather than merely losing narrowing — guards for that are tracked in
+#1680, not built here. `review`'s tier still defaults to `claude`
+(`WorkerTiers.json`'s `frontier` entry), so a default dispatch is unaffected; an operator who
+overrides `--adapter agy` on `review` now starts rather than hitting
+`PermissionGrantUnsupportedException` at bind time. This is the same #529 coherence rule §9 already
+enforces everywhere else, applied to a grant that #1355 had previously kept flat specifically to avoid
+it; #1456 shipped claude's real scoped shell first and accepted the then-open agy-side refusal as the
+honest cost of not declining both vendors to keep their capability artificially identical — #1387 is
+what closed that gap on the agy side, so the two vendors converge on the same grant shape rather than
+staying deliberately unequal.
 
 **`tools/baton-agy-loop/dispatch.py`'s own grant model is extended to match.** That tool reads the
 same `WorkerRoles.json`/`WorkerTiers.json` catalog (`_load_worker_catalog`, the #836 shared-source
