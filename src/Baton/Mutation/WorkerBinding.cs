@@ -37,6 +37,12 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// remarks. Null enforces no cap. Independent of <paramref name="TokenBudget"/>: a monitor is
     /// constructed whenever either is set (<c>MutationInterface.DispatchAndRecordOutcomeAsync</c>).
     /// </param>
+    /// <param name="BilledRateLimit">
+    /// #1691: the billed-rate ceiling — see <c>Baton.Vendors.WorkerRole.BilledRateLimit</c>'s remarks,
+    /// including why no role sets one. Null enforces no rate trigger. Independent of the two above: a
+    /// monitor is constructed whenever ANY of the three is set
+    /// (<c>MutationInterface.DispatchAndRecordOutcomeAsync</c>).
+    /// </param>
     /// <param name="IsWorktree">
     /// F4 (#1593 review): whether <see cref="Target"/>'s <c>WorkingDirectory</c> is an ACTUALLY
     /// provisioned worktree (<see cref="Baton.Vendors.WorkerBindingConfigEntry.IsWorktree"/>'s own
@@ -67,6 +73,7 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         string? VerifyPixiTask = null,
         long? TokenBudget = null,
         int? MaxToolSteps = null,
+        long? BilledRateLimit = null,
         bool IsWorktree = false,
         string? WorktreeBaseSha = null)
         : WorkerBinding(Contract, GrantAuditMode);

@@ -64,6 +64,12 @@ namespace Baton.Vendors;
 /// F11, <see cref="RoleDispatch.ToBinding"/>'s <c>maxToolStepsOverride</c>) when one was supplied —
 /// same axis shape as <paramref name="TokenBudget"/>'s <c>--token-budget</c>.
 /// </param>
+/// <param name="BilledRateLimit">
+/// #1691: <see cref="WorkerRole.BilledRateLimit"/>, or the <c>--billed-rate-limit</c> override
+/// (<see cref="RoleDispatch.ToBinding"/>'s <c>billedRateLimitOverride</c>) when one was supplied —
+/// same axis shape as <paramref name="TokenBudget"/>'s <c>--token-budget</c>. In practice the override
+/// is the ONLY source: no role declares a default (spec/baton.md §3).
+/// </param>
 /// <param name="Workstream">
 /// The operator-supplied <c>--workstream</c> slug (#1619, rung 1 of #1614's ruling) — a grouping key,
 /// not a title: unlike <paramref name="Label"/> it IS path-written, as the directory name of a
@@ -107,6 +113,7 @@ public sealed record WorkerBindingConfigEntry(
     string? VerifyPixiTask = null,
     long? TokenBudget = null,
     int? MaxToolSteps = null,
+    long? BilledRateLimit = null,
     string? Workstream = null,
     string? WorktreeBaseSha = null,
     string? ToolSha = null);

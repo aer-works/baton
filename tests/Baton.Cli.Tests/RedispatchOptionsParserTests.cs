@@ -56,19 +56,24 @@ public class RedispatchOptionsParserTests
         Assert.Equal(new[] { "context.txt", "notes.md" }, options.Attachments);
     }
 
-    /// <summary>Merge of #1576 (--attach) and #1686 review F2 (--max-tool-steps): both parse together, alongside --spec.</summary>
+    /// <summary>
+    /// Merge of #1576 (--attach), #1686 review F2 (--max-tool-steps), and #1691 (--billed-rate-limit):
+    /// all three parse together, alongside --spec, proving the #1704/#1691 merge threaded the flag
+    /// through the same seam rather than one silently dropping out.
+    /// </summary>
     [Fact]
-    public void Parses_spec_attach_and_max_tool_steps_together()
+    public void Parses_spec_attach_max_tool_steps_and_billed_rate_limit_together()
     {
         var options = RedispatchOptionsParser.Parse(
             [
                 "parent-room", "--spec", "amended.md", "--attach", "context.txt",
-                "--max-tool-steps", "200",
+                "--max-tool-steps", "200", "--billed-rate-limit", "250000",
             ]);
 
         Assert.Equal("amended.md", options.SpecFilePath);
         Assert.Equal(new[] { "context.txt" }, options.Attachments);
         Assert.Equal(200, options.MaxToolSteps);
+        Assert.Equal(250_000, options.BilledRateLimit);
     }
 
     [Fact]
@@ -201,5 +206,34 @@ public class RedispatchOptionsParserTests
         var options = RedispatchOptionsParser.Parse(["parent-room"]);
         Assert.Null(options.Workstream);
         Assert.False(options.WorkstreamSpecified);
+    }
+
+    /// <summary>
+    /// #1691: <c>redispatch</c> takes the flag too. #1686 review F2 found <c>--max-tool-steps</c>
+    /// shipped on <c>dispatch</c> only, so an operator's escape hatch silently evaporated the moment
+    /// they redispatched with an amended brief; this axis does not repeat that.
+    /// </summary>
+    [Fact]
+    public void The_billed_rate_limit_option_parses_and_defaults_to_null()
+    {
+        Assert.Equal(250_000, RedispatchOptionsParser.Parse(["parent-room", "--billed-rate-limit", "250000"]).BilledRateLimit);
+        Assert.Null(RedispatchOptionsParser.Parse(["parent-room"]).BilledRateLimit);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("nonsense")]
+    public void A_non_positive_or_non_numeric_billed_rate_limit_is_a_typed_argument_error(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => RedispatchOptionsParser.Parse(["parent-room", "--billed-rate-limit", rawValue]));
+
+        Assert.Contains("--billed-rate-limit", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_usage_line_advertises_billed_rate_limit()
+    {
+        Assert.Contains("--billed-rate-limit <n>", RedispatchOptionsParser.Usage, StringComparison.Ordinal);
     }
 }

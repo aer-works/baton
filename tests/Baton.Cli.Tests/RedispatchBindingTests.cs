@@ -238,4 +238,22 @@ public class RedispatchBindingTests
         Assert.Equal("/other-repo", entry.Worktree!.Repository);
         Assert.Equal("HEAD", entry.Worktree!.Ref);
     }
+
+    /// <summary>
+    /// #1691: the parent's rate limit is carried when no override is passed, and replaced when one is.
+    /// This is the axis #1686 review F2 found broken for <c>--max-tool-steps</c> — the no-<c>--spec</c>
+    /// path carried it and the amended-spec path dropped it, so an operator's escape hatch did not
+    /// survive a redispatch. Both polarities pinned here; <c>RedispatchCommandEndToEndTests</c> is
+    /// where the amended-spec path itself is exercised.
+    /// </summary>
+    [Fact]
+    public void A_billed_rate_limit_is_inherited_from_the_parent_and_overridden_when_passed()
+    {
+        var parent = ParentEntry() with { BilledRateLimit = 250_000 };
+
+        Assert.Equal(250_000, RedispatchCommand.InheritBinding(
+            parent, new RedispatchOptions("parent-room", "new-room")).BilledRateLimit);
+        Assert.Equal(400_000, RedispatchCommand.InheritBinding(
+            parent, new RedispatchOptions("parent-room", "new-room", BilledRateLimit: 400_000)).BilledRateLimit);
+    }
 }
