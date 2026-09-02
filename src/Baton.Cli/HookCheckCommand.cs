@@ -312,25 +312,28 @@ public static class HookCheckCommand
                                      $"shell grant — {result.Reason}.");
                     return DeniedExitCode;
                 }
+            }
 
-                // #1683 F2's rung, in the position its own caller contract requires (see
-                // ShellCommandPatternMatcher.IsDeniedByOptionToken). Scoped to this same branch on
-                // purpose: it inherits #1459's engagement condition rather than inventing a second,
-                // stricter absent-handling rule behind a deliberately permissive one -- if this channel
-                // is missing, BATON_HOOK_SHELL_PATTERNS is missing too and the whole branch is already
-                // skipped. Whole-line tokenization, not per-segment: the line reaching here is already
-                // segmented-and-allowed, and every segment's tokens are its tokens.
-                var deniedOptionTokenList = ShellPatternList.Parse(deniedShellOptionTokensRaw, VendorTag);
-                if (deniedOptionTokenList.Status == ShellPatternListStatus.Present &&
-                    Baton.Vendors.ShellCommandPatternMatcher.IsDeniedByOptionToken(
-                        shellCommandLine, deniedOptionTokenList.Patterns))
-                {
-                    stderr.WriteLine(
-                        "AER: the 'Bash' command carries an option this session's grant denies outright " +
-                        "(a standing option-token 'never', matched anywhere on the line rather than at " +
-                        "its start) and was refused.");
-                    return DeniedExitCode;
-                }
+            // #1683 F2: at the toolName == "Bash" level, matching where agy's own copy of this rung
+            // sits (AgyHookCheckCommand), not nested under shellPatternList.Patterns.Count > 0. Nested
+            // there, a role carrying denied_shell_option_tokens on top of a deliberate UNSCOPED shell
+            // grant (Present, empty Patterns) would have the rung enforced on agy and silently skipped
+            // on claude — no role ships that shape today (IsDeniedByOptionToken has nothing to bind an
+            // empty-Patterns command to besides its own token list, so this is a no-op against every
+            // current role), but the two hooks agreeing on when the rung engages is the point, not the
+            // shape of today's catalog. Whole-line tokenization, not per-segment: the line reaching
+            // here already passed the metacharacter scan and pattern pass above whenever those ran, and
+            // every segment's tokens are the line's tokens.
+            var deniedOptionTokenList = ShellPatternList.Parse(deniedShellOptionTokensRaw, VendorTag);
+            if (deniedOptionTokenList.Status == ShellPatternListStatus.Present &&
+                Baton.Vendors.ShellCommandPatternMatcher.IsDeniedByOptionToken(
+                    shellCommandLine, deniedOptionTokenList.Patterns))
+            {
+                stderr.WriteLine(
+                    "AER: the 'Bash' command carries an option this session's grant denies outright " +
+                    "(a standing option-token 'never', matched anywhere on the line rather than at " +
+                    "its start) and was refused.");
+                return DeniedExitCode;
             }
         }
 

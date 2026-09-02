@@ -1730,7 +1730,7 @@ public class AgyWorkerAdapterTests
 
         Baton.Cli.AgyHookCheckCommand.Execute(
             stdin, stdout, deniedTools, shellPatternsRaw: shellPatterns,
-            deniedShellPatternsRaw: deniedShellPatterns);
+            deniedShellPatternsRaw: deniedShellPatterns, deniedShellOptionTokensRaw: "agy:");
 
         using var doc = JsonDocument.Parse(stdout.ToString());
         var decision = doc.RootElement.GetProperty("decision").GetString()!;

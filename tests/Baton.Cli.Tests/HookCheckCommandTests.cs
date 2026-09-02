@@ -305,6 +305,25 @@ public class HookCheckCommandTests
     }
 
     [Fact]
+    public void An_unscoped_shell_grant_still_enforces_a_denied_option_token()
+    {
+        // #1683 F2: the shape that used to fall through the nesting under
+        // shellPatternList.Patterns.Count > 0 -- see HookCheckCommand's own comment at the
+        // toolName == "Bash" check for the per-vendor divergence this closes.
+        using var stdin = new StringReader(
+            """{"tool_name": "Bash", "tool_input": {"command": "git log --output=C:/x"}}""");
+        using var stderr = new StringWriter();
+
+        var exitCode = HookCheckCommand.Execute(
+            stdin, stderr, "claude:Edit,Write",
+            shellPatternsRaw: "claude:",
+            deniedShellPatternsRaw: "claude:",
+            deniedShellOptionTokensRaw: "claude:--output");
+
+        Assert.Equal(HookCheckCommand.DeniedExitCode, exitCode);
+    }
+
+    [Fact]
     public void The_denied_option_token_variable_matches_the_adapter_side_contract()
     {
         // Baton.Vendors cannot reference Baton.Cli, so the name is a plain string contract mirrored on

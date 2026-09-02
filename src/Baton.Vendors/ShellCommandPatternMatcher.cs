@@ -9,25 +9,40 @@ namespace Baton.Vendors;
 /// <c>Bash(pattern)</c> glob semantics, enforcing strict shell metacharacter rejection (#659)
 /// and word-boundary matching for trailing-wildcard patterns (#1679).
 /// <para>
-/// <b>A trailing-<c>*</c> pattern <c>P*</c> matches a command line in exactly three cases</b> — the
-/// full accepting set, not a summary of it. #1683's review found the previous "iff … followed by
-/// whitespace" wording false in both copies of this rule (here and spec/baton.md §9): it omitted the
-/// two branches below it, so a reader who trusted it reasoned wrongly about what a pattern admits,
-/// which is the very class of defect #1679 is:
+/// <b>A trailing-<c>*</c> pattern <c>P*</c> is matched by two branches on whether <c>P</c> itself ends
+/// in whitespace, five conditions total</b> — the full accepting set, stated the way the code branches
+/// rather than as a summary of it. #1683's second round found the first correction still false in both
+/// copies of this rule (here and spec/baton.md §9): its three cases silently assumed <c>P</c> never
+/// ends in whitespace, so it mis-described the one branch (<c>:204</c>) that exists precisely because
+/// some patterns do — including <c>git merge *</c> and <c>git -c *</c>, the two live deny patterns that
+/// take it. No condition below spans both branches; that is how the wording drifted twice.
 /// <list type="number">
-/// <item>the trimmed line <b>equals</b> <c>P</c> (with <c>P</c>'s own trailing whitespace trimmed
-/// when it has any);</item>
-/// <item>the line starts with <c>P</c> and the next character is <b>whitespace</b> — the word
-/// boundary (<c>git diff*</c> matches <c>git diff --stat</c>, never <c>git difftool</c> or
-/// <c>git diff-index</c>; <c>git merge*</c> never matches <c>git merge-base</c>);</item>
+/// <item><b><c>P</c> ends in whitespace</b> (e.g. <c>"git merge *"</c>):
+/// <list type="bullet">
+/// <item>the trimmed line <b>equals</b> <c>P</c> with its own trailing whitespace trimmed — bare
+/// <c>git merge</c>;</item>
+/// <item>the trimmed line <b>starts with <c>P</c></b> — the word boundary is already inside <c>P</c>,
+/// so the next character may be anything — <c>git merge origin/main</c>. This is <em>not</em> "starts
+/// with <c>P</c> followed by whitespace": a second space is not required.</item>
+/// </list>
+/// </item>
+/// <item><b><c>P</c> does not end in whitespace</b> (e.g. <c>"git diff*"</c>):
+/// <list type="bullet">
+/// <item>the trimmed line <b>equals</b> <c>P</c> — <c>git log</c>;</item>
+/// <item>the line starts with <c>P</c> and the next character is <b>whitespace</b> — the word boundary
+/// (<c>git diff*</c> matches <c>git diff --stat</c>, never <c>git difftool</c> or <c>git diff-index</c>;
+/// <c>git merge*</c>, unlike <c>git merge *</c> above, never matches <c>git merge-base</c>) —
+/// <c>git log --oneline</c>;</item>
 /// <item>the line starts with <c>P</c>, <c>P</c>'s last space-delimited token is <b>flag-shaped</b>
 /// (starts with <c>-</c>), and the next character is anything at all — the attached-argument branch
-/// (<c>git grep -O*</c> matches <c>git grep -Ocalc</c>, <c>git grep --open-files-in-pager*</c>
-/// matches <c>…-pager=calc</c>).</item>
+/// (<c>git grep -O*</c> matches <c>git grep -Ocalc</c>, <c>git grep --open-files-in-pager*</c> matches
+/// <c>…-pager=calc</c>).</item>
 /// </list>
-/// Case 3 is what makes <c>=</c> accept. Before #1683 the <c>=</c> accept sat <em>above</em> the
-/// flag-shape test and applied to every non-whitespace-terminated prefix, so <c>git log*</c> matched
-/// <c>git log=x</c> — a widening nothing documented and nothing gated. It is now inside case 3.
+/// </item>
+/// </list>
+/// The last condition is what makes <c>=</c> accept. Before #1683 the <c>=</c> accept sat <em>above</em>
+/// the flag-shape test and applied to every non-whitespace-terminated prefix, so <c>git log*</c> matched
+/// <c>git log=x</c> — a widening nothing documented and nothing gated. It is now inside that condition.
 /// </para>
 /// <para>
 /// <b>Prefix matching is anchored at the start of the line, so it cannot bound an option that can

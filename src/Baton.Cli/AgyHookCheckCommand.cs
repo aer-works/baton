@@ -336,13 +336,25 @@ public static class AgyHookCheckCommand
                 }
             }
 
-            // #1683 F2's rung, in the position its caller contract requires (see
-            // ShellCommandPatternMatcher.IsDeniedByOptionToken) and inside this branch, so it introduces
-            // no absent-handling rule of its own: the two channels it is emitted alongside have already
-            // denied run_command in the case where a channel went missing.
+            // #1683 F3: fails closed on a non-Present status, matching its two sibling channels above
+            // rather than skipping silently. Both adapters emit this variable unconditionally alongside
+            // the other two ("agy:"/"claude:" at minimum), so today the three arrive or break together
+            // and this is a no-op change in practice -- but the prior wording asserted that togetherness
+            // as a guarantee the code did not have, in the fail-open direction, and this is the one rung
+            // with no vendor-flag backstop on either vendor to catch a silent drift.
             var deniedOptionTokenList = ShellPatternList.Parse(deniedShellOptionTokensRaw, VendorTag);
-            if (deniedOptionTokenList.Status == ShellPatternListStatus.Present &&
-                deniedOptionTokenList.Patterns.Count > 0)
+            if (deniedOptionTokenList.Status != ShellPatternListStatus.Present)
+            {
+                return DenyJson(
+                    deniedOptionTokenList.Status == ShellPatternListStatus.Absent
+                        ? "AER: the permission gate did not receive its denied option token list and denied " +
+                          "this run_command call rather than allowing it unchecked."
+                        : "AER: the permission gate received another vendor's denied option token list, whose " +
+                          "tokens it cannot judge, and denied this run_command call rather than allowing it " +
+                          "unchecked.");
+            }
+
+            if (deniedOptionTokenList.Patterns.Count > 0)
             {
                 if (commandLine is null)
                 {

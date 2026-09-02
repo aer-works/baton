@@ -92,6 +92,24 @@ public class ShellCommandPatternMatcherTests
     }
 
     [Theory]
+    [InlineData("git merge", true)] // equals P with its own trailing whitespace trimmed
+    [InlineData("git merge origin/main", true)] // starts with P; boundary is already inside P
+    [InlineData("git merge-base x", false)] // does not start with "git merge " at all
+    public void Whitespace_terminated_prefix_matches_bare_and_continuation_but_not_a_hyphenated_sibling(
+        string commandLine, bool expectedAllowed)
+    {
+        string[] patterns = ["git merge *"];
+        Assert.Equal(expectedAllowed, ShellCommandPatternMatcher.IsAllowed(commandLine, patterns));
+    }
+
+    [Fact]
+    public void Whitespace_terminated_flag_prefix_matches_a_continuation_with_no_second_space()
+    {
+        string[] patterns = ["git -c *"];
+        Assert.True(ShellCommandPatternMatcher.IsAllowed("git -c core.pager=calc log", patterns));
+    }
+
+    [Theory]
     [InlineData("git grep -Ocalc foo", true)]
     [InlineData("git grep -O calc foo", true)]
     [InlineData("git grep -O", true)]

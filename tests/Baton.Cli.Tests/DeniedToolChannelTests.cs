@@ -20,12 +20,13 @@ public class DeniedToolChannelTests
     // AgyHookCheckCommandTests, not here.
     private static string RunAgy(
         string? denied, string payload = AgyPayload, string? shellPatterns = "agy:",
-        string? deniedShellPatterns = "agy:")
+        string? deniedShellPatterns = "agy:", string? deniedShellOptionTokens = "agy:")
     {
         using var stdout = new StringWriter();
         AgyHookCheckCommand.Execute(
             new StringReader(payload), stdout, denied, shellPatternsRaw: shellPatterns,
-            deniedShellPatternsRaw: deniedShellPatterns);
+            deniedShellPatternsRaw: deniedShellPatterns,
+            deniedShellOptionTokensRaw: deniedShellOptionTokens);
         return stdout.ToString();
     }
 

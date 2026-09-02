@@ -39,14 +39,16 @@ public class AgyHookCheckCommandTests
 
     private static string Decide(
         string stdinText, string? denied, string? outbox = null, string? workspace = null,
-        string? shellPatterns = "agy:", string? deniedShellPatterns = "agy:")
+        string? shellPatterns = "agy:", string? deniedShellPatterns = "agy:",
+        string? deniedShellOptionTokens = "agy:")
     {
         using var stdin = new StringReader(stdinText);
         using var stdout = new StringWriter();
 
         var exitCode = AgyHookCheckCommand.Execute(
             stdin, stdout, denied, shellPatternsRaw: shellPatterns, outboxDirectory: outbox,
-            workspaceDirectory: workspace, deniedShellPatternsRaw: deniedShellPatterns);
+            workspaceDirectory: workspace, deniedShellPatternsRaw: deniedShellPatterns,
+            deniedShellOptionTokensRaw: deniedShellOptionTokens);
 
         Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
 
@@ -503,10 +505,42 @@ public class AgyHookCheckCommandTests
     public void The_option_token_channel_is_what_denies_the_output_write_not_the_pattern_lists()
     {
         // agy's copy of claude's discriminating control (#1683 F2): same command line, same allow/deny
-        // pattern lists, option-token channel absent -> allowed. Without this arm the deny row above
-        // would not distinguish the new channel from the lists that were already there.
+        // pattern lists, option-token channel PRESENT but empty -> allowed. Without this arm the deny
+        // row above would not distinguish the new channel from the lists that were already there.
+        // Present-but-empty, not absent: #1683 F3 made an absent channel deny outright (fail-closed,
+        // matching its two sibling channels), so an absent channel no longer isolates "the pattern
+        // lists alone did not deny this" -- it deny for its own, unrelated reason.
         var review = Baton.Vendors.WorkerRoleCatalog.For("review");
         const string command = "git log -1 --output=C:/x --format=format:y";
+        var payload = $$"""
+            {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+             "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+             "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}}, "Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                         "name":"run_command"},
+             "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+            """;
+        using var stdin = new StringReader(payload);
+        using var stdout = new StringWriter();
+
+        AgyHookCheckCommand.Execute(
+            stdin, stdout, "agy:write_to_file,replace_file_content",
+            shellPatternsRaw: "agy:" + string.Join(",", review.Grant.ShellCommandPatterns!),
+            deniedShellPatternsRaw: "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns!),
+            deniedShellOptionTokensRaw: "agy:");
+
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal("allow", doc.RootElement.GetProperty("decision").GetString());
+    }
+
+    [Fact]
+    public void An_absent_denied_option_token_channel_now_fails_closed()
+    {
+        // #1683 F3: this channel used to skip silently on a non-Present status, unlike its two
+        // sibling channels in the same branch (shellPatternList, deniedShellPatternList), which
+        // already deny on Status != Present. A broken channel now denies with a reason naming it,
+        // the same way the siblings already do.
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        const string command = "git log --oneline -5";
         var payload = $$"""
             {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
              "modelName":"gemini-3.6-flash-medium","stepIdx":3,
@@ -524,7 +558,8 @@ public class AgyHookCheckCommandTests
             deniedShellOptionTokensRaw: null);
 
         using var doc = JsonDocument.Parse(stdout.ToString());
-        Assert.Equal("allow", doc.RootElement.GetProperty("decision").GetString());
+        Assert.Equal("deny", doc.RootElement.GetProperty("decision").GetString());
+        Assert.Contains("denied option token", doc.RootElement.GetProperty("reason").GetString());
     }
 
     [Fact]
