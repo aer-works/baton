@@ -408,13 +408,13 @@ public sealed class FleetStatusTool : IMcpTool
     }
 
     /// <summary>
-    /// Resolves the worker-binding config entry (issue #1503) for whichever step this room's
-    /// projection currently calls <c>"Running"</c> — the same worker a caller would see live if they
-    /// tailed <c>room_detail</c> right now. Picks the first Running step when a workflow has more than
-    /// one in flight at once; a room row carries one binding, not a list. See spec/baton.md §6 schema
-    /// for when this comes back absent and why.
+    /// Resolves the worker-binding config entry (issue #1503) and recorded request (issue #1584)
+    /// for whichever step this room's projection currently calls <c>"Running"</c> — the same worker
+    /// a caller would see live if they tailed <c>room_detail</c> right now. Picks the first Running
+    /// step when a workflow has more than one in flight at once; a room row carries one binding, not
+    /// a list. See spec/baton.md §6 schema for when this comes back absent and why.
     /// </summary>
-    private static (string Role, WorkerBindingConfigEntry Entry)? TryResolveRunningBinding(
+    private static (string Role, WorkerBindingConfigEntry Entry, ExecutionRequest Request)? TryResolveRunningBinding(
         IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings,
         IReadOnlyList<FleetStepStatusView> steps,
         IReadOnlyList<FlowEvent> events)
@@ -425,17 +425,17 @@ public sealed class FleetStatusTool : IMcpTool
             return null;
         }
 
-        string? role = null;
+        ExecutionRequest? runningRequest = null;
         foreach (var evt in events)
         {
             if (evt is FlowEvent.ExecutionRequestAccepted accepted && accepted.Request.ExecutionId.Value == runningExecution)
             {
-                role = accepted.Request.Worker;
+                runningRequest = accepted.Request;
                 break;
             }
         }
 
-        if (role is null)
+        if (runningRequest is null)
         {
             return null;
         }
@@ -445,7 +445,9 @@ public sealed class FleetStatusTool : IMcpTool
             return null;
         }
 
-        return bindings.TryGetValue(role, out var entry) ? (role, entry) : null;
+        return bindings.TryGetValue(runningRequest.Worker, out var entry)
+            ? (runningRequest.Worker, entry, runningRequest)
+            : null;
     }
 
     /// <summary>
@@ -470,12 +472,23 @@ public sealed class FleetStatusTool : IMcpTool
     /// wire fields -- both the active-room path (<see cref="TryResolveRunningBinding"/>) and the
     /// terminal-sentinel fast path (<see cref="TryResolveSoleBinding"/>) resolve WHICH role
     /// differently, but project the resolved <c>(Role, Entry)</c> pair to Role/Adapter/Model/
-    /// Effort/TimeoutMs identically.
+    /// Effort/TimeoutMs identically (spec/baton.md §6 schema).
     /// </summary>
     private static (string? Role, string? Adapter, string? Model, string? Effort, long? TimeoutMs) ProjectBindingFields(
-        (string Role, WorkerBindingConfigEntry Entry)? binding) =>
+        (string Role, WorkerBindingConfigEntry Entry)? binding,
+        ExecutionRequest? recordedRequest = null) =>
         binding is { } resolved
-            ? (resolved.Role, resolved.Entry.Adapter, resolved.Entry.Model, resolved.Entry.Effort, (long?)resolved.Entry.Timeout.TotalMilliseconds)
+            ? (resolved.Role,
+               recordedRequest?.Adapter ?? resolved.Entry.Adapter,
+               recordedRequest?.Model ?? resolved.Entry.Model,
+               resolved.Entry.Effort,
+               (long?)resolved.Entry.Timeout.TotalMilliseconds)
+            : (null, null, null, null, null);
+
+    private static (string? Role, string? Adapter, string? Model, string? Effort, long? TimeoutMs) ProjectBindingFields(
+        (string Role, WorkerBindingConfigEntry Entry, ExecutionRequest Request)? binding) =>
+        binding is { } resolved
+            ? ProjectBindingFields((resolved.Role, resolved.Entry), resolved.Request)
             : (null, null, null, null, null);
 
     /// <summary>
@@ -516,13 +529,8 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("rejected")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     bool Rejected = false,
-    // #1503: worker role/adapter/model/effort/timeout for this room's Running step, read off
-    // bindings.json via TryResolveRunningBindingAsync -- see spec/baton.md §6 schema for exactly
-    // which step this reads, when the five fields come back absent, and why timeoutMs isn't a
-    // countdown. Adapter/Model here are bindings.json's CURRENT values, not the recorded-at-accept
-    // value Steps[].Usage is attributed by since #1567 (ExecutionRequest.Adapter) -- after a
-    // failover rebind the two can name different vendors in the same view, neither labelled as such
-    // (issue #1584, not fixed here).
+    // #1503, extended by #1584: worker role/adapter/model/effort/timeout for this room's Running step,
+    // read via TryResolveRunningBinding -- see spec/baton.md §6 schema for resolution rules and gating.
     [property: JsonPropertyName("role")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Role = null,
