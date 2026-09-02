@@ -722,8 +722,9 @@ function laneHtml(room, timelines, dismissable = false, openTimelines = null){
   const t = newestStepTime(room);
   const a = age(t);
   const ageLine = a ? `<div class="age">last event ${a} ago${room.state === "Running" && t && (Date.now()-Date.parse(t)) > 15*60000 ? " ⚠" : ""}</div>` : "";
-  const deliverables = room.name
-    ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(room.name)}">deliverables &rarr;</a></div>` : "";
+  const roomDeliverablesKey = room.path || room.name;
+  const deliverables = roomDeliverablesKey
+    ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(roomDeliverablesKey)}">deliverables &rarr;</a></div>` : "";
   // #1499: a --label makes the room title the human-legible name (e.g. "the #1496 env-snapshot
   // lane") instead of its bare dispatch-<role>-<hex8> directory name; the room name never disappears
   // -- it drops to a secondary line so deliverables/redispatch/cancel still show what to paste.
@@ -1103,14 +1104,20 @@ function itemRow(item){
   const [label, cls] = verdictChip(item.verdict);
   const a = age(item.created_at || item.pushed_at);
   const withheld = item.withheld ? ` · <span title="${esc(item.stub_reason || "")}">withheld</span>` : "";
+  const roomLabel = item.room_name || item.room;
   return `<div class="item" data-id="${esc(item.id)}">
     <div class="top"><span class="title">${esc(item.title || item.artifact || item.id)}</span><span class="chip ${cls}">${label}</span></div>
-    <div class="meta">${esc(item.room)}${item.artifact ? " · " + esc(item.artifact) : ""} · ${a ? a + " ago" : "?"}${withheld}</div>
+    <div class="meta">${esc(roomLabel)}${item.artifact ? " · " + esc(item.artifact) : ""} · ${a ? a + " ago" : "?"}${withheld}</div>
   </div>`;
 }
 function renderInboxList(items, roomFilter){
+  let filterLabel = roomFilter;
+  if(roomFilter){
+    const match = (items.length > 0 ? items : inboxIndex).find(m => m.room === roomFilter && m.room_name);
+    if(match) filterLabel = match.room_name;
+  }
   $("filter").innerHTML = roomFilter
-    ? `filtered to room <b>${esc(roomFilter)}</b> · <a id="clearfilter">clear</a>`
+    ? `filtered to room <b>${esc(filterLabel)}</b> · <a id="clearfilter">clear</a>`
     : "";
   const clear = $("clearfilter");
   if(clear) clear.addEventListener("click", () => { inboxRoomFilter = ""; location.hash = "#inbox"; applyRoute(); });
