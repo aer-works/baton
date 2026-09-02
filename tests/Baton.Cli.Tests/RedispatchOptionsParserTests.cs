@@ -42,6 +42,27 @@ public class RedispatchOptionsParserTests
         Assert.Null(options.Timeout);
         Assert.Null(options.Label);
         Assert.False(options.LabelSpecified);
+        Assert.Null(options.Attachments);
+    }
+
+    /// <summary>#1576: mirrors <c>DispatchOptionsParserTests.Parses_repeatable_attach_flags_in_order</c>.</summary>
+    [Fact]
+    public void Parses_repeatable_attach_flags_in_order()
+    {
+        var options = RedispatchOptionsParser.Parse(
+            ["parent-room", "--spec", "amended.md", "--attach", "context.txt", "--attach", "notes.md"]);
+
+        Assert.NotNull(options.Attachments);
+        Assert.Equal(new[] { "context.txt", "notes.md" }, options.Attachments);
+    }
+
+    [Fact]
+    public void Attach_without_value_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => RedispatchOptionsParser.Parse(["parent-room", "--spec", "amended.md", "--attach"]));
+
+        Assert.Contains("--attach", ex.TryInvocation);
     }
 
     [Fact]

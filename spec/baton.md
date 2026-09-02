@@ -197,9 +197,12 @@ by-workstream junction against whichever slug `InheritBinding` just resolved —
 overridden — never the raw `--workstream` flag alone, since a bare `baton redispatch` with no
 `--workstream` flag at all must still link into the parent's workstream directory. `--spec`
 omitted reuses the parent's already-built prompt verbatim; given, the amended brief is rebuilt through
-the same `RoleDispatch.Materialize` a fresh dispatch uses, with the parent's recorded axes as defaults
+the same `RoleSpecMaterializer` seam a fresh dispatch uses, with the parent's recorded axes as defaults
 — including the inherited-unless-overridden label, applied after that rebuild since
-`RoleDispatch.Materialize` itself knows nothing of it (`RedispatchCommand.ExecuteAsync`).
+`RoleDispatch.Materialize` itself knows nothing of it (`RedispatchCommand.ExecuteAsync`). That seam is
+what makes the spec/grant mismatch lint and `--attach` (#1500, `docs/dispatch.md`) apply identically on
+this `--spec` path (#1576) — `--attach` is refused outright when `--spec` is omitted, since a verbatim
+prompt has nothing left to append an attachment listing to.
 The parent must be Terminal (`terminal.json` present) — a still-running or never-dispatched parent is
 refused with a typed `CliArgumentException` naming `baton status` as the retry (no interactive
 confirmation exists for a non-interactive CLI, the same doctrine `--timeout`'s ceiling above rests on);

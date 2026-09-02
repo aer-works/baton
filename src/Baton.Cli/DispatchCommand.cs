@@ -20,7 +20,6 @@ public static class DispatchCommand
 {
     private const string WorkflowFileName = "workflow.json";
     private const string BindingsFileName = "bindings.json";
-    private const string AttachmentsDirectoryName = "attachments";
 
     /// <exception cref="CliArgumentException">
     /// <paramref name="options"/> names neither a role nor a template (or names both), a role without a
@@ -126,35 +125,14 @@ public static class DispatchCommand
         // #1619: the navigational half of the ruling -- a no-op when --workstream was never passed.
         WorkstreamJunctionLinker.CreateIfRequested(options.Workstream, options.RoomDirectoryPath);
 
-        // #1500: Copy attached context files into the room before the worker starts.
-        // Attachment content is operator-supplied and inbound: it is never scanned and never published,
-        // because the pusher's gather_deliverables reads only terminal.json's declared step outputs (not
-        // a directory walk), and an attachment is never a declared output of any step (#1500
-        // second-reader LOW-6 — "never passes the gate" read as either "never scanned" or "the gate
-        // withholds it"; state the mechanism instead of the ambiguous phrase).
-        if (options.Attachments is { Count: > 0 } attachmentsToCopy)
-        {
-            var attachmentsDir = Path.Combine(options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName, AttachmentsDirectoryName);
-            Directory.CreateDirectory(attachmentsDir);
-            foreach (var attachPath in attachmentsToCopy)
-            {
-                var fileName = Path.GetFileName(attachPath);
-                var destPath = Path.Combine(attachmentsDir, fileName);
-                try
-                {
-                    File.Copy(attachPath, destPath, overwrite: true);
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    // Same R3 (#1354/#1380 finding 3) shape as CopyPrimaryOutputToOverride below: a
-                    // locked or permission-denied source throws a type that does not derive from
-                    // BatonFlowException, which Program's typed catches would otherwise miss. Wrapped
-                    // in CliArgumentException (itself a BatonFlowException) so the failure is reported
-                    // cleanly and the terminal-sentinel path still runs, rather than an unhandled crash.
-                    throw new CliArgumentException($"Could not copy attached file '{attachPath}' to '{destPath}': {ex.Message}");
-                }
-            }
-        }
+        // #1500/#1576: Copy attached context files into the room before the worker starts, via the
+        // seam RedispatchCommand's own --attach path now shares. Attachment content is operator-supplied
+        // and inbound: it is never scanned and never published, because the pusher's gather_deliverables
+        // reads only terminal.json's declared step outputs (not a directory walk), and an attachment is
+        // never a declared output of any step (#1500 second-reader LOW-6 — "never passes the gate" read
+        // as either "never scanned" or "the gate withholds it"; state the mechanism instead of the
+        // ambiguous phrase).
+        RoleSpecMaterializer.CopyAttachmentsIntoRoom(options.Attachments, options.RoomDirectoryPath);
 
         var primaryOutputName = definition.Steps.FirstOrDefault()?.Outputs.FirstOrDefault() ?? "output";
         Console.Out.WriteLine($"Room directory: {options.RoomDirectoryPath}");
@@ -487,29 +465,6 @@ public static class DispatchCommand
             throw new CliArgumentException($"Spec file '{options.SpecFilePath}' does not exist.");
         }
 
-        if (options.Attachments is { Count: > 0 } attachments)
-        {
-            var seenFileNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var file in attachments)
-            {
-                if (!File.Exists(file))
-                {
-                    throw new CliArgumentException($"Attached file '{file}' does not exist.");
-                }
-
-                var fileName = Path.GetFileName(file);
-                if (seenFileNames.TryGetValue(fileName, out var priorPath))
-                {
-                    throw new CliArgumentException(
-                        $"--attach '{priorPath}' and '{file}' both copy to the same file name '{fileName}' "
-                        + "in the room's attachments directory — the second would silently overwrite the first.",
-                        "rename one of the files, or pass only one of the two --attach flags.");
-                }
-
-                seenFileNames[fileName] = file;
-            }
-        }
-
         var role = WorkerRoleCatalog.For(options.Name);
 
         if (options.OutputPath is not null)
@@ -519,41 +474,15 @@ public static class DispatchCommand
 
         var spec = await File.ReadAllTextAsync(options.SpecFilePath, cancellationToken).ConfigureAwait(false);
 
-        // #1500: Spec/grant mismatch lint (WARN, never fail). The guarantee is asserted on
-        // DispatchSpecLinter's own class doc and in docs/dispatch.md; this try/catch is what actually
-        // enforces it. Every heuristic today is a string Contains/StartsWith, but Heuristics is a
-        // public list explicitly framed as the extension point — the first heuristic that throws (a
-        // future regex, say) must degrade this advisory lint to "skipped", not refuse a dispatch it
-        // was only ever supposed to warn about (#1500 second-reader MED-4).
-        IReadOnlyList<SpecLintWarning> warnings;
-        try
-        {
-            warnings = DispatchSpecLinter.Lint(spec, role.Grant, role.Id);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Warning: spec/grant lint failed and was skipped ({ex.GetType().Name}: {ex.Message}).");
-            warnings = [];
-        }
-
-        foreach (var warning in warnings)
-        {
-            Console.Error.WriteLine(warning.Format());
-        }
-
-        string? attachmentsDir = null;
-        if (options.Attachments is { Count: > 0 })
-        {
-            attachmentsDir = Path.Combine(options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName, AttachmentsDirectoryName);
-        }
-
         // #1083: pin the workspace onto the binding so the worker can actually read the project it was
         // dispatched to study — the process cwd alone does not reach agy (`-p` ignores it, #491).
         // #1082: vendor/model/effort are three independent axes over the role's instructions ([0017]).
-        return RoleDispatch.Materialize(
+        // #1576: attach validation, the spec/grant lint, and the Materialize call itself all go through
+        // the seam RedispatchCommand's own --spec path now shares (RoleSpecMaterializer).
+        return RoleSpecMaterializer.Materialize(
             role, spec, options.Adapter, workingDirectory: workspaceDirectory,
             modelOverride: options.Model, effortOverride: options.Effort, outputOverride: options.OutputPath,
-            timeoutOverride: options.Timeout, attachments: options.Attachments, attachmentsDirectory: attachmentsDir,
+            timeoutOverride: options.Timeout, attachments: options.Attachments, roomDirectoryPath: options.RoomDirectoryPath,
             tokenBudgetOverride: options.TokenBudget);
     }
 
