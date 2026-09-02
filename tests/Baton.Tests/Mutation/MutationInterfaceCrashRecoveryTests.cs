@@ -524,6 +524,142 @@ public class MutationInterfaceCrashRecoveryTests
     }
 
     [Fact]
+    public async Task StartWorkflowAsync_does_not_journal_StepRebound_for_a_legacy_request_with_no_recorded_Adapter()
+    {
+        // #1583 MEDIUM: a request accepted before #1567 added ExecutionRequest.Adapter/Model has both
+        // fields null -- absence of a record, not absence of an adapter (ExecutionRequest.Adapter's own
+        // doc). Comparing null against the current binding's "claude" must not read as a divergence:
+        // nobody rebound anything, and journaling StepRebound(null->claude) would durably assert a
+        // failover that never happened.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "sonnet");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: null, model: null);
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.StepRebound>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_journals_a_second_StepRebound_when_a_rebind_reverts_after_a_pre_spawn_crash()
+    {
+        // #1583 HIGH, review scenario B: pump P1 accepted on "claude"; pump P2 rebound to "agy" and
+        // journaled StepRebound(claude->agy) but crashed pre-spawn (never appended a Core outcome), so
+        // this fixture manufactures exactly that log tail directly, the same way every other fixture
+        // in this file manufactures its crash window. Pump P3 (this call) sees the binding reverted
+        // back to "claude". Without StateProjector projecting the first StepRebound as an override on
+        // AcceptedRequestByExecutionId, P3's replay still reads request.Adapter == "claude" (the
+        // original accept), sees no divergence against the current "claude" binding, and journals
+        // nothing -- silently reintroducing the exact misattribution #1583 exists to fix. With the
+        // projection arm in place, P3 sees the request as bound to "agy" (the first StepRebound's
+        // override), detects divergence against the current "claude" binding, and journals a SECOND
+        // StepRebound naming agy->claude.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: null);
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "claude", model: null);
+            await writer.AppendAsync(
+                new FlowEvent.StepRebound(A, executionId, PreviousAdapter: "claude", PreviousModel: null, NewAdapter: "agy", NewModel: null),
+                TestContext.Current.CancellationToken);
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var rebounds = events.OfType<FlowEvent.StepRebound>().ToList();
+            Assert.Equal(2, rebounds.Count);
+            var second = rebounds[1];
+            Assert.Equal(executionId, second.ForExecutionId);
+            Assert.Equal("agy", second.PreviousAdapter);
+            Assert.Equal("claude", second.NewAdapter);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_dispatches_a_divergent_resubmit_with_the_rebound_Adapter_and_Model_in_the_same_round()
+    {
+        // #1583 MEDIUM: MutationInterface.cs's in-memory `request with { Adapter, Model }` update
+        // (kept alongside the StateProjector override as the same-round fast path) has to actually
+        // reach Core -- DispatchAndRecordOutcomeAsync's live classification reads prepared.Request.Adapter,
+        // not the binding, so a dispatch still carrying the pre-crash Adapter/Model would pick the wrong
+        // usage parser for this round's own outcome classification even though the journaled event is
+        // correct. Deleting the in-memory update (MutationInterface.cs:907-912) makes this fail.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "sonnet");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "agy", model: "gemini-3-pro");
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            await runTask;
+
+            Assert.NotNull(stub.LastDispatchedRequest);
+            Assert.Equal("claude", stub.LastDispatchedRequest!.Adapter);
+            Assert.Equal("sonnet", stub.LastDispatchedRequest.Model);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
     public async Task StartWorkflowAsync_does_not_journal_StepRebound_when_resubmitting_through_an_identical_binding()
     {
         // Control / non-divergent case: when the binding matches the request's recorded Adapter and Model,

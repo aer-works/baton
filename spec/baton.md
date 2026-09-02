@@ -441,9 +441,10 @@ but it drives no `StepState`/`FlowState` consequence; it exists to be loud, not 
 to a different adapter/model binding (#802 §3.3 / #1583). When crash-recovery resubmission encounters a
 binding in `bindings.json` that diverges from the accepted request's recorded `Adapter`/`Model`, Flow
 journals `StepRebound` (naming `PreviousAdapter`/`PreviousModel` → `NewAdapter`/`NewModel`) before
-dispatching, and `ExecutionUsageProjector` re-attributes the execution's usage to the new binding rather
-than silently misattributing it to the pre-crash binding. S6 will reuse this event shape for declared
-programmatic failover.
+dispatching; `StateProjector` applies it as an override on the accepted request's `Adapter`/`Model` so
+the rebind survives replay, and `ExecutionUsageProjector` re-attributes the execution's usage to the new
+binding rather than silently misattributing it to the pre-crash binding. S6 extends this event (adding
+`Effort` and a closed-token `Reason`, per #802 §3.3) rather than introducing a second one.
 
 **`settledAt`/`settledBy` remain unimplemented — S2 scope, not S1's.** The proposal on #1586 §2
 names two additive `terminal.json` fields (`settledAt`: ISO-8601 UTC, `settledBy`:
