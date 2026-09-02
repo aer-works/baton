@@ -452,7 +452,8 @@ public static class RunCommand
         try
         {
             await RoomRegistryStore.AppendAsync(
-                options.RoomDirectoryPath, projectRoot, BatonPaths.RoomRegistryFile, cancellationToken)
+                options.RoomDirectoryPath, projectRoot, BatonPaths.RoomRegistryFile,
+                explicitRegister: options.Register, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)

@@ -254,9 +254,10 @@ public static class DispatchCommand
         await WorkflowDefinitionWriter.SaveToFileAsync(definition, workflowFilePath, cancellationToken).ConfigureAwait(false);
         await WorkerBindingConfigWriter.SaveToFileAsync(bindings, bindingsFilePath, cancellationToken).ConfigureAwait(false);
 
+        // Register: true -- rationale is spec/baton.md §8 (#1657).
         var runOptions = new RunOptions(
             workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, options.WorkflowId,
-            ProjectRootDirectory: workspace);
+            ProjectRootDirectory: workspace, Register: true);
         var result = await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: cancellationToken).ConfigureAwait(false);
 
         if (options.OutputPath is not null && result.State.Status == WorkflowStatus.Terminal)

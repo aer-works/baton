@@ -89,6 +89,14 @@ public static class RoomRegistryStore
     /// reader compares registry entries against directory-scan results the same way every other
     /// per-directory record in AER already does.
     /// </summary>
+    /// <param name="explicitRegister">
+    /// #1657: a repro is not fleet. Without this, a <paramref name="roomPath"/> under the user temp
+    /// directory or a project's own <c>.scratch*</c>/<c>.baton</c> directory (see
+    /// <see cref="IsThrowawayReproPath"/>) is skipped rather than written — <c>baton run</c>'s
+    /// <c>--register</c> flag is the one caller that sets this true for such a path on purpose. A room
+    /// under <see cref="BatonPaths.Rooms"/> (every <c>baton dispatch</c>/<c>redispatch</c> room, and
+    /// most deliberate <c>baton run --room-dir</c> invocations) is never skipped regardless of this flag.
+    /// </param>
     /// <exception cref="IOException">
     /// Another process held the registry lock for longer than <see cref="LockTimeout"/>. Callers (see
     /// <c>RunCommand.RegisterRoomAsync</c>) treat this the same as any other registry write failure:
@@ -100,11 +108,23 @@ public static class RoomRegistryStore
     /// above: log and swallow.
     /// </exception>
     public static Task AppendAsync(
-        string roomPath, string projectRoot, string registryFilePath, CancellationToken cancellationToken = default)
+        string roomPath,
+        string projectRoot,
+        string registryFilePath,
+        bool explicitRegister = false,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomPath);
         ArgumentException.ThrowIfNullOrEmpty(projectRoot);
         ArgumentException.ThrowIfNullOrEmpty(registryFilePath);
+
+        var recordedRoomPath = BatonPaths.RecordKey(roomPath);
+        if (!explicitRegister && IsThrowawayReproPath(recordedRoomPath))
+        {
+            Console.Error.WriteLine(
+                $"Room registry: skipping '{roomPath}' (looks like a repro room, not fleet work). Pass --register to include it.");
+            return Task.CompletedTask;
+        }
 
         var directory = Path.GetDirectoryName(registryFilePath);
         if (!string.IsNullOrEmpty(directory))
@@ -112,8 +132,7 @@ public static class RoomRegistryStore
             Directory.CreateDirectory(directory);
         }
 
-        var entry = new RoomRegistryEntry(
-            BatonPaths.RecordKey(roomPath), BatonPaths.RecordKey(projectRoot), DateTime.UtcNow);
+        var entry = new RoomRegistryEntry(recordedRoomPath, BatonPaths.RecordKey(projectRoot), DateTime.UtcNow);
         var line = JsonSerializer.Serialize(entry, SerializerOptions);
         var bytes = Encoding.UTF8.GetBytes(line + "\n");
 
@@ -122,6 +141,15 @@ public static class RoomRegistryStore
             {
                 RunUnderLock(registryFilePath, () =>
                 {
+                    // #1657: a bare `baton run` re-registering an unchanged room on every call through
+                    // the pump (see the type remarks) would otherwise write an identical line every
+                    // time -- skip when a line for this exact (RoomPath, ProjectRoot) pair is already
+                    // present, so only an actual change (or a genuinely new room) grows the file.
+                    if (File.Exists(registryFilePath) && IsAlreadyRegistered(registryFilePath, entry))
+                    {
+                        return;
+                    }
+
                     using var stream = new FileStream(
                         registryFilePath, FileMode.Append, FileAccess.Write, FileShare.Read, bufferSize: 4096, useAsync: false);
                     stream.Write(bytes);
@@ -129,6 +157,83 @@ public static class RoomRegistryStore
                 });
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// #1657: true for a <paramref name="recordedRoomPath"/> (already run through
+    /// <see cref="BatonPaths.RecordKey"/>) that reads as a throwaway repro room rather than fleet work —
+    /// under the user temp directory, or carrying a <c>.scratch*</c>/<c>.baton</c> path segment. A path
+    /// under <see cref="BatonPaths.Rooms"/> is never throwaway: that is every room's legitimate home,
+    /// and it happens to contain a <c>.baton</c> segment of its own (<c>{UserProfile}/.baton/rooms</c>),
+    /// which is exactly why that check runs first.
+    /// </summary>
+    private static bool IsThrowawayReproPath(string recordedRoomPath)
+    {
+        var homeRooms = BatonPaths.RecordKey(BatonPaths.Rooms);
+        if (IsUnderOrEqual(recordedRoomPath, homeRooms))
+        {
+            return false;
+        }
+
+        var tempDirectory = BatonPaths.RecordKey(Path.GetTempPath());
+        if (IsUnderOrEqual(recordedRoomPath, tempDirectory))
+        {
+            return true;
+        }
+
+        var segments = recordedRoomPath.Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+        return segments.Any(segment =>
+            segment.Equals(".baton", StringComparison.OrdinalIgnoreCase)
+            || segment.StartsWith(".scratch", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsUnderOrEqual(string candidate, string root) =>
+        candidate.Equals(root, StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// #1657: reads <paramref name="registryFilePath"/> (already known to exist, and already inside the
+    /// caller's <see cref="RunUnderLock{T}(string,Func{T})"/> section) looking for a line whose
+    /// <see cref="RoomRegistryEntry.RoomPath"/> and <see cref="RoomRegistryEntry.ProjectRoot"/> both
+    /// match <paramref name="candidate"/> exactly — <see cref="RoomRegistryEntry.CreatedAt"/> is
+    /// deliberately excluded from the comparison, since it differs on every call by construction. A
+    /// project-root *change* for an already-registered room path is not a duplicate and still appends,
+    /// preserving <see cref="ReadDistinctByRoomAsync"/>'s last-writer-wins fold.
+    /// </summary>
+    private static bool IsAlreadyRegistered(string registryFilePath, RoomRegistryEntry candidate)
+    {
+        string text;
+        try
+        {
+            text = File.ReadAllText(registryFilePath, Encoding.UTF8);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+
+        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            RoomRegistryEntry? existing;
+            try
+            {
+                existing = JsonSerializer.Deserialize<RoomRegistryEntry>(line, SerializerOptions);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (existing is not null
+                && string.Equals(existing.RoomPath, candidate.RoomPath, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(existing.ProjectRoot, candidate.ProjectRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

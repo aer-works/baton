@@ -72,6 +72,10 @@ public class RunCommandEndToEndTests
     /// <c>baton run</c> (no <c>--workspace</c> concept, unlike <c>baton dispatch</c>): the registration uses
     /// whatever <see cref="RunOptions.ProjectRootDirectory"/> was resolved to (the process cwd in
     /// production; passed explicitly here rather than mutating the shared process cwd for one test).
+    /// <c>Register: true</c> here stands in for <c>--register</c> (#1657): the room directory below
+    /// sits under the temp directory purely for test isolation, which is otherwise exactly the shape
+    /// <see cref="RunOptions.Register"/>'s absence would now skip — <see cref="Running_a_bare_workflow_without_register_skips_the_temp_room_registration"/>
+    /// covers that default.
     /// </summary>
     [Fact]
     public async Task Running_registers_the_room_into_the_multi_project_registry()
@@ -82,7 +86,8 @@ public class RunCommandEndToEndTests
         {
             var workflowFilePath = await WriteThreeStepWorkflowAsync(testRoot);
             var bindingsFilePath = await WriteThreeStepBindingsAsync(testRoot);
-            var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory, ProjectRootDirectory: testRoot);
+            var options = new RunOptions(
+                workflowFilePath, bindingsFilePath, roomDirectory, ProjectRootDirectory: testRoot, Register: true);
 
             await RunCommand.ExecuteAsync(options, Adapters, cancellationToken: TestContext.Current.CancellationToken);
 
@@ -90,6 +95,37 @@ public class RunCommandEndToEndTests
                 BatonPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
             var entry = Assert.Single(entries, e => e.RoomPath == BatonPaths.RecordKey(roomDirectory));
             Assert.Equal(BatonPaths.RecordKey(testRoot), entry.ProjectRoot);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1657: the room-registry half of the fix at the exact call <c>Program.cs</c> makes for a bare
+    /// <c>baton run</c> with no <c>--register</c> — a room under the temp directory (or, in real usage,
+    /// a project's own <c>.scratch*</c>/<c>.baton</c> path) is a throwaway repro by default and never
+    /// reaches the registry, even though the run itself still completes normally.
+    /// </summary>
+    [Fact]
+    public async Task Running_a_bare_workflow_without_register_skips_the_temp_room_registration()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteThreeStepWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteThreeStepBindingsAsync(testRoot);
+            var options = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory, ProjectRootDirectory: testRoot);
+
+            var finalState = (await RunCommand.ExecuteAsync(
+                options, Adapters, cancellationToken: TestContext.Current.CancellationToken)).State;
+
+            Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
+            var entries = await RoomRegistryStore.ReadDistinctByRoomAsync(
+                BatonPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
+            Assert.DoesNotContain(entries, e => e.RoomPath == BatonPaths.RecordKey(roomDirectory));
         }
         finally
         {
