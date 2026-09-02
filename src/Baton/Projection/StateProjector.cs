@@ -280,6 +280,20 @@ public static class StateProjector
 
                 break;
 
+            case FlowEvent.StepRebound rebound:
+                // Overrides the frozen Adapter/Model on the accepted request so the rebind survives
+                // replay (spec/baton.md §3, #802 section 3.3's own stated reason for freezing the value
+                // into the event in the first place — a full replay must recover it without re-deriving
+                // from bindings.json). No StepState/FlowState consequence otherwise: this does not
+                // affect step lifecycle.
+                if (state.AcceptedRequestByExecutionId.TryGetValue(rebound.ForExecutionId, out var reboundRequest))
+                {
+                    state.AcceptedRequestByExecutionId[rebound.ForExecutionId] =
+                        reboundRequest with { Adapter = rebound.NewAdapter, Model = rebound.NewModel };
+                }
+
+                break;
+
             case FlowEvent.ExecutionRequestRejected:
             case FlowEvent.ZeroOutputsDespiteSubstantialWork:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.

@@ -1237,4 +1237,46 @@ public class StateProjectorTests
             DirectoryCleanup.DeleteRecursively(tempDir);
         }
     }
+
+    [Fact]
+    public void StepRebound_is_projected_without_perturbing_step_state()
+    {
+        // #1583 / S6 (spec/baton.md §3, #802 section 3.3): StepRebound is a diagnostic ledger event consumed by ExecutionUsageProjector;
+        // it does not alter step lifecycle status or retry counters.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.StepRebound(Architect, executionId, "agy", "gemini-3-pro", "claude", "sonnet", "Failover"),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.Equal(executionId, architect.LatestExecutionId);
+        Assert.Equal(0, architect.ConsecutiveFailureCount);
+    }
+
+    [Fact]
+    public void StepRebound_overrides_the_accepted_requests_Adapter_and_Model_and_survives_a_full_replay()
+    {
+        // #1583 HIGH: StepRebound must be projected as an override on AcceptedRequestByExecutionId,
+        // not merely journaled — a crash before the checkpoint save (the path this event exists for)
+        // recovers the rebind only if a full replay from scratch reproduces it.
+        var executionId = new ExecutionId("exec-1");
+        var acceptedRequest = MakeRequest(executionId, Architect) with { Adapter = "claude", Model = "sonnet" };
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(acceptedRequest),
+            new FlowEvent.StepRebound(Architect, executionId, PreviousAdapter: "claude", PreviousModel: "sonnet", NewAdapter: "agy", NewModel: "gemini-3-pro"),
+        };
+
+        var (_, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot());
+
+        var reboundRequest = Assert.Single(checkpoint.State.AcceptedRequestByExecutionId.Values);
+        Assert.Equal("agy", reboundRequest.Adapter);
+        Assert.Equal("gemini-3-pro", reboundRequest.Model);
+    }
 }

@@ -21,6 +21,11 @@ internal sealed class StubCoreDispatcher : ICoreDispatcher
     /// <summary>Yields each <see cref="StepId"/> the moment its dispatch begins, in call order.</summary>
     public ChannelReader<StepId> DispatchStarted => _dispatchStarted.Reader;
 
+    /// <summary>The full request most recently handed to <see cref="DispatchAsync"/> — lets a test
+    /// inspect what actually went to Core (e.g. a resubmit's rebound Adapter/Model), not just which
+    /// StepId dispatched.</summary>
+    public ExecutionRequest? LastDispatchedRequest { get; private set; }
+
     /// <summary>
     /// Arms the next <see cref="DispatchAsync"/> call for <paramref name="stepId"/> to await the
     /// returned <see cref="TaskCompletionSource{TResult}"/> instead of completing immediately — the
@@ -52,6 +57,7 @@ internal sealed class StubCoreDispatcher : ICoreDispatcher
         // Only ever dispatched for a step-tied, process-bound request — StepId is always
         // set here.
         var stepId = request.StepId!.Value;
+        LastDispatchedRequest = request;
 
         TaskCompletionSource<CoreDispatchResult> completionSource;
         lock (_lock)
