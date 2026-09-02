@@ -211,25 +211,16 @@ public abstract record FlowEvent
         VerifyFailedKind Kind = VerifyFailedKind.GatesFailed) : FlowEvent;
 
     /// <summary>
-    /// #1702 (contract: <c>spec/baton.md</c> §3): the resolved verify command was never started because
-    /// a pre-flight check found it not runnable in this workspace — the role's <c>verify_pixi_task</c>
-    /// naming a pixi task the workspace's <c>pixi task list</c> does not contain (the measured #1702
-    /// failure: an <c>implement</c> lane's baked-in <c>gates-quiet</c> run against a foreign, non-baton
-    /// repo), or a resolved repo/override command whose executable does not resolve. Diagnostic only,
-    /// the same "durable fact, no <see cref="Status.WorkflowOutcome.Indeterminate"/> consequence" shape
-    /// as <see cref="VerifyPassed"/> — unlike <see cref="VerifyFailed"/>, this never settles
-    /// Indeterminate: the worker's own <see cref="Outcomes.OutcomeClassifier"/> verdict (already
-    /// Succeeded, or this event would never be reached — <c>Mutation.MutationInterface</c>'s verify gate
-    /// only runs when classification already succeeded) decides the room word unassisted. Never emitted
-    /// alongside <see cref="VerifyStarted"/> for the same execution: the pre-flight check runs BEFORE
-    /// <see cref="VerifyStarted"/> would be appended, so <see cref="ProjectionCheckpointState.UnmatchedVerifyExecutionIds"/>
-    /// and the #1608 <c>EngineRestart</c> recovery path (which only reconciles a started-but-unmatched
-    /// verify) are both untouched by this arm.
+    /// #1702 (contract: <c>spec/baton.md</c> §3, "Verify command resolution, and the not-run outcome"):
+    /// <see cref="Mutation.VerifyCommandResolver.CheckRunnableAsync"/>'s pre-flight probe found the
+    /// resolved verify command not runnable, so it was never spawned. Diagnostic only, same "no
+    /// <see cref="Status.WorkflowOutcome.Indeterminate"/> consequence" shape as <see cref="VerifyPassed"/>
+    /// — the execution's own already-<c>Succeeded</c> classification decides the room word unassisted.
+    /// Never emitted alongside <see cref="VerifyStarted"/> for the same execution, so
+    /// <see cref="ProjectionCheckpointState.UnmatchedVerifyExecutionIds"/> and the #1608
+    /// <c>EngineRestart</c> recovery path are both untouched by this arm.
     /// </summary>
-    /// <param name="Reason">
-    /// The pre-flight verdict, e.g. <c>"task absent: gates-quiet"</c> or <c>"executable not found:
-    /// eslint"</c> — <see cref="Mutation.VerifyCommandResolver"/>'s own wording, never re-derived here.
-    /// </param>
+    /// <param name="Reason"><see cref="Mutation.VerifyCommandResolver"/>'s own verdict text, never re-derived here.</param>
     public sealed record VerifyNotRun(ExecutionId ExecutionId, string Reason) : FlowEvent;
 
     /// <summary>

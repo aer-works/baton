@@ -441,10 +441,9 @@ public class MutationInterfaceTests
     [Fact]
     public async Task StartWorkflowAsync_verify_override_wins_over_the_role_default_and_settles_Indeterminate_when_it_runs_red()
     {
-        // #1702 item 5's discriminating control: verify actually RUNNING and going red must still
-        // settle Indeterminate exactly as before -- #1702 only changes the "never ran at all" case.
-        // The role default here (buildlock-selftest) would pass, proving the override -- not the role
-        // default -- is what actually ran.
+        // #1702 item 5's discriminating control (spec/baton.md §3 states the general rule this
+        // pins). The role default here (buildlock-selftest) would pass, proving the override -- not
+        // the role default -- is what actually ran.
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
         var logPath = Path.Combine(roomDirectory, "flow.jsonl");

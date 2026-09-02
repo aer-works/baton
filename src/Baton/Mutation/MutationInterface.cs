@@ -1719,10 +1719,9 @@ public static class MutationInterface
             // on the crash-recovery ToClassify branch (PumpToFixedPointAsync above) replaying a
             // recorded exit from a possibly-defunct workspace; a real subprocess belongs only on the
             // live-dispatch path.
-            // #1702: resolved fresh from the workspace on every call (never baked onto the binding at
-            // dispatch time) so a redispatch reads the workspace's CURRENT .baton/verify declaration,
-            // not one frozen at the parent's own dispatch. Precedence: --verify override, then the
-            // workspace's own declaration, then the role's verify_pixi_task default — spec/baton.md §3.
+            // #1702: VerifyCommandResolver.Resolve is called fresh here, never memoized onto the
+            // binding, so a redispatch reads the workspace's CURRENT declaration — see that class's
+            // own doc for the resolution order.
             var resolvedVerify = classification.Verdict == OutcomeVerdict.Succeeded
                 ? VerifyCommandResolver.Resolve(binding.Target.WorkingDirectory, binding.VerifyCommandOverride, binding.VerifyPixiTask)
                 : null;

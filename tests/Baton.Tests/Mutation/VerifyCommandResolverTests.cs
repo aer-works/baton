@@ -5,11 +5,8 @@ using Xunit;
 namespace Baton.Tests.Mutation;
 
 /// <summary>
-/// Coverage for <see cref="VerifyCommandResolver"/> (#1702): the resolution order
-/// (<c>--verify</c> override, then a workspace's own <c>.baton/verify</c> declaration, then the
-/// role's <c>verify_pixi_task</c> default) and the pre-flight runnability check that turns "the
-/// resolved command doesn't exist in this workspace" into a distinct not-run outcome. Pure/unit —
-/// no pump, no real dispatch — per the resolution order's own testability design.
+/// Coverage for <see cref="VerifyCommandResolver"/> (#1702) — see its own class doc for the resolution
+/// order and spec/baton.md §3 for the contract. Pure/unit — no pump, no real dispatch.
 /// </summary>
 public sealed class VerifyCommandResolverTests
 {
@@ -77,9 +74,8 @@ public sealed class VerifyCommandResolverTests
     [Fact]
     public void Resolve_repo_declaration_still_applies_when_the_role_declares_no_default()
     {
-        // spec/baton.md §3: verify is a property of the WORKSPACE, not gated on the role declaring
-        // one -- a review/advise-shaped role (no VerifyPixiTask) dispatched against a workspace that
-        // declares .baton/verify still gets a verify step.
+        // Pins the rule spec/baton.md §3 states: a review/advise-shaped role (no VerifyPixiTask)
+        // dispatched against a workspace that declares .baton/verify still gets a verify step.
         var workspace = CreateTempWorkspace();
         try
         {

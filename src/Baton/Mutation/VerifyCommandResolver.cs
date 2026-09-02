@@ -29,22 +29,14 @@ public sealed record ResolvedVerifyCommand(
     string Label);
 
 /// <summary>
-/// #1702 (contract: <c>spec/baton.md</c> §3): resolves the verify command for a workspace, in
-/// precedence order — a dispatch <c>--verify</c> override, then the workspace's own <c>.baton/verify</c>
-/// declaration, then the role's baked-in <c>verify_pixi_task</c> (today's only source, and the one that
-/// fails by construction against a foreign, non-baton workspace — the measured #1702 defect). The repo
-/// declaration is read fresh from disk on every call rather than cached onto a binding, so a redispatch
-/// against a workspace whose declaration changed between attempts never runs a stale command.
+/// #1702 (contract: <c>spec/baton.md</c> §3, "Verify command resolution"): resolves the verify command
+/// for a workspace — precedence order and rationale are stated there, not restated here. Read fresh
+/// from disk on every call rather than cached onto a binding, so a redispatch never runs a stale
+/// declaration.
 /// </summary>
 public static class VerifyCommandResolver
 {
-    /// <summary>
-    /// The one repo-level declaration mechanism (#1702 item 1 picks a single one rather than also
-    /// supporting a <c>[tool.baton]</c> table in <c>pixi.toml</c>): a plain-text file whose first
-    /// non-blank, non-<c>#</c>-comment line is the verify command line. Works for any workspace,
-    /// pixi-based or not — the whole point, since a foreign workspace's own task runner is unknown to
-    /// this engine.
-    /// </summary>
+    /// <summary>The repo-level declaration file — first non-blank, non-<c>#</c>-comment line is the command line. Contract: spec/baton.md §3.</summary>
     public const string RepoDeclarationRelativePath = ".baton/verify";
 
     public static ResolvedVerifyCommand? Resolve(string? workspaceDirectory, string? overrideCommand, string? roleVerifyPixiTask)

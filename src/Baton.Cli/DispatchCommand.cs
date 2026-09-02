@@ -287,13 +287,10 @@ public static class DispatchCommand
     /// </summary>
     private static void CopyPrimaryOutputToOverride(DispatchOptions options, CommandResult result, string primaryOutputName)
     {
-        // #1702 (the measured defect): NOT gated on Status == Succeeded. A worker execution that wrote
-        // its declared output but then had the engine's own verify step fail settles the STEP as
-        // Failed/Indeterminate (StateProjector.ApplyIndeterminate) even though the output already
-        // exists on disk -- gating here on Succeeded silently dropped that output, sitting unseen in
-        // the room's artifacts while --output was never written (report-953.md, #1702's own repro).
-        // The File.Exists(srcPath) check below is the real, unconditional gate: deliver whatever the
-        // execution actually wrote, regardless of what verify (or its #1702 not-run outcome) decided.
+        // #1702: NOT gated on Status == Succeeded — a verify failure flips the step to
+        // Failed/Indeterminate after the output already exists on disk (report-953.md's own repro;
+        // full account spec/baton.md §3, "the resolved verify command" section). File.Exists(srcPath)
+        // below is the real, unconditional gate.
         var step = result.State.Steps.FirstOrDefault(s => s.LatestExecutionId is not null);
         if (step is null || step.LatestExecutionId is not { } execId)
         {

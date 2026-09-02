@@ -26,15 +26,12 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// <param name="Model">The resolved config entry's <c>WorkerBindingConfigEntry.Model</c>, carried for the same reason.</param>
     /// <param name="VerifyPixiTask">
     /// #1623: this execution's role-default verify task — see
-    /// <c>Baton.Vendors.WorkerRole.VerifyPixiTask</c>'s remarks. One of three inputs
-    /// <see cref="VerifyCommandResolver.Resolve"/> weighs (lowest precedence); null contributes no
-    /// role default, not "runs no verify step" outright since #1702 — <paramref name="VerifyCommandOverride"/>
-    /// or the workspace's own <c>.baton/verify</c> declaration can still resolve one.
+    /// <c>Baton.Vendors.WorkerRole.VerifyPixiTask</c>'s remarks. Lowest-precedence input to
+    /// <see cref="VerifyCommandResolver.Resolve"/> (full precedence order on
+    /// <c>Baton.Vendors.WorkerBindingConfigEntry.VerifyCommandOverride</c>'s own doc, spec/baton.md §3).
     /// </param>
     /// <param name="VerifyCommandOverride">
-    /// #1702: the <c>--verify</c> escape hatch, mirroring <paramref name="TokenBudget"/>'s override
-    /// pattern — highest precedence in <see cref="VerifyCommandResolver.Resolve"/>. Null defers to the
-    /// workspace's own <c>.baton/verify</c> declaration, then <paramref name="VerifyPixiTask"/>.
+    /// #1702: this execution's <c>--verify</c> value, carried the same hop as <paramref name="VerifyPixiTask"/>.
     /// </param>
     /// <param name="TokenBudget">
     /// #1623: the per-execution token ceiling — see <c>Baton.Vendors.WorkerRole.TokenBudget</c>'s
