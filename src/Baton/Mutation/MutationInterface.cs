@@ -203,11 +203,13 @@ public static class MutationInterface
     /// required.
     /// </param>
     /// <exception cref="InvalidCaptureResolutionException">
-    /// <paramref name="executionId"/> names no step with an unresolved
-    /// <see cref="FlowEvent.ExecutionIndeterminate"/> <b>and a captured response to resolve</b> (an
+    /// <paramref name="executionId"/> names no step this verb admits for the requested
+    /// <paramref name="accepted"/> value — see the guard's own comment for
+    /// <see cref="Domain.IndeterminateProducer"/>'s per-verb admission table (F1, #1593 review): an
     /// Indeterminate settled by <see cref="FlowEvent.VerifyFailed"/> or
-    /// <see cref="FlowEvent.ExecutionArrested"/> is not a target of this verb — see the guard's own
-    /// comment), <paramref name="accepted"/> is <c>false</c> and
+    /// <see cref="FlowEvent.ExecutionArrested"/> is never a target of either verb, and one settled by
+    /// this class's own #1593 contract-failure arm (<see cref="Outcomes.OutcomeClassifier"/>, no
+    /// captured response) admits <c>--reject</c> only. <paramref name="accepted"/> is <c>false</c> and
     /// <paramref name="reason"/> is null/whitespace, or reading/writing a captured or declared output
     /// file failed.
     /// </exception>
@@ -252,19 +254,22 @@ public static class MutationInterface
 
         var target = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
 
-        // #1623 merge: LatestCapturedResponseFile, not IndeterminateAwaitingResolution alone, is what
-        // makes a step a CAPTURE-resolution target. Since #1623 that flag has three producers, and the
-        // other two (FlowEvent.VerifyFailed, FlowEvent.ExecutionArrested) settle Indeterminate with no
-        // captured response at all — StateProjector.ApplyIndeterminate deliberately leaves
-        // LatestCapturedResponseFile untouched. Without this second clause a `baton resolve --reject`
-        // against a verify-failed or arrested step would be admitted, journal a CaptureResolved that
-        // clears the flag, and hand the step back to RetryEngine.MayRetry as an ordinary Failed one —
-        // the blind retry #1623's ruling forbids, arriving through a verb that never examined the
-        // verify failure. (The --accept path already refuses such a step below on the same null file,
-        // so only the reject path was ever reachable; both are refused here instead, at admission.)
-        // The one ExecutionIndeterminate producer, OutcomeClassifier's captured-response arm, always
-        // records a file, so no #1608 target loses admission to this clause.
-        if (target is null || !target.IndeterminateAwaitingResolution || target.LatestCapturedResponseFile is null)
+        // F1 (#1593 review): IndeterminateProducer, not a bare LatestCapturedResponseFile null/not-null
+        // read, is what makes a step a target of THIS verb — and which of the two verbs. Since #1593
+        // IndeterminateAwaitingResolution has four producers. VerifyFailed/Arrested settle Indeterminate
+        // with no captured response at all (StateProjector.ApplyIndeterminate deliberately leaves
+        // LatestCapturedResponseFile untouched) and admit neither verb — a `baton resolve --reject`
+        // against either would otherwise be admitted, journal a CaptureResolved that clears the flag,
+        // and hand the step back to RetryEngine.MayRetry as an ordinary Failed one, the blind retry
+        // #1623's ruling forbids, arriving through a verb that never examined the failure.
+        // ContractFailure (#1593) has no captured response either, but DOES have something a `--reject`
+        // is allowed to record: the conductor's own judgement after inspecting the workspace. Only
+        // `--accept-capture` keeps refusing it, on the same "nothing to accept" logic that already
+        // covered every producer before this fix, since there is genuinely no file to write from.
+        var admitsThisVerb = target is { IndeterminateAwaitingResolution: true }
+            && (target.IndeterminateProducer == IndeterminateProducer.CapturedResponse
+                || (accepted == false && target.IndeterminateProducer == IndeterminateProducer.ContractFailure));
+        if (!admitsThisVerb)
         {
             // #1608 review finding 5: an explicit --execution naming a step whose latest attempt
             // already recorded an ACCEPTED CaptureResolved for this exact execution is a repair
@@ -310,7 +315,7 @@ public static class MutationInterface
                 $"'{roomDirectoryPath}' — 'baton resolve' only targets a step still awaiting conductor resolution.");
         }
 
-        IReadOnlyList<string> resolvedOutputNames = target.LatestUnsatisfiedOutputNames ?? [];
+        IReadOnlyList<string> resolvedOutputNames = target!.LatestUnsatisfiedOutputNames ?? [];
 
         if (accepted)
         {

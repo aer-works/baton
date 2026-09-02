@@ -87,12 +87,19 @@ internal static class ShellWorkerCommands
     }
 
     /// <summary>
-    /// The bounded self-iteration pattern: writes <paramref name="verdictFileName"/> with
-    /// <c>{"status":"needs_revision"}</c> on its first invocation and <c>{"status":"approved"}</c>
-    /// on every one after, keyed off a marker file outside <c>BATON_OUTPUT_DIR</c> — each attempt's
-    /// output directory is fresh by design, so durable state across attempts has to live
-    /// elsewhere, same as <see cref="FailOnFirstAttemptThenSucceed"/>. Exits 0 both times: only the
-    /// caller's declared <c>OutputCondition</c> on the produced output distinguishes the two attempts.
+    /// The (now-defunct, F3 #1593 review) bounded self-iteration pattern: writes
+    /// <paramref name="verdictFileName"/> with <c>{"status":"needs_revision"}</c> on its first
+    /// invocation and <c>{"status":"approved"}</c> on every one after, keyed off a marker file outside
+    /// <c>BATON_OUTPUT_DIR</c> — each attempt's output directory is fresh by design, so durable state
+    /// across attempts has to live elsewhere, same as <see cref="FailOnFirstAttemptThenSucceed"/>.
+    /// Exits 0 both times: only the caller's declared <c>OutputCondition</c> on the produced output
+    /// distinguishes the two attempts. F3: the retry this pattern relied on no longer happens — an
+    /// exit-0 attempt whose <c>OutputCondition</c> fails now settles <c>Indeterminate</c> the same way
+    /// a missing declared output does (the #1593 ruling's own reasoning applies identically: an exit-0
+    /// worker that fails its output contract has done unknown work on the workspace, whether the
+    /// contract violation is a missing file or a failed condition). Kept for
+    /// <see cref="Baton.Tests.EndToEnd.WorkflowEndToEndTests.An_exit_0_worker_whose_OutputCondition_fails_settles_Indeterminate_and_is_not_retried"/>,
+    /// which exercises the FIRST attempt only and never reaches the "approved" branch.
     /// </summary>
     public static CoreDispatchTarget WriteVerdictNeedsRevisionThenApproved(
         string scriptDirectory, string markerFilePath, string verdictFileName)
@@ -108,7 +115,6 @@ internal static class ShellWorkerCommands
               ") else (\n" +
               $"  echo marker>\"{markerFilePath}\"\n" +
               $"  echo {{\"status\":\"needs_revision\"}}>\"{outputPath}\"\n" +
-              "  exit /b 1\n" +
               ")\n"
             : "#!/bin/sh\n" +
               $"if [ -f \"{markerFilePath}\" ]; then\n" +
@@ -116,7 +122,6 @@ internal static class ShellWorkerCommands
               "else\n" +
               $"  touch \"{markerFilePath}\"\n" +
               $"  echo '{{\"status\":\"needs_revision\"}}' > \"{outputPath}\"\n" +
-              "  exit 1\n" +
               "fi\n";
 
         return FromScript(scriptDirectory, body);

@@ -1,6 +1,30 @@
 namespace Baton.Domain;
 
 /// <summary>
+/// F1 (#1593 review): which of the four sources settled a step's
+/// <see cref="StepState.IndeterminateAwaitingResolution"/> flag — the discriminant <c>baton resolve</c>
+/// (<c>Baton.Cli.ResolveCommand</c>, <c>Mutation.MutationInterface.RecordCaptureResolutionAsync</c>)
+/// admits its verbs on, replacing a bare <see cref="StepState.LatestCapturedResponseFile"/> null/not-null
+/// read that could not tell <see cref="ContractFailure"/> (which DOES have something for a conductor to
+/// reject — their judgement after inspecting the workspace) from <see cref="VerifyFailed"/>/
+/// <see cref="Arrested"/> (which never do, since neither carries a captured response at all).
+/// </summary>
+public enum IndeterminateProducer
+{
+    /// <summary>#1594/#1608: <see cref="FlowEvent.ExecutionIndeterminate"/> with a non-null <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/> — the worker's declared output(s) were missing but a terminal response was recoverable. <c>--accept-capture</c> and <c>--reject --reason</c> both admit this producer.</summary>
+    CapturedResponse,
+
+    /// <summary>#1593: <see cref="FlowEvent.ExecutionIndeterminate"/> with a null <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/> — an exit-0 contract failure (or a dead worker on a mutated workspace) with no response to capture. Only <c>--reject --reason</c> admits this producer; <c>--accept-capture</c> has no capture to accept and keeps refusing.</summary>
+    ContractFailure,
+
+    /// <summary>#1623: <see cref="FlowEvent.VerifyFailed"/> — the role's verify command exited non-zero after a clean, contract-satisfied worker exit. Neither <c>baton resolve</c> verb admits this producer; only a fresh <c>baton dispatch</c> reopens the step.</summary>
+    VerifyFailed,
+
+    /// <summary>#1623: <see cref="FlowEvent.ExecutionArrested"/> — a live execution crossed its role's token budget and was arrested. Neither <c>baton resolve</c> verb admits this producer; only a fresh <c>baton dispatch</c> reopens the step.</summary>
+    Arrested,
+}
+
+/// <summary>
 /// <c>FlowState = Project(EventStore, WorkflowDefinitionSnapshot)</c> — workflow state
 /// reconstructed from event history, never from live process state, wall-clock time, or anything
 /// not frozen inside an event. Producing this from the event log is the State Projector's
@@ -199,6 +223,12 @@ public enum StepStatus
 /// captured-response producer (which records its own account on
 /// <see cref="LatestFailureReason"/> instead) leaves this null while still reading Indeterminate.
 /// </param>
+/// <param name="IndeterminateProducer">
+/// F1 (#1593 review): which of <see cref="Domain.IndeterminateProducer"/>'s four sources raised
+/// <paramref name="IndeterminateAwaitingResolution"/> — the discriminant <c>baton resolve</c> admits
+/// its verbs on. Null whenever <paramref name="IndeterminateAwaitingResolution"/> is false; cleared in
+/// the same breath as <paramref name="IndeterminateReason"/> on resolution or reopen.
+/// </param>
 public sealed record StepState(
     StepId StepId,
     StepStatus Status,
@@ -221,7 +251,8 @@ public sealed record StepState(
     IReadOnlyList<string>? LatestUnsatisfiedOutputNames = null,
     bool RetryForeclosed = false,
     bool IndeterminateAwaitingResolution = false,
-    string? IndeterminateReason = null);
+    string? IndeterminateReason = null,
+    IndeterminateProducer? IndeterminateProducer = null);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

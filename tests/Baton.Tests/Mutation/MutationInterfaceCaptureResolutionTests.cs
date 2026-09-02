@@ -564,6 +564,13 @@ public class MutationInterfaceCaptureResolutionTests
             Assert.Equal(StepStatus.Failed, resolvedStep.Status);
             Assert.False(resolvedStep.IndeterminateAwaitingResolution);
             Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(resolvedState));
+
+            // F8 (#1593 review): a reject of a ContractFailure producer must not hand the step back to
+            // blind retry -- the review's own finding was that this test asserted the post-reject state
+            // was Failed but never checked MayRetry on it, so a reject that silently re-armed retry on
+            // a possibly-mutated workspace would have passed unnoticed.
+            Assert.True(resolvedStep.RetryForeclosed);
+            Assert.False(Baton.Scheduling.RetryEngine.MayRetry(resolvedStep, snapshot.Steps[0].RetryPolicy));
         }
         finally
         {
@@ -707,7 +714,14 @@ public class MutationInterfaceCaptureResolutionTests
                 accepted: false, reason: "not my problem",
                 cancellationToken: TestContext.Current.CancellationToken);
 
-            Assert.False(state.Steps.Single().IndeterminateAwaitingResolution);
+            var step = state.Steps.Single();
+            Assert.False(step.IndeterminateAwaitingResolution);
+
+            // F8 (#1593 review) polarity control: unlike a ContractFailure producer's reject (asserted
+            // above in An_exit_0_worker_with_missing_contract_...), a CapturedResponse producer's reject
+            // stays retry-eligible -- #1608's own ruling. That shape is "substantial work happened",
+            // never "the workspace may have been mutated", so nothing here needs foreclosing.
+            Assert.False(step.RetryForeclosed);
         }
         finally
         {

@@ -98,28 +98,49 @@ public static class RedispatchCommand
         // is the only sanctioned way to clear this refusal.
         if (parentTerminal is not null && string.Equals(parentTerminal.State, WorkflowOutcome.Indeterminate, StringComparison.Ordinal))
         {
-            // #1623 merge: the refusal is unconditional as before, but the REMEDY is not — Indeterminate
-            // has three producers now and `baton resolve` only handles one of them. Discriminated on the
-            // same fact MutationInterface.RecordCaptureResolutionAsync admits on, read here off the
-            // sentinel's own per-step `capturedResponseFile`. Naming `baton resolve` unconditionally
-            // would send a verify-failed or arrested parent to a verb that refuses it outright — a dead
-            // end in a user-facing string, and the whole point of this signage is a next step that works.
-            var hasCapture = parentTerminal.Steps.Any(step => step.CapturedResponseFile is not null);
+            // F1 (#1593 review): the refusal is unconditional as before, but the REMEDY is not —
+            // Indeterminate has four producers now and each admits a different remedy.
+            // WorkflowStatusStepView.IndeterminateProducerKind (Domain.IndeterminateProducer's own enum
+            // member name) is the discriminant, replacing a bare CapturedResponseFile null/not-null
+            // read that could not tell ContractFailure (which DOES have something for `baton resolve
+            // --reject` to record: the conductor's judgement after inspecting the workspace) from
+            // VerifyFailed/Arrested (which never do). Naming `baton resolve` unconditionally, or naming
+            // it only for CapturedResponse, would send a ContractFailure or verify-failed/arrested
+            // parent to a dead end — the whole point of this signage is a next step that works.
+            // A terminal.json written before this field existed carries no IndeterminateProducerKind
+            // at all -- fall back to the pre-F1 hasCapture read so an older sentinel still gets the
+            // remedy its shape actually supports, rather than always landing on the fresh-dispatch
+            // fallback below.
+            var indeterminateStep = parentTerminal.Steps.FirstOrDefault(
+                step => step.State == nameof(StepStatus.Failed)
+                    && (step.IndeterminateProducerKind is not null || step.CapturedResponseFile is not null));
+            var producerKind = indeterminateStep?.IndeterminateProducerKind
+                ?? (indeterminateStep?.CapturedResponseFile is not null ? nameof(IndeterminateProducer.CapturedResponse) : null);
 
             throw new CliArgumentException(
                 $"Parent room '{options.ParentRoomDirectoryPath}' settled Indeterminate — journal facts "
                 + "alone could not decide whether it succeeded or failed, so redispatching it would "
                 + "silently discard that ambiguity rather than resolve it.",
-                hasCapture
-                    ? $"run `baton resolve {options.ParentRoomDirectoryPath} [--execution <id>] "
-                        + "--accept-capture | --reject --reason <text>` first, then redispatch — see spec/baton.md §3."
-                    : "this room settled Indeterminate without a captured response (a verify failure or a "
+                producerKind switch
+                {
+                    nameof(IndeterminateProducer.CapturedResponse) =>
+                        $"run `baton resolve {options.ParentRoomDirectoryPath} [--execution <id>] "
+                        + "--accept-capture | --reject --reason <text>` first, then redispatch — see spec/baton.md §3.",
+                    nameof(IndeterminateProducer.ContractFailure) =>
+                        $"this room settled Indeterminate with no captured response (an exit-0 contract "
+                        + "failure, or a dead worker on a mutated workspace) — `baton resolve --accept-capture` "
+                        + $"refuses it (nothing to accept), but `baton resolve {options.ParentRoomDirectoryPath} "
+                        + "[--execution <id>] --reject --reason <text>` still resolves it; redispatch the "
+                        + "resulting room, or, once resolved, redispatch this one — see spec/baton.md §3.",
+                    _ =>
+                        "this room settled Indeterminate without a captured response (a verify failure or a "
                         + $"token-budget arrest), so neither `baton resolve` nor `baton redispatch` applies — "
                         + "redispatch is permanently unavailable for this producer, since there is no parent "
                         + $"terminal.json fact it could clear. Read `baton status {options.ParentRoomDirectoryPath} "
                         + "--json` for the step's reason, fix the underlying cause, and run "
                         + $"{DescribeFreshDispatchRemedy(workerName, parentEntry)} into a fresh room — "
-                        + "see spec/baton.md §3.");
+                        + "see spec/baton.md §3.",
+                });
         }
 
         if (parentTerminal is not null && !string.Equals(parentTerminal.State, WorkflowOutcome.Succeeded, StringComparison.Ordinal))
