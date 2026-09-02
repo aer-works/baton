@@ -46,6 +46,15 @@ public static class RetryEngine
             return false;
         }
 
+        // #1623: retry-ineligible by an explicit arm, not merely a side effect of RetryForeclosed
+        // above (the ruling's own wording) -- a verify failure or a token-budget arrest settles
+        // Indeterminate for the conductor, and must never be retried regardless of how the two
+        // producers happen to set RetryForeclosed alongside this.
+        if (stepState.IndeterminateReason is not null)
+        {
+            return false;
+        }
+
         if (stepState.LinkedFromExecutionId is not null)
         {
             return false;

@@ -90,6 +90,20 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park")];
         yield return [new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park", ForeclosedBy: "settle")];
         yield return [new FlowEvent.ZeroOutputsDespiteSubstantialWork(ExecutionId, "4 turns, 500 output tokens")];
+
+        // #1623
+        yield return [new FlowEvent.VerifyStarted(ExecutionId)];
+        yield return [new FlowEvent.VerifyPassed(ExecutionId)];
+        yield return [new FlowEvent.VerifyFailed(ExecutionId)];
+        yield return [new FlowEvent.VerifyFailed(ExecutionId, ["fmt-check", "lint"], "GATES: FAIL 2 of 25 -- fmt-check, lint")];
+        yield return [new FlowEvent.ExecutionArrested(ExecutionId)];
+        yield return
+        [
+            new FlowEvent.ExecutionArrested(
+                ExecutionId,
+                new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000),
+                LastToolNames: ["manage_task", "manage_task", "run_command"])
+        ];
     }
 
     [Theory]

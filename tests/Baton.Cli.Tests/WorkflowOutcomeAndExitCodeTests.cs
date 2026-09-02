@@ -152,6 +152,37 @@ public class WorkflowOutcomeAndExitCodeTests
         Assert.NotEqual(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
     }
 
+    // #1623 (contract: spec/baton.md §3). VerifyFailed and ExecutionArrested
+    // describe identically here -- StateProjectorTests pins the two events separately, so
+    // this file only needs the shared StepState shape both leave behind (IndeterminateReason set).
+
+    [Fact]
+    public void A_step_with_an_IndeterminateReason_resolves_to_Indeterminate_not_Failed()
+    {
+        var step = new StepState(
+            new StepId("a"), StepStatus.Failed, new ExecutionId("exec-1"), new Dictionary<StepId, ExecutionId>(),
+            LatestFailureClassification: FailureClassification.Permanent,
+            LatestFailureReason: "Verify failed (fmt-check) — awaiting conductor resolution.",
+            IndeterminateReason: "Verify failed (fmt-check) — awaiting conductor resolution.");
+        var state = TerminalState([step]);
+
+        Assert.Equal(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+        Assert.Equal(RunExitCode.Failed, RunExitCodeResolver.Resolve(Result(state)));
+    }
+
+    [Fact]
+    public void An_Indeterminate_step_alongside_an_ordinary_success_still_resolves_to_Indeterminate()
+    {
+        var state = TerminalState([
+            Step("a", StepStatus.Succeeded),
+            new StepState(
+                new StepId("b"), StepStatus.Failed, new ExecutionId("exec-2"), new Dictionary<StepId, ExecutionId>(),
+                IndeterminateReason: "Execution arrested: token budget exceeded — awaiting conductor resolution."),
+        ]);
+
+        Assert.Equal(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+    }
+
     // #1586 S1 review F1: the operator's amendment 1 called this a "tripwire pattern" that sweeps
     // every predicate that must learn a new WorkflowOutcome member -- a mechanism the repo did not
     // actually have (no reflection over the constant set anywhere, no vocabulary checker under

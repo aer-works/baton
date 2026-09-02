@@ -532,6 +532,29 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         var originalOut = Console.Out;
         try
         {
+            // #1623: "implement" is also the catalog's one role carrying a VerifyPixiTask
+            // -- with no workspace override, DispatchCommand defaults to
+            // Directory.GetCurrentDirectory() (this test assembly's own output directory), and pixi
+            // walks UP parent directories looking for a manifest, which would find and run THIS repo's
+            // real, multi-minute gates-quiet. An isolated workspace with its own minimal, fast,
+            // passing fixture manifest keeps the verify spawn real without that hazard --
+            // DispatchTemplateEndToEndTests.InitGitWorkspaceAsync's own comment explains the shape.
+            var workspace = Path.Combine(testRoot, "workspace");
+            Directory.CreateDirectory(workspace);
+            await File.WriteAllTextAsync(
+                Path.Combine(workspace, "pixi.toml"),
+                """
+                [workspace]
+                name = "verify-fixture"
+                version = "0.1.0"
+                channels = []
+                platforms = ["win-64"]
+
+                [tasks]
+                gates-quiet = { cmd = "cmd /c exit 0" }
+                """,
+                TestContext.Current.CancellationToken);
+
             var specPath = await WriteSpecAsync(testRoot, "Make the bounded change.");
             var roomDirectory = Path.Combine(testRoot, "task");
             var options = new DispatchOptions("implement", specPath, roomDirectory, Adapter: "fake");
@@ -542,7 +565,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
 
             using var consoleOutput = new StringWriter();
             Console.SetOut(consoleOutput);
-            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken, workspaceDirectory: workspace);
             Console.SetOut(originalOut);
 
             Assert.Contains("Grant: read, write, shell, network", consoleOutput.ToString());

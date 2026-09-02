@@ -46,6 +46,11 @@ namespace Baton.Cli;
 /// </param>
 /// <param name="Attachments">The <c>--attach</c> context files copied into the room (#1500).</param>
 /// <param name="ListCapabilities">True when <c>--list-capabilities</c> was passed to print discoverability info (#1500).</param>
+/// <param name="TokenBudget">
+/// The <c>--token-budget</c> escape hatch (#1623) — per-execution token ceiling, independent of the
+/// role like <paramref name="Timeout"/>. Role dispatch only, rejected for a workflow template the same
+/// way <paramref name="Timeout"/> is. Null keeps the role's own default (<c>Baton.Vendors.WorkerRole.TokenBudget</c>).
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -59,4 +64,5 @@ public sealed record DispatchOptions(
     TimeSpan? Timeout = null,
     string? Label = null,
     IReadOnlyList<string>? Attachments = null,
-    bool ListCapabilities = false);
+    bool ListCapabilities = false,
+    long? TokenBudget = null);

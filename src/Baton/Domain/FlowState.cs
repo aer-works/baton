@@ -166,6 +166,18 @@ public enum StepStatus
 /// <c>true</c>, independent of <see cref="LatestFailureClassification"/> or
 /// <see cref="ConsecutiveFailureCount"/>.
 /// </param>
+/// <param name="IndeterminateReason">
+/// #1623: non-null exactly when a <see cref="FlowEvent.VerifyFailed"/> or
+/// <see cref="FlowEvent.ExecutionArrested"/> has been projected against this step's latest execution —
+/// the diagnostic text doubles as the flag. <see cref="Status.WorkflowOutcome.DescribeTerminal"/> reads
+/// this ahead of <see cref="StepStatus.Failed"/> to report
+/// <see cref="Status.WorkflowOutcome.Indeterminate"/> instead, and
+/// <see cref="Scheduling.RetryEngine.MayRetry"/> refuses unconditionally while this is set — the same
+/// "never a blind retry" shape <see cref="RetryForeclosed"/> already gives #1586 S1's own producer.
+/// Distinct field from <see cref="RetryForeclosed"/> (which this also sets) because a captured-response
+/// Indeterminate candidate (#1608, a separate, still-unmerged producer) may end up needing a different
+/// flag; see that issue for the merge-order note.
+/// </param>
 public sealed record StepState(
     StepId StepId,
     StepStatus Status,
@@ -186,7 +198,8 @@ public sealed record StepState(
     int ExecutionCount = 0,
     string? LatestCapturedResponseFile = null,
     IReadOnlyList<string>? LatestUnsatisfiedOutputNames = null,
-    bool RetryForeclosed = false);
+    bool RetryForeclosed = false,
+    string? IndeterminateReason = null);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

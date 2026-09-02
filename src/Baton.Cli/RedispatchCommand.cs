@@ -171,7 +171,8 @@ public static class RedispatchCommand
     /// <paramref name="options"/> actually set, falling back to the parent's own recorded value for
     /// every axis left null -- adapter, model, effort, workspace, timeout. Public so it is unit-testable
     /// against a hand-built <see cref="WorkerBindingConfigEntry"/> without a room on disk, the same
-    /// reusability <see cref="RoleDispatch.ToBinding"/> is public for.
+    /// reusability <see cref="RoleDispatch.ToBinding"/> is public for. #1623 added <c>--token-budget</c>
+    /// to the same axis list -- null keeps the parent's.
     /// </summary>
     public static WorkerBindingConfigEntry InheritBinding(WorkerBindingConfigEntry parentEntry, RedispatchOptions options)
     {
@@ -213,6 +214,7 @@ public static class RedispatchCommand
             WorkingDirectory = workingDirectory,
             Worktree = worktree,
             Timeout = options.Timeout ?? parentEntry.Timeout,
+            TokenBudget = options.TokenBudget ?? parentEntry.TokenBudget,
             Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label, // #1499, spec/baton.md §2
             // Adapter-derived, not role-derived, so it CAN be recomputed here — carrying the parent's
             // value across a vendor swap would stream-json a claude/agy worker (or text-mode a non-streaming one).
@@ -246,7 +248,8 @@ public static class RedispatchCommand
                 modelOverride: options.Model ?? parentEntry.Model,
                 effortOverride: options.Effort ?? parentEntry.Effort,
                 outputOverride: options.OutputPath,
-                timeoutOverride: options.Timeout ?? parentEntry.Timeout);
+                timeoutOverride: options.Timeout ?? parentEntry.Timeout,
+                tokenBudgetOverride: options.TokenBudget ?? parentEntry.TokenBudget);
 
             return (definition, bindings[role.Id]);
         }

@@ -1211,19 +1211,6 @@ public static class MutationInterface
     {
         try
         {
-            // Rests on ICoreDispatcher's contract that cancellation via dispatchCancellationToken
-            // comes back as a normal CoreDispatchResult (CoreExitReason.CancelRequested), never as
-            // OperationCanceledException — CoreDispatcher converts BatonCancelException two layers
-            // down. If an implementation (or a test double) ever let OCE escape here, the outcome
-            // append below would be skipped and, with the ambient token also cancelled, the pump's
-            // round-level catch would absorb the evidence. There is deliberately no local catch:
-            // that would convert a contract violation into a fabricated outcome.
-            var dispatchResult = await dispatcher.DispatchAsync(prepared.Request, binding.Target, dispatchCancellationToken)
-                .ConfigureAwait(false);
-            // The request's mode was set from this binding at preparation; null can only mean a
-            // request shape that predates the mode, and those were never promised an audit.
-            var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
-            var worktreePath = binding.Target.WorkingDirectory;
             // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own #1567
             // comment explains — prepared.Request.Adapter, not the binding, so this site and the
             // crash-recovery site below both read the same source (identical value here, since
@@ -1231,9 +1218,95 @@ public static class MutationInterface
             var usageParser = prepared.Request.Adapter is { } liveAdapter
                 ? StandardWorkerUsageParsers.Default.GetValueOrDefault(liveAdapter)
                 : null;
+
+            // #1623 ruling addendum: a live token-budget watch, wired the same way
+            // CoreDispatcher.DetectsTerminalSuccess composes onto an existing OnStdoutLine sink —
+            // never replacing whatever a caller (e.g. the M24 live-streaming seam) already wired.
+            // Only possible when the adapter is known: with no usage parser there is nothing to read
+            // usage from, so an execution with a role budget but an unrecognized adapter simply runs
+            // unwatched rather than refusing to dispatch.
+            TokenBudgetMonitor? budgetMonitor = null;
+            var target = binding.Target;
+            if (binding.TokenBudget is { } tokenBudget && usageParser is not null)
+            {
+                budgetMonitor = new TokenBudgetMonitor(tokenBudget, usageParser);
+                var innerOnStdoutLine = target.OnStdoutLine;
+                target = target with
+                {
+                    OnStdoutLine = line =>
+                    {
+                        innerOnStdoutLine?.Invoke(line);
+                        budgetMonitor.OnStdoutLine(line);
+                    },
+                };
+            }
+
+            using var linkedCancellation = budgetMonitor is not null
+                ? CancellationTokenSource.CreateLinkedTokenSource(dispatchCancellationToken, budgetMonitor.ArrestRequested)
+                : null;
+            var effectiveCancellationToken = linkedCancellation?.Token ?? dispatchCancellationToken;
+
+            // Rests on ICoreDispatcher's contract that cancellation via its token argument comes back
+            // as a normal CoreDispatchResult (CoreExitReason.CancelRequested), never as
+            // OperationCanceledException — CoreDispatcher converts BatonCancelException two layers
+            // down, agnostic to which linked source actually fired. If an implementation (or a test
+            // double) ever let OCE escape here, the outcome append below would be skipped and, with
+            // the ambient token also cancelled, the pump's round-level catch would absorb the
+            // evidence. There is deliberately no local catch: that would convert a contract violation
+            // into a fabricated outcome.
+            var dispatchResult = await dispatcher.DispatchAsync(prepared.Request, target, effectiveCancellationToken)
+                .ConfigureAwait(false);
+
+            if (budgetMonitor is { Arrested: true })
+            {
+                // The budget's own token fired, not the caller's dispatchCancellationToken -- an
+                // engine-initiated arrest, never operator intent, so this is FlowEvent.ExecutionArrested,
+                // never FlowEvent.CancellationRequested/ExecutionCancelled (those mean the operator
+                // asked). No OutcomeClassifier.Classify call at all: classifying a cancelled-out-from-
+                // under-it process would only produce a Cancelled/Failed verdict that this replaces
+                // wholesale, never Succeeded.
+                await eventLogWriter.AppendAsync(
+                    new FlowEvent.ExecutionArrested(prepared.Request.ExecutionId, budgetMonitor.SnapshotUsage(), budgetMonitor.SnapshotLastToolNames()),
+                    CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            // The request's mode was set from this binding at preparation; null can only mean a
+            // request shape that predates the mode, and those were never promised an audit.
+            var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
+            var worktreePath = binding.Target.WorkingDirectory;
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
                 grantAuditMode, worktreePath, binding.ResponseParser, usageParser);
+
+            // #1623 (contract: spec/baton.md §3): the engine's own verify
+            // step, spawned here -- between Classify returning Succeeded and the outcome event append
+            // below -- rather than inside OutcomeClassifier.Classify itself, because Classify also runs
+            // on the crash-recovery ToClassify branch (PumpToFixedPointAsync above) replaying a
+            // recorded exit from a possibly-defunct workspace; a real subprocess belongs only on the
+            // live-dispatch path.
+            if (classification.Verdict == OutcomeVerdict.Succeeded && binding.VerifyPixiTask is { } verifyTask)
+            {
+                await eventLogWriter.AppendAsync(new FlowEvent.VerifyStarted(prepared.Request.ExecutionId), CancellationToken.None)
+                    .ConfigureAwait(false);
+                var verifyOutcome = await VerifyRunner.RunAsync(verifyTask, binding.Target.WorkingDirectory, CancellationToken.None)
+                    .ConfigureAwait(false);
+                if (verifyOutcome.Passed)
+                {
+                    await eventLogWriter.AppendAsync(new FlowEvent.VerifyPassed(prepared.Request.ExecutionId), CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    // Never a blind retry (the ruling's own words): this IS the terminal event for this
+                    // execution -- no FlowEvent.ExecutionSucceeded, no ZeroOutputsTripwire check, the
+                    // step settles Indeterminate via StateProjector.ApplyIndeterminate instead.
+                    await eventLogWriter.AppendAsync(
+                        new FlowEvent.VerifyFailed(prepared.Request.ExecutionId, verifyOutcome.FailingMembers, verifyOutcome.Tail),
+                        CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+            }
 
             // Never gated on dispatchCancellationToken: that token having fired is exactly what
             // produced this outcome (Cancelled) in the first place, so recording it must not itself

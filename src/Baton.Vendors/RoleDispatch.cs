@@ -72,12 +72,17 @@ public static class RoleDispatch
     /// </param>
     /// <param name="attachments">Attached context files supplied by the operator.</param>
     /// <param name="attachmentsDirectory">The directory inside the room artifacts where attached files live.</param>
+    /// <param name="tokenBudgetOverride">
+    /// The <c>--token-budget</c> escape hatch (#1623), independent of the role like <paramref
+    /// name="timeoutOverride"/>. Null keeps <see cref="WorkerRole.TokenBudget"/>.
+    /// </param>
     public static WorkerBindingConfigEntry ToBinding(
         WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null,
         string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null,
         IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null,
         bool autoProvisionWorktree = true, TimeSpan? timeoutOverride = null,
-        IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null)
+        IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null,
+        long? tokenBudgetOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -162,7 +167,11 @@ public static class RoleDispatch
             // #1089, #1540: agy and claude. Streaming puts event-level JSON envelopes on stdout so a running lane's
             // log fills incrementally (feeding the live tail), while agy's terminal `result` event reaches the
             // teardown-hang guard. claude dispatches run plain stream-json --verbose without --include-partial-messages.
-            StreamJson: StreamsJson(adapter));
+            StreamJson: StreamsJson(adapter),
+            // #1623: verify is the engine's own step, never operator-overridden here -- a role either
+            // declares one or it doesn't. The token budget follows timeoutOverride's own pattern.
+            VerifyPixiTask: role.VerifyPixiTask,
+            TokenBudget: tokenBudgetOverride ?? role.TokenBudget);
     }
 
     /// <summary>
@@ -184,14 +193,15 @@ public static class RoleDispatch
         WorkerRole role, string spec, string? adapterOverride = null, string? workingDirectory = null,
         string? modelOverride = null, string? effortOverride = null, string? outputOverride = null,
         TimeSpan? timeoutOverride = null, IReadOnlyList<string>? attachments = null,
-        string? attachmentsDirectory = null)
+        string? attachmentsDirectory = null, long? tokenBudgetOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
         var binding = ToBinding(
             role, spec, adapterOverride, workingDirectory: workingDirectory,
             modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride,
-            timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory);
+            timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory,
+            tokenBudgetOverride: tokenBudgetOverride);
 
         var stepOutputs = binding.Contract.ProducedOutputs.Select(o => o.Name).ToList();
 

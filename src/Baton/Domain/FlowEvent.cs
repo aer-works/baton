@@ -21,6 +21,10 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(StepRetryScheduled), "stepRetryScheduled")]
 [JsonDerivedType(typeof(StepRetryForeclosed), "stepRetryForeclosed")]
 [JsonDerivedType(typeof(ZeroOutputsDespiteSubstantialWork), "zeroOutputsDespiteSubstantialWork")]
+[JsonDerivedType(typeof(VerifyStarted), "verifyStarted")]
+[JsonDerivedType(typeof(VerifyPassed), "verifyPassed")]
+[JsonDerivedType(typeof(VerifyFailed), "verifyFailed")]
+[JsonDerivedType(typeof(ExecutionArrested), "executionArrested")]
 public abstract record FlowEvent
 {
     private FlowEvent()
@@ -169,4 +173,50 @@ public abstract record FlowEvent
     public sealed record ZeroOutputsDespiteSubstantialWork(
         ExecutionId ExecutionId,
         string Evidence) : FlowEvent;
+
+    /// <summary>
+    /// #1623 (contract: <c>spec/baton.md</c> §3): the engine has begun running a
+    /// role's declared verify command (<c>pixi run gates-quiet</c> for <c>implement</c>) against a
+    /// worker execution that exited 0 with its output contract satisfied. Diagnostic only, the same
+    /// "durable fact, no <see cref="StepState"/> consequence" shape as
+    /// <see cref="ZeroOutputsDespiteSubstantialWork"/> — <see cref="VerifyPassed"/>/<see cref="VerifyFailed"/>
+    /// record how it ended.
+    /// </summary>
+    public sealed record VerifyStarted(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>#1623: the verify command <see cref="VerifyStarted"/> named exited 0. Diagnostic only.</summary>
+    public sealed record VerifyPassed(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>
+    /// #1623 (contract: <c>spec/baton.md</c> §3): the role's verify command exited non-zero after the
+    /// worker itself exited 0 with a satisfied output contract. Settles the step
+    /// <see cref="Status.WorkflowOutcome.Indeterminate"/> — the ruling's own words, "never a blind
+    /// retry"; the conductor resolves it. <paramref name="FailingMembers"/>/<paramref name="Tail"/>
+    /// mirror <c>tools/gates/gates.py</c>'s own <c>--quiet</c> shape (member names from its
+    /// <c>summarise()</c> line, plus a bounded output tail) — never a full log dump.
+    /// </summary>
+    /// <param name="FailingMembers">Which gate members failed, by name — empty/null if the verify
+    /// command reports no per-member breakdown.</param>
+    /// <param name="Tail">A bounded tail of the verify command's own output, for a human to read
+    /// without re-running it.</param>
+    public sealed record VerifyFailed(
+        ExecutionId ExecutionId,
+        IReadOnlyList<string>? FailingMembers = null,
+        string? Tail = null) : FlowEvent;
+
+    /// <summary>
+    /// #1623 (contract: <c>spec/baton.md</c> §3; the addendum's own words are quoted on
+    /// <see cref="Mutation.TokenBudgetMonitor"/>): a live execution's measured usage crossed its role's
+    /// token budget. The engine cancels the execution (arrest, not park) rather than let it keep running.
+    /// <paramref name="Usage"/> is the measured usage at arrest time; <paramref name="LastToolNames"/>
+    /// the last few tool calls observed, which is what a conductor reads to tell a runaway loop from a
+    /// merely long task. Settles the step <see cref="Status.WorkflowOutcome.Indeterminate"/>, same as
+    /// <see cref="VerifyFailed"/> — never a blind retry. Deliberately not
+    /// <see cref="FlowEvent.CancellationRequested"/>: that event is operator intent, and this is a
+    /// distinct, engine-initiated fact.
+    /// </summary>
+    public sealed record ExecutionArrested(
+        ExecutionId ExecutionId,
+        WorkerUsage? Usage = null,
+        IReadOnlyList<string>? LastToolNames = null) : FlowEvent;
 }

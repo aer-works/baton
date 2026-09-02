@@ -46,7 +46,8 @@ public sealed record ProjectionCheckpointState(
     Dictionary<StepId, int>? ExecutionCountByStepId = null,
     Dictionary<StepId, string?>? LatestCapturedResponseFileByStepId = null,
     Dictionary<StepId, List<string>?>? LatestUnsatisfiedOutputNamesByStepId = null,
-    HashSet<StepId>? RetryForeclosedStepIds = null)
+    HashSet<StepId>? RetryForeclosedStepIds = null,
+    Dictionary<StepId, string?>? IndeterminateReasonByStepId = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -67,6 +68,14 @@ public sealed record ProjectionCheckpointState(
     /// first (#1606).
     /// </summary>
     public HashSet<StepId> RetryForeclosedStepIds { get; init; } = RetryForeclosedStepIds ?? new();
+
+    /// <summary>
+    /// #1623: which steps carry a projected <see cref="FlowEvent.VerifyFailed"/> or
+    /// <see cref="FlowEvent.ExecutionArrested"/> not since reopened, and the diagnostic text to show for
+    /// it — same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above, and
+    /// the same <see cref="DeepCopy"/> load-bearing note applies.
+    /// </summary>
+    public Dictionary<StepId, string?> IndeterminateReasonByStepId { get; init; } = IndeterminateReasonByStepId ?? new();
 
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
@@ -125,5 +134,6 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<StepId, int>(ExecutionCountByStepId),
         new Dictionary<StepId, string?>(LatestCapturedResponseFileByStepId),
         LatestUnsatisfiedOutputNamesByStepId.ToDictionary(kvp => kvp.Key, kvp => kvp.Value is null ? null : new List<string>(kvp.Value)),
-        new HashSet<StepId>(RetryForeclosedStepIds));
+        new HashSet<StepId>(RetryForeclosedStepIds),
+        new Dictionary<StepId, string?>(IndeterminateReasonByStepId));
 }

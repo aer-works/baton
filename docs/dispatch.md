@@ -11,7 +11,7 @@ interactive session (chat) is a different path with a different prompt and a con
 ```
 baton dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
                     [--workspace <dir>] [--workflow-id <label>] [--output <path>] [--timeout <minutes>]
-                    [--label <text>] [--attach <file>]...
+                    [--token-budget <n>] [--label <text>] [--attach <file>]...
 
 baton dispatch --list-capabilities
 ```
@@ -29,6 +29,7 @@ baton dispatch --list-capabilities
 | `--workflow-id <label>` | A label forwarded to the run; defaults to the materialised template id. |
 | `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. |
 | `--timeout <minutes>` | Override the dispatched role's own catalog timeout for just this dispatch — a role that legitimately needs longer than its fixed tier timebox (an orchestrator coordinating sub-lanes, say) does not have to die mid-flight. Role dispatch only — refused up front on a template dispatch, the same way `--output` is: each phase carries its own role's timeout, so there is no single one to override. Must be a positive whole number of minutes; rejected outright above a 24h ceiling (a non-interactive dispatch has no confirmation prompt to gate a larger value behind); merely flagged on stderr above 2h. |
+| `--token-budget <n>` | Override the dispatched role's own default per-execution token ceiling (#1623) for just this dispatch — measured incrementally from the same usage the vendor's own `stream-json` output reports mid-execution, not merely the terminal line. Crossing it arrests the execution (cancels it, mid-flight) and settles the step `Indeterminate` for a conductor to resolve — never a silent retry. Role dispatch only, same refusal as `--timeout` on a template. Must be a positive whole number of tokens; no ceiling (raising your own budget is not the runaway-consumption failure mode this exists to arrest). Per-role defaults are listed in `spec/baton.md` §3; every other role runs unwatched unless this flag is passed. |
 | `--label <text>` | Display text only, e.g. `"the #1496 env-snapshot lane"` — so Fleet Glass shows something legible instead of the bare `dispatch-<role>-<8 hex>` directory name. Never part of the room directory's own name. Trimmed, newline-folded, capped at `DispatchOptionsParser.MaxLabelLength` chars; full contract in `spec/baton.md` §2. |
 | `--attach <file>` | Repeatable (#1500). Copies `<file>` into the room's `artifacts/attachments/` directory before the worker starts, and appends one line to the prompt naming every attached file and that directory. Keeps a brief short instead of pasting context documents inline. Role dispatch only — refused up front on a template dispatch, the same way `--output`/`--timeout` are. Content is operator-supplied and **inbound**: it is never scanned and never published, because the mailbox pusher reads only `terminal.json`'s declared step outputs and an attachment is never one of them (not the deliverable secret gate withholding it — there is nothing for that gate to see in the first place). Each named file must exist; a missing one is a typed argument error before the room is created. |
 | `--list-capabilities` | Prints every adapter's supported models and effort values, plus each catalog role's timebox default, and exits — no `<role>` or room required (#1500). Refused if combined with a `<name>`, rather than silently discarding the dispatch and exiting 0. `WorkerRoleCatalog.All` is the same catalog `ModelAndEffortValidationTests` reads directly. The role and effort sections can never drift from what dispatch actually accepts, but that is single-source construction — this printer and `ClaudeWorkerAdapter.Resolve`/`AgyWorkerAdapter.Resolve` all read the same `EffortTierMapping` statics — not test coverage: that suite only exercises agy's raw effort values end to end; it never hands Claude an `--effort`, and no test passes a canonical word to either vendor. Claude's model aliases (`ClaudeWorkerAdapter.ModelAliases`) are read live too, but that specific list has no validation surface of its own and is not exercised by that suite either — every alias always resolves to a vendor-current model, so nothing dispatch-side rejects one. agy has no equivalent alias catalog — its model names are suffix-parametrized (`gemini-<version>-<flash\|pro>-<low\|medium\|high>`), so the printed agy model examples are illustrative text, not a sourced table. |
@@ -68,6 +69,26 @@ assertion on this page — see `DispatchSpecLinter`'s own class doc for why the 
 larger, live on `DispatchSpecLinter`'s own class doc; record-once, not restated here.** In short: the
 shell check cannot tell an allowlisted command from a forbidden one, and the network check can miss an
 unrelated command a scoped shell doesn't actually cover.
+
+### The engine-run verify step (#1623)
+
+`implement` declares an engine-run verify command (`pixi run gates-quiet`) — the ENGINE runs it once,
+under the build lock, after the worker's own process exits 0 with its output contract satisfied; the
+worker itself is never asked to run gates or tests and never sees the command. `review`/`advise` and
+every other role declare none. A verify failure is never a blind retry: it settles the step
+`Indeterminate`, with the failing gate members and a bounded output tail recorded as room facts
+(`verifyStarted`/`verifyPassed`/`verifyFailed` in `flow.jsonl`) — a conductor resolves it, the same way
+an ambiguous captured-response outcome does (spec/baton.md §3).
+
+### The per-execution token budget (#1623)
+
+Every dispatch is watched against a token budget (per-role defaults in `spec/baton.md` §3),
+`--token-budget` overrides per dispatch, and every other role runs unwatched.
+Usage is read incrementally from the vendor's own `stream-json` output as it arrives, not just the
+terminal line, so a poll loop or a runaway tool-call sequence is caught mid-flight rather than after
+the fact. Crossing the budget arrests the execution (cancels it, never lets it keep running) and
+settles the step `Indeterminate` — `executionArrested` in `flow.jsonl` carries the measured usage and
+the last few tool names observed.
 
 ### The auto-provisioned worktree, and what it costs
 
@@ -214,7 +235,8 @@ schedule background work or wait for a wake-up, because nothing resumes the turn
 
 ```
 baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--model <m>] [--effort <e>]
-                          [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>]
+                          [--workspace <dir>] [--output <path>] [--timeout <minutes>]
+                          [--token-budget <n>] [--label <text>]
 ```
 
 `<room-dir>` names the parent room to rerun. The full contract — what each flag inherits from that

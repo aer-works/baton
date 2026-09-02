@@ -16,4 +16,26 @@ public interface IWorkerUsageParser
         usage = null;
         return false;
     }
+
+    /// <summary>
+    /// #1623: attempts to read usage from a live, not-yet-terminal stdout line (e.g. claude's mid-stream
+    /// <c>"type":"assistant"</c> <c>message.usage</c>, agy's <c>"step_update"</c> DONE-state
+    /// <c>usage</c>) — for a running token budget evaluated as usage arrives, never a replacement for
+    /// <see cref="TryParseFinalUsage"/>'s own terminal-line read. Each matching line reports that one
+    /// turn's own usage (not a running total), so a caller sums across calls rather than taking the
+    /// latest value. Default false/null: a parser that only supports the final-usage read (a test
+    /// double, a future vendor) opts out cleanly rather than being forced to implement this.
+    /// </summary>
+    bool TryParseIncrementalUsage(string rawLine, out WorkerUsage? usage)
+    {
+        usage = null;
+        return false;
+    }
+
+    /// <summary>
+    /// #1623: the tool name a live stdout line names, if any (e.g. agy's <c>step_update.tool_name</c>).
+    /// Independent of <see cref="TryParseIncrementalUsage"/> — a line can report one, both, or neither.
+    /// Default null.
+    /// </summary>
+    string? TryParseToolName(string rawLine) => null;
 }

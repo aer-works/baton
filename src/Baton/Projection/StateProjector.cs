@@ -280,11 +280,65 @@ public static class StateProjector
 
                 break;
 
+            case FlowEvent.VerifyFailed verifyFailed:
+                ApplyIndeterminate(state, verifyFailed.ExecutionId, DescribeVerifyFailure(verifyFailed));
+                break;
+
+            case FlowEvent.ExecutionArrested arrested:
+                ApplyIndeterminate(state, arrested.ExecutionId, DescribeArrest(arrested));
+                break;
+
             case FlowEvent.ExecutionRequestRejected:
             case FlowEvent.ZeroOutputsDespiteSubstantialWork:
+            case FlowEvent.VerifyStarted:
+            case FlowEvent.VerifyPassed:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
                 break;
         }
+    }
+
+    /// <summary>
+    /// #1623: shared apply for both Indeterminate producers (<see cref="FlowEvent.VerifyFailed"/>,
+    /// <see cref="FlowEvent.ExecutionArrested"/>) — settles the execution's terminal status as
+    /// <see cref="StepStatus.Failed"/> (so <see cref="DeriveWorkflowStatus"/>'s existing deliverability
+    /// predicate reaches Terminal the same way any other failure does) while also recording
+    /// <paramref name="reason"/> onto <see cref="ProjectionCheckpointState.IndeterminateReasonByStepId"/>
+    /// and foreclosing retry — <see cref="Scheduling.RetryEngine.MayRetry"/> also checks the reason
+    /// directly (not merely the foreclosure side effect), per the ruling's "retry-ineligible by an
+    /// explicit arm, not an accident of a default."
+    /// </summary>
+    private static void ApplyIndeterminate(ProjectionCheckpointState state, ExecutionId executionId, string reason)
+    {
+        state.TerminalStatusByExecutionId[executionId] = StepStatus.Failed;
+        if (!state.StepIdByExecutionId.TryGetValue(executionId, out var stepId))
+        {
+            return;
+        }
+
+        state.ConsecutiveFailureCountByStepId[stepId] = state.ConsecutiveFailureCountByStepId.GetValueOrDefault(stepId) + 1;
+        state.LatestFailureClassificationByStepId[stepId] = FailureClassification.Permanent;
+        state.LatestFailureReasonByStepId[stepId] = reason;
+        state.IndeterminateReasonByStepId[stepId] = reason;
+        state.RetryForeclosedStepIds.Add(stepId);
+        state.RetryNotBeforeByStepId.Remove(stepId);
+        state.RetryDelayMsByStepId.Remove(stepId);
+        state.RetryScheduledForExecutionIdByStepId.Remove(stepId);
+    }
+
+    private static string DescribeVerifyFailure(FlowEvent.VerifyFailed verifyFailed)
+    {
+        var members = verifyFailed.FailingMembers is { Count: > 0 }
+            ? $" ({string.Join(", ", verifyFailed.FailingMembers)})"
+            : string.Empty;
+        return $"Verify failed{members} — awaiting conductor resolution.";
+    }
+
+    private static string DescribeArrest(FlowEvent.ExecutionArrested arrested)
+    {
+        var tokens = (arrested.Usage?.TokensIn ?? 0) + (arrested.Usage?.TokensOut ?? 0);
+        return tokens > 0
+            ? $"Execution arrested: token budget exceeded ({tokens} tokens measured) — awaiting conductor resolution."
+            : "Execution arrested: token budget exceeded — awaiting conductor resolution.";
     }
 
     private static FlowState DeriveFlowState(
@@ -342,7 +396,8 @@ public static class StateProjector
                 state.ExecutionCountByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.LatestCapturedResponseFileByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.LatestUnsatisfiedOutputNamesByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.RetryForeclosedStepIds.Contains(stepDefinition.StepId)));
+                state.RetryForeclosedStepIds.Contains(stepDefinition.StepId),
+                state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

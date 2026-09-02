@@ -24,6 +24,14 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// <c>bindings.json</c> today, just captured at resolve time instead of at read time.
     /// </param>
     /// <param name="Model">The resolved config entry's <c>WorkerBindingConfigEntry.Model</c>, carried for the same reason.</param>
+    /// <param name="VerifyPixiTask">
+    /// #1623: this execution's resolved verify task — see
+    /// <c>Baton.Vendors.WorkerRole.VerifyPixiTask</c>'s remarks. Null runs no verify step.
+    /// </param>
+    /// <param name="TokenBudget">
+    /// #1623: the per-execution token ceiling — see <c>Baton.Vendors.WorkerRole.TokenBudget</c>'s
+    /// remarks. Null enforces no budget.
+    /// </param>
     public sealed record Process(
         WorkerContract Contract,
         CoreDispatchTarget Target,
@@ -35,7 +43,9 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         // #1594: same resolved adapter object as FailureClassifier above -- a worker adapter answers
         // both questions, and this is the settle path's seam for the second one (recovering a missing
         // declared output from the worker's own terminal response).
-        Outcomes.IWorkerResponseParser? ResponseParser = null)
+        Outcomes.IWorkerResponseParser? ResponseParser = null,
+        string? VerifyPixiTask = null,
+        long? TokenBudget = null)
         : WorkerBinding(Contract, GrantAuditMode);
 
     /// <summary>

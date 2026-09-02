@@ -411,6 +411,15 @@ public static class DispatchCommand
                 "remove the --timeout flag, or dispatch a single role instead of a template.");
         }
 
+        if (options.TokenBudget is not null)
+        {
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — each phase carries its own role's token "
+                + "budget, so --token-budget does not apply to one of them. Pass --token-budget only "
+                + "when dispatching a role.",
+                "remove the --token-budget flag, or dispatch a single role instead of a template.");
+        }
+
         var template = WorkflowTemplateCatalog.For(options.Name);
         // #1083: hand every phase the workspace too, so a role run as a template phase can read the repo
         // exactly as a directly-dispatched role now can.
@@ -501,7 +510,8 @@ public static class DispatchCommand
         return RoleDispatch.Materialize(
             role, spec, options.Adapter, workingDirectory: workspaceDirectory,
             modelOverride: options.Model, effortOverride: options.Effort, outputOverride: options.OutputPath,
-            timeoutOverride: options.Timeout, attachments: options.Attachments, attachmentsDirectory: attachmentsDir);
+            timeoutOverride: options.Timeout, attachments: options.Attachments, attachmentsDirectory: attachmentsDir,
+            tokenBudgetOverride: options.TokenBudget);
     }
 
     /// <summary>

@@ -26,15 +26,17 @@ public static class WorkflowOutcome
     /// does not reconcile at settle time. A single added value, not a two-field split, per the ruling's
     /// own wording.
     /// <para>
-    /// <b>No producer in this slice.</b> <see cref="Describe"/> never returns this today — the vocabulary
-    /// exists so every consumer can be swept and tested ahead of #2's <c>baton settle</c> verb (which
-    /// may settle a room TO this value) and #1608's classification-path swap (which flips the #1594
-    /// capture shape onto it). Wiring either producer here was explicitly deferred (S1's own scope
-    /// note): flipping the #1594 capture arm onto this value is #1608's job, not S1's — every
-    /// captured-response room's <see cref="Describe"/> reading is unchanged by this slice
-    /// (<c>WorkflowOutcomeAndExitCodeTests</c> pins that). Tests exercising the consumers below fabricate
-    /// a <c>terminal.json</c>/status view carrying this string directly rather than deriving it from a
-    /// journal, since nothing in <c>src/</c> can derive it yet.
+    /// <b>First producers landed by #1623</b> (contract: <c>spec/baton.md</c> §3):
+    /// <see cref="DescribeTerminal"/> reads a step's
+    /// <see cref="StepState.IndeterminateReason"/> — set by <see cref="FlowEvent.VerifyFailed"/> or
+    /// <see cref="FlowEvent.ExecutionArrested"/> — ahead of <see cref="Failed"/>/<see cref="Rejected"/>.
+    /// #1608's own producer (the #1594 captured-response arm settling here instead of
+    /// <see cref="Failed"/>) is a separate, still-unmerged PR (#1644 as of this writing) — every
+    /// captured-response room's <see cref="Describe"/> reading is unchanged by #1623
+    /// (<c>WorkflowOutcomeAndExitCodeTests</c> pins that; <c>spec/baton.md</c> §3 names the exact test).
+    /// Whichever of #1623/#1644 merges second should fold both into a single check here
+    /// rather than leaving two Indeterminate arms side by side — noted so the merge order is explicit,
+    /// not silent.
     /// </para>
     /// <para>
     /// <b>Consumer obligations (ruling item 2, spelled out in full in <c>spec/baton.md</c> §3):</b>
@@ -85,6 +87,16 @@ public static class WorkflowOutcome
         if (steps.All(step => step.Status == StepStatus.Succeeded))
         {
             return Succeeded;
+        }
+
+        // #1623: checked ahead of the ordinary Failed/Rejected read below -- a verify failure or a
+        // token-budget arrest is projected as an underlying StepStatus.Failed (see
+        // StateProjector.ApplyIndeterminate) so RetryEngine/DeriveWorkflowStatus's existing
+        // deliverability machinery needs no separate StepStatus value, but the room-level outcome must
+        // read Indeterminate, not Failed, for a step carrying this reason.
+        if (steps.Any(step => step.IndeterminateReason is not null))
+        {
+            return Indeterminate;
         }
 
         if (steps.Any(step => step.Status is StepStatus.Failed or StepStatus.Rejected))
