@@ -66,6 +66,47 @@ public class ShellCommandPatternMatcherTests
     }
 
     [Theory]
+    [InlineData("git diff", true)]
+    [InlineData("git diff --stat", true)]
+    [InlineData("git diff HEAD~1", true)]
+    [InlineData("git difftool", false)]
+    [InlineData("git difftool --extcmd=calc", false)]
+    [InlineData("git diff-index", false)]
+    public void Trailing_star_matches_on_word_boundaries_never_arbitrary_continuation(
+        string commandLine, bool expectedAllowed)
+    {
+        string[] patterns = ["git diff*"];
+        Assert.Equal(expectedAllowed, ShellCommandPatternMatcher.IsAllowed(commandLine, patterns));
+    }
+
+    [Theory]
+    [InlineData("git merge", true)]
+    [InlineData("git merge origin/main", true)]
+    [InlineData("git merge-base", false)]
+    [InlineData("git merge-base --is-ancestor a b", false)]
+    public void Trailing_star_word_boundary_does_not_shadow_hyphenated_subcommands(
+        string commandLine, bool expectedAllowed)
+    {
+        string[] patterns = ["git merge*"];
+        Assert.Equal(expectedAllowed, ShellCommandPatternMatcher.IsAllowed(commandLine, patterns));
+    }
+
+    [Theory]
+    [InlineData("git grep -Ocalc foo", true)]
+    [InlineData("git grep -O calc foo", true)]
+    [InlineData("git grep -O", true)]
+    [InlineData("git grep --open-files-in-pager=calc foo", true)]
+    [InlineData("git grep --open-files-in-pager calc foo", true)]
+    [InlineData("git grep --open-files-in-pager", true)]
+    [InlineData("git -c alias.x=!calc x", true)]
+    [InlineData("git -c core.pager=calc log", true)]
+    public void Flag_driven_escape_patterns_match_attached_and_separated_arguments(string commandLine, bool expectedAllowed)
+    {
+        string[] patterns = ["git grep -O*", "git grep --open-files-in-pager*", "git -c *"];
+        Assert.Equal(expectedAllowed, ShellCommandPatternMatcher.IsAllowed(commandLine, patterns));
+    }
+
+    [Theory]
     [InlineData("git status")]
     [InlineData("anything")]
     public void Empty_or_null_patterns_deny_everything(string commandLine)
@@ -172,5 +213,27 @@ public class ShellCommandPatternMatcherTests
         Assert.Equal(ShellCommandPatternMatcher.ScopedShellVerdict.Unparseable, result.Verdict);
         Assert.Contains("unparseable under scoped grant", result.Reason, StringComparison.Ordinal);
         Assert.Null(result.Segment);
+    }
+
+    [Theory]
+    [InlineData("git merge-base --is-ancestor a b", true)]
+    [InlineData("git diff --stat", true)]
+    [InlineData("git status", true)]
+    [InlineData("git difftool --extcmd=calc -y HEAD~1 HEAD", false)]
+    [InlineData("git grep -Ocalc foo", false)]
+    [InlineData("git grep --open-files-in-pager=calc foo", false)]
+    [InlineData("git -c alias.x=!calc x", false)]
+    [InlineData("git push --dry-run", false)]
+    [InlineData("gh api repos/x", false)]
+    [InlineData("gh pr view 1", true)]
+    public void Review_role_command_allow_deny_polarities_evaluated_directly(string command, bool expectedAllowed)
+    {
+        var review = WorkerRoleCatalog.For("review");
+        var allowed = review.Grant.ShellCommandPatterns;
+        var denied = review.Grant.DeniedShellCommandPatterns;
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(command, allowed, denied);
+
+        Assert.Equal(expectedAllowed, result.IsAllowed);
     }
 }

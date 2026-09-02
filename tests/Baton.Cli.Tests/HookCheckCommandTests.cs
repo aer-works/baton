@@ -221,4 +221,38 @@ public class HookCheckCommandTests
 
         Assert.Equal(HookCheckCommand.AllowedExitCode, exitCode);
     }
+
+    [Theory]
+    [InlineData("git merge-base --is-ancestor a b", HookCheckCommand.AllowedExitCode)]
+    [InlineData("git diff --stat", HookCheckCommand.AllowedExitCode)]
+    [InlineData("git status", HookCheckCommand.AllowedExitCode)]
+    [InlineData("git difftool --extcmd=calc -y HEAD~1 HEAD", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git grep -Ocalc foo", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git grep --open-files-in-pager=calc foo", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git -c alias.x=!calc x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("git push --dry-run", HookCheckCommand.DeniedExitCode)]
+    [InlineData("gh api repos/x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("gh pr view 1", HookCheckCommand.AllowedExitCode)]
+    public void Review_role_command_allow_deny_polarities_from_catalog(string command, int expectedExitCode)
+    {
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        var shellPatternsRaw = review.Grant.ShellCommandPatterns is { Count: > 0 }
+            ? "claude:" + string.Join(",", review.Grant.ShellCommandPatterns)
+            : "claude:";
+        var deniedShellPatternsRaw = review.Grant.DeniedShellCommandPatterns is { Count: > 0 }
+            ? "claude:" + string.Join(",", review.Grant.DeniedShellCommandPatterns)
+            : "claude:";
+
+        var payload = """{"tool_name": "Bash", "tool_input": {"command": COMMAND_JSON}}"""
+            .Replace("COMMAND_JSON", System.Text.Json.JsonSerializer.Serialize(command));
+        using var stdin = new StringReader(payload);
+        using var stderr = new StringWriter();
+
+        var exitCode = HookCheckCommand.Execute(
+            stdin, stderr, "claude:Edit,Write",
+            shellPatternsRaw: shellPatternsRaw,
+            deniedShellPatternsRaw: deniedShellPatternsRaw);
+
+        Assert.Equal(expectedExitCode, exitCode);
+    }
 }

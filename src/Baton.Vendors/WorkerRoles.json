@@ -54,6 +54,7 @@
       "git commit*", "git push*", "git merge*", "git checkout*", "git switch*", "git reset*", "git clean*",
       "git rebase*", "git am*", "git apply*", "git stash*", "git worktree*", "git remote*", "git config*",
       "git tag*", "git restore*", "git cherry-pick*", "git revert*",
+      "git difftool*", "git submodule*", "git -c *", "git grep -O*", "git grep --open-files-in-pager*",
       "gh pr comment*", "gh pr edit*", "gh pr merge*", "gh issue comment*", "gh issue edit*", "gh label*",
       "gh repo*", "gh release*", "gh api*", "gh auth*", "gh secret*", "gh variable*", "gh workflow*",
       "gh run cancel*", "gh run rerun*"

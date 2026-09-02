@@ -1619,6 +1619,7 @@ and permission grant, resolvable at both dispatch time (writes the room's copy) 
 rule as `decide`: the bindings passed continue the room's own standing permissions — the
 composition never widens mid-room through any verb.
 
+<!-- record-once-ok: #1679 src/Baton.Vendors/ShellCommandPatternMatcher.cs -->
 **The `review` role's ceiling: read-only `git`/`gh`, enforced, not a flat shell refusal (#1456,
 operator-approved reversal of #1355).** `WorkerRoles.json`'s `review` entry now carries
 `run_shell_commands: true` scoped by `shell_command_patterns` to exactly: `git diff`, `log`, `show`,
@@ -1626,7 +1627,7 @@ operator-approved reversal of #1355).** `WorkerRoles.json`'s `review` entry now 
 view`/`diff`/`checks`, `gh issue view`. `denied_shell_command_patterns` closes the named mutating
 families (`commit`, `push`, `merge`, `checkout`, `switch`, `reset`, `clean`, `gh pr
 comment`/`edit`/`merge`, `gh issue comment`/`edit`, `gh label`) as a standing, subtractive "never"
-(0022's DenyAlways) on top of the allowlist. `gh api` is deliberately **not** granted: its HTTP
+(0022's DenyAlways) on top of the allowlist. Trailing-`*` shell patterns are matched on word boundaries: a pattern `P*` matches a command line iff the line equals `P` or starts with `P` followed by whitespace (`git diff*` matches `git diff --stat` and `git diff`, never `git difftool`; `git merge*` never matches `git merge-base`). Flag-driven escapes that word-boundary matching alone does not stop (`git difftool*`, `git grep -O*`, `git grep --open-files-in-pager*`, `git -c *`, `git submodule*`) are denied explicitly in `denied_shell_command_patterns`. `gh api` is deliberately **not** granted: its HTTP
 method is a runtime flag/field (`-X`, `-f`), not something `ShellCommandPatternMatcher`'s glob
 prefix-match can bind to GET-only, so admitting it would be an unenforced hole wearing a scoped
 label rather than an actually-scoped grant.

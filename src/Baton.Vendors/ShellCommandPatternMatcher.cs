@@ -6,7 +6,11 @@ namespace Baton.Vendors;
 
 /// <summary>
 /// Evaluates a shell command line against a pattern allowlist using claude-compatible
-/// <c>Bash(pattern)</c> glob semantics, enforcing strict shell metacharacter rejection (#659).
+/// <c>Bash(pattern)</c> glob semantics, enforcing strict shell metacharacter rejection (#659)
+/// and word-boundary matching for trailing-wildcard patterns (#1679). A trailing-<c>*</c> pattern
+/// <c>P*</c> matches a command line iff the line equals <c>P</c> or starts with <c>P</c> followed by whitespace
+/// (e.g. <c>git diff*</c> matches <c>git diff --stat</c> and <c>git diff</c>, never <c>git difftool</c>;
+/// <c>git merge*</c> never matches <c>git merge-base</c>).
 /// </summary>
 public static class ShellCommandPatternMatcher
 {
@@ -171,9 +175,42 @@ public static class ShellCommandPatternMatcher
             if (pattern.EndsWith('*'))
             {
                 string prefix = pattern[..^1];
-                if (trimmed.StartsWith(prefix, StringComparison.Ordinal))
+                if (prefix.Length > 0 && char.IsWhiteSpace(prefix[^1]))
                 {
-                    return true;
+                    if (trimmed.Equals(prefix.TrimEnd(), StringComparison.Ordinal) ||
+                        trimmed.StartsWith(prefix, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+                else
+                {
+                    if (trimmed.Equals(prefix, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+
+                    if (trimmed.StartsWith(prefix, StringComparison.Ordinal))
+                    {
+                        if (trimmed.Length > prefix.Length)
+                        {
+                            char next = trimmed[prefix.Length];
+                            if (char.IsWhiteSpace(next) || next == '=')
+                            {
+                                return true;
+                            }
+
+                            // Flag-driven prefixes (e.g. "git grep -O*" or "git grep --open-files-in-pager*")
+                            // where the last whitespace-delimited token in the prefix starts with '-'
+                            // match option arguments attached directly without whitespace (e.g. -Ocalc).
+                            var lastSpace = prefix.LastIndexOf(' ');
+                            var lastToken = lastSpace >= 0 ? prefix[(lastSpace + 1)..] : prefix;
+                            if (lastToken.StartsWith('-'))
+                            {
+                                return true;
+                            }
+                        }
+                    }
                 }
             }
             else

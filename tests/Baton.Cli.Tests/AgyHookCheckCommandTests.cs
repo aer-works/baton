@@ -441,6 +441,47 @@ public class AgyHookCheckCommandTests
         Assert.Equal("BATON_HOOK_DENIED_TOOLS", AgyHookCheckCommand.DeniedToolsEnvironmentVariable);
     }
 
+    [Theory]
+    [InlineData("git merge-base --is-ancestor a b", "allow")]
+    [InlineData("git diff --stat", "allow")]
+    [InlineData("git status", "allow")]
+    [InlineData("git difftool --extcmd=calc -y HEAD~1 HEAD", "deny")]
+    [InlineData("git grep -Ocalc foo", "deny")]
+    [InlineData("git grep --open-files-in-pager=calc foo", "deny")]
+    [InlineData("git -c alias.x=!calc x", "deny")]
+    [InlineData("git push --dry-run", "deny")]
+    [InlineData("gh api repos/x", "deny")]
+    [InlineData("gh pr view 1", "allow")]
+    public void Review_role_command_allow_deny_polarities_from_catalog(string command, string expectedDecision)
+    {
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        var shellPatternsRaw = review.Grant.ShellCommandPatterns is { Count: > 0 }
+            ? "agy:" + string.Join(",", review.Grant.ShellCommandPatterns)
+            : "agy:";
+        var deniedShellPatternsRaw = review.Grant.DeniedShellCommandPatterns is { Count: > 0 }
+            ? "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns)
+            : "agy:";
+
+        var payload = $$"""
+            {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+             "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+             "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}}, "Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                         "name":"run_command"},
+             "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+            """;
+        using var stdin = new StringReader(payload);
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, "agy:write_to_file,replace_file_content",
+            shellPatternsRaw: shellPatternsRaw,
+            deniedShellPatternsRaw: deniedShellPatternsRaw);
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal(expectedDecision, doc.RootElement.GetProperty("decision").GetString());
+    }
+
     private sealed class ThrowingReader : TextReader
     {
         public override string ReadToEnd() => throw new IOException("simulated pipe failure");
