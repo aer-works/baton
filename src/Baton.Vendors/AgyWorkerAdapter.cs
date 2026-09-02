@@ -205,9 +205,9 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <c>invoke_subagent</c> takes an optional <c>Workspace</c>. A write-withheld worker could
     /// therefore define a subagent with write tools enabled and invoke it — possibly under a
     /// different workspace root than the one this hook was loaded from. <c>manage_task</c> is grouped
-    /// with them rather than with <see cref="ShellTools"/> because it "sends stdin to and kills
-    /// background shell processes" — shell control the hook's pattern channel never inspects — so the
-    /// same reasoning applies to it independent of whether <c>run_command</c> itself is bounded.
+    /// with them rather than with <see cref="ShellTools"/> for the reason given on <see cref="ReadTools"/>
+    /// above — it reaches background shell control that the hook's pattern channel never inspects — so
+    /// the same reasoning applies to it independent of whether <c>run_command</c> itself is bounded.
     /// </para>
     /// <para>
     /// <b>Whether a subagent's own tool calls re-enter this hook is unmeasured on agy</b>, so this

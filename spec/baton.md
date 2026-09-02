@@ -1750,7 +1750,7 @@ that already enforces the pattern allow/deny lists on the wire) narrows the `run
 correctly on six probed commands: launched under `--dangerously-skip-permissions` with
 `BATON_HOOK_SHELL_PATTERNS`/`BATON_HOOK_DENIED_SHELL_PATTERNS` set to `review`'s own allow/deny
 lists, a write was denied, a push was denied (the DenyAlways channel), `curl` was denied, a
-non-git/gh read was denied by the same allowlist-shape mechanism as the write and the push above —
+non-git/gh read was denied by the same allowlist-shape mechanism as the write —
 `docs/vendor-doc-audit.md`'s dated entry states the precise reason and the qualifier it carries, not
 restated here — `git status`/
 `git log` were allowed, and a hook deny did not cancel the run. Reads are bounded by tool grant, not

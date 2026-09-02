@@ -1667,7 +1667,8 @@ public class AgyWorkerAdapterTests
     // only proves a deny blocks a call under a hook that always denies; it says nothing about
     // review's real allow/deny lists producing the right verdict. This group closes that gap by
     // feeding the REAL review role (loaded from WorkerRoles.json, not a hand-written fixture)
-    // straight into the hook.
+    // straight into the hook, and asserts the deny REASON per arm so the two deny channels
+    // (DenyAlways vs. allow-list-miss) are told apart rather than collapsed into "decision: deny".
     //
     // git merge-base is deliberately not asserted here: it is shadowed by the git merge* deny entry
     // (#1679) and would fail this test for a reason unrelated to the composition being proven.
@@ -1679,7 +1680,7 @@ public class AgyWorkerAdapterTests
          "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
         """;
 
-    private static string DecideForReviewRole(string commandLine)
+    private static (string Decision, string? Reason) DecideForReviewRole(string commandLine)
     {
         var review = WorkerRoleCatalog.For("review");
         var deniedTools = $"{AgyWorkerAdapter.DeniedToolsVendorTag}:{AgyWorkerAdapter.BuildDeniedTools(review.Grant)}";
@@ -1694,18 +1695,32 @@ public class AgyWorkerAdapterTests
             deniedShellPatternsRaw: deniedShellPatterns);
 
         using var doc = JsonDocument.Parse(stdout.ToString());
-        return doc.RootElement.GetProperty("decision").GetString()!;
+        var decision = doc.RootElement.GetProperty("decision").GetString()!;
+        var reason = doc.RootElement.TryGetProperty("reason", out var reasonProp)
+            ? reasonProp.GetString()
+            : null;
+        return (decision, reason);
     }
 
     [Theory]
-    [InlineData("git status", "allow")]
-    [InlineData("git log -1", "allow")]
-    [InlineData("curl https://example.com", "deny")]
-    [InlineData("git push --dry-run origin HEAD", "deny")]
+    [InlineData("git status", "allow", null)]
+    [InlineData("git log -1", "allow", null)]
+    [InlineData("curl https://example.com", "deny", "does not match the shell command patterns")]
+    [InlineData("git push --dry-run origin HEAD", "deny", "matches a standing 'never' rule")]
     public void The_real_review_role_s_shell_patterns_compose_correctly_through_the_hook(
-        string commandLine, string expectedDecision)
+        string commandLine, string expectedDecision, string? expectedReasonSubstring)
     {
-        Assert.Equal(expectedDecision, DecideForReviewRole(commandLine));
+        var (decision, reason) = DecideForReviewRole(commandLine);
+
+        Assert.Equal(expectedDecision, decision);
+        if (expectedReasonSubstring is null)
+        {
+            Assert.Null(reason);
+        }
+        else
+        {
+            Assert.Contains(expectedReasonSubstring, reason);
+        }
     }
 
     // ---- #1387 review F8: the write-granted scoped-shell variant is also intentionally in scope ----
