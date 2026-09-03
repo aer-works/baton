@@ -38,8 +38,8 @@ UseSharedCompilation = "false"
 # (tool-manifest and standalone-tool commands, not MSBuild), the LIVE smoke-*/vendor-probe tasks
 # (human-run, never concurrent with a lane by construction), and
 # `gates`/`gates-fast` themselves -- they hold no MSBuild directly; their MSBuild-owning legs
-# (fmt-check, lint, test-no-build, build-cli) are each wrapped, which serializes exactly the
-# dangerous fraction and lets the python audit legs of two gates runs still overlap.
+# (fmt-check, lint, test-no-build) are each wrapped, which serializes exactly the dangerous
+# fraction and lets the python audit legs of two gates runs still overlap.
 build = { cmd = "python tools/buildlock.py dotnet build" }
 # The rebuild is FORCED and then the test run is told not to build again (#688). MSBuild skips a
 # project whose source is older than the assembly built from it, so a plain `dotnet test` can run the
@@ -193,11 +193,13 @@ vendor-verify = { cmd = "python -u tools/vendor-verify/verify.py" }
 # neither is available.
 audit-completeness = { cmd = "python -u tools/audit-completeness/completeness.py" }
 
-# CLI-only build for the CI audit job (#887): audit-selfcheck's catalog checks read the role
-# catalog through `baton templates --json`, so the audit leg needs a built Baton.Cli. Pure managed
-# code since #1474 (no native lib, no cargo, no P/Invoke into anything external) — this build stays
-# ~a minute for the same reason `build`/`test`/`lint` no longer need a `build-core` dependency either.
-build-cli = { cmd = "python tools/buildlock.py dotnet build src/Baton.Cli" }
+# #1759: `build-cli` used to exist so the CI audit leg had a built Baton.Cli before
+# audit-selfcheck's catalog checks read the role catalog through `tools/baton-agy-loop/dispatch.py`'s
+# own `baton templates --json` call at import. That reason went away with dispatch.py; neither
+# audit-selfcheck nor audit-controls touches the built CLI at all now, so the task was removed
+# rather than left as dead weight. They stay sequenced in AFTER_BUILD_FAST (tools/gates/gates.py)
+# regardless, out of caution rather than a remaining need -- moving them into OVERLAP is now
+# possible but is its own change, not exercised by this one.
 audit-selfcheck = { cmd = "python -u tools/audit-completeness/selfcheck.py" }
 audit-controls = { cmd = "python -u tools/audit-completeness/controls.py" }
 
@@ -282,23 +284,11 @@ setup-hooks = { cmd = "git config core.hooksPath .githooks" }
 # with no vendor CLI present to inspect it says so plainly without failing.
 vendor-check = { cmd = "python tools/buildlock.py dotnet run --project tools/Baton.VendorProbe -- --check" }
 
-# Dispatches one AER workflow step to a worker via a real `baton run` and prints its output -- the
-# scaffolding an ad-hoc Node one-liner stood in for three times during the #513 cross-vendor
-# orchestration trial, each time with a different bug (see tools/baton-agy-loop/dispatch.py's own
-# docstring). Not a smoke test and not CI-wired: this is a dispatch primitive for whoever is
-# orchestrating a multi-step worker exchange (implementer/reviewer or otherwise), same spirit as
-# vendor-verify being a re-runnable instrument rather than a one-off script.
-baton-dispatch = { cmd = "python tools/baton-agy-loop/dispatch.py" }
-# Pure-Python red/green check that dispatch.py's denied-tool guard (#912) discriminates: a real agy
-# "auto-denied" stderr line is caught, a clean run is not. Gated (in FAST) so an agy rewording that
-# would silently disable the guard fails a gate instead.
-baton-dispatch-selftest = { cmd = "python tools/baton-agy-loop/dispatch.py --selftest" }
-
 # #1413: pure-Python red/green check that the fleet-glass pusher's secret gate fails CLOSED (a
 # missing/unreadable secretpatterns.local.txt withholds every deliverable) and that its dedupe and
 # artifact-selection rules discriminate, over synthetic temp fixtures -- no network, no real
 # ~/.baton. Not wired into gates/gates-fast: fleet-glass is an unbuilt-by-CI operator tool (like
-# vendor-verify/baton-dispatch above), run by whoever touches pusher.py rather than on every PR.
+# vendor-verify above), run by whoever touches pusher.py rather than on every PR.
 fleet-glass-pusher-selftest = { cmd = "python tools/fleet-glass/pusher.py --selftest" }
 
 # #1656 F2 (2026-09-02 review): the JS-side twin of the selftest above -- worker.core.mjs's

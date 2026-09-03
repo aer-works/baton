@@ -36,7 +36,6 @@ PROTECTED_TOOLING_PATHS: tuple[tuple[str, str, str], ...] = (
     # sibling (tools/fleet-glass/pusher.py) stays unprotected.
     ("file", "tools/fleet-glass/worker.selftest.mjs", "the only thing standing between worker.js's paging/heartbeat-merge logic and a silent revert (gates.py OVERLAP)"),
     ("file", "tools/tool-refresh/refresh.py", "tool-refresh-selftest's body (gates.py OVERLAP)"),
-    ("file", "tools/baton-agy-loop/dispatch.py", "baton-dispatch-selftest's body (gates.py AFTER_BUILD_FAST)"),
     ("file", "tests/Launcher.Tests.ps1", "launcher-selftest's body -- exercises baton.cmd/baton.ps1 against a mock exe fixture (gates.py OVERLAP)"),
     ("dir", "tools/Baton.VendorProbe/", "vendor-check's actual body, the loud half of the drift grace window (gates.py AFTER_BUILD_FAST); a directory because it is a compiled project"),
 )
@@ -572,7 +571,6 @@ def selftest() -> int:
             # excluded as "not enforcement", plus vendor-check's actual body.
             ("s", "tools/fleet-glass/worker.selftest.mjs"),
             ("t", "tools/tool-refresh/refresh.py"),
-            ("u", "tools/baton-agy-loop/dispatch.py"),
             ("v", "tests/Launcher.Tests.ps1"),
             ("w", "tools/Baton.VendorProbe/Program.cs"),
         ]
