@@ -125,7 +125,6 @@ public static class ExecutionUsageProjector
         var startedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var exitedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var workerNameByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
-        var recordedAdapterByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
         // #1709: FlowEvent.ExecutionSucceeded/ExecutionFailed's own PeakBilledInWindow -- see
         // ExecutionUsageView.PeakBilledInWindow's own doc comment for what this is and is not the same
         // figure as.
@@ -136,23 +135,6 @@ public static class ExecutionUsageProjector
             if (entry is LogEntry.FlowLogEntry { Event: FlowEvent.ExecutionRequestAccepted accepted })
             {
                 workerNameByExecutionId[accepted.Request.ExecutionId.Value] = accepted.Request.Worker;
-                if (accepted.Request.Adapter is { Length: > 0 } recordedAdapter)
-                {
-                    recordedAdapterByExecutionId[accepted.Request.ExecutionId.Value] = recordedAdapter;
-                }
-            }
-
-            // #1583: a rebound resubmission overrides the frozen ExecutionRequest's recorded adapter.
-            if (entry is LogEntry.FlowLogEntry { Event: FlowEvent.StepRebound rebound })
-            {
-                if (rebound.NewAdapter is { Length: > 0 } newAdapter)
-                {
-                    recordedAdapterByExecutionId[rebound.ForExecutionId.Value] = newAdapter;
-                }
-                else
-                {
-                    recordedAdapterByExecutionId.Remove(rebound.ForExecutionId.Value);
-                }
             }
 
             if (entry is LogEntry.FlowLogEntry flowEntry)
@@ -186,6 +168,9 @@ public static class ExecutionUsageProjector
         }
 
         var bindings = TryLoadBindings(roomDirectoryPath);
+        // #1583/#1781: the recorded-adapter-with-StepRebound-override precedence is one primitive now,
+        // shared with QuotaLedgerStore.BuildEntries -- see ExecutionBindingResolver's own doc comment.
+        var resolvedBindings = ExecutionBindingResolver.Resolve(entries);
 
         var result = new Dictionary<string, ExecutionUsageView>(StringComparer.Ordinal);
         foreach (var (executionId, startedAt) in startedTimestamps)
@@ -207,8 +192,8 @@ public static class ExecutionUsageProjector
             }
 
             workerNameByExecutionId.TryGetValue(executionId, out var workerName);
-            recordedAdapterByExecutionId.TryGetValue(executionId, out var recordedAdapter);
-            var reading = TryReadWorkerUsage(artifactsRootPath, executionId, workerName, recordedAdapter, bindings, adapters);
+            resolvedBindings.TryGetValue(executionId, out var resolvedBinding);
+            var reading = TryReadWorkerUsage(artifactsRootPath, executionId, workerName, resolvedBinding.Adapter, bindings, adapters);
             var usage = reading?.Terminal;
             // #1706: the terminal billed total, on the SAME arithmetic WorkerUsage.BilledTokens
             // documents (input + output + cache_creation, never cache_read). Null unless the terminal

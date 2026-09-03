@@ -98,6 +98,45 @@ public sealed class QuotaLedgerStoreTests
     }
 
     [Fact]
+    public void BuildEntries_attributes_a_rebound_execution_to_its_new_adapter_and_model()
+    {
+        // #1781 review finding 1: BuildEntries used to re-derive the StepRebound override itself,
+        // untested against this exact scenario, rather than asking ExecutionBindingResolver -- the one
+        // primitive ExecutionUsageProjectorTests already pins three ways. This is the ledger-level arm
+        // that closes that gap: a rebound to a different adapter AND model must show up on the ledger
+        // line, not the frozen ExecutionRequestAccepted's original binding.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"ledger-build-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-rebound");
+            var stepId = new StepId("plan");
+            var start = DateTime.UtcNow;
+
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(
+                    AcceptedRequest(executionId, "plan", adapter: "agy", model: "gemini-3-pro"))),
+                new LogEntry.FlowLogEntry(new FlowEvent.StepRebound(
+                    stepId, executionId, PreviousAdapter: "agy", PreviousModel: "gemini-3-pro",
+                    NewAdapter: "claude", NewModel: "sonnet")),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionSucceeded(executionId)),
+            };
+
+            var built = QuotaLedgerStore.BuildEntries(entries, testRoot);
+
+            var entry = Assert.Single(built);
+            Assert.Equal("claude", entry.Adapter);
+            Assert.Equal("sonnet", entry.Model);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
     public void BuildEntries_is_absent_for_an_execution_with_no_exit_event()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"ledger-build-{Guid.NewGuid():N}");

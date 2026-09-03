@@ -107,8 +107,10 @@ public static class QuotaLedgerStore
         var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
         var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(entries, artifactsRootPath, roomDirectoryPath: roomDirectoryPath);
 
-        var adapterByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
-        var modelByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
+        // #1781: the recorded-adapter/model-with-StepRebound-override precedence is the one primitive
+        // ExecutionUsageProjector already computes for its own parser choice -- see
+        // ExecutionBindingResolver's own doc comment for why this used to be a second, untested copy.
+        var resolvedBindings = ExecutionBindingResolver.Resolve(entries);
         var outcomeByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
         var exitedAtByExecutionId = new Dictionary<string, DateTime>(StringComparer.Ordinal);
 
@@ -126,44 +128,6 @@ public static class QuotaLedgerStore
 
             switch (flowEntry.Event)
             {
-                case FlowEvent.ExecutionRequestAccepted accepted:
-                    var acceptedExecutionId = accepted.Request.ExecutionId.Value;
-                    if (accepted.Request.Adapter is { Length: > 0 } adapter)
-                    {
-                        adapterByExecutionId[acceptedExecutionId] = adapter;
-                    }
-
-                    if (accepted.Request.Model is { Length: > 0 } model)
-                    {
-                        modelByExecutionId[acceptedExecutionId] = model;
-                    }
-
-                    break;
-
-                // #1583: a rebound resubmission overrides the frozen ExecutionRequest's recorded
-                // adapter/model -- the same divergence ExecutionUsageProjector's own
-                // recordedAdapterByExecutionId handles, mirrored here for the same reason.
-                case FlowEvent.StepRebound rebound:
-                    if (rebound.NewAdapter is { Length: > 0 } newAdapter)
-                    {
-                        adapterByExecutionId[rebound.ForExecutionId.Value] = newAdapter;
-                    }
-                    else
-                    {
-                        adapterByExecutionId.Remove(rebound.ForExecutionId.Value);
-                    }
-
-                    if (rebound.NewModel is { Length: > 0 } newModel)
-                    {
-                        modelByExecutionId[rebound.ForExecutionId.Value] = newModel;
-                    }
-                    else
-                    {
-                        modelByExecutionId.Remove(rebound.ForExecutionId.Value);
-                    }
-
-                    break;
-
                 case FlowEvent.ExecutionSucceeded succeeded:
                     outcomeByExecutionId[succeeded.ExecutionId.Value] = "Succeeded";
                     break;
@@ -190,8 +154,7 @@ public static class QuotaLedgerStore
         var result = new List<QuotaLedgerEntry>(usageByExecutionId.Count);
         foreach (var (executionId, usage) in usageByExecutionId)
         {
-            adapterByExecutionId.TryGetValue(executionId, out var resolvedAdapter);
-            modelByExecutionId.TryGetValue(executionId, out var resolvedModel);
+            resolvedBindings.TryGetValue(executionId, out var resolvedBinding);
             outcomeByExecutionId.TryGetValue(executionId, out var outcome);
             var at = exitedAtByExecutionId.TryGetValue(executionId, out var exitedAt) ? exitedAt : (DateTime?)null;
 
@@ -199,8 +162,8 @@ public static class QuotaLedgerStore
                 At: at,
                 Room: recordedRoomPath,
                 Execution: executionId,
-                Adapter: resolvedAdapter,
-                Model: resolvedModel,
+                Adapter: resolvedBinding.Adapter,
+                Model: resolvedBinding.Model,
                 TokensIn: usage.TokensIn,
                 TokensOut: usage.TokensOut,
                 CacheReadTokens: usage.CacheReadTokens,
