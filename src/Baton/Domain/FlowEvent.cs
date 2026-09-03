@@ -467,19 +467,13 @@ public abstract record FlowEvent
     }
 
     /// <summary>
-    /// #1549: a coarse, content-free progress heartbeat for a live execution — the fact that
-    /// <paramref name="ExecutionId"/>'s <c>.stdout.log</c> mtime advanced since this poller's own
-    /// last observation (or since it started tracking this execution), and nothing else.
-    /// Deliberately carries no content beyond the id: the writer-stamped timestamp every journal
-    /// line already carries (<see cref="LogEntry.FlowLogEntry.WriterUtcTimestamp"/>) is the
-    /// "timestamp" half of "execution id + timestamp only", so this record adds nothing further. A
-    /// healthy 30-minute lane previously wrote zero journal events between
-    /// <see cref="ExecutionRequestAccepted"/> and its terminal outcome, which made every "last
-    /// journal event age" reader (the Fleet Glass ⚠, an anomaly rule) misread a busy worker as
-    /// stalled — see <c>spec/baton.md</c> §7's entry on the false Running ⚠ (#1549, #1656) for the
-    /// symptom this closes. Emitted only when observed stdout activity has actually moved forward
-    /// (<c>Baton.Cli.ExecutionProgressHeartbeat</c>): a wedged worker's stdout never advances, so its
-    /// journal correctly goes quiet too, which is the entire point — this is not a keepalive.
+    /// #1549: a coarse, content-free progress heartbeat for a live execution. Carries nothing beyond
+    /// the id — the writer-stamped timestamp every journal line already carries
+    /// (<see cref="LogEntry.FlowLogEntry.WriterUtcTimestamp"/>) is the "timestamp" half of "execution
+    /// id + timestamp only". <c>Baton.Cli.ExecutionProgressHeartbeat</c> is the sole producer and the
+    /// canonical explanation of when this fires (cadence, the mtime gate, the coverage limits); see
+    /// its own remarks rather than a second copy here. <c>spec/baton.md</c> §2 records why this event
+    /// exists at all.
     /// </summary>
     public sealed record ExecutionProgress(ExecutionId ExecutionId) : FlowEvent;
 

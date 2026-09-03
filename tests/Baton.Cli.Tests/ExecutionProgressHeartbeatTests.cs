@@ -6,12 +6,12 @@ using Baton.Store;
 namespace Baton.Cli.Tests;
 
 /// <summary>
-/// #1549: unit-level tests against <see cref="ExecutionProgressHeartbeat.TickAsync"/> — the
-/// mtime-gated, content-free heartbeat that closes the gap a healthy, long-running lane otherwise
-/// leaves in <c>flow.jsonl</c>. Covers the baseline-on-first-observation rule, the "quiet stays
-/// quiet" no-op, the advance-triggers-emission case, and the "zero or ambiguous candidates" reset —
-/// deliberately not <see cref="ExecutionProgressHeartbeat.RunAsync"/>, whose only added behaviour is
-/// a real-time <c>Task.Delay</c> loop around the same tick, already exercised deterministically here.
+/// #1549: unit-level tests against <see cref="ExecutionProgressHeartbeat.TickAsync"/> — see that
+/// type's own remarks for the mechanism under test. Covers the baseline-on-first-observation rule,
+/// the "quiet stays quiet" no-op, the advance-triggers-emission case, and the "zero or ambiguous
+/// candidates" reset — deliberately not <see cref="ExecutionProgressHeartbeat.RunAsync"/>, whose only
+/// added behaviour is a real-time <c>Task.Delay</c> loop around the same tick, already exercised
+/// deterministically here.
 /// </summary>
 public class ExecutionProgressHeartbeatTests
 {

@@ -93,62 +93,41 @@ infrastructure is a separate cleanup this document does not scope — but a harn
 describes writes to it or reads from it.
 
 **The progress heartbeat and the coarse lifecycle events (#1549).** §7's "false Running ⚠" entry
-below records the symptom this closes: a healthy, long-running `flow.jsonl` can carry zero events
-between `ExecutionRequestAccepted` and its terminal outcome, which is what made journal-event age
-useless as a liveness signal in the first place. Two additions to the `FlowEvent` vocabulary
-(`FlowEvent.cs`) fix that at the source rather than papering over it downstream:
+below records the symptom this closes: journal-event age was useless as a liveness signal because a
+healthy lane could go a long stretch without writing to `flow.jsonl` at all. Three additions to the
+`FlowEvent` vocabulary fix that at the source. Each is content-free (an `ExecutionId` and nothing
+else — the wire timestamp every journal line already carries covers "when"), and each carries its
+full producer-side contract as a doc comment on its own case in `FlowEvent.cs` — cited here by name,
+not restated:
 
-- **`ExecutionProgress`** — content-free (execution id only; the writer-stamped timestamp every
-  journal line already carries is the rest of the fact). Emitted by `Baton.Cli.ExecutionProgressHeartbeat`,
-  a fire-and-forget poller `RunCommand` starts alongside `CancelRequestPoller` for every `baton run`/
-  `dispatch`/`redispatch` invocation (they all funnel through `RunCommand.ExecuteAsync`) — **not**
-  `baton resume`/`supply`, which never ran a sibling poller for cancellation delivery either; this
-  follows that existing asymmetry rather than introducing a new one. Ticks on its own cadence
-  (`GetInterval()`: default 5 minutes, `BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS`, read through
-  `BatonEnvironmentSnapshot` the same way `RoomRetentionSweep`'s interval knobs are, clamped to
-  [1s, 1 day]) and appends an event **only when** the room's one resolved candidate execution's
-  `.stdout.log` mtime has advanced since this poller's own last observation of it
-  (`RunningExecutionResolver` — the same "fail closed on zero or more than one candidate" resolver
-  `CancelRequestPoller` already uses, so a room running more than one execution concurrently gets no
-  heartbeat for either: a stated coverage limit, not a silent gap). The first tick after a fresh
-  execution id is seen never emits — its current mtime becomes the baseline, with nothing yet to
-  compare against — and a non-process dispatch, or one that has not yet written a first stdout chunk,
-  has nothing to stat and so never heartbeats either. **Quiet means wedged, by design**: a worker
-  whose stdout genuinely stops advancing gets no further heartbeats, which is the entire point —
-  this is a progress signal, not a keepalive that would mask the exact failure it exists to surface.
-  Budget: the pusher does not map journal events to KV writes 1:1 — it coalesces on a 90s floor
-  (§7's #1690 entry) — so heartbeats change what a coalesced snapshot push *contains* (a fresher
-  `lastActivityAt`-adjacent fact), not how many pushes happen; the real bound stays the 90s floor and
-  the 1,000/day KV cap #1690 already budgets against, unaffected by this cadence.
-- **`CancellationDelivered`** / **`CancellationRejected`** — both content-free (execution id only),
-  both from the operator `cancel.request` path specifically (never the host-stop wind-down
-  `InFlightExecutionRegistry.RequestStopAsync` takes on shutdown, which stays unchanged — a
-  deliberate scope narrowing to avoid heartbeat-shaped noise on ordinary exit).
-  `CancellationDelivered` is distinct from the pre-existing `CancellationRequested` (which only
-  records that Flow forwarded the intent, appended immediately before the signal is even attempted):
-  it is appended only once `InFlightExecutionRegistry.RequestCancellationAsync` actually signals a
-  still-live `CancellationTokenSource`, not merely once a (possibly since-disposed) registry entry
-  was found. `CancellationRejected` is appended by `CancelRequestPoller.TickAsync` only on its
-  bounded-retry-exhausted rejection (5 ticks, target still projects Running but unreachable through
-  the registry) — the one rejection shape with a concrete resolved `ExecutionId` to key an
-  execution-scoped fact on; a malformed request or an ambiguous `latest` (no execution ever named)
-  stays a file-and-stderr-only rejection, exactly as before this event existed.
-- **Retry scheduled and artifact collection, both already covered, added nothing.** The #1537
-  enumeration's authoritative list (PR #1564's body) named four moments; verified against
-  `FlowEvent.cs` directly rather than assumed from either issue's text (`common-sense`): `StepRetryScheduled`
-  already exists and is already emitted (`MutationInterface.cs`, projected by `StateProjector`) — no
-  fourth event needed. "Artifact collection" has no engine-side collection step distinct from
-  `OutcomeClassifier.Classify`'s in-place `ContractValidator.Validate` — that moment is simultaneous
-  with the terminal `ExecutionSucceeded`/`ExecutionFailed`/`ExecutionIndeterminate` event already
-  journaling, so a fourth event firing at the identical instant would be pure duplication — exactly
-  the journal noise this issue's own per-gate-evaluation exclusion is guarding against. Deliberately
-  not added; this paragraph is that decision's durable record.
+- **`ExecutionProgress`**. Producer: `Baton.Cli.ExecutionProgressHeartbeat`, a poller
+  `RunCommand.ExecuteAsync` starts alongside `CancelRequestPoller` for every `run`/`dispatch`/
+  `redispatch` invocation (all three funnel through that one method) but not `resume`/`supply` — the
+  same command split `CancelRequestPoller` itself already has. `ExecutionProgressHeartbeat`'s own
+  remarks are the canonical description of its cadence, its `.stdout.log`-mtime gate, and why silence
+  under a wedge is the intended behaviour rather than a gap. Cadence is env-configurable
+  (`BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS` through `BatonEnvironmentSnapshot`, default 5 minutes)
+  the same way `RoomRetentionSweep`'s interval knobs already are. Write-budget arithmetic: §7's #1690
+  entry already establishes that the pusher's 90s coalescing floor, not a 1:1 journal-event count, is
+  what the 1,000/day KV cap is measured against — a heartbeat changes a coalesced push's *contents*,
+  never its *count*, so it spends nothing extra against that cap.
+- **`CancellationDelivered`** and **`CancellationRejected`**, both scoped to the operator
+  `cancel.request` path only (the host-stop wind-down stays as it was — deliberately, to keep an
+  ordinary shutdown quiet). `FlowEvent.cs`'s own doc comments on each case are the canonical statement
+  of exactly which branch of `InFlightExecutionRegistry`/`CancelRequestPoller` produces them and why
+  each is a distinct fact from the pre-existing `CancellationRequested`.
+- **Retry scheduled and artifact collection, the other two of the four moments #1537's enumeration
+  (PR #1564's body) named, needed nothing new.** Checked against `FlowEvent.cs` directly rather than
+  assumed (`common-sense`): `StepRetryScheduled` already exists and is already emitted. An engine-side
+  "artifact collection" moment does not exist as a step distinct from the terminal outcome
+  classification itself, so a fourth event would fire at the same instant as an existing one — pure
+  duplication, the exact journal noise the issue's own per-gate-evaluation exclusion already guards
+  against. Deliberately not added; this sentence is that decision's durable record.
 
-All three new cases project as explicit no-ops in `StateProjector` (durable facts, no `StepState`/
-`FlowState` consequence) and, per PR #1564's own audit, reach every downstream mailbox surface
-unfiltered — `extract_timeline`, `RoomDetailTool`'s reflection-driven tag map, and `room_detail`'s
-schema (§6) admit any journalled event type already, so nothing downstream needed widening for
-these three specifically.
+All three new cases project as explicit no-ops in `StateProjector`, and — per PR #1564's own audit —
+reach every downstream mailbox surface unfiltered without any widening of their own, since nothing
+in that pipeline (`extract_timeline`, `RoomDetailTool`'s tag map, `room_detail`'s schema in §6)
+filters by event type in the first place.
 
 A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
 
