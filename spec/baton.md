@@ -3120,10 +3120,10 @@ this entry records only the decision itself and why it deviates from the mock it
 ### C-15 — Diff-shape CI gate: test-only PR self-weakening and protected tooling (#1603)
 
 Ratified design (operator, 2026-09-01) — closes the "a conductor can relax the bounds on its own authority" hole. A required CI check (`diff-shape`, `.github/workflows/diff-shape.yml`, `tools/diff-shape/diff_shape.py`) that fails when either holds:
-1. **Test-only PR weakening:** the PR touches no `src/` code AND the diff contains a deleted or changed line in a pre-existing test file (pure additions of new test files or appended lines pass; mixed engine+test PRs touching `src/` are exempt).
-2. **Protected tooling edit:** any file in the protected-tooling set (`tools/gates/`, `pixi.toml`, `.github/workflows/`, and `tools/diff-shape/diff_shape.py` itself) is edited (additions included).
+1. **Test-only PR weakening:** the PR touches no `src/` code AND the diff contains a deleted or changed line in a pre-existing test file (pure additions of new test files or appended lines pass; mixed engine+test PRs touching `src/` are exempt). Line-level, no parsing: renames and mechanical refactors of test files in a test-only PR are expected to trip this, and the label is the intended answer, not a defect to fix.
+2. **Protected tooling edit:** any file under the protected-tooling set (`tools/gates/`, `pixi.toml`, `.github/workflows/`, and the whole `tools/diff-shape/` directory) is edited (additions included). `.githooks/` is deliberately excluded — ruled local convenience, not enforcement. `pixi.toml` is protected in full, wider than #1603's original "the gates task definitions in `pixi.toml`" — accepted as cost rather than narrowed, since line-level parsing of a TOML file is the complexity #1603 refused; recorded here pending an operator ruling on whether to narrow it.
 
-Both failures are lifted by the `operator-merge` PR label.
+Both failures are lifted by the `operator-merge` PR label, applied by the operator. Self-application — a conductor or worker adding the label to its own PR — is a forbidden act; the mechanism does not prevent it (both PR author and label-applier can be the same shared operator credential), but it is permanently visible in PR history, which is the property the design relies on instead of a technical block.
 
 ---
 

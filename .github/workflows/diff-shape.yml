@@ -9,7 +9,6 @@ on:
 
 jobs:
   diff-shape:
-    if: ${{ !startsWith(github.event.pull_request.head.ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -20,11 +19,13 @@ jobs:
           fetch-depth: 0
       - uses: prefix-dev/setup-pixi@v0.8.0
         with:
-          run-install: false
           cache: false
       - name: Verify PR diff shape and protected tooling
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
         run: |
-          python tools/diff-shape/diff_shape.py \
+          pixi run diff-shape -- \
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }} \
-            --labels "${{ join(github.event.pull_request.labels.*.name, ',') }}"
+            --labels "$PR_LABELS" \
+            --actor "$GITHUB_ACTOR"

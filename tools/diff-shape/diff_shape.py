@@ -41,7 +41,12 @@ def is_test_file(path: str) -> bool:
     p = path.replace("\\", "/")
     if p.startswith("tests/") or "/tests/" in p:
         return True
-    if p.endswith("Tests.cs") or p.endswith("Test.cs") or p.endswith("Tests.ps1") or p.endswith("_test.py"):
+    if p.endswith("Tests.cs") or p.endswith("Test.cs") or p.endswith("Tests.ps1") or p.endswith("_test.ps1"):
+        return True
+    name = p.rsplit("/", 1)[-1]
+    if name.startswith("test_") and name.endswith(".py"):
+        return True
+    if name.endswith("_test.py"):
         return True
     return False
 
@@ -51,6 +56,7 @@ def check_diff_shape(
     head: str = "HEAD",
     labels: list[str] | set[str] | None = None,
     cwd: str | Path | None = None,
+    actor: str = "",
 ) -> tuple[bool, list[str]]:
     """Analyze git diff between base and head against diff-shape and protected-tooling rules.
 
@@ -63,10 +69,14 @@ def check_diff_shape(
         labels = []
     labels_set = {label.strip().lower() for label in labels}
 
-    # Fetch status of all changed files: `git diff --name-status base head`
+    # Fetch status of all changed files: `git diff --no-renames --name-status base...head`.
+    # Three-dot diffs from the merge-base, not base's tip, so a base branch that moved after
+    # branching does not reverse its own commits into the diff. --no-renames makes a renamed
+    # file that also lost lines show up as a D/A pair instead of one clean-looking R### entry
+    # whose per-path diff (below) would otherwise read the new path as freshly added.
     try:
         proc = subprocess.run(
-            ["git", "diff", "--name-status", base, head],
+            ["git", "diff", "--no-renames", "--name-status", f"{base}...{head}"],
             cwd=cwd_str,
             capture_output=True,
             text=True,
@@ -83,7 +93,7 @@ def check_diff_shape(
             continue
         parts = line.split("\t")
         status = parts[0].strip()
-        path = parts[-1].strip()  # If renamed (R100 old new), parts[-1] is new path
+        path = parts[-1].strip()
         touched_files.append((status, path))
 
     # Condition 1: Check if any src/ code was touched
@@ -104,19 +114,29 @@ def check_diff_shape(
         # Inspect diff for deleted lines starting with '-' (excluding diff headers)
         try:
             diff_proc = subprocess.run(
-                ["git", "diff", "-U0", base, head, "--", path],
+                ["git", "diff", "-U0", f"{base}...{head}", "--", path],
                 cwd=cwd_str,
                 capture_output=True,
                 text=True,
                 check=True,
                 env=env,
             )
-        except subprocess.CalledProcessError:
-            continue
+        except subprocess.CalledProcessError as err:
+            return False, [f"git diff failed on {path}: {err.stderr.strip()}"]
 
+        # Only lines inside a hunk (after its `@@ ... @@` marker) are added/deleted content; the
+        # `--- a/path` / `+++ b/path` file headers precede the first hunk and are skipped by
+        # position (in_hunk gate), not by content -- a deleted source line whose own text starts
+        # with `--` (e.g. `--counter;`) must still count.
         deleted_lines: list[str] = []
+        in_hunk = False
         for dline in diff_proc.stdout.splitlines():
-            if dline.startswith("-") and not dline.startswith("---"):
+            if dline.startswith("@@"):
+                in_hunk = True
+                continue
+            if not in_hunk:
+                continue
+            if dline.startswith("-"):
                 deleted_lines.append(dline)
 
         if deleted_lines:
@@ -146,6 +166,8 @@ def check_diff_shape(
     if is_failing:
         if has_operator_label:
             messages.append("OK Failure lifted by 'operator-merge' PR label.")
+            actor_clause = f" by {actor}" if actor else ""
+            messages.append(f"::notice::diff-shape gate lifted by the 'operator-merge' label{actor_clause}.")
             return True, messages
         else:
             messages.append("To proceed: ask the operator to add the 'operator-merge' label to this PR if these changes are intended.")
@@ -185,6 +207,7 @@ def selftest() -> int:
         subprocess.run(["git", "commit", "-q", "-m", "initial base"], cwd=repo, check=True, env=env)
 
         base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+        default_branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
 
         # (a) Test-only weakening -> FAIL
         subprocess.run(["git", "checkout", "-q", "-b", "branch-a"], cwd=repo, check=True, env=env)
@@ -248,11 +271,48 @@ def selftest() -> int:
         else:
             print("  OK (e) failing shapes + operator-merge label -> PASS")
 
+        # (f) Moved base branch: base advances (its own src+test commits) after branching -> a
+        # test-only weakening PR against the *old* base must still FAIL. A two-dot diff would
+        # reverse the base branch's own src commit into the diff, setting touches_src=True and
+        # silently disabling Condition A -- a false PASS.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-f", base_sha], cwd=repo, check=True, env=env)
+        test_file.write_text("line1\nline3\n", encoding="utf-8")  # line2 deleted, no src touch
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "weaken test on old base"], cwd=repo, check=True, env=env)
+        head_f = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        subprocess.run(["git", "checkout", "-q", default_branch], cwd=repo, check=True, env=env)
+        (src_dir / "Other.cs").write_text("class Other {}\n", encoding="utf-8")
+        (tests_dir / "BazTests.cs").write_text("class BazTests {}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "advance base with src and test additions"], cwd=repo, check=True, env=env)
+        moved_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_f, msgs_f = check_diff_shape(moved_base, head_f, labels=[], cwd=repo)
+        if passed_f:
+            failures.append(f"(f) test-only weakening against a moved base did not fail as expected (two-dot diff bug): {msgs_f}")
+        else:
+            print("  OK (f) test-only weakening against moved base -> FAIL")
+
+        # (g) Renamed test file with a deleted line -> FAIL. Rename detection would otherwise pair
+        # the old and new paths as one clean R### entry whose per-path diff (against the excluded
+        # old path) reads the new file as freshly added -- all '+', zero '-'.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-g", base_sha], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "mv", "tests/FooTests.cs", "tests/FooTests2.cs"], cwd=repo, check=True, env=env)
+        (tests_dir / "FooTests2.cs").write_text("line1\nline3\n", encoding="utf-8")  # line2 deleted post-rename
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "rename and weaken test"], cwd=repo, check=True, env=env)
+        head_g = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_g, msgs_g = check_diff_shape(base_sha, head_g, labels=[], cwd=repo)
+        if passed_g:
+            failures.append(f"(g) renamed+weakened test file did not fail as expected (rename fail-open bug): {msgs_g}")
+        else:
+            print("  OK (g) renamed+weakened test file -> FAIL")
+
     if failures:
         print(f"diff-shape: selftest FAIL -- {'; '.join(failures)}", file=sys.stderr)
         return 1
 
-    print("diff-shape: selftest OK (all 5 discrimination arms passed)")
+    print("diff-shape: selftest OK (all 7 discrimination arms passed)")
     return 0
 
 
@@ -275,7 +335,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Diff-shape CI gate check (#1603)")
     parser.add_argument("--base", type=str, default="origin/main", help="Base commit/ref to diff against")
     parser.add_argument("--head", type=str, default="HEAD", help="Head commit/ref to diff against")
-    parser.add_argument("--labels", type=str, default="", help="Comma-separated PR labels")
+    parser.add_argument("--labels", type=str, default="", help="Newline-delimited PR labels (a label name may itself contain a comma)")
+    parser.add_argument("--actor", type=str, default="", help="Who to name in the lift notice, if the failure is lifted by label")
     parser.add_argument("--selftest", action="store_true", help="Run synthetic selftest fixtures")
 
     args = parser.parse_args(argv)
@@ -283,11 +344,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.selftest:
         return selftest()
 
-    labels_list = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()]
+    labels_list = [lbl.strip() for lbl in args.labels.splitlines() if lbl.strip()]
     if not labels_list:
         labels_list = get_labels_from_event_path()
 
-    passed, messages = check_diff_shape(args.base, args.head, labels=labels_list)
+    actor = args.actor or os.environ.get("GITHUB_ACTOR", "")
+
+    passed, messages = check_diff_shape(args.base, args.head, labels=labels_list, actor=actor)
     for msg in messages:
         print(msg)
 
