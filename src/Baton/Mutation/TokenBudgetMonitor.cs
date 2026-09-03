@@ -82,7 +82,10 @@ public sealed class TokenBudgetMonitor
     private long? _cacheReadSum;
     // #1557: additive the same way _billedTokens is -- one per usage-bearing line that contributed a
     // billed delta, so a caller can tell "how many turns" from "how many tokens" independently. Never a
-    // fabricated 0, same convention as every other Σ on this type.
+    // fabricated 0, same convention as every other Σ on this type. WorkerUsage.Turns is now populated
+    // (previously always null); the only live consumer whose output changes is the arrest event's Usage
+    // (MutationInterface's ExecutionArrested), and its current readers (StateProjector's arrest
+    // descriptions) do not consume Turns today -- benign until something reads it.
     private int? _turns;
     // #1706: sticky. Set the first time any reading declares itself a floor (claude, always) and never
     // cleared -- a Σ over a stream where one component was structurally unreadable stays a floor no

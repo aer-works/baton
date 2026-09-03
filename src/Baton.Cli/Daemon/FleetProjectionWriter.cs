@@ -510,15 +510,12 @@ public sealed class FleetProjectionWriter : BackgroundService
                 DateTime prunedAt;
                 if (Directory.Exists(child))
                 {
-                    // #1351: `child` here is a pruned execution's own former output directory
-                    // (`artifacts/pruned/execution_{id}`) -- ExecutionStreamLogger's engine-written
-                    // .stdout.log/.stderr.log (and rollovers/truncation markers) live in that SAME
-                    // directory as whatever a worker declared as output, so a raw byte sum over it
-                    // would count engine-written bytes as if a worker had produced them. Excluded here,
-                    // the same filter every other execution-output-directory reader in src/ applies.
+                    // Unfiltered, matching pusher.py's pruned_info_for_room: this field answers "how
+                    // much did pruning reclaim", and stream logs were reclaimed too, so their bytes
+                    // count. #1351's filter is about hiding stream logs from artifact LISTINGS; it does
+                    // not apply to this reclaimed-bytes total.
                     size = new DirectoryInfo(child)
                         .EnumerateFiles("*", SearchOption.AllDirectories)
-                        .Where(f => !ExecutionStreamLogger.IsStreamLogFileName(f.Name))
                         .Sum(f => f.Length);
                     prunedAt = Directory.GetLastWriteTimeUtc(child);
                 }

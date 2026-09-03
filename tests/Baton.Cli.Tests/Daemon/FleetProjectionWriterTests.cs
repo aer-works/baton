@@ -121,12 +121,45 @@ public sealed class FleetProjectionWriterTests : IDisposable
     }
 
     [Fact]
+    public void GetInterval_ClampsPathologicalValue_InsteadOfOverflowing()
+    {
+        // Mirrors RoomRetentionSweepTests' identically-named test: a value whose seconds would
+        // overflow TimeSpan.FromSeconds must collapse to MaxInterval, never throw.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { FleetProjectionIntervalSecondsOverride = "1e300" });
+
+        var interval = FleetProjectionWriter.GetInterval();
+        Assert.Equal(FleetProjectionWriter.MaxInterval, interval);
+    }
+
+    [Fact]
+    public void GetInterval_LiftsSubSecondValue_ToMinInterval()
+    {
+        // Mirrors RoomRetentionSweepTests' identically-named test: a value below one second must lift
+        // to MinInterval rather than pass through near-zero.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { FleetProjectionIntervalSecondsOverride = "1e-9" });
+
+        Assert.Equal(FleetProjectionWriter.MinInterval, FleetProjectionWriter.GetInterval());
+    }
+
+    [Fact]
     public async Task BuildProjectionJson_deserializes_into_FleetRoomStatusView_and_carries_derived_at()
     {
         var room = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName, "terminal-room");
         Directory.CreateDirectory(room);
         var sentinel = new WorkflowStatusView("Succeeded", [], ["/tmp/out.txt"], null, null);
         await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        // A pruned execution directory containing an engine-written stream log alongside a worker
+        // output. pruned[].bytes sums the whole thing unfiltered (matching pusher.py's own sum), not
+        // #1351's listing filter -- see FleetProjectionWriter.cs's ComputePrunedInfo comment.
+        var prunedExecDir = Path.Combine(room, "artifacts", "pruned", "execution_exec-1");
+        Directory.CreateDirectory(prunedExecDir);
+        await File.WriteAllTextAsync(
+            Path.Combine(prunedExecDir, ".stdout.log"), new string('x', 500), TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(
+            Path.Combine(prunedExecDir, "output.txt"), new string('y', 300), TestContext.Current.CancellationToken);
 
         var writer = new FleetProjectionWriter();
         var json = await writer.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
@@ -145,6 +178,9 @@ public sealed class FleetProjectionWriterTests : IDisposable
         var roomObject = singleRoomNode!.AsObject();
         Assert.False(roomObject.ContainsKey("live"));
         Assert.False(roomObject.ContainsKey("processAlive"));
+
+        var prunedItem = Assert.Single(roomObject["pruned"]!["items"]!.AsArray());
+        Assert.Equal(800, prunedItem!["bytes"]!.GetValue<long>());
     }
 
     /// <summary>Pins the `live`-vs-diagnostics gating split <see cref="FleetProjectionWriter.BuildProjectionJsonAsync"/>'s
