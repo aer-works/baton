@@ -67,6 +67,16 @@ public sealed class ExecutionStreamLogger
     /// a worker-written <c>.gitignore</c> is a deliverable this filter must not swallow, even though
     /// it could never have been declared. Narrow filter, broad declaration ban: both hold.
     /// </para>
+    /// <para>
+    /// #1351: this is the single filtered listing seam spec/baton.md's Fleet Glass section (§6, the
+    /// C-11 entry) now names — a fact stated once, referenced from there rather than restated. As of
+    /// #1351, no production caller enumerates an execution's output directory at all (nothing to
+    /// filter yet), and <c>Baton.Architecture.Tests.ExecutionOutputDirectoryListingTests</c> is the
+    /// tripwire: it pins every raw file-listing call site in <c>src/</c> to a reviewed allowlist, so
+    /// the next one that appears fails the build unless it either routes through a filtered listing
+    /// using this method or is added to that allowlist with proof it does not read an execution's
+    /// output directory.
+    /// </para>
     /// </summary>
     public static bool IsStreamLogFileName(string fileName) =>
         string.Equals(fileName, StdoutLogFileName, StringComparison.Ordinal)

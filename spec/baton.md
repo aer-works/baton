@@ -3176,7 +3176,11 @@ Neither is a fallback for the other.
 **Why the mailbox cannot carry drill-down — the constraint that forced a second plane.** Two hard
 walls, not taste. The secret gate: the deliverables path exists to guarantee the mailbox never
 carries `prompt.txt` or `.stdout.log` — only declared outputs through a fail-closed denylist — and a
-live stdout tail is precisely the uncurated stream that design refuses, on a public repo. The write
+live stdout tail is precisely the uncurated stream that design refuses, on a public repo. (#1351: the
+invariant this rests on holds fleet-wide, not just at this denylist — a room's file list is what the
+worker produced, and engine capture files such as `ExecutionStreamLogger`'s stream logs are filtered
+at the single listing seam, never restated per consumer; `ExecutionOutputDirectoryListingTests` pins
+that no second, unfiltered listing seam exists in `src/`.) The write
 quota: Cloudflare's free KV tier caps at 1,000 writes/day; a live tail at the pusher's cadence is
 ~3,456/day — the #1457 change-gate exists because even the *fleet row* brushes this ceiling. On the
 operator's own tailnet both walls vanish: the bytes never leave the network, and no third-party
