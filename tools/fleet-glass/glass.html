@@ -926,7 +926,10 @@ function stdoutTailHtml(room, derivedAt){
   if(!tail) return "";
   const asOfAge = age(derivedAt);
   const asOf = asOfAge ? `<span class="stdout-asof">as of ${esc(asOfAge)} ago</span>` : "";
-  return `<div class="section-heading">stdout ${asOf}</div>
+  // #1723: stdoutTail is pre-rendered prose (stream-json lines summarized, blobs elided) by the
+  // pusher, not the worker's raw stdout -- this hint is why a reader won't find every field here.
+  const hint = `<span class="stdout-asof" title="stream-json lines are rendered as prose and long base64/blob tokens are elided -- this is not raw stdout">rendered</span>`;
+  return `<div class="section-heading">stdout ${hint} ${asOf}</div>
     <div class="stdout-tail mono">${esc(tail)}</div>
     <div class="verbs">${copyButtonHtml(tail, "copy stdout")}</div>`;
 }

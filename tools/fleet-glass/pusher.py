@@ -710,10 +710,28 @@ STDOUT_TAIL_READ_WINDOW_BYTES = 65_536  # generous headroom read from EOF -- a r
 STDOUT_TAIL_TRUNCATION_MARK = "…"
 
 
+def _decode_utf8_boundary_safe(data: bytes) -> str:
+    """Strict UTF-8 decode, falling back to `errors="replace"` only for bytes that are genuinely
+    invalid (never for a straddled multi-byte character at a caller-chosen cut point -- callers of
+    this function are expected to have already trimmed to a real line boundary, so a
+    `UnicodeDecodeError` here means the log itself carries non-UTF-8 bytes, not a torn character)."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
 def _read_tail_text(path: Path, window_bytes: int = STDOUT_TAIL_READ_WINDOW_BYTES) -> str:
     """Last `window_bytes` bytes of `path`, decoded, with a possibly-torn leading line dropped (the
     seek landed mid-line unless it started at byte 0). Bounds the read against a multi-megabyte log
-    -- #1710's own selftest arm (a 5 MB log) is what this window exists for."""
+    -- #1710's own selftest arm (a 5 MB log) is what this window exists for.
+
+    #1723: the boundary is found on the RAW BYTES (searching for the `\\n` byte, which never appears
+    as part of a multi-byte UTF-8 sequence) before anything is decoded -- decoding first and then
+    slicing the decoded text, as the pre-#1723 version did, still worked here because the drop only
+    ever discarded text before the found newline, but doing the search byte-side is what makes the
+    same discipline safe to reuse below the max_bytes cut too, where decoding before slicing is
+    exactly the bug (see `stdout_tail_for_room`)."""
     try:
         size = path.stat().st_size
     except OSError:
@@ -725,11 +743,147 @@ def _read_tail_text(path: Path, window_bytes: int = STDOUT_TAIL_READ_WINDOW_BYTE
             chunk = f.read()
     except OSError:
         return ""
-    text = chunk.decode("utf-8", errors="replace")
     if start > 0:
-        nl = text.find("\n")
-        text = text[nl + 1:] if nl != -1 else ""
-    return text
+        nl = chunk.find(b"\n")
+        chunk = chunk[nl + 1:] if nl != -1 else b""
+    return _decode_utf8_boundary_safe(chunk) if chunk else ""
+
+
+STDOUT_TAIL_BLOB_ELISION_THRESHOLD = 200  # #1723: a whitespace-free token this long (base64, a data
+                                            # URI, a hex dump) reads as noise, never as prose -- the
+                                            # operator's own words, "stdout by itself is unintelligible
+                                            # and useless".
+_BLOB_TOKEN_PATTERN = re.compile(r"\S{%d,}" % STDOUT_TAIL_BLOB_ELISION_THRESHOLD)
+
+
+def _elide_blob_tokens(text: str) -> str:
+    """Replaces any whitespace-free run of >= `STDOUT_TAIL_BLOB_ELISION_THRESHOLD` characters with a
+    byte-count marker (#1723). Applies to every surviving tail line, JSON-rendered or plain-text
+    alike -- a blob can show up embedded in ordinary non-JSON output just as easily as inside a
+    stream-json field."""
+    return _BLOB_TOKEN_PATTERN.sub(
+        lambda m: f"…[{len(m.group(0).encode('utf-8'))} bytes elided]…", text)
+
+
+STDOUT_TAIL_PROSE_FIELD_LIMIT = 200  # #1723: one prose line stays short even when the source field
+                                       # (an assistant message, a tool_result body) runs long.
+
+
+def _prose_first_line(text: str, limit: int = STDOUT_TAIL_PROSE_FIELD_LIMIT) -> str:
+    """First line of `text` (a multi-line assistant message or tool result renders as ONE prose line,
+    matching #1723's "one short prose line" per stream-json line), truncated to `limit` chars."""
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    return first if len(first) <= limit else first[:limit] + STDOUT_TAIL_TRUNCATION_MARK
+
+
+def _prose_summarize_tool_input(tool_input: object, limit: int = 120) -> str:
+    """`key=value, ...` one-liner off a `tool_use` block's `input` object, truncated -- the "one-line
+    summary of its input" #1723 asks for. Not a general JSON pretty-printer: values are stringified
+    plainly (JSON-encoded only when not already a string) and newlines are flattened, since this is a
+    glance summary, not a faithful re-serialization."""
+    if not isinstance(tool_input, dict) or not tool_input:
+        return ""
+    parts = []
+    for key, value in tool_input.items():
+        rendered = value if isinstance(value, str) else json.dumps(value, separators=(",", ":"))
+        parts.append(f"{key}={rendered.replace(chr(10), ' ')}")
+    summary = ", ".join(parts)
+    return summary if len(summary) <= limit else summary[:limit] + STDOUT_TAIL_TRUNCATION_MARK
+
+
+def _render_stream_json_prose(evt: dict) -> str | None:
+    """One prose line for a parsed stream-json object, or `None` if the line carries nothing a reader
+    needs (a hook lifecycle marker, a thinking-only block, a rate-limit ping) -- #1723. This is a
+    Python sibling of `Baton.Cli`'s `RunCommand.EchoStreamJsonLine`/`WorkerStreamLineRenderer`
+    (`src/Baton.Cli/RunCommand.cs`, `src/Baton.Cli/WorkerStreamRendering.cs`) by necessity, not by
+    choice: the pusher is Python until #1557 moves projection into the daemon, so the same envelope
+    shapes (claude's `assistant`/`user`/`result`/`system`) are recognized a second time here rather
+    than shared. See those files for the authoritative shape-by-shape rules; this function mirrors
+    their OUTPUT for the common events (assistant text, a tool_use name plus a one-line input summary,
+    a tool_result's first line, the turn-completion result line) and is NOT restated a second time in
+    this comment. Unlike the C# renderer's --follow-oriented "never swallow an unrecognized envelope"
+    posture, an envelope this function does not recognize at all is dropped rather than echoed raw:
+    this tail is a bounded glance surface, not a live monitor, and the operator's own framing --
+    "the user probably doesn't need to see every field" -- is exactly the case for every field this
+    function has no arm for."""
+    evt_type = evt.get("type")
+
+    if evt_type == "assistant":
+        message = evt.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            return None
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    return _prose_first_line(text)
+            elif block_type == "tool_use":
+                name = block.get("name")
+                if isinstance(name, str) and name:
+                    summary = _prose_summarize_tool_input(block.get("input"))
+                    return f"[tool: {name}({summary})]" if summary else f"[tool: {name}]"
+        return None  # a thinking-only block, or an empty content array -- nothing to show.
+
+    if evt_type == "user":
+        message = evt.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            return None
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            body = block.get("content")
+            if isinstance(body, list):
+                body = next(
+                    (c.get("text") for c in body if isinstance(c, dict) and isinstance(c.get("text"), str)),
+                    None)
+            if isinstance(body, str) and body.strip():
+                prefix = "[tool_result error: " if block.get("is_error") else "[tool_result: "
+                return prefix + _prose_first_line(body) + "]"
+        return None
+
+    if evt_type == "result":
+        is_error = evt.get("is_error")
+        if not isinstance(is_error, bool):
+            return None
+        if is_error:
+            summary = evt.get("result")
+            text = summary if isinstance(summary, str) and summary else "no error detail in the result envelope"
+            return f"[result: error — {_prose_first_line(text)}]"
+        return "[result: success]"
+
+    if evt_type == "system":
+        subtype = evt.get("subtype")
+        if subtype == "init":
+            return "[status: Session started]"
+        if subtype == "status":
+            status = evt.get("status")
+            if isinstance(status, str) and status:
+                return f"[status: {status}]"
+        return None  # every other subtype (hook lifecycle, thinking-token estimates, ...) is noise.
+
+    return None  # an envelope type this renderer has no arm for (e.g. rate_limit_event).
+
+
+def _render_tail_line(raw_line: str) -> str | None:
+    """One rendered tail line for `raw_line`, or `None` if it should be dropped entirely (#1723). A
+    line that parses as a JSON OBJECT routes through `_render_stream_json_prose`; anything else --
+    malformed JSON, or valid JSON that is not an object (an array, a bare number) -- passes through
+    unchanged, mirroring `WorkerStreamLineRenderer`'s non-JSON fallback."""
+    stripped = raw_line.strip()
+    if not stripped:
+        return raw_line
+    try:
+        evt = json.loads(stripped)
+    except json.JSONDecodeError:
+        return raw_line
+    if not isinstance(evt, dict):
+        return raw_line
+    return _render_stream_json_prose(evt)
 
 
 def _gate_tail_lines(lines: list[str], patterns: list[re.Pattern] | None) -> list[str]:
@@ -747,10 +901,18 @@ def _gate_tail_lines(lines: list[str], patterns: list[re.Pattern] | None) -> lis
 def stdout_tail_for_room(room_path: str, execution_id: str, patterns: list[re.Pattern] | None,
                           max_lines: int = STDOUT_TAIL_MAX_LINES,
                           max_bytes: int = STDOUT_TAIL_MAX_BYTES) -> str | None:
-    """`live.stdoutTail` for one Running room (#1710): the last `max_lines` lines of the CURRENT
-    execution's `.stdout.log`, secret-gated per line (`_gate_tail_lines`), hard-capped at `max_bytes`
-    by truncating from the FRONT (the newest lines are what a live tail is for) and marking the cut
-    with `STDOUT_TAIL_TRUNCATION_MARK` on the first surviving line. None when there is no captured
+    """`live.stdoutTail` for one Running room (#1710, rendered as prose and blob-elided by #1723): the
+    last `max_lines` RAW lines of the CURRENT execution's `.stdout.log`, each rendered to prose
+    (`_render_tail_line` -- a stream-json object becomes one short human-readable line or is dropped;
+    a non-JSON line passes through), blob-elided (`_elide_blob_tokens`), then secret-gated per
+    surviving line (`_gate_tail_lines`), hard-capped at `max_bytes` by truncating from the FRONT (the
+    newest lines are what a live tail is for) and marking the cut with `STDOUT_TAIL_TRUNCATION_MARK`
+    on the first surviving line -- ON A LINE BOUNDARY, never mid-character (#1723: the pre-fix version
+    decoded the byte-truncated tail with `errors="replace"` and only dropped a *found* leading partial
+    line, so a cut landing inside a line with no earlier newline within the truncated budget left a
+    genuine U+FFFD at the front; this version finds the boundary on the raw bytes FIRST, so a strict
+    decode of what's kept never straddles a character, at the cost of possibly emitting less than
+    `max_bytes` when no boundary exists inside the budget at all). None when there is no captured
     stdout yet for this execution -- absent, never a fabricated empty string, matching
     `live_telemetry_for_room`'s own never-fabricated convention."""
     stdout_path, _rollover_path = _find_stdout_paths(room_path, execution_id)
@@ -759,8 +921,13 @@ def stdout_tail_for_room(room_path: str, execution_id: str, patterns: list[re.Pa
     text = _read_tail_text(stdout_path)
     if not text:
         return None
-    lines = text.splitlines()[-max_lines:]
-    gated = _gate_tail_lines(lines, patterns)
+    raw_lines = text.splitlines()[-max_lines:]
+    rendered = []
+    for raw in raw_lines:
+        line = _render_tail_line(raw)
+        if line is not None:
+            rendered.append(_elide_blob_tokens(line))
+    gated = _gate_tail_lines(rendered, patterns)
     tail = "\n".join(gated)
     if not tail:
         return None
@@ -771,11 +938,14 @@ def stdout_tail_for_room(room_path: str, execution_id: str, patterns: list[re.Pa
         # the marker afterwards can overshoot by the marker's own length.
         marker_bytes = STDOUT_TAIL_TRUNCATION_MARK.encode("utf-8")
         content_budget = max(0, max_bytes - len(marker_bytes))
-        cut = encoded[len(encoded) - content_budget:]
-        decoded = cut.decode("utf-8", errors="replace")
-        nl = decoded.find("\n")
-        decoded = decoded[nl + 1:] if nl != -1 else decoded
-        tail = STDOUT_TAIL_TRUNCATION_MARK + decoded
+        cut_start = len(encoded) - content_budget
+        # #1723: search for the boundary on the RAW BYTES, from the tentative cut point FORWARD, so
+        # the found `\n` is always a real line terminator (never a byte inside a multi-byte character
+        # -- `\n` cannot appear as a UTF-8 continuation or lead byte) and the subsequent decode is
+        # strict rather than papering over a straddle with `errors="replace"`.
+        nl_index = encoded.find(b"\n", max(0, cut_start))
+        body_bytes = encoded[nl_index + 1:] if nl_index != -1 else b""
+        tail = STDOUT_TAIL_TRUNCATION_MARK + _decode_utf8_boundary_safe(body_bytes)
     return tail
 
 
@@ -3442,6 +3612,73 @@ def _selftest() -> int:
         check("stdout_tail_for_room is absent (None), never a fabricated empty string, when the "
               "execution has no captured .stdout.log yet",
               stdout_tail_for_room(str(room_dir), "exec-never-started", []) is None)
+
+        # -- #1723: a multi-byte character straddling the max_bytes truncation cut yields no U+FFFD.
+        # Five short filler lines, then one long line of 2-byte UTF-8 characters (broken into
+        # sub-200-char runs by spaces, so the #1723 blob-elision arm below never touches it) with NO
+        # trailing newline (the log is still being written) -- the shape of the #1723 bug report: the
+        # truncation cut lands inside the newest, still-open line, with no newline anywhere ahead of
+        # the cut to recover a boundary from, so the pre-fix version left a genuine leading U+FFFD.
+        straddle_room_dir = Path(tmp) / "straddle-room"
+        straddle_exec_dir = straddle_room_dir / "artifacts" / "execution_exec-straddle-1"
+        straddle_exec_dir.mkdir(parents=True)
+        straddle_long_line = ("é" * 50 + " ") * 60
+        (straddle_exec_dir / ".stdout.log").write_text("short\n" * 5 + straddle_long_line, encoding="utf-8")
+        straddle_tail = stdout_tail_for_room(str(straddle_room_dir), "exec-straddle-1", [], max_bytes=106)
+        check("#1723: a multi-byte character straddling the byte-cap cut never yields a U+FFFD",
+              straddle_tail is not None and "�" not in straddle_tail)
+        check("#1723: with no line boundary anywhere ahead of the cut, the tail degrades to just the "
+              "truncation mark (no partial character survives) rather than a fragment",
+              straddle_tail == STDOUT_TAIL_TRUNCATION_MARK)
+
+        # -- #1723: a stream-json assistant/tool_use/tool_result triple renders to three prose lines
+        # with no braces, mirroring Baton.Cli's WorkerStreamLineRenderer output shapes. --
+        prose_room_dir = Path(tmp) / "prose-room"
+        prose_exec_dir = prose_room_dir / "artifacts" / "execution_exec-prose-1"
+        prose_exec_dir.mkdir(parents=True)
+        prose_lines_in = [
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Reading the issue now."}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "ls -la"}}]}}),
+            json.dumps({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "x", "is_error": False,
+                 "content": "total 0\ndrwxr-xr-x"}]}}),
+        ]
+        (prose_exec_dir / ".stdout.log").write_text("\n".join(prose_lines_in) + "\n", encoding="utf-8")
+        prose_tail = stdout_tail_for_room(str(prose_room_dir), "exec-prose-1", [])
+        prose_out_lines = prose_tail.split("\n") if prose_tail else []
+        check("#1723: an assistant/tool_use/tool_result triple renders to exactly three prose lines",
+              len(prose_out_lines) == 3)
+        check("#1723: none of the rendered prose lines carry a raw JSON brace",
+              prose_tail is not None and "{" not in prose_tail and "}" not in prose_tail)
+        check("#1723: assistant text renders as the plain text itself",
+              prose_out_lines[:1] == ["Reading the issue now."])
+        check("#1723: tool_use renders as the tool name plus a one-line input summary",
+              prose_out_lines[1:2] == ["[tool: Bash(command=ls -la)]"])
+        check("#1723: tool_result renders its first line",
+              prose_out_lines[2:3] == ["[tool_result: total 0]"])
+
+        # -- #1723: a 5 KB base64-shaped token (no whitespace) is elided, never shipped whole. --
+        blob_room_dir = Path(tmp) / "blob-room"
+        blob_exec_dir = blob_room_dir / "artifacts" / "execution_exec-blob-1"
+        blob_exec_dir.mkdir(parents=True)
+        blob_token = "Q" * 5000
+        (blob_exec_dir / ".stdout.log").write_text(f"before\n{blob_token}\nafter\n", encoding="utf-8")
+        blob_tail = stdout_tail_for_room(str(blob_room_dir), "exec-blob-1", [])
+        check("#1723: a long whitespace-free token is elided rather than shipped whole",
+              blob_tail is not None and blob_token not in blob_tail)
+        check("#1723: the elision marker names the elided byte count",
+              blob_tail is not None and "[5000 bytes elided]" in blob_tail)
+
+        # -- #1723: a plain (non-JSON) line passes through unchanged. --
+        plain_room_dir = Path(tmp) / "plain-room"
+        plain_exec_dir = plain_room_dir / "artifacts" / "execution_exec-plain-1"
+        plain_exec_dir.mkdir(parents=True)
+        plain_line = "just a normal stdout line, nothing special here"
+        (plain_exec_dir / ".stdout.log").write_text(plain_line + "\n", encoding="utf-8")
+        plain_tail = stdout_tail_for_room(str(plain_room_dir), "exec-plain-1", [])
+        check("#1723: a plain non-JSON line passes through unchanged", plain_tail == plain_line)
 
     # Absence on a terminal room: attach_live_telemetry never runs live_telemetry_for_room (and so
     # never the stdout tail) for anything other than a Running room -- covered structurally by the
