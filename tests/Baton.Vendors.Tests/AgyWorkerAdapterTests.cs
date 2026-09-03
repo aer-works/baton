@@ -1743,8 +1743,8 @@ public class AgyWorkerAdapterTests
     [Theory]
     [InlineData("git status", "allow", null)]
     [InlineData("git log -1", "allow", null)]
-    [InlineData("curl https://example.com", "deny", "does not match the shell command patterns")]
-    [InlineData("git push --dry-run origin HEAD", "deny", "matches a standing 'never' rule")]
+    [InlineData("curl https://example.com", "deny", "does not match any pattern this session's grant allows")]
+    [InlineData("git push --dry-run origin HEAD", "deny", "matches this session's standing deny list")]
     public void The_real_review_role_s_shell_patterns_compose_correctly_through_the_hook(
         string commandLine, string expectedDecision, string? expectedReasonSubstring)
     {
