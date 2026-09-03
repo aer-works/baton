@@ -5,6 +5,14 @@ using Baton.Store;
 namespace Baton.Projection;
 
 /// <summary>
+/// Result of <see cref="RoomTurnThrottleStore.LoadWithDiagnostics"/>: the resolved throttles plus the
+/// diagnostic lines <see cref="RoomTurnThrottleStore.Load"/> would otherwise print to <see
+/// cref="Console.Error"/>. Empty <paramref name="Warnings"/> means the load was unremarkable --
+/// including a deliberately partial file, which is the operator's normal move, not a fault.
+/// </summary>
+public sealed record RoomTurnThrottleLoad(RoomTurnThrottles Throttles, IReadOnlyList<string> Warnings);
+
+/// <summary>
 /// Persistence store for operator-visible turn throttle settings at <c>{room}/turn-throttles.json</c> (#778).
 /// <para>
 /// <b>Filename choice rationale:</b> Placed at room root as <c>turn-throttles.json</c> alongside
@@ -46,21 +54,40 @@ public static class RoomTurnThrottleStore
     };
 
     /// <summary>
-    /// Reads settings fresh on each call from <c>{room}/turn-throttles.json</c>.
-    /// Missing file → returns defaults silently.
-    /// Present-but-invalid (corrupt JSON or non-positive numeric values) → LOUD stderr message + returns defaults.
+    /// Reads settings fresh on each call from <c>{room}/turn-throttles.json</c>, printing any
+    /// diagnostics to <see cref="Console.Error"/> as it goes -- the single call site that owns the
+    /// console for this store. Callers that need the diagnostics without the console side effect
+    /// (tests, chiefly) should call <see cref="LoadWithDiagnostics"/> directly instead.
     /// </summary>
     public static RoomTurnThrottles Load(string roomDirectoryPath)
     {
+        var (throttles, warnings) = LoadWithDiagnostics(roomDirectoryPath);
+        foreach (var warning in warnings)
+        {
+            Console.Error.WriteLine(warning);
+        }
+
+        return throttles;
+    }
+
+    /// <summary>
+    /// Same contract as <see cref="Load"/> -- missing file → defaults, present-but-invalid (corrupt
+    /// JSON or non-positive numeric values) → defaults -- but returns the diagnostics that <see
+    /// cref="Load"/> would print instead of writing them to <see cref="Console.Error"/> itself. A
+    /// deliberately partial file (one knob overridden) is normal operator behaviour, not a fault, and
+    /// returns no warnings.
+    /// </summary>
+    public static RoomTurnThrottleLoad LoadWithDiagnostics(string roomDirectoryPath)
+    {
         if (string.IsNullOrEmpty(roomDirectoryPath))
         {
-            return RoomTurnThrottles.Default;
+            return new RoomTurnThrottleLoad(RoomTurnThrottles.Default, []);
         }
 
         var filePath = GetThrottleFilePath(roomDirectoryPath);
         if (!File.Exists(filePath))
         {
-            return RoomTurnThrottles.Default;
+            return new RoomTurnThrottleLoad(RoomTurnThrottles.Default, []);
         }
 
         try
@@ -69,13 +96,14 @@ public static class RoomTurnThrottleStore
             var dto = JsonSerializer.Deserialize<ThrottleDto>(json, ReadOptions);
             if (dto is null)
             {
-                Console.Error.WriteLine($"[RoomTurnThrottles] Loud fallback to defaults: Throttle file '{filePath}' deserialized to null.");
-                return RoomTurnThrottles.Default;
+                return new RoomTurnThrottleLoad(RoomTurnThrottles.Default,
+                    [$"[RoomTurnThrottles] Loud fallback to defaults: Throttle file '{filePath}' deserialized to null."]);
             }
 
+            var warnings = new List<string>();
             if (dto.UnrecognizedKeys is { Count: > 0 } unknown)
             {
-                Console.Error.WriteLine(
+                warnings.Add(
                     $"[RoomTurnThrottles] Unrecognized key(s) in '{filePath}' IGNORED: {string.Join(", ", unknown.Keys)}. "
                     + "Valid keys: minMachineTurnIntervalSeconds, maxMachineTurnsPerHour, failedTurnsBeforeDormancy. "
                     + "A misspelled key falls back to its default.");
@@ -87,20 +115,19 @@ public static class RoomTurnThrottleStore
 
             if (intervalSeconds <= 0 || maxPerHour <= 0 || failedDormancy <= 0)
             {
-                Console.Error.WriteLine(
+                warnings.Add(
                     $"[RoomTurnThrottles] Loud fallback to defaults: Throttle file '{filePath}' contains non-positive values (minIntervalSec: {intervalSeconds}, maxPerHour: {maxPerHour}, failedBeforeDormancy: {failedDormancy}).");
-                return RoomTurnThrottles.Default;
+                return new RoomTurnThrottleLoad(RoomTurnThrottles.Default, warnings);
             }
 
-            return new RoomTurnThrottles(
-                TimeSpan.FromSeconds(intervalSeconds),
-                maxPerHour,
-                failedDormancy);
+            return new RoomTurnThrottleLoad(
+                new RoomTurnThrottles(TimeSpan.FromSeconds(intervalSeconds), maxPerHour, failedDormancy),
+                warnings);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[RoomTurnThrottles] Loud fallback to defaults: Failed to load throttles from '{filePath}': {ex.Message}");
-            return RoomTurnThrottles.Default;
+            return new RoomTurnThrottleLoad(RoomTurnThrottles.Default,
+                [$"[RoomTurnThrottles] Loud fallback to defaults: Failed to load throttles from '{filePath}': {ex.Message}"]);
         }
     }
 
