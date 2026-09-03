@@ -1438,6 +1438,27 @@ figures a claim rests on are pinned in `TokenBudgetReplayTests`, which is commit
 rooms" measurement exists for those roles in this issue's evidence set, so their ceilings stay
 carried-over-unverified in the same sense #1623's re-review already flagged, not freshly justified.
 
+**Per-adapter token budgets — the SHAPE ships, the VALUE question stays open (#1745, operator ruling
+2026-09-03, "I'm fine with per vendor token budgets").** The open item the paragraph above left
+unresolved — "whether `implement` carries a per-vendor budget or a single raised scalar is an OPERATOR
+ruling" — is answered on the shape only: `WorkerRole.TokenBudget` (`WorkerRoles.json`'s `token_budget`
+key) is now a `TokenBudgetSpec` — either `Fixed` (one figure for every adapter, unchanged from before
+this issue) or `PerAdapter` (a map keyed by adapter name). `WorkerRoleCatalog` parses the wire shape at
+load and `TokenBudgetSpec.Resolve` (called from `RoleDispatch.ToBinding`, against the actually-
+dispatched adapter, never earlier) states the exact fail-closed-vs-unwatched split for a map entry
+that's missing; both carry their own reasoning and are not restated here. `--token-budget` still
+overrides either shape outright.
+
+**`implement`'s own value is deliberately UNCHANGED by this issue.** The 1,200,000 scalar this section
+already found to be simultaneously ~26% loose against the best claude evidence and already
+false-arresting four delivered agy lanes is not re-derived here: doing so needs a value decision this
+issue's own acceptance criteria do not ask for ("depends on nothing; pairs with the burn ledger #1570
+and the live burn view"), and the claude side of any such derivation is still bounded rather than
+closed (the live-floor paragraph above). Only `review` demonstrates the new map shape, and its two
+values (`{"claude": 250000, "agy": 250000}`) are deliberately equal to the pre-#1745 single figure —
+the shape is exercised on a real shipped role with no behavioural change, not a fresh per-vendor
+calibration. A future issue that DOES re-derive `implement`'s value now has a shape to put it in.
+
 **The shared mechanism.** All four producers (engine-run verify, the token budget, #1682's tool-step
 cap, and #1691's billed-rate limit) route through the one `StateProjector.ApplyIndeterminate` helper — flag, reason text,
 foreclosure; the `IndeterminateAwaitingResolution` flag is what `WorkflowOutcome.DescribeTerminal` and

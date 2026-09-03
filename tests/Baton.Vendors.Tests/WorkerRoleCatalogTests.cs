@@ -461,4 +461,109 @@ public class WorkerRoleCatalogTests
         Assert.Contains("refuted", instruction);
         Assert.Contains("unverified", instruction);
     }
+
+    // #1745: token_budget accepts either a bare number (Fixed, today's shape) or an object mapping
+    // adapter name to number (PerAdapter) -- both parsed by WorkerRoleCatalog, never left to a bare
+    // long that could not represent the map shape at all.
+
+    [Fact]
+    public void A_role_with_a_single_number_token_budget_parses_as_Fixed()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            $$"""[{{Role("r", "t")[..^1]}}, "token_budget": 42}]""");
+
+        var budget = Assert.IsType<TokenBudgetSpec.Fixed>(WorkerRoleCatalog.For("r").TokenBudget);
+        Assert.Equal(42, budget.Value);
+    }
+
+    [Fact]
+    public void A_role_with_a_per_adapter_map_parses_as_PerAdapter()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            "[" + Role("r", "t")[..^1] + ", \"token_budget\": {\"claude\": 10, \"agy\": 20}}]");
+
+        var budget = Assert.IsType<TokenBudgetSpec.PerAdapter>(WorkerRoleCatalog.For("r").TokenBudget);
+        Assert.Equal(10, budget.ByAdapter["claude"]);
+        Assert.Equal(20, budget.ByAdapter["agy"]);
+    }
+
+    [Fact]
+    public void A_role_with_no_token_budget_key_parses_as_null()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            $"[{Role("r", "t")}]");
+
+        Assert.Null(WorkerRoleCatalog.For("r").TokenBudget);
+    }
+
+    [Fact]
+    public void A_token_budget_map_naming_an_unknown_adapter_fails_loudly_by_role_and_key()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            "[" + Role("r", "t")[..^1] + ", \"token_budget\": {\"gemini\": 10}}]");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => _ = WorkerRoleCatalog.All);
+        Assert.Contains("r", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("gemini", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_token_budget_map_value_that_is_not_a_whole_number_fails_loudly_by_role_and_key()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            "[" + Role("r", "t")[..^1] + ", \"token_budget\": {\"claude\": \"a lot\"}}]");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => _ = WorkerRoleCatalog.All);
+        Assert.Contains("r", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("claude", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_token_budget_that_is_neither_a_number_nor_an_object_fails_loudly()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            $$"""[{{Role("r", "t")[..^1]}}, "token_budget": "a lot"}]""");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => _ = WorkerRoleCatalog.All);
+        Assert.Contains("r", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>#1745: spec/baton.md §3 has why `review` and why its two values are equal.</summary>
+    [Fact]
+    public void The_shipped_review_role_carries_a_per_adapter_map_whose_values_equal_the_prior_single_figure()
+    {
+        using var env = ShippedDefault();
+
+        var budget = Assert.IsType<TokenBudgetSpec.PerAdapter>(WorkerRoleCatalog.For("review").TokenBudget);
+        Assert.Equal(250_000, budget.ByAdapter["claude"]);
+        Assert.Equal(250_000, budget.ByAdapter["agy"]);
+    }
+
+    /// <summary>#1745: every other shipped role keeps today's single-number shape unchanged.</summary>
+    [Fact]
+    public void Every_other_shipped_role_keeps_a_single_number_token_budget()
+    {
+        using var env = ShippedDefault();
+
+        Assert.Equal(1_200_000L, ((TokenBudgetSpec.Fixed)WorkerRoleCatalog.For("implement").TokenBudget!).Value);
+        Assert.Equal(150_000L, ((TokenBudgetSpec.Fixed)WorkerRoleCatalog.For("advise").TokenBudget!).Value);
+    }
 }

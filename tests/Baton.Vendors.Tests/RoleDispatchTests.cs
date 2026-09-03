@@ -329,5 +329,81 @@ public class RoleDispatchTests
         Assert.True(binding.PermissionGrant!.WriteFiles, "the widened grant this test targets must actually have fired");
         Assert.False(binding.ChangesTree);
     }
+
+    // #1745: a synthetic role, not a catalog fixture -- ToBinding's resolution of TokenBudgetSpec
+    // against the winning adapter needs no JSON, only a WorkerRole with a TokenBudget set.
+    private static WorkerRole MakeRole(string id, string tier, string adapter, TokenBudgetSpec? tokenBudget) => new(
+        Id: id,
+        Tier: tier,
+        Adapter: adapter,
+        Model: null,
+        Effort: null,
+        Grant: new PermissionGrant(ReadFiles: true, WriteFiles: true),
+        Timeout: TimeSpan.FromMinutes(10),
+        ProducesVerdict: false,
+        Purpose: "p",
+        Outputs: [new WorkerRoleOutput("out.md", OutputSchema.None, "Write to out.md.")],
+        TokenBudget: tokenBudget);
+
+    /// <summary>#1745: a role with a single figure keeps resolving to that figure regardless of adapter.</summary>
+    [Fact]
+    public void A_single_number_token_budget_resolves_the_same_for_every_adapter()
+    {
+        var role = MakeRole("r", "t", "claude", new TokenBudgetSpec.Fixed(500_000));
+
+        Assert.Equal(500_000, RoleDispatch.ToBinding(role, "spec").TokenBudget);
+        Assert.Equal(500_000, RoleDispatch.ToBinding(role, "spec", adapterOverride: "agy").TokenBudget);
+    }
+
+    /// <summary>#1745: a role with a per-adapter map resolves the dispatched adapter's own figure.</summary>
+    [Fact]
+    public void A_per_adapter_token_budget_map_resolves_the_dispatched_adapters_own_figure()
+    {
+        var role = MakeRole("r", "t", "claude", new TokenBudgetSpec.PerAdapter(
+            new Dictionary<string, long> { ["claude"] = 300_000, ["agy"] = 900_000 }));
+
+        Assert.Equal(300_000, RoleDispatch.ToBinding(role, "spec").TokenBudget);
+        Assert.Equal(300_000, RoleDispatch.ToBinding(role, "spec", adapterOverride: "claude").TokenBudget);
+        Assert.Equal(900_000, RoleDispatch.ToBinding(role, "spec", adapterOverride: "agy").TokenBudget);
+    }
+
+    /// <summary>#1745: see TokenBudgetSpec.Resolve's own remarks for the fail-closed case this pins.</summary>
+    [Fact]
+    public void A_per_adapter_map_missing_the_dispatched_adapter_refuses_at_dispatch()
+    {
+        var role = MakeRole("r", "t", "claude", new TokenBudgetSpec.PerAdapter(
+            new Dictionary<string, long> { ["claude"] = 300_000 }));
+
+        var ex = Assert.Throws<TokenBudgetAdapterNotConfiguredException>(
+            () => RoleDispatch.ToBinding(role, "spec", adapterOverride: "agy"));
+
+        Assert.Equal("r", ex.RoleId);
+        Assert.Equal("agy", ex.Adapter);
+        Assert.Contains("agy", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>#1745: see TokenBudgetSpec.Resolve's own remarks for the unwatched case this pins.</summary>
+    [Fact]
+    public void A_per_adapter_map_run_on_an_unrecognized_adapter_resolves_to_no_budget_rather_than_refusing()
+    {
+        var role = MakeRole("r", "t", "claude", new TokenBudgetSpec.PerAdapter(
+            new Dictionary<string, long> { ["claude"] = 300_000, ["agy"] = 900_000 }));
+
+        Assert.Null(RoleDispatch.ToBinding(role, "spec", adapterOverride: "fake").TokenBudget);
+    }
+
+    /// <summary>#1745: --token-budget wins outright, whether the role carries a single figure or a map.</summary>
+    [Fact]
+    public void A_token_budget_override_wins_over_either_shape()
+    {
+        var fixedRole = MakeRole("r1", "t", "claude", new TokenBudgetSpec.Fixed(500_000));
+        var mapRole = MakeRole("r2", "t", "claude", new TokenBudgetSpec.PerAdapter(
+            new Dictionary<string, long> { ["claude"] = 300_000 }));
+
+        Assert.Equal(1, RoleDispatch.ToBinding(fixedRole, "spec", tokenBudgetOverride: 1).TokenBudget);
+        Assert.Equal(2, RoleDispatch.ToBinding(mapRole, "spec", tokenBudgetOverride: 2).TokenBudget);
+        // Even an adapter the map has no entry for is never consulted once an override is supplied.
+        Assert.Equal(3, RoleDispatch.ToBinding(mapRole, "spec", adapterOverride: "agy", tokenBudgetOverride: 3).TokenBudget);
+    }
 }
 
