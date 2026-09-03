@@ -50,6 +50,9 @@ public static class DaemonHost
 
         // #1488: WatchSweep -- baton watch's firing half. Contract: spec/baton.md §2.
         builder.Services.AddHostedService<WatchSweep>();
+        // #1557: writes BatonPaths.FleetProjectionFile every ~30s -- spec/baton.md §7's fourth kept
+        // daemon responsibility, outbound-only (no listener added).
+        builder.Services.AddHostedService<FleetProjectionWriter>();
 
         var host = builder.Build();
         onHostBuilt?.Invoke(host);

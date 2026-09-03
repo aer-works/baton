@@ -2286,6 +2286,35 @@ definition has no exit event yet and needs every line scanned, not just the last
   arithmetic-gate arm proves the worst-day write total is identical whether or not any Running room
   carries a `stdoutTail`.
 
+**The fleet projection file (#1557 PR-A) carries four more fields the mailbox payload above does
+not — a local file has no KV-write-budget or payload-size ceiling to weigh against them, so this is
+new surface, not a relocation of anything above.** `BatonPaths.FleetProjectionFile`
+(`{Root}/fleet/projection.json`, §7) wraps the same per-room shape this section already describes —
+`fleet_status`'s own fields, plus `live`/`pruned` gated exactly as above — under one more top-level
+`derived_at` (the daemon's own wall-clock at successful write completion; unrelated to the
+mailbox-payload `derived_at` above, which is the pusher's cycle time). Per room, alongside `live`,
+whenever that room's steps carry a Running execution (present even when #1513 has downgraded the
+room's own displayed `state` to `"Stalled"` — these three exist specifically to diagnose that case,
+so gating them on `state == "Running"` the way `live` itself is gated would hide them from exactly
+the room they are for):
+- **`processAlive`**: `"alive"` / `"dead"` / `"unknown"`, from `EngineLivenessProbe.Probe` against the
+  Running step's own recorded `FlowEvent.ExecutionRequestAccepted.EnginePid`/`.EngineStartTime` — the
+  same probe and identity source `StatusCommand`/`MutationInterface` already read, never a second
+  liveness mechanism.
+- **`stdout_last_write_ago_sec`**: seconds since the Running execution's `.stdout.log` last-write
+  time — a byproduct of the same incremental read `live.toolCalls`/`live.billedTokens` are computed
+  from, not a second file open.
+- **`elapsed`**: seconds since the Running step's own `timestamp` (already emitted, this schema
+  above) — paired arithmetic this section's `timeoutMs` remarks already noted a renderer could do,
+  now actually done. `timeoutMs` itself is not duplicated here; it already rides the base shape.
+
+A fifth field the operator's own ask named — pending-outputs status — has no clean source:
+`StepOutputResolver` resolves a Succeeded (or Paused-then-Succeeded) step's already-produced output
+paths, not a verdict for a step that has not reached that state yet, so PR-A omits it rather than
+inventing a projection nothing in `src/` computes today. `stdoutTail` is also absent from this file
+in PR-A — deferred to a later PR that ports pusher.py's prose-rendering block, the single largest,
+least-reusable piece of that file's own live-telemetry logic.
+
 **Board + detail-pane IA (#1678, operator ruling 2026-09-02, Combo C+E).** `glass.html`'s Fleet tab
 is a three-column state board — Needs You (the conductor pinned first, then Stalled + Indeterminate
 rooms) / Running / Done (Failed + Succeeded, dismissible) — with a detail pane that opens on
@@ -2639,6 +2668,15 @@ trigger is not registrable by a standard user and is not used (#1770).
   applied at daemon startup (`Program.cs`). At HEAD this settings file holds only
   `GlobalConcurrencyCap`/`PerVendorConcurrencyCap` (`DaemonSettingsStore.cs`) — it is machine-wide,
   not per-room, so it belongs in the narrowed daemon too.
+- **The fleet projection file (#1557 PR-A)** — `FleetProjectionWriter` (`src/Baton.Cli/Daemon/`, a
+  hosted service registered beside `RoomRetentionSweep`) rewrites `BatonPaths.FleetProjectionFile`
+  (`{Root}/fleet/projection.json`) atomically roughly every 30s (env-var-configurable, clamped, same
+  pattern as `RoomRetentionSweep`'s own interval), calling `FleetStatusTool`'s room-processing logic
+  in-process and adding the §6 `live`/`pruned` fields plus `processAlive`/`stdout_last_write_ago_sec`/
+  `elapsed` (§6 schema). A fourth kept responsibility under the same outbound-only ceiling the rest of
+  this section states: the daemon only ever writes this file, never serves it over a listener. No
+  pusher.py change rides with PR-A — both paths run side by side until a later PR retires the pusher's
+  own derivation.
 
 Explicitly **not** kept: pairing (`PairedClientsStore`), WebSocket broadcast (`/api/ws`,
 `/api/ws/progress`), sidecar/Tailscale supervision, a desktop-owner-only auth tier, template-picker
