@@ -72,6 +72,10 @@ public sealed class TokenBudgetMonitor
     private long? _tokensOut;
     private long? _billedTokens;
     private long? _cacheReadSum;
+    // #1706: sticky. Set the first time any reading declares itself a floor (claude, always) and never
+    // cleared -- a Σ over a stream where one component was structurally unreadable stays a floor no
+    // matter how many complete readings follow it.
+    private bool _billedIsFloor;
     private long _rateWindowSum;
     private long _peakBilledInWindow;
     private int _toolStepCount;
@@ -184,20 +188,42 @@ public sealed class TokenBudgetMonitor
                 var alreadyCounted = usage.MessageId is { Length: > 0 } messageId && !_seenMessageIds.Add(messageId);
                 if (!alreadyCounted)
                 {
-                    _tokensOut = (_tokensOut ?? 0) + (usage.TokensOut ?? 0);
-                    // #1686 review F7: now nullable, following BilledTokens' own convention right below.
-                    _cacheReadSum = (_cacheReadSum ?? 0) + (usage.CacheReadTokens ?? 0);
+                    // #1706: each Σ stays null until a reading actually carries ITS OWN component --
+                    // not merely until some usage line parses. claude's readings carry no output figure
+                    // at all now (ClaudeUsageParser.TryParseIncrementalUsage's own doc has why), and
+                    // reporting a Σ of 0 output tokens over a room that emitted tens of thousands is
+                    // exactly the fabricated zero #1686 review F5/F7 removed from the two Σs below.
+                    if (usage.TokensOut.HasValue)
+                    {
+                        _tokensOut = (_tokensOut ?? 0) + usage.TokensOut.Value;
+                    }
+
+                    // #1686 review F7: nullable, following BilledTokens' own convention right below.
+                    if (usage.CacheReadTokens.HasValue)
+                    {
+                        _cacheReadSum = (_cacheReadSum ?? 0) + usage.CacheReadTokens.Value;
+                    }
+
                     // #1682: per-line input + output + cache_creation, summed -- WorkerUsage.BilledTokens
                     // has the full arithmetic case for the shape and the thinking-tokens exclusion. Stays
-                    // null (never a fabricated 0) until a usage line actually parses.
-                    var billedDelta = (usage.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
-                    _billedTokens = (_billedTokens ?? 0) + billedDelta;
-                    // #1691: the SAME deduped per-turn billed delta the running Σ above takes, admitted a
-                    // second time into the trailing window -- deliberately reusing #1682's accounting
-                    // rather than re-deriving a rate-specific one, so the two triggers can never disagree
-                    // about what a billed token is.
-                    AdmitRateSample(billedDelta);
+                    // null (never a fabricated 0) until a reading reports at least one of the three.
+                    if (usage.TokensIn.HasValue || usage.TokensOut.HasValue || usage.CacheCreationTokens.HasValue)
+                    {
+                        var billedDelta = (usage.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
+                        _billedTokens = (_billedTokens ?? 0) + billedDelta;
+                        // #1691: the SAME deduped per-turn billed delta the running Σ above takes, admitted a
+                        // second time into the trailing window -- deliberately reusing #1682's accounting
+                        // rather than re-deriving a rate-specific one, so the two triggers can never disagree
+                        // about what a billed token is. #1706 merge: inside the same guard as the Σ for that
+                        // very reason -- a cache_read-only line contributes nothing to either, and admitting
+                        // a 0 sample for it would put a window entry behind a reading that billed nothing.
+                        AdmitRateSample(billedDelta);
+                    }
                 }
+
+                // #1706: outside the dedupe guard on purpose -- a repeat contributes no tokens but is
+                // still evidence about what this stream's readings can and cannot measure.
+                _billedIsFloor |= usage.BilledIsFloor;
             }
 
             if (!_arrested && _budget is { } budget && _billedTokens is { } billedSoFar && billedSoFar >= budget)
@@ -269,7 +295,9 @@ public sealed class TokenBudgetMonitor
     /// instead, so a reader summing the three raw fields does not silently double-count it.
     /// <see cref="WorkerUsage.CacheReadTokens"/> here is the running Σ (display-only, #1682), not the
     /// latest reading. <see cref="WorkerUsage.BilledTokens"/> is the quantity actually compared to the
-    /// budget.
+    /// budget, and <see cref="WorkerUsage.BilledIsFloor"/> (#1706) says whether that quantity is a
+    /// measurement of this execution's billed tokens or only a lower bound on them — true for every
+    /// claude stream, false for every agy one, per the two parsers' own measured shapes.
     /// </summary>
     public WorkerUsage SnapshotUsage()
     {
@@ -281,7 +309,8 @@ public sealed class TokenBudgetMonitor
                 CacheReadTokens: _cacheReadSum,
                 CacheCreationTokens: _latestCacheCreation,
                 ContextLevelTokens: _inputLevel,
-                BilledTokens: _billedTokens);
+                BilledTokens: _billedTokens,
+                BilledIsFloor: _billedIsFloor);
         }
     }
 

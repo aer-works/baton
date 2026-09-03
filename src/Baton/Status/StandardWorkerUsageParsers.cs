@@ -30,16 +30,24 @@ public static class StandardWorkerUsageParsers
 /// cost and quota" section is the register this reads against). <c>total_cost_usd</c> is real on this
 /// vendor but outside #1569's additive shape, so it is read by nothing here.
 /// <para>
-/// <b>Scope, measured (docs/vendor-doc-audit.md, #479): this is a top-level figure, not a whole-tree
-/// one.</b> <c>usage.output_tokens</c> excludes tokens spent by any subagent the dispatched worker
-/// itself fans out to -- confirmed at a 22% shortfall against the same result's <c>modelUsage</c>
-/// object on a single subagent, growing with the tree. AER caps a worker's own subagent fan-out at
-/// depth 1 (<c>ClaudeWorkerAdapter.MaxSubagentSpawnDepthVariable</c>) rather than zero, so this
-/// undercount is a real, reachable case here, not a hypothetical. <c>modelUsage</c> is left unread:
-/// summing it correctly needs a per-model breakdown this shape's scalars cannot carry without
-/// inventing a field neither #1360 nor #1569 asked for. Per <c>spec/baton.md</c> §7, none of this
-/// shape is the reset-time source of truth -- it is attribution, and the fleet-level <c>/usage</c>
-/// poll is what that section rules authoritative.
+/// <b>Scope, corrected by #1706: this reads <c>modelUsage</c>, the WHOLE-TREE figure, and falls back
+/// to top-level <c>usage</c> only when the line carries no <c>modelUsage</c> at all.</b> The prior
+/// reading was top-level-only and this doc recorded that as a known shortfall (docs/vendor-doc-audit.md,
+/// #479: 22% on a single subagent, growing with the tree) while ruling <c>modelUsage</c> unreadable
+/// because "summing it correctly needs a per-model breakdown this shape's scalars cannot carry". That
+/// objection was about COST, which weights per model; this shape carries no cost field, and a TOKEN
+/// COUNT sums across models without any breakdown being lost. Measured on spec/baton.md §3's two claude
+/// evidence rooms: one moves from 298,095 to 884,568 billed tokens, and the other does not move at all
+/// (294,769 both ways, its <c>modelUsage</c> being identical to its top-level <c>usage</c> field for
+/// field) -- which is what reading another field looks like, as against rescaling every figure. **What
+/// decides which room falls where is unmeasured**; spec/baton.md §3 carries the retraction of a first,
+/// wrong answer (subagent fan-out) and the sweep that falsified it -- do not reintroduce a mechanism here.
+/// AER caps a worker's own subagent fan-out at depth 1
+/// (<c>ClaudeWorkerAdapter.MaxSubagentSpawnDepthVariable</c>) rather than zero, so a whole-tree read is
+/// a real, reachable need either way. <c>num_turns</c> stays a top-level read --
+/// <c>modelUsage</c> has no analogue. Per <c>spec/baton.md</c> §7, none of this shape is the reset-time
+/// source of truth -- it is attribution, and the fleet-level <c>/usage</c> poll is what that section
+/// rules authoritative.
 /// </para>
 /// </summary>
 public sealed class ClaudeUsageParser : IWorkerUsageParser
@@ -68,7 +76,12 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
             long? cacheReadTokens = null;
             long? cacheCreationTokens = null;
             long? thinkingTokens = null;
-            if (root.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
+            // #1706: whole-tree first. Only when the line carries no readable modelUsage at all does
+            // this fall back to the top-level, main-thread-only `usage` object below -- so a capture
+            // predating the field (or a vendor build that stops emitting it) still yields the figures
+            // it always did rather than nothing.
+            var readFromModelUsage = TryReadModelUsageTotals(root, ref tokensIn, ref tokensOut, ref cacheReadTokens, ref cacheCreationTokens, ref thinkingTokens);
+            if (!readFromModelUsage && root.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
             {
                 if (usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
                 {
@@ -121,20 +134,98 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
     }
 
     /// <summary>
-    /// #1623: reads <c>message.usage</c> off a mid-stream <c>"type":"assistant"</c> line — measured
-    /// 2026-09-01 (docs/vendor-capabilities.md's "The terminal result line is not the only place this
-    /// lives" finding) to carry the same four keys this class's own <see cref="TryParseFinalUsage"/>
-    /// reads off the terminal line: <c>input_tokens</c>/<c>output_tokens</c>/
-    /// <c>cache_creation_input_tokens</c>/<c>cache_read_input_tokens</c>. <c>num_turns</c> and
-    /// <c>output_tokens_details.thinking_tokens</c> are NOT claimed on this line (that finding did not
-    /// re-check them), so this deliberately leaves <see cref="WorkerUsage.Turns"/>/
-    /// <see cref="WorkerUsage.ThinkingTokens"/> null here rather than reusing the terminal-line reader.
-    /// The per-line/per-turn summing contract is <see cref="IWorkerUsageParser.TryParseIncrementalUsage"/>'s.
+    /// #1706: sums the terminal line's <c>modelUsage</c> map — one entry per model the whole execution
+    /// TREE used, subagents included — into the four token figures plus <c>thinkingTokens</c>. Its keys
+    /// are camelCase (<c>inputTokens</c>/<c>outputTokens</c>/<c>cacheReadInputTokens</c>/
+    /// <c>cacheCreationInputTokens</c>/<c>thinkingTokens</c>), NOT the snake_case names the sibling
+    /// top-level <c>usage</c> object uses, which is why this cannot share the reader above.
+    /// Each figure is accumulated independently: a model entry reporting some and not others
+    /// contributes exactly what it reported. Returns <see langword="false"/> — leaving every ref
+    /// argument untouched — when there is no <c>modelUsage</c> object, or when it is present but no
+    /// entry yielded a single figure, so the caller's top-level fallback is reached on a shape this
+    /// could not read rather than on one it read as all-zero.
+    /// </summary>
+    private static bool TryReadModelUsageTotals(
+        JsonElement root,
+        ref long? tokensIn,
+        ref long? tokensOut,
+        ref long? cacheReadTokens,
+        ref long? cacheCreationTokens,
+        ref long? thinkingTokens)
+    {
+        if (!root.TryGetProperty("modelUsage", out var modelUsage) || modelUsage.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        long? summedIn = null;
+        long? summedOut = null;
+        long? summedCacheRead = null;
+        long? summedCacheCreation = null;
+        long? summedThinking = null;
+        foreach (var model in modelUsage.EnumerateObject())
+        {
+            if (model.Value.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            Accumulate(model.Value, "inputTokens", ref summedIn);
+            Accumulate(model.Value, "outputTokens", ref summedOut);
+            Accumulate(model.Value, "cacheReadInputTokens", ref summedCacheRead);
+            Accumulate(model.Value, "cacheCreationInputTokens", ref summedCacheCreation);
+            Accumulate(model.Value, "thinkingTokens", ref summedThinking);
+        }
+
+        if (summedIn is null && summedOut is null && summedCacheRead is null && summedCacheCreation is null && summedThinking is null)
+        {
+            return false;
+        }
+
+        tokensIn = summedIn;
+        tokensOut = summedOut;
+        cacheReadTokens = summedCacheRead;
+        cacheCreationTokens = summedCacheCreation;
+        thinkingTokens = summedThinking;
+        return true;
+
+        static void Accumulate(JsonElement model, string propertyName, ref long? running)
+        {
+            if (model.TryGetProperty(propertyName, out var prop) && prop.TryGetInt64(out var value))
+            {
+                running = (running ?? 0) + value;
+            }
+        }
+    }
+
+    /// <summary>
+    /// #1623: reads <c>message.usage</c> off a mid-stream <c>"type":"assistant"</c> line — the only
+    /// place in the shipped <c>stream-json --verbose</c> mode where per-message usage appears at all.
+    /// <c>num_turns</c> and <c>output_tokens_details.thinking_tokens</c> are NOT claimed on this line,
+    /// so this deliberately leaves <see cref="WorkerUsage.Turns"/>/<see cref="WorkerUsage.ThinkingTokens"/>
+    /// null here rather than reusing the terminal-line reader. The per-line/per-turn summing contract is
+    /// <see cref="IWorkerUsageParser.TryParseIncrementalUsage"/>'s.
     /// <c>message.id</c> is also read onto <see cref="WorkerUsage.MessageId"/> (#1686 review F6):
-    /// measured against real `.stdout.log` captures, several consecutive <c>"type":"assistant"</c>
-    /// lines can carry the SAME <c>message.id</c> and an identical <c>usage</c> object (one API
-    /// response split across content-block chunks) — a caller summing every line's usage without
-    /// deduping by this field over-counts by however many chunks that message split into.
+    /// several consecutive <c>"type":"assistant"</c> lines can carry the SAME <c>message.id</c> and an
+    /// identical <c>usage</c> object (one API response split across content-block chunks) — a caller
+    /// summing every line's usage without deduping by this field over-counts by however many chunks
+    /// that message split into.
+    /// <para>
+    /// <b>#1706: <c>input_tokens</c> and <c>output_tokens</c> on this line are PLACEHOLDERS and are
+    /// deliberately NOT read.</b> Which columns here are the vendor's real figures for this message is
+    /// docs/vendor-capabilities.md's measurement, not restated here; the two cache keys are the real
+    /// pair, and they are what <see cref="WorkerUsage.BilledTokens"/> accumulates on this vendor. Because a
+    /// billed component is therefore structurally missing from every live reading, each one carries
+    /// <see cref="WorkerUsage.BilledIsFloor"/> — spec/baton.md §3 rules on what that costs the budget.
+    /// </para>
+    /// <para>
+    /// Consequently a usage object carrying ONLY the two placeholder keys and neither cache key yields
+    /// no reading at all (<see langword="false"/>), rather than a <see cref="WorkerUsage"/> whose every
+    /// figure is null — a deliberate call, not an oversight: it keeps the never-fabricate-a-zero
+    /// convention the rest of this file follows, and the register above records that every
+    /// usage-bearing line on measured traffic carries all four keys together, so it is unreachable
+    /// there.
+    /// </para>
     /// </summary>
     public bool TryParseIncrementalUsage(string rawLine, out WorkerUsage? usage)
     {
@@ -159,18 +250,20 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
                 return false;
             }
 
-            long? tokensIn = usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens) ? inTokens : null;
-            long? tokensOut = usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens) ? outTokens : null;
             long? cacheReadTokens = usageProp.TryGetProperty("cache_read_input_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue) ? cacheReadValue : null;
             long? cacheCreationTokens = usageProp.TryGetProperty("cache_creation_input_tokens", out var cacheCreationProp) && cacheCreationProp.TryGetInt64(out var cacheCreationValue) ? cacheCreationValue : null;
             string? messageId = message.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String ? idProp.GetString() : null;
 
-            if (tokensIn is null && tokensOut is null && cacheReadTokens is null && cacheCreationTokens is null)
+            if (cacheReadTokens is null && cacheCreationTokens is null)
             {
                 return false;
             }
 
-            usage = new WorkerUsage(tokensIn, tokensOut, CacheReadTokens: cacheReadTokens, CacheCreationTokens: cacheCreationTokens, MessageId: messageId);
+            usage = new WorkerUsage(
+                CacheReadTokens: cacheReadTokens,
+                CacheCreationTokens: cacheCreationTokens,
+                MessageId: messageId,
+                BilledIsFloor: true);
             return true;
         }
         catch (JsonException)

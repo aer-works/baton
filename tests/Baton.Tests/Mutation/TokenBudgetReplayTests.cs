@@ -266,4 +266,250 @@ public sealed class TokenBudgetReplayTests
         // per-turn assertion above never firing.
         Assert.Equal(258_160, maxTrackedAtAnyTurn);
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // #1706: the claude side. Everything above replays agy, whose incremental usage IS its real usage.
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Per distinct <c>message.id</c>, in emitted order, off room <c>dispatch-implement-3dc5e21a</c>'s
+    /// real <c>.stdout.log</c>
+    /// (<c>artifacts/execution_b3cdfeb7684f459a9af0baca24c6e1c3/.stdout.log</c>):
+    /// <c>(output_tokens, cache_creation_input_tokens)</c>. 153 distinct ids over 246 usage-bearing
+    /// <c>"type":"assistant"</c> lines; 37 of the 153 are subagent messages (non-null
+    /// <c>parent_tool_use_id</c>) and are deliberately included, since the vendor bills them.
+    /// <c>input_tokens</c> is not a column because it is the literal constant 2 on all 153 — that
+    /// invariant is asserted by <see cref="ClaudePlaceholderInputTokens"/>'s use below rather than
+    /// carried 153 times. The 93 repeat lines are not reproduced either: measured over this capture,
+    /// 0 of the 93 carry a <c>usage</c> object differing from their id's first sighting, so replaying
+    /// one line per id is arithmetically identical (the dedupe path itself keeps its own real-pair
+    /// control in <c>TokenBudgetMonitorTests</c>).
+    /// Regenerating: filter the capture for <c>"type":"assistant"</c> lines carrying
+    /// <c>message.usage</c>, keep the first occurrence of each <c>message.id</c>, and read those two
+    /// fields off each.
+    /// </summary>
+    private static readonly (long Out, long CacheCreation)[] Room3dc5e21aMessages =
+    [
+        (1, 39901), (1, 1889), (3, 5607), (5, 4979), (5, 16287), (3, 11004), (3, 2694), (4, 5788), (3, 3327), (5,
+        3394), (4, 1680), (3, 3453), (4, 5939), (3, 4581), (2, 2462), (2, 1897), (4, 3763), (16, 347), (4, 2171),
+        (17, 710), (16, 603), (3, 942), (16, 736), (3, 499), (4, 720), (17, 1286), (17, 1030), (6, 672), (3, 547),
+        (17, 380), (6, 620), (3, 3640), (3, 1339), (17, 976), (17, 857), (17, 735), (2, 823), (4, 1129), (17, 965),
+        (4, 2843), (3, 1008), (3, 1370), (2, 636), (17, 647), (3, 1838), (17, 430), (17, 582), (3, 1866), (16, 804),
+        (20, 848), (3, 596), (2, 1214), (9, 789), (4, 4908), (1, 732), (3, 598), (17, 1406), (17, 883), (17, 554),
+        (2, 968), (16, 388), (17, 220), (16, 159), (3, 1111), (6, 1465), (17, 1054), (16, 894), (3, 759), (16, 488),
+        (17, 617), (17, 224), (4, 338), (20, 683), (7, 689), (16, 974), (20, 665), (3, 409), (17, 838), (17, 498),
+        (20, 636), (3, 360), (16, 608), (5, 660), (3, 2975), (20, 356), (17, 437), (3, 459), (2, 860), (17, 1142),
+        (17, 2965), (3, 401), (3, 447), (4, 2050), (1, 31849), (17, 868), (17, 1027), (3, 14005), (4, 7618), (3,
+        2894), (3, 3480), (2, 2944), (5, 6150), (3, 1521), (3, 3469), (17, 989), (3, 574), (3, 5794), (8, 317), (3,
+        1130), (3, 2156), (20, 4874), (2, 1164), (2, 3677), (2, 2353), (2, 1364), (3, 846), (3, 5204), (3, 3023),
+        (10, 895), (16, 723), (10, 2459), (21, 4252), (3, 709), (3, 2021), (3, 1192), (2, 1147), (17, 583), (9,
+        380), (3, 906), (3, 0), (3, 6796), (17, 1526), (20, 579), (4, 718), (17, 690), (17, 717), (3, 800), (20,
+        1487), (14, 917), (17, 2051), (20, 734), (2, 538), (17, 0), (20, 461), (3, 794), (8, 922), (20, 574), (2,
+        366), (20, 1568), (3, 349), (16, 631), (21, 1691), (2, 370),
+    ];
+
+    /// <summary>
+    /// The same fixture for room <c>dispatch-implement-5d9686dd</c>
+    /// (<c>artifacts/execution_01b37417062c4250ba8b211a851707a2/.stdout.log</c>), same regeneration
+    /// recipe: 94 distinct ids over 176 usage-bearing lines, 82 repeats (again 0 of 82 differing),
+    /// and — the fact that makes this room the discriminating half of the pair — ZERO subagent
+    /// messages.
+    /// </summary>
+    private static readonly (long Out, long CacheCreation)[] Room5d9686ddMessages =
+    [
+        (2, 27817), (2, 1400), (17, 713), (8, 16550), (3, 2757), (2, 3952), (3, 24258), (2, 1207), (2, 3533), (3,
+        4327), (2, 1848), (10, 3098), (3, 3499), (9, 1318), (3, 1574), (3, 5245), (20, 1109), (3, 2783), (3, 2329),
+        (3, 1784), (1, 5481), (2, 393), (3, 2871), (20, 268), (1, 3955), (2, 3576), (20, 233), (2, 527), (20, 218),
+        (20, 901), (2, 162), (2, 1283), (3, 1235), (7, 1332), (20, 1120), (2, 1005), (20, 420), (1, 2172), (2,
+        1453), (3, 3757), (7, 993), (17, 472), (3, 540), (8, 1758), (20, 297), (2, 3118), (3, 479), (2, 554), (20,
+        941), (20, 424), (9, 525), (2, 4440), (2, 4553), (20, 2294), (6, 487), (2, 763), (20, 494), (3, 580), (2,
+        985), (3, 887), (20, 587), (3, 1029), (20, 2103), (4, 850), (2, 2482), (2, 2822), (6, 6895), (4, 2198), (3,
+        1104), (3, 1984), (20, 527), (20, 1005), (8, 1049), (5, 1012), (3, 2992), (2, 8310), (6, 3184), (2, 508),
+        (6, 3145), (5, 1035), (3, 532), (8, 925), (1, 2208), (3, 455), (20, 503), (20, 441), (20, 505), (7, 185),
+        (2, 269), (3, 1883), (2, 1930), (4, 1126), (20, 205), (7, 2622),
+    ];
+
+    /// <summary>
+    /// The value claude's mid-stream <c>message.usage.input_tokens</c> carries on every message of
+    /// both captures — docs/vendor-capabilities.md records the measurement. Not "a small number" but
+    /// the same number every time, which is what makes it a placeholder rather than a small real
+    /// reading, and why it is a constant here instead of a fixture column.
+    /// </summary>
+    private const long ClaudePlaceholderInputTokens = 2;
+
+    /// <summary>Room <c>3dc5e21a</c>'s real terminal <c>"type":"result"</c> line, trimmed to the
+    /// <c>usage</c>/<c>modelUsage</c>/<c>num_turns</c> fields this parser reads, values verbatim.</summary>
+    private const string Room3dc5e21aResultLine =
+        """{"type":"result","num_turns":125,"usage":{"input_tokens":236,"cache_creation_input_tokens":221809,"cache_read_input_tokens":18306867,"output_tokens":76050,"output_tokens_details":{"thinking_tokens":15370}},"modelUsage":{"claude-opus-5":{"inputTokens":421821,"outputTokens":113293,"cacheReadInputTokens":21764631,"cacheCreationInputTokens":349454,"thinkingTokens":26232}}}""";
+
+    /// <summary>Room <c>5d9686dd</c>'s, same treatment.</summary>
+    private const string Room5d9686ddResultLine =
+        """{"type":"result","num_turns":100,"usage":{"input_tokens":188,"cache_creation_input_tokens":227657,"cache_read_input_tokens":16254371,"output_tokens":66924,"output_tokens_details":{"thinking_tokens":37565}},"modelUsage":{"claude-sonnet-5":{"inputTokens":188,"outputTokens":66924,"cacheReadInputTokens":16254371,"cacheCreationInputTokens":227657,"thinkingTokens":37565}}}""";
+
+    private static string ClaudeAssistantLine(int index, long outputTokens, long cacheCreationTokens) =>
+        "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_" + index + "\",\"usage\":{"
+        + "\"input_tokens\":" + ClaudePlaceholderInputTokens
+        + ",\"cache_creation_input_tokens\":" + cacheCreationTokens
+        + ",\"cache_read_input_tokens\":0"
+        + ",\"output_tokens\":" + outputTokens + "}}}";
+
+    private static TokenBudgetMonitor ReplayClaudeRoom((long Out, long CacheCreation)[] messages, long? budget)
+    {
+        var monitor = new TokenBudgetMonitor(budget, maxToolSteps: null, billedRateLimit: null, new ClaudeUsageParser());
+        for (var i = 0; i < messages.Length; i++)
+        {
+            monitor.OnStdoutLine(ClaudeAssistantLine(i, messages[i].Out, messages[i].CacheCreation));
+        }
+
+        return monitor;
+    }
+
+    private static long TerminalBilled(string resultLine)
+    {
+        Assert.True(new ClaudeUsageParser().TryParseFinalUsage(resultLine, out var usage));
+        return (usage!.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
+    }
+
+    [Theory]
+    [InlineData(nameof(Room3dc5e21aMessages), 344_225)]
+    [InlineData(nameof(Room5d9686ddMessages), 228_536)]
+    public void RED_the_pre_1706_reading_bills_the_placeholders_and_lands_on_the_wrong_number(string fixtureName, long preFixBilled)
+    {
+        // The defect, reproduced turn by turn against the real per-message data: the pre-#1706
+        // ClaudeUsageParser summed `input_tokens + output_tokens + cache_creation_input_tokens` off
+        // each deduped `assistant` line, and the first two of those three are placeholders. That
+        // formula no longer exists in the tree (removing it IS the fix), so it is reproduced inline
+        // here as the red control -- the same treatment
+        // RED_the_same_replay_does_NOT_arrest_at_any_point_under_the_pre_1682_level_based_reading
+        // already gives #1682's superseded formula.
+        var messages = FixtureByName(fixtureName);
+
+        var billed = messages.Sum(m => ClaudePlaceholderInputTokens + m.Out + m.CacheCreation);
+
+        Assert.Equal(preFixBilled, billed);
+    }
+
+    [Theory]
+    [InlineData(nameof(Room3dc5e21aMessages), 342_557, Room3dc5e21aResultLine, 884_568)]
+    [InlineData(nameof(Room5d9686ddMessages), 227_657, Room5d9686ddResultLine, 294_769)]
+    public void GREEN_the_fixed_reading_bills_only_the_measurable_component_and_says_so(
+        string fixtureName, long liveBilled, string resultLine, long terminalBilled)
+    {
+        // The honest post-fix result, and the reason this issue's outcome is "state the bound" rather
+        // than "close the gap": nothing in the shipped stream-json mode carries a real input or output
+        // count, so the live figure moves by less than 0.5% (344,225 -> 342,557 and 228,536 -> 227,657)
+        // and remains far under the terminal truth. What changes is that it no longer claims to be the
+        // whole figure -- BilledIsFloor, and the terminal reconciliation below.
+        var monitor = ReplayClaudeRoom(FixtureByName(fixtureName), budget: null);
+
+        var usage = monitor.SnapshotUsage();
+        Assert.Equal(liveBilled, usage.BilledTokens);
+        Assert.True(usage.BilledIsFloor);
+        // The placeholders are gone, not merely excluded from the Σ: nothing downstream can re-add
+        // them by reading the snapshot's own raw fields.
+        Assert.Null(usage.TokensIn);
+        Assert.Null(usage.TokensOut);
+        // The floor is a floor. #1706 review L2: `<=`, not `<` -- a floor GUARANTEES at-most, and a room
+        // whose live Σ happened to reach the terminal figure (an agy-shaped stream, or a claude room
+        // whose whole spend was cache creation) would be a correct reading that a strict `<` calls a
+        // defect. Both of these fixtures happen to sit strictly under, which is exactly why the strict
+        // form passed and had to be caught by reading rather than by running.
+        Assert.Equal(terminalBilled, TerminalBilled(resultLine));
+        Assert.True(usage.BilledTokens <= terminalBilled);
+    }
+
+    [Theory]
+    [InlineData(nameof(Room3dc5e21aMessages), Room3dc5e21aResultLine, 542_011)]
+    [InlineData(nameof(Room5d9686ddMessages), Room5d9686ddResultLine, 67_112)]
+    public void The_live_under_read_is_room_dependent_not_a_vendor_constant(string fixtureName, string resultLine, long underRead)
+    {
+        // #1706's central claim, pinned rather than left in prose: the shortfall is 542,011 on one room
+        // and 67,112 on the other. spec/baton.md §3 explains what drives the spread and what follows
+        // from it; these two numbers are what that explanation has to keep agreeing with.
+        var monitor = ReplayClaudeRoom(FixtureByName(fixtureName), budget: null);
+
+        Assert.Equal(underRead, TerminalBilled(resultLine) - monitor.SnapshotUsage().BilledTokens);
+    }
+
+    [Fact]
+    public void DISCRIMINATING_the_modelUsage_read_moves_only_the_room_whose_modelUsage_differs()
+    {
+        // #1706: the terminal read switched from top-level `usage` to `modelUsage`
+        // (ClaudeUsageParser.TryParseFinalUsage's own doc has the case). The control that proves it
+        // READS ANOTHER FIELD instead of scaling the old one: the room whose modelUsage differs
+        // moves by 586,473, the room whose modelUsage equals its top-level usage stays put. A change
+        // that moved BOTH would be a different defect, and this arm is the only thing in the suite that
+        // could tell them apart. NOTE the earlier name and comment on this test attributed the split to
+        // subagent fan-out; spec/baton.md §3 retracts that -- the sweep found 35 zero-subagent rooms on
+        // the moving side -- so this asserts the arithmetic and claims nothing about the cause.
+        Assert.Equal(298_095, TopLevelOnlyBilled(Room3dc5e21aResultLine));
+        Assert.Equal(884_568, TerminalBilled(Room3dc5e21aResultLine));
+
+        Assert.Equal(294_769, TopLevelOnlyBilled(Room5d9686ddResultLine));
+        Assert.Equal(294_769, TerminalBilled(Room5d9686ddResultLine));
+    }
+
+    [Fact]
+    public void HONEST_neither_delivered_claude_room_arrests_at_the_shipped_implement_budget_live_or_terminal()
+    {
+        // The budget re-derivation's own evidence (spec/baton.md §3): both rooms delivered their work
+        // and neither crosses 1,200,000 on EITHER figure -- 884,568 is the higher of the two corrected
+        // totals. So the shipped value does not false-arrest a delivered claude room and is left where
+        // it is; what changes is the derivation text, which claimed a "~2x the higher measured normal
+        // room" method against figures that method was never applied to.
+        Assert.False(ReplayClaudeRoom(Room3dc5e21aMessages, ShippedImplementBudget).Arrested);
+        Assert.False(ReplayClaudeRoom(Room5d9686ddMessages, ShippedImplementBudget).Arrested);
+        Assert.True(TerminalBilled(Room3dc5e21aResultLine) < ShippedImplementBudget);
+        Assert.True(TerminalBilled(Room5d9686ddResultLine) < ShippedImplementBudget);
+    }
+
+    [Fact]
+    public void The_live_floor_widens_the_effective_claude_ceiling_by_the_room_s_own_under_read_factor()
+    {
+        // What shipping a floor costs the budget in real tokens. spec/baton.md §3 argues it and cites
+        // this test by name; the assertions exist so that section and the code cannot drift apart.
+        var effectiveCeiling3dc5e21a =
+            (double)ShippedImplementBudget * TerminalBilled(Room3dc5e21aResultLine) / ReplayClaudeRoom(Room3dc5e21aMessages, budget: null).SnapshotUsage().BilledTokens!.Value;
+        var effectiveCeiling5d9686dd =
+            (double)ShippedImplementBudget * TerminalBilled(Room5d9686ddResultLine) / ReplayClaudeRoom(Room5d9686ddMessages, budget: null).SnapshotUsage().BilledTokens!.Value;
+
+        Assert.InRange(effectiveCeiling3dc5e21a, 3_090_000, 3_110_000);
+        Assert.InRange(effectiveCeiling5d9686dd, 1_550_000, 1_560_000);
+    }
+
+    [Fact]
+    public void POLARITY_agy_s_incremental_reading_is_not_a_floor()
+    {
+        // The other direction of the same condition: agy's step_update usage carries real input and
+        // output figures, so its Σ is a measurement and must not be labelled a floor. Without this arm
+        // a parser that set BilledIsFloor unconditionally would pass every claude assertion above.
+        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: null, billedRateLimit: null, new AgyUsageParser());
+
+        monitor.OnStdoutLine(AgyDoneLine(14205, 443));
+
+        var usage = monitor.SnapshotUsage();
+        Assert.False(usage.BilledIsFloor);
+        Assert.Equal(14205 + 443, usage.BilledTokens);
+    }
+
+    private static (long Out, long CacheCreation)[] FixtureByName(string name) => name switch
+    {
+        nameof(Room3dc5e21aMessages) => Room3dc5e21aMessages,
+        nameof(Room5d9686ddMessages) => Room5d9686ddMessages,
+        _ => throw new ArgumentOutOfRangeException(nameof(name), name, "Unknown claude replay fixture."),
+    };
+
+    /// <summary>
+    /// The pre-#1706 terminal read — top-level <c>usage</c> only, ignoring <c>modelUsage</c> — kept
+    /// solely so <see cref="DISCRIMINATING_the_modelUsage_read_moves_only_the_room_whose_modelUsage_differs"/>
+    /// has something to discriminate against. Not a second implementation of anything shipped.
+    /// </summary>
+    private static long TopLevelOnlyBilled(string resultLine)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(resultLine);
+        var usage = doc.RootElement.GetProperty("usage");
+        return usage.GetProperty("input_tokens").GetInt64()
+            + usage.GetProperty("output_tokens").GetInt64()
+            + usage.GetProperty("cache_creation_input_tokens").GetInt64();
+    }
 }

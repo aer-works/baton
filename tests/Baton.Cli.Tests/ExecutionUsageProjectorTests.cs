@@ -546,6 +546,302 @@ public sealed class ExecutionUsageProjectorTests
         }
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // #1706: the reconciliation triple (billedTokens / liveBilledTokens / billedUnderReadTokens).
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Writes one execution's captured stream and projects it. <paramref name="rolledLines"/> go to
+    /// <c>.stdout.log.1</c> — the single rollover file <c>ExecutionStreamLogger</c> writes FIRST once a
+    /// stream passes 8 MiB — and <paramref name="currentLines"/> to <c>.stdout.log</c>.
+    /// </summary>
+    private static ExecutionUsageView ProjectStream(
+        string testRoot,
+        string adapter,
+        IReadOnlyList<string> currentLines,
+        IReadOnlyList<string>? rolledLines = null,
+        bool truncatedByRollover = false)
+    {
+        var executionId = new ExecutionId("exec-1706");
+        var start = DateTime.UtcNow;
+        WriteBindings(testRoot, ("plan", adapter));
+        var entries = new List<LogEntry>
+        {
+            new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId, "plan"))),
+            new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+            new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+        };
+
+        var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+        Directory.CreateDirectory(outputDir);
+        if (rolledLines is not null)
+        {
+            File.WriteAllLines(Path.Combine(outputDir, ExecutionStreamLogger.StdoutRolloverFileName), rolledLines);
+        }
+
+        if (truncatedByRollover)
+        {
+            // What ExecutionStreamLogger itself writes on the roll that DESTROYS a segment -- an empty
+            // sentinel, its existence the whole payload.
+            File.WriteAllBytes(Path.Combine(outputDir, ExecutionStreamLogger.StdoutTruncationMarkerFileName), []);
+        }
+
+        File.WriteAllLines(Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName), currentLines);
+
+        return Assert.Single(
+            ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot)).Value;
+    }
+
+    private static string ClaudeAssistantLine(string messageId, long cacheCreation) =>
+        "{\"type\":\"assistant\",\"message\":{\"id\":\"" + messageId
+        + "\",\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":" + cacheCreation
+        + ",\"cache_read_input_tokens\":0,\"output_tokens\":3}}}";
+
+    /// <summary>A claude terminal line whose whole-tree <c>modelUsage</c> bills 1,000 + 500 + 4,000.</summary>
+    private const string ClaudeTerminalLine =
+        """{"type":"result","num_turns":2,"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":3},"modelUsage":{"claude-opus-5":{"inputTokens":1000,"outputTokens":500,"cacheReadInputTokens":9000,"cacheCreationInputTokens":4000}}}""";
+
+    [Fact]
+    public void The_reconciliation_triple_reports_terminal_billed_live_billed_and_their_difference()
+    {
+        // #1706: the shipped `baton status --json` surface (spec/baton.md §3) -- terminal 5,500 billed
+        // against a live floor of 1,200 (cache_creation only, deduped), so 4,300 of this room's real
+        // spend was invisible to the budget while it ran.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1706-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(testRoot, "claude", [
+                ClaudeAssistantLine("msg_1", 700),
+                ClaudeAssistantLine("msg_1", 700), // a repeat of the same id -- deduped, never summed twice
+                ClaudeAssistantLine("msg_2", 500),
+                ClaudeTerminalLine,
+            ]);
+
+            Assert.Equal(1000 + 500 + 4000, view.BilledTokens);
+            Assert.Equal(700 + 500, view.LiveBilledTokens);
+            Assert.Equal(5500 - 1200, view.BilledUnderReadTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void REGRESSION_a_rolled_over_stream_replays_the_rollover_file_too_never_the_tail_alone()
+    {
+        // #1706 review, the defect this arm exists for: the replay originally read `.stdout.log` only.
+        // Once ExecutionStreamLogger has rolled over at 8 MiB the earlier -- usually larger -- half of
+        // the stream lives in `.stdout.log.1`, so the live figure came out as a fraction of the truth
+        // and the reported under-read was a rollover artifact rather than a measurement -- the real
+        // rolled room the projector's own doc comment quantifies. Here the rollover file carries 900 of
+        // the 1,200 real cache-creation tokens, so
+        // reading the tail alone would report 300 and an under-read of 5,200.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1706-roll-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(
+                testRoot,
+                "claude",
+                currentLines: [ClaudeAssistantLine("msg_3", 300), ClaudeTerminalLine],
+                rolledLines: [ClaudeAssistantLine("msg_1", 400), ClaudeAssistantLine("msg_2", 500)]);
+
+            Assert.Equal(400 + 500 + 300, view.LiveBilledTokens);
+            Assert.Equal(5500 - 1200, view.BilledUnderReadTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void DISCRIMINATING_the_same_stream_without_the_rollover_file_reports_the_tail_only_figure()
+    {
+        // The control for the arm above: identical current file, no `.stdout.log.1` on disk. If this
+        // reported 1,200 the previous test would be passing for a reason unrelated to the rollover
+        // read -- and a rollover file that is simply absent (every execution under 8 MiB, i.e. nearly
+        // all of them) must contribute nothing rather than failing the read.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1706-noroll-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(testRoot, "claude", [ClaudeAssistantLine("msg_3", 300), ClaudeTerminalLine]);
+
+            Assert.Equal(300, view.LiveBilledTokens);
+            Assert.Equal(5500 - 300, view.BilledUnderReadTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void CONTROL_an_agy_stream_reconciles_to_a_ZERO_under_read()
+    {
+        // spec/baton.md §3 leans on agy's zero under-read to give claude's non-zero one its meaning --
+        // so it needs to exist as a test, not only as prose.
+        //
+        // #1706 review M4: this control used to run on a synthetic stream, which asserted its own
+        // arithmetic rather than anything about the vendor. It now replays room
+        // `dispatch-implement-38c24d11`'s REAL capture -- 70 `agent_response` usage lines plus its own
+        // terminal `result`, copied verbatim. The vendor fact underneath is measured in
+        // docs/vendor-capabilities.md and pinned directly by `AgyTerminalUsageIsCumulativeTests`; what
+        // this exercises is that fact reaching the surface `baton status --json` actually serves.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1706-agy-{Guid.NewGuid():N}");
+        try
+        {
+            var realAgyStream = File.ReadAllLines(
+                Path.Combine(AppContext.BaseDirectory, "Fixtures", "agy-38c24d11-agent-response-usage.jsonl"));
+
+            var view = ProjectStream(testRoot, "agy", realAgyStream);
+
+            // The room's own measured totals -- input 595,684 + output 199,256, from the real terminal
+            // line and, identically, from the Σ of its 70 per-turn lines.
+            Assert.Equal(794_940, view.BilledTokens);
+            Assert.Equal(794_940, view.LiveBilledTokens);
+            Assert.Equal(0, view.BilledUnderReadTokens);
+            Assert.Null(view.BilledReconciliationUnavailable);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void The_triple_is_absent_entirely_when_the_stream_carries_no_terminal_usage_line()
+    {
+        // Never a fabricated zero, and never a lone liveBilledTokens with nothing to reconcile it
+        // against: all three go together or none does.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1706-absent-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(testRoot, "claude", [ClaudeAssistantLine("msg_1", 700)]);
+
+            Assert.Null(view.BilledTokens);
+            Assert.Null(view.LiveBilledTokens);
+            Assert.Null(view.BilledUnderReadTokens);
+            // #1706 review M2: and the reason says WHICH half was missing, so a consumer that got no
+            // triple can tell "nothing terminal to reconcile against" from "the replay was unusable".
+            Assert.Equal("no-terminal-billed-figure", view.BilledReconciliationUnavailable);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void REGRESSION_billedTokens_is_never_emitted_ALONE_when_the_live_figure_is_unavailable()
+    {
+        // #1706 review M2 — the defect and the contract are on ExecutionUsageView and in spec/baton.md
+        // §6. The reachable shape pinned here: a real terminal line with no usage-bearing line ahead of
+        // it, which used to ship `billedTokens` by itself.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1706-lone-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(testRoot, "claude", [
+                """{"type":"system","subtype":"init","session_id":"s"}""",
+                ClaudeTerminalLine,
+            ]);
+
+            Assert.Null(view.BilledTokens);
+            Assert.Null(view.LiveBilledTokens);
+            Assert.Null(view.BilledUnderReadTokens);
+            Assert.Equal("no-live-billed-figure", view.BilledReconciliationUnavailable);
+            // The rest of the terminal reading is untouched -- this clamp is about the reconciliation
+            // triple only, not about withholding figures the terminal line really did report.
+            Assert.Equal(2, view.Turns);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void CONTROL_the_same_stream_WITH_a_live_usage_line_emits_all_three()
+    {
+        // The discriminating arm for the regression above: identical shape apart from one usage-bearing
+        // line. Without it, a projector that simply never emitted the triple would pass that test.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1706-lone-ctl-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(testRoot, "claude", [
+                """{"type":"system","subtype":"init","session_id":"s"}""",
+                ClaudeAssistantLine("msg_1", 700),
+                ClaudeTerminalLine,
+            ]);
+
+            Assert.Equal(5500, view.BilledTokens);
+            Assert.Equal(700, view.LiveBilledTokens);
+            Assert.Equal(4800, view.BilledUnderReadTokens);
+            Assert.Null(view.BilledReconciliationUnavailable);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void REGRESSION_a_TWICE_rolled_stream_reports_the_under_read_as_unknown_not_as_a_number()
+    {
+        // #1706 review M3. Why a marker is needed at all, and why the reader cannot infer it, is on
+        // `ExecutionStreamLogger.StdoutTruncationMarkerFileName` and in `ExecutionUsageProjector`'s
+        // rollover arm. What this pins is the behaviour: the once-rolled fix this PR shipped would
+        // otherwise produce here the very artifact it was written to remove.
+        //
+        // The fixture is deliberately the once-rolled test's own stream plus the marker: the number is
+        // computable, and refused anyway, which is the whole point.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1706-twice-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(
+                testRoot,
+                "claude",
+                [ClaudeAssistantLine("msg_2", 500), ClaudeTerminalLine],
+                rolledLines: [ClaudeAssistantLine("msg_1", 700)],
+                truncatedByRollover: true);
+
+            Assert.Equal("stream-truncated-by-rollover", view.BilledReconciliationUnavailable);
+            Assert.Null(view.BilledTokens);
+            Assert.Null(view.LiveBilledTokens);
+            Assert.Null(view.BilledUnderReadTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void CONTROL_the_same_ONCE_rolled_stream_without_the_marker_still_reconciles()
+    {
+        // The polarity arm. Same bytes, no marker: the replay spans the whole stream and reports a real
+        // figure. Without this, a projector that withheld the triple on every rolled stream -- or on
+        // every stream at all -- would pass the regression above.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1706-once-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(
+                testRoot,
+                "claude",
+                [ClaudeAssistantLine("msg_2", 500), ClaudeTerminalLine],
+                rolledLines: [ClaudeAssistantLine("msg_1", 700)]);
+
+            Assert.Null(view.BilledReconciliationUnavailable);
+            Assert.Equal(5500, view.BilledTokens);
+            Assert.Equal(1200, view.LiveBilledTokens);
+            Assert.Equal(4300, view.BilledUnderReadTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static ExecutionRequest AcceptedRequest(ExecutionId executionId, string worker, string? adapter = null) => new(
         executionId,
         new WorkflowId("wf-usage-test"),

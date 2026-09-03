@@ -902,7 +902,9 @@ public class MutationInterfaceTests
                 WorkflowTemplateVersion: 1,
                 Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(3))]);
 
-            const string usageLine = """{"type":"assistant","message":{"usage":{"input_tokens":500000,"output_tokens":200000}}}""";
+            // #1706: the billed component on claude is cache_creation -- the input/output columns on a
+            // mid-stream `assistant` line are placeholders and are no longer read at all.
+            const string usageLine = """{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":700000,"cache_read_input_tokens":500000,"output_tokens":3}}}""";
             var bindings = new Dictionary<string, WorkerBinding>
             {
                 ["architect"] = new WorkerBinding.Process(
@@ -929,12 +931,14 @@ public class MutationInterfaceTests
             Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
             Assert.Empty(events.OfType<FlowEvent.ExecutionCancelled>());
             var arrested = Assert.Single(events.OfType<FlowEvent.ExecutionArrested>());
-            Assert.Equal(500000, arrested.Usage?.TokensIn);
-            Assert.Equal(200000, arrested.Usage?.TokensOut);
-            // #1682: billed (what the budget actually arrested on) is Σ input + Σ output for this
-            // single line -- 700,000, crossing the 1,000 budget -- and the reason is recorded on the
-            // wire, not just inferred from Arrested being true.
+            Assert.Null(arrested.Usage?.TokensIn);
+            Assert.Null(arrested.Usage?.TokensOut);
+            // #1682: billed (what the budget actually arrested on) is 700,000 for this single line,
+            // crossing the 1,000 budget -- and the reason is recorded on the wire, not just inferred
+            // from Arrested being true. #1706: the floor flag rides the same event, so a reader of the
+            // ledger can tell a claude arrest figure from a complete one without knowing the vendor.
             Assert.Equal(700000, arrested.Usage?.BilledTokens);
+            Assert.True(arrested.Usage?.BilledIsFloor);
             Assert.Equal(ArrestReason.TokenBudget, arrested.Reason);
         }
         finally

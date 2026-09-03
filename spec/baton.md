@@ -916,8 +916,12 @@ point in the same 70-turn replay (`TokenBudgetReplayTests.RED_the_same_replay_do
 which reproduces the pre-#1682 formula turn-by-turn against real per-turn data and pins that peak).
 
 `Baton.Mutation.TokenBudgetMonitor` now accumulates `WorkerUsage.BilledTokens` — a running Σ, across
-every incremental usage line, of that line's own `input_tokens + output_tokens [+
-cache_creation_input_tokens, on claude]`. Deliberately excludes `thinking_tokens`: verified against
+every incremental usage line, of whichever of `input_tokens`/`output_tokens`/
+`cache_creation_input_tokens` that line's vendor actually reports for real. On agy that is
+`input_tokens + output_tokens`; on claude it is `cache_creation_input_tokens` alone, the other two
+being placeholders (#1706, below — this paragraph originally read `input_tokens + output_tokens [+
+cache_creation_input_tokens, on claude]`, which described what the code summed and not what the
+vendor meant by it). Deliberately excludes `thinking_tokens`: verified against
 every usage line in room `38c24d11`'s real capture, `Σinput_tokens + Σoutput_tokens` reproduces the
 vendor's own `Σtotal_tokens` exactly on every sampled line (e.g. one real line: `input_tokens: 14205,
 output_tokens: 443, thinking_tokens: 349, total_tokens: 14648` — `14205 + 443 = 14648`, and adding
@@ -926,7 +930,11 @@ output_tokens: 443, thinking_tokens: 349, total_tokens: 14648` — `14205 + 443 
 issue body and evidence comment ("Σ input+output+thinking, which equals it here" — it does not; found
 while fixing, corrected in this same change rather than filed separately). `ContextLevelTokens` keeps
 its pre-#1682 meaning unchanged — the latest `input_tokens + cache_read_input_tokens +
-cache_creation_input_tokens` reading, a level, DISPLAY-only now, never what a budget arrests on.
+cache_creation_input_tokens` reading, a level, DISPLAY-only now, never what a budget arrests on. One
+term of that sum is gone on claude as of #1706: with `input_tokens` no longer read there, the engine's
+level is the two cache counters alone. Numerically it is a 2-token difference, but it is a difference
+in *definition*, and it makes the engine's level and glass's own `contextTokens` (§6 below, which still
+includes the placeholder) subtly different quantities rather than the same one.
 `CacheReadTokens` on the monitor's own snapshot changes from a level to a running Σ (display-only, same
 convention).
 
@@ -946,12 +954,79 @@ larger than `BilledTokens` alone suggests; an operator reading this figure as "t
 than "the budget-relevant, vendor-reconcilable token count" would be misled, which is exactly why this
 paragraph exists.
 
+**On claude, the live billed figure is a FLOOR, not a measurement (#1706).** The vendor fact this
+rests on — which columns of a mid-stream `assistant` line are real, whether a repeat line ever
+revises them, and whether any other event in the shipped mode carries them — is
+`docs/vendor-capabilities.md`'s, under this issue's correction to that file's per-message usage-shape
+finding — measured there and not restated here. Two consequences follow for this engine, and they are
+what this section rules on.
+
+The live-measurable billed quantity on this vendor is Σ`cache_creation_input_tokens` alone;
+`ClaudeUsageParser.TryParseIncrementalUsage` reads that and nothing else, and every reading it
+produces carries `WorkerUsage.BilledIsFloor`, sticky through `TokenBudgetMonitor`'s Σ, surfaced in
+`StateProjector.DescribeArrest`'s text and as glass's trailing `+`.
+
+Per room, billed tokens (`input + output + cache_creation`), live versus the terminal line's
+authoritative whole-tree `modelUsage`:
+
+| Room | pre-#1706 live | post-#1706 live | terminal (authoritative) | under-read | subagent messages |
+|---|---|---|---|---|---|
+| `dispatch-implement-3dc5e21a` | 344,225 | 342,557 | 884,568 | 542,011 (38.7% seen) | 37 of 153 |
+| `dispatch-implement-5d9686dd` | 228,536 | 227,657 | 294,769 | 67,112 (77.2% seen) | 0 of 94 |
+
+**The magnitude does not move; only the label and the reconciliation do.** 344,225 → 342,557 is 0.5%.
+Saying otherwise would be the second wrong number #1706 warned about. What the fix buys is that the
+figure no longer claims to be complete, and that the terminal reconciliation is now derivable per
+room (`ExecutionUsageView`'s `billedTokens`/`liveBilledTokens`/`billedUnderReadTokens`, from
+`baton status --json`).
+
+**The shortfall is room-dependent, and its mechanism is UNMEASURED.** Swept over all 127 claude rooms
+under `~/.baton/rooms` carrying a terminal `modelUsage` (126 excluding the one whose stream had rolled
+over), the live-seen fraction runs **min 0.282, p10 0.312, p25 0.444, median 0.768, p75 0.817, max
+0.911**. So no single correction factor exists and the figure is labelled rather than scaled.
+
+**A first attempt at the mechanism was wrong and is retracted here rather than filed.** This section
+briefly claimed the spread was driven by subagent fan-out — a subagent's first request being uncached
+and therefore billing real `input_tokens`. It was inferred from the two evidence rooms, where it fit
+exactly, and the sweep falsifies it: of the 113 rooms that spawned no subagent at all (the terminal
+line's own `subagent_stats.spawned`), **35 still show `modelUsage` differing from top-level `usage`**,
+including `dispatch-review-c012659f` at 374,918 whole-tree input tokens against a top-level 86. Rooms
+that *did* spawn subagents sit at the *high*-seen end (0.79–0.80). Whatever drives the gap, it is not
+fan-out, and this register does not name a mechanism it has not measured. #1709's normal-room
+population is where a real answer would come from.
+
+**The product consequence, stated rather than left to inference.** A budget is compared against the
+floor, so `implement`'s shipped 1,200,000 is an effective ceiling of `1,200,000 ÷ seen` in real tokens:
+~1.55M on the best-seen of the two evidence rooms, ~3.1M on the worse, and **~4.26M** on the worst room
+in the whole 126-room sweep (`dispatch-review-b4f33edb`, seen 0.282).
+`TokenBudgetReplayTests.The_live_floor_widens_the_effective_claude_ceiling_by_the_room_s_own_under_read_factor`
+pins the two evidence rooms' figures so this paragraph and the code cannot drift; the 4.26M is the
+sweep's, and the sweep is not a committed instrument (see the note on `tools/room-rate-sweep` below).
+The token trigger is therefore materially looser on claude than on agy, whose incremental usage IS its
+real usage; closing that asymmetry needs a live figure this vendor does not emit, so it is a bound to
+know about, not a defect left open.
+
+**The terminal read is `modelUsage`, which is ≥ top-level `usage` (#1706).**
+`ClaudeUsageParser.TryParseFinalUsage` now sums `modelUsage` (camelCase keys, one entry per model)
+and falls back to the main-thread-only top-level `usage` object only when no `modelUsage` is present.
+The prior ruling left `modelUsage` unread on the grounds that summing it needs a per-model breakdown —
+true of COST, which this shape carries no field for, and false of a TOKEN COUNT. The discriminating
+control is that this reads a different field rather than rescaling every figure: room `5d9686dd`, whose
+`modelUsage` equals its top-level `usage` field for field, does not move at all (294,769 either way)
+while `3dc5e21a` moves from 298,095 to 884,568. Across the 127-room sweep 78 rooms are in `5d9686dd`'s
+position and 49 in `3dc5e21a`'s, so both arms of that control are well populated — but which room falls
+where is NOT predicted by subagent fan-out, per the retraction above, and the control must not be read
+as evidence about scope.
+
 **Claude's incremental usage line is deduped by `message.id` (#1686 review F6).** Measured against
 real `.stdout.log` captures (`dispatch-implement-3dc5e21a`: 246 usage-bearing `"type":"assistant"`
 lines, only 153 distinct `message.id`s; `dispatch-implement-5d9686dd`: 176 lines, 94 distinct ids;
 `dispatch-review-9ef0b9c3`: 85 lines, 33 distinct ids) — claude's stream-json splits a single API
 response's content blocks across several consecutive `assistant` events that each repeat the SAME
-`message.id` and an IDENTICAL `message.usage` object. Summing every line's usage without deduping would
+`message.id` and an IDENTICAL `message.usage` object. That identity is measured, not assumed, and is
+what settles #1686 review F4: `docs/vendor-capabilities.md` records zero repeat lines differing from
+their id's first sighting, so first-sighting dedupe is correct and no "read the last one" rule would
+recover anything. Summing every line's usage without deduping would
 have over-counted `BilledTokens` by roughly 40-60% on these three real rooms alone.
 `ClaudeUsageParser.TryParseIncrementalUsage` now also reads `message.id` onto
 `WorkerUsage.MessageId`, and `TokenBudgetMonitor` tracks the set of ids already accumulated for the
@@ -1173,24 +1248,12 @@ same way on a non-positive value, rejected on a workflow-template dispatch the s
 `RedispatchBindingTests` pinning both polarities.
 
 **A cross-vendor caveat that is load-bearing for all three triggers, not just this one (#1706).**
-`BilledTokens` is not the same quantity on the two vendors. claude's mid-stream `assistant` lines carry
-`message_start` PLACEHOLDER values on **both** the input and the output side — over
-`dispatch-implement-3dc5e21a`'s 153 distinct messages, Σ deduped `output_tokens` is **1,362** against
-the terminal line's own `modelUsage.outputTokens` of 113,293, and Σ deduped `input_tokens` is **306**
-against `modelUsage.inputTokens` of 421,821. The missing input side is 3.7× the missing output side, so
-"it's the output tokens" — the framing #1707's review caught in an earlier draft here and in #1706's
-own title — understates both the size and the fix. What the monitor bills on a claude stream is
-essentially `Σ cache_creation` alone: roughly 39% of THAT room's real billed volume (`5d9686dd`'s ratio
-is 78%, so the shortfall is heavily room-dependent and must not be quoted as a per-vendor constant).
-agy's `agent_response` DONE line carries the complete per-turn figure.
-Every token-side threshold is therefore tight on agy and loose on claude, and #1691's premise is a
-direct consequence: it compared an agy runaway against two claude reference rooms. Tracked as #1706,
-not fixed here — fixing it re-derives `implement`'s and `review`'s budgets, and #1691's own change ships
-no threshold at all. The same measurement settles #1686 review F4's open question in passing: repeated
-`message.id`s DO carry a byte-identical `usage` object with disjoint `content` blocks (verified over
-both captures, 64 of 153 and 72 of 94 ids repeat), so first-sighting dedupe is correct — and the missing
-output side is not something a different dedupe rule could recover, because the real figure never
-appears on any `assistant` line.
+`BilledTokens` is not the same quantity on the two vendors: on claude it is a FLOOR, on agy a
+measurement. The measurement, the per-room table and the consequences are stated once, above, under
+"On claude, the live billed figure is a FLOOR, not a measurement (#1706)" — not restated here. What it
+means for THIS trigger is the one clause that belongs here: every token-side threshold is tight on agy
+and loose on claude, and #1691's premise is a direct consequence, since it compared an agy runaway
+against two claude reference rooms.
 
 **`--max-tool-steps <n>` (#1686 review F11)** is `baton dispatch`'s override for this axis, mirroring
 `--token-budget` end to end — a positive whole number of real tool calls (this fixed unit), or refused
@@ -1226,12 +1289,51 @@ PR does not make: whether `implement`'s ceiling should move per-vendor or the sc
 and the number that would settle either question is itself under-read on claude by #1706 above, so
 re-deriving it belongs with that fix rather than here.** The OLD
 600,000 default, read under the NEW billed-token arithmetic rather than the OLD level-based one it was
-tuned for, would already false-arrest the FIRST of those two ordinary, successful lanes mid-run — the
-new default is set to roughly 2× the higher of the two measured normal totals, giving headroom for a
-legitimate longer session. Both evidence rooms (794,940 and 529,425) sit BELOW this recalibrated
-budget, by the same sound method that recalibrated it — see the honest replay result above for what
-that means for the shipped configuration's actual coverage of these two rooms. `review`/`advise` keep
-their pre-#1682 token-budget figures (250,000/150,000) unchanged — no comparable "two normal completed
+tuned for, would already false-arrest the FIRST of those two ordinary, successful lanes mid-run: that
+part of the case stands.
+
+**The re-derivation #1707 deferred here (#1706), taken up and answered in halves.** #1707 deferred
+re-deriving this number to #1706 on the ground that the claude side of it was under-read. #1706 bounds
+that under-read but does **not** close the derivation, and the reason is `claim-scope`: the two
+populations disagree, and a single cross-vendor scalar cannot be sized from either alone.
+
+- **claude (this issue's population).** The old stated method — "roughly 2× the higher of the two
+  measured normal totals" — was applied to 628,302 and 507,402, sums taken under pre-#1686 accounting,
+  before the `message.id` dedupe. Deduped they are 344,225 and 228,536; corrected for the mid-stream
+  placeholder columns and read against the terminal whole-tree line (#1706's table above) they are
+  **884,568 and 294,769**. Applying "2× the higher" to the corrected pair would give ~1,769,000, not
+  1,200,000. On this population 1,200,000 false-arrests nothing: 884,568 sits under it with ~26% margin
+  (`TokenBudgetReplayTests.HONEST_neither_delivered_claude_room_arrests_at_the_shipped_implement_budget_live_or_terminal`),
+  making the shipped value **~1.36× the higher corrected normal room** — TIGHTER than the "2×" the old
+  text claimed, not looser. Tighter in intent than in effect, since what a live claude budget is
+  actually compared against is the floor, not these corrected figures (see the effective-ceiling
+  paragraph above).
+- **agy (#1707's population, above).** On the same shipped ceiling, four delivered agy lanes are over
+  it — `7d25642b` (2,358,353), `46d513e7` (1,754,518), `55aa75ae` (1,419,955), `46e842cd` (1,205,398).
+  There the value is not loose, it is already false-arresting.
+
+**So the two halves point in opposite directions, and a scalar cannot satisfy both.** ~26% of headroom
+on the higher of two delivered claude rooms and four delivered agy rooms over the same line is not a
+number that is "a bit off" — it is evidence that **`implement`'s ceiling is not a single-vendor-sizable
+quantity**, because `BilledTokens` does not mean the same thing on the two vendors (the FLOOR paragraph
+above). Raising the scalar to cover agy's 2.36M would make it ~2.7× the higher claude room and, read
+against claude's own live floor, an effective real ceiling past 8M on the worst-seen room in the sweep;
+holding it at 1,200,000 keeps arresting delivered agy work. **`WorkerRoles.json` is therefore left
+untouched by this PR, and the open item is named rather than passed on again: whether `implement`
+carries a per-vendor budget or a single raised scalar is an OPERATOR ruling, not an engineering one, and
+it is the last thing blocking the derivation.** #1706 does not defer it to #1709 — what #1709 collects
+(a normal-room population) would inform the *value* chosen under either shape, but it cannot choose the
+shape. Neither can a further measurement.
+
+**On the sweep instrument.** `tools/room-rate-sweep/sweep.py` is on `main` (#1707) and is the
+re-runnable instrument for the room figures above — `python tools/room-rate-sweep/sweep.py --sweep`.
+#1706 extends its claude arm to this issue's accounting (cache-creation only, the mid-stream
+input/output columns dropped) so the tool and `TokenBudgetMonitor` cannot disagree about what a claude
+billed token is, and marks the vendor asymmetry in its output. The 126-room seen-fraction figures above
+predate that extension and were produced by a throwaway script over `~/.baton/rooms`; the per-room
+figures a claim rests on are pinned in `TokenBudgetReplayTests`, which is committed.
+
+`review`/`advise` keep their pre-#1682 token-budget figures (250,000/150,000) unchanged — no comparable "two normal completed
 rooms" measurement exists for those roles in this issue's evidence set, so their ceilings stay
 carried-over-unverified in the same sense #1623's re-review already flagged, not freshly justified.
 
@@ -1315,7 +1417,8 @@ code is the only signal a lane is even still going, and it is unreliable for tha
 where `ExecutionUsageView` is
 ```
 { "wallClockMs": number, "tokensIn"?: number, "tokensOut"?: number, "turns"?: number,
-  "cacheReadTokens"?: number, "cacheCreationTokens"?: number, "thinkingTokens"?: number }
+  "cacheReadTokens"?: number, "cacheCreationTokens"?: number, "thinkingTokens"?: number,
+  "billedTokens"?: number, "liveBilledTokens"?: number, "billedUnderReadTokens"?: number }
 ```
 (`src/Baton/Status/ExecutionUsageView.cs` declares the C# record; `WorkflowStatusView.cs` projects it). `wallClockMs` is
 always present when the object is present at all — derived from recorded start/exit timestamps. The
@@ -1325,6 +1428,49 @@ real field on both measured vendors' envelopes (claude: `cache_read_input_tokens
 never been observed reporting one; and `thinkingTokens` (claude: nested
 `usage.output_tokens_details.thinking_tokens`; agy: flat `thinking_tokens`) — each independently
 absent when its vendor's line does not carry it, same doctrine as the original three.
+
+**Source, corrected by #1706 — on claude these six now come from `modelUsage`, not the snake_case
+top-level `usage` object the paragraph above names.** The key names above describe agy's shape and
+claude's *fallback* shape (a terminal line carrying no `modelUsage`); claude's normal path reads the
+camelCase `modelUsage` siblings instead, per §3's terminal-read ruling. This is a real change to the
+existing fields' VALUES, not only to the three added below: on room `dispatch-implement-3dc5e21a`
+`tokensIn` moves 236 → 421,821, `tokensOut` 76,050 → 113,293, `cacheReadTokens` 18,306,867 →
+21,764,631, `cacheCreationTokens` 221,809 → 349,454, `thinkingTokens` 15,370 → 26,232 — and on a room
+whose `modelUsage` equals its top-level `usage`, nothing moves at all. Anything reading these figures
+reads the larger scope now, including `OutcomeClassifier`'s ZeroOutputsDespiteSubstantialWork tripwire
+text (its `> 0` polarity is unchanged; the number it shows an operator is not).
+
+**The three added by #1706 are the per-room reconciliation** — the durable answer to "how much of this
+room's spend did the live budget actually see". `billedTokens` is the AUTHORITATIVE billed total,
+`tokensIn + tokensOut + cacheCreationTokens` off the terminal line (whole-tree on claude, per that
+issue's `modelUsage` change above). `liveBilledTokens` is what `TokenBudgetMonitor` — the real class,
+replayed over the same captured stream rather than a second implementation of its Σ — saw while the
+execution ran, i.e. the quantity a budget arrested on. `billedUnderReadTokens` is their difference.
+The three appear together or not at all, and the difference is emitted even at zero, because a
+measured zero under-read is a finding: it is what agy produces (measured over three real rooms —
+`docs/vendor-capabilities.md`'s finding on that vendor's terminal usage line, not restated here), and
+it is the control that makes claude's non-zero one meaningful. Derived on read, never a
+ledger event — the same derive-over-record-twice preference `ExecutionUsageProjector` was built on.
+
+**A fourth field carries WHY they are absent, and the all-or-nothing rule is enforced rather than
+merely stated (#1706 review).** Where the triple cannot be completed, the view carries
+`billedReconciliationUnavailable` and withholds all three rather than serving whichever half it has.
+An earlier revision of this contract was prose only, and the code did serve that half — so a consumer
+obeying the register was handed a partial answer in precisely the case the guard exists to flag, which
+is why the rule is now enforced in the projector and pinned in both polarities by
+`ExecutionUsageProjectorTests`. The permitted reason values, and when the reason itself is absent, are
+on `ExecutionUsageView.BilledReconciliationUnavailable`.
+
+One of them is worth a ruling rather than a field doc, because the bound behind it reads like a
+guarantee and is not. **`ExecutionStreamLogger`'s 8 MiB-plus-one-rollover ceiling is a RETENTION bound,
+never a completeness one.** Each roll overwrites the single `.stdout.log.1`, so a stream past ~16 MiB
+has permanently discarded its earliest segments and any replay over what survives is not even a floor
+of the real live Σ. The engine's response is fail-closed: the logger records the roll that destroys a
+segment, and a reader that sees that record withholds the reconciliation instead of reporting a
+partial replay as a measurement. Fail-closed only *forward* — a room that rolled twice before this
+landed carries no such record and still reports a figure. Not reachable on today's corpus (largest
+room measured ~9 MB, one rolled room in 127), which is why this is a bound to know about rather than a
+live wrong number.
 
 **Not all fields are addends — on claude, `thinkingTokens` is a breakdown of `tokensOut`, not a
 sibling count; on agy, the containment relationship is unmeasured.** Measured (#1569): on claude,
@@ -1723,8 +1869,8 @@ the last non-blank line of the captured stream — neither fits a still-running 
 definition has no exit event yet and needs every line scanned, not just the last:
 - **`rooms[].live` (item 1, extended by a 2026-09-01 review of #1613's PR, and by #1682)**, present
   only for a room whose pusher-displayed `state` is exactly `"Running"`:
-  `{ "toolCalls"?: number, "billedTokens"?: number, "turns"?: number, "contextTokens"?: number,
-    "cacheReadTokens"?: number, "lastActivityAt"?: string }`.
+  `{ "toolCalls"?: number, "billedTokens"?: number, "billedIsFloor"?: true, "turns"?: number,
+    "contextTokens"?: number, "cacheReadTokens"?: number, "lastActivityAt"?: string }`.
 
   `toolCalls` counts `tool_use` blocks in claude's `assistant` stream events and DONE/`tool`
   `step_update` heartbeats in agy's — both shapes measured (docs/vendor-capabilities.md's
@@ -1746,14 +1892,18 @@ definition has no exit event yet and needs every line scanned, not just the last
   "agy emits none of the three: its `step_update` heartbeat carries no `usage` field at all" was
   wrong (it checked the `tool` step_type's heartbeat, not the `agent_response` one, which does carry
   `usage`) and is corrected here rather than left standing. `billedTokens` is the SAME quantity the
-  engine's own `Baton.Mutation.TokenBudgetMonitor` arrests on (§3 below) — `Σ(input_tokens +
-  output_tokens [+ cache_creation_input_tokens on claude])` per usage-bearing line, additive
-  (whole-tree on claude — `docs/vendor-doc-audit.md` measures the terminal line's own cumulative
-  figure undercounting by ~22% with a single subagent in the tree, so summing every mid-stream line
-  instead is *more* accurate, not less), never `thinking_tokens` (a breakdown already counted inside
-  `output_tokens` on both vendors — measured against real #1682 captures: Σinput + Σoutput
-  reproduces the vendor's own Σ`total_tokens` exactly). `turns` is the count of usage-bearing lines
-  contributing to `billedTokens`, additive the same way. `contextTokens` (the sum of the message's
+  engine's own `Baton.Mutation.TokenBudgetMonitor` arrests on (§3 below), read by the same per-vendor
+  rule: `Σ(input_tokens + output_tokens)` per agy usage line, `Σ(cache_creation_input_tokens)` per
+  claude one (#1706 — that vendor's other two columns are placeholders; §3 has the measurement).
+  Additive, whole-tree on claude (a subagent's `assistant` events carry `parent_tool_use_id` and are
+  never filtered out), never `thinking_tokens` (a breakdown already counted inside `output_tokens` on
+  both vendors — measured against real #1682 captures: Σinput + Σoutput reproduces agy's own
+  Σ`total_tokens` exactly). **`billedIsFloor` (#1706)** is `true`, and absent otherwise, once any
+  batch contributed a claude figure: `billedTokens` is then a LOWER BOUND on real spend rather than a
+  measurement of it, and the glass renders a trailing `+` on the number rather than showing a
+  complete-looking figure. Sticky across batches — one incomplete batch makes the accumulated total
+  incomplete — matching `TokenBudgetMonitor`'s own sticky flag. `turns` is the count of usage-bearing
+  lines contributing to `billedTokens`, additive the same way. `contextTokens` (the sum of the message's
   fresh-input count and both its cache counters) and `cacheReadTokens` (the cache-read counter
   alone) stay claude-only — read off the LATEST `assistant` line only, a LEVEL, replaced every turn,
   never summed: the trap the original ruling correctly named applies to the fresh-input count
