@@ -336,8 +336,8 @@ process, or how many rounds later, reads it. A `null` `Origin` (a line written b
 is likewise never accumulated. Because the `Origin` field and the ledger-read rule that consults it
 ship in the same PR, no released build ever ran the rule without `Origin` — there is no window in
 which a real, already-deployed ledger's `HostStop` line was ever read as an operator cancel by this
-mechanism, so this addition cannot make any existing ledger *worse*; it simply closes the leak (F1
-above) before the rule that has the leak ever reaches an operator. The `!hostStopRequested` gate
+mechanism, so this addition cannot make any existing ledger *worse*; it simply closes the
+cross-process leak before the rule that has the leak ever reaches an operator. The `!hostStopRequested` gate
 stays too, alongside the `Origin` filter — cheap, and it stops the same-process case one round
 earlier than waiting for the accumulator to simply never contain a `HostStop` id.
 
