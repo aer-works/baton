@@ -47,9 +47,8 @@ public sealed class WatchNotifier : IWatchNotifier
     /// §2) means exactly that: a command that exits on its own within the budget still runs to
     /// completion, this process just stops blocking on it. Generous: a webhook-posting script or an
     /// ntfy curl call is the expected shape, never a long-running watcher of its own. The SAME budget
-    /// also bounds the stdin write below (spec/baton.md §2) — there the command IS killed, because a
-    /// write that has not drained by the deadline means the command is never going to read the rest of
-    /// stdin at all, so there is nothing left to "let finish".</summary>
+    /// also bounds the stdin write below, where the command IS killed on timeout — spec/baton.md §2
+    /// (H1) states why the two branches differ.</summary>
     public static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(30);
 
     private static readonly JsonSerializerOptions PayloadJsonOptions = new() { WriteIndented = false };
