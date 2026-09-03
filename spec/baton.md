@@ -1023,12 +1023,19 @@ always shows again as soon as the parent speaks, even if some earlier sub-agent 
 figure than either the parent's old or new reading. `BilledTokens` itself was
 never affected: it already sums every line's delta, parent or sub-agent, deduped only by `message.id`
 (above) — this fix is scoped to the DISPLAY-only level, not the arrest predicate. **This fix is
-claude-only.** `AgyUsageParser.TryParseIncrementalUsage` sets no `IsSubAgentTurn`, so every agy line
-lands in the parent bucket and agy's level keeps the pre-#1666 replace-on-every-line behaviour;
-whether agy's own stream marks a sub-agent turn at all is UNMEASURED (review F4) — neither
-`docs/vendor-doc-audit.md` nor `docs/vendor-capabilities.md` records agy's sub-agent usage-line shape,
-though both record that agy has sub-agents at all. That measurement is owed as a follow-up, not done
-here. `tools/fleet-glass/pusher.py`'s
+claude-only, and #1742 measured why the gap it fixes cannot occur on agy through the same path.**
+`AgyUsageParser.TryParseIncrementalUsage` sets no `IsSubAgentTurn`; a real agy fan-out capture
+(`invoke_subagent`, docs/vendor-doc-audit.md's #1742 entry, capture `dispatch-implement-2807af38`)
+shows why that is not an omission to close: unlike claude's `parent_tool_use_id`-marked
+`"type":"assistant"` lines, agy's own `step_type:"subagent"` line — the only line the parent's stream
+carries for the whole sub-agent call — has no `usage` object at all (that entry has the exact reader
+gate this trips and why). The sub-agent's own turns are written to an entirely separate transcript
+(its own `conversation_id`, a `log_uri` outside this dispatch's `.stdout.log`), never entering the
+parent's stream. So every agy line the engine reads usage from is, by construction, a
+parent-conversation line — agy's level keeps the pre-#1666 replace-on-every-line behaviour, but that
+behaviour cannot dip from a visible sub-agent reading the way claude's could, because no such reading
+is visible to replace it with. Scoped to the one capture available while agy was quota-exhausted, not
+to every agy build. `tools/fleet-glass/pusher.py`'s
 `extract_live_counts` built its own `contextTokens`/`cacheReadTokens` the same "latest line, no
 `parent_tool_use_id` filter" way — mirrored the same defect, and now applies the same rule (review
 F5, `tools/fleet-glass/pusher.py`'s `extract_live_counts`): a sub-agent line (`parent_tool_use_id` a string) is skipped for the
